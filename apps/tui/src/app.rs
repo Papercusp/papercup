@@ -205,14 +205,15 @@ pub enum Action {
     },
     /// Reattach a previously created SU session by its stable advSessionId.
     ///
-    /// ⚠ Currently has NO emitter — main.rs handles it and spawns
-    /// `attach_su_session_task`, but no reducer path constructs it, so the
-    /// reattach capability is unreachable. Whether this is an unwired
-    /// capability or superseded residue of `Action::OpenSuSession` needs a
-    /// design call, tracked as EI-21746542925159695. Annotated rather than
-    /// deleted so the decision is not pre-empted by a lint cleanup; remove this
-    /// `allow` (and the variant, or the gap) when that issue is settled.
-    #[allow(dead_code)]
+    /// Settled by D-012 (EI-21746542925159695): this is an unwired capability,
+    /// NOT residue of `Action::OpenSuSession`. The two differ in target —
+    /// `OpenSuSession` opens the canonical session for a BACKEND, while this
+    /// re-attaches to one specific prior `adv_session_id`, which only the
+    /// per-chat SU-session inventory row carries.
+    ///
+    /// Emitter: the session-picker handler, which fires this instead of
+    /// `LoadAgentChat` when the selected chat has an inventory row reconciled
+    /// `Attached`. Consumer: main.rs, which spawns `attach_su_session_task`.
     AttachSuSession {
         harness: String,
         chat_id: String,
@@ -1962,6 +1963,18 @@ pub struct App {
     /// inventory is kept independently of the selected stream so ended and
     /// archived sessions remain available for inspection after a restart.
     pub su_session_inventory: Vec<SuSessionInventoryEntry>,
+    /// advSessionIds this process has already issued an adopt/reattach for.
+    ///
+    /// P-010 requires restart reconciliation to "prevent duplicate panes /
+    /// processes". The inventory refreshes repeatedly, so the
+    /// `su_session.is_none()` guard alone is not sufficient: between emitting
+    /// `Action::AttachSuSession` and the binding actually landing there is a
+    /// window in which a second inventory frame would re-emit and spawn a
+    /// duplicate attach. This set closes that window — adoption is attempted
+    /// at most once per advSessionId per process, which is also why it is
+    /// keyed on the STABLE advSessionId rather than the native session id
+    /// (the latter changes on runtime replacement, which must not re-adopt).
+    pub su_adopted_sessions: BTreeSet<i64>,
     pub su_command_counter: u64,
     pub chat_has_more_earlier: bool,
     /// The lowest `seq` currently loaded — the cursor for paginating older turns
@@ -2269,6 +2282,7 @@ impl App {
             su_backend: None,
             su_session: None,
             su_session_inventory: Vec::new(),
+            su_adopted_sessions: BTreeSet::new(),
             su_command_counter: 0,
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
@@ -3741,6 +3755,39 @@ impl App {
                                 .find(|chat| chat.id == chat_id)
                                 .map(|chat| chat.role.clone())
                                 .unwrap_or_else(|| "operator".to_string());
+                            // D-012: a chat whose SU-session inventory row is
+                            // reconciled `Attached` has a live binding to one
+                            // specific prior adv_session_id, so re-attach to
+                            // that session rather than re-loading the chat.
+                            // Every other reconciliation state (Pending /
+                            // RuntimeReplaced / EndedArchived / FailedOrphaned)
+                            // and every chat with no inventory row fall through
+                            // to the load path below: only `Attached` asserts a
+                            // reconciled, still-present runtime, and a wrong
+                            // attach is user-visible.
+                            let attach_target = self
+                                .su_session_inventory
+                                .iter()
+                                .find(|entry| {
+                                    entry.agent_chat_id == chat_id
+                                        && entry.reconciliation
+                                            == crate::su_session::SuSessionReconciliation::Attached
+                                })
+                                .map(|entry| (entry.adv_session_id, entry.backend));
+                            if let Some((adv_session_id, backend)) = attach_target {
+                                self.reset_agent_chat_binding();
+                                self.su_backend = Some(backend);
+                                self.agent_chat_id = Some(chat_id.to_string());
+                                self.agent_chat_role = role;
+                                self.session_note = Some(format!("attaching {label}"));
+                                self.session_picker = None;
+                                return Action::AttachSuSession {
+                                    harness: self.harness.clone(),
+                                    chat_id: chat_id.to_string(),
+                                    adv_session_id,
+                                    backend,
+                                };
+                            }
                             // A selected legacy agent-chat may or may not have
                             // a durable SU binding; clear the backend intent
                             // until `agent_chat_load` probes the canonical
@@ -7447,6 +7494,52 @@ impl App {
                         entry
                     })
                     .collect();
+
+                // P-010: adopt/reattach a live SU session by its STABLE
+                // advSessionId. Until this existed, `Action::AttachSuSession`
+                // had no emitter at all (EI-21746542925159695) — the action,
+                // its run-loop arm and `attach_su_session_task` were all
+                // present, so reattach looked implemented while being
+                // unreachable. This is the missing construction.
+                //
+                // Adoption is deliberately narrow:
+                //  - only when nothing is bound (`su_session.is_none()`), so a
+                //    live pane is never displaced;
+                //  - only for the chat the inventory frame is about, which the
+                //    guard above already pinned to `self.agent_chat_id`;
+                //  - only for `Attached` non-terminal rows. `EndedArchived` /
+                //    `FailedOrphaned` rows are preserved for inspection but
+                //    must NOT be respawned, and `RuntimeReplaced` is handled by
+                //    the rebind path above rather than by a fresh attach;
+                //  - at most once per advSessionId (see `su_adopted_sessions`).
+                if self.su_session.is_none() {
+                    let adoptable = self
+                        .su_session_inventory
+                        .iter()
+                        .find(|entry| {
+                            Some(entry.agent_chat_id.as_str()) == self.agent_chat_id.as_deref()
+                                && entry.reconciliation
+                                    == crate::su_session::SuSessionReconciliation::Attached
+                                && !entry.terminal
+                        })
+                        .map(|entry| {
+                            (
+                                entry.agent_chat_id.clone(),
+                                entry.adv_session_id,
+                                entry.backend,
+                            )
+                        });
+                    if let Some((chat_id, adv_session_id, backend)) = adoptable {
+                        if self.su_adopted_sessions.insert(adv_session_id) {
+                            return Action::AttachSuSession {
+                                harness: self.harness.clone(),
+                                chat_id,
+                                adv_session_id,
+                                backend,
+                            };
+                        }
+                    }
+                }
                 Action::Render
             }
             Event::ConversationContextProjectionLoaded { target, projection } => {
@@ -10700,6 +10793,113 @@ mod tests {
         assert_eq!(a.agent_chat_role, "reviewer");
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat-review"));
         assert_eq!(a.chat_input, "half typed");
+    }
+
+    /// D-012 / EI-21746542925159695. `Action::AttachSuSession` had a consumer
+    /// in main.rs but no emitter, so reattach-by-advSessionId was unreachable.
+    /// The picker now emits it for a chat whose inventory row reconciles
+    /// `Attached`.
+    fn chat_summary_for(id: &str) -> crate::agent_chats::AgentChatSummary {
+        crate::agent_chats::AgentChatSummary {
+            id: id.into(),
+            role: "operator".into(),
+            feature_id: None,
+            title: Some("session".into()),
+            turn_count: 2,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost_usd_cents: 0.0,
+            created_at: "2026-08-29".into(),
+            updated_at: "2026-08-29T00:00:00Z".into(),
+            archived_at: None,
+        }
+    }
+
+    fn inventory_row_for(
+        id: &str,
+        reconciliation: crate::su_session::SuSessionReconciliation,
+    ) -> crate::su_session::SuSessionInventoryEntry {
+        crate::su_session::SuSessionInventoryEntry {
+            agent_chat_id: id.into(),
+            adv_session_id: 42,
+            backend: crate::su_session::SuSessionBackend::Codex,
+            lifecycle: crate::su_session::SuSessionLifecycleState::Ready,
+            runtime_generation: 1,
+            native_session_id: "rollout-42".into(),
+            terminal: false,
+            reconciliation,
+        }
+    }
+
+    fn select_session_option(a: &mut App, option_id: &str) -> Action {
+        a.open_agent_session_picker();
+        let idx = a
+            .session_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .position(|option| option.id == option_id)
+            .unwrap();
+        a.session_picker.as_mut().unwrap().sel = idx;
+        a.commit_session_picker()
+    }
+
+    #[test]
+    fn session_picker_attaches_when_inventory_row_reconciles_attached() {
+        let mut a = App::new();
+        a.agent_chat_summaries = vec![chat_summary_for("chat-attached")];
+        a.su_session_inventory = vec![inventory_row_for(
+            "chat-attached",
+            crate::su_session::SuSessionReconciliation::Attached,
+        )];
+        assert_eq!(
+            select_session_option(&mut a, "session:chat-attached"),
+            Action::AttachSuSession {
+                harness: "papercup".into(),
+                chat_id: "chat-attached".into(),
+                adv_session_id: 42,
+                backend: crate::su_session::SuSessionBackend::Codex,
+            }
+        );
+        assert_eq!(
+            a.su_backend,
+            Some(crate::su_session::SuSessionBackend::Codex)
+        );
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat-attached"));
+        assert!(a.session_picker.is_none());
+    }
+
+    /// Falsifiability control for the test above: if the emitter ever stopped
+    /// gating on `Attached` and fired for any inventory row, this fails. Only
+    /// `Attached` asserts a reconciled, still-present runtime.
+    #[test]
+    fn session_picker_loads_rather_than_attaches_for_every_non_attached_reconciliation() {
+        use crate::su_session::SuSessionReconciliation as R;
+        for reconciliation in [R::Pending, R::RuntimeReplaced, R::EndedArchived, R::FailedOrphaned]
+        {
+            let mut a = App::new();
+            a.agent_chat_summaries = vec![chat_summary_for("chat-x")];
+            a.su_session_inventory = vec![inventory_row_for("chat-x", reconciliation)];
+            let action = select_session_option(&mut a, "session:chat-x");
+            assert!(
+                matches!(action, Action::LoadAgentChat { .. }),
+                "reconciliation {reconciliation:?} must NOT attach, got {action:?}"
+            );
+        }
+    }
+
+    /// A chat with NO inventory row at all (a legacy chat) keeps the load path.
+    #[test]
+    fn session_picker_loads_a_chat_with_no_inventory_row() {
+        let mut a = App::new();
+        a.agent_chat_summaries = vec![chat_summary_for("chat-legacy")];
+        a.su_session_inventory = vec![];
+        let action = select_session_option(&mut a, "session:chat-legacy");
+        assert!(
+            matches!(action, Action::LoadAgentChat { .. }),
+            "a chat with no inventory row must load, got {action:?}"
+        );
     }
 
     #[test]
