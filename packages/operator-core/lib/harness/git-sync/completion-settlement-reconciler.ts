@@ -26,8 +26,13 @@ export function residualPathsForCommit(
     const expected = closeIdentity.get(path);
     if (!expected) return [{ path, reason: 'identity-unavailable' }];
     const actual = committed.get(path);
-    if (!actual) return [{ path, reason: 'missing-from-commit' }];
-    return actual === expected ? [] : [{ path, reason: 'content-mismatch' }];
+    // WI-42441: a path the lookup could not RESOLVE is `identity-unavailable`, never
+    // `missing-from-commit`. The two carry opposite remedies — one is the server's to
+    // fix, the other asks the closer to go re-commit work that is already committed —
+    // and an unreadable submodule used to land in the second.
+    if (!actual || actual.status === 'unresolvable') return [{ path, reason: 'identity-unavailable' }];
+    if (actual.status === 'absent') return [{ path, reason: 'missing-from-commit' }];
+    return actual.sha === expected ? [] : [{ path, reason: 'content-mismatch' }];
   });
 }
 

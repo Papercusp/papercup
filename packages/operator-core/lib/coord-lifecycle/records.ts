@@ -151,6 +151,14 @@ export type CompletionTreeContentIdentity = {
   path: string;
   workingTreeBlobSha: string | null;
   headBlobSha: string | null;
+  /**
+   * WI-42441: set ONLY when `headBlobSha` is null because the server could not READ
+   * the HEAD side (an uninitialized submodule, an unreadable object store) — never
+   * when the commit genuinely lacks the path. Readers use its presence to tell a
+   * server-side resolution failure from the closer's tree being wrong; the two carry
+   * opposite remedies, and conflating them is what made this class silent three times.
+   */
+  headBlobUnresolvable?: string;
 };
 
 /**
@@ -197,6 +205,15 @@ export const CompletionTreeStampSchema = z
           path: z.string().min(1),
           workingTreeBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
           headBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+          /**
+           * WI-42441: why the HEAD side could not be READ, when that is the reason
+           * `headBlobSha` is null. A null alone conflates "the commit genuinely does
+           * not carry this path" with "the server could not resolve it" — and those
+           * two demand opposite remedies, so the closer was blamed for a resolution
+           * bug. Present ONLY for the unresolvable case; a genuine absence leaves it
+           * unset, which is what keeps the two distinguishable downstream.
+           */
+          headBlobUnresolvable: z.string().min(1).optional(),
         }),
       )
       .min(1)

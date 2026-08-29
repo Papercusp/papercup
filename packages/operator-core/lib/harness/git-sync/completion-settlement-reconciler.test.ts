@@ -9,6 +9,7 @@ import {
   type CompletionSettlementReconcilerDeps,
 } from './completion-settlement-reconciler';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
+import type { HeadBlobResolution } from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';
 
 const SHA = 'a'.repeat(40);
@@ -30,22 +31,27 @@ const manifest = {
   ],
 };
 
+/** Build a lookup result in the three-valued contract (WI-42441). */
+const resolved = (sha: string): HeadBlobResolution => ({ status: 'resolved', sha });
+const absent = (): HeadBlobResolution => ({ status: 'absent' });
+const unresolvable = (reason: string): HeadBlobResolution => ({ status: 'unresolvable', reason });
+
 describe('residualPathsForCommit', () => {
   it('settles only when every close-time blob is present in the exact commit', () => {
     expect(residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', 'd'.repeat(40)],
-      ['nested/b.ts', 'e'.repeat(40)],
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('e'.repeat(40))],
     ]))).toEqual([]);
   });
 
   it('reads identities from the emitted commit SHA, independent of later working-tree edits', () => {
     const lookup = vi.fn(() => new Map([
-      ['a.ts', 'd'.repeat(40)],
-      ['nested/b.ts', 'e'.repeat(40)],
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('e'.repeat(40))],
     ]));
     const laterWorkingTreeIdentity = new Map([
-      ['a.ts', 'f'.repeat(40)],
-      ['nested/b.ts', 'f'.repeat(40)],
+      ['a.ts', resolved('f'.repeat(40))],
+      ['nested/b.ts', resolved('f'.repeat(40))],
     ]);
 
     expect(residualPathsForCommit(manifest, SHA, lookup)).toEqual([]);
@@ -55,7 +61,8 @@ describe('residualPathsForCommit', () => {
 
   it('persists deterministic residue for partial and mismatched commits', () => {
     expect(residualPathsForCommit(manifest, SHA, () => new Map([
-      ['a.ts', 'f'.repeat(40)],
+      ['a.ts', resolved('f'.repeat(40))],
+      ['nested/b.ts', absent()],
     ]))).toEqual([
       { path: 'a.ts', reason: 'content-mismatch' },
       { path: 'nested/b.ts', reason: 'missing-from-commit' },
@@ -67,6 +74,41 @@ describe('residualPathsForCommit', () => {
       { path: 'a.ts', reason: 'identity-unavailable' },
       { path: 'nested/b.ts', reason: 'identity-unavailable' },
     ]);
+  });
+
+  /**
+   * WI-42441 — the defect this contract exists to kill. An unreadable submodule and a
+   * path the commit genuinely lacks used to arrive here as the SAME thing (absence from
+   * the map), so a resolution failure was reported as `missing-from-commit` — which reads
+   * as the closer's fault and sends them to re-commit work that is already committed.
+   *
+   * The CONTROL below is what makes this falsifiable: the two cases are asserted in ONE
+   * test against the SAME path, so an implementation that collapses them cannot pass —
+   * whichever single reason it picks, one of the two expectations fails.
+   */
+  it('separates an unreadable submodule from a path the commit really lacks', () => {
+    const reason = "submodule 'libs/papercusp' could not be read at abc123456789";
+    const unreadable = residualPathsForCommit(manifest, SHA, () => new Map([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', unresolvable(reason)],
+    ]));
+    // CONTROL: identical shape, the one difference being a tree that was actually read.
+    const genuinelyMissing = residualPathsForCommit(manifest, SHA, () => new Map([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', absent()],
+    ]));
+
+    expect(unreadable).toEqual([{ path: 'nested/b.ts', reason: 'identity-unavailable' }]);
+    expect(genuinelyMissing).toEqual([{ path: 'nested/b.ts', reason: 'missing-from-commit' }]);
+    expect(unreadable).not.toEqual(genuinelyMissing);
+  });
+
+  it('fails closed — never `missing-from-commit` — for a path the lookup did not answer at all', () => {
+    // A map that simply omits a requested path is an INCOMPLETE answer, not a verdict
+    // that the commit lacks it. Absence must never be promoted to a finding about the tree.
+    expect(residualPathsForCommit(manifest, SHA, () => new Map([
+      ['a.ts', resolved('d'.repeat(40))],
+    ]))).toEqual([{ path: 'nested/b.ts', reason: 'identity-unavailable' }]);
   });
 });
 
@@ -99,8 +141,8 @@ function settlementEmitMock() {
 describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
   const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
   const matchingLookup = () => new Map([
-    ['a.ts', 'd'.repeat(40)],
-    ['nested/b.ts', 'e'.repeat(40)],
+    ['a.ts', resolved('d'.repeat(40))],
+    ['nested/b.ts', resolved('e'.repeat(40))],
   ]);
 
   it('emits the latched settlement receipt once, only after a successful proposed→committed CAS', async () => {
@@ -132,7 +174,7 @@ describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
     const emit = settlementEmitMock();
     const residue = await reconcileProposedCompletionsAtCommit(SHA, scope, {
       sql: settlementSql({ updateHits: [true] }),
-      lookup: () => new Map([['a.ts', 'f'.repeat(40)]]),
+      lookup: () => new Map([['a.ts', resolved('f'.repeat(40))]]),
       emit,
     });
     const missed = await reconcileProposedCompletionsAtCommit(SHA, scope, {

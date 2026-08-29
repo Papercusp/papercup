@@ -77,6 +77,7 @@ import {
   completionSettlementManifest,
   completionTreeStamp,
   completionTreeStampForEvidence,
+  unresolvableContentIdentityPaths,
 } from './completion-freshness';
 export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
 export type {
@@ -2949,7 +2950,18 @@ async function completeOne(
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
         `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
         (contentIdentityDowngrade
-          ? `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
+          ? unresolvableContentIdentityPaths(treeStamp).length > 0
+            ? // WI-42441: this is the SERVER's resolution failure, not the closer's tree
+              // hygiene. The generic advice below is unfollowable here — re-running from a
+              // perfectly committed tree reproduces it exactly — so say what actually
+              // happened and do not send them to re-verify work that is already correct.
+              `The server could NOT RESOLVE the committed content for ${unresolvableContentIdentityPaths(treeStamp)
+                .map((entry) => `\`${entry.path}\` (${entry.headBlobUnresolvable})`)
+                .join('; ')}. This is a resolution failure on the server side, NOT a problem with your tree: ` +
+              `re-closing from a committed tree will reproduce it identically. Your other evidence was accepted. ` +
+              `Settlement will upgrade this close automatically once the path resolves; if it persists, file it ` +
+              `against the completion content-identity resolver rather than re-verifying.`
+            : `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
           : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
           ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
             `be true: if this close added or changed tests, it changed at least one file, and a completion ` +

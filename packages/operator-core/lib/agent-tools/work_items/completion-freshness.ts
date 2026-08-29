@@ -74,7 +74,37 @@ export interface CompletionTreeStampProbe {
     repoRoot: string,
     headSha: string,
     paths: readonly string[],
-  ) => ReadonlyMap<string, string | null> | undefined;
+  ) => ReadonlyMap<string, HeadBlobResolution> | undefined;
+}
+
+/**
+ * WI-42441 — the HEAD side of one declared path, THREE-valued on purpose.
+ *
+ * The predecessor returned `ReadonlyMap<string, string | null>` and signalled
+ * "not in the commit" by leaving the path OUT of the map. That overloads absence:
+ * a submodule whose descent failed (not initialized — routine in a `git worktree`
+ * checkout, WI-40231) dropped out of the map exactly like a path the commit really
+ * does not carry. Downstream that became `missing-from-commit`, which reads as
+ * "the closer declared a path that is not in the commit" and sends them to re-verify
+ * a tree that was already correct.
+ *
+ * So every requested path now gets an entry, and the two failures are separate
+ * constructors. This is the same discipline `candidate-contains.ts` already applies
+ * to the gate's blob-containment read ("an ABSENCE must never read as a POSITIVE");
+ * the two modules answer the same question about the same trees, and this one was
+ * the half still conflating them.
+ */
+export type HeadBlobResolution =
+  /** The commit carries this path, at this blob. */
+  | { status: 'resolved'; sha: string }
+  /** Definitively NOT in the commit — the tree was read, and the path is not in it. */
+  | { status: 'absent' }
+  /** The lookup could not answer. NEVER a verdict about the commit's contents. */
+  | { status: 'unresolvable'; reason: string };
+
+/** The blob sha when resolved, else null — for readers that only need the match test. */
+export function headBlobShaOf(resolution: HeadBlobResolution | undefined): string | null {
+  return resolution?.status === 'resolved' ? resolution.sha : null;
 }
 
 function normalizedRepoPath(repoRoot: string, raw: string): string | undefined {
@@ -95,7 +125,7 @@ export function completionHeadBlobMap(
   repoRoot: string,
   headSha: string,
   paths: readonly string[],
-): ReadonlyMap<string, string | null> | undefined {
+): ReadonlyMap<string, HeadBlobResolution> | undefined {
   try {
     const runLsTree = (root: string, sha: string, selected?: readonly string[], recursive = true) =>
       execFileSync(
@@ -133,8 +163,8 @@ export function completionHeadBlobMap(
     };
 
     const direct = parseTree(runLsTree(repoRoot, headSha, paths));
-    const result = new Map<string, string | null>();
-    for (const [path, sha] of direct.blobs) result.set(path, sha);
+    const result = new Map<string, HeadBlobResolution>();
+    for (const [path, sha] of direct.blobs) result.set(path, { status: 'resolved', sha });
 
     const missing = paths.filter((path) => !result.has(path));
     if (missing.length > 0) {
@@ -169,12 +199,26 @@ export function completionHeadBlobMap(
       }
       for (const [prefix, group] of grouped) {
         const nested = completionHeadBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths);
-        if (!nested) continue;
         for (const path of group.paths) {
-          const sha = nested.get(path);
-          if (sha) result.set(`${prefix}/${path}`, sha);
+          // A submodule we could not read answers NOTHING about the commit's contents.
+          // Reporting it as absent is the WI-42441 conflation: it blames the closer for
+          // a path the server merely failed to resolve.
+          result.set(
+            `${prefix}/${path}`,
+            nested
+              ? nested.get(path) ?? { status: 'absent' }
+              : {
+                  status: 'unresolvable',
+                  reason:
+                    `submodule '${prefix}' could not be read at ${group.sha.slice(0, 12)} ` +
+                    `(not initialized in this checkout, or its object store is unreadable)`,
+                },
+          );
         }
       }
+      // Anything still unaccounted for was read out of a tree that simply does not
+      // carry it — the one case that IS a definitive negative.
+      for (const path of missing) if (!result.has(path)) result.set(path, { status: 'absent' });
     }
     return result;
   } catch {
@@ -205,12 +249,31 @@ function contentIdentity(
     });
   return paths.map((path) => {
     const bytes = readBytes(nodePath.join(repositoryRoot, path));
+    const resolution = head.get(path);
     return {
       path,
       workingTreeBlobSha: bytes === undefined ? null : gitBlobSha(bytes, headSha.length),
-      headBlobSha: head.get(path) ?? null,
+      headBlobSha: headBlobShaOf(resolution),
+      // Carried so the closer is told WHY, not just that it failed (WI-42441).
+      ...(resolution?.status === 'unresolvable' ? { headBlobUnresolvable: resolution.reason } : {}),
     };
   });
+}
+
+/**
+ * WI-42441: the declared paths whose HEAD side could not be READ, with the reason.
+ *
+ * Non-empty means the downgrade is the SERVER's resolution failure, not the closer's
+ * tree hygiene — which is the difference between advice that can be followed and
+ * advice that cannot. Deliberately narrow: a path that resolved and simply does not
+ * match is NOT listed, because that one really is the closer's to fix.
+ */
+export function unresolvableContentIdentityPaths(
+  stamp: { contentIdentity?: readonly CompletionTreeContentIdentity[] } | undefined | null,
+): { path: string; headBlobUnresolvable: string }[] {
+  return (stamp?.contentIdentity ?? []).flatMap((entry) =>
+    entry.headBlobUnresolvable ? [{ path: entry.path, headBlobUnresolvable: entry.headBlobUnresolvable }] : [],
+  );
 }
 
 export function completionTreeContentIdentityMatches(
@@ -336,7 +399,7 @@ export interface CompletionTreeStampForEvidenceProbe {
     repoRoot: string,
     headSha: string,
     paths: readonly string[],
-  ) => ReadonlyMap<string, string | null> | undefined;
+  ) => ReadonlyMap<string, HeadBlobResolution> | undefined;
 }
 
 /**
@@ -582,6 +645,29 @@ export function completionFreshnessForEvidence(
       storedTreeStamp: stored,
       currentTreeStamp: current,
       reason: `Current committed content identity could not be observed for ${stored.repositoryRoot}; completion freshness is not established.`,
+    };
+  }
+
+  /**
+   * WI-42441: a path whose HEAD side could not be READ makes the identity fail to match,
+   * but `stale` is a claim ABOUT THE EVIDENCE ("it no longer describes this tree"), and we
+   * have not established that. Saying stale here sends the reader to re-verify work that
+   * may be perfectly current, which is the same misattribution this item fixed at the
+   * close path. `unavailable` is the honest verdict for "could not check".
+   */
+  const unresolvable = [
+    ...unresolvableContentIdentityPaths(current),
+    ...unresolvableContentIdentityPaths(stored),
+  ];
+  if (unresolvable.length > 0) {
+    return {
+      verdict: 'unavailable',
+      storedTreeStamp: stored,
+      currentTreeStamp: current,
+      reason:
+        `Committed content could not be resolved for ${unresolvable
+          .map((entry) => `${entry.path} (${entry.headBlobUnresolvable})`)
+          .join('; ')}; completion freshness is not established. This is a resolution failure, not evidence of staleness.`,
     };
   }
 

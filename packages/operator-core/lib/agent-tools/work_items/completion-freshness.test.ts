@@ -167,4 +167,37 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     expect(result?.verdict).toBe('stale');
     expect(result?.reason).toMatch(/does not match committed HEAD/);
   });
+
+  /**
+   * WI-42441 — `stale` is a claim about the EVIDENCE; `unavailable` is a claim about our
+   * ABILITY TO CHECK. An unreadable submodule produces the same null headBlobSha as a real
+   * drift, so this read path used to report a perfectly current completion as stale and
+   * send the reader to re-verify it. The mismatch case above is the permanent CONTROL:
+   * both tests assert on the same field, so an implementation that collapses the two
+   * verdicts fails one of them whichever way it collapses.
+   */
+  it('reports unavailable, not stale, when a declared path could not be resolved', () => {
+    const reason = "submodule 'libs/papercusp' could not be read at abc123456789";
+    const result = completionFreshnessForEvidence(
+      { treeStamp: stored },
+      {
+        currentStamp: () => ({
+          repositoryRoot: '/repo',
+          headSha: stored.headSha,
+          contentIdentity: [
+            {
+              path: 'src/fix.ts',
+              workingTreeBlobSha: 'c'.repeat(40),
+              headBlobSha: null,
+              headBlobUnresolvable: reason,
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(result?.verdict).toBe('unavailable');
+    expect(result?.reason).toContain(reason);
+    expect(result?.reason).toMatch(/not evidence of staleness/);
+  });
 });

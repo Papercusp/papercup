@@ -535,7 +535,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
       exists: () => true,
       readFile,
       readBytes: () => workingTree,
-      headBlobs: () => new Map([['src/fix.ts', headBlob]]),
+      headBlobs: () => new Map([['src/fix.ts', { status: 'resolved' as const, sha: headBlob }]]),
     });
 
     expect(result).toMatchObject({
@@ -545,6 +545,34 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     });
     expect(result?.contentIdentity?.[0]?.workingTreeBlobSha).toMatch(/^[0-9a-f]{40}$/);
     expect(result?.contentIdentity?.[0]?.workingTreeBlobSha).not.toBe(headBlob);
+    // WI-42441: a RESOLVED path carries no unresolvable reason — that field is reserved
+    // for the server failing to read HEAD, so its presence stays a reliable signal.
+    expect(result?.contentIdentity?.[0]?.headBlobUnresolvable).toBeUndefined();
+  });
+
+  it('carries the reason forward when the HEAD side could not be resolved (WI-42441)', () => {
+    const reason = "submodule 'libs/papercusp' could not be read at abc123456789";
+    const result = completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
+      exists: () => true,
+      readFile,
+      readBytes: () => Buffer.from('present\n'),
+      headBlobs: () => new Map([['src/fix.ts', { status: 'unresolvable' as const, reason }]]),
+    });
+
+    expect(result?.contentIdentity?.[0]?.headBlobSha).toBeNull();
+    expect(result?.contentIdentity?.[0]?.headBlobUnresolvable).toBe(reason);
+  });
+
+  it('leaves a genuinely absent path with no reason, so it stays the closer‑side case', () => {
+    const result = completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
+      exists: () => true,
+      readFile,
+      readBytes: () => Buffer.from('present\n'),
+      headBlobs: () => new Map([['src/fix.ts', { status: 'absent' as const }]]),
+    });
+
+    expect(result?.contentIdentity?.[0]?.headBlobSha).toBeNull();
+    expect(result?.contentIdentity?.[0]?.headBlobUnresolvable).toBeUndefined();
   });
 
   it('records a null HEAD blob when a dirty worktree path is absent from HEAD', () => {
