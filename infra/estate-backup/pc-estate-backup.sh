@@ -264,13 +264,16 @@ while read -r rsize rname; do
 done < <(gcloud storage ls -l -r "${DEST}/**" 2>/dev/null | awk 'NF>=3 && $1 ~ /^[0-9]+$/ {print $1, $NF}')
 
 BAD=0
+BADLIST=()
 while IFS='|' read -r apath abytes; do
   [ -z "$apath" ] && continue
   got="${REMOTE[$apath]:-}"
   if [ -z "$got" ]; then
     echo "MISSING REMOTELY: ${apath} (declared ${abytes} bytes)" >&2; BAD=$((BAD+1))
+    BADLIST+=("MISSING: ${apath} (declared ${abytes} bytes)")
   elif [ "$got" != "$abytes" ]; then
     echo "SIZE MISMATCH: ${apath} declared=${abytes} remote=${got}" >&2; BAD=$((BAD+1))
+    BADLIST+=("SIZE MISMATCH: ${apath} declared=${abytes} remote=${got}")
   fi
 done < <(python3 -c "
 import json
@@ -279,9 +282,53 @@ for a in json.load(open('${STAGE}/MANIFEST.json'))['artifacts']:
 ")
 if [ -z "${REMOTE[MANIFEST.json]:-}" ]; then
   echo "MISSING REMOTELY: MANIFEST.json" >&2; BAD=$((BAD+1))
+  BADLIST+=("MISSING: MANIFEST.json")
 fi
 if [ "$BAD" -gt 0 ]; then
   fail "${BAD} declared artifact(s) missing or wrong size in the bucket"
+  # WI-808388: mark the prefix IN THE BUCKET, not just in this log.
+  #
+  # Two properties of this script make an unmarked failed prefix genuinely
+  # dangerous, and neither is obvious from the bucket:
+  #   1. MANIFEST.json is written (above) and uploaded BEFORE this verification
+  #      runs, and is never rewritten. Its "failures" field is therefore frozen
+  #      at its pre-upload value -- it reads 0 even for the run you are reading
+  #      right now, which just failed. It can NEVER report an upload or
+  #      verification failure.
+  #   2. Nothing else here distinguishes a partial prefix from a complete one.
+  # So a human following RESTORE-RUNBOOK section 3, reading only the bucket,
+  # sees a manifest declaring N artifacts with "failures": 0 and no other
+  # signal -- exactly how daily/2026-08-29/hetzner-restore-prod/20260829T055415Z
+  # sat there claiming 6 artifacts while holding 4, with both application
+  # databases absent. That marker had to be written BY HAND after the fact.
+  #
+  # This writes it automatically, at the moment we know. Deliberately a small
+  # separate object rather than a manifest rewrite: the manifest is the sha256
+  # integrity authority and must stay exactly as produced.
+  marker="${STAGE}/INCOMPLETE-DO-NOT-USE.txt"
+  {
+    echo "INCOMPLETE BACKUP -- DO NOT RESTORE FROM THIS SNAPSHOT"
+    echo
+    echo "host:           ${HOST}"
+    echo "snapshot:       ${TS}"
+    echo "destination:    ${DEST}"
+    echo "detected_at:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "failed_checks:  ${BAD}"
+    echo
+    echo "MANIFEST.json in this prefix is NOT a success signal: it is uploaded"
+    echo "before verification runs and its \"failures\" field is always its"
+    echo "pre-upload value. Trust THIS file over that one."
+    echo
+    echo "Declared-but-unverifiable artifacts:"
+    for b in "${BADLIST[@]}"; do echo "  - ${b}"; done
+  } > "$marker" 2>/dev/null
+  # Best-effort and strictly non-masking: a marker we cannot upload must never
+  # change the outcome or hide the real failure below.
+  if gcloud storage cp "$marker" "${DEST}/INCOMPLETE-DO-NOT-USE.txt" --quiet >/dev/null 2>&1; then
+    log "  wrote INCOMPLETE-DO-NOT-USE.txt into ${DEST}"
+  else
+    echo "WARNING: could not write the INCOMPLETE marker into ${DEST} -- this prefix is partial and UNMARKED; mark it by hand." >&2
+  fi
 else
   log "  all ${#ARTIFACTS[@]} declared artifacts present remotely at the declared size"
 fi
