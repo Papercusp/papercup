@@ -296,17 +296,29 @@ export async function resolveResumeTarget(ref: {
   // workspace-scoped here: coord_owner_id and session_id are globally unique
   // (see advSessionsByCoordOwner's note), so a workspace predicate could only
   // drop valid rows.
+  //
+  // An exact native-session pin is its OWN candidate, and must NOT be looked up
+  // through adv_sessions first (WI-555403). A carry-respawn REWRITES the owner's
+  // adv_sessions row in place — same row id, new session_id + started_at (see
+  // reanchorAdvSessionNativeId in adv-sessions.ts) — so every EARLIER session in
+  // a respawn chain has no adv_sessions row at all. Seeding `candidate` from
+  // adv_sessions therefore left indexed_owner NULL for exactly those sessions,
+  // the final predicate degenerated to `coord_owner_id = NULL`, and an earlier
+  // transcript resolved as not_found even though session_turns still holds it
+  // under the same owner. Taking the pin directly lets indexed_owner bridge it
+  // back to the owner's CURRENT row; resolvedNativeSessionId below still returns
+  // the requested uuid, so the pin is never replaced by that row's newer one.
   const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
     WITH candidate AS (
-      SELECT s.session_id AS candidate_session_id
-        FROM harness_shared.adv_sessions s
-       WHERE ${
-         sessionId
-           ? sql`s.session_id = ${sessionId}`
-           : sql`s.coord_owner_id LIKE ${agentId + '%'}`
-       }
-       ORDER BY ${sessionId ? sql`(s.session_id = ${sessionId}) DESC,` : sql``} s.started_at DESC
-       LIMIT 1
+      ${
+        sessionId
+          ? sql`SELECT ${sessionId}::text AS candidate_session_id`
+          : sql`SELECT s.session_id AS candidate_session_id
+                  FROM harness_shared.adv_sessions s
+                 WHERE s.coord_owner_id LIKE ${agentId + '%'}
+                 ORDER BY s.started_at DESC
+                 LIMIT 1`
+      }
     ),
     indexed_owner AS (
       SELECT t.owner
@@ -339,7 +351,8 @@ export async function resolveResumeTarget(ref: {
       ok: false,
       error: 'not_found',
       detail: sessionId
-        ? `no adv_sessions row records native session ${sessionId}`
+        ? `no adv_sessions row records native session ${sessionId}, and session_turns holds no owner ` +
+          'for it either — check the uuid (sessions:list)'
         : `no adv_sessions row for agent ${agentId} — check the id (coord:presence / sessions:list)`,
     };
   }
