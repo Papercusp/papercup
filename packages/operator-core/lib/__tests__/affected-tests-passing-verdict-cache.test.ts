@@ -463,6 +463,19 @@ describe('cross-run passing-task verdict reuse', () => {
 // the second is the load-bearing one: widening WHICH commands may reuse must not widen WHAT is
 // reusable. Every miss rule above still applies unchanged to a local run.
 describe('D-007 root `npm test` local cross-run reuse', () => {
+  // Bound the persist function by its real closing brace, not a magic byte count: a fixed slice
+  // silently stops covering the tail of the function as comments/code are added, which turns
+  // these guards into false greens exactly when the function is being edited.
+  const persistFnSource = (): string => {
+    const start = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
+    expect(start).toBeGreaterThan(-1);
+    const end = AFFECTED_TESTS_SRC.indexOf('\n}\n', start);
+    expect(end).toBeGreaterThan(start);
+    return AFFECTED_TESTS_SRC.slice(start, end);
+  };
+  const stripComments = (source: string): string =>
+    source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+
   it('opts the root test script into resumable execution', () => {
     // The whole feature is inert without this: TASK_VERDICT_CACHE_ENABLED gates on
     // GREEN_CHECKPOINT or AFFECTED_TASK_VERDICT_RESUME, and an ordinary local run sets neither.
@@ -514,25 +527,35 @@ describe('D-007 root `npm test` local cross-run reuse', () => {
   // outwardly identical to "reuse is on, nothing was reusable". Two guards: the dead binding is
   // gone, and the catch now re-throws programmer errors so the class cannot be silent again.
   it('does not reference an undeclared binding on the store path', () => {
-    const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
-    expect(persist).toBeGreaterThan(-1);
     // Strip comments first: this guard is about CODE. Prose that merely NAMES the dead binding
     // (including the regression note left at the fix site) must not trip it.
-    const body = AFFECTED_TESTS_SRC.slice(persist, persist + 3500)
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^[ \t]*\/\/.*$/gm, '');
+    const body = stripComments(persistFnSource());
     const used = body.includes('perRunMerged');
     const declared = /(?:const|let|var)\s+perRunMerged\b/.test(body);
     // Either the binding is absent entirely, or it is genuinely declared before use.
     expect(used && !declared).toBe(false);
   });
 
-  it('fails loudly on a programmer error instead of degrading to silent no-reuse', () => {
-    const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
-    const body = AFFECTED_TESTS_SRC.slice(persist, persist + 3500);
+  it('reports a programmer error loudly instead of degrading to silent no-reuse', () => {
+    const body = persistFnSource();
     expect(body).toContain('error instanceof ReferenceError');
     expect(body).toContain('error instanceof TypeError');
-    expect(body).toContain('throw error;');
+    expect(body).toContain('taskVerdictPersistDefects.push(');
+    expect(body).toContain('status=defect');
+    // And it must be surfaced where the cache is already reported, not only per-task on stderr.
+    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TASK_CACHE_DEFECTS count=');
+  });
+
+  // A persist-path defect costs REUSE, never correctness: the suite simply does more work. This
+  // callback is awaited inside runBudgetedTasks' try/catch, which re-throws
+  // (budgeted-task-scheduler.mjs), so throwing here would abort the whole suite and turn a lost
+  // optimization into a gate outage that blocks every agent's deploys. Loud, counted, NOT fatal.
+  it('never aborts the suite from the settlement callback', () => {
+    const body = stripComments(persistFnSource());
+    expect(body).not.toContain('throw ');
+    // The scheduler contract this depends on: settlement is awaited inside a re-throwing catch.
+    const scheduler = readFileSync(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'), 'utf8');
+    expect(scheduler).toContain('await onTaskSettled(scheduled)');
   });
 
   // Widening the ENTRY POINT must not widen the ADMISSION RULE. These re-assert, against the

@@ -3915,6 +3915,10 @@ const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED
   ? readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH)
   : null;
 const taskVerdictDigestCache = new Map();
+// D-008: programmer-error persist failures, counted so a broken store is visible on the summary
+// line rather than only on a per-task stderr line. A non-empty list means reuse is BROKEN even
+// though the suite itself is unaffected — the state that previously looked identical to health.
+const taskVerdictPersistDefects = [];
 const taskVerdictTrackedScan = TASK_VERDICT_CACHE_ENABLED
   ? listTrackedFiles(ROOT)
   : null;
@@ -4690,18 +4694,29 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
         `path=${TASK_VERDICT_CACHE_PATH}`,
     );
   } catch (error) {
-    // This catch exists to tolerate ENVIRONMENTAL failure (a full disk, a racing rename, a
-    // read-only tmpdir): losing one proof is survivable, so the run continues without reuse.
-    // A ReferenceError/TypeError is NOT that — it is a defect in the code above, and swallowing
-    // it is what let the `perRunMerged` regression present as "reuse is on but nothing was ever
-    // reusable" instead of as a failure. The two are indistinguishable from the outside, which
-    // is precisely why the programmer-error class has to be loud. Re-throw it.
+    // Classify, but NEVER let this abort the run. Two facts decide the shape of this handler:
+    //
+    //   1. A broken store is SAFE, only wasteful. It costs reuse, so the suite does MORE work,
+    //      never less — it cannot cause an unverified task to be certified. Aborting a ~40min
+    //      gate suite over a lost optimization would convert a harmless bug into the one thing
+    //      this plan exists to prevent: a gate outage that blocks every agent's deploys. This
+    //      callback is awaited inside runBudgetedTasks' try/catch, which RE-THROWS
+    //      (budgeted-task-scheduler.mjs:734), so a throw here would do exactly that.
+    //   2. The real defect in the `perRunMerged` regression was OBSERVABILITY, not tolerance:
+    //      "reuse on, nothing reusable" (healthy) and "the store throws on every task" (broken)
+    //      printed the same way, so nothing distinguished them.
+    //
+    // So: tolerate environmental failure exactly as before, and make the programmer-error class
+    // COUNTED — surfaced on the summary line everyone already reads (defects=N below), instead
+    // of only on a per-task stderr line nobody greps. Loud, not fatal. See plan D-008.
     if (error instanceof ReferenceError || error instanceof TypeError) {
+      taskVerdictPersistDefects.push(`${key}: ${error.message}`);
       errSync(
         `AFFECTED_TASK_CACHE_WRITE status=defect task=${JSON.stringify(key)} ` +
-          `reason=${error.message} (bug in persistCleanFirstPassTaskVerdict — failing loudly)`,
+          `reason=${error.message} (BUG in persistCleanFirstPassTaskVerdict — reuse is broken, ` +
+          `suite continues)`,
       );
-      throw error;
+      return;
     }
     errSync(
       `AFFECTED_TASK_CACHE_WRITE status=failed task=${JSON.stringify(key)} ` +
@@ -4749,6 +4764,15 @@ if (TASK_VERDICT_CACHE_ENABLED) {
       },
     ),
   );
+  // D-008: a persist-path defect costs reuse without failing the suite, so it must be reported
+  // where the cache is already being reported. Silence here is what let the regression survive.
+  if (taskVerdictPersistDefects.length > 0) {
+    errSync(
+      `AFFECTED_TASK_CACHE_DEFECTS count=${taskVerdictPersistDefects.length} ` +
+        `(reuse is broken — suite results are unaffected) ` +
+        `first=${JSON.stringify(taskVerdictPersistDefects[0])}`,
+    );
+  }
 }
 try {
   // Re-read immediately before the atomic replace so a run that finished while this one was
