@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +28,7 @@ import {
   PC_HEAVY_VOLATILE_IDENTITY_ENV,
   passingTaskVerdictCacheEntry,
   passingTaskVerdictCrossRunIdentityEnvironment,
+  passingTaskVerdictCrossRunGateConfig,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
@@ -436,26 +438,30 @@ describe('cross-run passing-task verdict reuse', () => {
 
   // The falsifier for the exclusion above: neutralising the DERIVED bound must not smuggle out
   // the STATIC timeout policy with it. A real config change still has to invalidate.
+  // The falsifier for the exclusion above: neutralising the DERIVED bound must not smuggle out
+  // the STATIC timeout policy with it. A real config change still has to invalidate.
   it('still MISSES when the static timeout policy itself changed', () => {
     const proven = crossRunIdentity(runA, withTimeout(null, 'floor'));
     const policyChanged = crossRunIdentity(runB, {
-      gateConfig: {
+      gateConfig: passingTaskVerdictCrossRunGateConfig({
         retry: true,
+        affectedBase: 'a2d69cef',
         batchTimeout: { ...batchTimeoutPolicy, floorMs: 600_000, effectiveMs: null, source: 'floor' },
-      },
+      }),
     });
     expect(policyChanged.fingerprint).not.toBe(proven.fingerprint);
   });
 
-  // Identity-level agreement is not wiring: the runner has to actually null the derived pair, and
-  // it is the runner — not this module — that reads durationHistory.
-  it('nulls the derived timeout on the cross-run identity in affected-tests.mjs', () => {
+  // Identity-level agreement is not wiring: the runner has to actually ROUTE its cross-run
+  // gateConfig through the normaliser, and it is the runner — not this module — that reads
+  // durationHistory. Without this the rule can be correct and simply never called.
+  it('routes the cross-run gateConfig through the normaliser in affected-tests.mjs', () => {
     const runner = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
-    const crossRun = runner.slice(runner.indexOf('gateConfig: {\n            ...cacheIdentitySpec.gateConfig'));
-    expect(crossRun).toBeTruthy();
-    const block = crossRun.slice(0, crossRun.indexOf('environment: crossRunEnvironment'));
-    expect(block).toContain('affectedBase: null');
-    expect(block).toMatch(/batchTimeout:\s*\{[\s\S]*effectiveMs:\s*null[\s\S]*source:\s*null/);
+    expect(runner).toMatch(
+      /gateConfig:\s*passingTaskVerdictCrossRunGateConfig\(\s*cacheIdentitySpec\.gateConfig\s*\)/,
+    );
+    // and it must actually be imported, not just referenced
+    expect(runner).toMatch(/^\s*passingTaskVerdictCrossRunGateConfig,\s*$/m);
   });
 
   // The falsifiability controls. Each asserts a MISS: if any of these ever hits, the gate is
@@ -1348,5 +1354,41 @@ describe('affected-tests wires the miss diagnostics in', () => {
     'identityEnvDigests(crossRunEnvironment)',
   ])('calls %s', (fragment) => {
     expect(AFFECTED_TESTS_SRC).toContain(fragment.replaceAll('"', "'"));
+  });
+});
+
+// DEFECT-1 REGRESSION GUARD (the other half of what made cross-run reuse inert).
+//
+// `defineVitestConfig` sets `cacheDir: '.vitest-tmp'`, and `.vitest-tmp/vitest/<hash>/results.json`
+// records a per-run `duration`. When that file is TRACKED it sits in the affected-tests dependency
+// closure and changes on EVERY run, so the closure hash — the one component the whole cache's
+// validity rests on — moved on its own and reuse could never hit.
+//
+// It survived a long time because the SUPERPROJECT .gitignore does cover `.vitest-tmp/`, and a
+// superproject ignore DOES NOT REACH INSIDE A SUBMODULE. Seven submodules tracked the file.
+describe('vitest cache artifacts stay out of the dependency closure', () => {
+  const tracked = (pathspec: string) =>
+    execFileSync('git', ['ls-files', '--recurse-submodules', '--', pathspec], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
+      .split('\n')
+      .filter(Boolean);
+
+  it('tracks no .vitest-tmp artifact in the superproject or any submodule', (ctx) => {
+    // POSITIVE CONTROL FIRST. A zero-row answer is only evidence of absence if the instrument can
+    // still see inside submodules — an uninitialised checkout, or a git that quietly stopped
+    // recursing, would otherwise report a clean tree by failing to look. Without this the guard's
+    // green is indistinguishable from its blindness.
+    const control = tracked('*libs/generic/rrf/src/*.ts');
+    if (control.length === 0) {
+      ctx.skip(
+        'submodule contents are not enumerable in this checkout — the guard cannot answer here, ' +
+          'and reporting green would assert an absence it never measured',
+      );
+      return;
+    }
+    expect(tracked('*.vitest-tmp/*')).toEqual([]);
   });
 });
