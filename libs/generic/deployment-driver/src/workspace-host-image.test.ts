@@ -360,3 +360,55 @@ describe("workspace-host image compatibility", () => {
     );
   });
 });
+
+/**
+ * A validator whose entire contract is "return the list of what is wrong" must not CRASH on
+ * the malformed input it exists to reject.
+ *
+ * It used to: `verifyWorkspaceHostBuildManifest` correctly reported a missing manifest, and
+ * the very next line then dereferenced `artifact.buildManifest.releaseArtifact.version`
+ * anyway. Because `runWorkspaceHostCleanRoomAcceptance` calls compatibility evaluation
+ * OUTSIDE its try/catch, that TypeError escaped the whole acceptance path — so an operator
+ * feeding a malformed artifact JSON to the clean-room producer got
+ * "Cannot read properties of undefined (reading 'releaseArtifact')" instead of a
+ * `passed: false` report naming the offending field.
+ */
+describe("validateWorkspaceHostImageArtifact structural robustness", () => {
+  it.each([
+    ["image", { buildManifest: {}, release: {} }],
+    ["buildManifest", { image: {}, release: {} }],
+    ["release", { image: {}, buildManifest: {} }],
+  ])("reports a missing %s section instead of throwing", (section, partial) => {
+    const errors = validateWorkspaceHostImageArtifact(
+      partial as unknown as WorkspaceHostImageArtifact,
+    );
+    expect(errors).toContain(`${section} must be an object`);
+  });
+
+  it("reports every missing section at once for an empty artifact", () => {
+    const errors = validateWorkspaceHostImageArtifact(
+      {} as unknown as WorkspaceHostImageArtifact,
+    );
+    for (const section of ["image", "buildManifest", "release"]) {
+      expect(errors).toContain(`${section} must be an object`);
+    }
+  });
+
+  it("surfaces a structurally-invalid artifact as a report, not an exception", async () => {
+    let booted = false;
+    const result = await runWorkspaceHostCleanRoomAcceptance(
+      { image: { id: "bogus", version: "0.0.0" } } as unknown as WorkspaceHostImageArtifact,
+      { architecture: "x86_64" } as unknown as WorkspaceHostCleanRoomInstallSpec,
+      {
+        async execute() {
+          booted = true;
+          return { stdout: "" };
+        },
+      },
+    );
+    expect(result.passed).toBe(false);
+    expect(result.issues.length).toBeGreaterThan(0);
+    // And it must refuse BEFORE spending a real cloud boot on it.
+    expect(booted).toBe(false);
+  });
+});

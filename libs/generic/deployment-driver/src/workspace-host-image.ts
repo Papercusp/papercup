@@ -170,8 +170,20 @@ export interface WorkspaceHostCleanRoomAcceptanceReport {
 const SHA256 = /^[a-f0-9]{64}$/;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
+/**
+ * Report a non-string as the validation failure it is, rather than crashing on it.
+ *
+ * The parameter is TYPED `string`, so TypeScript is satisfied — but every caller here
+ * validates values parsed from JSON on disk, where that guarantee does not hold. The bare
+ * `value.trim()` therefore threw `Cannot read properties of undefined` for exactly the
+ * malformed input this helper exists to reject, and because compatibility evaluation runs
+ * outside `runWorkspaceHostCleanRoomAcceptance`'s try/catch, that TypeError escaped the whole
+ * acceptance path instead of becoming a `passed: false` report naming the field.
+ */
 function requireText(value: string, path: string, errors: string[]): void {
-  if (!value.trim()) errors.push(`${path} must be a non-empty string`);
+  if (typeof value !== "string" || !value.trim()) {
+    errors.push(`${path} must be a non-empty string`);
+  }
 }
 
 function timestamp(value: string, path: string, errors: string[]): number {
@@ -202,23 +214,50 @@ export function validateWorkspaceHostImageArtifact(
       `contractVersion must be '${WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION}'`,
     );
   }
-  requireText(artifact.image.id, "image.id", errors);
-  requireText(artifact.image.version, "image.version", errors);
+  // Structural preconditions come first. Every check below reads THROUGH these sections, and
+  // a validator whose entire job is to report what is wrong must not crash on the malformed
+  // input it exists to reject: `runWorkspaceHostCleanRoomAcceptance` calls compatibility
+  // evaluation OUTSIDE its try/catch, so a TypeError here escapes the acceptance path as an
+  // opaque "Cannot read properties of undefined" instead of a `passed: false` report naming
+  // the offending field.
+  const section = (value: unknown, path: string): boolean => {
+    const present = typeof value === "object" && value !== null;
+    if (!present) errors.push(`${path} must be an object`);
+    return present;
+  };
+  const hasImage = section(artifact.image, "image");
+  const hasManifest = section(artifact.buildManifest, "buildManifest");
+  const hasRelease = section(artifact.release, "release");
 
-  const manifest = verifyWorkspaceHostBuildManifest(artifact.buildManifest);
-  if (!manifest.ok) {
-    errors.push(...manifest.errors.map((error) => `buildManifest: ${error}`));
+  if (hasImage) {
+    requireText(artifact.image.id, "image.id", errors);
+    requireText(artifact.image.version, "image.version", errors);
+  }
+
+  if (hasManifest) {
+    const manifest = verifyWorkspaceHostBuildManifest(artifact.buildManifest);
+    if (!manifest.ok) {
+      errors.push(...manifest.errors.map((error) => `buildManifest: ${error}`));
+    }
   }
   if (
+    hasImage &&
+    hasManifest &&
+    typeof artifact.buildManifest.releaseArtifact === "object" &&
+    artifact.buildManifest.releaseArtifact !== null &&
     artifact.image.version !== artifact.buildManifest.releaseArtifact.version
   ) {
     errors.push(
       "image.version must equal buildManifest.releaseArtifact.version",
     );
   }
-  if (artifact.release.version !== artifact.image.version) {
+  if (hasImage && hasRelease && artifact.release.version !== artifact.image.version) {
     errors.push("release.version must equal image.version");
   }
+
+  // Nothing below can be evaluated without all three sections, and continuing would only
+  // convert a clear structural rejection into a crash.
+  if (!hasImage || !hasManifest || !hasRelease) return errors;
 
   // The release pins must be provenance-bound to the manifest above: same digest, same version,
   // an immutably addressed bundle, a matching detached signature, and a packaged executable
