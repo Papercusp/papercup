@@ -495,6 +495,56 @@ describe('resolveResumeTarget', () => {
     expect(source).toContain('t.ingested_at DESC');
     expect(source).toContain('coord_owner_id = (SELECT owner FROM indexed_owner)');
   });
+
+  // WI-555403. A carry-respawn REWRITES the owner's adv_sessions row in place
+  // (same row id, new session_id), so every EARLIER native session in the chain
+  // has no adv_sessions row at all. Seeding the candidate CTE from adv_sessions
+  // left indexed_owner NULL for exactly those sessions and they resolved as
+  // not_found, even though session_turns still holds them under the same owner.
+  const candidateFragmentOf = (calls: { 0?: TemplateStringsArray }[]): string | undefined =>
+    calls.map((c) => String(c[0]?.join('?'))).find((q) => q.includes('candidate_session_id'));
+
+  it('pins an exact native session as its own candidate, so an earlier session in a respawn chain still resolves', async () => {
+    // The requested uuid is NOT in adv_sessions; the row that comes back is the
+    // owner's CURRENT one, recovered via session_turns.
+    launchCoreSql.mockResolvedValue([{
+      id: 20807,
+      workspace_id: 'ws-carry',
+      coord_owner_id: OWNER,
+      session_id: 'current-native-uuid',
+      agent: 'claude',
+      cwd: '/repo',
+      started_at: '2026-08-29T00:04:31.000Z',
+      ended_at: null,
+      exit_code: null,
+      ended_by: null,
+    }] as unknown[]);
+
+    const r = await resolveResumeTarget({ sessionId: 'earlier-native-uuid' });
+
+    // The pin survives: we resume the transcript that was ASKED for, while the
+    // owner/advSessionId metadata comes from the row that is current now.
+    expect(r).toMatchObject({
+      ok: true,
+      sessionId: 'earlier-native-uuid',
+      ownerId: OWNER,
+      advSessionId: 20807,
+    });
+
+    const fragment = candidateFragmentOf(launchCoreSql.mock.calls as unknown as { 0?: TemplateStringsArray }[]);
+    expect(fragment).toBeDefined();
+    expect(fragment).not.toContain('harness_shared.adv_sessions');
+  });
+
+  it('CONTROL: an agentId lookup still seeds its candidate from adv_sessions', async () => {
+    launchCoreSql.mockResolvedValue([] as unknown[]);
+
+    await resolveResumeTarget({ agentId: OWNER });
+
+    const fragment = candidateFragmentOf(launchCoreSql.mock.calls as unknown as { 0?: TemplateStringsArray }[]);
+    expect(fragment).toBeDefined();
+    expect(fragment).toContain('harness_shared.adv_sessions');
+  });
 });
 
 describe('probeFreshLaunchSessions', () => {

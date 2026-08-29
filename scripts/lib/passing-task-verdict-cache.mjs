@@ -135,7 +135,7 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
 /** One bounded, machine-readable composite cache verdict for gate logs. */
 export function formatPassingTaskVerdictSummary(
   decisions,
-  { proofGroupApplied = false, cacheGroup = null } = {},
+  { proofGroupApplied = false, cacheGroup = null, cacheScope = null } = {},
 ) {
   let hits = 0;
   let misses = 0;
@@ -153,10 +153,17 @@ export function formatPassingTaskVerdictSummary(
   const reasonCounts = Object.fromEntries(
     [...reasons.entries()].sort(([a], [b]) => a.localeCompare(b)),
   );
+  const proofIdentity =
+    cacheScope === "cross-run"
+      ? "cross-run"
+      : proofGroupApplied
+        ? "initial-run"
+        : "current-run";
+  const scopeSuffix = cacheScope ? ` scope=${cacheScope}` : "";
   return (
     `AFFECTED_TASK_CACHE_SUMMARY hits=${hits} misses=${misses} ` +
-    `proofIdentity=${proofGroupApplied ? "initial-run" : "current-run"} ` +
-    `group=${cacheGroup ? sha256(cacheGroup).slice(0, 12) : "missing"} ` +
+    `proofIdentity=${proofIdentity} ` +
+    `group=${cacheGroup ? sha256(cacheGroup).slice(0, 12) : "missing"}${scopeSuffix} ` +
     `reasons=${JSON.stringify(reasonCounts)}`
   );
 }
