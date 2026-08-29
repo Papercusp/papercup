@@ -507,6 +507,20 @@ describe('work_items:create — body/summary alias + strict (WI-4492)', () => {
       expect(() => parse({ items: [{ kind: 'bug', title: 'x', bogus: 1 }] })).toThrow();
     });
 
+    it('requires plan_item to be an object with slug/item in both arities', () => {
+      expect(() => parse({ kind: 'bug', title: 'x', plan_item: 'some-plan#P-003' })).toThrow();
+      expect(() =>
+        parse({ items: [{ kind: 'bug', title: 'x', plan_item: 'some-plan#P-003' }] }),
+      ).toThrow();
+    });
+
+    it('accepts the canonical plan_item object in both arities', () => {
+      expect(() => parse({ kind: 'bug', title: 'x', plan_item: { slug: 'some-plan', item: 'P-003' } })).not.toThrow();
+      expect(() =>
+        parse({ items: [{ kind: 'bug', title: 'x', plan_item: { slug: 'some-plan', item: 'P-003' } }] }),
+      ).not.toThrow();
+    });
+
     it('REJECTS an explicit schedule intent without cadence in either arity', () => {
       expect(() => parse({
         kind: 'task',

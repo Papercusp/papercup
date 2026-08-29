@@ -127,6 +127,15 @@ describe("plans:items bounded limit", () => {
     expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", itemIds: [] }).success).toBe(false);
   });
 
+  it("rejects the unsupported singular item selector", () => {
+    const result = tool.args.safeParse({ harness: "papercup", slug: "plan-a", item: "P-007" });
+
+    expect(result.success).toBe(false);
+    expect(result.success ? "" : result.error.issues.map((issue) => issue.message).join(" ")).toContain(
+      'Unrecognized key: "item"',
+    );
+  });
+
   it("filters exact itemIds from the requested plan only", async () => {
     M.getPlanRow.mockResolvedValue(
       plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
