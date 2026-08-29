@@ -233,6 +233,38 @@ export default defineConfig({
     // transform) — this also keeps JS and CSS minification on the same
     // toolchain, avoiding a second one for no benefit.
     cssMinify: 'esbuild',
+    rollupOptions: {
+      output: {
+        // P-046 / D-178: content hashes MUST NOT use the base64url alphabet.
+        //
+        // Rollup's default `[hash]` alphabet is base64url, which includes `-`
+        // and `_`. Both are regex WORD-BOUNDARY characters, so a hash like
+        // `aVI-w_hC` puts `\b`-delimited tokens inside a filename that nothing
+        // semantic ever produced. The release identity audit
+        // (papercusp-desktop/bin/audit-release-bundle.py) word-boundaries short
+        // owner-name literals precisely so it does not fire on substrings —
+        // `\bAvi\b` — and that correct rule then matches
+        // `spa/assets/factor-aVI-w_hC.js` for real, red-ing the release gate on
+        // a filename that carries no identity at all.
+        //
+        // This is not rare. Measured over 300 generated chunks on rollup 4.60.2:
+        //   DEFAULT (base64) -> 64/300 hashes contain `-` or `_`  (21.3%)
+        //   hashCharacters: 'hex' -> 0/300
+        // so ~1 chunk in 5 is a chance for any short owner token to collide.
+        //
+        // Fixing it HERE rather than in the auditor is deliberate: the audit rule
+        // is behaving correctly and must not be weakened to let a bundle through
+        // (D-172 / D-174 / D-175). A hex alphabet ([0-9a-f]) cannot contain a
+        // word-boundary character, so the whole false-positive class disappears
+        // at the source. Hash strength is unchanged — same digest, wider encoding.
+        //
+        // ⚠ This is a ROLLUP option. Vite 7 is rollup-backed, but Vite 8 is
+        // rolldown-backed and rolldown does not expose `hashCharacters`; if this
+        // app moves to Vite 8, re-establish the guarantee before assuming it holds
+        // (the symptom is a release-gate identity red on an asset filename).
+        hashCharacters: 'hex',
+      },
+    },
   },
   server: {
     // EI-18739245749680446: apps/operator/playwright.config.ts reads OPERATOR_E2E_PORT
