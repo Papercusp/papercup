@@ -82,6 +82,15 @@ export interface AdmissionDailyDigestActionDeps {
   log: (message: string) => void;
 }
 
+function optionalModelSpec(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`daily digest expected a model spec string, received ${String(value)}`);
+  }
+  const spec = value.trim();
+  return spec === '' ? undefined : spec;
+}
+
 async function productionRun(ctx: SystemActionCtx): Promise<DailyDigestRunResult> {
   if (process.env.VITEST) throw new Error('production admission daily digest must not run from a unit test');
   if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
@@ -98,6 +107,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<DailyDigestRunResult
     harnessSlug: ctx.installSlug,
     runId: explicit || runId(),
     maxTokens,
+    model: optionalModelSpec(payload.model),
     llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
     fileUmbrella: productionFileUmbrella,
     linkUmbrella: productionLinkUmbrella,
