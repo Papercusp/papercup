@@ -26,6 +26,7 @@ import {
   runCmd,
   quietCutSecFromEnv,
   extractFailingTests,
+  frozenRepairCapacityHoldSummary,
   authoritativeAffectedFailureSignature,
   extractFailingTestNames,
   extractFailingCasesByFile,
@@ -11966,5 +11967,128 @@ describe("WI-42350: the judged-red marker is stamped ONLY by a verdict that actu
     // suppress a future real judgement of this sha.
     expect(result.green).toBe(false);
     expect(stamped).toEqual([]);
+  });
+});
+
+describe("WI-606293: release-fixer provider-capacity preflight", () => {
+  const RESET_AT = Date.parse("2026-09-03T16:24:00.000Z");
+
+  /** A queue that routes to decision.kind === "dispatch-fixer" (reason "unassigned"). */
+  const unassignedQueue = (
+    frozen: string,
+    ready: string,
+  ): FrozenCandidateRepairQueue => ({
+    schemaVersion: 3,
+    phase: "awaiting-fixer",
+    candidate: frozen,
+    base: ready,
+    repairHead: frozen,
+    worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+    attempts: 1,
+    openedAtMs: Date.now() - 1_000,
+    updatedAtMs: Date.now() - 500,
+    fixerSpawnId: null,
+    failingTests: ["lib/broken.test.ts"],
+  });
+
+  /**
+   * Drive a red against a pre-existing unassigned queue and report whether the fixer
+   * actually launched. `capacity` is the preflight stub under test.
+   */
+  async function runWithCapacity(
+    capacity: NonNullable<
+      Parameters<typeof runGreenCheckpoint>[1]["checkFixerProviderCapacity"]
+    >,
+  ) {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    let queue: FrozenCandidateRepairQueue | null = unassignedQueue(frozen, ready);
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    let dispatched = 0;
+    let prepared = 0;
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      prepared += 1;
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      dispatched += 1;
+      return { spawnId: "fixer", runId: "run" };
+    };
+    deps.checkFixerProviderCapacity = capacity;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    return { result, dispatched, prepared, queue };
+  }
+
+  // INSTRUMENT CHECK for the withhold assertions below. If this ever stops dispatching,
+  // the branch is no longer reached and a `dispatched === 0` elsewhere would pass for the
+  // wrong reason — the whole suite would go quietly vacuous.
+  it("dispatches normally when the pool still has headroom", async () => {
+    const { dispatched } = await runWithCapacity(async () => ({
+      ok: true,
+      summary: "3/5 codex account(s) have usage headroom",
+    }));
+    expect(dispatched).toBe(1);
+  });
+
+  it("withholds the dispatch when every account is usage-walled, spending no attempt", async () => {
+    const { result, dispatched, prepared, queue } = await runWithCapacity(
+      async () => ({
+        ok: false,
+        summary: "all 5 codex account(s) are usage-walled",
+        retryAtMs: RESET_AT,
+      }),
+    );
+
+    expect(dispatched).toBe(0);
+    // Refused BEFORE worktree preparation, so a walled pool costs no setup either.
+    expect(prepared).toBe(0);
+    // A walled provider says nothing about the candidate: it must stay inconclusive
+    // (green: null) so it cannot inflate the red streak.
+    expect(result).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+    });
+    expect(result.summary).toContain("WITHHELD");
+    expect(result.summary).toContain("usage-walled");
+    expect(result.summary).toContain("2026-09-03T16:24:00.000Z");
+    // The attempt budget is the scarce resource this whole preflight protects.
+    expect(queue?.attempts).toBe(1);
+  });
+
+  it("dispatches rather than freezing when the capacity probe itself throws", async () => {
+    // Fail OPEN, unlike disk-headroom: an unmeasurable pool must never become a silent,
+    // permanent freeze of the repair arm. Guessing wrong here costs one attempt.
+    const { dispatched } = await runWithCapacity(async () => {
+      throw new Error("pool read failed");
+    });
+    expect(dispatched).toBe(1);
+  });
+
+  it("summary names the wall, the retry time, and that nothing was spent", () => {
+    const line = frozenRepairCapacityHoldSummary("abcdef1234567890", {
+      summary: "all 5 codex account(s) are usage-walled",
+      retryAtMs: RESET_AT,
+    });
+    expect(line).toContain("WITHHELD for abcdef12");
+    expect(line).toContain("usage-walled");
+    expect(line).toContain("2026-09-03T16:24:00.000Z");
+    expect(line).toContain(
+      "No repair attempt and no dispatch reservation were spent",
+    );
+  });
+
+  it("omits a retry clause rather than inventing one when no window reset is known", () => {
+    const line = frozenRepairCapacityHoldSummary("abcdef1234567890", {
+      summary: "all 5 codex account(s) are usage-walled",
+      retryAtMs: null,
+    });
+    expect(line).not.toContain("Retry after");
+    expect(line).toContain("usage-walled");
   });
 });
