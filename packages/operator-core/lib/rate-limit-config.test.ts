@@ -54,7 +54,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 
 import {
   clampRateLimitConfig,
-  RATE_LIMIT_MAX_CEILING,
+  RATE_LIMIT_SANITY_BOUND,
   initRateLimitConfig,
   writeRateLimitConfig,
   getCachedRateLimitConfig,
@@ -67,7 +67,10 @@ describe('clampRateLimitConfig (Gap 4 — malformed-input coercion)', () => {
     { name: 'undefined → profile defaults', input: undefined, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
     { name: 'empty object → profile defaults', input: {}, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
     { name: 'max:0 clamps up to the floor of 1', input: { maxSimultaneousAgents: 0 }, expect: { maxSimultaneousAgents: 1, concurrencyFloor: 1 } },
-    { name: 'max:1000 clamps down to the ceiling (64)', input: { maxSimultaneousAgents: 1000 }, expect: { maxSimultaneousAgents: RATE_LIMIT_MAX_CEILING, concurrencyFloor: 1 } },
+    // P-009: 1000 is now HONORED — the baked 64 ceiling is retired, so an explicit user value is
+    // deliberate intent, not something to silently clamp. Only absurd input meets the sanity bound.
+    { name: 'max:1000 is honored (the baked 64 ceiling is retired)', input: { maxSimultaneousAgents: 1000 }, expect: { maxSimultaneousAgents: 1000, concurrencyFloor: 1 } },
+    { name: 'an absurd max still meets the sanity bound', input: { maxSimultaneousAgents: 1e9 }, expect: { maxSimultaneousAgents: RATE_LIMIT_SANITY_BOUND, concurrencyFloor: 1 } },
     { name: 'max:NaN → profile default', input: { maxSimultaneousAgents: Number.NaN }, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
     { name: 'max:3.7 floors to 3 (Math.floor)', input: { maxSimultaneousAgents: 3.7 }, expect: { maxSimultaneousAgents: 3, concurrencyFloor: 1 } },
     { name: 'concurrencyFloor:-5 clamps up to 1', input: { concurrencyFloor: -5 }, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },

@@ -164,7 +164,13 @@ export function clampRateLimitConfig(input: Partial<RateLimitConfig> | null | un
   // BEFORE clamping — once the resource-profile default has been substituted the two are
   // indistinguishable, and treating the substituted default as user intent is exactly how a
   // boot-time guess became a hard productive-capacity maximum.
-  const explicit = typeof input?.maxSimultaneousAgents === 'number' && Number.isFinite(input.maxSimultaneousAgents);
+  // A caller that already KNOWS the provenance states it, and that wins: the PUT route rewrites the
+  // whole config on every edit, so a floor-only edit would otherwise re-send the seeded default as a
+  // number and silently promote it to a user cap — the exact back-door this field exists to close.
+  const explicit =
+    input?.maxSimultaneousAgentsSource !== undefined
+      ? input.maxSimultaneousAgentsSource === 'user'
+      : typeof input?.maxSimultaneousAgents === 'number' && Number.isFinite(input.maxSimultaneousAgents);
   // The 64 ceiling is gone: an explicit request is honored up to the sanity bound only.
   const max = clampInt(input?.maxSimultaneousAgents, DEFAULT_RATE_LIMIT_CONFIG.maxSimultaneousAgents, 1, RATE_LIMIT_SANITY_BOUND);
   const floor = clampInt(input?.concurrencyFloor, DEFAULT_RATE_LIMIT_CONFIG.concurrencyFloor, 1, max);

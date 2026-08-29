@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
-  RATE_LIMIT_MAX_CEILING,
+  RATE_LIMIT_SANITY_BOUND,
   GOVERNOR_PROVIDERS,
   readRateLimitConfig,
   writeRateLimitConfig,
@@ -58,8 +58,8 @@ export default defineTool({
     z.object({ op: z.literal('get') }),
     z.object({
       op: z.literal('set'),
-      maxSimultaneousAgents: z.number().int().min(1).max(RATE_LIMIT_MAX_CEILING).optional(),
-      concurrencyFloor: z.number().int().min(1).max(RATE_LIMIT_MAX_CEILING).optional(),
+      maxSimultaneousAgents: z.number().int().min(1).max(RATE_LIMIT_SANITY_BOUND).optional(),
+      concurrencyFloor: z.number().int().min(1).max(RATE_LIMIT_SANITY_BOUND).optional(),
       // P-021: pass {} to clear all provider-floor overrides; omit to leave the current ones unchanged.
       providerFloors: providerFloorsSchema.optional(),
       // P-021: pass {} to restore the baked AIMD curve; omit to leave it unchanged.

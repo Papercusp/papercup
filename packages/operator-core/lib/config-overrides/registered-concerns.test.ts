@@ -52,7 +52,7 @@ vi.mock('@papercusp/sse', () => ({
 import { listOverrideConcerns, getOverrideConcern } from './registry';
 
 // Import the concern store modules so their registerOverrideConcern side-effects run.
-import { writeRateLimitConfig, RATE_LIMIT_MAX_CEILING } from '../rate-limit-config';
+import { writeRateLimitConfig, RATE_LIMIT_SANITY_BOUND } from '../rate-limit-config';
 import { writeAgentConfig, readAgentConfig } from '../agent-config';
 import { saveVoicePrefs } from '../voice-prefs';
 import { setAccountOverride } from '../deployment/account-session-override';
@@ -67,10 +67,10 @@ beforeEach(() => {
 // therefore surfaces as an override only where 2 ≠ the default — green on the dev
 // box, silently no-diff on any small host (laptop / CI runner / packaged install).
 // Derive a value guaranteed to differ from the live default, staying inside the
-// clamp range [1, RATE_LIMIT_MAX_CEILING].
+// clamp range [1, RATE_LIMIT_SANITY_BOUND] (P-009 retired the baked 64 ceiling).
 const DEFAULT_MAX_AGENTS = getResourceProfile().maxSimultaneousAgents;
 const OVERRIDE_MAX_AGENTS =
-  DEFAULT_MAX_AGENTS < RATE_LIMIT_MAX_CEILING ? DEFAULT_MAX_AGENTS + 1 : DEFAULT_MAX_AGENTS - 1;
+  DEFAULT_MAX_AGENTS < RATE_LIMIT_SANITY_BOUND ? DEFAULT_MAX_AGENTS + 1 : DEFAULT_MAX_AGENTS - 1;
 
 const CONCERNS = ['rate-limit-config', 'agent-config', 'voice-prefs', 'account-session-override'] as const;
 

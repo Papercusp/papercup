@@ -14,7 +14,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../rate-limit-config', () => ({
-  RATE_LIMIT_MAX_CEILING: 64,
+  RATE_LIMIT_SANITY_BOUND: 100_000,
   // Mirrors the real export; the SUT imports it and the mock replaces the whole
   // module, so it must be present (it lagged when rate-limit-config.ts added it).
   GOVERNOR_PROVIDERS: ['anthropic', 'openai', 'unknown'] as const,
