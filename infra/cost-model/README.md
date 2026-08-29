@@ -117,6 +117,29 @@ the one to instrument before a launch.
 
 ## Why the Hetzner baseline was so high
 
-Both `cpx41` instances sit in a **US** location at $141.49/mo against $37.99 for the
+Both `cpx41` instances sat in a **US** location at $141.49/mo against $37.99 for the
 identical spec in `fsn1` — a **3.7× location premium**, measured from the account's own
 price list. The migration was never competing with Hetzner's headline European pricing.
+
+## Hetzner is decommissioned — the baseline is now historical
+
+**2026-08-29T06:5xZ (P-026, D-034): all four Hetzner servers were deleted.** The account
+now holds 0 servers, 0 primary IPs, 0 volumes, 0 floating IPs, 0 load balancers, and no
+billable images. Billing went **$429.96/mo → $0**.
+
+So **re-running the script now reports an empty Hetzner section, and that is correct, not
+a failure.** The baseline figures above are preserved here precisely because they are no
+longer re-measurable — they were captured from the live account on 2026-08-29 before
+deletion, which is the last moment they could be. Treat the GCP half as live and
+re-derivable, and the Hetzner half as a frozen historical comparison.
+
+Two measurements are worth keeping for their own sake:
+
+- The four servers were billing $429.96/mo while serving essentially nothing — post-cutover
+  egress had fallen to 0.11 and 0.18 GB/30d against a 14.75 and 0.73 GB/30d baseline. The
+  estate was being paid for twice.
+- A pre-deletion disk image was attempted first, as ~$2.60/mo insurance against anything
+  written after the last capture, and refused with **HTTP 403 forbidden** — the suspended
+  account permits deleting resources but not creating them. Deletion destroyed nothing
+  recoverable: the hosts had been network-isolated (ICMP, 22 and 443 all closed) since
+  ~2026-08-27, so no path existed to read them.
