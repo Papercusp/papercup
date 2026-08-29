@@ -13160,6 +13160,8 @@ export function realCheckpointDeps(
         cfg.integrationRoot,
         "--release",
         cfg.checkpointRoot,
+        "--source-integrity",
+        "object-sourced",
         "--source-only",
       ],
       {

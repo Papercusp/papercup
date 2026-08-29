@@ -2714,7 +2714,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     ]);
   }
 
-  it("P-007: prepares exact source-only checkout and probes related tests in that candidate tree", async () => {
+  it("P-007/P-008: prepares object-sourced exact checkout and probes related tests in that candidate tree", async () => {
     const { exec, calls } = makeExec([
       {
         code: 0,
@@ -2747,6 +2747,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "/int",
         "--release",
         cpTree,
+        "--source-integrity",
+        "object-sourced",
         "--source-only",
       ],
     });
