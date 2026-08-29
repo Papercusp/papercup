@@ -49,10 +49,14 @@ import {
   run,
   runOrThrow,
 } from './gcp-ephemeral.mjs';
+import {
+  DEFAULT_CLEAN_ROOM_MACHINE_TYPE,
+  buildCleanRoomInstanceCreateArgs,
+} from './gcp-clean-room-args.mjs';
 
 /** Must match WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX in the deployment driver. */
 const ATTESTATION_PREFIX = 'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
-const MACHINE_TYPE = process.env.PAPERCUSP_CLEAN_ROOM_MACHINE_TYPE?.trim() || 'e2-standard-2';
+const MACHINE_TYPE = DEFAULT_CLEAN_ROOM_MACHINE_TYPE;
 const BOOT_BUDGET_MS = 12 * 60 * 1000;
 const BOOTSTRAP_BUDGET_MS = 20 * 60 * 1000;
 
@@ -153,6 +157,10 @@ async function cleanRoom(input) {
   const projectId = requireText(input.projectId, 'projectId');
   const zone = requireText(input.zone, 'zone');
   const buildManifestIdentity = requireText(input.buildManifestIdentity, 'buildManifestIdentity');
+  // Required at the boundary: a missing subnetwork must fail fast and loudly here rather
+  // than default to a no-egress network and surface 20 minutes later as an opaque
+  // apt-get/curl timeout inside the guest.
+  const subnetwork = requireText(input.subnetwork, 'subnetwork');
 
   if (projectId !== requested.projectId) fail('projectId does not match the project embedded in imageId');
 
@@ -190,26 +198,15 @@ async function cleanRoom(input) {
     // Private-only instance: no external address, IAP is the sole ingress.
     await runOrThrow(
       'gcloud',
-      [
-        'compute',
-        'instances',
-        'create',
+      buildCleanRoomInstanceCreateArgs({
         instanceName,
-        `--project=${projectId}`,
-        `--zone=${zone}`,
-        `--machine-type=${MACHINE_TYPE}`,
-        `--image=${requested.imageName}`,
-        `--image-project=${projectId}`,
-        '--no-address',
-        '--no-service-account',
-        '--no-scopes',
-        '--metadata=enable-oslogin=TRUE',
-        `--labels=papercusp-artifact=workspace-host,papercusp-role=clean-room,papercusp-fixture=${fixtureId
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]/g, '-')
-          .slice(0, 63)}`,
-        '--quiet',
-      ],
+        projectId,
+        zone,
+        imageName: requested.imageName,
+        imageProject: projectId,
+        subnetwork,
+        fixtureId,
+      }),
       { timeoutMs: 8 * 60 * 1000 },
     );
     ledger.track('instance', instanceName, zone);
