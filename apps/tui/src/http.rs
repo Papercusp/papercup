@@ -270,32 +270,57 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Recurrence guard for the bounded probe budget: an unreachable,
-    /// explicitly-selected operator must fail QUICKLY rather than hang.
+    /// Recurrence guard for the bounded probe budget (R2).
     ///
-    /// 203.0.113.0/24 is TEST-NET-3 (RFC 5737) — reserved for documentation and
-    /// routed nowhere. A connect attempt therefore either blackholes (the case
-    /// this guards: with no `connect_timeout`, Linux retries SYNs for ~130s
-    /// before giving up) or is refused immediately by local routing policy.
-    /// Both outcomes satisfy the bound; only the unbounded regression blows it,
-    /// which is precisely the failure this asserts against.
-    #[tokio::test]
-    async fn unreachable_operator_fails_within_bounded_connect_budget() {
-        let client = HttpClient::new("http://203.0.113.1:9443".to_string(), None);
-        let started = std::time::Instant::now();
-        let result = client.sys_http("GET", "/api/health", None).await;
-        let elapsed = started.elapsed();
+    /// This is a SOURCE invariant, deliberately, and the reason is worth
+    /// keeping: the obvious behavioural test — dial an unroutable host and
+    /// assert it fails quickly — is HOLLOW on any machine whose routing policy
+    /// refuses the address immediately. Measured here: dialling 203.0.113.1
+    /// (TEST-NET-3, RFC 5737) returned in well under a millisecond, so an
+    /// `elapsed < N` assertion passes identically with and without
+    /// `connect_timeout` and guards nothing. `reqwest` exposes no way to read a
+    /// configured timeout back off a built `Client`, so the construction site
+    /// itself is the only environment-independent thing left to assert.
+    ///
+    /// Falsifiable by construction: delete or rename the `.connect_timeout(..)`
+    /// call in `HttpClient::new` and this test fails.
+    #[test]
+    fn http_client_is_constructed_with_a_bounded_connect_timeout() {
+        let src = include_str!("http.rs");
+        let ctor = src
+            .split_once("pub fn new(base: String, token: Option<String>) -> Self {")
+            .expect("HttpClient::new constructor not found — did it get renamed?")
+            .1;
+        let ctor_body = ctor
+            .split_once("\n    }")
+            .expect("could not delimit HttpClient::new body")
+            .0;
 
+        assert!(
+            ctor_body.contains(".connect_timeout(Self::CONNECT_TIMEOUT)"),
+            "HttpClient::new must build its reqwest client with \
+             .connect_timeout(Self::CONNECT_TIMEOUT). Without it an unreachable \
+             explicitly-selected operator hangs on OS TCP defaults (~130s of SYN \
+             retries on Linux), which presents to the user as a frozen cockpit. \
+             Constructor body was:\n{ctor_body}"
+        );
+        assert!(
+            HttpClient::CONNECT_TIMEOUT <= Duration::from_secs(30),
+            "CONNECT_TIMEOUT {:?} is too loose to be a probe budget",
+            HttpClient::CONNECT_TIMEOUT
+        );
+    }
+
+    /// Companion smoke check: an unroutable operator must ERROR rather than
+    /// report success. Says nothing about timing — see the guard above for why
+    /// a timing assertion here would be meaningless on this host.
+    #[tokio::test]
+    async fn unroutable_operator_errors_rather_than_succeeding() {
+        let client = HttpClient::new("http://203.0.113.1:9443".to_string(), None);
+        let result = client.sys_http("GET", "/api/health", None).await;
         assert!(
             result.is_err(),
             "an unroutable operator must not report success"
-        );
-        assert!(
-            elapsed < Duration::from_secs(30),
-            "connect budget is unbounded: took {elapsed:?} (CONNECT_TIMEOUT is {:?}). \
-             Without connect_timeout this stalls ~130s on Linux SYN retries, which \
-             reads to the user as a frozen cockpit.",
-            HttpClient::CONNECT_TIMEOUT
         );
     }
 
