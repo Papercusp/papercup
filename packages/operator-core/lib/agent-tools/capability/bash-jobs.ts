@@ -24,6 +24,7 @@ import { execFile, spawn as childSpawn, type ChildProcess } from 'node:child_pro
 import { createWriteStream, mkdirSync, readdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { buildCapabilitySandboxCommand, scrubExecEnv } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
@@ -1285,6 +1286,11 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const redactor = createStreamingSecretRedactor(opts.redactValues);
     const streamLineCap = createStreamingLineCap();
     const missingCommandDetector = createMissingCommandMarkerDetector(id);
+    // Child streams can split a UTF-8 code point across arbitrary data events.
+    // Keep one decoder per stream so incomplete sequences carry into the next
+    // chunk instead of becoming replacement characters (WI-910499).
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     let redactorFlushed = false;
 
     const appendSafeOutput = (s: string): void => {
@@ -1308,9 +1314,10 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       redactorFlushed = true;
       appendSafeOutput(redactor?.flush() ?? '');
     };
-    const onData = (b: Buffer): void => appendRawOutput(b.toString('utf8'));
-    child.stdout?.on('data', onData);
-    child.stderr?.on('data', onData);
+    const onStdoutData = (b: Buffer): void => appendRawOutput(stdoutDecoder.write(b));
+    const onStderrData = (b: Buffer): void => appendRawOutput(stderrDecoder.write(b));
+    child.stdout?.on('data', onStdoutData);
+    child.stderr?.on('data', onStderrData);
 
     const timer = setTimeout(
       () => {
@@ -1330,6 +1337,10 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const finish = (status: BashStatus, exitCode: number | null): void => {
       if (settled) return;
       settled = true;
+      // Flush incomplete trailing bytes before the redactor and line-cap flushes
+      // finalize their own suffix state.
+      appendRawOutput(stdoutDecoder.end());
+      appendRawOutput(stderrDecoder.end());
       // The suffix held for chunk-boundary matching must reach every safe sink
       // before output/truncation metadata is finalized.
       flushRedactor();
@@ -1468,12 +1479,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // A service can finish before the job object and redactor are fully assembled.
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
   // tiny early prefix through the normal redaction/output path below.
-  const earlyOutput: Buffer[] = [];
-  const captureEarly = (b: Buffer): void => {
-    earlyOutput.push(Buffer.from(b));
+  const earlyOutput: Array<{ stream: 'stdout' | 'stderr'; chunk: Buffer }> = [];
+  const captureEarlyStdout = (b: Buffer): void => {
+    earlyOutput.push({ stream: 'stdout', chunk: Buffer.from(b) });
   };
-  child.stdout?.on('data', captureEarly);
-  child.stderr?.on('data', captureEarly);
+  const captureEarlyStderr = (b: Buffer): void => {
+    earlyOutput.push({ stream: 'stderr', chunk: Buffer.from(b) });
+  };
+  child.stdout?.on('data', captureEarlyStdout);
+  child.stderr?.on('data', captureEarlyStderr);
   const job: BashJob = {
     id,
     command: opts.command,
@@ -1516,6 +1530,10 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const redactor = createStreamingSecretRedactor(opts.redactValues);
   const missingCommandDetector = createMissingCommandMarkerDetector(id);
   const preflightFailureDetector = createPreflightFailureMarkerDetector();
+  // Decode each child stream incrementally so UTF-8 bytes split across data
+  // events survive intact in retained output, stream callbacks, and spill logs.
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let redactorFlushed = false;
   let preflightSnapshotWritten = false;
   const appendSafeOutput = (chunk: string): void => {
@@ -1565,12 +1583,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // Attach before recording/enrolling the job. A transient service can execute
   // an immediate command and close before the later setup work yields; listeners
   // attached after that close lose its stdout/stderr entirely.
-  const onData = (b: Buffer): void => appendRawOutput(b.toString('utf8'));
-  child.stdout?.removeListener('data', captureEarly);
-  child.stderr?.removeListener('data', captureEarly);
-  child.stdout?.on('data', onData);
-  child.stderr?.on('data', onData);
-  for (const b of earlyOutput) appendRawOutput(b.toString('utf8'));
+  const onStdoutData = (b: Buffer): void => appendRawOutput(stdoutDecoder.write(b));
+  const onStderrData = (b: Buffer): void => appendRawOutput(stderrDecoder.write(b));
+  child.stdout?.removeListener('data', captureEarlyStdout);
+  child.stderr?.removeListener('data', captureEarlyStderr);
+  child.stdout?.on('data', onStdoutData);
+  child.stderr?.on('data', onStderrData);
+  for (const { stream, chunk } of earlyOutput) {
+    appendRawOutput((stream === 'stdout' ? stdoutDecoder : stderrDecoder).write(chunk));
+  }
 
   completeSyncEnrolment(
     enrolment,
@@ -1651,6 +1672,8 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.status = 'failed';
     job.endedAt = Date.now();
     clearTimeout(timer);
+    appendRawOutput(stdoutDecoder.end());
+    appendRawOutput(stderrDecoder.end());
     flushRedactor();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
@@ -1683,6 +1706,10 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     const normalized = normalizeMissingCommandResult(job.status, job.exitCode, missingCommandDetector.seen());
     job.status = normalized.status;
     job.exitCode = normalized.exitCode;
+    // Flush any incomplete UTF-8 bytes and redactor suffix before the attribution
+    // block so the snapshot is guaranteed to follow all command output.
+    appendRawOutput(stdoutDecoder.end());
+    appendRawOutput(stderrDecoder.end());
     // Flush any redactor suffix before the attribution block so the snapshot
     // is guaranteed to precede the normal terminal marker in the durable log.
     flushRedactor();

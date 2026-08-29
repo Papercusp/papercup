@@ -84,6 +84,30 @@ describe('runForeground', () => {
     expect(chunks.join('')).toContain('hello-world');
   });
 
+  it('preserves a UTF-8 code point split across stdout chunks in every output sink (WI-910499)', async () => {
+    const streamed: string[] = [];
+    const r = await runForeground(
+      {
+        // Force the first byte of 😀 (F0 9F 98 80) into a separate data event.
+        command: "printf '\\360'; sleep 0.2; printf '\\237\\230\\200'",
+        cwd: STATE,
+        stateDir: STATE,
+        onChunk: (chunk) => streamed.push(chunk),
+      },
+      never,
+      10_000,
+    );
+    const spill = readFileSync(r.logPath, 'utf8');
+
+    expect(r.status).toBe('completed');
+    expect(r.output).toBe('😀');
+    expect(streamed.join('')).toContain('😀');
+    expect(spill).toContain('😀');
+    for (const surface of [r.output, streamed.join(''), spill]) {
+      expect(surface).not.toContain('\uFFFD');
+    }
+  });
+
   it('captures stderr and a non-zero exit', async () => {
     const r = await runForeground({ command: 'echo oops >&2; exit 3', cwd: STATE, stateDir: STATE }, never, 10_000);
     expect(r.exitCode).toBe(3);
@@ -495,6 +519,27 @@ describe('background jobs', () => {
     expect(out).toContain('second');
     // Cursor advanced — a second read returns nothing new.
     expect(readJobOutput(final)).toBe('');
+  });
+
+  it('preserves a UTF-8 code point split across background stdout chunks in retained output and spill (WI-910499)', async () => {
+    const job = startBackground(
+      {
+        command: "printf '\\360'; sleep 0.2; printf '\\237\\230\\200'",
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      10_000,
+    );
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+    const output = readJobOutput(final);
+    const spill = readFileSync(final.logPath, 'utf8');
+
+    expect(final.status).toBe('completed');
+    expect(output).toContain('😀');
+    expect(spill).toContain('😀');
+    expect(output).not.toContain('\uFFFD');
+    expect(spill).not.toContain('\uFFFD');
   });
 
   it('keeps a successful background job green when its child output contains missing-command fixtures', async () => {
