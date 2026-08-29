@@ -76,6 +76,12 @@ pub enum SuSessionLifecycleState {
 pub enum SuSessionReconciliation {
     Pending,
     Attached,
+    /// The durable session's files were archived at death and are being replayed
+    /// back out of `harness_shared.session_archives`.  Distinct from
+    /// `EndedArchived`, which is the settled resting state once that replay has
+    /// caught up: without the in-progress variant an owner reattaching to a large
+    /// archived transcript sees an empty pane and cannot tell it from a hang.
+    Rematerializing,
     RuntimeReplaced,
     EndedArchived,
     FailedOrphaned,
@@ -86,10 +92,84 @@ impl SuSessionReconciliation {
         match self {
             Self::Pending => "pending",
             Self::Attached => "attached",
+            Self::Rematerializing => "rematerializing",
             Self::RuntimeReplaced => "runtime-replaced",
             Self::EndedArchived => "ended-archived",
             Self::FailedOrphaned => "failed-orphaned",
         }
+    }
+}
+
+/// The action half of the host's restart reconciliation
+/// (`RuntimeReconciliation` in `su-session-persistence.ts`).  PUI consumes the
+/// server's classification rather than re-deriving one from pids it cannot see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuSessionRuntimeAction {
+    Reattach,
+    Rematerialize,
+    Relaunch,
+    Wait,
+}
+
+impl SuSessionRuntimeAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reattach => "reattach",
+            Self::Rematerialize => "rematerialize",
+            Self::Relaunch => "relaunch",
+            Self::Wait => "wait",
+        }
+    }
+}
+
+/// How the host reconciled this session's durable row against the runtime it
+/// found after a restart.  `None` on the snapshot means the host was created
+/// live at launch and never rehydrated — deliberately NOT the same as a clean
+/// reattach, so PUI renders no reconciliation banner for it at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionRuntimeReconciliation {
+    pub action: SuSessionRuntimeAction,
+    pub reason: String,
+    #[serde(default)]
+    pub stale_pid: bool,
+}
+
+/// Replay progress while an archived transcript is rematerialised.  The bounds
+/// come from the host snapshot's retained-event window, so this is a real
+/// measured fraction rather than a spinner: `floor` is the oldest replayable
+/// sequence, `last` the newest the host holds, `applied` how far this pane has
+/// reduced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuSessionRematerializeProgress {
+    pub floor_sequence: u64,
+    pub last_sequence: u64,
+    pub applied_sequence: u64,
+}
+
+impl SuSessionRematerializeProgress {
+    /// Events still to replay before the archived transcript is whole.
+    pub fn remaining(self) -> u64 {
+        self.last_sequence.saturating_sub(self.applied_sequence)
+    }
+
+    pub fn is_complete(self) -> bool {
+        self.remaining() == 0
+    }
+
+    /// Replayed / total, as whole percent. A zero-width window (nothing retained
+    /// to replay) is complete by definition rather than a divide-by-zero.
+    pub fn percent(self) -> u8 {
+        let total = self.last_sequence.saturating_sub(self.floor_sequence);
+        if total == 0 {
+            return 100;
+        }
+        let done = self
+            .applied_sequence
+            .saturating_sub(self.floor_sequence)
+            .min(total);
+        ((done.saturating_mul(100)) / total) as u8
     }
 }
 
@@ -201,6 +281,10 @@ pub struct SuSessionSnapshot {
     pub floor_sequence: u64,
     pub last_sequence: u64,
     pub terminal: bool,
+    /// Absent on a host that was never rehydrated; see
+    /// [`SuSessionRuntimeReconciliation`].
+    #[serde(default)]
+    pub runtime_reconciliation: Option<SuSessionRuntimeReconciliation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -258,6 +342,9 @@ pub struct SuSessionState {
     pub error: Option<String>,
     /// Startup/reconnect outcome surfaced beside the lifecycle in the PUI.
     pub reconciliation: SuSessionReconciliation,
+    /// Present only while an archived transcript is being replayed back; cleared
+    /// once the replay catches up so a stale bar can never outlive its own work.
+    pub rematerialize: Option<SuSessionRematerializeProgress>,
 }
 
 impl SuSessionState {
@@ -271,6 +358,7 @@ impl SuSessionState {
             stale: false,
             error: None,
             reconciliation: SuSessionReconciliation::Pending,
+            rematerialize: None,
         }
     }
 

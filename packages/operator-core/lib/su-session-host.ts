@@ -24,9 +24,27 @@ import {
 import { pinModuleState } from '@papercusp/module-singleton';
 import { dropChannel, getChannel, parseLastEventId, sseResponse, type BusChannel } from '@papercusp/sse';
 import {
+  classifySuSessionRuntime,
   persistSuSessionDescriptor,
-  readPersistedSuSessionDescriptor,
+  readDurableSuSession,
+  type RuntimeReconciliation,
 } from './su-session-persistence';
+
+/**
+ * Is `pid` a live OS process? Signal 0 = existence check; EPERM = alive-not-ours.
+ * A local copy of the identical helper in adv-sessions.ts / adv-roster.ts for the
+ * same reason they keep their own: importing either back into this module would
+ * close a cycle. Injected into {@link classifySuSessionRuntime} so the pure
+ * classifier stays deterministic under test.
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
 
 type EventEnvelopeKey = 'schema' | 'protocolVersion' | 'eventId' | 'sequence' | 'at' | 'session';
 
@@ -72,6 +90,13 @@ export interface SuSessionHostOptions<B extends SuSessionBackend> {
    * callback is deliberately fire-and-forget so a PG outage never blocks the
    * live event stream; the adv row remains the authoritative identity. */
   persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
+  /**
+   * How this host's runtime was reconciled against the durable adv row when it
+   * was rebuilt after an operator/PUI restart. `null` (the default) means no
+   * reconciliation was performed because the host was created live at launch —
+   * it is NOT "reconciled clean", and PUI must not render it as progress.
+   */
+  runtimeReconciliation?: RuntimeReconciliation | null;
   /** Retained events available to Last-Event-ID reconnects. Default 1024. */
   replaySize?: number;
   /** Per-live-client queue before the shared SSE layer closes/replays. */
@@ -84,6 +109,14 @@ export interface SuSessionHostSnapshot<B extends SuSessionBackend = SuSessionBac
   floorSequence: number;
   lastSequence: number;
   terminal: boolean;
+  /**
+   * The restart reconciliation that produced this host, or `null` when it was
+   * created live at launch and never rehydrated. PUI reads this to surface
+   * runtime replacement and archive/rematerialize progress; without it the
+   * client cannot distinguish "attached to a running runtime" from "rebuilt an
+   * ended session out of the archive", which renders as an identical empty pane.
+   */
+  runtimeReconciliation: RuntimeReconciliation | null;
 }
 
 export class SuSessionHostError extends Error {
@@ -196,6 +229,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   private readonly executeCommand?: SuSessionCommandExecutor<B>;
   private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
   private readonly commands = new Map<string, StoredCommand<B>>();
+  private readonly runtimeReconciliation: RuntimeReconciliation | null;
   private descriptorValue: SuSessionDescriptor<B>;
   private activeCommands = 0;
   private disposed = false;
@@ -206,6 +240,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     this.now = options.now ?? (() => new Date());
     this.executeCommand = options.executeCommand;
     this.persistDescriptor = options.persistDescriptor;
+    this.runtimeReconciliation = options.runtimeReconciliation ?? null;
     this.channelKey = hostChannelKey(this.descriptorValue.identity);
     this.channel = getChannel<SuSessionEvent<B>>(this.channelKey, {
       ringSize: options.replaySize ?? 1024,
@@ -232,6 +267,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       floorSequence: recent[0]?.id ?? lastSequence,
       lastSequence,
       terminal: TERMINAL_STATES.has(this.descriptorValue.lifecycle),
+      runtimeReconciliation: this.runtimeReconciliation,
     };
   }
 
@@ -567,16 +603,27 @@ export async function rehydrateRegisteredSuSessionHost(input: {
 }): Promise<RegisteredHost | null> {
   const existing = getRegisteredSuSessionHost(input);
   if (existing) return existing;
-  const descriptor = await readPersistedSuSessionDescriptor(input.agentChatId, input.workspaceId);
+  const record = await readDurableSuSession({
+    agentChatId: input.agentChatId,
+    workspaceId: input.workspaceId,
+  });
+  const descriptor = record?.descriptor ?? null;
   if (!descriptor) return null;
   if (
     descriptor.identity.agentChatId !== input.agentChatId ||
     descriptor.identity.workspaceId !== input.workspaceId ||
     (descriptor.identity.harnessSlug !== null && descriptor.identity.harnessSlug !== input.harnessSlug)
   ) return null;
+  // Classify the durable row against the runtime we actually found. This is the
+  // ONLY production caller of classifySuSessionRuntime: rebuilding a host from a
+  // persisted descriptor IS the restart reconciliation the classifier describes,
+  // so a rehydrate that skipped it left PUI unable to tell an ended/archived
+  // session being rematerialised from a live reattach.
+  const runtimeReconciliation = classifySuSessionRuntime(record, isPidAlive);
   try {
     const host = new SuSessionHost({
       descriptor,
+      runtimeReconciliation,
       persistDescriptor: async (next) => {
         await persistSuSessionDescriptor(next.identity.advSessionId, next);
       },

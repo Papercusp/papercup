@@ -2490,15 +2490,41 @@ impl App {
             || previous_generation
                 .is_some_and(|generation| snapshot.descriptor.runtime_generation > generation);
         let snapshot_adv_session_id = snapshot.descriptor.identity.adv_session_id;
+        let rematerializing = snapshot.runtime_reconciliation.as_ref().is_some_and(|r| {
+            r.action == crate::su_session::SuSessionRuntimeAction::Rematerialize
+        });
+        let floor_sequence = snapshot.floor_sequence;
+        let head_sequence = snapshot.last_sequence;
         state.identity = Some(snapshot.descriptor.identity.clone());
         state.lifecycle = snapshot.descriptor.lifecycle;
         state.descriptor = Some(snapshot.descriptor);
-        state.last_sequence = snapshot.last_sequence;
+        // The replay cursor is the FLOOR of what the host still retains, never
+        // its head. Setting it to the head (as this did until P-010) declared the
+        // pane already caught up, so the stream's replay of the retained window —
+        // which the transport requests from sequence 0, having never sent a
+        // Last-Event-ID — was discarded wholesale by the duplicate guard in
+        // `apply_su_session_event`. A live session hid that behind its next live
+        // event; an ended/archived one has no next event, so the transcript the
+        // owner reattached to read rendered EMPTY. `max` keeps the cursor
+        // monotonic, so a reattach of an already-replayed pane still de-dupes.
+        state.last_sequence = state.last_sequence.max(floor_sequence.saturating_sub(1));
         state.stale = false;
         state.error = None;
+        state.rematerialize = rematerializing.then_some(
+            crate::su_session::SuSessionRematerializeProgress {
+                floor_sequence,
+                last_sequence: head_sequence,
+                applied_sequence: state.last_sequence,
+            },
+        );
+        let replay_pending = state
+            .rematerialize
+            .is_some_and(|progress| !progress.is_complete());
         state.reconciliation =
             if state.lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
                 crate::su_session::SuSessionReconciliation::FailedOrphaned
+            } else if replay_pending {
+                crate::su_session::SuSessionReconciliation::Rematerializing
             } else if state.lifecycle == crate::su_session::SuSessionLifecycleState::Ended
                 || snapshot.terminal
             {
@@ -2508,7 +2534,21 @@ impl App {
             } else {
                 crate::su_session::SuSessionReconciliation::Attached
             };
-        if runtime_replaced {
+        if let Some(progress) =
+            state
+                .rematerialize
+                .filter(|_| {
+                    state.reconciliation
+                        == crate::su_session::SuSessionReconciliation::Rematerializing
+                })
+        {
+            self.session_note = Some(format!(
+                "Rematerializing archived transcript for adv {}: {}% ({} events remaining)",
+                snapshot_adv_session_id,
+                progress.percent(),
+                progress.remaining()
+            ));
+        } else if runtime_replaced {
             self.session_note = Some(format!(
                 "SU runtime replaced for adv {}; reattached native session",
                 snapshot_adv_session_id
@@ -2548,6 +2588,9 @@ impl App {
         }
         state.last_sequence = envelope.sequence;
         state.identity = Some(envelope.session.clone());
+        if let Some(progress) = state.rematerialize.as_mut() {
+            progress.applied_sequence = envelope.sequence;
+        }
         self.agent_chat_id = Some(envelope.session.agent_chat_id.clone());
 
         match event {
@@ -2714,7 +2757,50 @@ impl App {
                 }
             }
         }
+        self.converge_su_rematerialize();
         Action::Render
+    }
+
+    /// Advance the archive-replay banner after an event has been reduced.
+    ///
+    /// Runs after the event match rather than inside it because the terminal
+    /// `Lifecycle(Ended)` event of an archived session is itself part of the
+    /// replay: letting that arm's own `EndedArchived` verdict stand while events
+    /// are still outstanding would retire the progress banner early and re-create
+    /// the "looks finished, still filling in" ambiguity this exists to remove.
+    /// A `Failed` session keeps its explicit orphaned verdict either way — its
+    /// transcript still replays, but the convergence state the owner needs to see
+    /// is the failure, not the copy.
+    fn converge_su_rematerialize(&mut self) {
+        let Some(state) = self.su_session.as_mut() else {
+            return;
+        };
+        let Some(progress) = state.rematerialize else {
+            return;
+        };
+        if state.lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
+            state.rematerialize = None;
+            state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
+            self.session_note = Some("SU session failed; preserved as an orphaned session".into());
+            return;
+        }
+        if progress.is_complete() {
+            let adv = state.binding.adv_session_id;
+            state.rematerialize = None;
+            state.reconciliation = crate::su_session::SuSessionReconciliation::EndedArchived;
+            self.session_note = Some(format!(
+                "Rematerialized archived transcript for adv {adv}; preserved for inspection"
+            ));
+            return;
+        }
+        state.reconciliation = crate::su_session::SuSessionReconciliation::Rematerializing;
+        let adv = state.binding.adv_session_id;
+        self.session_note = Some(format!(
+            "Rematerializing archived transcript for adv {}: {}% ({} events remaining)",
+            adv,
+            progress.percent(),
+            progress.remaining()
+        ));
     }
 
     pub fn su_session_selection_label(&self) -> Option<String> {
