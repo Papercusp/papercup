@@ -29,6 +29,7 @@ import {
   type InferenceGateway,
 } from './gateway';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
+import { reportRetiredCapacityEnv } from './retired-capacity-env';
 import {
   createDurableGatewayAdmissionGovernor,
   type DurableGatewayAdmissionOptions,
@@ -124,6 +125,10 @@ export interface GatewayServiceOptions {
    *  (B-HOT-1). 0 = disabled. Default 60s. Tests inject a tiny value (or 0) to control it. */
   poolReloadIntervalMs?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string) => void;
+  /** Environment to read DEPLOYMENT-level inputs from. Defaults to `process.env`. Injected rather
+   *  than read globally so the P-012 retired-capacity readback can be exercised without mutating
+   *  process.env under a parallel test run. */
+  env?: NodeJS.ProcessEnv;
   // ── injectable for tests ──
   /** Resolve a SINGLE bound account (back-compat). When set, takes precedence over resolveAccounts
    *  and yields a one-account, no-failover pool. */
@@ -603,6 +608,12 @@ function createOptionalFailoverPool(
 
 export async function startGatewayService(opts: GatewayServiceOptions = {}): Promise<RunningGatewayService> {
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
+  // P-012: every deployment path (dev tsx, systemd unit, packaged re-exec, container) enters the
+  // gateway through THIS function, which is what lets one call make "equivalent inputs produce
+  // equivalent admission decisions across deployment paths" audible rather than merely true. A
+  // retired capacity variable that is silently ignored leaves the deployer with a confident, wrong
+  // model of the fleet's capacity; say so out loud, once, at boot.
+  reportRetiredCapacityEnv(log, opts.env ?? process.env);
   const makeResolver = opts.makeResolver ?? makeCredentialResolver;
   const observePool = opts.observePool ?? defaultObservePool;
   // Local inference-backend pool (D-002): OPT-IN — the default resolver returns empty (no PG touch),

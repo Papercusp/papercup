@@ -22,7 +22,10 @@ Environment="PAPERCUSP_GATEWAY_PORT=8788"
 Environment="PAPERCUSP_GATEWAY_REQUEST_ABSORB_MS=120000"
 # Optional: pin a pool account; else the sole pool account or the box's ~/.claude login is used.
 # Environment="PAPERCUSP_ACCOUNT_ID=acct-main"
-# Optional: PAPERCUSP_GATEWAY_CONCURRENCY=24
+# RETIRED: PAPERCUSP_GATEWAY_CONCURRENCY is read by nothing. Do not reinstate a numeric ceiling here.
+# Admission concurrency is LEARNED per provider lane from measured outcomes and has a floor but no
+# maximum (capless-inference-gateway-2026-08-28 P-010/P-012). Setting this variable changes no
+# admission decision on any deployment path; the gateway logs a loud warning if it is present.
 ExecStart=/usr/bin/env npx tsx packages/operator-core/lib/inference-gateway/bin.ts
 # Fail CLOSED: always restart so the egress path is never silently absent.
 Restart=always

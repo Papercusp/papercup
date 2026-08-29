@@ -390,27 +390,32 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
   }),
   // P-010 REMOVED the `sidecar-concurrency-environment` writer: sidecar-main.ts no
   // longer reads PAPERCUSP_GATEWAY_CONCURRENCY at all, so the production sidecar
-  // passes no admission seed and the env cannot reinstate a cap on restart. The
-  // systemd row below survives because the unit file still MENTIONS the variable —
-  // it is now inert documentation, and deleting that mention is P-012's deployment
-  // sweep, not this item's.
+  // passes no admission seed and the env cannot reinstate a cap on restart.
+  //
+  // P-012 then finished the deployment sweep on the systemd unit. The row below is
+  // KEPT rather than deleted, and deliberately so: what P-012 had to remove was the
+  // actionable capacity CLAIM (`# Optional: PAPERCUSP_GATEWAY_CONCURRENCY=24` reads as
+  // a supported knob with a recommended value of 24). Bare deletion would remove the
+  // claim but leave NOTHING preventing a future deployer from re-adding it. Re-pointing
+  // this row at the tombstone keeps the anchor guard policing that file, so a
+  // reinstated ceiling is caught by a failing test rather than shipped silently.
   writer({
     id: 'systemd-concurrency-environment',
     file: 'apps/operator/scripts/systemd/papercup-inference-gateway.service',
     symbol: 'PAPERCUSP_GATEWAY_CONCURRENCY environment',
-    sourceAnchor: '# Optional: PAPERCUSP_GATEWAY_CONCURRENCY=24',
+    sourceAnchor: '# RETIRED: PAPERCUSP_GATEWAY_CONCURRENCY is read by nothing',
     sourceKind: 'deployment',
     dimensions: ['deployment', 'claude-admission'],
     units: 'requests in flight',
     owner: 'systemd gateway unit',
     liveEffect:
-      'INERT since P-010: the unit file still mentions the variable, but sidecar-main.ts no longer reads it, so setting it changes no admission decision. Retained as a live row because the mention itself is a capacity CLAIM a deployer can act on.',
-    currentValue: '24 (documented only; read by nothing)',
+      'NONE. P-010 stopped sidecar-main.ts reading the variable; P-012 replaced the unit file\'s "Optional: ...=24" suggestion with a tombstone that names no number and forbids reinstating one. The row survives as a RECURRENCE GUARD on the deployment file, not as a live writer, and startGatewayService now logs a loud warning if the variable is present in any deployment path\'s environment.',
+    currentValue: 'none (tombstoned in the unit file; read by nothing on any path)',
     disposition: 'remove',
-    deletionTarget: 'P-012: delete the mention in the deployment sweep',
-    recurrenceTest: 'capacity-inventory.test.ts deployment-anchor guard',
+    deletionTarget: 'P-012 (done): mention deleted; the row now guards against recurrence',
+    recurrenceTest: 'capacity-inventory.test.ts deployment-anchor guard + retired-capacity-env.test.ts',
     durableSource: 'controller state and deployment provenance',
-    telemetry: 'systemd environment plus gateway /admin/config readback',
+    telemetry: 'startGatewayService retired-env warning plus gateway /admin/config readback',
     contextPath: 'systemd ExecStart → sidecar-main',
   }),
   writer({
