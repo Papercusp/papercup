@@ -1518,7 +1518,6 @@ export function runCapturedTestProcess(command, args, options = {}) {
     killProcessImpl = defaultKillOwnedProcess,
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
-    onClose = () => {},
     // Tests may replace this narrow governance seam; production callers leave
     // the canonical bridge in place.
     governedProcessImpl = runGovernedTestProcess,
@@ -1532,6 +1531,23 @@ export function runCapturedTestProcess(command, args, options = {}) {
     fileDescriptors: 16 + Math.max(1, files.length),
   });
 
+  // WI-42293 / EI-21752720321040227: this function deliberately NEVER releases
+  // the PSI-finalization marker. Releasing it here — as the `child.once('close')`
+  // handler used to — ends the protected window while the run is still producing
+  // its terminal evidence: the governed sampler stop, outcome classification and
+  // admission release all happen AFTER close and take ~500ms-1s, and `main()`
+  // does not print TEST_FILE_RESULT until later still. pc-heavy's PSI monitor
+  // froze a run in exactly that gap and reported a child that had already exited
+  // 0 as `undetermined` / exit 75 — the "never destroy a completed focused run"
+  // case the marker exists to prevent.
+  //
+  // Release is owned by three parties that all outlive this call:
+  //   1. `main()`'s `cleanupPreemptMarkers()`, in a finally AFTER TEST_FILE_RESULT;
+  //   2. the next group's `onAllFilesComplete`, which supersedes the marker;
+  //   3. pc-heavy itself, which removes it at every terminal/reap boundary and is
+  //      the last-resort owner if this process is killed.
+  // Holding it is fail-safe either way: pc-heavy bounds the deferral by
+  // PC_HEAVY_PSI_FINALIZATION_MAX_SEC, so a stuck marker cannot pin a slot.
   const runChild = (admissionContext, governedEnv, { inherited = false } = {}) => new Promise((resolveRun) => {
     const startedAt = Date.now();
     const sampler = createGovernedProcessDemandSampler(plannedDemand);
@@ -1553,7 +1569,6 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let terminationStarted = false;
     let forceTimer = null;
     let allFilesCompleteObserved = false;
-    let completionCleanup = null;
     const signalForwarders = new Map();
 
     const normalized = (file) => String(file).replaceAll('\\', '/');
@@ -1636,8 +1651,10 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
       allFilesCompleteObserved = true;
       try {
-        const cleanup = onAllFilesComplete();
-        completionCleanup = typeof cleanup === 'function' ? cleanup : null;
+        // The returned cleanup is intentionally discarded here — see the note on
+        // marker ownership above `runChild`. The caller keeps its own handle and
+        // releases only once its terminal evidence is out.
+        onAllFilesComplete();
       } catch (error) {
         captureError ??= error;
         terminate('finalization-marker');
@@ -1685,18 +1702,9 @@ export function runCapturedTestProcess(command, args, options = {}) {
       if (progressTimer) clearTimeout(progressTimer);
       clearTimeout(timeoutTimer);
       if (forceTimer) clearTimeout(forceTimer);
-      try {
-        completionCleanup?.();
-      } catch (error) {
-        captureError ??= error;
-      } finally {
-        completionCleanup = null;
-      }
-      try {
-        onClose();
-      } catch (error) {
-        captureError ??= error;
-      }
+      // The finalization marker is deliberately NOT released here — see the
+      // note on `completionCleanup` above. It is released after the governed
+      // process settles, so the post-close finalization window stays protected.
       emitProgress('finished', status, signal, true);
       resolveRun({
         status,
@@ -1788,18 +1796,15 @@ export async function main(
       return false;
     }
   };
+  // Publishing supersedes the previous group's marker, so consecutive groups
+  // never stack protection. Releasing is deliberately NOT done per child: it is
+  // owned by `cleanupPreemptMarkers()` in main()'s finally (which runs only after
+  // TEST_FILE_RESULT is printed) and, as last resort, by pc-heavy's terminal/reap
+  // cleanup. See the ownership note above `runChild` in runCapturedTestProcess.
   const finalizationCallbacks = () => ({
     onAllFilesComplete: () => {
       cleanupPreemptFinalizationMarker?.();
       cleanupPreemptFinalizationMarker = publishPreemptFinalizationMarker();
-      return () => {
-        cleanupPreemptFinalizationMarker?.();
-        cleanupPreemptFinalizationMarker = null;
-      };
-    },
-    onClose: () => {
-      cleanupPreemptFinalizationMarker?.();
-      cleanupPreemptFinalizationMarker = null;
     },
   });
   try {
