@@ -21,7 +21,7 @@ import { retireFleetLeaderWatches } from './leader-control';
 export default defineTool({
   name: 'fleet:leave',
   description:
-    'Leave your current fleet — clears your fleet membership label. If you were the fleet\'s leader, the fleet is left leaderless (its durable registry row persists, but it no longer has a recorded driver).',
+    'Leave your current fleet — clears your membership label and retires leader watches. An active fleet is left leaderless when its leader leaves; during winding-down, the registry retains that leader only as the durable final-report recipient.',
   guidance: {
     when: 'Stepping out of a fleet you are a member or leader of.',
     notWhen: 'Switching to a different fleet → just fleet:join the other one (it re-labels you).',

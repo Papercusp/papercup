@@ -60,6 +60,11 @@ beforeEach(() => {
 });
 
 describe('fleet:leave leader lifecycle', () => {
+  it('documents the winding-down final-report recipient exception', () => {
+    expect(tool.description).toContain('during winding-down');
+    expect(tool.description).toContain('final-report recipient');
+  });
+
   it('clears leadership when an active fleet leader leaves', async () => {
     h.getFleet.mockResolvedValue({ fleetSlug: 'alpha', leaderOwnerId: 'su-me', controlState: 'active' });
 
