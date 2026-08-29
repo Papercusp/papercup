@@ -23,6 +23,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   setGlobalConcurrencyCap,
   setGlobalConcurrencyFloor,
+  setGlobalConcurrencySeed,
   setProviderFloorOverride,
   setAimdTuning,
   AIMD_CLEAN_TURNS_PER_STEP,
@@ -68,11 +69,34 @@ export interface RateLimitConfig {
   providerFloors?: Partial<Record<GovernorProvider, ProviderFloorConfig>>;
   /** P-021: AIMD response-curve tuning. Absent ⇒ baked DEFAULT_AIMD_TUNING. */
   aimd?: AimdTuningConfig;
+  /**
+   * P-009: WHERE `maxSimultaneousAgents` came from — and therefore whether it is a CAP at all.
+   *
+   * `'user'`  an explicit, deliberate throttle ("I'm using Claude myself, fleet back off"). It is
+   *           real user intent, so it still installs a hard cap.
+   * `'seed'`  nobody asked for a limit; the number is only the host's boot-time starting point.
+   *           It seeds the probe window and installs NO cap, so productive capacity can grow past
+   *           it. This is what stops a resource-profile guess from silently becoming a maximum.
+   *
+   * Optional so every existing construction site stays valid; absent is read as `'seed'`.
+   */
+  maxSimultaneousAgentsSource?: 'user' | 'seed';
 }
 
-/** Absolute ceiling the route/UI allow a user to set (defense-in-depth above the orchestrator's
-    own SAFETY_CEILING backstop). */
-export const RATE_LIMIT_MAX_CEILING = 64;
+/**
+ * P-009 — the baked absolute ceiling is RETIRED.
+ *
+ * This was 64: a flat number that capped what a user was ALLOWED to ask for, independent of what
+ * the machine or the provider could actually sustain. capless-inference-gateway P-004 listed it in
+ * the deletion matrix (capacity-inventory.ts legacyFields) precisely because a productive-capacity
+ * maximum cannot be a compile-time constant. Admission is now governed by observation: the global
+ * gate probes upward and contracts on measured pressure, per-lane and with expiry.
+ *
+ * Retained ONLY as a sanity bound on absurd/hostile input (a typo'd 1e9 would allocate nonsense),
+ * which is why it is deliberately far above any real fleet size. It is NOT a capacity verdict, and
+ * nothing may reintroduce it as one.
+ */
+export const RATE_LIMIT_SANITY_BOUND = 100_000;
 
 /** The DEFAULT cap is SEEDED from the host's resource profile (P0 of
     operator-scalability-event-loop-2026-06-16) instead of a constant tuned for one box: a laptop
@@ -110,7 +134,10 @@ function clampProviderFloors(
     const raw = input[provider];
     if (!raw || typeof raw !== 'object') continue;
     const entry: ProviderFloorConfig = {};
-    const mc = optInt(raw.maxConcurrent, 1, 256);
+    // P-009: the baked 256 provider-override ceiling is retired. A per-provider FLOOR override is a
+    // cold-start starting point, and capping how high an operator may seed it made that seed a
+    // maximum by the back door. Only the sanity bound remains.
+    const mc = optInt(raw.maxConcurrent, 1, RATE_LIMIT_SANITY_BOUND);
     const rpm = optInt(raw.rpm, 1, 100_000);
     if (mc !== undefined) entry.maxConcurrent = mc;
     if (rpm !== undefined) entry.rpm = rpm;
@@ -133,9 +160,19 @@ function clampAimd(input: AimdTuningConfig | undefined): AimdTuningConfig | unde
 
 /** Coerce arbitrary input into a valid config (the route validates; this is the safety floor). */
 export function clampRateLimitConfig(input: Partial<RateLimitConfig> | null | undefined): RateLimitConfig {
-  const max = clampInt(input?.maxSimultaneousAgents, DEFAULT_RATE_LIMIT_CONFIG.maxSimultaneousAgents, 1, RATE_LIMIT_MAX_CEILING);
+  // P-009: WHETHER the caller actually asked for a limit is now load-bearing, so it is decided
+  // BEFORE clamping — once the resource-profile default has been substituted the two are
+  // indistinguishable, and treating the substituted default as user intent is exactly how a
+  // boot-time guess became a hard productive-capacity maximum.
+  const explicit = typeof input?.maxSimultaneousAgents === 'number' && Number.isFinite(input.maxSimultaneousAgents);
+  // The 64 ceiling is gone: an explicit request is honored up to the sanity bound only.
+  const max = clampInt(input?.maxSimultaneousAgents, DEFAULT_RATE_LIMIT_CONFIG.maxSimultaneousAgents, 1, RATE_LIMIT_SANITY_BOUND);
   const floor = clampInt(input?.concurrencyFloor, DEFAULT_RATE_LIMIT_CONFIG.concurrencyFloor, 1, max);
-  const cfg: RateLimitConfig = { maxSimultaneousAgents: max, concurrencyFloor: floor };
+  const cfg: RateLimitConfig = {
+    maxSimultaneousAgents: max,
+    concurrencyFloor: floor,
+    maxSimultaneousAgentsSource: explicit ? 'user' : 'seed',
+  };
   const providerFloors = clampProviderFloors(input?.providerFloors);
   if (providerFloors) cfg.providerFloors = providerFloors;
   const aimd = clampAimd(input?.aimd);
@@ -202,7 +239,18 @@ function applyCached(cfg: RateLimitConfig): void {
   cached = cfg;
   // Push the fleet cap + AIMD floor into the governor registry's global gate — honored by the
   // next acquire (D-004/D-005).
-  setGlobalConcurrencyCap(cfg.maxSimultaneousAgents);
+  //
+  // P-009: a number the user never asked for must not become a productive-capacity MAXIMUM. Only an
+  // explicit `maxSimultaneousAgents` installs a hard cap; the host's resource-profile default is
+  // pushed as a SEED, which bootstraps the probe window and leaves it free to grow past that guess.
+  // This is the concrete guarantee behind "live config cannot reinstall a productive-capacity
+  // maximum": clearing the user's value returns the fleet to observation, not to a baked ceiling.
+  if (cfg.maxSimultaneousAgentsSource === 'user') {
+    setGlobalConcurrencyCap(cfg.maxSimultaneousAgents);
+  } else {
+    setGlobalConcurrencyCap(undefined);
+    setGlobalConcurrencySeed(cfg.maxSimultaneousAgents);
+  }
   setGlobalConcurrencyFloor(cfg.concurrencyFloor);
   // P-021: push the per-provider floor overrides + AIMD curve. DECLARATIVE — a provider absent from
   // the config clears its override (setProviderFloorOverride is unchanged-guarded so a benign re-apply
