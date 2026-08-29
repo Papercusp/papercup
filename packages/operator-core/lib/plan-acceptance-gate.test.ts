@@ -13,6 +13,7 @@ import {
   getAcceptanceRubricsForPlan,
   getRubric,
   getRubricPlanRevision,
+  readRubricPlanRevision,
   type Rubric,
 } from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
@@ -34,6 +35,7 @@ vi.mock('./rubrics', () => ({
   getAcceptanceRubricsForPlan: rubricMocks.getAcceptanceRubricsForPlan,
   getRubric: vi.fn(),
   getRubricPlanRevision: vi.fn(),
+  readRubricPlanRevision: vi.fn(),
   META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
 }));
 vi.mock('./scorecards', () => ({
@@ -65,6 +67,11 @@ const mockRubric = vi.mocked(getAcceptanceRubricForPlan);
 const mockRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const mockGetRubric = vi.mocked(getRubric);
 const mockRevision = vi.mocked(getRubricPlanRevision);
+// EI-21827040531672903: the gate reads through readRubricPlanRevision, which reports a
+// FAILED read distinctly from "no revision". Existing cases drive the plain value mock,
+// so the read mock delegates to it and reports success; the fail-open case overrides
+// this to return { ok: false }.
+const mockRevisionRead = vi.mocked(readRubricPlanRevision);
 const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
@@ -131,6 +138,12 @@ beforeEach(() => {
     return one ? [one] : [];
   });
   mockAuthorIdentity.mockImplementation(async (author, candidate) => author === candidate);
+  // Delegate the ok/failed-aware read to the plain value mock every existing case
+  // already drives, so those cases keep expressing "the revision is N" unchanged.
+  mockRevisionRead.mockImplementation(async (rubricId: string) => ({
+    ok: true as const,
+    revision: await mockRevision(rubricId),
+  }));
   // This suite exercises the acceptance-rubric family in isolation. The newer
   // code-truth gates have their own focused suite and deliberately run first in
   // production, so leave them disabled here unless a test opts in explicitly.

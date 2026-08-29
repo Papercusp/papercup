@@ -31,6 +31,11 @@ vi.mock('./rubrics', () => ({
   getAcceptanceRubricsForPlan: vi.fn(),
   getRubric: vi.fn(),
   getRubricPlanRevision: vi.fn(),
+  // EI-21827040531672903: the gate reads the revision through the ok/failed-aware
+  // reader now. This suite's subject is the code-truth family, so the default is a
+  // SUCCESSFUL read of an unversioned rubric — the shape that leaves the vetting
+  // block's behaviour exactly as it was before that change.
+  readRubricPlanRevision: vi.fn(async () => ({ ok: true, revision: null })),
   META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
 }));
 vi.mock('./scorecards', () => ({ listScorecards: vi.fn() }));
