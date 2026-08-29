@@ -21,18 +21,13 @@ pub struct ConversationContextProjectionTarget {
 /// `Unknown` is deliberately distinct from `Unavailable`: the initial
 /// `sessions:search` seed is bounded, so absence from that page cannot prove
 /// that a roster session has no indexed turns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionTranscriptAvailability {
+    #[default]
     Unknown,
     Available,
     Unavailable,
-}
-
-impl Default for SessionTranscriptAvailability {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Canonical result of resolving one exact roster session through
