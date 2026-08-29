@@ -1984,11 +1984,17 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
 
     // Merged model (P-009): each row carries a source tag (G/M/A) + a freshness
     // marker (⚠ / ○), so generated vs human and stale vs fresh are visible at a glance.
-    let items: Vec<ListItem> = app
-        .docs_files
+    // Width-aware path presentation (EI-21646357450104414): the path budget
+    // follows the pane instead of a fixed 26 columns, and an over-long path
+    // elides from the LEFT so the filename — the part that identifies a doc —
+    // always survives. The subtracted overhead is the two borders, the
+    // highlight symbol, the freshness marker and the source tag.
+    let visible: Vec<&String> = app.visible_docs();
+    let path_budget = (cols[0].width as usize).saturating_sub(9).max(12);
+    let items: Vec<ListItem> = visible
         .iter()
         .map(|p| {
-            let entry = app.doc_entries.iter().find(|e| &e.doc_id == p);
+            let entry = app.doc_entries.iter().find(|e| &e.doc_id == *p);
             let (src_tag, src_style) =
                 doc_source_tag(entry.map(|e| e.source.as_str()).unwrap_or("manual"));
             let (mark, mark_style) =
@@ -1996,23 +2002,36 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(mark, mark_style),
                 Span::styled(src_tag, src_style),
-                Span::raw(trunc(p, 26)),
+                Span::raw(elide_left(p.as_str(), path_budget)),
             ]))
         })
         .collect();
     let mut state = ListState::default();
-    if !app.docs_files.is_empty() {
+    if !visible.is_empty() {
         state.select(Some(app.doc_sel));
     }
+    // shown/total plus the active needle, so a NARROWED list can never be
+    // misread as a small or truncated documentation tree.
+    let docs_title = if app.docs_query.is_empty() {
+        format!(
+            " {} · docs ({}) · /:filter R:regen V:verify ",
+            app.harness,
+            app.docs_files.len()
+        )
+    } else {
+        format!(
+            " {} · docs ({}/{} · /{}) · /:edit ",
+            app.harness,
+            visible.len(),
+            app.docs_files.len(),
+            trunc(&app.docs_query, 16)
+        )
+    };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(Line::from(format!(
-                    " {} · docs ({}) · R:regen V:verify ",
-                    app.harness,
-                    app.docs_files.len()
-                ))),
+                .title(Line::from(docs_title)),
         )
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
@@ -2065,6 +2084,21 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
                 .title(Line::from(reader_title)),
         );
     f.render_widget(para, cols[1]);
+
+    // The `/` filter composer floats over the tab while open (Cupboard's
+    // pattern). Rendered last so it sits above both panes.
+    if app.docs_search_open {
+        let overlay = centered_rect(60, 18, f.area());
+        f.render_widget(Clear, overlay);
+        f.render_widget(
+            Paragraph::new(format!("> {}", app.docs_search_input)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Filter docs by path (Enter apply · empty clears · Esc cancel) "),
+            ),
+            overlay,
+        );
+    }
 }
 
 fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
@@ -4691,6 +4725,23 @@ pub(crate) fn trunc(s: &str, n: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/// Truncate from the LEFT, keeping the tail (EI-21646357450104414).
+///
+/// For a path the identifying part is the filename, so dropping leading
+/// directories preserves strictly more information than [`trunc`], which keeps
+/// the head and would render a deep documentation tree as a column of
+/// indistinguishable `internal/docs/agent-i…` prefixes.
+pub(crate) fn elide_left(s: &str, n: usize) -> String {
+    let count = s.chars().count();
+    if count <= n {
+        return s.to_string();
+    }
+    let keep = n.saturating_sub(1);
+    let mut out = String::from("…");
+    out.extend(s.chars().skip(count - keep));
+    out
 }
 
 /// Paint a bounded [`ToolDiff`] as card rows.
