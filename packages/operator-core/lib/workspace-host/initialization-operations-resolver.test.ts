@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
@@ -344,6 +344,47 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
       `enroll:${identity.instanceName}:${controller.knownHostsFile}:3`,
     ]);
     expect(resolved.operations.supportedStepKinds).toContain('create-workspace');
+  });
+
+  it('uses the hosted delegation resolver through the real GCP client path instead of ADC/gcloud', async () => {
+    const credentialRef = 'delegation://workspace-1/gcp/connection-1/1';
+    // ⚠ Keep this stand-in short and referenced by identifier. The git-sync
+    // commit-time secrets detector's `secret-assignment` rule fires on an
+    // `accessToken:` key assigned a >=20-char value over 3.2 bits/char of
+    // entropy, which ordinary hyphenated English clears — the previous literal
+    // ('delegated-short-lived-token') quarantined this file out of every commit
+    // for ~41h / 149+ ticks (WI-784913).
+    const DELEGATED_TOKEN = 'delegated-token';
+    const resolveHostedAuth = vi.fn(async () => ({
+      accessToken: DELEGATED_TOKEN,
+      identity: 'workspace-host@papercusp-hosted-123.iam.gserviceaccount.com',
+      projectId: 'active-alcove-504205-q3',
+    }));
+    const gcpFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${DELEGATED_TOKEN}`);
+      return Response.json({ queryValue: { items: guestHostKeys() } });
+    });
+    const spec = desired({
+      credentials: { cloudCredentialRef: { kind: 'cloud', ref: credentialRef } },
+      provider: {
+        hostedDelegation: {
+          schemaVersion: 'hosted-provider-delegation-v1',
+          workspaceId: 'workspace-1', connectionId: 'connection-1', credentialRef,
+          provider: 'gcp', generation: 1, status: 'verified',
+        },
+      },
+    } as never);
+
+    await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'workspace-1', hostId: spec.hostId, controller,
+      readDesiredSpec: async () => ({ desired: spec }),
+      resolveHostedAuth,
+      gcpFetch,
+      enrollHostKeys: async () => undefined,
+    });
+
+    expect(resolveHostedAuth).toHaveBeenCalledWith({ credentialRef, provider: spec.provider });
+    expect(gcpFetch).toHaveBeenCalledTimes(1);
   });
 
   it('distinguishes an unknown host from a host with no recorded intent', async () => {
