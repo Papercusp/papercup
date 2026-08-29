@@ -346,6 +346,13 @@ export async function runGovernedTestProcess(options, run) {
     admissionClass: options.admissionClass ?? 'process',
     demand: options.demand ?? { cpuWeight: 1 },
     idempotencyKey: options.idempotencyKey ?? governedProcessIdempotencyKey(options.owner),
+    // WI-638180: every caller of this bridge is a one-shot CLI (`test-files.mjs`,
+    // `affected-tests.mjs`). A top-level admission on the process-wide `getOrgPg()`
+    // pool leaves PgBouncer sockets nothing can close, so the runner completes all
+    // of its work and then never exits — indistinguishable, to a supervisor, from a
+    // wedged test run. Ask for a dedicated client that closes on settlement instead.
+    // `dedicatedClient: false` opts a long-lived embedder back onto the shared pool.
+    dedicatedClient: options.dedicatedClient !== false,
     ...(options.payloadRef ? { payloadRef: options.payloadRef } : {}),
     ...(options.parent ? { parent: options.parent } : {}),
     ...(options.metadata ? { metadata: options.metadata } : {}),
