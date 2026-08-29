@@ -1702,9 +1702,10 @@ export function runCapturedTestProcess(command, args, options = {}) {
       if (progressTimer) clearTimeout(progressTimer);
       clearTimeout(timeoutTimer);
       if (forceTimer) clearTimeout(forceTimer);
-      // The finalization marker is deliberately NOT released here — see the
-      // note on `completionCleanup` above. It is released after the governed
-      // process settles, so the post-close finalization window stays protected.
+      // The finalization marker is deliberately NOT released here — nor anywhere
+      // else in this function; see the marker-ownership note above `runChild`.
+      // Releasing it at close ends the protected window while the run is still
+      // producing its terminal evidence.
       emitProgress('finished', status, signal, true);
       resolveRun({
         status,
