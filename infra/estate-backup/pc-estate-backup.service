@@ -1,0 +1,14 @@
+[Unit]
+Description=Papercusp estate logical backup to GCS (plan hetzner-to-gcp-restore-2026-08-28 / P-024)
+Documentation=https://storage.googleapis.com/papercusp-estate-backups-active-alcove-504205-q3/tools/RESTORE-RUNBOOK.md
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pc-estate-backup.sh
+# the script exits non-zero on ANY artifact failure; systemd records that as a
+# failed unit so `systemctl list-units --failed` surfaces a silently-rotting backup
+TimeoutStartSec=7200
+Nice=10
+IOSchedulingClass=idle

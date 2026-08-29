@@ -1505,6 +1505,25 @@ pub enum PluginsFocus {
     Panes,
 }
 
+/// Which sub-view of the Inbox tab has focus. `Tab` toggles, mirroring
+/// `PluginsFocus` / `TestingFocus`.
+///
+/// The retired `Tab::Convos` shell was absorbed into Inbox, but only its
+/// *title* moved: `tab_entry_side_effect` fetched conversations on entering
+/// Inbox while no thread list was ever drawn, so the absorbed capability —
+/// the thread list, its seed/accepted-answer/linked-work-item detail, the
+/// state/kind/topic filters, and promote-to-issue — was unreachable from any
+/// keystroke. This focus is what makes the absorbed half reachable again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboxFocus {
+    /// The pot-scope-filtered attention list, tiered Decisions ▸ Handled ▸
+    /// Alerts ▸ Activity. The landing sub-view.
+    Attention,
+    /// The absorbed coord-conversations browser: threads under the active
+    /// state/kind/topic filter + the selected thread's detail.
+    Threads,
+}
+
 /// One test run's lifecycle on the Testing tab (D-004a): in-flight, then the
 /// finished status + tail output. Replaced wholesale per run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1699,6 +1718,9 @@ pub struct App {
     pub plugins: Vec<crate::models::PluginManifest>,
     pub plugin_sel: usize,
     pub plugins_focus: PluginsFocus,
+    /// Which Inbox sub-view is drawn — the attention list, or the absorbed
+    /// Convos thread browser. `Tab` toggles.
+    pub inbox_focus: InboxFocus,
     pub plugin_config: Option<(String, serde_json::Value)>,
     /// Memory tab (D-006 Step 2): the backend's memories (`memory:list`), an
     /// optional search-hit overlay (`memory:search` — shown instead of the
@@ -2175,6 +2197,7 @@ impl App {
             plugins: Vec::new(),
             plugin_sel: 0,
             plugins_focus: PluginsFocus::List,
+            inbox_focus: InboxFocus::Attention,
             plugin_config: None,
             hives: Vec::new(),
             hive_sel: 0,
@@ -8903,22 +8926,24 @@ impl App {
             // and refetches; `/` opens the search composer (seeded with the
             // active query); `r` refetches the current filter; Enter arms the
             // selected listing's action then confirms it; `y` fires the armed one.
-            // ── Conversations tab (Brief 25) ─────────────────────────────────
-            KeyCode::Char('s') if self.tab == Tab::Conversations => {
+            // ── Inbox · Threads sub-view (absorbed Brief 25 Convos) ──────────
+            // Gated on the Threads focus, not on the retired `Tab::Convos`:
+            // that tab is no longer in `Tab::ALL`, so these arms were dead.
+            KeyCode::Char('s') if self.inbox_threads_focused() => {
                 self.conv_state_idx = (self.conv_state_idx + 1) % CONV_STATES.len();
                 self.conversation_sel = 0;
                 self.refetch_conversations()
             }
-            KeyCode::Char('t') if self.tab == Tab::Conversations => {
+            KeyCode::Char('t') if self.inbox_threads_focused() => {
                 self.conv_kind_idx = (self.conv_kind_idx + 1) % CONV_KINDS.len();
                 self.conversation_sel = 0;
                 self.refetch_conversations()
             }
-            KeyCode::Char('T') if self.tab == Tab::Conversations => {
+            KeyCode::Char('T') if self.inbox_threads_focused() => {
                 self.cycle_conv_topic();
                 Action::Render
             }
-            KeyCode::Char('r') if self.tab == Tab::Conversations => self.refetch_conversations(),
+            KeyCode::Char('r') if self.inbox_threads_focused() => self.refetch_conversations(),
             // Realtime operator voice toggle (voice-realtime-tui-2026-06-05
             // P-007): `V` (shift) starts/stops the continuous Conv-AI session
             // on ANY tab; lowercase `v` stays the PTT turn. Refused mid-PTT so
@@ -8970,7 +8995,7 @@ impl App {
             }
             KeyCode::Char('-') if self.tab == Tab::Overview => self.nudge_max_agents(-1),
             KeyCode::Enter if self.tab == Tab::Overview => self.overview_activate(),
-            KeyCode::Enter if self.tab == Tab::Conversations => self.conv_open_detail(),
+            KeyCode::Enter if self.inbox_threads_focused() => self.conv_open_detail(),
             // P-028: one discoverable key from both scheduling surfaces. Uppercase
             // `K` is intentionally distinct from `k` navigation.
             KeyCode::Char('K')
@@ -8983,7 +9008,7 @@ impl App {
             // P-034: launch from the exact Plans column under focus. Uppercase
             // keeps lowercase `l` available for pane navigation elsewhere.
             KeyCode::Char('L') if self.tab == Tab::Plans => self.open_fleet_launcher(),
-            KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
+            KeyCode::Char('i') if self.inbox_threads_focused() => self.conv_promote(),
             KeyCode::Char('f') if self.tab == Tab::Cupboard => {
                 self.cycle_cupboard_kind();
                 self.cupboard_sel = 0;
@@ -9298,6 +9323,17 @@ impl App {
                 self.plugins_focus = match self.plugins_focus {
                     PluginsFocus::List => PluginsFocus::Panes,
                     PluginsFocus::Panes => PluginsFocus::List,
+                };
+                Action::Render
+            }
+            // Inbox sub-view focus: Tab hops the attention list ↔ the absorbed
+            // Convos thread browser. This is the ONLY keystroke that reaches
+            // the absorbed capability, so it is what makes the Convos→Inbox
+            // absorption real rather than title-only.
+            KeyCode::Tab if self.tab == Tab::Inbox => {
+                self.inbox_focus = match self.inbox_focus {
+                    InboxFocus::Attention => InboxFocus::Threads,
+                    InboxFocus::Threads => InboxFocus::Attention,
                 };
                 Action::Render
             }
@@ -9651,6 +9687,12 @@ impl App {
                 None => true,
             })
             .collect()
+    }
+
+    /// True when the Inbox is showing its absorbed Threads sub-view — the one
+    /// guard every conversation keystroke and the thread render agree on.
+    pub fn inbox_threads_focused(&self) -> bool {
+        self.tab == Tab::Inbox && self.inbox_focus == InboxFocus::Threads
     }
 
     pub fn selected_conversation(&self) -> Option<&crate::models::ConvSummary> {
@@ -10020,7 +10062,10 @@ impl App {
             // The Overview's four tiles (Plans · Needs-you · Agents · Activity).
             Tab::Overview => 4,
             Tab::Plans => self.visible_plans().len(),
-            Tab::Inbox => self.visible_inbox().len(),
+            Tab::Inbox => match self.inbox_focus {
+                InboxFocus::Attention => self.visible_inbox().len(),
+                InboxFocus::Threads => self.visible_conversations().len(),
+            },
             Tab::Harnesses => match self.harness_focus {
                 HarnessFocus::Features => self.features.len(),
                 HarnessFocus::Issues => self.issues.len(),
@@ -10059,7 +10104,10 @@ impl App {
         let slot: &mut usize = match self.tab {
             Tab::Overview => &mut self.overview_sel,
             Tab::Plans => &mut self.plan_sel,
-            Tab::Inbox => &mut self.inbox_sel,
+            Tab::Inbox => match self.inbox_focus {
+                InboxFocus::Attention => &mut self.inbox_sel,
+                InboxFocus::Threads => &mut self.conversation_sel,
+            },
             Tab::Harnesses => match self.harness_focus {
                 HarnessFocus::Features => &mut self.feat_sel,
                 HarnessFocus::Issues => &mut self.issue_sel,

@@ -2,7 +2,8 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{
-    App, FleetLauncherField, HarnessFocus, PluginsFocus, SessionBrowserFacet, Tab, TestingFocus,
+    App, FleetLauncherField, HarnessFocus, InboxFocus, PluginsFocus, SessionBrowserFacet, Tab,
+    TestingFocus,
     SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
 };
 use crate::models::{
@@ -1432,6 +1433,15 @@ fn report_block_lines(rep: &crate::chat_tags::Report, inner_w: usize) -> Vec<Lin
 }
 
 fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
+    // Two sub-views, `Tab` toggles: the attention list, and the absorbed
+    // Convos thread browser. Without this dispatch the conversations that
+    // `tab_entry_side_effect` fetches on entering Inbox were never drawn, so
+    // the whole absorbed capability was unreachable — the absorption was
+    // title-only.
+    if app.inbox_focus == InboxFocus::Threads {
+        draw_conversations(f, app, area);
+        return;
+    }
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
@@ -1502,8 +1512,10 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("F:plans({}) · ", app.plan_filter.len())
     };
+    // Name the sub-view actually on screen and advertise the key that reaches
+    // the other one — the thread list is only discoverable if this says so.
     let title = format!(
-        " Inbox · {}Attention + Threads ({}) {}{} ",
+        " Inbox · {}Attention · [Tab] Threads ({}) {}{} ",
         filter_badge,
         app.visible_conversations().len(),
         crate::glyph::status::NEEDS_HUMAN,
@@ -1576,7 +1588,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             lines
         }
         None => vec![Line::from(format!(
-            "Inbox empty — nothing needs attention. Threads: {} (open Inbox to browse).",
+            "Inbox empty — nothing needs attention. Threads: {} (Tab to browse).",
             app.visible_conversations().len()
         ))],
     };
@@ -1606,7 +1618,7 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
         " Conversations (loading…) ".to_string()
     } else {
         format!(
-            " Conversations ({}) · s:{} t:{}{} ",
+            " Inbox · Threads ({}) · [Tab] Attention · s:{} t:{}{} ",
             convs.len(),
             app.conv_state(),
             app.conv_kind(),
