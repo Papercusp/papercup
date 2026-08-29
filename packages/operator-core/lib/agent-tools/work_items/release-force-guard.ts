@@ -27,7 +27,9 @@
  * this guard is tool-layer only.
  */
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
+import type { Sql } from 'postgres';
 import type { LivenessVerdict } from '../coordination/liveness-oracle';
+import { agentToolInvocationPredicate } from '../sessions/automatic-tool-names';
 import type { WorkItemReleaseRequest } from '../../work-items-release-request';
 
 export type ForceReleaseBasis =
@@ -217,6 +219,28 @@ function parseTs(v: unknown): number {
 }
 
 /**
+ * Read the holder's newest agent-authored tool call.
+ *
+ * Hook/UI/system telemetry can continue after an agent stops taking turns, so
+ * a raw MAX(invoked_at) is not activity evidence for the warm-idle guard. Keep
+ * this query on the shared behavior predicate: explicit agent/unknown origins
+ * are real work, while legacy NULL rows retain the non-automatic tool-name
+ * fallback used by the other behavior-facing readers.
+ */
+export async function readLastAgentToolInvocationAt(
+  sql: Sql,
+  ownerId: string,
+): Promise<string | Date | null> {
+  const rows = await sql<Array<{ last_tool_at: string | Date | null }>>`
+    SELECT MAX(t.invoked_at) AS last_tool_at
+      FROM harness_shared.tool_invocations t
+     WHERE t.coord_owner_id = ${ownerId}
+       AND ${agentToolInvocationPredicate(sql, 't')}
+  `;
+  return rows[0]?.last_tool_at ?? null;
+}
+
+/**
  * Decide whether `callerOwnerId` may force-release `holderOwnerId`'s claim.
  * Never throws; a lookup failure degrades to "signal absent", which only ever
  * makes the guard STRICTER on authority (an unresolvable fleet grants nothing)
@@ -242,11 +266,7 @@ export async function assessForceRelease(
     deps.getLastToolInvocationAt ??
     (async (ownerId: string) => {
       const { getOrgPg } = await import('@papercusp/db-org');
-      const rows = await getOrgPg().sql<{ last_tool_at: string | Date | null }[]>`
-        SELECT MAX(invoked_at) AS last_tool_at
-          FROM harness_shared.tool_invocations
-         WHERE coord_owner_id = ${ownerId}`;
-      return rows[0]?.last_tool_at ?? null;
+      return readLastAgentToolInvocationAt(getOrgPg().sql, ownerId);
     });
   const endedOwnersOf =
     deps.endedRecordedOwnerIds ??
