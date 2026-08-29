@@ -167,6 +167,13 @@ vuln_by_severity=\$(jq -c '[.matches[]?.vulnerability.severity] | group_by(.) | 
 if [ "\$vuln_by_severity" = "null" ]; then detail="vuln-severity-parse-failed"; exit 1; fi
 vuln_fixable=\$(jq '[.matches[]? | select(.vulnerability.fix.state == "fixed")] | length' /tmp/vuln.json 2>/dev/null || echo "null")
 if [ "\$vuln_fixable" = "null" ]; then detail="vuln-fix-parse-failed"; exit 1; fi
+# Fixable AND severity, crossed. The two breakdowns above cannot be combined after the fact:
+# a total of 3829 fixable beside 247 Critical cannot answer "how many of the Critical ones can
+# we actually act on", and that is precisely the number that decides whether a red gate means
+# "patch the image" or "the threshold is unsatisfiable against this distro". Measured on the
+# 0.0.18 candidate, where the answer had to be guessed for want of this field (D-171).
+vuln_fixable_by_severity=\$(jq -c '[.matches[]? | select(.vulnerability.fix.state == "fixed") | .vulnerability.severity] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_fixable_by_severity" = "null" ]; then detail="vuln-fix-severity-parse-failed"; exit 1; fi
 
 # Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
 # emitted: this document is read back over SSH and lands in release logs and work-item
@@ -186,9 +193,10 @@ jq -n \\
   --argjson mountedFilesystems "\$mounted" \\
   --argjson vulnerabilityBySeverity "\$vuln_by_severity" \\
   --argjson vulnerabilityFixable "\$vuln_fixable" \\
+  --argjson vulnerabilityFixableBySeverity "\$vuln_fixable_by_severity" \\
   --argjson secretsByRule "\$secrets_by_rule" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
+  '{sbomSha256:\$sbomSha256, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
