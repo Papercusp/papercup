@@ -120,12 +120,17 @@ const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
 
 interface PsuPtyDiscovery {
   ownerId?: string;
-  advSessionId?: number;
+  /** WRITTEN AS A STRING by psu-pty-host ("20811"), not a number. A `===`
+   *  comparison against the numeric adv id therefore never matches, and the
+   *  symptom is the worst kind: the poll silently never finds the session and
+   *  the failure reads "discovery file never appeared" — i.e. it looks like the
+   *  session failed to start rather than like the harness failed to look. */
+  advSessionId?: number | string;
   pid?: number;
   ptyPid?: number;
   sock?: string;
   command?: string;
-  startedAt?: string;
+  startedAt?: number | string;
 }
 
 async function discoverPsuPtyByAdvSessionId(advSessionId: number): Promise<PsuPtyDiscovery | null> {
@@ -139,13 +144,22 @@ async function discoverPsuPtyByAdvSessionId(advSessionId: number): Promise<PsuPt
     if (!name.endsWith('.json')) continue;
     try {
       const parsed = JSON.parse(await readFile(join(PSU_PTY_DIR, name), 'utf8')) as PsuPtyDiscovery;
-      if (parsed.advSessionId === advSessionId) return parsed;
+      if (Number(parsed.advSessionId) === advSessionId) return parsed;
     } catch {
       // A partially-written discovery file is normal during boot; skip it and
       // let the poll come back.
     }
   }
   return null;
+}
+
+/** POSIX single-quote quoting, so an argv element containing a space, a quote
+ *  or a shell metacharacter survives the `script -c <string>` round-trip. The
+ *  pane argv is machine-generated and currently tame, but silently mangling a
+ *  future `--plan="two words"` into two arguments would produce a launch
+ *  failure whose cause is invisible in the output. */
+function shellQuote(argv: readonly string[]): string {
+  return argv.map((a) => `'${a.replaceAll("'", `'\\''`)}'`).join(' ');
 }
 
 function pidAlive(pid: number | null | undefined): boolean {
@@ -285,14 +299,30 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           'psu will refuse the launch as an unclaimed workbench row',
       ).toBe(true);
 
-      const [cmd, ...args] = launchArgv;
-      spawned = await managedSpawn(cmd, args, {
+      // THE PANE ARGV NEEDS A TTY, AND THAT IS NOT AN INCIDENTAL DETAIL.
+      //
+      // Run this argv with piped stdio and psu gets all the way through the
+      // claim, gateway account routing and "session <id>" — then the agent CLI
+      // sees a non-TTY stdin, falls back to non-interactive --print mode, and
+      // dies immediately:
+      //   Warning: no stdin data received in 3s, proceeding without it.
+      //   Error: Input must be provided either through stdin or as a prompt
+      //          argument when using --print
+      // In the product the pane IS a terminal, so the interactive path is the
+      // only one that ever runs. `script -qfec` is the faithful headless
+      // equivalent: it allocates a real pty and runs the argv inside it, which
+      // is what a terminal emulator does and nothing more.
+      const ptyCommand = shellQuote(launchArgv);
+      spawned = await managedSpawn('script', ['-qfec', ptyCommand, '/dev/null'], {
         class: 'agent-session',
         title: `p012 real-backend matrix — ${backend} adv:${advSessionId}`,
-        argv: launchArgv,
+        // Provenance is the point of the ledger: record what is ACTUALLY
+        // running (the pty wrapper), and keep the pane argv beside it so a
+        // stray row in processes:list is traceable to this matrix and its leg.
+        argv: ['script', '-qfec', ptyCommand, '/dev/null'],
         harnessSlug: HARNESS,
         launchedBy: 'test:su-session-real-backend-matrix',
-        detail: { backend, advSessionId, planItem: 'P-012' },
+        detail: { backend, advSessionId, planItem: 'P-012', paneArgv: launchArgv },
       });
       leg.spawned = spawned;
 
