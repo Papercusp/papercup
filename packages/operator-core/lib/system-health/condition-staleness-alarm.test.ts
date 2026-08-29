@@ -877,8 +877,8 @@ describe('toBridgeConditionStates (pure)', () => {
         ],
         'papercusp',
       );
-      expect(out[0].summary).toContain('Latest alarm detail (from the emitter):');
-      expect(out[0].summary).toContain('green-candidate-<pipeline>-<sha12>');
+      expect(out[0]!.summary).toContain('Latest alarm detail (from the emitter):');
+      expect(out[0]!.summary).toContain('green-candidate-<pipeline>-<sha12>');
       // The control lacks both — proving neither assertion is trivially satisfied.
       expect(preFoldSummary).not.toContain('Latest alarm detail (from the emitter):');
       expect(preFoldSummary).not.toContain('green-candidate-<pipeline>-<sha12>');
@@ -891,7 +891,7 @@ describe('toBridgeConditionStates (pure)', () => {
         [mkState({ condition_key: 'gate-red-streak:papercusp', latest_body: null })],
         'papercusp',
       );
-      expect(out[0].summary).not.toContain('Latest alarm detail');
+      expect(out[0]!.summary).not.toContain('Latest alarm detail');
     });
 
     it('TRUNCATES a runaway body and MARKS the truncation', () => {
@@ -901,8 +901,12 @@ describe('toBridgeConditionStates (pure)', () => {
         [mkState({ condition_key: 'gate-red-streak:papercusp', latest_body: 'x'.repeat(5000) })],
         'papercusp',
       );
-      expect(out[0].summary).toContain('…[truncated at 2000 chars');
-      expect(out[0].summary.length).toBeLessThan(3000);
+      expect(out[0]!.summary).toContain('…[truncated at 2000 chars');
+      // `summary` is OPTIONAL on the bridge's ConditionState (condition-bridge.ts:171),
+      // so the bang belongs on `summary`, not only on `out[0]` — the possibly-undefined
+      // object under `.length` is the summary itself. Asserting here does NOT weaken the
+      // production type; the preceding toContain already proves it is present.
+      expect(out[0]!.summary!.length).toBeLessThan(3000);
     });
   });
 });
