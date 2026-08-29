@@ -59,6 +59,7 @@ import {
   resolveHolderLiveness,
   type GoalHolderRow as GoalHolderLike,
 } from '../goals/holder';
+import { validateClaimSpec } from '../scheduler/claim-spec';
 
 export const GOAL_DRAIN_FLEET_SWEEP_INTERVAL_MS = 10 * 60_000;
 
@@ -126,18 +127,34 @@ export type DrainFleetSpecScope = 'goal-scoped' | 'not-goal-scoped' | 'unknown';
  * only when EVERY branch is (OR widens past the goal otherwise).
  */
 export function claimSpecFilterConstrainsGoal(filter: unknown, goalId: string): boolean {
+  return claimSpecFilterConstrainsField(filter, 'goal', goalId);
+}
+
+/**
+ * PURE: does every row admitted by this filter carry one positive field value?
+ *
+ * An `all` narrows when any branch pins the value; an `any` pins only when every
+ * branch does. Negation never counts. This is the same nullable-field rule the
+ * goal-scoped drain-fleet check already used, lifted so the plan-fleet leg does
+ * not grow a subtly different parser.
+ */
+function claimSpecFilterConstrainsField(
+  filter: unknown,
+  field: 'goal' | 'plan',
+  value: string,
+): boolean {
   if (!filter || typeof filter !== 'object') return false;
   const node = filter as Record<string, unknown>;
   if (Array.isArray(node.all)) {
-    return node.all.some((n) => claimSpecFilterConstrainsGoal(n, goalId));
+    return node.all.some((n) => claimSpecFilterConstrainsField(n, field, value));
   }
   if (Array.isArray(node.any)) {
-    return node.any.length > 0 && node.any.every((n) => claimSpecFilterConstrainsGoal(n, goalId));
+    return node.any.length > 0 && node.any.every((n) => claimSpecFilterConstrainsField(n, field, value));
   }
   if ('not' in node) return false;
-  if (node.field !== 'goal') return false;
-  if (node.op === '=') return node.value === goalId;
-  if (node.op === 'in') return Array.isArray(node.value) && node.value.includes(goalId);
+  if (node.field !== field) return false;
+  if (node.op === '=') return node.value === value;
+  if (node.op === 'in') return Array.isArray(node.value) && node.value.includes(value);
   return false;
 }
 
@@ -146,6 +163,221 @@ export function claimSpecIsGoalScoped(spec: unknown, goalId: string): boolean {
   if (!spec || typeof spec !== 'object') return false;
   const view = (spec as { view?: { filter?: unknown } }).view;
   return claimSpecFilterConstrainsGoal(view?.filter, goalId);
+}
+
+/** PURE: the plan-fleet counterpart of `claimSpecIsGoalScoped`. */
+export function claimSpecIsPlanScoped(spec: unknown, planSlug: string): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const view = (spec as { view?: { filter?: unknown } }).view;
+  return claimSpecFilterConstrainsField(view?.filter, 'plan', planSlug);
+}
+
+export interface GoalPlanFleetTargetLike {
+  fleetSlug: string;
+  liveness: DrainFleetLiveness;
+  /** Live (unexpired) plan-item claims held by members of this fleet. */
+  liveClaimItemIds: string[];
+}
+
+export interface GoalPlanFleetCoverageLike {
+  goalId: string;
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  /** Non-terminal (`done`/`dropped` excluded) normalized plan items. */
+  itemIds: string[];
+  targetingFleets: GoalPlanFleetTargetLike[];
+}
+
+/** A failed canonical read is UNKNOWN, never an empty cohort. */
+export type GoalPlanFleetCohort =
+  | { status: 'known'; plans: GoalPlanFleetCoverageLike[] }
+  | { status: 'unknown'; plans: [] };
+
+export type GoalPlanFleetReason =
+  | 'started-plan-no-live-targeting-fleet'
+  | 'started-plan-targeting-fleet-zero-live-claims';
+
+export interface GoalPlanFleetAlert {
+  goalId: string;
+  workspaceId: string;
+  title: string;
+  reason: GoalPlanFleetReason;
+  planSlug: string;
+  harnessSlug: string;
+  itemIds: string[];
+  targetingFleets: GoalPlanFleetTargetLike[];
+  liveHolders: string[];
+}
+
+/**
+ * PURE: classify GOAL obligation #1 from the canonical joined cohort.
+ *
+ * Exactly one verdict may speak for a goal. Leg A wins deterministically over
+ * Leg B when separate plans exhibit both failures. Any unresolved fleet on a
+ * non-empty started plan suppresses the whole goal: that fleet may be the live
+ * coverage we failed to observe, so treating UNKNOWN as absent would false-alarm.
+ */
+export function classifyGoalPlanFleetCoverage(
+  goal: GoalDrainRowLike,
+  holders: readonly GoalHolderLike[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>,
+  cohort: GoalPlanFleetCohort,
+): GoalPlanFleetAlert | null {
+  if (cohort.status === 'unknown') return null;
+
+  const liveHolders = holders
+    .filter((h) => h.goalId === goal.goalId && h.workspaceId === goal.workspaceId)
+    .filter((h) => {
+      const verdict = verdicts.get(h.ownerId);
+      return verdict ? holderCountsAsAlive(verdict) : false;
+    })
+    .map((h) => h.ownerId);
+  if (liveHolders.length === 0) return null;
+
+  const plans = cohort.plans
+    .filter((p) => p.goalId === goal.goalId && p.workspaceId === goal.workspaceId)
+    .filter((p) => p.itemIds.length > 0)
+    .sort((a, b) => a.planSlug.localeCompare(b.planSlug));
+  if (plans.some((p) => p.targetingFleets.some((f) => f.liveness === 'unknown'))) return null;
+
+  const legA = plans.find((p) => !p.targetingFleets.some((f) => f.liveness === 'alive'));
+  const legB = plans.find((p) => {
+    const alive = p.targetingFleets.filter((f) => f.liveness === 'alive');
+    return alive.length > 0 && !alive.some((f) => f.liveClaimItemIds.some((id) => p.itemIds.includes(id)));
+  });
+  const selected = legA ?? legB;
+  if (!selected) return null;
+
+  return {
+    goalId: goal.goalId,
+    workspaceId: goal.workspaceId,
+    title: goal.title,
+    reason: selected === legA
+      ? 'started-plan-no-live-targeting-fleet'
+      : 'started-plan-targeting-fleet-zero-live-claims',
+    planSlug: selected.planSlug,
+    harnessSlug: selected.harnessSlug,
+    itemIds: selected.itemIds,
+    targetingFleets: selected.targetingFleets,
+    liveHolders,
+  };
+}
+
+/**
+ * Read the canonical plan-fleet obligation cohort in one fail-closed unit.
+ *
+ * The join deliberately uses normalized plan items and their TTL-backed claims,
+ * plus current fleet membership for claim attribution. A read/validation/oracle
+ * failure returns UNKNOWN for the entire leg; it never degrades to "no fleet" or
+ * "zero claims". P-002 wires this classifier into escalation/event delivery.
+ */
+export async function readGoalPlanFleetCohort(
+  sql: Sql,
+  goals: readonly GoalDrainRowLike[],
+  resolveFleetLiveness: GoalDrainFleetSweepDeps['resolveFleetLiveness'],
+): Promise<GoalPlanFleetCohort> {
+  if (goals.length === 0) return { status: 'known', plans: [] };
+  try {
+    const goalIds = [...new Set(goals.map((g) => g.goalId))];
+    const workspaceIds = [...new Set(goals.map((g) => g.workspaceId))];
+    const planRows = await sql<{
+      workspace_id: string;
+      harness_slug: string;
+      plan_slug: string;
+      goal_id: string;
+    }[]>`
+      SELECT workspace_id, harness_slug, plan_slug, goal_id
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ANY(${workspaceIds}::text[])
+         AND goal_id = ANY(${goalIds}::text[])
+         AND op_status = 'started'
+         AND archived = false`;
+    const activeGoalKeys = new Set(goals.map((g) => fleetKey(g.workspaceId, g.goalId)));
+    const relevantPlans = planRows.filter((p) => activeGoalKeys.has(fleetKey(p.workspace_id, p.goal_id)));
+    if (relevantPlans.length === 0) return { status: 'known', plans: [] };
+
+    const planSlugs = [...new Set(relevantPlans.map((p) => p.plan_slug))];
+    const [itemRows, claimRows, specRows] = await Promise.all([
+      sql<{ workspace_id: string; harness_slug: string; plan_slug: string; item_id: string }[]>`
+        SELECT workspace_id, harness_slug, plan_slug, item_id
+          FROM harness_shared.plan_items
+         WHERE workspace_id = ANY(${workspaceIds}::text[])
+           AND plan_slug = ANY(${planSlugs}::text[])
+           AND status NOT IN ('done', 'dropped')`,
+      sql<{ workspace_id: string; harness_slug: string; plan_slug: string; item_id: string; owner: string }[]>`
+        SELECT workspace_id, harness_slug, plan_slug, item_id, owner
+          FROM harness_shared.plan_item_claims
+         WHERE workspace_id = ANY(${workspaceIds}::text[])
+           AND plan_slug = ANY(${planSlugs}::text[])
+           AND expires_ts > clock_timestamp()`,
+      sql<{ workspace_id: string; bee_id: string; spec: unknown }[]>`
+        SELECT workspace_id, bee_id, spec
+          FROM harness_shared.cup_claim_specs
+         WHERE workspace_id = ANY(${workspaceIds}::text[])
+           AND bee_id LIKE 'fleet:%'`,
+    ]);
+
+    const validSpecs = specRows.flatMap((row) => {
+      const checked = validateClaimSpec(row.spec);
+      if (!checked.ok || !checked.spec) return [];
+      return [{ workspaceId: row.workspace_id, fleetSlug: row.bee_id.slice('fleet:'.length), spec: checked.spec }];
+    });
+    const targetPairs = relevantPlans.flatMap((plan) =>
+      validSpecs
+        .filter((spec) => spec.workspaceId === plan.workspace_id && claimSpecIsPlanScoped(spec.spec, plan.plan_slug))
+        .map((spec) => ({ workspaceId: plan.workspace_id, fleetSlug: spec.fleetSlug })),
+    );
+    const uniqueTargets = [...new Map(targetPairs.map((p) => [fleetKey(p.workspaceId, p.fleetSlug), p])).values()];
+    const fleetLiveness = await resolveFleetLiveness(uniqueTargets);
+    const targetSlugs = [...new Set(uniqueTargets.map((p) => p.fleetSlug))];
+    const memberRows = targetSlugs.length === 0
+      ? []
+      : await sql<{ workspace_id: string; fleet_slug: string; owner_id: string }[]>`
+          SELECT workspace_id, fleet_slug, owner_id
+            FROM harness_shared.coord_presence
+           WHERE workspace_id = ANY(${workspaceIds}::text[])
+             AND fleet_slug = ANY(${targetSlugs}::text[])`;
+
+    const planKey = (workspaceId: string, harnessSlug: string, planSlug: string) =>
+      `${workspaceId}\u0000${harnessSlug}\u0000${planSlug}`;
+    return {
+      status: 'known',
+      plans: relevantPlans.map((plan) => {
+        const key = planKey(plan.workspace_id, plan.harness_slug, plan.plan_slug);
+        const itemIds = itemRows
+          .filter((item) => planKey(item.workspace_id, item.harness_slug, item.plan_slug) === key)
+          .map((item) => item.item_id);
+        const targeting = validSpecs.filter(
+          (spec) => spec.workspaceId === plan.workspace_id && claimSpecIsPlanScoped(spec.spec, plan.plan_slug),
+        );
+        return {
+          goalId: plan.goal_id,
+          workspaceId: plan.workspace_id,
+          harnessSlug: plan.harness_slug,
+          planSlug: plan.plan_slug,
+          itemIds,
+          targetingFleets: targeting.map((target) => {
+            const members = new Set(
+              memberRows
+                .filter((m) => m.workspace_id === plan.workspace_id && m.fleet_slug === target.fleetSlug)
+                .map((m) => m.owner_id),
+            );
+            return {
+              fleetSlug: target.fleetSlug,
+              liveness: fleetLiveness.get(fleetKey(plan.workspace_id, target.fleetSlug)) ?? 'unknown',
+              liveClaimItemIds: claimRows
+                .filter((claim) => planKey(claim.workspace_id, claim.harness_slug, claim.plan_slug) === key)
+                .filter((claim) => members.has(claim.owner))
+                .map((claim) => claim.item_id),
+            };
+          }),
+        };
+      }),
+    };
+  } catch {
+    return { status: 'unknown', plans: [] };
+  }
 }
 
 export interface GoalDrainAlert {

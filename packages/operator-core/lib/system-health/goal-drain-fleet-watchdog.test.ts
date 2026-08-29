@@ -7,13 +7,16 @@ import type { GoalHolderLike } from './goal-liveness-watchdog';
 import {
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
   claimSpecFilterConstrainsGoal,
+  claimSpecIsPlanScoped,
   classifyGoalDrainFleet,
+  classifyGoalPlanFleetCoverage,
   fleetKey,
   runGoalDrainFleetSweepOnce,
   scanGoalDrainFleets,
   type DrainFleetLiveness,
   type DrainFleetSpecScope,
   type GoalDrainRowLike,
+  type GoalPlanFleetCohort,
 } from './goal-drain-fleet-watchdog';
 
 const NOW = 1_800_000_000_000;
@@ -247,6 +250,113 @@ describe('claimSpecFilterConstrainsGoal — the D-005 scope predicate', () => {
   it('an empty / absent filter (the pot-wide default) never counts', () => {
     expect(claimSpecFilterConstrainsGoal(undefined, 'g-1')).toBe(false);
     expect(claimSpecFilterConstrainsGoal({}, 'g-1')).toBe(false);
+  });
+});
+
+describe('GOAL plan-fleet obligation classifier', () => {
+  const plan = (
+    planSlug: string,
+    targetingFleets: Array<{
+      fleetSlug: string;
+      liveness: DrainFleetLiveness;
+      liveClaimItemIds: string[];
+    }> = [],
+    itemIds = ['P-001'],
+  ) => ({
+    goalId: 'g-1',
+    workspaceId: 'ws',
+    harnessSlug: 'papercusp',
+    planSlug,
+    itemIds,
+    targetingFleets,
+  });
+  const cohort = (...plans: ReturnType<typeof plan>[]): GoalPlanFleetCohort => ({
+    status: 'known',
+    plans,
+  });
+
+  it('accepts the positive plan =/in claim-spec forms and rejects widening/negative forms', () => {
+    expect(claimSpecIsPlanScoped({ view: { filter: { field: 'plan', op: '=', value: 'p-1' } } }, 'p-1')).toBe(true);
+    expect(claimSpecIsPlanScoped({ view: { filter: { field: 'plan', op: 'in', value: ['p-0', 'p-1'] } } }, 'p-1')).toBe(true);
+    expect(claimSpecIsPlanScoped({ view: { filter: { not: { field: 'plan', op: '=', value: 'p-2' } } } }, 'p-1')).toBe(false);
+    expect(claimSpecIsPlanScoped({ view: { filter: { any: [
+      { field: 'plan', op: '=', value: 'p-1' },
+      { field: 'kind', op: '=', value: 'bug' },
+    ] } } }, 'p-1')).toBe(false);
+  });
+
+  it('healthy: a live targeting fleet with a live claim on a non-terminal item is silent', () => {
+    const result = classifyGoalPlanFleetCoverage(
+      makeGoal(),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      cohort(plan('p-healthy', [{ fleetSlug: 'fleet-a', liveness: 'alive', liveClaimItemIds: ['P-001'] }])),
+    );
+    expect(result).toBeNull();
+  });
+
+  it('Leg A: a non-empty started plan with no live targeting fleet alarms', () => {
+    const result = classifyGoalPlanFleetCoverage(
+      makeGoal(),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      cohort(plan('p-no-fleet')),
+    );
+    expect(result).toMatchObject({
+      reason: 'started-plan-no-live-targeting-fleet',
+      planSlug: 'p-no-fleet',
+      itemIds: ['P-001'],
+    });
+  });
+
+  it('Leg B: a live targeting fleet with zero live claims on the plan alarms', () => {
+    const result = classifyGoalPlanFleetCoverage(
+      makeGoal(),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      cohort(plan('p-unclaimed', [{ fleetSlug: 'fleet-a', liveness: 'alive', liveClaimItemIds: [] }])),
+    );
+    expect(result).toMatchObject({
+      reason: 'started-plan-targeting-fleet-zero-live-claims',
+      planSlug: 'p-unclaimed',
+    });
+  });
+
+  it('unknown cohort or targeting-fleet liveness suppresses rather than alarming', () => {
+    const args = [makeGoal(), [makeHolder()], verdicts(makeVerdict('su-a', 'live'))] as const;
+    expect(classifyGoalPlanFleetCoverage(...args, { status: 'unknown', plans: [] })).toBeNull();
+    expect(classifyGoalPlanFleetCoverage(
+      ...args,
+      cohort(plan('p-unknown', [{ fleetSlug: 'fleet-a', liveness: 'unknown', liveClaimItemIds: [] }])),
+    )).toBeNull();
+  });
+
+  it('an empty/completed started plan and a goal without a positively-live holder stay silent', () => {
+    expect(classifyGoalPlanFleetCoverage(
+      makeGoal(),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      cohort(plan('p-empty', [], [])),
+    )).toBeNull();
+    expect(classifyGoalPlanFleetCoverage(
+      makeGoal(),
+      [makeHolder()],
+      verdicts(),
+      cohort(plan('p-no-fleet')),
+    )).toBeNull();
+  });
+
+  it('exactly one classifier speaks per goal, deterministically preferring Leg A', () => {
+    const result = classifyGoalPlanFleetCoverage(
+      makeGoal(),
+      [makeHolder()],
+      verdicts(makeVerdict('su-a', 'live')),
+      cohort(
+        plan('p-b', [{ fleetSlug: 'fleet-b', liveness: 'alive', liveClaimItemIds: [] }]),
+        plan('p-a'),
+      ),
+    );
+    expect(result).toMatchObject({ reason: 'started-plan-no-live-targeting-fleet', planSlug: 'p-a' });
   });
 });
 
