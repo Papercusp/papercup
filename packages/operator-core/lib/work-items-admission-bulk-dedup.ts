@@ -37,6 +37,56 @@ export const WORK_ITEM_ADMISSION_BULK_DEDUP = 'work-item-admission-bulk-dedup';
 export const BULK_DEDUP_ACTOR = `system:${WORK_ITEM_ADMISSION_BULK_DEDUP}`;
 export const DEFAULT_BULK_MAX_STAGES = 12;
 export const DEFAULT_BULK_PAIRS_PER_CALL = 150;
+/**
+ * Output-token budget for ONE judge batch, and the per-pair/overhead rates the
+ * batch size is derived from.
+ *
+ * These three numbers and `pairsPerCall` are ONE constraint, not four settings.
+ * Before 2026-08-29 they disagreed: the call site asked for
+ * `Math.min(8_000, 500 + batch.length * 180)`, so a default 150-pair batch
+ * computed a 27,500-token need and was silently clamped to 8,000 — a 3.4x
+ * shortfall. The model then ran out of output mid-JSON, `responsePayload`
+ * returned null, and `parsePromoterJudgements` threw
+ * `expected object, received null`. Because the truncation is DETERMINISTIC in
+ * the batch size, every retry re-sent the same oversized batch and failed
+ * identically, so the bounded retry could only burn the budget, never recover.
+ *
+ * Measured on run wi882767-opus5-20260829-stage-1 (claude-opus-5:xhigh, 1770
+ * pairs): modelCalls 12, modelRetries 36 (= 12 batches x the 3-retry maximum,
+ * i.e. EVERY batch exhausted), protocolFailures 46, exhaustedBatches 10 of 12,
+ * merged 0. tokens_out averaged 7,974 across 48 calls — flush against the 8,000
+ * ceiling, which is the signature of truncation rather than a model that cannot
+ * follow the schema. Only the two batches small enough to fit survived.
+ *
+ * The fix is to DERIVE the batch size from the budget (see
+ * {@link maxPairsForOutputBudget}) so a batch can never be issued that its own
+ * token budget cannot hold. Raising the ceiling instead would trade a known-
+ * workable limit for a guess about a specific model's maximum output.
+ */
+export const BULK_JUDGE_MAX_OUTPUT_TOKENS = 8_000;
+export const BULK_JUDGE_TOKENS_PER_PAIR = 180;
+export const BULK_JUDGE_TOKEN_OVERHEAD = 500;
+
+/**
+ * The largest pair batch whose judgements fit in `maxOutputTokens`. This is the
+ * single place the batch/budget relationship is expressed; the clamp on
+ * `pairsPerCall` and the `maxTokens` passed to the model both read from it, so
+ * they cannot drift apart again.
+ */
+export function maxPairsForOutputBudget(
+  maxOutputTokens: number = BULK_JUDGE_MAX_OUTPUT_TOKENS,
+): number {
+  return Math.max(
+    1,
+    Math.floor((maxOutputTokens - BULK_JUDGE_TOKEN_OVERHEAD) / BULK_JUDGE_TOKENS_PER_PAIR),
+  );
+}
+
+/** Output tokens a batch of `pairs` judgements needs. Never exceeds the ceiling
+ * for a batch sized by {@link maxPairsForOutputBudget}. */
+export function bulkJudgeMaxTokens(pairs: number): number {
+  return BULK_JUDGE_TOKEN_OVERHEAD + pairs * BULK_JUDGE_TOKENS_PER_PAIR;
+}
 export const DEFAULT_BULK_SHARD_CONCURRENCY = 4;
 /** Bounded retries for a single model batch. A successful earlier batch stays
  * in memory, so only the failed batch is replayed. */
@@ -509,7 +559,7 @@ async function judgeBulkPairs(
             system: prompt.system,
             messages: [{ role: 'user', content: prompt.user }],
             responseFormat: 'json',
-            maxTokens: Math.min(8_000, 500 + batch.length * 180),
+            maxTokens: bulkJudgeMaxTokens(batch.length),
             ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
           }),
         (response) => parsePromoterJudgements(responsePayload(response)),
@@ -579,7 +629,16 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const now = opts.now ?? Date.now;
   const rootRunId = opts.runId ?? `bulk-dedup-${now()}-${randomUUID().slice(0, 8)}`;
   const maxStages = Math.max(1, Math.floor(opts.maxStages ?? DEFAULT_BULK_MAX_STAGES));
-  const pairsPerCall = Math.max(1, Math.min(200, Math.floor(opts.pairsPerCall ?? DEFAULT_BULK_PAIRS_PER_CALL)));
+  // Clamp to what ONE batch's output budget can actually hold. A larger request
+  // does not produce a bigger answer, it produces a TRUNCATED one that fails
+  // parsing identically on every retry (see BULK_JUDGE_MAX_OUTPUT_TOKENS).
+  const pairsPerCall = Math.max(
+    1,
+    Math.min(
+      maxPairsForOutputBudget(),
+      Math.min(200, Math.floor(opts.pairsPerCall ?? DEFAULT_BULK_PAIRS_PER_CALL)),
+    ),
+  );
   const shardConcurrency = Math.max(
     1,
     Math.min(16, Math.floor(opts.shardConcurrency ?? DEFAULT_BULK_SHARD_CONCURRENCY)),
