@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+  FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP,
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  detectFrozenRepairSharedTreeCollision,
   diagnoseFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
@@ -786,5 +788,114 @@ describe('frozen-candidate escape hatch (P-048)', () => {
       runSuite: true,
       recordVerdict: true,
     });
+  });
+});
+
+describe('P-009 — shared-tree collision detector (REPORT-ONLY)', () => {
+  /**
+   * PERMANENT DELIBERATELY-WRONG CONTROL (CLAUDE.md: no cp/mutate/restore — the subject is a
+   * module we import, so the wrong implementation lives here forever as a control).
+   *
+   * This is the naive detector this guard must NOT be. It commits the two errors that make a
+   * report-only guard worse than none: it reports `measured: true` when nothing was measured
+   * (a false all-clear), and it ignores the repair phase (a false alarm before any repair
+   * exists). Every assertion below must REJECT this shape.
+   */
+  function naiveCollision(
+    queue: FrozenCandidateRepairQueue | null,
+    edited: readonly string[] | null | undefined,
+  ) {
+    const failing = queue?.failingTests ?? [];
+    const paths = (edited ?? []).filter((p) => failing.includes(p));
+    return { measured: true, collidingPaths: paths, collisionCount: paths.length };
+  }
+
+  const inFlight = (): FrozenCandidateRepairQueue => ({
+    ...fresh(),
+    failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+  });
+
+  it('CALIBRATION: on a plain collision the real detector and the control agree', () => {
+    // Without this, every "differs from the control" assertion below would also pass if the
+    // detector were simply broken in some unrelated way.
+    const q = inFlight();
+    const got = detectFrozenRepairSharedTreeCollision(q, ['lib/a.test.ts']);
+    expect(got.collidingPaths).toEqual(naiveCollision(q, ['lib/a.test.ts']).collidingPaths);
+    expect(got.measured).toBe(true);
+    expect(got.repairInFlight).toBe(true);
+    expect(got.collisionCount).toBe(1);
+  });
+
+  it('says so LOUDLY: names the worktree and that a shared-checkout edit is NOT admission', () => {
+    const got = detectFrozenRepairSharedTreeCollision(inFlight(), ['lib/b.test.ts']);
+    expect(got.detail).toContain('FROZEN-REPAIR COLLISION');
+    expect(got.detail).toContain(ROOT);
+    expect(got.detail).toContain('NOT admission');
+    expect(got.detail).toContain('lib/b.test.ts');
+  });
+
+  it('NOT MEASURED is not an all-clear — the control calls it measured, this must not', () => {
+    // The whole point of the field. A failed/absent measurement that renders as zero
+    // collisions is a false all-clear precisely when the measurement broke.
+    const q = inFlight();
+    for (const missing of [null, undefined]) {
+      const got = detectFrozenRepairSharedTreeCollision(q, missing);
+      expect(got.measured).toBe(false);
+      expect(got.measured).not.toBe(naiveCollision(q, missing).measured);
+      expect(got.collisionCount).toBe(0);
+      // ...and it must still SAY that it did not measure, rather than going silent.
+      expect(got.detail).toContain('NOT MEASURED');
+    }
+  });
+
+  it('ready-to-test is NOT in flight, so an overlapping edit is not a collision', () => {
+    // No repair exists yet — the candidate has not had its first suite, so an edit races nothing.
+    // The control fires here; the real detector must not.
+    const q: FrozenCandidateRepairQueue = { ...inFlight(), phase: 'ready-to-test' };
+    const got = detectFrozenRepairSharedTreeCollision(q, ['lib/a.test.ts']);
+    expect(got.repairInFlight).toBe(false);
+    expect(got.collisionCount).toBe(0);
+    expect(got.detail).toBeNull();
+    expect(naiveCollision(q, ['lib/a.test.ts']).collisionCount).toBe(1); // the control's false alarm
+  });
+
+  it('blocked IS in flight — the head stays immutable and nobody is watching', () => {
+    const q: FrozenCandidateRepairQueue = { ...inFlight(), phase: 'blocked' };
+    const got = detectFrozenRepairSharedTreeCollision(q, ['lib/a.test.ts']);
+    expect(got.repairInFlight).toBe(true);
+    expect(got.collisionCount).toBe(1);
+  });
+
+  it('normalizes ./ and backslash paths the control compares literally', () => {
+    const q = inFlight();
+    const edited = ['./lib/a.test.ts', 'lib\\b.test.ts'];
+    const got = detectFrozenRepairSharedTreeCollision(q, edited);
+    expect(got.collidingPaths).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    expect(naiveCollision(q, edited).collisionCount).toBe(0); // the control misses both
+  });
+
+  it('caps the listed paths but reports the TRUE count and marks the truncation', () => {
+    const many = Array.from({ length: FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP + 5 }, (_, i) => `lib/t${i}.test.ts`);
+    const q: FrozenCandidateRepairQueue = { ...fresh(), failingTests: many };
+    const got = detectFrozenRepairSharedTreeCollision(q, many);
+    expect(got.collidingPaths).toHaveLength(FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP);
+    expect(got.collisionCount).toBe(many.length); // the count must NOT be capped
+    expect(got.truncated).toBe(true);
+    expect(got.detail).toContain('5 more');
+  });
+
+  it('is REPORT-ONLY: a collision changes no control field of the diagnostic', () => {
+    // The plan asks for detection FIRST. If this ever fails, the guard has started
+    // blocking on a signal that was only supposed to be reported.
+    const q = inFlight();
+    const clean = diagnoseFrozenCandidateRepairQueue(q, { nowMs: T0 + 1, sharedTreeEditedPaths: [] });
+    const colliding = diagnoseFrozenCandidateRepairQueue(q, {
+      nowMs: T0 + 1,
+      sharedTreeEditedPaths: ['lib/a.test.ts', 'lib/b.test.ts'],
+    });
+    expect(colliding!.sharedTreeCollision.collisionCount).toBe(2); // the collision really is seen
+    for (const field of ['decision', 'retireAllowed', 'retireRefusal', 'nextAction'] as const) {
+      expect(colliding![field]).toEqual(clean![field]);
+    }
   });
 });

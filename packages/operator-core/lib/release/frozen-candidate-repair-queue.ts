@@ -236,6 +236,39 @@ export interface FrozenRepairQueueObservation {
    * negative is read as 0.
    */
   priorEscapes?: number;
+  /**
+   * P-009: repo-relative paths currently EDITED in the canonical shared checkout, as the
+   * caller measured them (e.g. `git status --porcelain` over the staging tree).
+   *
+   * Optional and nullable on purpose, and the two mean DIFFERENT things: `undefined`/`null`
+   * is "not measured" and must never render as "no collision". A missing measurement that
+   * reads as a clean zero is precisely how a report-only guard becomes a false all-clear.
+   */
+  sharedTreeEditedPaths?: readonly string[] | null;
+}
+
+/**
+ * P-009 (REPORT-ONLY): a frozen-candidate repair is in flight AND its failing paths are being
+ * edited in the shared checkout.
+ *
+ * Why this is a hazard rather than a style complaint: the gate promotes an isolated repair only
+ * after the exact patch is observed on staging (release-actions.ts:3831). So a shared-tree edit
+ * to one of the frozen candidate's failing paths that diverges from the repair worktree does not
+ * fail loudly — it silently withholds promotion, which reads as "the repair did not work".
+ */
+export interface FrozenRepairSharedTreeCollision {
+  /** false ⇒ the caller supplied no measurement. NOT the same as zero colliding paths. */
+  measured: boolean;
+  /** Whether a repair is actually in flight; a collision is only meaningful when it is. */
+  repairInFlight: boolean;
+  /** Sorted intersection of the queue's failing paths with the edited shared-tree paths. */
+  collidingPaths: string[];
+  /** Full intersection size, independent of the `collidingPaths` display cap. */
+  collisionCount: number;
+  /** True when `collidingPaths` was capped and therefore under-lists `collisionCount`. */
+  truncated: boolean;
+  /** The loud line, or null when there is nothing to say. */
+  detail: string | null;
 }
 
 export interface FrozenRepairQueueDiagnostic {
@@ -266,6 +299,12 @@ export interface FrozenRepairQueueDiagnostic {
   retireAllowed: boolean;
   retireRefusal: 'live-fixer' | 'liveness-unknown' | 'active-dispatch-reservation' | 'unsafe-phase' | null;
   nextAction: string | null;
+  /**
+   * P-009, REPORT-ONLY. This field is reported and nothing else: it must never feed `decision`,
+   * `retireAllowed`, `retireRefusal` or `nextAction`. The plan asks for detection first so the
+   * signal can be trusted before anything is allowed to block on it.
+   */
+  sharedTreeCollision: FrozenRepairSharedTreeCollision;
 }
 
 function nonBlank(value: unknown): value is string {
@@ -613,6 +652,83 @@ export function decideFrozenCandidateRepairQueue(
 }
 
 /** One normalized, bounded read model shared by every release diagnostic surface. */
+/** How many colliding paths the report lists inline before it says it capped them. */
+export const FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP = 20;
+
+/** Compare paths without tripping over `./` prefixes or Windows separators. */
+function normalizeRepoPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+/**
+ * P-009 (REPORT-ONLY): does a repair in flight overlap edits in the shared checkout?
+ *
+ * "In flight" is every phase EXCEPT `ready-to-test`. `ready-to-test` is deliberately excluded
+ * because no repair exists yet — the candidate has not even had its first suite, so an edit
+ * there races nothing. `blocked` is deliberately INCLUDED: automation has stopped but the queue
+ * head remains immutable until it is green, so an edit to a failing path is if anything more
+ * dangerous there, because no fixer is watching for it.
+ *
+ * Exported so the collision rule is unit-testable without constructing a whole diagnostic.
+ */
+export function detectFrozenRepairSharedTreeCollision(
+  queue: FrozenCandidateRepairQueue | null,
+  editedPaths: readonly string[] | null | undefined,
+): FrozenRepairSharedTreeCollision {
+  const repairInFlight = queue !== null && queue.phase !== 'ready-to-test';
+  // Distinguish "not measured" from "measured, found nothing" — a guard that cannot tell
+  // those apart reports a false all-clear exactly when the measurement broke.
+  if (editedPaths === null || editedPaths === undefined) {
+    return {
+      measured: false,
+      repairInFlight,
+      collidingPaths: [],
+      collisionCount: 0,
+      truncated: false,
+      detail: repairInFlight
+        ? `frozen-repair collision: NOT MEASURED — a repair is in flight for ${queue!.candidate.slice(0, 12)} ` +
+          `but no shared-checkout edit set was supplied, so this is not an all-clear.`
+        : null,
+    };
+  }
+
+  if (!repairInFlight) {
+    return { measured: true, repairInFlight: false, collidingPaths: [], collisionCount: 0, truncated: false, detail: null };
+  }
+
+  const edited = new Set(editedPaths.map(normalizeRepoPath).filter((p) => p.length > 0));
+  const colliding = [
+    ...new Set(
+      queue!.failingTests
+        .map(normalizeRepoPath)
+        .filter((p) => p.length > 0 && edited.has(p)),
+    ),
+  ].sort();
+
+  if (colliding.length === 0) {
+    return { measured: true, repairInFlight: true, collidingPaths: [], collisionCount: 0, truncated: false, detail: null };
+  }
+
+  const shown = colliding.slice(0, FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP);
+  const truncated = colliding.length > shown.length;
+  return {
+    measured: true,
+    repairInFlight: true,
+    collidingPaths: shown,
+    collisionCount: colliding.length,
+    truncated,
+    detail:
+      `⚠ FROZEN-REPAIR COLLISION: ${colliding.length} of the frozen candidate's failing path(s) ` +
+      `are edited in the SHARED checkout while repair ${queue!.candidate.slice(0, 12)} is in flight ` +
+      `at head ${queue!.repairHead.slice(0, 12)} (phase ${queue!.phase}). ` +
+      `The gate promotes this repair ONLY after the exact patch is observed on staging, so a shared-tree ` +
+      `edit that diverges from ${queue!.worktreePath} does not fail loudly — it silently withholds ` +
+      `promotion and reads as "the repair did not work". Author the fix in that worktree; editing the ` +
+      `shared checkout is NOT admission. Colliding: ${shown.join(', ')}` +
+      (truncated ? ` …and ${colliding.length - shown.length} more (list capped at ${FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP})` : ''),
+  };
+}
+
 export function diagnoseFrozenCandidateRepairQueue(
   queue: FrozenCandidateRepairQueue | null,
   observation: FrozenRepairQueueObservation,
@@ -664,6 +780,10 @@ export function diagnoseFrozenCandidateRepairQueue(
     retireAllowed,
     retireRefusal,
     nextAction,
+    // P-009 REPORT-ONLY: computed from the queue + observation and attached to the report.
+    // Deliberately NOT consulted by `decision`, `retireAllowed`, `retireRefusal` or
+    // `nextAction` above — all four are already final by this point.
+    sharedTreeCollision: detectFrozenRepairSharedTreeCollision(queue, observation.sharedTreeEditedPaths),
   };
 }
 
