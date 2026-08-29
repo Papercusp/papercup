@@ -4307,6 +4307,29 @@ function runCapturedTask(
           passingTaskVerdictCrossRunIdentityEnvironment(childEnv);
         crossRunCacheIdentity = buildPassingTaskVerdictIdentity({
           ...cacheIdentitySpec,
+          // WI-761481: drop `affectedBase` from the CROSS-RUN identity, for the same reason
+          // `scheduler` is nulled above and in exactly the same shape. An unpinned local run
+          // resolves its base from the test-certified WATERMARK (resolveTestCertifiedBase), and
+          // that watermark moves on this shared box as peers land commits and the gate certifies
+          // — so hashing it made cross-run reuse structurally unable to hit. Measured: two
+          // identical back-to-back local runs missed with `cross-run:gate-config-changed` every
+          // time, and the ONLY variable that flipped them to `cross-run:identity-match` (hits=1,
+          // zero tasks spawned) was exporting a pinned AFFECTED_BASE.
+          //
+          // WHY THIS IS SAFE, i.e. what the base was actually protecting. `affectedBase` is the
+          // run's SELECTION RADIUS — it decides WHICH tasks get picked, never what a picked task
+          // exercises. Validity of a stored verdict is decided by `dependencyHash`, the content
+          // sha256 of that task's whole dependency closure, which fails closed on any enumeration
+          // gap. If not one byte a task reads has changed, re-running it at a different base
+          // cannot produce different information, so admitting it is not "reusing an older
+          // proof" — it is reusing a proof whose inputs are byte-identical.
+          //
+          // SCOPE: cross-run ONLY. The per-run/process-group identity above still carries
+          // affectedBase, and cross-run reuse is disabled outright under the gate
+          // (TASK_VERDICT_LOCAL_CROSS_RUN_ENABLED requires GREEN_CHECKPOINT !== "1"), so no gate
+          // certification path is widened by this. Storage and lookup both use this same
+          // identity, so the two stay symmetric.
+          gateConfig: { ...cacheIdentitySpec.gateConfig, affectedBase: null },
           environment: crossRunEnvironment,
         });
         // WI-595883: per-variable digests, so the NEXT run's `environment-changed` miss names the
