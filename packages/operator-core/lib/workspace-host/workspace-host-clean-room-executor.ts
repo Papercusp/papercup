@@ -16,7 +16,9 @@
  * make the gate ratify its own assumption — asserted success wearing the costume of evidence,
  * which is precisely the failure the clean room is built to catch.
  */
-import { resolve } from 'node:path';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import type {
   WorkspaceHostCleanRoomExecutor,
@@ -71,6 +73,72 @@ const DEFAULT_TIMEOUT_MS = 45 * 60 * 1_000;
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 /**
+ * How much of a failed run's stderr is quoted inline in the thrown error.
+ *
+ * Bounded because this string is embedded in a release-gate issue and read in a terminal —
+ * NOT because the rest is expendable. Everything over the budget is spilled to a file whose
+ * path the message names; see {@link spillCleanRoomDiagnostic}.
+ */
+const DIAGNOSTIC_BUDGET_CHARS = 4_000;
+
+/**
+ * Fraction of the budget spent on the HEAD of the diagnostic. Weighted toward the head on
+ * purpose — see {@link excerptDiagnostic} for why that is the load-bearing end.
+ */
+const DIAGNOSTIC_HEAD_FRACTION = 0.6;
+
+/**
+ * Excerpt a diagnostic so BOTH ends survive.
+ *
+ * ⛔ NEVER go back to a tail-only `slice(-N)` here. It is the intuitive way to bound this
+ * string and it is exactly backwards: a Node failure prints its message and stack FIRST and
+ * its process/systemd epilogue LAST, so keeping only the tail keeps the CONSEQUENCE and
+ * discards the CAUSE.
+ *
+ * Measured on P-046 (2026-08-29). A clean-room boot failed because the guest could not load
+ * `rocksdb-native.node`. The 2_000-char tail preserved six lines of `systemctl` summary —
+ * "Main process exited", "start-post operation timed out", "Consumed 8.465s CPU time" —
+ * every one of which describes systemd reacting to the failure, and none of which names it.
+ * The `require.addon` error headline and the candidate paths it searched, i.e. the only part
+ * of the output identifying what was actually missing, fell off the FRONT. Diagnosing it
+ * cost an extra billable boot.
+ */
+export function excerptDiagnostic(text: string, budget: number = DIAGNOSTIC_BUDGET_CHARS): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= budget) return trimmed;
+
+  const headChars = Math.ceil(budget * DIAGNOSTIC_HEAD_FRACTION);
+  const tailChars = budget - headChars;
+  const omitted = trimmed.length - budget;
+
+  return (
+    `${trimmed.slice(0, headChars)}\n` +
+    `\n… [${String(omitted)} chars omitted from the middle of the guest output] …\n\n` +
+    `${trimmed.slice(-tailChars)}`
+  );
+}
+
+/**
+ * Write the COMPLETE stderr of a failed run to a file and return its path (null if the spill
+ * itself fails — a diagnostics write must never mask the failure it is describing).
+ *
+ * The clean-room boot is billable and takes ~12 minutes, so its output is expensive evidence.
+ * Before this existed the only surviving copy was the bounded excerpt above, which meant a
+ * truncated diagnostic could only be recovered by paying for the whole boot again.
+ */
+function spillCleanRoomDiagnostic(fixtureId: string, stderr: string): string | null {
+  try {
+    const safeId = fixtureId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'fixture';
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-clean-room-'));
+    const path = join(dir, `${safeId}.stderr.log`);
+    writeFileSync(path, stderr, 'utf8');
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Runs the real clean-room acceptance boot on GCP.
  *
  * Inject this into `runWorkspaceHostCleanRoomAcceptance`, which owns the honest assembly of
@@ -116,9 +184,16 @@ export class GcpWorkspaceHostCleanRoomExecutor implements WorkspaceHostCleanRoom
     if (result.exitCode !== 0) {
       // stderr carries the binary's structured {tool,error,details} payload, including any
       // residualResourceIds it could not tear down — surface it rather than a bare code.
+      //
+      // The full text is spilled to a file FIRST and its path named EARLY in the message,
+      // because this run costs ~12 billable minutes: whatever the excerpt drops, and
+      // whatever a downstream reader truncates, must still be recoverable without paying
+      // for the boot a second time.
+      const spillPath = spillCleanRoomDiagnostic(fixture.fixtureId, result.stderr);
       throw new Error(
-        `clean-room acceptance run failed with exit code ${String(result.exitCode)}: ` +
-          `${result.stderr.trim().slice(-2_000) || '<no stderr>'}`,
+        `clean-room acceptance run failed with exit code ${String(result.exitCode)}` +
+          `${spillPath === null ? '' : ` [full guest stderr: ${spillPath}]`}: ` +
+          `${excerptDiagnostic(result.stderr) || '<no stderr>'}`,
       );
     }
 
