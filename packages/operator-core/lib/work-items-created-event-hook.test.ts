@@ -34,9 +34,16 @@ vi.mock('./events/await/engine', async (importOriginal) => ({
 
 vi.mock('./pot/urgent-wake', () => ({ requestUrgentHiveWake: vi.fn(async () => ({ fired: true, coalesced: false })) }));
 
+// EI-21829617047179388: `.unsafe` must answer the feature-family INSERT's
+// `ON CONFLICT (harness_slug, feature_id) DO NOTHING RETURNING feature_id`.
+// createWorkItem treats an EMPTY result as "the insert was suppressed — mint a
+// new id and retry", and that retry is unbounded, so a fake returning [] spins
+// forever and exhausts the V8 heap at ANY --max-old-space-size (it OOM'd at both
+// the 2240MB default and at 8192MB). Answer with the RETURNING row shape —
+// `feature_id`, not `id` (that one belongs to the tagged-template id-mint above).
 const fakeSql = Object.assign(
   async () => [{ id: 'WI-9001' }],
-  { unsafe: vi.fn(async () => []) },
+  { unsafe: vi.fn(async () => [{ feature_id: 'WI-9001' }]) },
 );
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),

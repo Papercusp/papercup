@@ -2570,16 +2570,33 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
      VALUES (${vals.join(', ')})
      ON CONFLICT (harness_slug, feature_id) DO NOTHING
      RETURNING feature_id`;
+  // EI-21829617047179388: retrying a suppressed insert is correct, but the retry
+  // must be BOUNDED. Unbounded, a persistently-empty result — a stale sequence that
+  // never walks clear, or an org-PG seam answering [] for every `.unsafe` — spins
+  // this loop forever, allocating on each iteration, and exhausts the V8 heap at
+  // ANY --max-old-space-size instead of failing with a diagnosis. That is not a
+  // hypothetical: it OOM'd `test:lane-stateful` at both the 2240MB default and at
+  // 8192MB, presenting as an unattributed worker crash that named no test.
+  const MAX_INSERT_ID_ATTEMPTS = 25;
   let inserted: Array<{ feature_id: string }> = [];
-  do {
+  for (let attempt = 1; ; attempt += 1) {
     params[1] = id;
     inserted = await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
     if (inserted.length > 0) {
       id = inserted[0].feature_id;
       break;
     }
+    if (attempt >= MAX_INSERT_ID_ATTEMPTS) {
+      throw new Error(
+        `createWorkItem: the work_items INSERT returned no row after ${MAX_INSERT_ID_ATTEMPTS} freshly allocated ` +
+          `ids (harness=${featureHarness}, last attempted id=${id}). ON CONFLICT DO NOTHING is suppressing every ` +
+          `insert. Either the feature-id sequence is stale behind existing rows, or the org-PG seam is returning ` +
+          `an empty result for every sql.unsafe — a test fake must answer this INSERT with its RETURNING shape, ` +
+          `[{ feature_id }].`,
+      );
+    }
     id = await nextWorkItemId();
-  } while (true);
+  }
   const wi: WorkItem = {
     id,
     kind: input.kind,
