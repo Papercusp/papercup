@@ -300,8 +300,11 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'wake-turn-A' });
       expect(ok).toBe(true);
 
-      await sleep(600);
-      expect(captured()).toContain('ECHO:wake-turn-A');
+      // WI-785151: poll for the echo instead of asserting once after a fixed
+      // sleep. Same reason the header gives for waitForHost — these tests run
+      // back-to-back sharing the box's CPU/IO with other agents' suites, so a
+      // flat sleep that is generous in isolation is a coin flip under load.
+      expect(await waitForOutput(captured, 'ECHO:wake-turn-A', 5000)).toBe(true);
 
       // Let the child self-exit; the host resolves with its code.
       const code = await done;
@@ -327,7 +330,24 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       let exitSignal: string | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', silentChildCode(8000)],
+        // WI-785151: the child's self-exit TTL must NOT be able to win a race
+        // against this test's own setup. It used to be 8000ms, which is a wall
+        // clock competing with a load-sensitive prologue (spawn + waitForHost +
+        // inject) — and this file's header already documents that waitForHost
+        // alone can take seconds once several real node-pty children share the
+        // box. When the child won, it exited 0 on its own BEFORE exhaustion was
+        // ever declared, `done` resolved with that 0, and the failure surfaced
+        // as the deeply unhelpful `expected +0 to be 1` (measured at sha
+        // 5c5de968cc, saturationSuspect). Confirmed as a load flake in the
+        // test-run ledger alongside the mid-turn wake flake.
+        //
+        // A TTL far past this case's own 20s vitest timeout removes the race
+        // WITHOUT weakening the assertion: on the happy path the child is
+        // SIGTERM'd by exhaustion within ~1s of the inject, so runtime is
+        // unchanged; and if exhaustion never fires, the case still goes RED —
+        // now via the vitest timeout, which points at the stalled exhaustion
+        // path instead of at a misleading exit-code mismatch.
+        args: ['-e', silentChildCode(60_000)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -722,15 +742,18 @@ describe('psu-pty-host owner composer gate (EI-20199370837439455)', () => {
       // Submitting the owner line is safe; the deferred wake was deliberately
       // left for the next natural turn rather than appended to it.
       type('\r');
-      await sleep(400);
-      expect(captured()).toContain('ECHO:owner goal');
+      // WI-785151: poll rather than assert once after a fixed sleep.
+      expect(await waitForOutput(captured, 'ECHO:owner goal', 5000)).toBe(true);
 
       const second = await injectIntoHost(host!.sock, {
         mode: 'turn',
         data: '⟦turn-origin:loop-fire nonce:second⟧\n[await-event] loop wake',
       });
       expect(second).toBe(true);
-      await sleep(700);
+      // WI-785151: wait for the second delivery to be OBSERVED, then snapshot.
+      // 'nonce:second' is unique to this delivery, so this is the same wait the
+      // fixed sleep was approximating — without the load-dependent margin.
+      expect(await waitForOutput(captured, 'nonce:second', 5000)).toBe(true);
       const output = captured();
       expect(output).toContain('ECHO:⟦turn-origin:loop-fire nonce:second⟧');
       expect(output).not.toContain('ECHO:owner goal⟦turn-origin:loop-fire');
@@ -807,8 +830,17 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // After the agent goes quiet (≥900ms) + the 200ms output-quiet window, the
       // gate releases and the turn is CR-submitted — a CLEAN re-invoke once the
       // turn ended, with no wedge / no ESC.
-      await sleep(900);
-      expect(captured()).toContain('ECHO:midturn-wake');
+      // WI-785151: this was `await sleep(900); expect(captured()).toContain(...)`,
+      // and it is the assertion that actually flaked (measured 2 failures in 5
+      // runs at ONE sha, "expected false to be true"). The budget was ~150ms:
+      // the child emits until ~900ms, then OUTPUT_QUIET_MS=200 must elapse, then
+      // the gate writes and the echo round-trips — against a 350+900ms wall
+      // clock. Under fleet load that margin is gone. Polling asserts the SAME
+      // thing (the turn DOES land once the agent is quiet) without pinning WHEN.
+      // The negative check above stays a fixed sleep on purpose: it proves the
+      // turn is HELD during the busy window, and a slow box only makes that
+      // direction more likely to hold, never less.
+      expect(await waitForOutput(captured, 'ECHO:midturn-wake', 6000)).toBe(true);
 
       const code = await done;
       expect(code).toBe(0);
@@ -870,7 +902,14 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       }
 
       // After the busy window (~900ms) + quiet gate (200ms), ONE delivery lands.
-      await sleep(1600);
+      // WI-785151: anchor on the delivery being OBSERVED rather than on a flat
+      // 1600ms. The settle AFTER the anchor is what gives a (wrongly) duplicated
+      // delivery time to show up, so the "exactly one" assertion below keeps its
+      // falsifying power — the old flat sleep had no observation anchor at all,
+      // so under load it could sample before even the FIRST delivery landed and
+      // read a race as a clean pass.
+      expect(await waitForOutput(captured, 'ECHO:detail-3', 6000)).toBe(true);
+      await sleep(500);
       const out = captured();
       // Exactly one turn delivered — not three.
       expect(out.split('ECHO:LOOPWAKE goal G').length - 1).toBe(1);
@@ -1087,8 +1126,15 @@ describe(
 
         // After the agent goes quiet (≥900ms) + the output-quiet window, the gate
         // releases: /clear submits, settles, then the carry lands.
-        await sleep(1400);
-        expect(captured()).toContain('ECHO:midturn-reset-carry');
+        // WI-785151: poll for the carry instead of asserting once after a flat
+        // 1400ms. This is the SAME shape as the mid-turn wake assertion that
+        // measurably flaked — a positive assertion whose budget is the slack
+        // left over after two load-sensitive windows (busy ≥900ms + the 200ms
+        // output-quiet gate) — so it is the same bug whether or not it has been
+        // observed failing yet. The negative check above stays a fixed sleep on
+        // purpose: it proves the carry is HELD while the child is busy, and a
+        // slow box only makes that direction more likely to hold.
+        expect(await waitForOutput(captured, 'ECHO:midturn-reset-carry', 6000)).toBe(true);
 
         await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
         const code = await done;
@@ -1158,7 +1204,15 @@ describe('psu-pty-host cross-agent socket isolation (C1 / EI-153 class)', () => 
       // Wake ONLY A.
       const ok = await injectIntoHost(hostA!.sock, { mode: 'turn', data: 'only-for-A' });
       expect(ok).toBe(true);
-      await sleep(700);
+
+      // WI-785151: anchor on A's delivery being OBSERVED rather than on a flat
+      // 700ms. Note this also STRENGTHENS the cross-talk assertion below: B is
+      // now given at least as long as A actually needed (rather than a fixed
+      // window that might expire before either child had a chance to echo), so
+      // "B never saw it" is checked at a point where a leak would have had time
+      // to appear. Under load the old flat sleep could sample before A itself
+      // had echoed, reading "neither child has output yet" as a clean pass.
+      expect(await waitForOutput(() => a.captured(), 'ECHO:only-for-A', 5000)).toBe(true);
 
       // A's child saw it; B's child NEVER did — a wake for A cannot cross to B.
       expect(a.captured()).toContain('ECHO:only-for-A');
@@ -1278,8 +1332,12 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
       expect(ok).toBe(true);
 
       // Wait past the 120ms CR delay for the separate Enter to land + submit.
-      await sleep(700);
-      expect(captured()).toContain('SUBMIT:paste-then-enter');
+      // WI-785151: poll rather than assert once after a flat 700ms. This case
+      // already carries an EI-21432828786219414 note above about sharing the
+      // machine with several PTY children and having widened the READY wait to
+      // 10s for exactly that reason — the submit assertion right after it was
+      // left on a fixed sleep, which is the same load-sensitivity one line down.
+      expect(await waitForOutput(captured, 'SUBMIT:paste-then-enter', 5000)).toBe(true);
 
       const code = await done;
       expect(code).toBe(0);
