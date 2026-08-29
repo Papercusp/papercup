@@ -1257,6 +1257,14 @@ impl Tab {
             "Settings" => Some(Tab::Config),
             "Convos" => Some(Tab::Inbox),
             "Hives" => Some(Tab::Network),
+            // The three dock-only panes the audit folded into Fleet (audit
+            // plan pui-tui-tab-audit-2026-08-27 D-005): Wakes → Fleet
+            // Scheduling, Agent and Context → Fleet's Agent Inspector.
+            // Without these arms `from_title` fell through to the `ALL` scan,
+            // which cannot match a retired pane, returned `None`, and silently
+            // stranded a restored view-state on the default tab — exactly the
+            // capability loss D-003/D-005 forbid.
+            "Wakes" | "Agent" | "Context" => Some(Tab::Fleet),
             _ => Tab::ALL.iter().copied().find(|t| t.title() == s),
         }
     }
@@ -14852,6 +14860,152 @@ mod tests {
         assert_eq!(b.tab, Tab::Overview);
         b.update(key('1', KeyModifiers::NONE));
         assert_eq!(b.tab, Tab::Operator);
+    }
+
+    /// P-007 recurrence guard — the 14-destination registry is pinned by EXACT
+    /// identity and order, not merely by length.
+    ///
+    /// The pre-existing `assert_eq!(Tab::ALL.len(), 14)` is satisfied by any
+    /// fourteen tabs, so it cannot catch a SUBSTITUTION (a destination swapped
+    /// for a retired shell, or two entries transposed) — which is precisely the
+    /// drift D-003 forbids. This asserts the canonical list itself.
+    #[test]
+    fn tab_all_is_exactly_the_fourteen_canonical_destinations() {
+        // D-003 / audit D-005 target information architecture, in strip order.
+        const CANONICAL: [Tab; 14] = [
+            Tab::Overview,
+            Tab::Operator, // "Agent Chat" in the product surface
+            Tab::Inbox,
+            Tab::Plans,
+            Tab::Fleet,
+            Tab::Sessions,
+            Tab::Harnesses, // titled "Pots"
+            Tab::Docs,
+            Tab::Testing,
+            Tab::Config, // "Configuration"
+            Tab::Memory,
+            Tab::Cupboard,
+            Tab::Voice,
+            Tab::Network,
+        ];
+        assert_eq!(
+            Tab::ALL,
+            CANONICAL,
+            "the 14-destination registry drifted from the D-003 canonical set/order"
+        );
+
+        // Stable identity strings (persistence keys / `from_title`) are part of
+        // the contract — a rename silently breaks restored view-state.
+        let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "Overview", "Operator", "Inbox", "Plans", "Fleet", "Sessions", "Pots", "Docs",
+                "Testing", "Config", "Memory", "Cupboard", "Voice", "Network",
+            ]
+        );
+
+        // Every destination must be reachable from the strip by a UNIQUE key.
+        let mut keys: Vec<char> = Tab::ALL.iter().map(|t| t.switch_key()).collect();
+        keys.sort_unstable();
+        let unique = {
+            let mut k = keys.clone();
+            k.dedup();
+            k
+        };
+        assert_eq!(keys, unique, "two destinations share a switch key");
+        for t in Tab::ALL {
+            assert_eq!(
+                Tab::from_switch_key(t.switch_key()),
+                Some(t),
+                "{} is not reachable by its own switch key",
+                t.title()
+            );
+            assert_eq!(
+                Tab::from_title(t.title()),
+                Some(t),
+                "{} does not round-trip through from_title",
+                t.title()
+            );
+        }
+    }
+
+    /// P-007 recurrence guard — the audit's complete 21-surface input
+    /// (pui-tui-tab-audit-2026-08-27 D-005) stays reachable after the 21→14
+    /// consolidation.
+    ///
+    /// D-005's capability-preserving rule: a standalone shell is removed ONLY
+    /// once its capability is hosted by the named parent destination. So every
+    /// audited surface — retained or retired — must still resolve to a tab that
+    /// is actually in `Tab::ALL`. A retired shell that resolves to `None`
+    /// strands a restored view-state on the default tab, which is capability
+    /// loss, not consolidation.
+    #[test]
+    fn every_audited_surface_stays_reachable_after_consolidation() {
+        // (persisted title, destination that must host its capability)
+        const MATRIX: [(&str, Tab); 21] = [
+            // ── 14 retained destinations ──
+            ("Overview", Tab::Overview),
+            ("Operator", Tab::Operator),
+            ("Inbox", Tab::Inbox),
+            ("Plans", Tab::Plans),
+            ("Fleet", Tab::Fleet),
+            ("Sessions", Tab::Sessions),
+            ("Pots", Tab::Harnesses),
+            ("Docs", Tab::Docs),
+            ("Testing", Tab::Testing),
+            ("Config", Tab::Config),
+            ("Memory", Tab::Memory),
+            ("Cupboard", Tab::Cupboard),
+            ("Voice", Tab::Voice),
+            ("Network", Tab::Network),
+            // ── 7 retired shells, each absorbed by its named parent (D-005) ──
+            ("Settings", Tab::Config),  // → Configuration
+            ("Plugins", Tab::Cupboard), // → Cupboard · Installed
+            ("Convos", Tab::Inbox),     // → Inbox · Threads
+            ("Hives", Tab::Network),    // → Network · Nodes/Directory
+            ("Wakes", Tab::Fleet),      // → Fleet · Scheduling
+            ("Agent", Tab::Fleet),      // → Fleet · Agent Inspector
+            ("Context", Tab::Fleet),    // → Fleet · Agent Inspector
+        ];
+
+        // The audit closed at 21/21 with zero unclassified residue; the matrix
+        // is the whole input, so a shrunk matrix is itself the regression.
+        assert_eq!(MATRIX.len(), 21, "the audit input is 21 surfaces");
+
+        for (surface, parent) in MATRIX {
+            assert_eq!(
+                Tab::from_title(surface),
+                Some(parent),
+                "audited surface {surface:?} no longer resolves to its parent destination"
+            );
+            assert!(
+                Tab::ALL.contains(&parent),
+                "{surface:?} resolves to {}, which is not a live destination",
+                parent.title()
+            );
+        }
+
+        // Consolidation must not be undone: the 7 retired shells stay OUT of
+        // the top-level strip even though they still resolve.
+        for retired in [
+            Tab::Settings,
+            Tab::Plugins,
+            Tab::Conversations,
+            Tab::Hives,
+            Tab::Wake,
+            Tab::AgentCtx,
+            Tab::PlansBoard,
+        ] {
+            assert!(
+                !Tab::ALL.contains(&retired),
+                "retired shell {} reappeared as a top-level destination",
+                retired.title()
+            );
+        }
+
+        // 21 audited surfaces = 14 destinations + 7 retired shells, exactly.
+        assert_eq!(Tab::ALL.len() + 7, MATRIX.len());
     }
 
     #[test]

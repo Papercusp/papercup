@@ -2032,10 +2032,7 @@ fn draw_tape(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<8} ", hms(&row.created_at)), Theme::dim()),
                 Span::styled(format!("{:<12} ", badge), style),
-                Span::styled(
-                    format!("{:<18} ", trunc(&event.title, 18)),
-                    Theme::dim(),
-                ),
+                Span::styled(format!("{:<18} ", trunc(&event.title, 18)), Theme::dim()),
                 Span::raw(format!("{:<22} ", trunc(&event.subject, 22))),
                 Span::raw(trunc(&event.detail, 48)),
             ]))
