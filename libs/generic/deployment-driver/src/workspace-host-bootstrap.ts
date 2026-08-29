@@ -491,7 +491,20 @@ export function buildWorkspaceHostBootstrap(
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[1]}'`,
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -qq',
-    'apt-get install -y --no-install-recommends acl ca-certificates curl jq minisign openssh-server ufw unattended-upgrades',
+    // libatomic1/libstdc++6 are RUNTIME dependencies of the bundled native addons, not build
+    // tooling. Measured (P-046, 2026-08-29): `readelf -d` over all ten bundled *.node files
+    // reports exactly one externally-provided library that a minimal Ubuntu cloud image does
+    // not carry — libatomic.so.1 (package libatomic1), needed by rocksdb-native. It is present
+    // on any box with a compiler installed, which is why this reproduced on no developer
+    // machine and on every clean guest.
+    //
+    // The failure it produced was maximally misleading: require-addon catches the dlopen error
+    // and CONTINUES (`catch (err) { cause = err; continue }`, require-addon/lib/node.js), then
+    // reports "Cannot find addon '.'" with a candidate list. So a missing SHARED LIBRARY is
+    // reported as a missing ADDON FILE — while the file is present, correctly sized, correctly
+    // owned and readable by the service user. Do not remove these without re-running the readelf
+    // union over the bundle's *.node files; --no-install-recommends means nothing pulls them in.
+    'apt-get install -y --no-install-recommends acl ca-certificates curl jq libatomic1 libstdc++6 minisign openssh-server ufw unattended-upgrades',
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',
     'id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --gid "$SERVICE_GROUP" --home-dir "$STATE_ROOT" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"',
     'usermod --lock --shell /usr/sbin/nologin "$SERVICE_USER"',
@@ -669,6 +682,48 @@ export function buildWorkspaceHostBootstrap(
     // of what a unit is.
     '  echo "[workspace-host-bootstrap] --- journalctl -u $SERVICE_NAME.service (service output) ---" >&2',
     '  journalctl -u "$SERVICE_NAME.service" --no-pager --no-hostname -o cat -n 200 2>&1 | tail -200 >&2 || true',
+    // Native-addon inventory. The server loads prebuilt .node addons out of the extracted
+    // release tree, and a failure to load one reports only the CANDIDATE PATHS it searched —
+    // never whether the file is absent, unreadable, or present-but-rejected. Those three have
+    // completely different causes and the error cannot distinguish them, so the question has
+    // to be answered from the guest's own filesystem before the instance is destroyed.
+    //
+    // Measured (P-046, 2026-08-29): a boot failed with "Cannot find addon '.'" whose FIRST
+    // candidate was a path that demonstrably exists in the signed bundle, dlopens under the
+    // bundled Node, survives the bootstrap's exact chown/chmod treatment, and loads correctly
+    // under a faithful local replica of this very unit's sandbox. Every hypothesis that could
+    // be tested off-guest was eliminated; only the guest's extracted tree was left, and no
+    // instrumentation existed to look at it.
+    '  echo "[workspace-host-bootstrap] --- native addon inventory under $RELEASE_DIR ---" >&2',
+    '  echo "extracted .node count: $(find "$RELEASE_DIR" -name "*.node" -type f 2>/dev/null | wc -l)" >&2',
+    '  find "$RELEASE_DIR" -name "*.node" -type f -printf "%10s %M %u:%g %p\\n" 2>/dev/null | head -40 >&2 || true',
+    '  echo "release tree entries: $(find "$RELEASE_DIR" 2>/dev/null | wc -l)" >&2',
+    '  df -Pk "$RELEASE_DIR" 2>&1 | tail -2 >&2 || true',
+    // The inventory above answers "is the file THERE" and cannot answer "does it LOAD" — two
+    // questions with different causes and different fixes that require-addon collapses into
+    // one indistinguishable "Cannot find addon" string. So attempt the load and print the
+    // error it swallows into `cause`. Two properties of this probe are load-bearing:
+    //   * it runs AS THE SERVICE USER, because the inventory runs as root and is therefore
+    //     structurally blind to any permission the service user lacks; and
+    //   * it reports unresolved SHARED LIBRARIES, because a missing one (libatomic.so.1 —
+    //     see the apt install above) is reported by require-addon as a missing ADDON FILE.
+    // A `find` whose stderr is discarded cannot distinguish "no matches" from "could not
+    // traverse", so a zero count is explicitly marked as possibly-understated rather than
+    // being allowed to read as a confident absence.
+    '  ADDON_FIND_ERR="$(find "$RELEASE_DIR" -name "*.node" -type f 2>&1 >/dev/null)"',
+    '  [[ -z "$ADDON_FIND_ERR" ]] || echo "WARNING: find reported errors; the .node count above may be UNDERSTATED: $ADDON_FIND_ERR" >&2',
+    '  echo "[workspace-host-bootstrap] --- addon load probe (as $SERVICE_USER) ---" >&2',
+    '  ADDON_PATH="$(find "$RELEASE_DIR" -name "rocksdb-native.node" -type f 2>/dev/null | head -1)"',
+    '  NODE_BIN="$(find "$RELEASE_DIR" -type f -name node -perm -u+x 2>/dev/null | head -1)"',
+    '  echo "addon: ${ADDON_PATH:-<not found>}" >&2',
+    '  echo "node:  ${NODE_BIN:-<not found>}" >&2',
+    '  if [[ -n "$ADDON_PATH" ]]; then',
+    '    echo "--- unresolved shared libraries (a dlopen failure is reported as a MISSING ADDON) ---" >&2',
+    '    ldd "$ADDON_PATH" 2>&1 | grep -i "not found" >&2 || echo "(ldd reports no missing libraries)" >&2',
+    '  fi',
+    '  if [[ -n "$ADDON_PATH" && -n "$NODE_BIN" ]]; then',
+    `    runuser -u "$SERVICE_USER" -- "$NODE_BIN" -e 'try{require(process.argv[1]);console.error("ADDON LOADED OK")}catch(e){console.error("ADDON LOAD FAILED:",e&&e.message);if(e&&e.cause)console.error("CAUSE:",String(e.cause))}' "$ADDON_PATH" 2>&1 | head -20 >&2 || true`,
+    '  fi',
     '}',
     'systemctl enable --now "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
     '',
