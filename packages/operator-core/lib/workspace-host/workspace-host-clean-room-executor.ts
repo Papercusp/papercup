@@ -73,50 +73,17 @@ const DEFAULT_TIMEOUT_MS = 45 * 60 * 1_000;
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 /**
- * How much of a failed run's stderr is quoted inline in the thrown error.
+ * How much of a failed run's stderr is quoted inline in the thrown error, and the rule that
+ * bounds it. The implementation moved to ./diagnostic-excerpt so the GCP image-family adapter
+ * can share it: that module is imported BY this one, so importing it back would have been a
+ * cycle. Re-exported here because callers and tests already import it from this module.
  *
- * Bounded because this string is embedded in a release-gate issue and read in a terminal —
- * NOT because the rest is expendable. Everything over the budget is spilled to a file whose
- * path the message names; see {@link spillCleanRoomDiagnostic}.
+ * Everything over the budget is spilled to a file whose path the message names; see
+ * {@link spillCleanRoomDiagnostic}.
  */
-const DIAGNOSTIC_BUDGET_CHARS = 4_000;
+import { excerptDiagnostic } from './diagnostic-excerpt';
 
-/**
- * Fraction of the budget spent on the HEAD of the diagnostic. Weighted toward the head on
- * purpose — see {@link excerptDiagnostic} for why that is the load-bearing end.
- */
-const DIAGNOSTIC_HEAD_FRACTION = 0.6;
-
-/**
- * Excerpt a diagnostic so BOTH ends survive.
- *
- * ⛔ NEVER go back to a tail-only `slice(-N)` here. It is the intuitive way to bound this
- * string and it is exactly backwards: a Node failure prints its message and stack FIRST and
- * its process/systemd epilogue LAST, so keeping only the tail keeps the CONSEQUENCE and
- * discards the CAUSE.
- *
- * Measured on P-046 (2026-08-29). A clean-room boot failed because the guest could not load
- * `rocksdb-native.node`. The 2_000-char tail preserved six lines of `systemctl` summary —
- * "Main process exited", "start-post operation timed out", "Consumed 8.465s CPU time" —
- * every one of which describes systemd reacting to the failure, and none of which names it.
- * The `require.addon` error headline and the candidate paths it searched, i.e. the only part
- * of the output identifying what was actually missing, fell off the FRONT. Diagnosing it
- * cost an extra billable boot.
- */
-export function excerptDiagnostic(text: string, budget: number = DIAGNOSTIC_BUDGET_CHARS): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= budget) return trimmed;
-
-  const headChars = Math.ceil(budget * DIAGNOSTIC_HEAD_FRACTION);
-  const tailChars = budget - headChars;
-  const omitted = trimmed.length - budget;
-
-  return (
-    `${trimmed.slice(0, headChars)}\n` +
-    `\n… [${String(omitted)} chars omitted from the middle of the guest output] …\n\n` +
-    `${trimmed.slice(-tailChars)}`
-  );
-}
+export { excerptDiagnostic } from './diagnostic-excerpt';
 
 /**
  * Write the COMPLETE stderr of a failed run to a file and return its path (null if the spill

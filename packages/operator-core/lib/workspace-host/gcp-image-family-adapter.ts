@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 
+// Leaf module on purpose: workspace-host-clean-room-executor (where this helper used to live)
+// imports THIS file, so importing it from there would be a cycle.
+import { excerptDiagnostic } from './diagnostic-excerpt';
+
 import {
   buildWorkspaceHostCleanRoomInstallFixture,
   validateWorkspaceHostBootstrapAttestation,
@@ -272,16 +276,45 @@ export function safeExecutable(value: string | undefined, fallback: string, path
   return result;
 }
 
+/**
+ * Redact credential-shaped values before a command's output is quoted into an error.
+ */
+function redactDiagnostic(stream: unknown): string {
+  return typeof stream === 'string'
+    ? stream
+        .replace(/(authorization|token|secret|private[_ -]?key|password)\s*[:=]\s*[^\s]+/gi, '$1=[redacted]')
+        .trim()
+    : '';
+}
+
+/**
+ * Quote a failed command's output into the thrown error.
+ *
+ * ⚠ BOTH streams, always. `packer build` runs here with `-machine-readable`
+ * (see buildCandidate), and in that mode packer writes its ENTIRE event stream — `ui,error`
+ * records and template/validation failures included — to STDOUT, leaving stderr empty. This
+ * function previously read stderr only, so a failed production release build reported exactly
+ * `packer build failed with exit code 1` and nothing else: not truncated-looking, just silent,
+ * as though packer had had nothing to say (EI-21762126059344308). Reading only the stream you
+ * expect the error on is how a diagnostic disappears.
+ *
+ * Excerpted head-weighted rather than tail-truncated — a packer failure names its cause at the
+ * TOP and then emits a long teardown epilogue, so a tail-only window keeps the consequence and
+ * drops the cause. See {@link excerptDiagnostic}.
+ */
 function assertSuccess(result: GcpImageFamilyCommandResult, operation: string): string {
   if (!Number.isSafeInteger(result.exitCode) || result.exitCode !== 0) {
-    const diagnostic =
-      typeof result.stderr === 'string'
-        ? result.stderr
-            .replace(/(authorization|token|secret|private[_ -]?key|password)\s*[:=]\s*[^\s]+/gi, '$1=[redacted]')
-            .trim()
-            .slice(-2_000)
-        : '';
-    fail(`${operation} failed with exit code ${String(result.exitCode)}${diagnostic ? `; stderr: ${diagnostic}` : ''}`);
+    const stderr = redactDiagnostic(result.stderr);
+    const stdout = redactDiagnostic(result.stdout);
+    const parts: string[] = [];
+    if (stderr) parts.push(`stderr: ${excerptDiagnostic(stderr)}`);
+    if (stdout) parts.push(`stdout: ${excerptDiagnostic(stdout)}`);
+    fail(
+      `${operation} failed with exit code ${String(result.exitCode)}` +
+        // An explicit "no output" is a real finding — it distinguishes a silent command from
+        // this function having dropped the stream the failure was written to.
+        (parts.length > 0 ? `; ${parts.join('; ')}` : '; the command produced no output on either stream'),
+    );
   }
   return result.stdout;
 }
