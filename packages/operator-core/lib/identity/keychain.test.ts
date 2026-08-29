@@ -234,7 +234,9 @@ describe('keychain (encrypted-file fallback)', () => {
       expect(loaded.kind).toBe('error');
       if (loaded.kind === 'error') {
         expect(loaded.error.kind).toBe('io_error');
-        expect(loaded.error.reason).toContain('identity mirrors disagree');
+        if (loaded.error.kind === 'io_error') {
+          expect(loaded.error.reason).toContain('identity mirrors disagree');
+        }
       }
       expect(await readFile(primaryPath)).toEqual(primaryBefore);
       expect(await readFile(encPath(id))).toEqual(legacyBefore);
