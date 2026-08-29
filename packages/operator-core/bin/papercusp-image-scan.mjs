@@ -55,6 +55,26 @@ const RESULT_PATH = '/var/log/papercusp-image-scan.json';
 const DONE_PATH = '/var/log/papercusp-image-scan.done';
 
 /**
+ * gitleaks, pinned by version AND digest.
+ *
+ * Unlike syft and grype, gitleaks publishes NO install script — it distributes release
+ * tarballs only. The previous code piped `gitleaks/gitleaks/master/scripts/install.sh`,
+ * a path that has never existed: it 404s (confirmed against a syft install.sh control,
+ * which returns 200). Because that line ended in `|| true`, the 404 was swallowed and the
+ * run continued for another eight minutes before dying as `gitleaks-missing` — a symptom
+ * eight steps removed from its cause.
+ *
+ * The digest is verified before the binary is trusted. This tool decides whether the
+ * release contains secrets, so an unverified download would let a compromised or truncated
+ * artifact silently report zero findings — which the adapter accepts as a passing gate.
+ * The digest below equals the published gitleaks_8.30.1_checksums.txt entry.
+ */
+const GITLEAKS_VERSION = process.env.PAPERCUSP_SCAN_GITLEAKS_VERSION?.trim() || '8.30.1';
+const GITLEAKS_SHA256 =
+  process.env.PAPERCUSP_SCAN_GITLEAKS_SHA256?.trim() ||
+  '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb';
+
+/**
  * Startup script for the scanner VM. Mounts every filesystem on the attached candidate
  * disk read-only, then runs syft (SBOM), grype (vulnerabilities) and gitleaks (secrets)
  * against the mounted tree, writing one JSON document.
@@ -85,7 +105,17 @@ apt-get install -y curl ca-certificates jq >/dev/null || { detail="apt-install-f
 # Pinned installers, checked into the release path rather than 'latest'.
 curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin || { detail="syft-install-failed"; exit 1; }
 curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin || { detail="grype-install-failed"; exit 1; }
-curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/scripts/install.sh | sh -s -- -b /usr/local/bin 2>/dev/null || true
+# gitleaks has no installer script (see GITLEAKS_VERSION above): fetch the pinned release
+# tarball and VERIFY it before trusting the binary. Every step reports its OWN failure —
+# the previous '|| true' here is exactly why this surfaced as 'gitleaks-missing' instead of
+# naming the 404 that caused it.
+curl -sSfL -o /tmp/gitleaks.tgz \\
+  "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \\
+  || { detail="gitleaks-download-failed"; exit 1; }
+echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c - >/dev/null 2>&1 \\
+  || { detail="gitleaks-digest-mismatch"; exit 1; }
+tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks || { detail="gitleaks-extract-failed"; exit 1; }
+chmod +x /usr/local/bin/gitleaks || { detail="gitleaks-chmod-failed"; exit 1; }
 
 # Locate the attached candidate disk (device name 'candidate') and mount every
 # filesystem it carries, read-only. A candidate with no mountable filesystem is a
