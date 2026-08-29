@@ -143,6 +143,13 @@ export function mergePassingTaskVerdictUpdates(
 /** Written by the SHELL to describe the invocation, never the task. Cross-run identity only. */
 export const SHELL_VOLATILE_IDENTITY_ENV: readonly string[];
 
+/**
+ * EI-21762403020037943 — env names `capability:bash` stamps into every child it spawns. They
+ * describe WHICH DOOR the command was typed through, never what it exercises. Cross-run identity
+ * only; derived-and-pinned by `affected-tests-passing-verdict-cache.test.ts`.
+ */
+export const CAPABILITY_BASH_SEAM_IDENTITY_ENV: readonly string[];
+
 export const CLOSURE_DIGEST_MANIFEST_VERSION: number;
 export const CLOSURE_DIGEST_MANIFEST_MAX_FILES: number;
 
