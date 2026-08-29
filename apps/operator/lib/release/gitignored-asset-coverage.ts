@@ -317,7 +317,7 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
  */
 function derivesFromTemporaryFixture(
   node: ts.Node | undefined,
-  consts: Map<string, ts.Expression>,
+  constsAt: (n: ts.Node) => Map<string, ts.Expression>,
   fns: Map<string, ts.SignatureDeclaration> = new Map(),
   depth = 0,
   seen: Set<string> = new Set(),
@@ -326,11 +326,14 @@ function derivesFromTemporaryFixture(
 
   if (ts.isIdentifier(node)) {
     if (seen.has(node.text)) return false;
-    const init = consts.get(node.text);
+    // Resolve at THIS node's scope, not the original call site's: once we
+    // follow a helper's `return root`, that `root` is the helper's own local
+    // binding, a different variable that merely shares the caller's name.
+    const init = constsAt(node).get(node.text);
     if (!init) return false;
     const next = new Set(seen);
     next.add(node.text);
-    return derivesFromTemporaryFixture(init, consts, fns, depth + 1, next);
+    return derivesFromTemporaryFixture(init, constsAt, fns, depth + 1, next);
   }
 
   if (ts.isCallExpression(node)) {
@@ -346,10 +349,13 @@ function derivesFromTemporaryFixture(
     if (callee && !seen.has(`fn:${callee}`)) {
       const fn = fns.get(callee);
       if (fn) {
-        const next = new Set(seen);
+        // Cross into the helper with the identifier trail CLEARED — only the
+        // recursion guards carry over. The caller's names shadow nothing here,
+        // and keeping them would make the helper's own `root` look already-seen.
+        const next = new Set([...seen].filter((s) => s.startsWith('fn:')));
         next.add(`fn:${callee}`);
         return returnExpressionsOf(fn).some((r) =>
-          derivesFromTemporaryFixture(r, consts, fns, depth + 1, next),
+          derivesFromTemporaryFixture(r, constsAt, fns, depth + 1, next),
         );
       }
     }
@@ -357,7 +363,7 @@ function derivesFromTemporaryFixture(
 
   let found = false;
   ts.forEachChild(node, (child) => {
-    if (!found && derivesFromTemporaryFixture(child, consts, fns, depth + 1, seen)) found = true;
+    if (!found && derivesFromTemporaryFixture(child, constsAt, fns, depth + 1, seen)) found = true;
   });
   return found;
 }
@@ -536,7 +542,7 @@ export function scanRequiredIgnoredAssets(opts: {
         const fn = calleeName(n);
         if (FS_REQUIRE_FNS.has(fn) && !toleratesAbsence(n)) {
           const consts = constsAt(n);
-          if (derivesFromTemporaryFixture(n.arguments[0], consts, localFns)) {
+          if (derivesFromTemporaryFixture(n.arguments[0], constsAt, localFns)) {
             ts.forEachChild(n, visit);
             return;
           }
