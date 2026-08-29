@@ -98,7 +98,40 @@ export interface FrozenCandidateRepairQueue {
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
   failingTests: string[];
+  /**
+   * P-013 / D-007 observability. `failingTests` is REPLACED on every red, so by the time a
+   * reader asks "is this cycle converging?" the only evidence that it was ever larger is
+   * gone. Each red appends one round here so the shrink across a convergence cycle survives.
+   *
+   * Optional and additive: legacy queues (and any queue that has not yet taken a red under
+   * this build) parse with it absent, which reads as "no rounds recorded" — never as a
+   * cycle that failed to converge.
+   */
+  convergenceRounds?: readonly FrozenRepairConvergenceRound[];
 }
+
+/**
+ * One observed red for a single frozen-candidate convergence cycle. Deliberately a COUNT and
+ * not the failing set: the full set already lives in `failingTests` for the current round,
+ * and persisting N copies of a 50-entry list is how a metadata blob becomes unbounded.
+ */
+export interface FrozenRepairConvergenceRound {
+  /** 1-based position within this queue's cycle. Stable across cap-trimming (see below). */
+  round: number;
+  /** The head that was verified red for this round. */
+  head: string;
+  /** Size of the failing set observed at this round. */
+  failingCount: number;
+  atMs: number;
+}
+
+/**
+ * Rounds are capped so a long cycle cannot grow the persisted queue without bound. The FIRST
+ * round is retained on purpose even when trimming: it is the baseline every shrink figure is
+ * measured against, so dropping it (the obvious ring-buffer behaviour) would silently destroy
+ * the one number this field exists to produce.
+ */
+export const FROZEN_REPAIR_CONVERGENCE_ROUND_CAP = 24;
 
 export interface FrozenRepairQueueLimits {
   maxAttempts: number;
@@ -351,6 +384,61 @@ function boundedFailures(values: readonly string[]): string[] {
     .map((value) => value.slice(0, MAX_PERSISTED_FAILURE_CHARS));
 }
 
+function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] {
+  if (!Array.isArray(value)) return [];
+  const rounds: FrozenRepairConvergenceRound[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    if (!Number.isInteger(row.round) || (row.round as number) < 1) continue;
+    if (!nonBlank(row.head)) continue;
+    if (!Number.isInteger(row.failingCount) || (row.failingCount as number) < 0) continue;
+    if (!validTimestamp(row.atMs)) continue;
+    rounds.push({
+      round: row.round as number,
+      head: row.head,
+      failingCount: row.failingCount as number,
+      atMs: row.atMs as number,
+    });
+  }
+  return capConvergenceRounds(rounds);
+}
+
+/**
+ * Trim to the cap while ALWAYS retaining the first round. A plain `.slice(-cap)` would drop
+ * the baseline the shrink is measured against, so a long cycle would report `shrinkTotal:
+ * null` exactly when the convergence question matters most.
+ */
+function capConvergenceRounds(
+  rounds: readonly FrozenRepairConvergenceRound[],
+): FrozenRepairConvergenceRound[] {
+  if (rounds.length <= FROZEN_REPAIR_CONVERGENCE_ROUND_CAP) return [...rounds];
+  const first = rounds[0] as FrozenRepairConvergenceRound;
+  return [first, ...rounds.slice(-(FROZEN_REPAIR_CONVERGENCE_ROUND_CAP - 1))];
+}
+
+/**
+ * Append the round this red represents. `round` numbers keep counting from the highest one
+ * already recorded, so cap-trimming never renumbers history or makes two rounds share an
+ * index.
+ */
+function appendConvergenceRound(
+  queue: FrozenCandidateRepairQueue,
+  input: { head: string; failingTests: readonly string[]; nowMs: number },
+): FrozenRepairConvergenceRound[] {
+  const existing = queue.convergenceRounds ?? [];
+  const highest = existing.reduce((max, entry) => (entry.round > max ? entry.round : max), 0);
+  return capConvergenceRounds([
+    ...existing,
+    {
+      round: highest + 1,
+      head: input.head,
+      failingCount: boundedFailures(input.failingTests).length,
+      atMs: input.nowMs,
+    },
+  ]);
+}
+
 function requirePhase(queue: FrozenCandidateRepairQueue, phase: FrozenCandidateRepairPhase, operation: string): void {
   if (queue.phase !== phase) {
     throw new Error(`${operation} requires phase ${phase}; found ${queue.phase}`);
@@ -441,6 +529,14 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     return null;
   if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && !nonBlank(row.fixerSpawnId))
     return null;
+  /**
+   * Rounds are OBSERVABILITY, not safety, so a malformed value is dropped rather than
+   * failing the whole parse. The queue itself is the gate's safety state — refusing to
+   * parse a live queue because a display-only history entry is corrupt would discard the
+   * frozen head and let the treadmill D-007 exists to stop resume. Losing the history is
+   * the strictly smaller failure, and it is visible (rounds read as absent).
+   */
+  const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
   const blockedReason =
     row.blockedReason === 'attempts-exhausted' || row.blockedReason === 'wall-clock-exhausted'
       ? row.blockedReason
@@ -466,6 +562,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
     ...(dispatchReservation ? { dispatchReservation } : {}),
+    ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     failingTests: boundedFailures(row.failingTests as string[]),
   };
 }
@@ -798,6 +895,11 @@ export function markFrozenCandidateVerificationRed(
     ...queue,
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
+    convergenceRounds: appendConvergenceRound(queue, {
+      head: queue.repairHead,
+      failingTests: input.failingTests ?? [],
+      nowMs: input.nowMs,
+    }),
     failingTests: boundedFailures(input.failingTests ?? []),
   };
 }
@@ -894,6 +996,11 @@ export function markFrozenRepairVerificationRed(
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
     fixerSpawnId: null,
+    convergenceRounds: appendConvergenceRound(queue, {
+      head: input.repairHead,
+      failingTests: input.failingTests ?? [],
+      nowMs: input.nowMs,
+    }),
     failingTests: boundedFailures(input.failingTests ?? []),
   };
 }
@@ -937,5 +1044,215 @@ export function markFrozenRepairVerificationGreen(
     phase: 'ready-to-promote',
     updatedAtMs: input.nowMs,
     failingTests: [],
+  };
+}
+
+/**
+ * P-013 / D-007: what a reader needs to answer "is this convergence cycle actually
+ * converging, or is it a treadmill wearing a queue's clothes?" — projected into
+ * `gate_health` so it is legible without reconstructing the queue's history by hand.
+ *
+ * PURE and derived: every field is computed from the queue that is already persisted, so
+ * this cannot disagree with the queue, and adding it stores no new authority.
+ */
+export interface FrozenRepairConvergenceSummary {
+  /** When this cycle opened — the D-007 "cycle opened-at". */
+  openedAtMs: number;
+  ageMs: number;
+  /** Fixer dispatches actually made (mirrors `queue.attempts`). */
+  attempts: number;
+  /** Recorded red rounds. 0 means none observed under this build, NOT a stalled cycle. */
+  admissionRounds: number;
+  /** Failing-set size at the first recorded round; null when no round is recorded. */
+  failingFirst: number | null;
+  /** Failing-set size right now, straight off the live queue. */
+  failingNow: number;
+  /** failingFirst - failingNow. Positive = shrinking. Null when there is no baseline. */
+  shrinkTotal: number | null;
+  /** Per-round size and the delta from the previous round (negative = shrank). */
+  shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null }[];
+  /**
+   * True only when every recorded round is <= the one before it AND the set actually got
+   * smaller overall. Null when fewer than two rounds are recorded — deliberately NOT false,
+   * because "not yet knowable" and "not converging" are different answers and a reader that
+   * conflates them will call a healthy new cycle a treadmill.
+   */
+  converging: boolean | null;
+}
+
+export function summarizeFrozenRepairConvergence(
+  queue: FrozenCandidateRepairQueue,
+  nowMs: number,
+): FrozenRepairConvergenceSummary {
+  const rounds = queue.convergenceRounds ?? [];
+  const failingNow = queue.failingTests.length;
+  const failingFirst = rounds.length > 0 ? (rounds[0] as FrozenRepairConvergenceRound).failingCount : null;
+  const shrinkPerRound = rounds.map((entry, index) => ({
+    round: entry.round,
+    failingCount: entry.failingCount,
+    delta:
+      index === 0
+        ? null
+        : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
+  }));
+  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta <= 0);
+  const shrinkTotal = failingFirst === null ? null : failingFirst - failingNow;
+  return {
+    openedAtMs: queue.openedAtMs,
+    ageMs: Math.max(0, nowMs - queue.openedAtMs),
+    attempts: queue.attempts,
+    admissionRounds: rounds.length,
+    failingFirst,
+    failingNow,
+    shrinkTotal,
+    shrinkPerRound,
+    converging: rounds.length < 2 ? null : monotonic && (shrinkTotal ?? 0) > 0,
+  };
+}
+
+/**
+ * The D-007 default and its owner-visible off switch, as one pure decision.
+ *
+ * `freeze-and-converge` — a first REAL red freezes that candidate and converges it — is
+ * ALREADY the deployed default (verified in green-checkpoint.ts: a red with no live queue
+ * calls `createFrozenCandidateRepairQueue` with no streak threshold in front of it). So this
+ * does not flip a default ON; it gives the owner a way to turn it OFF, which is the half
+ * D-007 asked for and the half that did not exist.
+ *
+ * OFF restores the pre-D-001 behaviour: a red does not open a cycle, and the gate re-cuts at
+ * tip. That is the treadmill D-007 diagnosed, which is exactly why the switch is explicit,
+ * owner-visible, and defaults ON rather than being a quiet constant.
+ */
+export type FrozenConvergenceCycleEntry =
+  | { kind: 'open-cycle'; reason: 'first-real-red' }
+  | { kind: 'advance-existing-cycle'; reason: 'queue-already-open' }
+  | { kind: 'suppressed'; reason: 'off-switch-disabled' };
+
+export function decideFrozenConvergenceCycleEntry(input: {
+  /** FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT, read by the caller's io seam. */
+  flagEnabled: boolean;
+  hasOpenQueue: boolean;
+}): FrozenConvergenceCycleEntry {
+  // An ALREADY-OPEN cycle is never suppressed by the switch. Turning the default off must
+  // stop NEW cycles opening; abandoning a frozen candidate that is mid-convergence would
+  // strand its repair worktree and un-freeze a head the gate already committed to.
+  if (input.hasOpenQueue) return { kind: 'advance-existing-cycle', reason: 'queue-already-open' };
+  if (!input.flagEnabled) return { kind: 'suppressed', reason: 'off-switch-disabled' };
+  return { kind: 'open-cycle', reason: 'first-real-red' };
+}
+
+/**
+ * The shape persisted at `gate_health.convergence` — {@link FrozenRepairConvergenceSummary}
+ * plus the identity and write-time stamp a READER needs, which the summary alone cannot
+ * supply.
+ *
+ * Both additions exist to kill a specific misreading:
+ *
+ * - `candidate` / `repairHead` / `phase`: `gate_health` is a long-lived blob whose fields are
+ *   written by several code paths at different times. Convergence figures with no cycle
+ *   identity on them read as describing whatever candidate the reader is currently looking
+ *   at, which is exactly wrong the moment a cycle is retired and a new one opens.
+ * - `observedAtMs`: a shrink figure is a measurement, and a measurement with no timestamp
+ *   cannot be told apart from a current one. Readers that care about freshness compare it
+ *   themselves; nothing here expires it, because a stale reading that is LABELLED stale is
+ *   useful and one that silently disappears is not.
+ */
+export interface StoredFrozenRepairConvergence extends FrozenRepairConvergenceSummary {
+  candidate: string;
+  repairHead: string;
+  phase: FrozenCandidateRepairPhase;
+  observedAtMs: number;
+}
+
+/**
+ * PURE: the exact object the queue writer projects into `gate_health.convergence`.
+ *
+ * Derived wholly from the queue that is being persisted in the same statement, so the
+ * projection cannot disagree with the queue it describes and stores no new authority — it is
+ * a rendering of `repair_queue`, not a second copy of it. See the derived-truth ladder in the
+ * repo guide: this is rung 1 (DERIVE), which is why there is no separate writer for it.
+ */
+export function buildFrozenRepairConvergenceGateHealth(
+  queue: FrozenCandidateRepairQueue,
+  nowMs: number,
+): StoredFrozenRepairConvergence {
+  return {
+    ...summarizeFrozenRepairConvergence(queue, nowMs),
+    candidate: queue.candidate,
+    repairHead: queue.repairHead,
+    phase: queue.phase,
+    observedAtMs: nowMs,
+  };
+}
+
+/**
+ * PURE: interpret the raw `gate_health.convergence` value a snapshot read got back from PG.
+ *
+ * Returns `null` for anything not trustworthy — absent, JSON null (how the writer CLEARS it
+ * when a cycle retires), or a shape this reader does not recognize. A partially-recognized
+ * blob is rejected outright rather than rendered with holes: a convergence panel showing
+ * `failingFirst: undefined` invites the reader to treat "unreadable" as "no baseline", which
+ * is the false all-clear this whole item exists to prevent.
+ */
+export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairConvergence | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const num = (key: string): number | null => (typeof row[key] === 'number' ? (row[key] as number) : null);
+  const str = (key: string): string | null => (typeof row[key] === 'string' ? (row[key] as string) : null);
+  const openedAtMs = num('openedAtMs');
+  const ageMs = num('ageMs');
+  const attempts = num('attempts');
+  const admissionRounds = num('admissionRounds');
+  const failingNow = num('failingNow');
+  const observedAtMs = num('observedAtMs');
+  const candidate = str('candidate');
+  const repairHead = str('repairHead');
+  const phase = str('phase');
+  if (
+    openedAtMs === null ||
+    ageMs === null ||
+    attempts === null ||
+    admissionRounds === null ||
+    failingNow === null ||
+    observedAtMs === null ||
+    candidate === null ||
+    repairHead === null ||
+    phase === null
+  ) {
+    return null;
+  }
+  if (!Array.isArray(row.shrinkPerRound)) return null;
+  const shrinkPerRound: { round: number; failingCount: number; delta: number | null }[] = [];
+  for (const entry of row.shrinkPerRound) {
+    if (!entry || typeof entry !== 'object') return null;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.round !== 'number' || typeof e.failingCount !== 'number') return null;
+    if (e.delta !== null && typeof e.delta !== 'number') return null;
+    shrinkPerRound.push({ round: e.round, failingCount: e.failingCount, delta: (e.delta as number | null) ?? null });
+  }
+  // `converging` and `failingFirst` are DELIBERATELY tri-state (null = not yet knowable / no
+  // baseline). `null` is a legitimate stored value for both, so neither can be required above
+  // — but a wrong TYPE still rejects the whole blob rather than being coerced to null, which
+  // would turn a corrupt reading into a confident "not yet knowable".
+  const failingFirstRaw = row.failingFirst ?? null;
+  if (failingFirstRaw !== null && typeof failingFirstRaw !== 'number') return null;
+  const shrinkTotalRaw = row.shrinkTotal ?? null;
+  if (shrinkTotalRaw !== null && typeof shrinkTotalRaw !== 'number') return null;
+  const convergingRaw = row.converging ?? null;
+  if (convergingRaw !== null && typeof convergingRaw !== 'boolean') return null;
+  return {
+    openedAtMs,
+    ageMs,
+    attempts,
+    admissionRounds,
+    failingFirst: failingFirstRaw as number | null,
+    failingNow,
+    shrinkTotal: shrinkTotalRaw as number | null,
+    shrinkPerRound,
+    converging: convergingRaw as boolean | null,
+    candidate,
+    repairHead,
+    phase: phase as FrozenCandidateRepairPhase,
+    observedAtMs,
   };
 }

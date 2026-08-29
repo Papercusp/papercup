@@ -64,6 +64,7 @@ import {
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   parseFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
+  buildFrozenRepairConvergenceGateHealth,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
 import {
@@ -3423,24 +3424,54 @@ export async function writeFrozenCandidateRepairQueue(
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   if (queue) {
+    // P-013 / D-007: project the convergence summary into `gate_health.convergence` in the
+    // SAME statement that persists the queue.
+    //
+    // Why here and not a second writer: this is the one production write path for
+    // `repair_queue`, so a projection made here can never lag the queue it describes — there
+    // is no window in which the stored shrink figures are about a previous round. A separate
+    // best-effort writer (the `mergeGateHealth` marker idiom used by `inFlightRetriage`) would
+    // reintroduce exactly that window, and its failure mode is a convergence panel confidently
+    // reporting the round before last.
+    //
+    // The gate_health leg is a SHALLOW merge (`|| $4`), never a replace: the red streak,
+    // failing-test list and `observedCandidate` are written by other paths at other times, and
+    // a replace here would silently clobber whichever of them a concurrent reader depends on.
+    // `jsonb_set(..., true)` creates `gate_health` when the row has none.
+    const convergence = buildFrozenRepairConvergenceGateHealth(queue, Date.now());
     await sql.unsafe(
       `UPDATE harness_shared.routines
-          SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
+          SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+                '{gate_health}',
+                COALESCE(metadata->'gate_health', '{}'::jsonb) || $4::jsonb,
+                true
+              ),
+              updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
           AND target_role = 'system:green-checkpoint'`,
-      [target.workspaceId, target.installSlug, JSON.stringify({ repair_queue: queue })],
+      [
+        target.workspaceId,
+        target.installSlug,
+        JSON.stringify({ repair_queue: queue }),
+        JSON.stringify({ convergence }),
+      ],
     );
   } else {
+    // Retiring the cycle CLEARS the projection (`#- '{gate_health,convergence}'`, a no-op when
+    // absent). Leaving it behind would strand shrink figures for a candidate that no longer
+    // exists next to a gate that has moved on — and because every field of the projection is
+    // plausible on its own, a reader has no way to tell it is describing a dead cycle.
     await sql.unsafe(
       `UPDATE harness_shared.routines
-          SET metadata = CASE
+          SET metadata = (CASE
                 WHEN metadata #>> '{gate_health,inconclusive,status}'
                        IN ('repair-in-progress', 'repair-staging-mismatch')
                   THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
                        #- '{gate_health,inconclusive}'
                 ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
-              END,
+              END) #- '{gate_health,convergence}',
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
@@ -3462,14 +3493,17 @@ export async function retireFrozenCandidateRepairQueue(
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(
+    // P-013: retiring the queue also clears `gate_health.convergence` — same reason as the
+    // null-queue branch of writeFrozenCandidateRepairQueue. Both cycle-teardown paths must
+    // clear it or one of them leaves shrink figures for a candidate that no longer exists.
     `UPDATE harness_shared.routines
-        SET metadata = CASE
+        SET metadata = (CASE
               WHEN metadata #>> '{gate_health,inconclusive,status}'
                      IN ('repair-in-progress', 'repair-staging-mismatch')
                 THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
                      #- '{gate_health,inconclusive}'
               ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
-            END,
+            END) #- '{gate_health,convergence}',
             updated_at = now()
       WHERE workspace_id = $1
         AND install_slug = $2

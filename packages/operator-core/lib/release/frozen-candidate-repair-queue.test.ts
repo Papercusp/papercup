@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
   FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP,
+  FROZEN_REPAIR_CONVERGENCE_ROUND_CAP,
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  decideFrozenConvergenceCycleEntry,
   detectFrozenRepairSharedTreeCollision,
   diagnoseFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
@@ -17,6 +19,9 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   parseFrozenCandidateRepairQueue,
+  summarizeFrozenRepairConvergence,
+  buildFrozenRepairConvergenceGateHealth,
+  parseFrozenRepairConvergence,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -897,5 +902,303 @@ describe('P-009 — shared-tree collision detector (REPORT-ONLY)', () => {
     for (const field of ['decision', 'retireAllowed', 'retireRefusal', 'nextAction'] as const) {
       expect(colliding![field]).toEqual(clean![field]);
     }
+  });
+});
+
+describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', () => {
+  /** A queue parked at the phase a red repair verification is legal from. */
+  function readyToVerify(
+    overrides: Partial<FrozenCandidateRepairQueue> = {},
+  ): FrozenCandidateRepairQueue {
+    return {
+      ...fresh(),
+      phase: 'ready-to-verify',
+      attempts: 1,
+      fixerSpawnId: 'spawn-1',
+      ...overrides,
+    };
+  }
+
+  /**
+   * PERMANENT deliberately-wrong control. This is the obvious ring-buffer trim, and it is
+   * wrong in exactly one way: it drops the FIRST round, which is the baseline every shrink
+   * figure is measured against. It stays in this file so the real cap has something to be
+   * different from — if a refactor makes `capConvergenceRounds` behave like this, the test
+   * below that compares them starts failing instead of silently passing.
+   */
+  function naiveCap<T>(rounds: readonly T[], cap: number): T[] {
+    return rounds.slice(-cap);
+  }
+
+  it('CALIBRATION: the first red seeds round 1, so a shrink always has a baseline', () => {
+    // createFrozenCandidateRepairQueue routes through markFrozenCandidateVerificationRed,
+    // so creation IS the first red. If this stops being true, `failingFirst` silently
+    // becomes the SECOND red and every shrink figure understates by one round.
+    const queue = fresh();
+    expect(queue.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 },
+    ]);
+  });
+
+  it('each subsequent red appends a round with its failing-set size', () => {
+    const first = readyToVerify();
+    const second = markFrozenRepairVerificationRed(first, {
+      repairHead: C,
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      nowMs: T0 + 1_000,
+    });
+    expect(second.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000 },
+    ]);
+  });
+
+  it('LOAD-BEARING: trimming to the cap retains the FIRST round, unlike a naive ring buffer', () => {
+    const many = Array.from({ length: FROZEN_REPAIR_CONVERGENCE_ROUND_CAP + 6 }, (_, i) => ({
+      round: i + 1,
+      head: C,
+      // A genuinely converging cycle: 40 failures shrinking by one each round.
+      failingCount: 40 - i,
+      atMs: T0 + i * 1_000,
+    }));
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: many,
+    });
+    expect(parsed).not.toBeNull();
+    const kept = parsed!.convergenceRounds!;
+    expect(kept).toHaveLength(FROZEN_REPAIR_CONVERGENCE_ROUND_CAP);
+    // The whole point: round 1 survives the trim.
+    expect(kept[0]).toEqual(many[0]);
+    expect(kept[kept.length - 1]).toEqual(many[many.length - 1]);
+    // ...and the naive trim, which is what a reasonable person writes first, does NOT.
+    const naive = naiveCap(many, FROZEN_REPAIR_CONVERGENCE_ROUND_CAP);
+    expect(naive[0]).not.toEqual(many[0]);
+    expect(kept).not.toEqual(naive);
+  });
+
+  it('round numbers keep counting after a trim — history is never renumbered', () => {
+    const many = Array.from({ length: FROZEN_REPAIR_CONVERGENCE_ROUND_CAP + 3 }, (_, i) => ({
+      round: i + 1,
+      head: C,
+      failingCount: 30 - i,
+      atMs: T0 + i * 1_000,
+    }));
+    const queue = readyToVerify({ convergenceRounds: many });
+    const next = markFrozenRepairVerificationRed(queue, {
+      repairHead: C,
+      failingTests: [],
+      nowMs: T0 + 99_000,
+    });
+    const rounds = next.convergenceRounds!;
+    // Highest existing round was cap+3; the new one must be cap+4, not a reused index.
+    expect(rounds[rounds.length - 1]!.round).toBe(FROZEN_REPAIR_CONVERGENCE_ROUND_CAP + 4);
+    expect(new Set(rounds.map((r) => r.round)).size).toBe(rounds.length);
+  });
+
+  it('a legacy queue with no rounds parses, and reads as "none recorded" not "not converging"', () => {
+    const legacy = { ...fresh() } as Record<string, unknown>;
+    delete legacy.convergenceRounds;
+    const parsed = parseFrozenCandidateRepairQueue(legacy);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.convergenceRounds).toBeUndefined();
+    const summary = summarizeFrozenRepairConvergence(parsed!, T0 + 5_000);
+    expect(summary.admissionRounds).toBe(0);
+    expect(summary.failingFirst).toBeNull();
+    expect(summary.shrinkTotal).toBeNull();
+    // NOT false — "no rounds recorded" is not evidence of a treadmill.
+    expect(summary.converging).toBeNull();
+  });
+
+  it('malformed rounds are dropped WITHOUT failing the parse — the queue is safety state', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 5, atMs: T0 },
+        { round: 0, head: C, failingCount: 5, atMs: T0 },
+        { round: 2, head: '', failingCount: 5, atMs: T0 },
+        { round: 3, head: C, failingCount: -1, atMs: T0 },
+        { round: 4, head: C, failingCount: 2, atMs: 'nope' },
+        'not-an-object',
+      ],
+    });
+    // The queue itself survives — refusing it would discard the frozen head.
+    expect(parsed).not.toBeNull();
+    expect(parsed!.repairHead).toBe(C);
+    expect(parsed!.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 5, atMs: T0 },
+    ]);
+  });
+
+  it('summarizes a converging cycle: monotonic shrink to a smaller set', () => {
+    const queue = readyToVerify({
+      failingTests: ['lib/a.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 12, atMs: T0 },
+        { round: 2, head: C, failingCount: 5, atMs: T0 + 1_000 },
+        { round: 3, head: C, failingCount: 1, atMs: T0 + 2_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 10_000);
+    expect(summary).toMatchObject({
+      openedAtMs: T0,
+      ageMs: 10_000,
+      admissionRounds: 3,
+      failingFirst: 12,
+      failingNow: 1,
+      shrinkTotal: 11,
+      converging: true,
+    });
+    expect(summary.shrinkPerRound).toEqual([
+      { round: 1, failingCount: 12, delta: null },
+      { round: 2, failingCount: 5, delta: -7 },
+      { round: 3, failingCount: 1, delta: -4 },
+    ]);
+  });
+
+  it('a cycle whose failing set GREW is not reported as converging', () => {
+    const queue = readyToVerify({
+      failingTests: Array.from({ length: 9 }, (_, i) => `lib/${i}.test.ts`),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 4, atMs: T0 },
+        { round: 2, head: C, failingCount: 9, atMs: T0 + 1_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 2_000);
+    expect(summary.shrinkTotal).toBe(-5);
+    expect(summary.converging).toBe(false);
+  });
+
+  it('a single recorded round is UNKNOWN, never a verdict', () => {
+    const summary = summarizeFrozenRepairConvergence(fresh(), T0 + 1_000);
+    expect(summary.admissionRounds).toBe(1);
+    // One data point cannot establish a trend in either direction.
+    expect(summary.converging).toBeNull();
+  });
+
+  it('off switch: ON (the deployed default) opens a cycle on a first real red', () => {
+    expect(
+      decideFrozenConvergenceCycleEntry({ flagEnabled: true, hasOpenQueue: false }),
+    ).toEqual({ kind: 'open-cycle', reason: 'first-real-red' });
+  });
+
+  it('off switch: OFF suppresses a NEW cycle', () => {
+    expect(
+      decideFrozenConvergenceCycleEntry({ flagEnabled: false, hasOpenQueue: false }),
+    ).toEqual({ kind: 'suppressed', reason: 'off-switch-disabled' });
+  });
+
+  it('LOAD-BEARING: an ALREADY-OPEN cycle is never suppressed, even with the switch OFF', () => {
+    // Turning the default off must stop new cycles opening; abandoning a candidate that is
+    // mid-convergence would strand its repair worktree and un-freeze a head the gate has
+    // already committed to. Both switch positions must agree here.
+    expect(
+      decideFrozenConvergenceCycleEntry({ flagEnabled: false, hasOpenQueue: true }),
+    ).toEqual({ kind: 'advance-existing-cycle', reason: 'queue-already-open' });
+    expect(
+      decideFrozenConvergenceCycleEntry({ flagEnabled: true, hasOpenQueue: true }),
+    ).toEqual(decideFrozenConvergenceCycleEntry({ flagEnabled: false, hasOpenQueue: true }));
+  });
+});
+
+describe('P-013 / D-007 — the gate_health.convergence PROJECTION', () => {
+  /**
+   * PERMANENT deliberately-wrong control (CLAUDE.md: prove falsifiability without mutating the
+   * shared tree). This is the projection an implementer writes when they treat "put the summary
+   * in gate_health" as a copy job: it carries the numbers and drops the cycle IDENTITY and the
+   * observation stamp. Every assertion below must REJECT it. It also proves the assertions are
+   * not merely restating `summarizeFrozenRepairConvergence`, which they would pass unchanged.
+   */
+  function naiveProjection(queue: FrozenCandidateRepairQueue, nowMs: number): Record<string, unknown> {
+    return { ...summarizeFrozenRepairConvergence(queue, nowMs) };
+  }
+
+  function twoRoundQueue(): FrozenCandidateRepairQueue {
+    return parseFrozenCandidateRepairQueue({
+      ...fresh(),
+      failingTests: ['lib/a.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 5, atMs: T0 },
+        { round: 2, head: C1, failingCount: 1, atMs: T0 + 1_000 },
+      ],
+    })!;
+  }
+
+  it('CALIBRATION: the real projection carries every summary field unchanged', () => {
+    // If this fails, the controls below prove nothing — they would be rejecting the honest
+    // projection for the wrong reason.
+    const queue = twoRoundQueue();
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 2_000);
+    const projected = buildFrozenRepairConvergenceGateHealth(queue, T0 + 2_000);
+    expect(projected).toMatchObject(summary as unknown as Record<string, unknown>);
+    expect(projected.converging).toBe(true);
+    expect(projected.shrinkTotal).toBe(4);
+  });
+
+  it('LOAD-BEARING: the projection names WHICH cycle it describes — the naive one cannot', () => {
+    const queue = twoRoundQueue();
+    const projected = buildFrozenRepairConvergenceGateHealth(queue, T0 + 2_000);
+    expect(projected.candidate).toBe(queue.candidate);
+    expect(projected.repairHead).toBe(queue.repairHead);
+    expect(projected.phase).toBe(queue.phase);
+    // The control: shrink figures with no cycle identity read as describing whatever candidate
+    // the reader is currently looking at.
+    const control = naiveProjection(queue, T0 + 2_000);
+    expect(control.candidate).toBeUndefined();
+    expect(control.repairHead).toBeUndefined();
+    expect(control.phase).toBeUndefined();
+  });
+
+  it('LOAD-BEARING: the projection is stamped, so a stale reading is distinguishable', () => {
+    const projected = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 9_000);
+    expect(projected.observedAtMs).toBe(T0 + 9_000);
+    expect(naiveProjection(twoRoundQueue(), T0 + 9_000).observedAtMs).toBeUndefined();
+  });
+
+  it('round-trips through JSON — what PG stores is what a reader gets back', () => {
+    const projected = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000);
+    expect(parseFrozenRepairConvergence(JSON.parse(JSON.stringify(projected)))).toEqual(projected);
+  });
+
+  it('the parser REJECTS the naive projection rather than rendering it with holes', () => {
+    // A blob missing the identity fields is not a degraded reading to be shown with blanks; it
+    // is a reading whose subject is unknown.
+    const control = naiveProjection(twoRoundQueue(), T0 + 2_000);
+    expect(parseFrozenRepairConvergence(JSON.parse(JSON.stringify(control)))).toBeNull();
+  });
+
+  it('absent / cleared / malformed all read as null — never as a clean zero', () => {
+    expect(parseFrozenRepairConvergence(undefined)).toBeNull();
+    // JSON null is how the retire paths CLEAR the projection.
+    expect(parseFrozenRepairConvergence(null)).toBeNull();
+    expect(parseFrozenRepairConvergence('convergence')).toBeNull();
+    expect(parseFrozenRepairConvergence([])).toBeNull();
+    const good = JSON.parse(
+      JSON.stringify(buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000)),
+    ) as Record<string, unknown>;
+    expect(parseFrozenRepairConvergence({ ...good, shrinkPerRound: 'lots' })).toBeNull();
+    expect(parseFrozenRepairConvergence({ ...good, shrinkPerRound: [{ round: 1 }] })).toBeNull();
+  });
+
+  it('LOAD-BEARING: a wrong-typed tri-state is REJECTED, not coerced to "not yet knowable"', () => {
+    const good = JSON.parse(
+      JSON.stringify(buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000)),
+    ) as Record<string, unknown>;
+    // `converging: null` is a legitimate stored value ("fewer than two rounds"), so a corrupt
+    // value coerced to null would be indistinguishable from an honest unknown.
+    expect(parseFrozenRepairConvergence({ ...good, converging: 'yes' })).toBeNull();
+    expect(parseFrozenRepairConvergence({ ...good, failingFirst: 'five' })).toBeNull();
+    expect(parseFrozenRepairConvergence({ ...good, shrinkTotal: '4' })).toBeNull();
+  });
+
+  it('a genuinely-unknown cycle parses, with its nulls intact', () => {
+    // One round: converging is NULL by design. The parser must accept that, or the projection
+    // would only ever be readable for cycles that already have a verdict.
+    const projected = buildFrozenRepairConvergenceGateHealth(fresh(), T0 + 1_000);
+    expect(projected.converging).toBeNull();
+    const parsed = parseFrozenRepairConvergence(JSON.parse(JSON.stringify(projected)));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.converging).toBeNull();
+    expect(parsed!.admissionRounds).toBe(1);
   });
 });
