@@ -16,6 +16,20 @@ export const FLAGS = {
   // DARK_FLAGS); this flag is the kill-switch: OFF makes the tool refuse with
   // flag_disabled while dev:pg_query and every documented write verb are
   // untouched.
+  // converge-frozen-candidate-by-fix-only-admission-2026-08-27 (P-013 / D-007, owner
+  // directive 2026-08-27): the owner-visible OFF SWITCH for freeze-and-converge as the
+  // default response to a red candidate. Default ON (derived FLAG_DEFAULTS — deliberately
+  // NOT in DARK_FLAGS): ON is the ALREADY-DEPLOYED behaviour (a first real code red opens
+  // the one frozen repair queue, green-checkpoint.ts, D-001/WI-39944), so this flag ships
+  // matching production exactly and changes nothing on its own.
+  // OFF restores the pre-D-001 re-cut-at-tip stream — the treadmill D-007 diagnosed, where
+  // each new cut re-admits the whole sweep and imports breakage faster than fixes land. It
+  // exists because D-007 requires the default to be an owner-revocable choice rather than a
+  // constant, NOT because turning it off is expected to be a good idea.
+  // A cycle ALREADY open is never suppressed by this switch (see
+  // decideFrozenConvergenceCycleEntry): flipping it off stops new cycles opening and leaves
+  // an in-flight convergence to finish, rather than stranding its repair worktree.
+  RELEASE_FREEZE_AND_CONVERGE_DEFAULT: "papercusp-release-freeze-and-converge-default",
   PG_MUTATE_TOOL: "papercusp-pg-mutate-tool",
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   HARNESS_PHASES: "papercusp-harness-phases",

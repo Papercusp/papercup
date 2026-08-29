@@ -95,6 +95,7 @@ import {
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  decideFrozenConvergenceCycleEntry,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
@@ -821,6 +822,15 @@ export interface CheckpointDeps {
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
   ): Promise<void>;
+  /**
+   * P-013 / D-007 owner-visible off switch (FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT).
+   * ABSENT ⇒ enabled, which keeps every existing stub and non-recording CLI run on the
+   * deployed freeze-and-converge default byte-identically. The production wiring must
+   * fail-safe to TRUE as well: an unreadable flag store resuming the re-cut-at-tip
+   * treadmill is the exact failure D-007 exists to prevent, so a hiccup must never be
+   * able to switch this off by accident — only an owner can.
+   */
+  freezeAndConvergeEnabled?(): Promise<boolean>;
   prepareFrozenRepairWorktree?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<void>;
@@ -9268,6 +9278,22 @@ async function runGreenCheckpointInner(
         await deps.writeFrozenRepairQueue(repairQueue);
         repairQueueRedPersisted = true;
       } else if (!repairQueue) {
+        // P-013 / D-007: opening a NEW convergence cycle is the deployed default and is
+        // what the owner-visible off switch governs. `decideFrozenConvergenceCycleEntry`
+        // holds that policy; an absent dep hook reads as enabled, so this is behaviour-
+        // identical unless an owner has explicitly turned the default off.
+        const cycleEntry = decideFrozenConvergenceCycleEntry({
+          flagEnabled: (await deps.freezeAndConvergeEnabled?.()) ?? true,
+          hasOpenQueue: false,
+        });
+        if (cycleEntry.kind === "suppressed") {
+          // The owner turned freeze-and-converge off: this red does NOT freeze the
+          // candidate, and the gate re-cuts at tip on the next tick. Announced rather than
+          // silent — a suppressed cycle looks exactly like a gate that forgot to open one.
+          deps.log(
+            `frozen convergence cycle SUPPRESSED for ${candidate.slice(0, 8)} — FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set). The red stands and the candidate is NOT frozen; the next tick re-cuts at tip.`,
+          );
+        } else {
         repairQueue = createFrozenCandidateRepairQueue({
           candidate,
           qualificationAttemptId: deps.qualificationAttemptId ?? null,
@@ -9283,6 +9309,7 @@ async function runGreenCheckpointInner(
           nowMs: Date.now(),
         });
         repairQueueCreatedThisPass = true;
+        }
       }
       const deferNewRepairDispatch =
         repairQueueCreatedThisPass && !opts.candidate;
@@ -9295,7 +9322,10 @@ async function runGreenCheckpointInner(
         });
         await deps.writeFrozenRepairQueue(repairQueue);
       }
-      if (!deferNewRepairDispatch) {
+      // `repairQueue` is null here only when the P-013 off switch suppressed the cycle —
+      // there is then no queue to dispatch a fixer for. The explicit guard is what keeps
+      // that branch type-safe rather than dereferencing a null queue below.
+      if (!deferNewRepairDispatch && repairQueue) {
         let fired: FrozenRepairDispatchResult | null = null;
         if (hasFrozenRepairDispatchReservation) {
           // Reserve the durable candidate row before the external fixer launch. The candidate
@@ -9385,7 +9415,11 @@ async function runGreenCheckpointInner(
           `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red persisted and fixer dispatch resolved; ` +
             "continuing to moving-tip re-triage and prefix salvage",
         );
-      } else {
+      } else if (repairQueue) {
+        // Deliberately `else if (repairQueue)` and not a bare `else`: with the P-013 off
+        // switch OFF there is no queue at all, and this branch would otherwise announce a
+        // "red transition persisted" that never happened. The suppression path logged its
+        // own line above; a suppressed cycle must not also claim a queue exists.
         deps.log(
           `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red transition persisted; ` +
             "deferring first fixer dispatch until moving-tip re-triage",
