@@ -140,10 +140,18 @@ grype sbom:/tmp/sbom.json -o json > /tmp/vuln.json 2>/dev/null || { detail="gryp
 
 secret_count=0
 if command -v gitleaks >/dev/null 2>&1; then
-  gitleaks dir /mnt/candidate --report-format json --report-path /tmp/secrets.json --no-banner --exit-code 0 >/dev/null 2>&1 || true
-  if [ -s /tmp/secrets.json ]; then
-    secret_count=\$(jq 'if type=="array" then length else 0 end' /tmp/secrets.json 2>/dev/null || echo 0)
-  fi
+  # --exit-code 0 makes gitleaks return 0 even WHEN IT FINDS SECRETS, so a non-zero exit here
+  # is a genuine tool failure and must fail the scan. The previous '|| true' meant a crashed
+  # scanner left no report, secret_count stayed 0, and the adapter's secretFindings===0 gate
+  # PASSED — a secret scanner that dies was indistinguishable from a clean image. The
+  # vulnerability path above already fails closed on a parse error; secrets did not.
+  gitleaks dir /mnt/candidate --report-format json --report-path /tmp/secrets.json --no-banner --exit-code 0 >/dev/null 2>&1 \\
+    || { detail="gitleaks-failed"; exit 1; }
+  # gitleaks always writes the report, using [] for a clean scan (verified against 8.30.1), so
+  # an absent or unparseable report means the measurement did not happen — never "zero secrets".
+  if [ ! -f /tmp/secrets.json ]; then detail="gitleaks-no-report"; exit 1; fi
+  secret_count=\$(jq 'if type=="array" then length else empty end' /tmp/secrets.json 2>/dev/null)
+  if [ -z "\$secret_count" ]; then detail="secret-parse-failed"; exit 1; fi
 else
   detail="gitleaks-missing"; exit 1
 fi
