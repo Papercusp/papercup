@@ -22,6 +22,54 @@ export const DIAGNOSTIC_BUDGET_CHARS = 4_000;
 export const DIAGNOSTIC_HEAD_FRACTION = 0.6;
 
 /**
+ * Fraction of the budget re-allocated to the CAUSE band when the first failure signal falls in
+ * the stretch that head+tail weighting would have elided. Paid for by shrinking head and tail
+ * proportionally, so the total stays inside `budget`.
+ */
+export const DIAGNOSTIC_CAUSE_FRACTION = 0.3;
+
+/**
+ * Fraction of the cause band spent BEFORE the failure line, so the excerpt shows what was being
+ * attempted and not only that it failed.
+ */
+const CAUSE_LEAD_FRACTION = 0.25;
+
+/**
+ * Lines that carry a failure SIGNAL. Deliberately matched against the EARLIEST such line: a
+ * failing pipeline reports its root cause first and its consequences afterwards, so the first
+ * match is the one worth spending budget on.
+ *
+ * Kept narrow on purpose. Broad words like "warning" or a bare "not" would match the routine
+ * progress chatter that both packer and systemd emit constantly, and a cause band anchored on
+ * chatter is worse than no cause band at all — it would evict real head/tail content to show
+ * nothing.
+ */
+const CAUSE_SIGNAL =
+  /(?:\bFAILED\b|did NOT match|\bERROR\b|,error,|\berrored\b|\bfatal\b|Traceback|non-zero exit|exit(?:ed)? with (?:non-zero|code)|command not found|No such file|Permission denied|\bcannot\b|\brefused\b|\bError:)/;
+
+/**
+ * Byte offset of the first line carrying a failure signal, or null when none does.
+ */
+function firstCauseOffset(text: string): number | null {
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    if (CAUSE_SIGNAL.test(line)) return offset;
+    offset += line.length + 1;
+  }
+  return null;
+}
+
+/** Start of the line containing `offset`. */
+function lineStartAt(text: string, offset: number): number {
+  const start = text.lastIndexOf('\n', Math.max(0, offset - 1));
+  return start === -1 ? 0 : start + 1;
+}
+
+function elision(count: number): string {
+  return `\n… [${String(count)} chars omitted from the middle of the output] …\n\n`;
+}
+
+/**
  * Excerpt a diagnostic so BOTH ends survive.
  *
  * ⛔ NEVER go back to a tail-only `slice(-N)` here. It is the intuitive way to bound this
@@ -43,8 +91,19 @@ export const DIAGNOSTIC_HEAD_FRACTION = 0.6;
  *    excerpt read only stderr while packer's `-machine-readable` mode writes its entire event
  *    stream — errors included — to stdout (EI-21762126059344308).
  *
- * The lesson generalises past either bug: bound a diagnostic by excerpting it, never by
- * truncating it, and be sure you are excerpting the stream the failure was actually written to.
+ *  - The r18 production release build failed on a `sha256sum --check` inside the release
+ *    verification provisioner. Head+tail weighting preserved packer's instance-creation preamble
+ *    and its teardown epilogue, and elided 6_055 chars from the middle — which is where the
+ *    provisioner's own output lives, including the `<file>: FAILED` line naming WHICH artifact
+ *    mismatched. The surviving text proved only that a script somewhere exited 1.
+ *
+ * The lesson generalises past any of the three: bound a diagnostic by excerpting it, never by
+ * truncating it; be sure you are excerpting the stream the failure was actually written to; and
+ * do not assume the failure sits at either END of that stream. Position is a proxy for salience,
+ * and packer is the case where the proxy breaks: its output is framed by boilerplate at BOTH
+ * ends, so the cause is structurally in the middle. Hence the third band below — anchored on the
+ * EARLIEST failure signal, because a failing pipeline reports its cause first and the
+ * consequences after it.
  */
 export function excerptDiagnostic(
   text: string,
@@ -55,11 +114,37 @@ export function excerptDiagnostic(
 
   const headChars = Math.ceil(budget * DIAGNOSTIC_HEAD_FRACTION);
   const tailChars = budget - headChars;
-  const omitted = trimmed.length - budget;
+
+  const cause = firstCauseOffset(trimmed);
+  const middleStart = headChars;
+  const middleEnd = trimmed.length - tailChars;
+
+  // The cause is already inside a band we keep (or there is no recognisable one). Two bands,
+  // exactly as before — this is the clean-room shape, where the cause is the very first line.
+  if (cause === null || cause < middleStart || cause >= middleEnd) {
+    return (
+      `${trimmed.slice(0, headChars)}\n` +
+      elision(trimmed.length - budget) +
+      `${trimmed.slice(-tailChars)}`
+    );
+  }
+
+  // The cause is in the stretch head+tail weighting would have thrown away. Buy a third band
+  // around it by shrinking the other two, and keep the total inside `budget`.
+  const causeChars = Math.max(1, Math.floor(budget * DIAGNOSTIC_CAUSE_FRACTION));
+  const remaining = budget - causeChars;
+  const newHeadChars = Math.ceil(remaining * DIAGNOSTIC_HEAD_FRACTION);
+  const newTailChars = remaining - newHeadChars;
+
+  const lead = Math.floor(causeChars * CAUSE_LEAD_FRACTION);
+  const causeStart = Math.max(newHeadChars, lineStartAt(trimmed, Math.max(0, cause - lead)));
+  const causeEnd = Math.min(trimmed.length - newTailChars, causeStart + causeChars);
 
   return (
-    `${trimmed.slice(0, headChars)}\n` +
-    `\n… [${String(omitted)} chars omitted from the middle of the output] …\n\n` +
-    `${trimmed.slice(-tailChars)}`
+    `${trimmed.slice(0, newHeadChars)}\n` +
+    elision(causeStart - newHeadChars) +
+    `${trimmed.slice(causeStart, causeEnd)}\n` +
+    elision(trimmed.length - newTailChars - causeEnd) +
+    `${trimmed.slice(-newTailChars)}`
   );
 }

@@ -512,11 +512,27 @@ build {
       "BUNDLE_PATH=\"$WORK_DIR/server.tgz\"",
       "SIGNATURE_PATH=\"$WORK_DIR/server.tgz.minisig\"",
       "PUBLIC_KEY_PATH=\"$WORK_DIR/release-public.key\"",
+      # `sha256sum --check` reports "<path>: FAILED" and a computed-checksum warning, which says
+      # that SOMETHING mismatched but never what the digest actually was. On a remote build whose
+      # output is excerpted before a human reads it, that is the difference between diagnosing a
+      # failure and paying for another build to see it. Verify explicitly instead, and fail with
+      # the expected digest, the computed one, and the size — the three facts that separate a
+      # truncated download from a wrong pin. Still fails closed: any mismatch exits non-zero.
+      "verify_digest() {",
+      "  local label=\"$1\" path=\"$2\" want=\"$3\" have size",
+      "  size=\"$(stat -c '%s' \"$path\")\"",
+      "  have=\"$(sha256sum \"$path\" | cut -d' ' -f1)\"",
+      "  if [ \"$have\" != \"$want\" ]; then",
+      "    echo \"DIGEST MISMATCH on $label: expected $want, computed $have, $size bytes at $path\" >&2",
+      "    exit 1",
+      "  fi",
+      "  echo \"digest verified: $label, $size bytes\"",
+      "}",
       "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \"$BUNDLE_URL\" --output \"$BUNDLE_PATH\"",
       "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \"$SIGNATURE_URL\" --output \"$SIGNATURE_PATH\"",
-      "printf '%s  %s\\n' \"$BUNDLE_SHA256\" \"$BUNDLE_PATH\" | sha256sum --check --strict -",
+      "verify_digest release-bundle \"$BUNDLE_PATH\" \"$BUNDLE_SHA256\"",
       "printf '%s' \"$SIGNING_PUBLIC_KEY\" > \"$PUBLIC_KEY_PATH\"",
-      "printf '%s  %s\\n' \"$SIGNING_KEY_SHA256\" \"$PUBLIC_KEY_PATH\" | sha256sum --check --strict -",
+      "verify_digest signing-public-key \"$PUBLIC_KEY_PATH\" \"$SIGNING_KEY_SHA256\"",
       "minisign -Vm \"$BUNDLE_PATH\" -x \"$SIGNATURE_PATH\" -p \"$PUBLIC_KEY_PATH\" >/dev/null",
       "RELEASE_DIR=\"/opt/papercusp/releases/$RELEASE_VERSION\"",
       "STAGE_DIR=\"$(mktemp -d \"/opt/papercusp/releases/.$${RELEASE_VERSION}.XXXXXX\")\"",
