@@ -294,7 +294,11 @@ impl RendezvousError {
             // reset by peer`), and one accepted then closed before replying
             // (`Canceled ... connection closed before message completed` — how
             // a TLS-only port responds to plaintext, among other causes).
-            return Self::new(RendezvousFailure::Unreachable, endpoint, describe_chain(req));
+            return Self::new(
+                RendezvousFailure::Unreachable,
+                endpoint,
+                describe_chain(req),
+            );
         }
         Self::new(RendezvousFailure::Protocol, endpoint, format!("{err:#}"))
     }
@@ -949,7 +953,10 @@ mod tests {
         );
         // Blank/whitespace is NOT a credential — treating it as one would send
         // an empty bearer and turn a missing-token mistake into an opaque 401.
-        assert_eq!(resolve_token_for("https://op.example:9443", Some("   ")), None);
+        assert_eq!(
+            resolve_token_for("https://op.example:9443", Some("   ")),
+            None
+        );
         assert_eq!(
             resolve_token_for("https://op.example:9443", Some("  padded  ")),
             Some("padded".to_string())

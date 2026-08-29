@@ -1651,6 +1651,15 @@ pub struct App {
     pub pane_entered: bool,
     /// Docs tab: file list + selection + the active doc's content + scroll.
     pub docs_files: Vec<String>,
+    /// Docs filter (EI-21646357450104414). A harness documentation tree runs to
+    /// hundreds of paths, so the list is narrowed client-side by a
+    /// case-insensitive substring over the doc id. `docs_query` is the committed
+    /// filter; `docs_search_open`/`docs_search_input` are the `/` composer, on
+    /// the Cupboard's pattern. `doc_sel` indexes `visible_docs()`, NOT
+    /// `docs_files`.
+    pub docs_query: String,
+    pub docs_search_open: bool,
+    pub docs_search_input: String,
     pub doc_sel: usize,
     pub doc_content: String,
     pub doc_scroll: u16,
@@ -2131,6 +2140,9 @@ impl App {
             harness_focus: HarnessFocus::Features,
             pane_entered: false,
             docs_files: Vec::new(),
+            docs_query: String::new(),
+            docs_search_open: false,
+            docs_search_input: String::new(),
             doc_sel: 0,
             doc_content: String::new(),
             doc_scroll: 0,
@@ -3460,20 +3472,44 @@ impl App {
         let no_selection = self.active_doc.lock().map(|g| g.is_none()).unwrap_or(true);
         if no_selection {
             if let Some(ap) = docs.active_path {
-                if let Some(i) = self.docs_files.iter().position(|f| *f == ap) {
+                if let Some(i) = self.visible_docs().iter().position(|f| **f == ap) {
                     self.doc_sel = i;
                 }
             }
         }
-        if self.doc_sel >= self.docs_files.len() {
-            self.doc_sel = self.docs_files.len().saturating_sub(1);
+        // Clamp against the FILTERED list — `doc_sel` indexes that, never
+        // `docs_files` (EI-21646357450104414).
+        let visible = self.visible_docs().len();
+        if self.doc_sel >= visible {
+            self.doc_sel = visible.saturating_sub(1);
         }
+    }
+
+    /// The Docs rows actually on screen (EI-21646357450104414). With no active
+    /// `docs_query` this is every path; with one it is the case-insensitive
+    /// substring matches over the doc id. `doc_sel` indexes THIS list, mirroring
+    /// `visible_memories()`, so every reader of the selection comes through here
+    /// and a filtered cursor can never resolve to an off-screen doc.
+    pub fn visible_docs(&self) -> Vec<&String> {
+        if self.docs_query.is_empty() {
+            return self.docs_files.iter().collect();
+        }
+        let needle = self.docs_query.to_lowercase();
+        self.docs_files
+            .iter()
+            .filter(|p| p.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    /// The selected doc id, resolved through the active filter.
+    pub fn selected_doc(&self) -> Option<String> {
+        self.visible_docs().get(self.doc_sel).map(|p| (*p).clone())
     }
 
     /// Publish the selected doc path so the poller fetches its content.
     pub fn publish_active_doc(&self) {
         if let Ok(mut g) = self.active_doc.lock() {
-            *g = self.docs_files.get(self.doc_sel).cloned();
+            *g = self.selected_doc();
         }
     }
 
@@ -4013,7 +4049,7 @@ impl App {
             "features" => self.feat_sel = clamp(self.features.len()),
             "issues" => self.issue_sel = clamp(self.issues.len()),
             "docs" => {
-                self.doc_sel = clamp(self.docs_files.len());
+                self.doc_sel = clamp(self.visible_docs().len());
                 self.publish_active_doc();
             }
             "harnesses" | "pots" => self.harness_sel = clamp(self.harnesses.len()),
@@ -7786,6 +7822,36 @@ impl App {
         }
         // Cupboard search composer (D-011): captures all input while open,
         // mirroring the Memory composer. Enter refetches with the query.
+        // Docs `/` filter composer (EI-21646357450104414). Captures input while
+        // open, exactly like the Cupboard composer below it; Enter commits the
+        // filter and re-publishes the active doc so the reader pane follows the
+        // new selection rather than keeping a now-hidden doc on screen.
+        if self.docs_search_open {
+            return match code {
+                KeyCode::Esc => {
+                    self.docs_search_open = false;
+                    self.docs_search_input.clear();
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    self.docs_search_open = false;
+                    self.docs_query = self.docs_search_input.trim().to_string();
+                    self.docs_search_input.clear();
+                    self.doc_sel = 0;
+                    self.publish_active_doc();
+                    Action::Render
+                }
+                KeyCode::Backspace => {
+                    self.docs_search_input.pop();
+                    Action::Render
+                }
+                KeyCode::Char(c) => {
+                    self.docs_search_input.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
         if self.cupboard_search_open {
             return match code {
                 KeyCode::Esc => {
@@ -8709,6 +8775,14 @@ impl App {
                 self.cupboard_search_input = self.cupboard_query.clone();
                 Action::Render
             }
+            // Docs filter (EI-21646357450104414). Local, not a refetch: the
+            // whole doc-id list is already client-side, so narrowing it needs no
+            // round trip and stays responsive on a several-hundred-path tree.
+            KeyCode::Char('/') if self.tab == Tab::Docs => {
+                self.docs_search_open = true;
+                self.docs_search_input = self.docs_query.clone();
+                Action::Render
+            }
             KeyCode::Char('r') if self.tab == Tab::Cupboard => self.refetch_cupboard(),
             KeyCode::Char('n') if self.tab == Tab::Cupboard => self.load_next_cupboard(),
             KeyCode::Enter if self.tab == Tab::Cupboard => self.cupboard_activate(),
@@ -9019,7 +9093,7 @@ impl App {
             // regenerate a stale generated/augmented doc, or re-verify a manual one.
             // (Capital R — lowercase r/g are taken globally.)
             KeyCode::Char('R') if self.tab == Tab::Docs => {
-                if let Some(doc) = self.docs_files.get(self.doc_sel).cloned() {
+                if let Some(doc) = self.selected_doc() {
                     let source = self
                         .doc_entries
                         .iter()
@@ -9731,7 +9805,7 @@ impl App {
                 HarnessFocus::Features => self.features.len(),
                 HarnessFocus::Issues => self.issues.len(),
             },
-            Tab::Docs => self.docs_files.len(),
+            Tab::Docs => self.visible_docs().len(),
             Tab::Testing => match self.testing_focus {
                 TestingFocus::Domains => self.testing.len(),
                 TestingFocus::Files => self.testing_files.len(),

@@ -3438,15 +3438,15 @@ mod tests {
             .expect("could not delimit from_discovery body")
             .0;
 
-        let explicit_return = body
-            .find("if selection.explicit")
-            .expect("from_discovery must special-case an explicit selection; \
+        let explicit_return = body.find("if selection.explicit").expect(
+            "from_discovery must special-case an explicit selection; \
                      without it an unreachable remote falls through to the local \
-                     IPC socket and silently serves the WRONG store");
-        let ipc_attempt = body
-            .find("IpcClient::connect_discovered")
-            .expect("positive control failed: the IPC attempt was not found in \
-                     from_discovery, so this guard is measuring the wrong region");
+                     IPC socket and silently serves the WRONG store",
+        );
+        let ipc_attempt = body.find("IpcClient::connect_discovered").expect(
+            "positive control failed: the IPC attempt was not found in \
+                     from_discovery, so this guard is measuring the wrong region",
+        );
 
         assert!(
             explicit_return < ipc_attempt,
