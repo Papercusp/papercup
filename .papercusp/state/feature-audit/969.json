@@ -1,0 +1,9 @@
+{
+  "actor": "su-35b3b4e1-a84c-4333-855a-a487e8c1e661",
+  "feature_id": "F-FIX-051",
+  "field": "__created",
+  "id": 969,
+  "new_value": "{\"id\":\"F-FIX-051\",\"title\":\"scheduler:get_next exceeds its 55s request timeout during fleet drain\",\"sourceIssueId\":\"EI-21827892817896920\"}",
+  "old_value": "null",
+  "ts": 1788042910380
+}
