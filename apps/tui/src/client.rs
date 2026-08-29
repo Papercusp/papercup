@@ -536,15 +536,18 @@ impl OperatorClient {
     /// identity. The timeout is the fail-fast contract for startup/doctor: a
     /// dead or mismatched backend becomes an actionable error, not a hung UI.
     pub async fn backend_identity(&self) -> Result<BackendIdentity> {
-        let value =
-            tokio::time::timeout(Duration::from_secs(3), self.get_json("/api/tui/identity"))
-                .await
-                .map_err(|_| {
-                    anyhow!(
-                        "operator identity probe timed out after 3s ({})",
-                        self.endpoint
-                    )
-                })??;
+        const PROBE_BUDGET: Duration = Duration::from_secs(3);
+        let value = tokio::time::timeout(PROBE_BUDGET, self.get_json("/api/tui/identity"))
+            .await
+            // Typed (R2): an expired probe budget is an UNREACHABLE operator,
+            // and only the type carries that — a bare message would fall through
+            // to the classifier's "answered, but not usably" bucket.
+            .map_err(|_| {
+                anyhow::Error::new(crate::http::ProbeTimeout {
+                    endpoint: self.endpoint.clone(),
+                    budget: PROBE_BUDGET,
+                })
+            })??;
         let server: ServerIdentity =
             serde_json::from_value(value).context("decode /api/tui/identity")?;
         if server.schema_version != 1 {

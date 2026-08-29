@@ -71,9 +71,54 @@ impl fmt::Display for IdentityMismatchError {
 
 impl std::error::Error for IdentityMismatchError {}
 
+/// The operator SELECTION is not valid, so no rendezvous was ever attempted.
+///
+/// Distinct from every transport failure: there is no endpoint to diagnose,
+/// and advice about reachability is nonsense. Typed so the classifier reports
+/// it as such instead of describing a conversation that never happened.
+#[derive(Debug, Clone)]
+pub struct SelectionError {
+    pub selector: String,
+    pub reason: String,
+}
+
+impl fmt::Display for SelectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+
+impl std::error::Error for SelectionError {}
+
+/// The bounded rendezvous probe budget expired (R2's headline clause).
+///
+/// Typed, because this failure arises from a `tokio::time::timeout` rather than
+/// from the transport, so nothing in the error chain would otherwise identify
+/// it — and the fallback classification ("answered, but not usably") is exactly
+/// backwards for a probe that never got an answer.
+#[derive(Debug, Clone)]
+pub struct ProbeTimeout {
+    pub endpoint: String,
+    pub budget: Duration,
+}
+
+impl fmt::Display for ProbeTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "operator identity probe timed out after {:?} ({})",
+            self.budget, self.endpoint
+        )
+    }
+}
+
+impl std::error::Error for ProbeTimeout {}
+
 /// How a rendezvous with the selected operator failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendezvousFailure {
+    /// The selection itself is invalid — nothing was ever dialled.
+    Selection,
     /// No usable TCP conversation: refused, timed out, DNS failure, no route.
     Unreachable,
     /// Reached the host, but the TLS handshake failed.
@@ -89,6 +134,7 @@ pub enum RendezvousFailure {
 impl RendezvousFailure {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Selection => "invalid-selection",
             Self::Unreachable => "unreachable",
             Self::Tls => "tls",
             Self::Auth => "auth",
@@ -99,7 +145,8 @@ impl RendezvousFailure {
 
     /// Every variant, so a guard can assert the whole surface stays actionable
     /// instead of only the variants a test author happened to remember.
-    pub const ALL: [RendezvousFailure; 5] = [
+    pub const ALL: [RendezvousFailure; 6] = [
+        Self::Selection,
         Self::Unreachable,
         Self::Tls,
         Self::Auth,
@@ -136,6 +183,11 @@ impl RendezvousError {
     pub fn repair(&self) -> String {
         let e = &self.endpoint;
         match self.kind {
+            RendezvousFailure::Selection => format!(
+                "{e} is not a valid operator selection, so nothing was contacted. \
+                 PUI_OPERATOR must be `staging` (:3170), `release` (:3070), or a full http(s) \
+                 URL such as https://host:9443 — and it must not embed credentials."
+            ),
             RendezvousFailure::Unreachable => format!(
                 "nothing answered at {e}. Confirm an operator is running and reachable there \
                  (`curl {e}/api/health`), or select a different one with \
@@ -177,6 +229,19 @@ impl RendezvousError {
     /// `is_connect()` because a handshake failure is itself reported as a
     /// connect error — testing connect first would swallow every TLS case.
     pub fn classify(endpoint: &str, err: &anyhow::Error) -> Self {
+        // FIRST: an invalid selection means no rendezvous was attempted at all,
+        // so every downstream classification would describe a conversation that
+        // never happened — and name a "host" that is not one.
+        if let Some(selection) = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<SelectionError>())
+        {
+            return Self::new(
+                RendezvousFailure::Selection,
+                selection.selector.clone(),
+                selection.reason.clone(),
+            );
+        }
         if let Some(mismatch) = err
             .chain()
             .find_map(|cause| cause.downcast_ref::<IdentityMismatchError>())
@@ -185,6 +250,16 @@ impl RendezvousError {
                 RendezvousFailure::IdentityMismatch,
                 endpoint,
                 mismatch.detail.clone(),
+            );
+        }
+        if let Some(timeout) = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<ProbeTimeout>())
+        {
+            return Self::new(
+                RendezvousFailure::Unreachable,
+                endpoint,
+                timeout.to_string(),
             );
         }
         if let Some(status) = err
@@ -204,9 +279,22 @@ impl RendezvousError {
             if tls_marker_in_chain(req) {
                 return Self::new(RendezvousFailure::Tls, endpoint, describe_chain(req));
             }
-            if req.is_connect() || req.is_timeout() {
-                return Self::new(RendezvousFailure::Unreachable, endpoint, describe_chain(req));
-            }
+            // Every OTHER reqwest error is a transport failure, so it is
+            // `Unreachable` — not a fall-through to `Protocol`.
+            //
+            // This holds because of how this client is built: it never asks
+            // reqwest to interpret a response. Statuses are turned into
+            // `HttpStatusError` by `sys_http`, and bodies are decoded
+            // separately by the caller, so reqwest is never the thing that
+            // reports an unusable answer — only a conversation that failed.
+            //
+            // Testing `is_connect()` alone missed two REAL cases, both of which
+            // then claimed the operator "answered": a socket accepted from a
+            // dying listener's backlog and reset (`SendRequest ... Connection
+            // reset by peer`), and one accepted then closed before replying
+            // (`Canceled ... connection closed before message completed` — how
+            // a TLS-only port responds to plaintext, among other causes).
+            return Self::new(RendezvousFailure::Unreachable, endpoint, describe_chain(req));
         }
         Self::new(RendezvousFailure::Protocol, endpoint, format!("{err:#}"))
     }
@@ -509,17 +597,36 @@ pub fn base_for_selection(sel: &str) -> Result<String> {
         .strip_suffix("/api/mcp")
         .unwrap_or(sel)
         .trim_end_matches('/');
+    let invalid = |reason: String| {
+        anyhow::Error::new(SelectionError {
+            selector: sel.to_string(),
+            reason,
+        })
+    };
     let raw = match sel {
         "staging" => "http://127.0.0.1:3170".to_string(),
         "release" => "http://127.0.0.1:3070".to_string(),
         s if s.starts_with("http://") || s.starts_with("https://") => s.to_string(),
-        other => anyhow::bail!(
-            "PUI_OPERATOR must be `staging`, `release`, or an http(s) URL — got {other:?}"
-        ),
+        other => {
+            return Err(invalid(format!(
+                "PUI_OPERATOR must be `staging`, `release`, or an http(s) URL — got {other:?}"
+            )))
+        }
     };
-    let mut url = reqwest::Url::parse(&raw).context("parse PUI operator URL")?;
+    let mut url = reqwest::Url::parse(&raw)
+        .map_err(|e| invalid(format!("PUI operator URL is unparseable: {e}")))?;
     if !url.username().is_empty() || url.password().is_some() {
-        anyhow::bail!("PUI operator URL must not contain credentials");
+        // MASK before reporting. The classified failure echoes its selector
+        // back to the terminal (and into any log or screenshot of it), so
+        // reporting this one verbatim would publish the embedded password —
+        // which is the very thing being rejected.
+        let mut masked = url.clone();
+        let _ = masked.set_username("***");
+        let _ = masked.set_password(Some("***"));
+        return Err(anyhow::Error::new(SelectionError {
+            selector: masked.as_str().trim_end_matches('/').to_string(),
+            reason: "PUI operator URL must not contain credentials".to_string(),
+        }));
     }
     if url.host_str() == Some("localhost") {
         url.set_host(Some("127.0.0.1"))
@@ -615,6 +722,38 @@ mod tests {
         );
     }
 
+    /// R2: an operator that is not there does not always fail during CONNECT.
+    ///
+    /// This is the deterministic form of a flake that caught a real defect: a
+    /// socket accepted from a dying listener's backlog and then reset is
+    /// reported by reqwest as a REQUEST error, so an `is_connect()`-only check
+    /// classified it `Protocol` — telling the user to verify the endpoint is a
+    /// papercusp operator when in fact nothing is serving there.
+    #[tokio::test]
+    async fn a_connection_closed_before_any_response_classifies_as_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream); // close without ever answering
+            }
+        });
+
+        let client = HttpClient::new(addr.clone(), None);
+        let err = client
+            .sys_http("GET", "/api/health", None)
+            .await
+            .unwrap_err();
+        let failure = RendezvousError::classify(&addr, &err);
+        assert_eq!(
+            failure.kind,
+            RendezvousFailure::Unreachable,
+            "a connection closed before any response must read as unreachable, \
+             not as a protocol failure.\ndetail: {}\nchain: {err:#}",
+            failure.detail
+        );
+    }
+
     /// R2: a REAL rustls handshake failure must classify as `tls`, not as the
     /// generic connect failure reqwest also reports it as.
     ///
@@ -678,6 +817,82 @@ mod tests {
         assert_eq!(
             RendezvousError::classify(&addr, &err).kind,
             RendezvousFailure::Protocol
+        );
+    }
+
+    /// An invalid SELECTOR must not be described as a failed conversation.
+    ///
+    /// Found by running `pui doctor` with `PUI_OPERATOR=prod`: it reported a
+    /// `protocol` failure and told the user to
+    /// `curl (unresolved selector "prod")/api/tui/identity` — advice that
+    /// cannot be followed, about a host that does not exist. Nothing is dialled
+    /// when the selection itself is rejected, so it is its own class.
+    #[test]
+    fn an_invalid_selector_classifies_as_a_selection_failure() {
+        for selector in ["prod", "", "http://user:secret@localhost:3070"] {
+            let err = base_for_selection(selector)
+                .unwrap_err()
+                .context("resolve canonical PUI operator endpoint");
+            let failure = RendezvousError::classify("ignored-label", &err);
+
+            assert_eq!(
+                failure.kind,
+                RendezvousFailure::Selection,
+                "selector {selector:?} must classify as a selection failure, \
+                 not as a failed rendezvous; detail: {}",
+                failure.detail
+            );
+            let repair = failure.repair();
+            assert!(
+                !repair.contains("curl") || !repair.contains(selector),
+                "the repair must not tell the user to curl a non-endpoint: {repair}"
+            );
+            assert!(
+                repair.contains("PUI_OPERATOR must be"),
+                "the repair must state the valid selector forms: {repair}"
+            );
+        }
+    }
+
+    /// A rejected selector is echoed back to the terminal, so an embedded
+    /// password must be masked first — otherwise the diagnostic for "your URL
+    /// must not contain credentials" is itself what publishes them.
+    #[test]
+    fn a_rejected_selector_never_echoes_an_embedded_credential() {
+        let err = base_for_selection("http://alice:hunter2@127.0.0.1:3070").unwrap_err();
+        let failure = RendezvousError::classify("ignored-label", &err);
+        let rendered = format!("{}\n{}", failure, failure.repair());
+
+        assert!(
+            !rendered.contains("hunter2"),
+            "the embedded password must never be echoed back: {rendered}"
+        );
+        // Positive control: the guard is looking at text that really does
+        // describe this selector, so the absence above is meaningful.
+        assert!(
+            rendered.contains("127.0.0.1:3070"),
+            "the masked selector should still identify the host: {rendered}"
+        );
+    }
+
+    /// R2's headline clause: an expired probe budget is an UNREACHABLE
+    /// operator. It arrives from a `tokio` timeout rather than the transport,
+    /// so without its own type it would land in the fallback bucket and tell
+    /// the user the operator "answered" — the opposite of what happened.
+    #[test]
+    fn an_expired_probe_budget_classifies_as_unreachable() {
+        let err = anyhow::Error::new(ProbeTimeout {
+            endpoint: "https://op.example:9443".into(),
+            budget: Duration::from_secs(3),
+        })
+        .context("probe canonical PUI operator/store identity");
+
+        let failure = RendezvousError::classify("https://op.example:9443", &err);
+        assert_eq!(failure.kind, RendezvousFailure::Unreachable);
+        assert!(
+            failure.detail.contains("timed out"),
+            "the detail must say the budget expired: {}",
+            failure.detail
         );
     }
 
@@ -865,6 +1080,32 @@ mod tests {
         assert_eq!(status.method, "GET");
         assert_eq!(status.path, "/api/missing");
         assert_eq!(status.body, "nope");
+    }
+
+    /// P-001 asks for authenticated HTTP *and SSE* to the selected operator.
+    /// The HTTP half is asserted above; the streaming half rides the same
+    /// `send()` and so is easy to assume rather than check — but a remote
+    /// operator that authenticates reads but not its event stream would leave
+    /// the cockpit silently empty, not visibly broken.
+    #[tokio::test]
+    async fn subscribe_sse_sends_the_bearer_for_the_selected_operator() {
+        let (addr, req_rx) = spawn_http(
+            "200 OK",
+            "Content-Type: text/event-stream\r\n",
+            "event: heartbeat\ndata: {}\n\n",
+        )
+        .await;
+        let client = HttpClient::new(addr, Some("remote-token".into()));
+        let _rx = client.subscribe_sse("/api/zero-harness/sse").await.unwrap();
+
+        let req = req_rx.await.unwrap();
+        assert!(
+            req.contains("authorization: Bearer remote-token")
+                || req.contains("Authorization: Bearer remote-token"),
+            "the SSE subscription must carry the selected operator's \
+             credential, or a remote cockpit authenticates its reads and then \
+             streams nothing:\n{req}"
+        );
     }
 
     #[tokio::test]
