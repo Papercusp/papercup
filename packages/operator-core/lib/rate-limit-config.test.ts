@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
   })),
   sqlTag: vi.fn(() => Promise.resolve([])),
   setGlobalConcurrencyCap: vi.fn(),
+  // P-009: applyCached installs EITHER a hard cap (explicit user intent) or a growable seed.
+  // Both are spied so a test can prove which one a given config produced.
+  setGlobalConcurrencySeed: vi.fn(),
   storedConfig: null as unknown,
   readShouldThrow: false,
 }));
@@ -32,6 +35,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@papercusp/sse', () => ({ getChannel: () => ({ onPublish: () => () => {}, publish: () => {} }) }));
 vi.mock('@papercusp/papercusp-shared/agent', () => ({
   setGlobalConcurrencyCap: h.setGlobalConcurrencyCap,
+  setGlobalConcurrencySeed: h.setGlobalConcurrencySeed,
   setGlobalConcurrencyFloor: () => {},
   setProviderFloorOverride: () => {},
   setAimdTuning: () => {},
@@ -62,19 +66,32 @@ import {
 } from './rate-limit-config';
 
 describe('clampRateLimitConfig (Gap 4 — malformed-input coercion)', () => {
-  const cases: Array<{ name: string; input: unknown; expect: { maxSimultaneousAgents: number; concurrencyFloor: number } }> = [
-    { name: 'null → profile defaults', input: null, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
-    { name: 'undefined → profile defaults', input: undefined, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
-    { name: 'empty object → profile defaults', input: {}, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
-    { name: 'max:0 clamps up to the floor of 1', input: { maxSimultaneousAgents: 0 }, expect: { maxSimultaneousAgents: 1, concurrencyFloor: 1 } },
+  // P-009: `maxSimultaneousAgentsSource` is asserted on EVERY case, not ignored. It is the field
+  // applyCached reads to decide whether to install a HARD cap, so a case that substituted the
+  // resource-profile default while reporting 'user' would silently reinstate the productive-capacity
+  // maximum this item exists to remove — the assertion below is what makes that regression fail.
+  const cases: Array<{
+    name: string;
+    input: unknown;
+    expect: { maxSimultaneousAgents: number; concurrencyFloor: number; maxSimultaneousAgentsSource: 'user' | 'seed' };
+  }> = [
+    { name: 'null → profile defaults', input: null, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' } },
+    { name: 'undefined → profile defaults', input: undefined, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' } },
+    { name: 'empty object → profile defaults', input: {}, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' } },
+    { name: 'max:0 clamps up to the floor of 1', input: { maxSimultaneousAgents: 0 }, expect: { maxSimultaneousAgents: 1, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'user' } },
     // P-009: 1000 is now HONORED — the baked 64 ceiling is retired, so an explicit user value is
     // deliberate intent, not something to silently clamp. Only absurd input meets the sanity bound.
-    { name: 'max:1000 is honored (the baked 64 ceiling is retired)', input: { maxSimultaneousAgents: 1000 }, expect: { maxSimultaneousAgents: 1000, concurrencyFloor: 1 } },
-    { name: 'an absurd max still meets the sanity bound', input: { maxSimultaneousAgents: 1e9 }, expect: { maxSimultaneousAgents: RATE_LIMIT_SANITY_BOUND, concurrencyFloor: 1 } },
-    { name: 'max:NaN → profile default', input: { maxSimultaneousAgents: Number.NaN }, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
-    { name: 'max:3.7 floors to 3 (Math.floor)', input: { maxSimultaneousAgents: 3.7 }, expect: { maxSimultaneousAgents: 3, concurrencyFloor: 1 } },
-    { name: 'concurrencyFloor:-5 clamps up to 1', input: { concurrencyFloor: -5 }, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1 } },
-    { name: 'floor that exceeds max is clamped down to max', input: { maxSimultaneousAgents: 4, concurrencyFloor: 10 }, expect: { maxSimultaneousAgents: 4, concurrencyFloor: 4 } },
+    { name: 'max:1000 is honored (the baked 64 ceiling is retired)', input: { maxSimultaneousAgents: 1000 }, expect: { maxSimultaneousAgents: 1000, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'user' } },
+    { name: 'an absurd max still meets the sanity bound', input: { maxSimultaneousAgents: 1e9 }, expect: { maxSimultaneousAgents: RATE_LIMIT_SANITY_BOUND, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'user' } },
+    // NaN is NOT user intent: the substituted profile default must report 'seed' so applyCached
+    // installs no cap. Reporting 'user' here would turn malformed input into a hard maximum.
+    { name: 'max:NaN → profile default, and is NOT promoted to a user cap', input: { maxSimultaneousAgents: Number.NaN }, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' } },
+    { name: 'max:3.7 floors to 3 (Math.floor)', input: { maxSimultaneousAgents: 3.7 }, expect: { maxSimultaneousAgents: 3, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'user' } },
+    { name: 'concurrencyFloor:-5 clamps up to 1', input: { concurrencyFloor: -5 }, expect: { maxSimultaneousAgents: PROFILE_DEFAULT_MAX, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' } },
+    { name: 'floor that exceeds max is clamped down to max', input: { maxSimultaneousAgents: 4, concurrencyFloor: 10 }, expect: { maxSimultaneousAgents: 4, concurrencyFloor: 4, maxSimultaneousAgentsSource: 'user' } },
+    // An explicitly-declared provenance WINS over presence inference: the PUT route rewrites the
+    // whole config on every edit, so a floor-only edit re-sends the seeded default as a number.
+    { name: 'a declared seed provenance survives a re-sent numeric default', input: { maxSimultaneousAgents: 32, maxSimultaneousAgentsSource: 'seed' }, expect: { maxSimultaneousAgents: 32, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' } },
   ];
 
   for (const c of cases) {
@@ -84,14 +101,17 @@ describe('clampRateLimitConfig (Gap 4 — malformed-input coercion)', () => {
   }
 
   it('a non-number max (string) → profile default (typeof guard, not Number coercion)', () => {
-    expect(clampRateLimitConfig({ maxSimultaneousAgents: '12' } as never).maxSimultaneousAgents).toBe(PROFILE_DEFAULT_MAX);
+    const cfg = clampRateLimitConfig({ maxSimultaneousAgents: '12' } as never);
+    expect(cfg.maxSimultaneousAgents).toBe(PROFILE_DEFAULT_MAX);
+    // Same rule as NaN: a coerced string is not user intent, so it must not install a hard cap.
+    expect(cfg.maxSimultaneousAgentsSource).toBe('seed');
   });
 });
 
 describe('clampRateLimitConfig — P-021 providerFloors + aimd', () => {
   it('omits providerFloors / aimd entirely when absent (byte-identical base config)', () => {
     const cfg = clampRateLimitConfig({ maxSimultaneousAgents: 4 });
-    expect(cfg).toEqual({ maxSimultaneousAgents: 4, concurrencyFloor: 1 });
+    expect(cfg).toEqual({ maxSimultaneousAgents: 4, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'user' });
     expect('providerFloors' in cfg).toBe(false);
     expect('aimd' in cfg).toBe(false);
   });

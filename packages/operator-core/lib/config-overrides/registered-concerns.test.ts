@@ -38,6 +38,8 @@ vi.mock('@papercusp/papercusp-shared/agent', () => ({
   // (rate-limit-config.applyCached) imports — it lagged when governor-registry.ts
   // grew the provider-floor + AIMD tuning surface (a missing-mock-export drift).
   setGlobalConcurrencyCap: vi.fn(),
+  // P-009 grew the surface again: applyCached now installs EITHER a hard cap or a growable seed.
+  setGlobalConcurrencySeed: vi.fn(),
   setGlobalConcurrencyFloor: vi.fn(),
   setProviderFloorOverride: vi.fn(),
   setAimdTuning: vi.fn(),

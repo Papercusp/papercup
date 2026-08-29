@@ -665,37 +665,24 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     telemetry: 'factor anchor, elapsed recovery time, and provider/model scope',
     contextPath: 'effectiveRpmFactor → effectiveRpm → decideRate',
   }),
-  writer({
-    id: 'rate-limit-maximum-ceiling',
-    file: RATE_LIMIT,
-    symbol: 'RATE_LIMIT_MAX_CEILING',
-    sourceAnchor: 'export const RATE_LIMIT_MAX_CEILING = 64;',
-    sourceKind: 'code',
-    dimensions: ['resource-profile', 'claude-admission', 'codex-admission'],
-    units: 'requests in flight / agent spawns',
-    owner: 'operator rate-limit config surface',
-    liveEffect: 'Rejects or clamps live maxSimultaneousAgents above 64.',
-    currentValue: 64,
-    disposition: 'remove',
-    deletionTarget: 'P-009/P-012: migrate user setting to observe-only controller input',
-    recurrenceTest: 'capacity-inventory.test.ts source-anchor + config migration tests',
-    durableSource: 'durable controller desired window and explicit operator intent',
-    telemetry: 'config provenance, generation, and migration warning',
-    contextPath: 'clampRateLimitConfig / operator:rate_limit_config',
-  }),
+  // P-009 REMOVED the `rate-limit-maximum-ceiling` writer (RATE_LIMIT_MAX_CEILING = 64). The census
+  // tracks LIVE writers, so a deleted writer has no row — its recurrence guard is now
+  // CAPACITY_WRITER_SYMBOL_PATTERN, which names RATE_LIMIT_MAX_CEILING explicitly: re-declaring it
+  // anywhere in scope is reported as an unclassified-writer and reds this file's census test.
   writer({
     id: 'rate-limit-provider-override-bounds',
     file: RATE_LIMIT,
     symbol: 'clampProviderFloors',
-    sourceAnchor: 'const mc = optInt(raw.maxConcurrent, 1, 256);',
+    sourceAnchor: 'const mc = optInt(raw.maxConcurrent, 1, RATE_LIMIT_SANITY_BOUND);',
     sourceKind: 'code',
     dimensions: ['provider'],
     units: 'requests in flight and requests/minute',
     owner: 'operator provider-floor config surface',
-    liveEffect: 'Clamps provider floor overrides to local 256/100000 bounds before applying them to governors.',
-    currentValue: 'maxConcurrent 1..256; rpm 1..100000',
-    disposition: 'remove',
-    deletionTarget: 'P-009: provider limits are observed, not locally ceiling-bounded',
+    liveEffect:
+      'Rejects absurd/non-numeric provider floor override INPUT before it reaches the governors. P-009 retired the baked 256 productive ceiling; the surviving RATE_LIMIT_SANITY_BOUND is an input-validity bound, not a capacity verdict, and a floor override is a cold-start seed the AIMD may probe above without limit.',
+    currentValue: 'maxConcurrent 1..100000; rpm 1..100000 (sanity bound, not a productive-capacity maximum)',
+    disposition: 'semantic-protocol-safety',
+    deletionTarget: 'P-009 retired the 256 productive ceiling; retain only while the config surface needs an input-validity bound',
     recurrenceTest: 'capacity-inventory.test.ts source-anchor + provider override tests',
     durableSource: 'provider contract observations and paced probing',
     telemetry: 'override provenance, header freshness, and causal penalty scope',
@@ -1216,7 +1203,9 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
       id: 'operator-rate-limit',
       field: 'operator rate-limit cap and provider override bounds',
       legacyFields: ['RATE_LIMIT_MAX_CEILING', 'ProviderFloorConfig.maxConcurrent', 'ProviderFloorConfig.rpm', 'clampProviderFloors'],
-      writerIds: ['rate-limit-maximum-ceiling', 'rate-limit-provider-override-bounds'],
+      // 'rate-limit-maximum-ceiling' left this list when P-009 deleted the writer itself; the legacy
+      // field name is retained above so the compatibility contract for the removed cap survives.
+      writerIds: ['rate-limit-provider-override-bounds'],
       observeOnlyMigration:
         'Accept persisted operator settings for compatibility, record raw value and provenance, and pass them to the controller as non-binding intent; do not clamp healthy desired state to local bounds.',
       warningReadback:

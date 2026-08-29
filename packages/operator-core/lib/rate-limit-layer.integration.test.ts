@@ -35,7 +35,7 @@ const {
   __resetRateLimitConfigForTest,
 } = await import('./rate-limit-config');
 const { record503, recordSuccess } = await import('./operator-rate-limit');
-const { globalConcurrencySnapshot, effectiveConcurrencySnapshot } = await import(
+const { globalConcurrencySnapshot, effectiveConcurrencySnapshot, resetGovernorRegistry } = await import(
   '@papercusp/papercusp-shared/agent'
 );
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -169,9 +169,40 @@ describe('rate-limit layer (real PG)', () => {
 
   // --- P-014: live config persist + clamp + bus + real governor gate (D-004/D-005) ------------
   it('writeRateLimitConfig persists, clamps, and round-trips through PG', async () => {
+    // P-009: the clamped config now carries its PROVENANCE. An explicitly-supplied value is 'user'
+    // intent, which is what licenses applyCached to install a hard cap at all.
     const w = await writeRateLimitConfig({ maxSimultaneousAgents: 5, concurrencyFloor: 99 });
-    expect(w).toEqual({ maxSimultaneousAgents: 5, concurrencyFloor: 5 }); // floor clamps to max
+    expect(w).toEqual({ maxSimultaneousAgents: 5, concurrencyFloor: 5, maxSimultaneousAgentsSource: 'user' }); // floor clamps to max
     expect(await readRateLimitConfig()).toEqual(w);
+  });
+
+  // --- P-009: live config cannot reinstall a productive-capacity maximum ----------------------
+  it('an unset maxSimultaneousAgents installs NO hard cap — the profile default is only a seed', async () => {
+    // Reset the shared gate so the seed path is observed from a known state rather than inheriting
+    // whatever cap a previous test in this file installed.
+    resetGovernorRegistry();
+    try {
+      const seeded = await writeRateLimitConfig({ concurrencyFloor: 1 });
+      expect(seeded.maxSimultaneousAgentsSource).toBe('seed');
+      // THE acceptance criterion, through the real config → applyCached → registry-gate path: a
+      // number the operator never asked for must not become a fleet-wide productive maximum.
+      expect(Number.isFinite(globalConcurrencySnapshot().cap)).toBe(false);
+      // It still bootstraps the probe window — a seed, not an absence of governance.
+      expect(effectiveConcurrencySnapshot().effective).toBe(seeded.maxSimultaneousAgents);
+
+      // CALIBRATION: an EXPLICIT value on the SAME path still installs a real cap. Without this the
+      // assertion above would also pass if applyCached had simply stopped talking to the gate.
+      const explicit = await writeRateLimitConfig({ maxSimultaneousAgents: 6, concurrencyFloor: 1 });
+      expect(explicit.maxSimultaneousAgentsSource).toBe('user');
+      expect(globalConcurrencySnapshot().cap).toBe(6);
+
+      // And clearing it returns the fleet to observation rather than to a baked ceiling.
+      const cleared = await writeRateLimitConfig({ concurrencyFloor: 1 });
+      expect(cleared.maxSimultaneousAgentsSource).toBe('seed');
+      expect(Number.isFinite(globalConcurrencySnapshot().cap)).toBe(false);
+    } finally {
+      __resetRateLimitConfigForTest();
+    }
   });
 
   it('a write pushes cap+floor into the live governor gate and publishes on the bus', async () => {
