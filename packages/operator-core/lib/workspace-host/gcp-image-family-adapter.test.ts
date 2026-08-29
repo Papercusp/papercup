@@ -534,6 +534,26 @@ describe('GCP image-family production adapter', () => {
     expect(checked, 'no execute_command referenced {{ .Vars }} — the guard measured nothing').toBeGreaterThan(0);
   });
 
+  /**
+   * Recurrence guard for WI-662195.
+   *
+   * Workspace-host images are templates, so SSH server host keys must be removed before
+   * publication. The next boot regenerates them, while retaining them in the image makes
+   * every cloned host present the same server identity. Match the actual inline command,
+   * not the explanatory comment above it, so deleting the cleanup cannot leave a green test.
+   */
+  it('removes SSH server host keys from the final image-cleanup provisioner', async () => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL), 'utf8');
+    const blocks = template.split(/provisioner\s+"shell"\s*\{/).slice(1);
+    expect(blocks.length, 'no shell provisioners found — the guard measured nothing').toBeGreaterThan(0);
+
+    const finalCleanupBlock = blocks.at(-1)?.split(/\n\s{0,2}provisioner\s+"/)[0] ?? '';
+    expect(
+      finalCleanupBlock,
+      'the final image-cleanup provisioner must remove build-specific SSH server host keys',
+    ).toMatch(/^\s*"rm -f \/etc\/ssh\/ssh_host_\*",\s*$/m);
+  });
+
   it('canonicalises the signing key before hashing it, instead of trusting transport to preserve bytes', async () => {
     // Writes a value straight out of the environment with no trailing-newline normalisation.
     const writesRawEnvValue = (line: string): boolean =>
