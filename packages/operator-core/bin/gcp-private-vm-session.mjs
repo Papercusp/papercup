@@ -31,7 +31,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ResourceLedger, ephemeralSuffix, fail, gcloudJson, run, runOrThrow } from './gcp-ephemeral.mjs';
-import { buildCleanRoomInstanceCreateArgs } from './gcp-clean-room-args.mjs';
+import {
+  CLEAN_ROOM_NETWORK_TAG,
+  assertIapSshReachable,
+  buildCleanRoomInstanceCreateArgs,
+} from './gcp-clean-room-args.mjs';
 
 /** Stock Ubuntu 24.04 LTS, matching WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION ('24.04'). */
 export const STOCK_UBUNTU_IMAGE_PROJECT = 'ubuntu-os-cloud';
@@ -152,6 +156,55 @@ async function awaitOsLogin(projectId, instance, zone, budgetMs) {
 }
 
 /**
+ * Verify, BEFORE any instance exists, that IAP SSH can actually reach the clean room.
+ *
+ * The run's only route to the guest is `gcloud compute ssh --tunnel-through-iap`, which
+ * connects from Google's fixed IAP range. If no INGRESS rule on the subnet's network admits
+ * that range on tcp:22 to our tag, the implied-deny drops the probe — but the instance still
+ * boots and reports RUNNING, so the failure surfaces only as a full-budget `awaitOsLogin`
+ * timeout whose message names OS Login and sends the reader to IAM. Two read-only API calls
+ * here turn that 12-minute misdirection into an immediate refusal naming the exact repair
+ * (EI-21749232930340104).
+ *
+ * Read-only and fail-CLOSED: an unreachable clean room is a real blocker, and booting anyway
+ * to "see what happens" is what this replaces.
+ */
+export async function assertCleanRoomIapReachable(projectId, subnetwork, zone) {
+  const region = String(zone).replace(/-[a-z]$/, '');
+  const subnet = await gcloudJson([
+    'compute',
+    'networks',
+    'subnets',
+    'describe',
+    subnetwork,
+    `--project=${projectId}`,
+    `--region=${region}`,
+  ]);
+  // The API returns the network as a full self-link; firewall rules are listed by name.
+  const networkName = String(subnet?.network ?? '').split('/').pop();
+  if (!networkName) fail(`could not resolve the network backing subnet '${subnetwork}' in ${region}`);
+
+  const rules = await gcloudJson([
+    'compute',
+    'firewall-rules',
+    'list',
+    `--project=${projectId}`,
+    `--filter=network:${networkName}`,
+  ]);
+
+  try {
+    assertIapSshReachable(Array.isArray(rules) ? rules : [], {
+      networkName,
+      projectId,
+      tag: CLEAN_ROOM_NETWORK_TAG,
+    });
+  } catch (error) {
+    fail(error.message);
+  }
+  return { networkName };
+}
+
+/**
  * Create a private instance, run `script` on it as root over IAP, and tear it down.
  *
  * Teardown runs in a `finally`, so a failure anywhere above still destroys the instance —
@@ -183,6 +236,9 @@ export async function runScriptOnPrivateVm({
   let osLoginReady = false;
   let publicIpv4Assigned = false;
   let residualResourceIds = [];
+
+  // Before the ledger tracks anything billable: prove the guest will be reachable at all.
+  await assertCleanRoomIapReachable(projectId, subnetwork, zone);
 
   try {
     scriptDir = await mkdtemp(join(tmpdir(), 'pc-private-vm-'));
