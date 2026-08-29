@@ -397,6 +397,67 @@ describe('cross-run passing-task verdict reuse', () => {
     ).toMatchObject({ hit: true });
   });
 
+  // The task timeout is DERIVED FROM DURATION HISTORY (timeoutDurationEstimate), so every run
+  // moves the next run's value. Left in the identity it is self-invalidating: run J hit, and
+  // byte-identical run K missed with `gate-config-changed` purely because J recorded a duration.
+  // Same class as run group and fork allocation above — a resource envelope, not a description
+  // of what the task exercises.
+  const batchTimeoutPolicy = {
+    overrideMs: null,
+    floorMs: 2_700_000,
+    headroomMultiplier: 3,
+    quantumMs: 60_000,
+    maxMs: 5_400_000,
+  };
+  // Built through the SAME normaliser the runner calls, so this can never pass against a local
+  // reimplementation of the rule while the runner does something else.
+  const withTimeout = (effectiveMs: number | null, source: string | null) => ({
+    gateConfig: passingTaskVerdictCrossRunGateConfig({
+      retry: true,
+      affectedBase: 'a2d69cef',
+      batchTimeout: { ...batchTimeoutPolicy, effectiveMs, source },
+    }),
+  });
+
+  it('ignores a history-derived task timeout, so recording a duration does not evict the proof', () => {
+    // Run A fell back to the floor (no history). Run B had A's duration, so its bound moved.
+    const proven = crossRunIdentity(runA, withTimeout(null, 'floor'));
+    const next = crossRunIdentity(runB, withTimeout(1_234_000, 'history'));
+    expect(next.fingerprint).toBe(proven.fingerprint);
+    expect(
+      decidePassingTaskVerdict({
+        enabled: true,
+        cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(proven),
+        identity: next,
+      }),
+    ).toMatchObject({ hit: true });
+  });
+
+  // The falsifier for the exclusion above: neutralising the DERIVED bound must not smuggle out
+  // the STATIC timeout policy with it. A real config change still has to invalidate.
+  it('still MISSES when the static timeout policy itself changed', () => {
+    const proven = crossRunIdentity(runA, withTimeout(null, 'floor'));
+    const policyChanged = crossRunIdentity(runB, {
+      gateConfig: {
+        retry: true,
+        batchTimeout: { ...batchTimeoutPolicy, floorMs: 600_000, effectiveMs: null, source: 'floor' },
+      },
+    });
+    expect(policyChanged.fingerprint).not.toBe(proven.fingerprint);
+  });
+
+  // Identity-level agreement is not wiring: the runner has to actually null the derived pair, and
+  // it is the runner — not this module — that reads durationHistory.
+  it('nulls the derived timeout on the cross-run identity in affected-tests.mjs', () => {
+    const runner = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    const crossRun = runner.slice(runner.indexOf('gateConfig: {\n            ...cacheIdentitySpec.gateConfig'));
+    expect(crossRun).toBeTruthy();
+    const block = crossRun.slice(0, crossRun.indexOf('environment: crossRunEnvironment'));
+    expect(block).toContain('affectedBase: null');
+    expect(block).toMatch(/batchTimeout:\s*\{[\s\S]*effectiveMs:\s*null[\s\S]*source:\s*null/);
+  });
+
   // The falsifiability controls. Each asserts a MISS: if any of these ever hits, the gate is
   // reusing a verdict that no longer describes the code under test.
   it('MISSES when a dependency byte changed — the property the gate rests on', () => {

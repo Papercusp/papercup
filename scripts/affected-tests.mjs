@@ -151,6 +151,7 @@ import {
   namespacePassingTaskVerdictDecision,
   passingTaskVerdictCacheEntry,
   passingTaskVerdictCrossRunIdentityEnvironment,
+  passingTaskVerdictCrossRunGateConfig,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
   PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
@@ -4329,7 +4330,12 @@ function runCapturedTask(
           // (TASK_VERDICT_LOCAL_CROSS_RUN_ENABLED requires GREEN_CHECKPOINT !== "1"), so no gate
           // certification path is widened by this. Storage and lookup both use this same
           // identity, so the two stay symmetric.
-          gateConfig: { ...cacheIdentitySpec.gateConfig, affectedBase: null },
+          // ONE definition, shared with the test that proves it: the neutralised set and the
+          // reason each field is self-invalidating live on
+          // `passingTaskVerdictCrossRunGateConfig`, beside its environment-side sibling. The
+          // derived task TIMEOUT is neutralised there too — it comes from duration history, so
+          // every run moved the next run's gateConfig hash and reuse could never hit twice.
+          gateConfig: passingTaskVerdictCrossRunGateConfig(cacheIdentitySpec.gateConfig),
           environment: crossRunEnvironment,
         });
         // WI-595883: per-variable digests, so the NEXT run's `environment-changed` miss names the
