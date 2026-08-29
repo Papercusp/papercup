@@ -9,11 +9,15 @@
  * particular window, and every positive assertion is paired with a control showing the assertion
  * could actually fail.
  */
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   DIAGNOSTIC_HEAD_FRACTION,
   excerptDiagnostic,
+  spillDiagnostic,
 } from './diagnostic-excerpt.js';
 
 /**
@@ -131,5 +135,64 @@ describe('excerptDiagnostic', () => {
 
   it('returns short output untouched rather than decorating it', () => {
     expect(excerptDiagnostic('  boom  ', 400)).toBe('boom');
+  });
+
+  /**
+   * Real data from the r18b build. packer's `-machine-readable` stream tags every line by the
+   * STREAM it came from, so anything a tool writes to stderr is tagged `ui,error` — including
+   * needrestart cheerfully reporting that nothing needs restarting. Anchoring on that tag put
+   * the cause band on benign chatter and elided the real failure a second time.
+   *
+   * The general trap: a stream tag is not a severity. stderr is where well-behaved tools write
+   * progress.
+   */
+  it('does not treat packer\'s ui,error stream tag as a failure', () => {
+    const output = [
+      ...Array.from({ length: 200 }, (_, i) => `1787984050,,ui,say,==> host: setup line ${String(i)}`),
+      '1787984134,,ui,error,==> host: Running kernel seems to be up-to-date.',
+      '1787984134,,ui,error,==> host: No services need to be restarted.',
+      ...Array.from({ length: 200 }, (_, i) => `1787984140,,ui,say,==> host: more chatter ${String(i)}`),
+      '1787984200,,ui,say,==> host: guest tool jq is 1.7.1-3, not the pinned 1.7.1-4',
+      '1787984200,,ui,say,==> host: Provisioning step had errors: Running the cleanup provisioner...',
+      ...Array.from({ length: 200 }, (_, i) => `1787984201,,ui,say,==> host: teardown ${String(i)}`),
+    ].join('\n');
+
+    const excerpt = excerptDiagnostic(output, 1_200);
+
+    // The line that actually explains the build failure.
+    expect(excerpt).toContain('guest tool jq is 1.7.1-3, not the pinned 1.7.1-4');
+    // And NOT the benign stderr-tagged chatter it used to anchor on.
+    expect(excerpt).not.toContain('No services need to be restarted');
+  });
+
+  it('reads BACKWARDS from the consequence, because the cause is printed just above it', () => {
+    // A runner reports "the step failed" only AFTER the failing script has printed why.
+    const output = [
+      ...Array.from({ length: 300 }, (_, i) => `head ${String(i)}`),
+      'DIGEST MISMATCH on release-bundle: expected aaa, computed bbb, 12 bytes at /tmp/x',
+      'Provisioning step had errors: Running the cleanup provisioner, if present...',
+      ...Array.from({ length: 300 }, (_, i) => `teardown ${String(i)}`),
+    ].join('\n');
+
+    expect(excerptDiagnostic(output, 1_200)).toContain('DIGEST MISMATCH on release-bundle');
+  });
+});
+
+describe('spillDiagnostic', () => {
+  it('writes the COMPLETE text to disk, however long, and returns a readable path', () => {
+    const full = Array.from({ length: 5_000 }, (_, i) => `line ${String(i)}`).join('\n');
+    const path = spillDiagnostic('packer build', full);
+
+    expect(path).not.toBeNull();
+    expect(readFileSync(path!, 'utf8')).toBe(full);
+    // The excerpt of the same text is lossy — that asymmetry is the whole point of the spill.
+    expect(excerptDiagnostic(full, 4_000).length).toBeLessThan(full.length);
+  });
+
+  it('sanitises the label into the filename rather than trusting it as a path', () => {
+    const path = spillDiagnostic('../../etc/passwd', 'x');
+
+    expect(path).not.toBeNull();
+    expect(basename(path!)).toBe('.._.._etc_passwd.log');
   });
 });

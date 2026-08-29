@@ -1,3 +1,7 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 /**
  * Bounded excerpting for failure diagnostics from expensive workspace-host operations.
  *
@@ -29,10 +33,13 @@ export const DIAGNOSTIC_HEAD_FRACTION = 0.6;
 export const DIAGNOSTIC_CAUSE_FRACTION = 0.3;
 
 /**
- * Fraction of the cause band spent BEFORE the failure line, so the excerpt shows what was being
- * attempted and not only that it failed.
+ * Fraction of the cause band spent BEFORE the anchor line. Weighted heavily toward what came
+ * BEFORE, because the signal a runner emits ("Provisioning step had errors", "Script exited with
+ * non-zero exit status") is the CONSEQUENCE; the failing script's own message is printed just
+ * above it. Anchoring on the consequence and then reading backwards is what actually recovers
+ * the cause.
  */
-const CAUSE_LEAD_FRACTION = 0.25;
+const CAUSE_LEAD_FRACTION = 0.75;
 
 /**
  * Lines that carry a failure SIGNAL. Deliberately matched against the EARLIEST such line: a
@@ -45,7 +52,7 @@ const CAUSE_LEAD_FRACTION = 0.25;
  * nothing.
  */
 const CAUSE_SIGNAL =
-  /(?:\bFAILED\b|did NOT match|\bERROR\b|,error,|\berrored\b|\bfatal\b|Traceback|non-zero exit|exit(?:ed)? with (?:non-zero|code)|command not found|No such file|Permission denied|\bcannot\b|\brefused\b|\bError:)/;
+  /(?:\bFAILED\b|did NOT match|\bERROR\b|\berrored\b|\bfatal\b|Traceback|Provisioning step had errors|non-zero exit|exit(?:ed)? with (?:non-zero|code)|command not found|No such file|Permission denied|\bcannot\b|\brefused\b|\bError:)/;
 
 /**
  * Byte offset of the first line carrying a failure signal, or null when none does.
@@ -67,6 +74,36 @@ function lineStartAt(text: string, offset: number): number {
 
 function elision(count: number): string {
   return `\n… [${String(count)} chars omitted from the middle of the output] …\n\n`;
+}
+
+/**
+ * Write the COMPLETE diagnostic to a file and return its path, or null if the spill itself
+ * fails — writing diagnostics must never mask the failure being described.
+ *
+ * This is the escape hatch that makes the excerpting above non-fatal. Every excerpt rule is a
+ * guess about where the cause sits, and P-046 burned three billable builds proving that a
+ * guess which held for the last failure need not hold for the next one. A spilled file needs no
+ * guess: the excerpt goes in the message for the reader, the whole thing goes on disk for the
+ * investigation. Name the returned path EARLY in the failure message — a path mentioned after
+ * 4_000 chars of excerpt is a path nobody sees.
+ *
+ * @param label distinguishes one spill from another; sanitised into the filename.
+ * @param prefix mkdtemp prefix, so different subsystems' spills stay recognisable.
+ */
+export function spillDiagnostic(
+  label: string,
+  text: string,
+  prefix = 'papercusp-diagnostic-',
+): string | null {
+  try {
+    const safeLabel = label.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'diagnostic';
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    const path = join(dir, `${safeLabel}.log`);
+    writeFileSync(path, text, 'utf8');
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 /**
