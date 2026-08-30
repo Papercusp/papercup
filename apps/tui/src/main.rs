@@ -77,7 +77,7 @@ use mux::{Multiplexer, MuxAction, Zellij};
 const CLI_HELP: &str = "pui — Papercusp terminal workbench
 
 Usage:
-  pui [SUBCOMMAND]
+  pui [OPTIONS] [SUBCOMMAND]
 
 Subcommands:
   workbench                  Open the full zellij workbench
@@ -96,9 +96,125 @@ Subcommands:
   context-pane [SOURCE ID]   Open Context for the live Sentinel or an exact session
 
 Options:
+  --fleet=<slug>             Join fresh PUI SU sessions to an existing fleet
+  --seat=<ref>               Consume that fleet's delegated seat (requires --fleet)
   -h, --help                 Print this help text
   -V, --version              Print version information
 ";
+
+const PUI_FLEET_ENV: &str = "PUI_FLEET";
+const PUI_SEAT_ENV: &str = "PUI_SEAT";
+
+/// Process-wide launch context. The top-level workbench exports it before
+/// zellij starts, so every child `pui hud`/dock pane carries the same fleet and
+/// delegated-seat selection without copying it into each generated command.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CliInvocation {
+    positionals: Vec<String>,
+    fleet: Option<String>,
+    seat: Option<String>,
+}
+
+impl CliInvocation {
+    fn parse(
+        args: impl IntoIterator<Item = String>,
+        inherited_fleet: Option<&str>,
+        inherited_seat: Option<&str>,
+    ) -> Result<Self> {
+        fn set_cli_value(slot: &mut Option<String>, name: &str, raw: &str) -> Result<()> {
+            let value = raw.trim();
+            if value.is_empty() {
+                anyhow::bail!("{name} requires a non-empty value");
+            }
+            if let Some(existing) = slot {
+                if existing != value {
+                    anyhow::bail!("conflicting {name} values: {existing:?} and {value:?}");
+                }
+                return Ok(());
+            }
+            *slot = Some(value.to_string());
+            Ok(())
+        }
+
+        fn merge_value(
+            name: &str,
+            explicit: Option<String>,
+            inherited: Option<&str>,
+        ) -> Result<Option<String>> {
+            let inherited = inherited
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            if let (Some(explicit), Some(inherited)) = (&explicit, &inherited) {
+                if explicit != inherited {
+                    anyhow::bail!(
+                        "conflicting {name} selectors: CLI resolves to {explicit:?}, environment resolves to {inherited:?}"
+                    );
+                }
+            }
+            Ok(explicit.or(inherited))
+        }
+
+        let mut positionals = Vec::new();
+        let mut fleet = None;
+        let mut seat = None;
+        let mut pending: Option<&'static str> = None;
+
+        for arg in args {
+            if let Some(name) = pending.take() {
+                if arg.starts_with("--") {
+                    anyhow::bail!("{name} requires a value before {arg}");
+                }
+                match name {
+                    "--fleet" => set_cli_value(&mut fleet, name, &arg)?,
+                    "--seat" => set_cli_value(&mut seat, name, &arg)?,
+                    _ => unreachable!("only fleet/seat can be pending"),
+                }
+                continue;
+            }
+            match arg.as_str() {
+                "--fleet" => pending = Some("--fleet"),
+                "--seat" => pending = Some("--seat"),
+                _ if arg.starts_with("--fleet=") => {
+                    set_cli_value(&mut fleet, "--fleet", &arg["--fleet=".len()..])?
+                }
+                _ if arg.starts_with("--seat=") => {
+                    set_cli_value(&mut seat, "--seat", &arg["--seat=".len()..])?
+                }
+                _ => positionals.push(arg),
+            }
+        }
+        if let Some(name) = pending {
+            anyhow::bail!("{name} requires a value");
+        }
+
+        let fleet = merge_value("--fleet/PUI_FLEET", fleet, inherited_fleet)?;
+        let seat = merge_value("--seat/PUI_SEAT", seat, inherited_seat)?;
+        if seat.is_some() && fleet.is_none() {
+            anyhow::bail!(
+                "--seat/PUI_SEAT requires --fleet/PUI_FLEET because delegated seats belong to a fleet"
+            );
+        }
+        Ok(Self {
+            positionals,
+            fleet,
+            seat,
+        })
+    }
+
+    fn positional(&self, index: usize) -> Option<&str> {
+        self.positionals.get(index).map(String::as_str)
+    }
+
+    fn export_launch_env(&self) {
+        if let Some(fleet) = &self.fleet {
+            std::env::set_var(PUI_FLEET_ENV, fleet);
+        }
+        if let Some(seat) = &self.seat {
+            std::env::set_var(PUI_SEAT_ENV, seat);
+        }
+    }
+}
 
 fn print_cli_help(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> bool {
     if matches!(subcommand, Some("-h") | Some("--help"))
@@ -131,8 +247,16 @@ async fn main() -> Result<()> {
     //   pui           → the workbench from a plain terminal, but just the HUD when
     //                   already inside zellij (so the HUD pane can't recursively
     //                   nest another workbench — `$ZELLIJ` is set by zellij).
-    let subcommand = std::env::args().nth(1);
-    let subcommand_arg = std::env::args().nth(2);
+    let inherited_fleet = std::env::var(PUI_FLEET_ENV).ok();
+    let inherited_seat = std::env::var(PUI_SEAT_ENV).ok();
+    let cli = CliInvocation::parse(
+        std::env::args().skip(1),
+        inherited_fleet.as_deref(),
+        inherited_seat.as_deref(),
+    )?;
+    cli.export_launch_env();
+    let subcommand = cli.positional(0).map(str::to_string);
+    let subcommand_arg = cli.positional(1).map(str::to_string);
     if print_cli_help(subcommand.as_deref(), subcommand_arg.as_deref()) {
         return Ok(());
     }
@@ -157,9 +281,7 @@ async fn main() -> Result<()> {
         // panes. Tails the ONE shared session transcript so every desktop instance
         // shows the SAME live agent + survives shell exit (not a per-window psu shell).
         Some("brain-view") => {
-            return brain_view::run(brain_view::Scope::from_arg(
-                std::env::args().nth(2).as_deref(),
-            ))
+            return brain_view::run(brain_view::Scope::from_arg(cli.positional(1)))
             .await;
         }
         Some("hud") => {}
@@ -224,7 +346,7 @@ async fn main() -> Result<()> {
     // C-3 row key (slug or pubkey-b64) this instance renders full-pane.
     // Required argv[2] for `hive-pane`; `network-pane` renders the board.
     let network_focus: Option<String> = match subcommand.as_deref() {
-        Some("hive-pane") => match std::env::args().nth(2) {
+        Some("hive-pane") => match cli.positional(1) {
             Some(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
             _ => {
                 eprintln!("usage: pui hive-pane <key>");
@@ -238,13 +360,15 @@ async fn main() -> Result<()> {
     // session; one half of the pair is rejected rather than guessed.
     let context_target = match subcommand.as_deref() {
         Some("context-pane") | Some("plans-pane") => {
-            match (std::env::args().nth(2), std::env::args().nth(3)) {
+            match (cli.positional(1), cli.positional(2)) {
                 (None, None) => None,
                 (Some(source), Some(id)) if !source.trim().is_empty() && !id.trim().is_empty() => {
                     Some(models::ConversationContextProjectionTarget::new(
                         source.trim(),
                         id.trim(),
-                        std::env::args().nth(4).filter(|h| !h.trim().is_empty()),
+                        cli.positional(3)
+                            .filter(|h| !h.trim().is_empty())
+                            .map(str::to_string),
                     ))
                 }
                 _ => {
@@ -262,9 +386,9 @@ async fn main() -> Result<()> {
     // hive's attributed owners (P-014 item 3 — the drill-in tab's wake board,
     // server-filtered via `network.hive.wakes`).
     let wake_filter: app::WakeFilter = match subcommand.as_deref() {
-        Some("wake-pane") => match std::env::args().nth(2).as_deref() {
+        Some("wake-pane") => match cli.positional(1) {
             Some("--queen") => app::WakeFilter::Queen,
-            Some("--hive") => match std::env::args().nth(3) {
+            Some("--hive") => match cli.positional(2) {
                 Some(h) if !h.trim().is_empty() => app::WakeFilter::Hive(h.trim().to_string()),
                 _ => {
                     eprintln!("usage: pui wake-pane --hive <slug>");
@@ -277,7 +401,7 @@ async fn main() -> Result<()> {
         // The agent-context panes share the wake-pane's scope grammar; their
         // bare default is the QUEEN (they sit in her dock column).
         Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => {
-            match std::env::args().nth(2).as_deref() {
+            match cli.positional(1) {
                 Some("--queen") | None => app::WakeFilter::Queen,
                 Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
                 _ => app::WakeFilter::Queen,
@@ -327,6 +451,8 @@ async fn main() -> Result<()> {
 
     let result = run(
         &mut terminal,
+        cli.fleet,
+        cli.seat,
         pinned,
         network_focus,
         context_target,
@@ -360,7 +486,11 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod cli_help_tests {
-    use super::{print_cli_help, print_cli_version};
+    use super::{print_cli_help, print_cli_version, CliInvocation, CLI_HELP};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
 
     #[test]
     fn top_level_help_is_recognized() {
@@ -394,6 +524,79 @@ mod cli_help_tests {
     #[test]
     fn ordinary_subcommand_arguments_do_not_trigger_version() {
         assert!(!print_cli_version(Some("hive-pane"), Some("engineering")));
+    }
+
+    #[test]
+    fn seat_context_flags_are_global_and_preserve_subcommand_positionals() {
+        let equals = CliInvocation::parse(
+            args(&[
+                "--fleet=fed-drill",
+                "hive-pane",
+                "engineering",
+                "--seat=opus[1m]:xhigh:AUTO",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(equals.positionals, ["hive-pane", "engineering"]);
+        assert_eq!(equals.fleet.as_deref(), Some("fed-drill"));
+        assert_eq!(equals.seat.as_deref(), Some("opus[1m]:xhigh:AUTO"));
+
+        let split = CliInvocation::parse(
+            args(&[
+                "workbench",
+                "--fleet",
+                "fed-drill",
+                "--seat",
+                "sonnet:high:auto",
+            ]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(split.positionals, ["workbench"]);
+        assert_eq!(split.fleet.as_deref(), Some("fed-drill"));
+        assert_eq!(split.seat.as_deref(), Some("sonnet:high:auto"));
+    }
+
+    #[test]
+    fn inherited_seat_context_is_reused_by_zellij_child_panes() {
+        let child = CliInvocation::parse(
+            args(&["hud"]),
+            Some("fed-drill"),
+            Some("sonnet:high:auto"),
+        )
+        .unwrap();
+        assert_eq!(child.positionals, ["hud"]);
+        assert_eq!(child.fleet.as_deref(), Some("fed-drill"));
+        assert_eq!(child.seat.as_deref(), Some("sonnet:high:auto"));
+    }
+
+    #[test]
+    fn seat_context_refuses_missing_fleet_and_conflicting_sources() {
+        let missing = CliInvocation::parse(
+            args(&["--seat=sonnet:high:auto", "workbench"]),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("requires --fleet"));
+
+        let conflict = CliInvocation::parse(
+            args(&["--fleet=fleet-a", "workbench"]),
+            Some("fleet-b"),
+            None,
+        )
+        .unwrap_err();
+        assert!(conflict.to_string().contains("conflicting --fleet"));
+    }
+
+    #[test]
+    fn help_documents_remote_seat_consumption() {
+        assert!(CLI_HELP.contains("--fleet=<slug>"));
+        assert!(CLI_HELP.contains("--seat=<ref>"));
+        assert!(CLI_HELP.contains("requires --fleet"));
     }
 }
 
@@ -735,6 +938,8 @@ async fn run_chat_dock() -> Result<()> {
 )]
 async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
+    launch_fleet: Option<String>,
+    launch_seat: Option<String>,
     pinned: Option<app::Tab>,
     network_focus: Option<String>,
     context_target: Option<models::ConversationContextProjectionTarget>,
@@ -746,6 +951,8 @@ async fn run<B: Backend>(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    app.su_launch_fleet = launch_fleet;
+    app.su_launch_seat = launch_seat;
     // Resolve the same canonical record `pui doctor` prints. This is an
     // independent process inside zellij, but both endpoint variables were
     // normalized/inherited by the session launcher above.
@@ -4037,6 +4244,8 @@ async fn open_su_session_task(
             agent: backend,
             harness_slug: Some(harness.clone()),
             plan_slug: launch.plan_slug,
+            fleet: launch.fleet,
+            seat: launch.seat,
             model: launch.model,
             effort: launch.effort,
             account: launch.account,
