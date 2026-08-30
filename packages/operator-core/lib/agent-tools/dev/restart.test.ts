@@ -883,12 +883,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       reason: 'held_exclusive',
       holders: [
         {
+          resource: 'bg-host-cooldown',
+          lock_id: 'lock-peer-bg-6060',
           owner: 'peer-bg',
           owner_label: 'peer-bg-host',
           mode: 'exclusive',
           status: 'held',
           reason: '',
+          acquired_ts: new Date(),
           expires_ts: new Date(),
+          fence_seq: 1,
         },
       ],
     });
@@ -929,12 +933,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       reason: 'held_exclusive',
       holders: [
         {
+          resource: 'bg-host-cooldown',
+          lock_id: 'lock-peer-bg-6061',
           owner: 'peer-bg',
           owner_label: 'peer-bg-host',
           mode: 'exclusive',
           status: 'held',
           reason: '',
+          acquired_ts: new Date(),
           expires_ts: new Date(),
+          fence_seq: 1,
         },
       ],
     });
