@@ -229,6 +229,16 @@ describe('ptool bearer-token resolution', () => {
 describe('ptool call deadlines', () => {
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-21863905839650704: coord:declare-intent declares no timeoutSec (bound
+    // only by the flat 55s MCP_DEADLINE_MS floor), and a reporter observed the
+    // flat 30s client cutoff abort the call with "mutation may have executed"
+    // while the presence write had already landed. Cover both transport routes.
+    expect(timeoutForTool('coord:declare-intent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:declare-intent',
+      args: { intent: 'timeout mapping regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
     // EI-21831468700319864: fleet:wind-down inherits the 60s dispatch default;
@@ -309,6 +319,15 @@ describe('ptool call deadlines', () => {
     // flat 30s deadline reports the write outcome as unknown while capture
     // is still in flight.
     expect(timeoutForTool('improvements:capture')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-21863905839650704: loop:arm declares no timeoutSec and performs a
+    // compound admission (claim + inbox-wake arming + reachability probe);
+    // a reporter's combined "coord:declare-intent and loop:arm" call surfaced
+    // the identical ambiguous-outcome failure for this tool too.
+    expect(timeoutForTool('loop:arm')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'loop:arm',
+      args: { intervalSec: 60, goal: 'timeout mapping regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('loop:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('loop:end')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
