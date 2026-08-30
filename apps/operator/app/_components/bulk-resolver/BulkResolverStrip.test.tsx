@@ -27,9 +27,9 @@ describe("BulkResolverStrip", () => {
     );
 
     expect(
-      screen.getByTestId("shared-idle").getAttribute(
-        "data-bulk-resolver-strip-state",
-      ),
+      screen
+        .getByTestId("shared-idle")
+        .getAttribute("data-bulk-resolver-strip-state"),
     ).toBe("idle");
     fireEvent.click(screen.getByTestId("shared-start"));
     expect(onStart).toHaveBeenCalledTimes(1);
@@ -100,9 +100,9 @@ describe("BulkResolverStrip", () => {
     );
 
     expect(
-      screen.getByTestId("shared-review").getAttribute(
-        "data-bulk-resolver-strip-state",
-      ),
+      screen
+        .getByTestId("shared-review")
+        .getAttribute("data-bulk-resolver-strip-state"),
     ).toBe("review");
     expect(screen.getByText("run 12s")).toBeTruthy();
     fireEvent.click(screen.getByText("Review unresolved"));

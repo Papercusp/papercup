@@ -380,7 +380,7 @@ describe("PlanCleanupReport", () => {
     expect(
       (screen.getByTestId("review-report-apply") as HTMLButtonElement).disabled,
     ).toBe(true);
-    fireEvent.focus(screen.getByTestId("review-row-now"));
+    fireEvent.click(screen.getByTestId("review-row-now"));
     expect(screen.getByTestId("plan-cleanup-recheck-now")).toBeTruthy();
     expect(screen.getByTestId("plan-cleanup-retry-now")).toBeTruthy();
     expect(screen.getByTestId("plan-cleanup-dismiss-now")).toBeTruthy();
@@ -398,7 +398,7 @@ describe("PlanCleanupReport", () => {
     render(
       <PlanCleanupReport run={run()} findings={[stale]} onClose={vi.fn()} />,
     );
-    fireEvent.focus(screen.getByTestId("review-row-now"));
+    fireEvent.click(screen.getByTestId("review-row-now"));
     fireEvent.click(screen.getByTestId("plan-cleanup-recheck-now"));
 
     await waitFor(() =>
@@ -419,7 +419,7 @@ describe("PlanCleanupReport", () => {
     render(
       <PlanCleanupReport run={run()} findings={[failed]} onClose={onClose} />,
     );
-    fireEvent.focus(screen.getByTestId("review-row-failed"));
+    fireEvent.click(screen.getByTestId("review-row-failed"));
     fireEvent.click(screen.getByTestId("plan-cleanup-retry-failed"));
 
     await waitFor(() =>
@@ -439,7 +439,7 @@ describe("PlanCleanupReport", () => {
     render(
       <PlanCleanupReport run={run()} findings={[skipped]} onClose={onClose} />,
     );
-    fireEvent.focus(screen.getByTestId("review-row-skipped"));
+    fireEvent.click(screen.getByTestId("review-row-skipped"));
     fireEvent.click(screen.getByTestId("plan-cleanup-dismiss-skipped"));
 
     await waitFor(() =>

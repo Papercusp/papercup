@@ -14,7 +14,11 @@
  * maps D1 + R2 + GitHub onto it. PURE w.r.t. transport.
  */
 
-import { gcIfUnreferenced, type ArtifactStatus, type BlobStore } from './blob-store.js';
+import {
+  gcIfUnreferenced,
+  type ArtifactStatus,
+  type BlobStore,
+} from "./blob-store.js";
 
 /** A principal acting on the registry (publisher / claimant / unlister). */
 export interface PrincipalRef {

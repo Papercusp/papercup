@@ -7,17 +7,12 @@
  * to P-007; this strip carries the run into that surface through `?opcln=`.
  */
 import { useCallback, useState } from "react";
-import {
-  BrushCleaning,
-  ChevronRight,
-  Loader2,
-  RotateCw,
-  Sparkles,
-  Square,
-  X,
-} from "lucide-react";
+import { BrushCleaning, ChevronRight, Loader2, RotateCw } from "lucide-react";
 import { formatRunElapsed } from "../review-report/bulk-run-time";
 import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
+import BulkResolverStrip, {
+  type BulkResolverMetric,
+} from "../bulk-resolver/BulkResolverStrip";
 import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings";
 import {
   canonicalPlanCleanupDisposition,
@@ -26,10 +21,6 @@ import {
   type PlanCleanupFinding,
   type PlanCleanupRun,
 } from "./use-plan-cleanup-run";
-// Deliberate visual reuse: the approved mockup lifts this exact strip grammar
-// from Inbox bulk resolve. Sharing its CSS keeps both flows one learned control
-// instead of creating a near-identical style system that can drift.
-import "../inbox/inbox-bulk.css";
 
 export interface PlansCleanupStripProps {
   /** Exact click-time set currently rendered by PlansPane. */
@@ -180,7 +171,9 @@ export default function PlansCleanupStrip({
       if (!result.ok) {
         setNotice(result.error ?? "could not classify legacy skipped findings");
       } else {
-        setNotice(`Classified ${result.preservedOutcomes ?? 0} legacy findings; no outcomes changed`);
+        setNotice(
+          `Classified ${result.preservedOutcomes ?? 0} legacy findings; no outcomes changed`,
+        );
       }
     } finally {
       setClassifying(false);
@@ -190,225 +183,242 @@ export default function PlansCleanupStrip({
   if (isRunning && run) {
     const scanOnly = counts.total === 0;
     return (
-      <div
-        className="op-inbox__bulk op-inbox__bulk--running"
-        data-testid="plans-cleanup-running"
-      >
-        <BulkResolverSettingsControl
-          kind="plan-cleanup"
-          settings={resolverSettings}
-          effective={run.launchSnapshot ?? {}}
-          liveness={run.liveness}
-          onRestart={() => void onRestart()}
-          restartBusy={busy}
-        />
-        <div className="op-inbox__bulk-head">
-          <span className="op-inbox__bulk-spin" aria-hidden="true">
-            <Loader2 size={15} />
-          </span>
-          <span className="op-inbox__bulk-title">
-            {scanOnly
-              ? `Papercup is scanning ${run.totalItems} shown plan${run.totalItems === 1 ? "" : "s"}…`
-              : "Papercup is cleaning up…"}
-          </span>
-          <span className="op-inbox__bulk-spacer" />
-          <button
-            type="button"
-            className="op-inbox__bulk-ghost"
-            data-testid="plans-cleanup-stop"
-            disabled={busy}
-            onClick={() => void onStop()}
-          >
-            <Square size={11} aria-hidden="true" />
-            Stop
-          </button>
-        </div>
-        <div
-          className="op-inbox__bulk-track"
-          role="progressbar"
-          aria-valuenow={scanOnly ? undefined : counts.percent}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuetext={
-            scanOnly
-              ? `Scanning ${run.totalItems} plans`
-              : `${counts.decided} of ${counts.total} findings decided`
-          }
-          aria-label="Plan clean-up progress"
-        >
-          <div
-            className="op-inbox__bulk-fill"
-            style={{ width: scanOnly ? "2%" : `${counts.percent}%` }}
+      <BulkResolverStrip
+        state="running"
+        testId="plans-cleanup-running"
+        settings={
+          <BulkResolverSettingsControl
+            kind="plan-cleanup"
+            settings={resolverSettings}
+            effective={run.launchSnapshot ?? {}}
+            liveness={run.liveness}
+            onRestart={() => void onRestart()}
+            restartBusy={busy}
           />
-        </div>
-        <div
-          className="op-inbox__bulk-counts"
-          data-testid="plans-cleanup-counts"
-        >
-          {scanOnly ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" />
-              finding stale state and cleared blockers
-            </span>
-          ) : (
-            <>
-              <span className="op-inbox__bulk-count op-inbox__bulk-count--good">
-                <i aria-hidden="true" />
-                {counts.applied} tidied
-              </span>
-              <span className="op-inbox__bulk-count op-inbox__bulk-count--review">
-                <i aria-hidden="true" />
-                {counts.forReview} for review
-              </span>
-              <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-                <i aria-hidden="true" />
-                {counts.pending} left
-              </span>
-            </>
-          )}
-        </div>
-        {notice ? (
-          <Notice text={notice} onClose={() => setNotice(null)} />
-        ) : null}
-      </div>
+        }
+        title={
+          scanOnly
+            ? `Papercup is scanning ${run.totalItems} shown plan${run.totalItems === 1 ? "" : "s"}…`
+            : "Papercup is cleaning up…"
+        }
+        stopTestId="plans-cleanup-stop"
+        stopDisabled={busy}
+        onStop={() => void onStop()}
+        progress={{
+          percent: scanOnly ? undefined : counts.percent,
+          width: scanOnly ? "2%" : undefined,
+          ariaLabel: "Plan clean-up progress",
+          ariaValueText: scanOnly
+            ? `Scanning ${run.totalItems} plans`
+            : `${counts.decided} of ${counts.total} findings decided`,
+        }}
+        metrics={
+          scanOnly
+            ? [
+                {
+                  id: "scanning",
+                  value: null,
+                  label: "finding stale state and cleared blockers",
+                },
+              ]
+            : [
+                {
+                  id: "tidied",
+                  value: counts.applied,
+                  label: "tidied",
+                  tone: "good",
+                },
+                {
+                  id: "review",
+                  value: counts.forReview,
+                  label: "for review",
+                  tone: "review",
+                },
+                { id: "left", value: counts.pending, label: "left" },
+              ]
+        }
+        metricsTestId="plans-cleanup-counts"
+        notice={
+          notice
+            ? {
+                message: notice,
+                onDismiss: () => setNotice(null),
+                dismissLabel: "Dismiss clean-up notice",
+              }
+            : null
+        }
+      />
     );
   }
 
   if (isReview && run) {
     const elapsed = formatRunElapsed(run.startedAt, run.finishedAt);
+    const reviewMetrics: BulkResolverMetric[] = [
+      {
+        id: "recommendations",
+        value: counts.recommendationTotal,
+        label: "recommendations",
+        tone: "review",
+      },
+      ...(counts.ownerAction > 0
+        ? [
+            {
+              id: "owner-action",
+              value: counts.ownerAction,
+              label: `owner action${counts.ownerAction === 1 ? "" : "s"}`,
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+      ...(counts.cleanupCandidate > 0
+        ? [
+            {
+              id: "cleanup-candidate",
+              value: counts.cleanupCandidate,
+              label: `cleanup candidate${counts.cleanupCandidate === 1 ? "" : "s"}`,
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+      ...(counts.retryNeeded + counts.pending > 0
+        ? [
+            {
+              id: "retry-needed",
+              value: counts.retryNeeded + counts.pending,
+              label: "retry needed",
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+      ...(counts.routed > 0
+        ? [
+            {
+              id: "routed",
+              value: counts.routed,
+              label: "routed",
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+      ...(counts.investigate > 0
+        ? [
+            {
+              id: "investigate",
+              value: counts.investigate,
+              label: "investigate",
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+      ...(counts.failed > 0
+        ? [
+            {
+              id: "failed",
+              value: counts.failed,
+              label: "failed",
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+      ...(counts.legacySkipped > 0
+        ? [
+            {
+              id: "legacy-skips",
+              value: counts.legacySkipped,
+              label: "legacy skips to classify",
+            } satisfies BulkResolverMetric,
+          ]
+        : []),
+    ];
     return (
-      <div
-        className="op-inbox__bulk op-inbox__bulk--review"
-        data-testid="plans-cleanup-review"
-      >
-        <BulkResolverSettingsControl
-          kind="plan-cleanup"
-          settings={resolverSettings}
-          effective={run.launchSnapshot ?? {}}
-        />
-        <div className="op-inbox__bulk-head">
-          <span
-            className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
-            aria-hidden="true"
-          >
-            <Sparkles size={16} />
-          </span>
-          <span
-            className="op-inbox__bulk-title"
-            data-testid="plans-cleanup-review-headline"
-          >
+      <BulkResolverStrip
+        state="review"
+        testId="plans-cleanup-review"
+        settings={
+          <BulkResolverSettingsControl
+            kind="plan-cleanup"
+            settings={resolverSettings}
+            effective={run.launchSnapshot ?? {}}
+          />
+        }
+        headline={
+          <>
             {counts.total} assessed · {counts.applied} auto-applied ·{" "}
             {counts.unresolved} still open
-          </span>
-          <span className="op-inbox__bulk-spacer" />
-          {elapsed ? (
-            <span className="op-inbox__bulk-elapsed">run {elapsed}</span>
-          ) : null}
-        </div>
-        <div
-          className="op-inbox__bulk-counts op-inbox__bulk-counts--accounting"
-          data-testid="plans-cleanup-accounting"
-          aria-label="Plan cleanup accounting"
-        >
-          <span className="op-inbox__bulk-count op-inbox__bulk-count--review">
-            <i aria-hidden="true" />
-            {counts.recommendationTotal} recommendations
-          </span>
-          {counts.ownerAction > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.ownerAction} owner actions
-            </span>
-          ) : null}
-          {counts.cleanupCandidate > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.cleanupCandidate} cleanup candidates
-            </span>
-          ) : null}
-          {counts.retryNeeded + counts.pending > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.retryNeeded + counts.pending} retry needed
-            </span>
-          ) : null}
-          {counts.routed > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.routed} routed
-            </span>
-          ) : null}
-          {counts.investigate > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.investigate} investigate
-            </span>
-          ) : null}
-          {counts.failed > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.failed} failed
-            </span>
-          ) : null}
-          {counts.legacySkipped > 0 ? (
-            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
-              <i aria-hidden="true" /> {counts.legacySkipped} legacy skips to classify
-            </span>
-          ) : null}
-        </div>
-        <div className="op-inbox__bulk-actions">
-          <button
-            type="button"
-            className="op-inbox__bulk-accept-all"
-            data-testid="plans-cleanup-open-review"
-            disabled={counts.unresolved === 0 || busy || classifying}
-            onClick={() => onReview(run.runId)}
-          >
-            <ChevronRight size={14} aria-hidden="true" />
-            Review {counts.unresolved} unresolved
-          </button>
-          {retryableFindings.length > 0 ? (
+          </>
+        }
+        headlineTestId="plans-cleanup-review-headline"
+        elapsed={elapsed}
+        metrics={reviewMetrics}
+        metricsTestId="plans-cleanup-accounting"
+        metricsAriaLabel="Plan cleanup accounting"
+        actions={
+          <>
             <button
               type="button"
-              className="op-inbox__bulk-continue"
-              data-testid="plans-cleanup-continue"
-              disabled={busy || classifying}
-              onClick={() => void onResume()}
+              className="op-inbox__bulk-accept-all"
+              data-testid="plans-cleanup-open-review"
+              disabled={counts.unresolved === 0 || busy || classifying}
+              onClick={() => onReview(run.runId)}
             >
-              {busy ? (
-                <span className="op-inbox__bulk-spin" aria-hidden="true">
-                  <Loader2 size={14} />
-                </span>
-              ) : (
-                <RotateCw size={14} aria-hidden="true" />
-              )}
-              {busy ? "Continuing…" : `Continue ${retryableFindings.length} retryable`}
+              <ChevronRight size={14} aria-hidden="true" />
+              Review {counts.unresolved} unresolved
             </button>
-          ) : null}
-          {counts.legacySkipped > 0 ? (
+            {retryableFindings.length > 0 ? (
+              <button
+                type="button"
+                className="op-inbox__bulk-continue"
+                data-testid="plans-cleanup-continue"
+                disabled={busy || classifying}
+                onClick={() => void onResume()}
+              >
+                {busy ? (
+                  <span className="op-inbox__bulk-spin" aria-hidden="true">
+                    <Loader2 size={14} />
+                  </span>
+                ) : (
+                  <RotateCw size={14} aria-hidden="true" />
+                )}
+                {busy
+                  ? "Continuing…"
+                  : `Continue ${retryableFindings.length} retryable`}
+              </button>
+            ) : null}
+            {counts.legacySkipped > 0 ? (
+              <button
+                type="button"
+                className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
+                data-testid="plans-cleanup-classify"
+                disabled={busy || classifying}
+                onClick={() => void onReclassify()}
+              >
+                {classifying
+                  ? "Classifying…"
+                  : `Classify ${counts.legacySkipped} legacy skips`}
+              </button>
+            ) : null}
             <button
               type="button"
               className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
-              data-testid="plans-cleanup-classify"
-              disabled={busy || classifying}
-              onClick={() => void onReclassify()}
+              data-testid="plans-cleanup-hide"
+              disabled={busy}
+              onClick={onRunCleared}
             >
-              {classifying ? "Classifying…" : `Classify ${counts.legacySkipped} legacy skips`}
+              Hide
             </button>
-          ) : null}
-          <button
-            type="button"
-            className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
-            data-testid="plans-cleanup-hide"
-            disabled={busy}
-            onClick={onRunCleared}
-          >
-            Hide
-          </button>
-        </div>
-        <p className="op-inbox__bulk-hint">
-          Review opens every unresolved finding with its proposed next step.
-          Continue retries only unavailable/failed findings through the same
-          saved run and preserves every earlier outcome.
-        </p>
-        {notice ? (
-          <Notice text={notice} onClose={() => setNotice(null)} />
-        ) : null}
-      </div>
+          </>
+        }
+        hint={
+          <>
+            Review opens every unresolved finding with its proposed next step.
+            Continue retries only unavailable/failed findings through the same
+            saved run and preserves every earlier outcome.
+          </>
+        }
+        notice={
+          notice
+            ? {
+                message: notice,
+                onDismiss: () => setNotice(null),
+                dismissLabel: "Dismiss clean-up notice",
+              }
+            : null
+        }
+      />
     );
   }
 
@@ -417,58 +427,37 @@ export default function PlansCleanupStrip({
     (run?.phase === "failed" ? (run.error ?? "clean-up run failed") : null);
   const count = planSlugs.length;
   return (
-    <div className="op-inbox__bulk-slot" data-testid="plans-cleanup-idle">
-      <BulkResolverSettingsControl
-        kind="plan-cleanup"
-        settings={resolverSettings}
-      />
-      <button
-        type="button"
-        className="op-inbox__bulk-start"
-        data-testid="plans-cleanup-start"
-        disabled={count === 0 || starting || !resolverSettings.ready}
-        aria-label={`Clean up ${count} shown plan${count === 1 ? "" : "s"}`}
-        onClick={() => void onStart()}
-      >
-        <span className="op-inbox__bulk-icon" aria-hidden="true">
-          {starting ? (
-            <span className="op-inbox__bulk-spin">
-              <Loader2 size={17} />
-            </span>
-          ) : (
-            <BrushCleaning size={17} />
-          )}
-        </span>
-        <span className="op-inbox__bulk-start-copy">
-          <span className="op-inbox__bulk-start-title">
-            Clean up {count} shown plan{count === 1 ? "" : "s"}
-          </span>
-          <span className="op-inbox__bulk-start-sub">
-            Reconciles stale statuses, cleared blockers &amp; finished work ·
-            you review the rest
-          </span>
-        </span>
-        <ChevronRight size={16} aria-hidden="true" />
-      </button>
-      {failureNotice ? (
-        <Notice text={failureNotice} onClose={() => setNotice(null)} />
-      ) : null}
-    </div>
-  );
-}
-
-function Notice({ text, onClose }: { text: string; onClose: () => void }) {
-  return (
-    <div className="op-inbox__bulk-notice" role="alert">
-      <span>{text}</span>
-      <button
-        type="button"
-        className="op-inbox__bulk-notice-x"
-        aria-label="Dismiss clean-up notice"
-        onClick={onClose}
-      >
-        <X size={12} aria-hidden="true" />
-      </button>
-    </div>
+    <BulkResolverStrip
+      state="idle"
+      testId="plans-cleanup-idle"
+      settings={
+        <BulkResolverSettingsControl
+          kind="plan-cleanup"
+          settings={resolverSettings}
+        />
+      }
+      actionTestId="plans-cleanup-start"
+      ariaLabel={`Clean up ${count} shown plan${count === 1 ? "" : "s"}`}
+      icon={<BrushCleaning size={17} />}
+      busy={starting}
+      disabled={count === 0 || starting || !resolverSettings.ready}
+      title={`Clean up ${count} shown plan${count === 1 ? "" : "s"}`}
+      subtitle={
+        <>
+          Reconciles stale statuses, cleared blockers &amp; finished work · you
+          review the rest
+        </>
+      }
+      onStart={() => void onStart()}
+      notice={
+        failureNotice
+          ? {
+              message: failureNotice,
+              onDismiss: () => setNotice(null),
+              dismissLabel: "Dismiss clean-up notice",
+            }
+          : null
+      }
+    />
   );
 }

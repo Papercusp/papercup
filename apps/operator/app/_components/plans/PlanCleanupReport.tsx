@@ -133,7 +133,9 @@ function evidenceLines(finding: PlanCleanupFinding): string[] {
   if (finding.recommendation?.confidence) {
     lines.push(`confidence · ${finding.recommendation.confidence}`);
   } else if (finding.confidence) {
-    lines.push(`confidence · ${finding.confidence === "provable" ? "high" : "medium"}`);
+    lines.push(
+      `confidence · ${finding.confidence === "provable" ? "high" : "medium"}`,
+    );
   }
   if (finding.recommendation?.responsibility) {
     lines.push(`responsibility · ${finding.recommendation.responsibility}`);
@@ -164,7 +166,8 @@ function reportRow(
     error: localError,
     evidence: evidenceLines(finding),
     confidence:
-      finding.recommendation?.confidence === "high" || finding.confidence === "provable"
+      finding.recommendation?.confidence === "high" ||
+      finding.confidence === "provable"
         ? "provable"
         : "recommended",
     accounting: reviewAccounting(finding, status),
@@ -568,12 +571,14 @@ export default function PlanCleanupReport({
       subtitle={
         <span className="plan-cleanup-report__subtitle">
           <span>
-            {counts.total} assessed across {planCount} plan{planCount === 1 ? "" : "s"} ·{" "}
-            {counts.applied} auto-applied · {counts.unresolved} still open
+            {counts.total} assessed across {planCount} plan
+            {planCount === 1 ? "" : "s"} · {counts.applied} auto-applied ·{" "}
+            {counts.unresolved} still open
             <br />
-            {counts.recommendationTotal} recommendations · {counts.ownerAction} owner actions ·{" "}
-            {counts.cleanupCandidate} cleanup · {counts.retryNeeded + counts.pending} retry needed ·{" "}
-            {counts.routed} routed · {counts.investigate} investigate
+            {counts.recommendationTotal} recommendations · {counts.ownerAction}{" "}
+            owner actions · {counts.cleanupCandidate} cleanup ·{" "}
+            {counts.retryNeeded + counts.pending} retry needed · {counts.routed}{" "}
+            routed · {counts.investigate} investigate
           </span>
           {notice ? (
             <span role="alert" className="plan-cleanup-report__error">
@@ -594,9 +599,9 @@ export default function PlanCleanupReport({
           the existing <code>plans:set-status</code>,{" "}
           <code>plans:set-plan-status</code>, or <code>plans:set-archived</code>{" "}
           client paths before acceptance is recorded. Clear a checkbox to skip
-          it in this apply. Every unresolved row also exposes Open, Recheck,
-          Retry, and explicit per-finding Dismiss; closing this report never
-          marks unresolved work complete.
+          it in this apply. Click a row—or use its details button—to inspect its
+          evidence and expose Open, Recheck, Retry, and explicit per-finding
+          Dismiss; closing this report never marks unresolved work complete.
         </span>
       }
     />

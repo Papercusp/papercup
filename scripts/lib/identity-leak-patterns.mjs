@@ -197,14 +197,31 @@ export const FIX_HINT =
 
 /** Home dirs that are NOT a person: shared installs, CI runners, containers. */
 export const GENERIC_USERS = new Set([
-  'linuxbrew', 'dev', 'runner', 'user', 'ubuntu', 'root', 'node', 'builder',
-  'vscode', 'codespace', 'shared', 'Shared', 'ci', 'agent',
+  "linuxbrew",
+  "dev",
+  "runner",
+  "user",
+  "ubuntu",
+  "root",
+  "node",
+  "builder",
+  "vscode",
+  "codespace",
+  "shared",
+  "Shared",
+  "ci",
+  "agent",
   // Service/VM accounts that belong to the PRODUCT, not to a person: the account
   // inside a deployed frame, the WSL distro, the Windows VM's stock account, and
   // the placeholder a doc/test uses on purpose. Naming these is not a leak.
   // Keep this list to non-personal accounts only — it is not a place to silence
   // a real name to make the build pass.
-  'pcusp', 'papercusp', 'papercup', 'tester', 'User', 'x',
+  "pcusp",
+  "papercusp",
+  "papercup",
+  "tester",
+  "User",
+  "x",
   // IMAGE-BUILD accounts that our OWN infra creates, plus the stock account of the
   // builder that creates them (infra/images/workspace-host.pkr.hcl). They surface in
   // home-path shape only because that file DEFINES the account rather than consuming
@@ -219,15 +236,28 @@ export const GENERIC_USERS = new Set([
   // Not an exception added to make a build pass: neither name belongs to a person,
   // and neither can reach the release bundle's audit, which resolves THIS box's
   // identity at run time and never looks for a generic home path at all.
-  'papercusp-workspace', 'packer',
+  "papercusp-workspace",
+  "packer",
   // Stand-ins that name nobody: test fixtures and doc examples.
-  'test', 'testuser', 'owner', 'host', 'whoever', 'all', 'paper', 'submission',
+  "test",
+  "testuser",
+  "owner",
+  "host",
+  "whoever",
+  "all",
+  "paper",
+  "submission",
   // The canonical fake identities. The identity SCRUBBER's own tests
   // (release-content-scrub.test.ts, gate-release-site.test.ts) must contain
   // realistic-looking home paths — that is the input they scrub — so the rule
   // "no /home/<user>/ in source" fires on the one place a fake home path is the
   // entire point. These name no person; they are the John-Doe set.
-  'jdoe', 'alice', 'bob', 'buildbot', 'otheruser', 'someuser',
+  "jdoe",
+  "alice",
+  "bob",
+  "buildbot",
+  "otheruser",
+  "someuser",
   // ⚠ THE SCRUBBER'S OWN OUTPUT VOCABULARY (WI-6992). These are the values
   // REDACTION_BY_KEY in papercusp-desktop/bin/audit-release-bundle.py substitutes
   // FOR this box's identity — `build-user-name` -> `builduser`,
@@ -257,11 +287,15 @@ export const GENERIC_USERS = new Set([
   // so the sanctioned scrub output would have red-pinned check-no-box-identity
   // the first time a staged file put it in a `/home/<user>/` position. The test
   // caught it before a cut did; adding the token here is the fix, not a silencer.
-  'builduser', 'buildhost', 'macuser', 'maclogin', 'ownerhandle',
+  "builduser",
+  "buildhost",
+  "macuser",
+  "maclogin",
+  "ownerhandle",
   // WI-4776: illustrative placeholder SEGMENTS used in docs to show the SHAPE of
   // a path (e.g. `/absolute/home/path` in a tool-arg example) — the word after
   // /home/ there is not a username at all, just prose continuing the sentence.
-  'path',
+  "path",
 ]);
 
 /** Anonymous by construction: a redaction (`/home/.../`, `/home/<user>/`) or a

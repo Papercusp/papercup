@@ -13,10 +13,19 @@ status: active
 documents:
   - "packages/operator-core/lib/resource-governor/queue.ts"
   - "packages/operator-core/lib/resource-governor/controller.ts"
+  - "packages/operator-core/lib/resource-governor/execution.ts"
   - "packages/operator-core/lib/resource-governor/p018-rollback-drill.integration.test.ts"
   - "packages/operator-core/lib/resource-governor/p017-profile-matrix.integration.test.ts"
+  - "packages/operator-core/lib/resource-governor/governed-test-process-demand.integration.test.ts"
+  - "packages/operator-core/lib/__tests__/governed-test-process.test.ts"
+  - "scripts/lib/governed-test-process.mjs"
+  - "scripts/test-files.mjs"
+  - "scripts/affected-tests.mjs"
+  - "apps/operator/lib/release/green-checkpoint.ts"
+  - "apps/operator/lib/release/green-checkpoint-real-deps.test.ts"
 plans:
   - "capless-adaptive-resource-governor-2026-08-26"
+  - "nonblocking-test-materializer-2026-08-28"
 ---
 
 ## What survives, and what is supposed not to
@@ -51,6 +60,34 @@ Ordered procedure:
 4. **Keep telemetry armed.** The five `governor.*` cells stay registered through a rollback; they are the only way to judge whether rolling forward is safe.
 5. **Roll forward** by re-attaching the governed driver. Every receipt still resolves; replay is safe.
 6. **Never** leave a numeric cap behind as the "safe" resting state. A temporary control that outlives the incident is the failure mode this plan exists to remove.
+
+## Non-blocking test/materializer rollout slice
+
+This is the CI/release/test-worker slice named by `capless-adaptive-resource-governor-2026-08-26` P-016 and rolled out with the P-018 method: observe and validate one seam at a time, remove the old local control only after focused evidence, and preserve the shared queue/state/telemetry contract throughout.
+
+1. **Govern test-process residency first.** `scripts/test-files.mjs` and `scripts/affected-tests.mjs` start resident test children through `runGovernedTestProcess`. A parent owns one durable receipt for the process lifetime; a valid inherited `AdmissionContext` is forwarded to descendants rather than double-admitting them. Admission failure, worker exit, signal, or timeout remains red or undetermined evidence — never green.
+2. **Keep focused and broad validation distinct.** Focused `test:file` runs retain their direct routing. Broad affected-test work declares an explicit conservative demand envelope and emits progress while queued or running.
+3. **Narrow materializer exclusivity only from the selector verdict.** Both release-checkout materializer call sites compute the host-wide barrier from `!selectedDependencyGeneration.reused`. A fresh, absent, or unparseable verdict keeps `--exclusive-all-slots`; only a confirmed reused immutable generation may use the ordinary shared slot. Never hold a governor lease while waiting on the materializer correctness lock (D-001).
+4. **Use the runner's provenance, not a frozen HEAD.** Quote the emitted `provenance=stamped|unknown|drifted` verdict. `unknown` and `drifted` are not clean evidence, and freezing git-sync does not make working-tree bytes stable. When a source read is load-bearing, hash the file before and after the read and repeat on a mismatch (D-003).
+
+Rollback this slice without damaging the shared substrate:
+
+- For a test-admission regression, restore the prior start driver only at the affected test call sites. Leave queue rows, receipts, state history, and telemetry intact; explicitly cancel, never delete, a queued receipt that must not start.
+- For a materializer regression, temporarily restore unconditional `--exclusive-all-slots` at both materializer call sites. That restores the conservative prior fence while leaving governor state and dependency-generation identity untouched; it is a throughput mitigation, not a permanent cap architecture.
+- Do not roll back by freezing git-sync, inventing a numeric worker cap, bypassing the durable queue, or clearing receipts. Roll forward one seam at a time after the focused recurrence guards pass.
+
+For every remaining subsystem migration, use the same cross-plan rails: P-016 supplies the one-governor/queue/state/alert contract across deployment paths, and P-018 supplies observe-only → canary → focused validation → local-cap deletion, plus rollback that preserves queue, receipts, state history, and telemetry.
+
+Focused recurrence guards for this slice:
+
+```bash
+npm run test:file -- \
+  packages/operator-core/lib/__tests__/governed-test-process.test.ts \
+  packages/operator-core/lib/resource-governor/governed-test-process-demand.integration.test.ts \
+  apps/operator/lib/release/green-checkpoint-real-deps.test.ts
+```
+
+Read the resulting `TEST_FILE_RESULT` provenance fields before treating the run as attributable.
 
 ## Verify a recovery actually held
 

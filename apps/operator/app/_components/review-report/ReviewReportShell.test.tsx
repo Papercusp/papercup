@@ -5,24 +5,17 @@
 // the group checkbox is tri-state (checked / indeterminate / unchecked) and
 // toggles its pending rows as a block, applied rows render as done and are
 // never selectable, Apply-selected emits the sorted selected ids, and busy
-// freezes the whole surface. Row hover/focus-within owns the one active detail
-// region; no explicit detail control is rendered. The shared summary is an
-// exhaustive Ready / Handled / Manual / Not applied partition of Results.
+// freezes the whole surface. Row detail is an explicit click/keyboard
+// disclosure with a pointer affordance; hover and focus alone never open it.
+// The shared summary is an exhaustive Ready / Handled / Manual / Not applied
+// partition of Results.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ReviewReportShell, {
   partitionReviewRows,
-  REVIEW_DETAIL_EXIT_GRACE_MS,
-  REVIEW_DETAIL_HOVER_INTENT_MS,
   type ReviewReportGroup,
   type ReviewReportRow,
 } from "./ReviewReportShell";
@@ -298,8 +291,7 @@ describe("rendering", () => {
     );
   });
 
-  it("shows complete evidence plus consumer detail for only the hovered row", () => {
-    vi.useFakeTimers();
+  it("shows complete evidence plus consumer detail for only the clicked row", () => {
     renderShell();
     expect(screen.queryByText("plan item linked by coverage")).toBeNull();
     expect(screen.queryByTestId("consumer-detail-f1")).toBeNull();
@@ -307,75 +299,62 @@ describe("rendering", () => {
     const rowF1 = screen.getByTestId("review-row-f1");
     fireEvent.pointerEnter(rowF1);
     expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    fireEvent.click(rowF1);
     const detail = screen.getByTestId("review-row-detail-f1");
     expect(detail.getAttribute("role")).toBe("region");
     expect(rowF1.getAttribute("aria-describedby")).toBe(detail.id);
     expect(detail.textContent).toContain("WI-100 done; completion recorded");
     expect(detail.textContent).toContain("plan item linked by coverage");
     expect(screen.getByTestId("consumer-detail-f1")).toBeTruthy();
+    const toggleF1 = screen.getByTestId("review-row-conf-f1");
+    expect(toggleF1.getAttribute("aria-expanded")).toBe("true");
+    expect(toggleF1.getAttribute("aria-controls")).toBe(detail.id);
+    expect(toggleF1.getAttribute("aria-label")).toBe(
+      "Hide details for Index the finished work",
+    );
 
-    fireEvent.pointerEnter(screen.getByTestId("review-row-f2"));
-    expect(screen.getByTestId("review-row-detail-f1")).toBeTruthy();
-    expect(screen.queryByTestId("review-row-detail-f2")).toBeNull();
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    const rowF2 = screen.getByTestId("review-row-f2");
+    fireEvent.click(rowF2);
     expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
     expect(screen.getByTestId("review-row-detail-f2")).toBeTruthy();
-    fireEvent.pointerLeave(screen.getByTestId("review-row-f2"));
-    expect(screen.getByTestId("review-row-detail-f2")).toBeTruthy();
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_EXIT_GRACE_MS));
+    fireEvent.click(rowF2);
     expect(screen.queryByTestId("review-row-detail-f2")).toBeNull();
   });
 
-  it("never opens rows crossed before hover intent settles", () => {
-    vi.useFakeTimers();
+  it("never auto-opens from hover or focus", () => {
     renderShell();
     const rowF1 = screen.getByTestId("review-row-f1");
     const rowF2 = screen.getByTestId("review-row-f2");
 
     fireEvent.pointerEnter(rowF1);
-    act(() =>
-      vi.advanceTimersByTime(Math.max(1, REVIEW_DETAIL_HOVER_INTENT_MS - 20)),
-    );
     fireEvent.pointerLeave(rowF1);
     fireEvent.pointerEnter(rowF2);
-    act(() => vi.advanceTimersByTime(19));
+    fireEvent.focus(rowCheck("f1"));
 
     expect(
       screen.queryAllByRole("region", { name: /^Details for / }),
     ).toHaveLength(0);
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
-    expect(screen.getByTestId("review-row-detail-f2")).toBeTruthy();
   });
 
-  it("keeps detail open while hover or focus remains, including focusable applied rows", () => {
+  it("offers an explicit keyboard-operable details control for every row", async () => {
+    const user = userEvent.setup();
     renderShell();
-    const rowF1 = screen.getByTestId("review-row-f1");
-    const checkF1 = rowCheck("f1");
-
-    fireEvent.pointerEnter(rowF1);
-    fireEvent.focus(checkF1);
-    fireEvent.pointerLeave(rowF1);
+    const toggleF1 = screen.getByTestId("review-row-conf-f1");
+    toggleF1.focus();
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("review-row-detail-f1")).toBeTruthy();
-
-    const apply = applyBtn();
-    fireEvent.blur(checkF1, { relatedTarget: apply });
-    fireEvent.focus(apply, { relatedTarget: checkF1 });
+    await user.keyboard(" ");
     expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
 
-    const appliedRow = screen.getByTestId("review-row-o1");
     expect(screen.queryByTestId("review-row-check-o1")).toBeNull();
-    expect(appliedRow.getAttribute("tabindex")).toBe("0");
-    fireEvent.focus(appliedRow);
+    const appliedToggle = screen.getByTestId("review-row-conf-o1");
+    fireEvent.click(appliedToggle);
     expect(screen.getByTestId("review-row-detail-o1").textContent).toContain(
       "lease lapsed 42min ago; holder dead",
     );
-    fireEvent.blur(appliedRow, { relatedTarget: apply });
-    expect(screen.queryByTestId("review-row-detail-o1")).toBeNull();
   });
 
   it("does not resurrect active detail after a live row leaves and returns", () => {
-    vi.useFakeTimers();
     const props = {
       title: "Live report",
       onApply: vi.fn(),
@@ -385,8 +364,7 @@ describe("rendering", () => {
     const { rerender } = render(
       <ReviewReportShell {...props} groups={original} />,
     );
-    fireEvent.pointerEnter(screen.getByTestId("review-row-f1"));
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    fireEvent.click(screen.getByTestId("review-row-f1"));
     expect(screen.getByTestId("review-row-detail-f1")).toBeTruthy();
 
     const withoutF1 = original.map((group) => ({
@@ -404,7 +382,6 @@ describe("rendering", () => {
   });
 
   it("isolates active-detail changes from untouched rows in a 240-row report", () => {
-    vi.useFakeTimers();
     let untouchedTitleReads = 0;
     const rows: ReviewReportRow[] = Array.from({ length: 240 }, (_, index) => ({
       id: `stress-${index}`,
@@ -435,13 +412,11 @@ describe("rendering", () => {
     const readsAfterInitialRender = untouchedTitleReads;
     expect(readsAfterInitialRender).toBeGreaterThan(0);
 
-    fireEvent.pointerEnter(screen.getByTestId("review-row-stress-0"));
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    fireEvent.click(screen.getByTestId("review-row-stress-0"));
     expect(screen.getByTestId("review-row-detail-stress-0")).toBeTruthy();
     expect(untouchedTitleReads).toBe(readsAfterInitialRender);
 
-    fireEvent.pointerEnter(screen.getByTestId("review-row-stress-1"));
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    fireEvent.click(screen.getByTestId("review-row-stress-1"));
     expect(screen.queryByTestId("review-row-detail-stress-0")).toBeNull();
     expect(screen.getByTestId("review-row-detail-stress-1")).toBeTruthy();
     expect(untouchedTitleReads).toBe(readsAfterInitialRender);
@@ -450,6 +425,28 @@ describe("rendering", () => {
   it("contains each row's layout and paint work", () => {
     expect(REPORT_CSS).toMatch(
       /\.review-report__row\s*\{[^}]*contain:\s*layout paint;/s,
+    );
+  });
+
+  it("uses pointer cursors for clickable rows and their details control", () => {
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row\s*\{[^}]*cursor: pointer;/s,
+    );
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row--busy\s*\{[^}]*cursor: default;/s,
+    );
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row-conf\s*\{[^}]*cursor: pointer;/s,
+    );
+    const detailButtonRule = REPORT_CSS.match(
+      /\.review-report__row-conf\s*\{[^}]*\}/s,
+    )?.[0];
+    expect(detailButtonRule).toContain("display: block");
+    expect(detailButtonRule).not.toMatch(
+      /display:\s*(?:inline-)?(?:flex|grid)/,
+    );
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row-detail-toggle-inner\s*\{[^}]*display: inline-flex;/s,
     );
   });
 
@@ -520,8 +517,7 @@ describe("rendering", () => {
     ).toBeTruthy();
   });
 
-  it("keeps a dynamic row failure visible while detail remains hover-only", () => {
-    vi.useFakeTimers();
+  it("keeps a dynamic row failure visible while detail remains click-only", () => {
     renderShell({
       groups: [
         {
@@ -550,8 +546,7 @@ describe("rendering", () => {
     expect(alert.getAttribute("aria-atomic")).toBe("true");
     expect(alert.textContent).toContain("write was rejected");
     expect(rowCheck("failed-row")).toBeTruthy();
-    fireEvent.pointerEnter(screen.getByTestId("review-row-failed-row"));
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    fireEvent.click(screen.getByTestId("review-row-failed-row"));
     expect(
       screen.getByText("Keep these decision controls available."),
     ).toBeTruthy();

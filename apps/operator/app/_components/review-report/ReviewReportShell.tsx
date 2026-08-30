@@ -198,31 +198,18 @@ const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
   recommended: "recommended",
 };
 
-/** Deliberate hover intent prevents a pointer sweeping a dense report from
- * mounting a detail subscription for every crossed row. Keyboard focus never
- * waits on this timer. */
-export const REVIEW_DETAIL_HOVER_INTENT_MS = 140;
-/** Keep the current row stable while the pointer travels into its inline
- * controls or toward a neighboring row whose own intent timer is running. */
-export const REVIEW_DETAIL_EXIT_GRACE_MS = 180;
-
 /**
- * Row-scoped activation store for the report's hottest interaction path.
+ * Row-scoped explicit-disclosure store for the report's hottest interaction
+ * path.
  *
- * A parent `useState(activeRowId)` makes every pointer crossing reconcile the
- * complete report. Real runs can contain hundreds of rows, so activation is
- * kept outside the shell render and subscribers are indexed by row id. A
- * change notifies only the previous and next rows; every untouched row stays
- * out of React's render and commit work.
+ * A parent `useState(activeRowId)` makes every click reconcile the complete
+ * report. Real runs can contain hundreds of rows, so activation stays outside
+ * the shell render and subscribers are indexed by row id. A change notifies
+ * only the previous and next rows; every untouched row stays out of React's
+ * render and commit work.
  */
 class ReviewDetailController {
   private activeRowId: string | null = null;
-  private hoveredRowId: string | null = null;
-  private focusedRowId: string | null = null;
-  private openTimer: ReturnType<typeof setTimeout> | null = null;
-  private openTimerRowId: string | null = null;
-  private closeTimer: ReturnType<typeof setTimeout> | null = null;
-  private closeTimerRowId: string | null = null;
   private readonly listeners = new Map<string, Set<() => void>>();
 
   subscribe(rowId: string, listener: () => void): () => void {
@@ -239,117 +226,23 @@ class ReviewDetailController {
     return this.activeRowId === rowId;
   }
 
-  pointerEnter(rowId: string): void {
-    this.hoveredRowId = rowId;
-    if (this.activeRowId === rowId) {
-      if (this.closeTimerRowId === rowId) this.cancelClose();
-      return;
-    }
-    this.cancelOpen();
-    // A focused row owns the interactive detail until focus actually leaves;
-    // incidental mouse movement must never unmount a focused control.
-    if (this.focusedRowId !== null) return;
-    this.openTimerRowId = rowId;
-    this.openTimer = setTimeout(() => {
-      this.openTimer = null;
-      this.openTimerRowId = null;
-      if (this.hoveredRowId === rowId && this.focusedRowId === null) {
-        this.activate(rowId);
-      }
-    }, REVIEW_DETAIL_HOVER_INTENT_MS);
-  }
-
-  pointerLeave(rowId: string): void {
-    if (this.hoveredRowId === rowId) this.hoveredRowId = null;
-    if (this.openTimerRowId === rowId) this.cancelOpen();
-    if (this.activeRowId !== rowId || this.focusedRowId === rowId) return;
-    this.scheduleClose(rowId);
-  }
-
-  focusEnter(rowId: string): void {
-    this.focusedRowId = rowId;
-    this.cancelOpen();
-    this.cancelClose();
-    this.activate(rowId);
-  }
-
-  focusLeave(rowId: string): void {
-    if (this.focusedRowId === rowId) this.focusedRowId = null;
-    if (this.activeRowId !== rowId) return;
-    this.cancelClose();
-    if (this.hoveredRowId === rowId) return;
-    // Focus movement is explicit, so it stays immediate. If the pointer is
-    // already resting on another row, transfer directly instead of flashing a
-    // blank gap between blur and the next focus/intent event.
-    this.activate(this.hoveredRowId);
+  toggle(rowId: string): void {
+    this.activate(this.activeRowId === rowId ? null : rowId);
   }
 
   clear(): void {
-    this.cancelOpen();
-    this.cancelClose();
-    this.hoveredRowId = null;
-    this.focusedRowId = null;
     this.activate(null);
   }
 
   dispose(): void {
-    this.cancelOpen();
-    this.cancelClose();
+    this.activeRowId = null;
     this.listeners.clear();
   }
 
   prune(presentRowIds: ReadonlySet<string>): void {
-    if (
-      this.openTimerRowId !== null &&
-      !presentRowIds.has(this.openTimerRowId)
-    ) {
-      this.cancelOpen();
-    }
-    if (
-      this.closeTimerRowId !== null &&
-      !presentRowIds.has(this.closeTimerRowId)
-    ) {
-      this.cancelClose();
-    }
-    if (this.hoveredRowId !== null && !presentRowIds.has(this.hoveredRowId)) {
-      this.hoveredRowId = null;
-    }
-    if (this.focusedRowId !== null && !presentRowIds.has(this.focusedRowId)) {
-      this.focusedRowId = null;
-    }
     if (this.activeRowId !== null && !presentRowIds.has(this.activeRowId)) {
-      this.cancelClose();
       this.activate(null);
     }
-  }
-
-  private scheduleClose(rowId: string): void {
-    if (this.closeTimerRowId === rowId) return;
-    this.cancelClose();
-    this.closeTimerRowId = rowId;
-    this.closeTimer = setTimeout(() => {
-      this.closeTimer = null;
-      this.closeTimerRowId = null;
-      if (
-        this.activeRowId === rowId &&
-        this.focusedRowId !== rowId &&
-        this.hoveredRowId !== rowId
-      ) {
-        this.activate(this.focusedRowId ?? this.hoveredRowId);
-      }
-    }, REVIEW_DETAIL_EXIT_GRACE_MS);
-  }
-
-  private cancelOpen(): void {
-    if (this.openTimer !== null) clearTimeout(this.openTimer);
-    this.openTimer = null;
-    this.openTimerRowId = null;
-  }
-
-  private cancelClose(): void {
-    if (this.closeTimer !== null) clearTimeout(this.closeTimer);
-    this.closeTimer = null;
-    this.closeTimerRowId = null;
   }
 
   private activate(nextRowId: string | null): void {
@@ -363,6 +256,17 @@ class ReviewDetailController {
   private emit(rowId: string): void {
     for (const listener of this.listeners.get(rowId) ?? []) listener();
   }
+}
+
+function clickBelongsToNestedControl(
+  target: EventTarget | null,
+  row: HTMLLIElement,
+): boolean {
+  if (!(target instanceof Element)) return false;
+  const nested = target.closest(
+    "button, a, input, textarea, select, [role='button'], [role='link'], [data-review-detail-region]",
+  );
+  return nested !== null && row.contains(nested);
 }
 
 interface ReviewReportRowViewProps {
@@ -401,22 +305,26 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
   const selectable = rowSelectable(row);
   const evidence =
     row.evidence.length > 0 ? row.evidence : ["No reason was recorded."];
+  const detailAction = `${detailOpen ? "Hide" : "Show"} details for ${row.title}`;
 
   return (
     <li
       ref={setRowNode}
-      className={`review-report__row review-report__row--${status}${detailOpen ? " review-report__row--detail-open" : ""}`}
+      className={`review-report__row review-report__row--${status}${detailOpen ? " review-report__row--detail-open" : ""}${busy ? " review-report__row--busy" : ""}`}
       data-testid={`review-row-${row.id}`}
       data-review-row-id={row.id}
       aria-describedby={detailOpen ? detailRegionId : undefined}
-      tabIndex={selectable ? -1 : 0}
-      onPointerEnter={() => detailController.pointerEnter(row.id)}
-      onPointerLeave={() => detailController.pointerLeave(row.id)}
-      onFocusCapture={() => detailController.focusEnter(row.id)}
-      onBlurCapture={(event) => {
-        const next = event.relatedTarget;
-        if (next instanceof Node && event.currentTarget.contains(next)) return;
-        detailController.focusLeave(row.id);
+      aria-disabled={busy || undefined}
+      tabIndex={-1}
+      title={detailAction}
+      onClick={(event) => {
+        if (
+          busy ||
+          clickBelongsToNestedControl(event.target, event.currentTarget)
+        ) {
+          return;
+        }
+        detailController.toggle(row.id);
       }}
     >
       <span className="review-report__row-check-slot">
@@ -479,21 +387,38 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
       <span className="review-report__row-evidence">
         <span className="review-report__evidence-item">{evidence[0]}</span>
       </span>
-      <span
-        className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
+      <button
+        type="button"
+        className={`review-report__row-conf review-report__row-detail-toggle review-report__row-conf--${row.confidence}`}
         data-testid={`review-row-conf-${row.id}`}
+        aria-label={detailAction}
+        aria-expanded={detailOpen}
+        aria-controls={detailRegionId}
+        disabled={busy}
+        onClick={(event) => {
+          event.stopPropagation();
+          detailController.toggle(row.id);
+        }}
       >
-        {CONFIDENCE_LABEL[row.confidence]}
-      </span>
+        <span className="review-report__row-detail-toggle-inner">
+          <span>{CONFIDENCE_LABEL[row.confidence]}</span>
+          <ChevronDown
+            size={11}
+            className={`review-report__row-detail-chevron${detailOpen ? " review-report__row-detail-chevron--open" : ""}`}
+            aria-hidden="true"
+          />
+        </span>
+      </button>
       {detailOpen ? (
         <div
           className="review-report__row-detail-slot"
           data-testid={`review-row-detail-slot-${row.id}`}
+          data-review-detail-region
         >
           <div className="review-report__row-detail-clip">
             <div
               id={detailRegionId}
-              className="review-report__row-hover-detail"
+              className="review-report__row-detail"
               data-testid={`review-row-detail-${row.id}`}
               role="region"
               aria-label={`Details for ${row.title}`}
@@ -597,7 +522,7 @@ export default function ReviewReportShell({
   );
 
   // A live report can remove a row and later reintroduce the same stable id.
-  // Once it leaves, no stale hover/focus state may resurrect its detail.
+  // Once it leaves, stale disclosure state must not resurrect its detail.
   useLayoutEffect(() => {
     detailController.prune(presentRowIds);
   }, [detailController, presentRowIds]);

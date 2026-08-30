@@ -257,7 +257,7 @@ export const PlansCleanUp: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.hover(canvas.getByTestId("review-row-p1"));
+    await userEvent.click(canvas.getByTestId("review-row-p1"));
     await waitFor(() =>
       expect(canvas.getByTestId("review-row-detail-p1")).toBeVisible(),
     );
@@ -276,7 +276,7 @@ export const InboxBulkResolve: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.hover(canvas.getByTestId("review-row-i1"));
+    await userEvent.click(canvas.getByTestId("review-row-i1"));
     await waitFor(() =>
       expect(canvas.getByTestId("review-row-detail-i1")).toBeVisible(),
     );

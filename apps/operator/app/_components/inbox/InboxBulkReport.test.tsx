@@ -2,7 +2,6 @@
 /** Grouped Inbox bulk-resolve report coverage (cleanup-report-flows P-008/P-011). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  act,
   cleanup,
   fireEvent,
   render,
@@ -16,10 +15,7 @@ import {
   beginInteraction,
   getLatestMeasure,
 } from "../perf/perf-marks";
-import {
-  partitionReviewRows,
-  REVIEW_DETAIL_HOVER_INTENT_MS,
-} from "../review-report/ReviewReportShell";
+import { partitionReviewRows } from "../review-report/ReviewReportShell";
 
 const H = vi.hoisted(() => ({
   accept: vi.fn(),
@@ -30,6 +26,11 @@ const H = vi.hoisted(() => ({
   detail: vi.fn(),
   details: new Map<string, AttentionItem>(),
 }));
+
+function openRowDetails(itemId: string): void {
+  if (screen.queryByTestId(`review-row-detail-${itemId}`)) return;
+  fireEvent.click(screen.getByTestId(`review-row-${itemId}`));
+}
 
 vi.mock("./use-inbox-bulk-run", async (importOriginal) => {
   const real = await importOriginal<typeof import("./use-inbox-bulk-run")>();
@@ -534,8 +535,7 @@ describe("<InboxBulkReport>", () => {
     );
   });
 
-  it("hydrates only one active hover/focus detail across 200 report rows", () => {
-    vi.useFakeTimers();
+  it("hydrates only one explicitly opened detail across 200 report rows", () => {
     const items = highCardinalityRunItems();
     for (const item of items) {
       H.details.set(item.itemId, attention(item.itemId));
@@ -559,7 +559,7 @@ describe("<InboxBulkReport>", () => {
     const rowA = screen.getByTestId(`review-row-${firstId}`);
     fireEvent.pointerEnter(rowA);
     expect(H.detail).not.toHaveBeenCalled();
-    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
+    openRowDetails(firstId);
     expect(screen.getByTestId(`review-row-detail-${firstId}`)).toBeTruthy();
     expect(screen.getByTestId(`recommendation-${firstId}`)).toBeTruthy();
     expect(H.detail).toHaveBeenLastCalledWith(firstId);
@@ -569,7 +569,7 @@ describe("<InboxBulkReport>", () => {
     ).toHaveLength(1);
 
     fireEvent.pointerLeave(rowA);
-    fireEvent.focus(screen.getByTestId(`review-row-check-${secondId}`));
+    openRowDetails(secondId);
     expect(screen.queryByTestId(`review-row-detail-${firstId}`)).toBeNull();
     expect(screen.getByTestId(`review-row-detail-${secondId}`)).toBeTruthy();
     expect(screen.getByTestId(`recommendation-${secondId}`)).toBeTruthy();
@@ -586,7 +586,7 @@ describe("<InboxBulkReport>", () => {
       <InboxBulkReport run={run} runItems={[runItem()]} onClose={vi.fn()} />,
     );
 
-    fireEvent.focus(screen.getByTestId("review-row-a"));
+    openRowDetails("a");
     expect(
       screen.getByText(/no longer available in the live Inbox/),
     ).toBeTruthy();
@@ -598,7 +598,7 @@ describe("<InboxBulkReport>", () => {
     render(
       <InboxBulkReport run={run} runItems={[runItem()]} onClose={vi.fn()} />,
     );
-    fireEvent.focus(screen.getByTestId("review-row-a"));
+    openRowDetails("a");
     fireEvent.click(screen.getByTestId("inbox-bulk-reconcile-a"));
 
     await waitFor(() =>
@@ -618,7 +618,7 @@ describe("<InboxBulkReport>", () => {
     );
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
-    fireEvent.focus(screen.getByTestId("review-row-a"));
+    openRowDetails("a");
     fireEvent.click(screen.getByTestId("inbox-bulk-retry-a"));
     await waitFor(() => expect(H.resume).toHaveBeenCalledWith("run-8", ["a"]));
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -627,7 +627,7 @@ describe("<InboxBulkReport>", () => {
     rerender(
       <InboxBulkReport run={run} runItems={[skipped]} onClose={onClose} />,
     );
-    fireEvent.focus(screen.getByTestId("review-row-a"));
+    openRowDetails("a");
     fireEvent.click(screen.getByTestId("inbox-bulk-dismiss-item-a"));
     await waitFor(() =>
       expect(H.dismissItem).toHaveBeenCalledWith(
@@ -667,7 +667,7 @@ describe("<InboxBulkReport>", () => {
       />,
     );
 
-    fireEvent.focus(screen.getByTestId("review-row-a"));
+    openRowDetails("a");
     fireEvent.click(screen.getByTestId("discuss-a"));
     expect(onOpenThread).toHaveBeenCalledWith(live);
 

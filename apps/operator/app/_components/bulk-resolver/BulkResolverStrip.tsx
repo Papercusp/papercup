@@ -32,8 +32,7 @@ interface BulkResolverStripBaseProps {
   notice?: BulkResolverNotice | null;
 }
 
-export interface BulkResolverIdleStripProps
-  extends BulkResolverStripBaseProps {
+export interface BulkResolverIdleStripProps extends BulkResolverStripBaseProps {
   state: "idle";
   actionTestId: string;
   ariaLabel: string;
@@ -45,8 +44,7 @@ export interface BulkResolverIdleStripProps
   onStart: () => void;
 }
 
-export interface BulkResolverRunningStripProps
-  extends BulkResolverStripBaseProps {
+export interface BulkResolverRunningStripProps extends BulkResolverStripBaseProps {
   state: "running";
   title: ReactNode;
   stopTestId: string;
@@ -62,8 +60,7 @@ export interface BulkResolverRunningStripProps
   metricsTestId: string;
 }
 
-export interface BulkResolverReviewStripProps
-  extends BulkResolverStripBaseProps {
+export interface BulkResolverReviewStripProps extends BulkResolverStripBaseProps {
   state: "review";
   icon?: ReactNode;
   headline: ReactNode;
@@ -217,10 +214,7 @@ export default function BulkResolverStrip(props: BulkResolverStripProps) {
             style={{ width: progressWidth }}
           />
         </div>
-        <MetricList
-          metrics={props.metrics}
-          testId={props.metricsTestId}
-        />
+        <MetricList metrics={props.metrics} testId={props.metricsTestId} />
         {props.notice ? <Notice notice={props.notice} /> : null}
       </div>
     );

@@ -57,7 +57,7 @@ function refString(
  * snapshotted together; a legacy/corrupt row that lacks either, or whose two
  * discriminants disagree, stays visible in the report but cannot be selected.
  * DETAIL-only fields (especially `actions`) remain absent until the one active
- * hover/focus detail hydrates through `plans.attentionItem`.
+ * explicitly opened detail hydrates through `plans.attentionItem`.
  */
 export function bulkRunItemToAttentionSnapshot(
   runItem: BulkRunItem,
@@ -150,7 +150,10 @@ function reviewAccounting(
 ): ReviewRowAccounting {
   if (status === "applied") return "handled";
   if (status === "dismissed") return "not-applied";
-  if (runItem.outcome !== "recommended" && canonicalInboxDisposition(runItem) !== "recommended") {
+  if (
+    runItem.outcome !== "recommended" &&
+    canonicalInboxDisposition(runItem) !== "recommended"
+  ) {
     return "not-applied";
   }
   if (runItem.actionId === "answer" || !hasAction) return "manual";
@@ -159,7 +162,8 @@ function reviewAccounting(
 
 function evidenceLines(runItem: BulkRunItem): string[] {
   const lines: string[] = [];
-  if (runItem.recommendation?.label) lines.push(`next step · ${runItem.recommendation.label}`);
+  if (runItem.recommendation?.label)
+    lines.push(`next step · ${runItem.recommendation.label}`);
   if (runItem.recommendation?.responsibility) {
     lines.push(`responsibility · ${runItem.recommendation.responsibility}`);
   }
@@ -186,7 +190,8 @@ function fallbackDetail(runItem: BulkRunItem): ReactNode {
   if (runItem.recommendation) {
     return (
       <>
-        <strong>{runItem.recommendation.label}</strong>: {runItem.recommendation.rationale}
+        <strong>{runItem.recommendation.label}</strong>:{" "}
+        {runItem.recommendation.rationale}
         {runItem.recommendation.retryCondition ? (
           <> Retry condition: {runItem.recommendation.retryCondition}</>
         ) : null}
@@ -737,11 +742,13 @@ export default function InboxBulkReport({
       subtitle={
         <span className="inbox-bulk-report__subtitle">
           <span>
-            {counts.total} assessed · {counts.resolved} auto-resolved · {counts.unresolved} still open
+            {counts.total} assessed · {counts.resolved} auto-resolved ·{" "}
+            {counts.unresolved} still open
             <br />
-            {counts.recommendationTotal} recommendations · {counts.ownerAction} owner actions ·{" "}
-            {counts.cleanupCandidate} cleanup · {counts.retryNeeded + counts.pending} retry needed ·{" "}
-            {counts.routed} routed · {counts.investigate} investigate
+            {counts.recommendationTotal} recommendations · {counts.ownerAction}{" "}
+            owner actions · {counts.cleanupCandidate} cleanup ·{" "}
+            {counts.retryNeeded + counts.pending} retry needed · {counts.routed}{" "}
+            routed · {counts.investigate} investigate
           </span>
           {notice ? (
             <span role="alert" className="inbox-bulk-report__error">
@@ -762,9 +769,10 @@ export default function InboxBulkReport({
           <strong>Resolve-first guarantee.</strong> Selected rows dispatch
           through the same live Inbox action path as a hand resolve, then record
           acceptance on the run. A failed resolve stays visible and unrecorded.
-          Hover a row—or focus its checkbox—to review the item&rsquo;s current
-          options, edit a drafted reply, open the source, Retry, or dismiss one
-          row deliberately. Closing the report never completes unresolved work.
+          Click a row—or use its details button—to review the item&rsquo;s
+          current options, edit a drafted reply, open the source, Retry, or
+          dismiss one row deliberately. Closing the report never completes
+          unresolved work.
         </span>
       }
     />

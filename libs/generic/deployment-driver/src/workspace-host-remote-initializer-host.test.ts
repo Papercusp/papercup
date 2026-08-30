@@ -38,23 +38,26 @@ class RecordingSystem implements WorkspaceHostSystem {
 function gitBinding(expiresAt = '2026-08-26T23:00:00.000Z') {
   const fields = { forge: 'github', owner: 'papercupai', repository: 'private-canary' };
   return {
-    channel: 'git' as const,
+    channel: "git" as const,
     credentialRef: {
-      kind: 'git' as const,
-      ref: buildWorkspaceHostCredentialReference('git-short-lived-delegation', fields),
+      kind: "git" as const,
+      ref: buildWorkspaceHostCredentialReference(
+        "git-short-lived-delegation",
+        fields,
+      ),
     },
     delivery: {
-      kind: 'short-lived-delegation' as const,
+      kind: "short-lived-delegation" as const,
       generation: 7,
-      audience: 'workspace-host-canary',
+      audience: "workspace-host-canary",
       expiresAt,
       revocationRef: buildWorkspaceHostCredentialRevocationReference(
-        'git-short-lived-delegation',
+        "git-short-lived-delegation",
         fields,
         7,
       ),
     },
-    requestedAt: '2026-08-26T21:00:00.000Z',
+    requestedAt: "2026-08-26T21:00:00.000Z",
   };
 }
 
