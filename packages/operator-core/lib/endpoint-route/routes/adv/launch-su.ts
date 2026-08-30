@@ -41,7 +41,7 @@ import {
 } from '../../../su-session-persistence';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
-import { isLaunchAccountValue } from '../../../agent-config-constants';
+import { composeLaunchModelSpec, isLaunchAccountValue } from '../../../agent-config-constants';
 import { isLaunchableMode, LAUNCHABLE_MODE_IDS } from '../../../modes/registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { HARNESS_SLUG_RE } from '../../../harness-slug';
@@ -76,6 +76,11 @@ const launchSu = defineTool({
       // P-032: omp-parity passthroughs (the features the retired
       // buildEngineerOmpLaunchCommand used to provide).
       model?: string | null;
+      // PUI/PSU option-source parity: effort stays a separate UI choice, but
+      // psu carries it in the model spec. Compose it through the canonical
+      // agent-config helper rather than reimplementing suffix rules here or in
+      // the PUI client.
+      effort?: string | null;
       // su-context-size-variants: 'full' | 'trimmed' — initial-context size.
       context_size?: string | null;
       resume_session_id?: string | null;
@@ -168,7 +173,15 @@ const launchSu = defineTool({
     if (harness && !SLUG_RE.test(harness)) return json({ status: 'error', error: 'invalid harness slug' }, 400);
     if (plan && !SLUG_RE.test(plan)) return json({ status: 'error', error: 'invalid plan slug' }, 400);
 
-    const model = body.model?.trim() || null;
+    let model: string | null = null;
+    try {
+      model = composeLaunchModelSpec(body.model, body.effort) ?? null;
+    } catch (error) {
+      return json(
+        { status: 'error', error: error instanceof Error ? error.message : 'invalid model/effort' },
+        400,
+      );
+    }
     const resumeSessionId = body.resume_session_id?.trim() || null;
     if (model && !MODEL_RE.test(model)) return json({ status: 'error', error: 'invalid model' }, 400);
     if (resumeSessionId && !SESSION_ID_RE.test(resumeSessionId)) return json({ status: 'error', error: 'invalid resume session id' }, 400);
