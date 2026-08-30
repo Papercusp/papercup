@@ -25,6 +25,7 @@ vi.mock('./coordination-domain', () => ({
 
 import { tryHeartbeatResource } from './su-lock-store';
 import { inWorkspaceTxn } from './in-workspace-txn';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 const hbM = vi.mocked(tryHeartbeatResource);
 const txnM = vi.mocked(inWorkspaceTxn);
 const tool = (await import('./heartbeat_resource')).default;
@@ -38,7 +39,7 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('locks:heartbeat_resource handler', () => {
   it('extends and returns the new ISO expiry', async () => {
-    hbM.mockResolvedValue({ extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
+    mockResolvedTyped(hbM, { extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') });
     const b = body(await call());
     expect(b).toMatchObject({
       ok: true,
@@ -55,7 +56,7 @@ describe('locks:heartbeat_resource handler', () => {
   });
 
   it('a no-op (lapsed / not owner) is ok:false with null expiry — never a false-alive', async () => {
-    hbM.mockResolvedValue({ extended: false, expires_ts: null } as never);
+    mockResolvedTyped(hbM, { extended: false, expires_ts: null });
     const b = body(await call());
     expect(b).toMatchObject({
       ok: true,
@@ -73,7 +74,7 @@ describe('locks:heartbeat_resource handler', () => {
   });
 
   it('heartbeats selected lock_ids as one keyed batch', async () => {
-    hbM.mockResolvedValue({ extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
+    mockResolvedTyped(hbM, { extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') });
     const b = body(await call({
       lock_ids: [
         '33333333-3333-3333-3333-333333333333',
@@ -119,7 +120,7 @@ describe('locks:heartbeat_resource handler', () => {
   });
 
   it('WI-5960: reports the no-op (never-alive) result when NO domain — caller or special — has the lease', async () => {
-    hbM.mockResolvedValue({ extended: false, expires_ts: null } as never);
+    mockResolvedTyped(hbM, { extended: false, expires_ts: null });
     const b = body(await call());
     expect(b.results[0]).toMatchObject({ ok: false, extended: false, expires_ts: null });
     // every candidate domain was tried, in order, before giving up.
@@ -138,7 +139,7 @@ describe('locks:heartbeat_resource handler', () => {
       // of this file uses). Hand-annotating them re-declared `fn` as returning
       // `unknown`, which no longer satisfies the real `(tx) => Promise<unknown>`.
       txnM.mockImplementation(async (_d, _o, fn) => fn({} as never));
-      hbM.mockResolvedValue({ extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
+      mockResolvedTyped(hbM, { extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') });
 
       const pending = call();
       await vi.runAllTimersAsync();
