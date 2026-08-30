@@ -52,7 +52,25 @@ describe('PRE_PROMPT_REGISTRY', () => {
 
   it('hardens the positional work-item claim id with columnOverrides (D-007 residual, EI-7927)', () => {
     const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
-    expect(claim?.columnOverrides?.id?.pattern).toBe('^(?:(?:WI|F|EI)-\\d+|PR-\\d+-P-\\d+)$');
+    expect(claim?.columnOverrides?.id?.pattern).toBe('^(?:(?:WI|F|EI)-\\d+|F-FIX-\\d+|PR-\\d+-P-\\d+)$');
+  });
+
+  it('reconstructs a promoted F-FIX work-item id through the real claim registry projection', () => {
+    const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
+    const claimTool = lookupByMcpName('work_items:claim');
+    expect(claim).toBeDefined();
+    expect(claimTool).toBeDefined();
+
+    const columns = projectWriteColumns(claimTool!.inputSchema as Record<string, unknown>, {
+      columnNames: claim!.writeColumnNames,
+      requiredColumnNames: claim!.writeRequiredColumnNames,
+      columnOverrides: claim!.columnOverrides,
+    });
+    expect(columns).toBeDefined();
+    expect(reconstructArgs('F-FIX-051,worker,papercusp', columns!)).toEqual({
+      ok: true,
+      args: { id: 'F-FIX-051', assignee: 'worker', harness: 'papercusp' },
+    });
   });
 
   it('reconstructs a scheduler-created PR work-item id through the real claim registry projection', () => {
