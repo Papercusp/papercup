@@ -2103,7 +2103,21 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     echo "[pc-heavy] FATAL: cannot establish the exclusive materialization writer lock in $_dir" >&2
     exit 75
   fi
-  _exclusive_writer_started=$(date +%s)
+  # EI-21894520557549786: read the wall clock via bash's builtin
+  # $EPOCHSECONDS (bash 5.0+, zero forks — confirmed via strace, one clone()
+  # for `$(date +%s)` vs none for a bare `$EPOCHSECONDS` reference) rather
+  # than forking `date +%s` on every tick of a wait loop that can run for
+  # `_timeout` seconds under exactly the fleet-wide fork pressure (see the
+  # sibling EI-21415546552163181 fork-EAGAIN report) that makes a fork most
+  # likely to fail. A failed `date +%s` here previously poisoned BOTH the
+  # heartbeat (bash arithmetic treats "" as 0) and the deadline check (`[ ""
+  # -ge N ]` errors "integer expression expected", which this script's `set
+  # -uo pipefail` — no `-e` — does not abort on, so the surrounding `&&`/`if`
+  # just silently never breaks) — turning a bounded wait into an unbounded,
+  # totally silent one. `${EPOCHSECONDS:-$(date +%s)}` falls back to the
+  # original (still fork-vulnerable, but status-quo, never worse) behavior on
+  # any bash below 5.0, where EPOCHSECONDS is unset.
+  _exclusive_writer_started="${EPOCHSECONDS:-$(date +%s)}"
   _exclusive_writer_deadline=$(( _exclusive_writer_started + _timeout ))
   _exclusive_writer_last_heartbeat="$_exclusive_writer_started"
   _exclusive_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
@@ -2126,7 +2140,7 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     _exclusive_writer_wait_pid=$!
   fi
   while [ -n "$_exclusive_writer_wait_pid" ] && kill -0 "$_exclusive_writer_wait_pid" 2>/dev/null; do
-    _exclusive_writer_now=$(date +%s)
+    _exclusive_writer_now="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
     if [ "$_exclusive_writer_announced" = 0 ]; then
       echo "[pc-heavy] another exclusive materializer owns the writer lock — waiting before touching heavy slots" >&2
       _exclusive_writer_holders="$(_exclusive_describe_holders "$_exclusive_writer_path")"
@@ -2198,7 +2212,7 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   # would make the second healthy materializer acquire the mutex and then
   # immediately refuse without ever giving pre-existing ordinary holders time
   # to finish.
-  _exclusive_started=$(date +%s)
+  _exclusive_started="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
   _exclusive_deadline=$(( _exclusive_started + _timeout ))
   _exclusive_last_heartbeat="$_exclusive_started"
   declare -a _exclusive_fds=()
@@ -2245,7 +2259,7 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     done
     [ "$_exclusive_held" -ge "$_exclusive_slot_count" ] && break
     _exclusive_release_partial
-    _exclusive_now=$(date +%s)
+    _exclusive_now="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
     if [ $(( _exclusive_now - _exclusive_last_heartbeat )) -ge "$_exclusive_heartbeat_every" ]; then
       echo "[pc-heavy] exclusive materialization barrier still draining ($((_exclusive_now - _exclusive_started))s elapsed, $_exclusive_held/$_exclusive_slot_count slots held)" >&2
       # Name the blocker on the FIRST heartbeat, not only at the refusal: this
@@ -2695,7 +2709,7 @@ if [ -z "$_held" ]; then
     echo "[pc-heavy] queued for a heavy slot (all $_slots slot(s) busy) —" \
          "pid $$, waiting up to ${_timeout}s" >&2
   fi
-  _wait_start=$(date +%s)
+  _wait_start="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
   _fallback_deadline=$(( _wait_start + _timeout ))
   # PC_HEAVY_HEARTBEAT_SEC: test-only override (default 15s in production) so a
   # suite can assert multiple heartbeats without actually waiting 15s+ per one.
@@ -2721,7 +2735,7 @@ if [ -z "$_held" ]; then
         eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
       fi
     done
-    _now=$(date +%s)
+    _now="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
     # Periodic "still alive, still queued" heartbeat so a long wait (the
     # normal case under a hard gate clamp) never goes silent for minutes at a
     # stretch — same rationale as the enqueue line above, just amortized
@@ -3126,7 +3140,7 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
   local _intent_now='' _intent_last_heartbeat='' _intent_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
   local _intent_elapsed=0
   case "$_intent_heartbeat_every" in ''|*[!0-9]*) _intent_heartbeat_every=15 ;; esac
-  _intent_started=$(date +%s)
+  _intent_started="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
   _intent_deadline=$(( _intent_started + _intent_wait_sec ))
   _intent_last_heartbeat="$_intent_started"
   while :; do
@@ -3148,7 +3162,7 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
       _pc_heavy_report_exclusive_materializer "$_intent_path" "$_writer_path" 0
       _intent_announced=1
     else
-      _intent_now=$(date +%s)
+      _intent_now="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
       if [ $(( _intent_now - _intent_last_heartbeat )) -ge "$_intent_heartbeat_every" ]; then
         _intent_elapsed=$(( _intent_now - _intent_started ))
         echo "[pc-heavy] retry still waiting for exclusive materializer intent ($_intent_elapsed s elapsed)" >&2
@@ -3156,7 +3170,7 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
         _intent_last_heartbeat="$_intent_now"
       fi
     fi
-    [ -n "$_intent_now" ] || _intent_now=$(date +%s)
+    [ -n "$_intent_now" ] || _intent_now="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
     if [ "$_intent_wait_sec" -eq 0 ] || [ "$_intent_now" -ge "$_intent_deadline" ]; then
       echo "[pc-heavy] retry intent wait timed out after ${_intent_wait_sec}s; proceeding fail-open" >&2
       return 0
