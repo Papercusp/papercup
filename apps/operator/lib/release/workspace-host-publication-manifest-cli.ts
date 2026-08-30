@@ -37,10 +37,13 @@
  * cannot parse rather than reporting zero findings, because "no findings" and "I could not tell"
  * are indistinguishable in the output and only one of them is safe to publish.
  */
+import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
@@ -102,6 +105,8 @@ export const WORKSPACE_HOST_PROVENANCE_BUILD_TYPE =
   "https://papercusp.dev/workspace-host/vm-release/v1";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const NODE_VERSION = /^v(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const execFile = promisify(execFileCallback);
 
 export interface PublicationManifestCliArgs {
   publicationDir: string;
@@ -158,6 +163,17 @@ function requiredString(value: unknown, label: string): string {
   return value.trim();
 }
 
+function requiredNodeMajor(value: unknown, label: string): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < 20 ||
+    (value as number) > 99
+  ) {
+    throw new Error(`${label} must be a supported integer between 20 and 99`);
+  }
+  return value as number;
+}
+
 function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   return requiredString(value, label);
@@ -209,6 +225,11 @@ export interface PublicationManifestCliInput {
     templatePath: string;
     templateSha256?: string;
   };
+  /**
+   * The floor rendered into bootstrap-input.json. Publication measures the runtime shipped in
+   * `server.tgz` and refuses a floor that runtime cannot meet.
+   */
+  minimumNodeMajor: number;
   materials: readonly PublicationManifestMaterialSpec[];
   parameters: WorkspaceHostBuildManifestInput["parameters"];
   targets: WorkspaceHostBuildManifestInput["targets"];
@@ -300,6 +321,10 @@ export function parsePublicationManifestCliInput(
           }
         : {}),
     },
+    minimumNodeMajor: requiredNodeMajor(
+      value.minimumNodeMajor,
+      "input.minimumNodeMajor",
+    ),
     materials,
     parameters: requiredArray(
       value.parameters,
@@ -793,6 +818,142 @@ export async function assembleWorkspaceHostPublicationManifest(
 
 /* ------------------------------------------------------------------ filesystem */
 
+export interface BundledNodeRuntime {
+  version: string;
+  major: number;
+}
+
+/**
+ * Parse the exact output of the bundled runtime's `--version` command.
+ *
+ * A loose `parseInt` would accept a truncated or diagnostic string such as `v24oops` and turn
+ * an unreadable probe into a trustworthy-looking floor check. The publication gate is only
+ * useful if an unreadable runtime is a hard failure.
+ */
+export function parseBundledNodeVersion(output: string): BundledNodeRuntime {
+  const version = output.trim();
+  const match = NODE_VERSION.exec(version);
+  const major = match?.[1] === undefined ? Number.NaN : Number(match[1]);
+  if (!match || !Number.isSafeInteger(major)) {
+    throw new Error(
+      `bundled Node --version output '${version}' is not a supported semantic version`,
+    );
+  }
+  return { version, major };
+}
+
+interface BundledNodeArchiveMember {
+  raw: string;
+  normalized: string;
+}
+
+function bundledNodeArchiveMember(raw: string): BundledNodeArchiveMember | undefined {
+  const trimmed = raw.trim();
+  const normalized = trimmed.replace(/^\.\/+/, "");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.split("/").includes("..") ||
+    (normalized !== "bin/node" && !normalized.endsWith("/bin/node"))
+  ) {
+    return undefined;
+  }
+  return { raw: trimmed, normalized };
+}
+
+/**
+ * Measure the Node binary shipped inside a release archive.
+ *
+ * The archive is not fully extracted: only the exact `bin/node` member is copied into a private
+ * temporary directory and executed. Rejecting ambiguous, traversing, or symlink members keeps
+ * the check about the bytes named by the archive rather than an accidental host binary.
+ */
+export async function inspectBundledNodeRuntime(
+  bundlePath: string,
+): Promise<BundledNodeRuntime> {
+  const probeDir = await mkdtemp(join(tmpdir(), "papercusp-bundled-node-"));
+  try {
+    const listing = await execFile(
+      "tar",
+      ["--list", "--gzip", "--file", bundlePath],
+      { encoding: "utf8", maxBuffer: 1 << 20 },
+    );
+    const nodeMembers = String(listing.stdout)
+      .split(/\r?\n/u)
+      .map(bundledNodeArchiveMember)
+      .filter(
+        (member): member is BundledNodeArchiveMember => member !== undefined,
+      );
+    const uniqueNodeMembers = [
+      ...new Map(nodeMembers.map((member) => [member.normalized, member])).values(),
+    ];
+    if (uniqueNodeMembers.length === 0) {
+      throw new Error("release archive does not contain a bin/node member");
+    }
+    if (uniqueNodeMembers.length > 1) {
+      throw new Error(
+        `release archive contains multiple bin/node members: ${uniqueNodeMembers
+          .map((member) => member.normalized)
+          .join(", ")}`,
+      );
+    }
+    const [nodeMember] = uniqueNodeMembers;
+    await execFile(
+      "tar",
+      [
+        "--extract",
+        "--gzip",
+        "--file",
+        bundlePath,
+        "--directory",
+        probeDir,
+        "--no-same-owner",
+        "--no-same-permissions",
+        nodeMember.raw,
+      ],
+      { encoding: "utf8", maxBuffer: 1 << 20 },
+    );
+    const nodePath = join(probeDir, nodeMember.normalized);
+    const nodeStats = await lstat(nodePath).catch(() => null);
+    if (!nodeStats?.isFile()) {
+      throw new Error(`archive member '${nodeMember.normalized}' is not a regular file`);
+    }
+    const version = await execFile(nodePath, ["--version"], {
+      encoding: "utf8",
+      maxBuffer: 4096,
+    });
+    return parseBundledNodeVersion(String(version.stdout));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `cannot inspect bundled Node runtime in '${bundlePath}': ${message}`,
+      { cause: error },
+    );
+  } finally {
+    await rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Refuse publication when the bootstrap floor is higher than the runtime in the bytes being
+ * published. This is the publication-time recurrence guard for EI-21749928071060197.
+ */
+export async function assertBundledNodeMeetsMinimum(
+  bundlePath: string,
+  minimumNodeMajor: number,
+): Promise<BundledNodeRuntime> {
+  const floor = requiredNodeMajor(minimumNodeMajor, "minimumNodeMajor");
+  const runtime = await inspectBundledNodeRuntime(bundlePath);
+  if (runtime.major < floor) {
+    throw new Error(
+      `REFUSING TO PUBLISH: minimumNodeMajor ${floor} exceeds the bundled runtime ${runtime.version} ` +
+        `(major ${runtime.major}). This artifact could never bootstrap. Either lower the floor or rebuild ` +
+        `the bundle against a newer Node.`,
+    );
+  }
+  return runtime;
+}
+
 async function sha256OfFile(path: string): Promise<string> {
   const hash = createHash("sha256");
   // Streamed: the release bundle is measured in gigabytes and must never be buffered whole.
@@ -909,7 +1070,9 @@ export async function runPublicationManifestCli(
   const now = args.now ? Date.parse(args.now) : Date.now();
   if (!Number.isFinite(now)) throw new Error(`--now '${args.now}' is not a timestamp`);
 
-  const bundle = await measureFile(join(dir, WORKSPACE_HOST_PUBLISHED_BUNDLE_NAME));
+  const bundlePath = join(dir, WORKSPACE_HOST_PUBLISHED_BUNDLE_NAME);
+  const bundle = await measureFile(bundlePath);
+  await assertBundledNodeMeetsMinimum(bundlePath, input.minimumNodeMajor);
   const signature = await measureFile(
     join(dir, WORKSPACE_HOST_PUBLISHED_SIGNATURE_NAME),
   );

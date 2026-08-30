@@ -1,7 +1,9 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -9,8 +11,10 @@ import {
   resolveMaterials,
   WORKSPACE_HOST_PUBLICATION_TRUST_POLICY,
   assembleWorkspaceHostPublicationManifest,
+  assertBundledNodeMeetsMinimum,
   parsePublicationManifestCliArgs,
   parsePublicationManifestCliInput,
+  parseBundledNodeVersion,
   parseSbomFacts,
   parseSecretScanFindings,
   parseVulnerabilityFacts,
@@ -23,6 +27,7 @@ import {
 
 const digest = (seed: string): string =>
   createHash("sha256").update(seed, "utf8").digest("hex");
+const execFile = promisify(execFileCallback);
 
 const scratchDirs: string[] = [];
 afterAll(async () => {
@@ -54,6 +59,22 @@ const MATERIALS = [
     executable: true,
   },
   {
+    path: "bin/pui",
+    sha256: digest("pui"),
+    sizeBytes: 24_801_280,
+    executable: true,
+  },
+  {
+    path: "pui-companion.wasm",
+    sha256: digest("pui-companion"),
+    sizeBytes: 1_048_576,
+  },
+  {
+    path: "pui-install.json",
+    sha256: digest("pui-install-manifest"),
+    sizeBytes: 512,
+  },
+  {
     path: "papercusp-desktop/bin/audit-release-bundle.py",
     sha256: digest("auditor"),
     sizeBytes: 196_083,
@@ -69,7 +90,8 @@ function cliInput(): PublicationManifestCliInput {
       revision: "daf63630615e9266fe9cee27d388ff44aa42366f",
     },
     baseImage: {
-      reference: "ubuntu-24.04.4-host-default-linux-x64:/etc/os-release",
+      reference:
+        "projects/papercusp-images-123/global/images/ubuntu-2404-amd64",
       architecture: "x86_64",
       sha256: digest("base-image"),
     },
@@ -79,6 +101,7 @@ function cliInput(): PublicationManifestCliInput {
       version: "0.0.18",
       templatePath: "papercusp-desktop/bin/build-desktop-sidecar.sh",
     },
+    minimumNodeMajor: 24,
     materials: [...MATERIALS],
     parameters: [
       { name: "distribution_profile", value: "vm-release" },
@@ -162,6 +185,15 @@ describe("publication manifest CLI arguments", () => {
 });
 
 describe("publication manifest CLI input", () => {
+  it("requires a supported bundled Node floor", () => {
+    expect(() =>
+      parsePublicationManifestCliInput({
+        ...cliInput(),
+        minimumNodeMajor: 25.5,
+      }),
+    ).toThrow(/input\.minimumNodeMajor must be a supported integer/u);
+  });
+
   it("requires exactly one source for the base-image digest", () => {
     const both = { ...cliInput(), baseImage: { ...cliInput().baseImage, sha256Path: "/etc/os-release" } };
     expect(() => parsePublicationManifestCliInput(both)).toThrow(
@@ -185,6 +217,44 @@ describe("publication manifest CLI input", () => {
       materials: [{ path: "bin/papercusp-remote-initializer", executable: true }],
     });
     expect(parsed.materials[0]?.sha256).toBeUndefined();
+  });
+});
+
+describe("bundled Node publication guard", () => {
+  it("parses only complete semantic Node versions", () => {
+    expect(parseBundledNodeVersion("v24.18.1\n")).toEqual({
+      version: "v24.18.1",
+      major: 24,
+    });
+    expect(() => parseBundledNodeVersion("v24oops")).toThrow(
+      /not a supported semantic version/u,
+    );
+  });
+
+  it("measures the runtime from the archive and rejects a floor it cannot meet", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bundled-node-"));
+    scratchDirs.push(root);
+    const treeRoot = join(root, "tree");
+    await mkdir(join(treeRoot, "bin"), { recursive: true });
+    await writeFile(
+      join(treeRoot, "bin", "node"),
+      '#!/bin/sh\nprintf "%s\\n" "v24.18.1"\n',
+      { encoding: "utf8", mode: 0o755 },
+    );
+    const archive = join(root, "server.tgz");
+    await execFile(
+      "tar",
+      ["--create", "--gzip", "--file", archive, "--directory", treeRoot, "."],
+      { encoding: "utf8" },
+    );
+
+    expect(await assertBundledNodeMeetsMinimum(archive, 24)).toEqual({
+      version: "v24.18.1",
+      major: 24,
+    });
+    await expect(assertBundledNodeMeetsMinimum(archive, 25)).rejects.toThrow(
+      /minimumNodeMajor 25 exceeds the bundled runtime v24\.18\.1/u,
+    );
   });
 });
 
