@@ -549,6 +549,81 @@ export async function reconcileAgentReviewGrade(
   return { workItemId: workItem.id, status: 'approved', round: current.round, changed };
 }
 
+export type ClaimAgentReviewReason =
+  | 'not-found'
+  | 'not-open'
+  | 'not-review-kind'
+  | 'remote-owned'
+  | 'observation'
+  | 'owner-capability'
+  | 'agent-review-not-pending'
+  | 'own-submission'
+  | 'claim-conflict';
+
+export interface ClaimAgentReviewResult {
+  claimed: boolean;
+  workItem: WorkItem | null;
+  reason?: ClaimAgentReviewReason;
+}
+
+/**
+ * Directed reviewer pickup for one known work item.
+ *
+ * This is deliberately separate from claimNextAgentReview: a review request naming
+ * WI-B must never consume older WI-A merely because WI-A sorts first in the shared
+ * review queue. Identity remains caller-derived at the public door. The pre-claim
+ * checks provide useful refusal reasons; the returned row is checked again after
+ * claimWorkItem's CAS so a concurrent lifecycle transition cannot leave the reviewer
+ * holding work that is no longer pending or is their own submission.
+ */
+export async function claimAgentReview(
+  input: { id: string; reviewer: string; harnessSlug: string },
+  deps: AgentReviewDeps = defaultDeps,
+): Promise<ClaimAgentReviewResult> {
+  const workItem = await deps.getWorkItem(input.id, input.harnessSlug);
+  if (!workItem || workItem.harness !== input.harnessSlug) {
+    return { claimed: false, workItem: null, reason: 'not-found' };
+  }
+  if (workItem.state !== 'open') {
+    return { claimed: false, workItem: null, reason: 'not-open' };
+  }
+  const eligibility = agentReviewEligibility(workItem);
+  if (!eligibility.eligible) {
+    return { claimed: false, workItem: null, reason: eligibility.reason };
+  }
+  const current = readAgentReviewState(workItem.payload);
+  if (current?.status !== 'pending') {
+    return { claimed: false, workItem: null, reason: 'agent-review-not-pending' };
+  }
+  if (current.submittedBy === input.reviewer) {
+    return { claimed: false, workItem: null, reason: 'own-submission' };
+  }
+
+  const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {
+    ...(workItem.harness ? { harness: workItem.harness } : {}),
+  });
+  if (!claimed) return { claimed: false, workItem: null, reason: 'claim-conflict' };
+
+  const claimedState = readAgentReviewState(claimed.payload);
+  const postClaimReason: ClaimAgentReviewReason | null =
+    claimedState?.status !== 'pending'
+      ? 'agent-review-not-pending'
+      : claimedState.submittedBy === input.reviewer
+        ? 'own-submission'
+        : null;
+  if (postClaimReason) {
+    const released = await deps.releaseWorkItem(claimed.id, {
+      ...(claimed.harness ? { harness: claimed.harness } : {}),
+      expectedAssignee: input.reviewer,
+    });
+    if (!released) {
+      throw new Error(`claimAgentReview: could not release invalidated claim on '${claimed.id}'`);
+    }
+    return { claimed: false, workItem: null, reason: postClaimReason };
+  }
+  return { claimed: true, workItem: claimed };
+}
+
 /** Reviewer pickup over the unified queue; direct claims still use claimWorkItem's CAS. */
 export async function claimNextAgentReview(
   input: { reviewer: string; harnessSlug?: string },

@@ -4,12 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 
 const h = vi.hoisted(() => ({
+  claim: vi.fn(),
   claimNext: vi.fn(),
   resubmit: vi.fn(),
   identity: vi.fn(() => ({ ownerId: 'su-reviewer' })),
 }));
 
 vi.mock('../../harness/improvements/agent-review', () => ({
+  claimAgentReview: h.claim,
   claimNextAgentReview: h.claimNext,
   resubmitAgentReview: h.resubmit,
 }));
@@ -25,11 +27,31 @@ const body = (result: ToolResult) => JSON.parse(result.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   h.identity.mockReturnValue({ ownerId: 'su-reviewer' });
+  h.claim.mockResolvedValue({ claimed: false, workItem: null, reason: 'not-found' });
   h.claimNext.mockResolvedValue(null);
   h.resubmit.mockResolvedValue({ resubmitted: true, state: { status: 'pending', round: 2 } });
 });
 
 describe('improvements:agent-review public door', () => {
+  it('claims the requested second pending item without consuming the first', async () => {
+    h.claim.mockResolvedValue({ claimed: true, workItem: { id: 'WI-8', title: 'review me second' } });
+
+    const out = await call({ mode: 'claim', id: 'WI-8' }, { harnessSlug: 'papercusp' });
+
+    expect(h.claim).toHaveBeenCalledWith({
+      id: 'WI-8',
+      reviewer: 'su-reviewer',
+      harnessSlug: 'papercusp',
+    });
+    expect(h.claimNext).not.toHaveBeenCalled();
+    expect(body(out)).toEqual({
+      ok: true,
+      mode: 'claim',
+      claimed: true,
+      workItem: { id: 'WI-8', title: 'review me second' },
+    });
+  });
+
   it('claim-next derives reviewer identity and concrete harness from the caller context', async () => {
     h.claimNext.mockResolvedValue({ id: 'WI-7', title: 'review me' });
 
