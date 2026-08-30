@@ -119,6 +119,33 @@ describe('secrets-guard rules', () => {
     expect(scanForSecrets([{ path: 'src/config.ts', content: loaded }]).length).toBeGreaterThanOrEqual(2);
   });
 
+  it('voice-credentials integration test is exempt by path, not by content (EI-20216447367071456)', () => {
+    // WI/EI-20216447367071456: the tested scanner and the live publish guard
+    // went behaviorally divergent because voice-credentials.integration.test.ts
+    // had ONLY a content-dependent self-check (`scanForSecrets([this file's
+    // CURRENT content]) === []`), not a path exemption. A historical blob of
+    // that same file (commit b3279dba9f, before the fixture literal was
+    // reworded to include a PLACEHOLDER_RE marker) contained an un-suppressed
+    // 'sk_plaintext_...' literal, which the shape rules DO flag — and per the
+    // header comment above, that blob is permanently inside the own-head
+    // publish range no matter how the current file reads (froze publication
+    // EI-20191187592939864, 2026-08-11; cleared by a runtime path exemption
+    // that is retired now that the static entry below supersedes it).
+    const path = 'packages/operator-core/lib/voice-credentials.integration.test.ts';
+    expect(isFixtureFile(path)).toBe(true);
+    // Reproduce the ACTUAL historical trigger directly: the pre-reword literal,
+    // at the real path, must be treated as exempt regardless of content —
+    // proving the fix is path-scoped, not a lucky content coincidence.
+    // Assembled at runtime (like AKIA/GH above) so this test file's own SOURCE
+    // never contains the bare 20+-char literal the write-time guard would flag.
+    const historicalSecret = 'sk_plaintext_' + 'supersecret_9999';
+    const historicalContent = `const SECRET = '${historicalSecret}';`;
+    expect(scanForSecrets([{ path, content: historicalContent }])).toEqual([]);
+    // Sanity: the SAME literal at a non-fixture path still flags — confirms the
+    // exemption is path-scoped, not a rule change that weakened detection.
+    expect(scanForSecrets([{ path: 'src/config.ts', content: historicalContent }]).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('BLOCKING publish paths use the exemption-aware entrypoint, never the raw primitive', () => {
     // The trap this guards (P-402 / EI-13924, 2026-07-19): github-egress called
     // the per-line `scanTextForSecrets` directly, so it never applied
