@@ -73,21 +73,20 @@ describe('coord:presence ownerIds compatibility alias', () => {
     expect(mocks.assemblePresenceSnapshot.mock.calls[0]?.[1]).not.toHaveProperty('ownerIds');
   });
 
-  it('rejects ownerIds combined with owners (both plural spellings at once)', async () => {
-    await expect(
-      presenceTool.handler(
-        { owners: ['su-a'], ownerIds: ['su-b'] } as never,
-        { workspaceId: 'test-workspace', harnessSlug: 'papercusp', isSuperuser: true } as never,
-      ),
-    ).rejects.toThrow();
-  });
+});
 
-  it('rejects ownerIds combined with owner (singular + plural-alias mix)', async () => {
-    await expect(
-      presenceTool.handler(
-        { owner: 'su-a', ownerIds: ['su-b'] } as never,
-        { workspaceId: 'test-workspace', harnessSlug: 'papercusp', isSuperuser: true } as never,
-      ),
-    ).rejects.toThrow();
+describe('coord:presence ownerIds schema validation', () => {
+  // Zod schema validation runs at the dispatch layer (args.safeParse), never
+  // inside .handler — mirrors presence-roster-select.test.ts's targeted-owner
+  // schema coverage for owner/ownerId/owners.
+  it('accepts ownerIds alone, and rejects it combined with owner/ownerId/owners', () => {
+    expect(presenceTool.args.safeParse({ ownerIds: ['su-a', 'su-b'] }).success).toBe(true);
+    expect(presenceTool.args.safeParse({ owner: 'su-a', ownerIds: ['su-b'] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ ownerId: 'su-a', ownerIds: ['su-b'] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ owners: ['su-a'], ownerIds: ['su-b'] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ ownerIds: [] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ ownerIds: Array.from({ length: 51 }, (_, i) => `su-${i}`) }).success).toBe(
+      false,
+    );
   });
 });

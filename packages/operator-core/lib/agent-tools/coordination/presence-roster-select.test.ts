@@ -102,6 +102,10 @@ describe('coord:presence targeted-owner schema', () => {
     expect(presenceTool.args.safeParse({ owner: 'su-a', ownerId: 'su-a' }).success).toBe(false);
     expect(presenceTool.args.safeParse({ owners: [] }).success).toBe(false);
     expect(presenceTool.args.safeParse({ owners: Array.from({ length: 51 }, (_, i) => `su-${i}`) }).success).toBe(false);
+    // ownerIds is the plural compatibility alias for owners (EI-21631841527230352):
+    // see presence-owners-alias.test.ts for full coverage.
+    expect(presenceTool.args.safeParse({ ownerIds: ['su-a', 'su-b'] }).success).toBe(true);
+    expect(presenceTool.args.safeParse({ owners: ['su-a'], ownerIds: ['su-b'] }).success).toBe(false);
   });
 
   it('does not advertise confirmLiveness as an input field', () => {
