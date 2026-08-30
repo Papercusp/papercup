@@ -19,6 +19,7 @@ import {
   findCatalogNearMiss,
   type EventCatalogEntry,
 } from './catalog';
+import { buildAnnouncedKey } from './announce-key';
 
 describe('events catalog — registry integrity', () => {
   it('has unique family ids', () => {
@@ -63,12 +64,16 @@ describe('buildKey', () => {
       'ext:gmail:message.received',
     );
     expect(buildKey('consult-reply', { conversationId: 'conv-123' })).toBe('consult:reply:conv-123');
+    expect(buildKey('plan-event', { slug: 'release-plan', gate: 'sidecar-released' })).toBe(
+      'plan:release-plan:sidecar-released',
+    );
   });
 
   it('throws when a required param is missing', () => {
     expect(() => buildKey('work-item', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('work-item-settled', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('service-up', {})).toThrow(/requires param 'name'/);
+    expect(() => buildKey('plan-event', { slug: 'release-plan' })).toThrow(/requires param 'gate'/);
   });
 
   it('collapses an omitted OPTIONAL param to the global key (matches the real global emit)', () => {
@@ -149,6 +154,8 @@ describe('renderCatalog', () => {
     expect(byFamily['fleet-member-stalled'].key).toBe('fleet:member-stalled:<slug>');
     expect(byFamily['fleet-admission-blocked'].awaitable_now).toBe(true);
     expect(byFamily['fleet-admission-blocked'].key).toBe('fleet:admission-blocked:<slug>');
+    expect(byFamily['plan-event'].awaitable_now).toBe(true);
+    expect(byFamily['plan-event'].key).toBe('plan:<slug>:<gate>');
   });
 
   it('makes the self-assignee restriction discoverable for both work-item await families', () => {
@@ -200,6 +207,23 @@ describe('familyKeyPrefix (EI-9000 — the live-awaiter-count join key)', () => 
       const concreteKey = buildKey(e.family, concreteParams);
       expect(concreteKey.startsWith(prefix), `${e.family}: '${concreteKey}' should start with '${prefix}'`).toBe(true);
     }
+  });
+});
+
+describe('plan-scoped announced gates — catalog recurrence (EI-216663)', () => {
+  it('recognizes the key shape produced by buildAnnouncedKey without claiming this exact gate fired', () => {
+    const key = buildAnnouncedKey('p508-current-head-desktop-sidecar-released', {
+      kind: 'plan',
+      ref: 'p2p-public-release-remaining-lanes-2026-07-16',
+    });
+    expect(key).toBe('plan:p2p-public-release-remaining-lanes-2026-07-16:p508-current-head-desktop-sidecar-released');
+    expect(keyMatchesCatalog(key)).toBe(true);
+
+    const row = renderCatalog().find((candidate) => candidate.family === 'plan-event');
+    expect(row).toMatchObject({
+      key: 'plan:<slug>:<gate>',
+      awaitable_now: true,
+    });
   });
 });
 

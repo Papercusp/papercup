@@ -715,6 +715,25 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'plans:get re-polling for a draft to appear',
   },
   {
+    // Plan-scoped announced gates use the same `plan:<slug>:<gate>` key shape
+    // whether the caller supplied `announceScope:'plan'` or passed an already
+    // prefixed gate to the global announcement path. Keep this family separate
+    // from the plan-event history surface (`coord:plan-events`): this is the
+    // awaitable event key emitted when the declared gate eventually fires.
+    family: 'plan-event',
+    keyTemplate: 'plan:<slug>:<gate>',
+    params: [
+      { name: 'slug', required: true, describe: 'the plan slug in the announced key' },
+      { name: 'gate', required: true, describe: 'the stable gate name' },
+    ],
+    describe:
+      'A plan-qualified announced gate FIRED; declaration visibility and latch generation remain in the announcement row, while this key is the awaitable completion signal.',
+    emitter:
+      'events:emit announcement + fire path (packages/operator-core/lib/agent-tools/events/emit.ts → packages/operator-core/lib/events/await/announce-key.ts)',
+    exists: true,
+    replacesPoll: 'polling events:status or a peer-owned plan gate for completion',
+  },
+  {
     family: 'rate-limit-exhausted',
     keyTemplate: 'rate-limit:exhausted:<accountId>',
     params: [
