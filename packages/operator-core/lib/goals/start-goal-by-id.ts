@@ -55,11 +55,17 @@ import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { readGoalReadiness } from '@papercusp/agent-mcp/goal-deps';
 import {
   launchGoalHolderSession,
+  neutralizeGoalHolderSession,
   type GoalHolderLaunchInput,
   type GoalHolderLaunchResult,
 } from '../harness/routines/goal-holder-launch-action';
 import { resolveGoalHolders, type GoalHolders } from './holder';
-import { setMode } from '../modes/store';
+import {
+  setMode,
+  type GoalModeElectionExpectation,
+  type GoalModeElectionReceipt,
+} from '../modes/store';
+import { notifyGoalHolderHandoff } from './holder-handoff';
 import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 // Same direction the sibling package-start door already imports (start-from-package.ts):
 // lib/goals → lib/agent-tools/goals/start. No cycle; start.ts does not import this file.
@@ -146,7 +152,19 @@ export interface StartGoalByIdDeps {
     ownerId: string;
     goalTitle: string;
     setBy: string;
-  }) => Promise<{ ok: boolean; error?: string | null }>;
+    expectedLease: GoalModeElectionExpectation | null;
+  }) => Promise<{
+    ok: boolean;
+    error?: string | null;
+    goalElection?: GoalModeElectionReceipt;
+  }>;
+  neutralize: (input: {
+    workspaceId: string;
+    goalId: string;
+    ownerId: string;
+    reason: string;
+  }) => Promise<unknown>;
+  notifyHandoff: (workspaceId: string, election: GoalModeElectionReceipt) => Promise<unknown>;
   /**
    * Refreshes the compact control projection after a direct GOAL attachment.
    * Injectable so this activation path can prove the projection refresh without
@@ -180,7 +198,7 @@ const DEFAULT_DEPS: StartGoalByIdDeps = {
   // Promise-like but the generic signatures are not mutually assignable).
   readReadiness: (sql, workspaceId, goalId) =>
     readGoalReadiness(sql as unknown as GoalSqlTag, workspaceId, goalId),
-  attach: async ({ sql, workspaceId, goalId, ownerId, goalTitle, setBy }) => {
+  attach: async ({ sql, workspaceId, goalId, ownerId, goalTitle, setBy, expectedLease }) => {
     const result = await setMode({
       workspaceId,
       ownerId,
@@ -190,13 +208,17 @@ const DEFAULT_DEPS: StartGoalByIdDeps = {
       setBy,
       ownerDirected: false,
       subject: goalId,
+      ...(expectedLease ? { goalElectionExpectation: expectedLease } : {}),
       sql,
     });
     return {
       ok: result.ok,
       error: !result.ok && 'error' in result ? (result.error ?? null) : null,
+      ...(result.goalElection ? { goalElection: result.goalElection } : {}),
     };
   },
+  neutralize: neutralizeGoalHolderSession,
+  notifyHandoff: notifyGoalHolderHandoff,
   stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
     await sql`
       UPDATE harness_shared.goals
@@ -354,15 +376,24 @@ export async function startGoalById(
     ownerId: launched.ownerId,
     goalTitle: goal.title,
     setBy,
+    expectedLease: holders.elected
+      ? {
+          ownerId: holders.elected.ownerId,
+          epoch: holders.elected.goalLeaseEpoch ?? null,
+        }
+      : null,
   });
   if (!attach.ok) {
-    // The spawn is irreversible; the holder row is what failed. Name the
-    // orphan identity so the caller (or the watchdog's next sweep, which will
-    // read this goal as holderless) can attach or reap it — never swallow it.
+    const failure = attach.error ?? 'mode store refused';
+    await deps.neutralize({
+      workspaceId,
+      goalId,
+      ownerId: launched.ownerId,
+      reason: `GOAL attachment failed after launch: ${failure}`,
+    });
     throw new Error(
       `goal '${goalId}' agent launched (ownerId ${launched.ownerId}) but the GOAL-mode ` +
-        `attachment failed (${attach.error ?? 'mode store refused'}) — ` +
-        `the session is up without a holder row; attach it or let the liveness watchdog report it`,
+        `attachment failed (${failure}) — the launched session was neutralized and must not retry`,
     );
   }
 
@@ -390,6 +421,11 @@ export async function startGoalById(
   // not turn a successful launch into a refusal if this best-effort stamp is
   // temporarily unavailable (the watchdog can repair/report the divergence).
   const warnings = [...launched.warnings];
+  if (attach.goalElection?.predecessorOwnerId) {
+    await deps
+      .notifyHandoff(workspaceId, attach.goalElection)
+      .catch((error) => warnings.push(`holder handoff notice failed: ${(error as Error)?.message ?? error}`));
+  }
   await deps
     .stampAgentOwner(sql, { workspaceId, goalId, ownerId: launched.ownerId })
     .catch((e) => warnings.push(`agentOwnerId stamp failed: ${(e as Error)?.message ?? e}`));
