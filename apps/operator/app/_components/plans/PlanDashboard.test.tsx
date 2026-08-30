@@ -301,6 +301,29 @@ describe('PlanDashboard header', () => {
     expect(screen.queryByTestId('plan-dash-needs')).toBeNull();
   });
 
+  it('renders sanely when the plan is not (yet) resolved by its own targeted fetch', () => {
+    // plans-list-windowing-cardinality-fix-2026-08-30 P-003 regression guard:
+    // this surface used to derive `plan` via
+    // `usePlanList({}).data.plans.find((p) => p.slug === planSlug)` — a plan
+    // absent from that SHARED, potentially windowed/truncated harness-wide
+    // list (e.g. a large harness's `plans.list` returning only a bounded
+    // slice) silently produced `plan: null` even though the plan genuinely
+    // existed. Now `plan` comes from its OWN targeted `usePlan(slug,
+    // {live:true})` fetch, so "not present in some other list's window" can
+    // no longer be the reason this surface can't find its own plan — the
+    // only way `plan` is null here is the dedicated fetch itself not having
+    // resolved yet (or a real 404), which this asserts degrades gracefully:
+    // title falls back to the slug, no bucket/progress render, nothing
+    // throws — rather than replaying the old cache-shape-coincidence bug.
+    seed({ activity: false, liveSessions: false });
+    planData.value = null;
+    renderDash();
+    expect(screen.getByText('p1')).toBeTruthy();
+    expect(screen.queryByText('plan')).toBeNull();
+    expect(screen.queryByTestId('plan-dash-progress')).toBeNull();
+    expect(screen.getByTestId('plan-dash-edit-t').textContent).toContain('edited —');
+  });
+
   it('back clears ?pdsess and calls onBack', () => {
     seed();
     nuqs['pdsess'] = OWNER_A;

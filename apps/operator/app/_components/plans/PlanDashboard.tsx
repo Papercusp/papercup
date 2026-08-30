@@ -21,8 +21,13 @@
  *     P-004). Work rows deep-link to the work-item popup (`wpop`).
  *
  * REUSE, not re-derivation:
- *   - plan row: the SAME `plans.list` feed (usePlanList) every plan surface
- *     reads — shared cache entry, warm from the sidebar;
+ *   - plan row: a TARGETED `usePlan(planSlug, {live:true})` fetch
+ *     (plans-list-windowing-cardinality-fix-2026-08-30 P-003) — NOT the
+ *     shared `plans.list` feed (usePlanList) most other plan surfaces read.
+ *     That feed is a bounded/potentially-windowed harness-wide index; a plan
+ *     merely absent from whatever slice it currently holds used to render
+ *     this whole dashboard as if the plan didn't exist. This surface needs
+ *     exactly the one plan it was opened for, so it fetches it directly.
  *   - needs-you: the SAME `plans.attention` feed (useInboxAttention →
  *     effectiveTier === 'decision'), the sidebar's own join;
  *   - ⚒ last work: the SAME `planWorkActivity.list` map the sidebar rows read
