@@ -9,6 +9,7 @@ import {
   isPotChipDormant,
   learningPotSlugs,
   partitionLearningPotRail,
+  potArmingDetail,
 } from './learning-pot-rail';
 
 function gym(harnessSlug: string, enabled: boolean, spentUsd = 0): AutomationGymArm {
@@ -229,6 +230,67 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(potsOf(active)).toEqual(['armed']);
     expect(potsOf(dormant)).toEqual(['idle-a', 'idle-b']);
     expect(active.length + dormant.length).toBe(rail.length);
+  });
+});
+
+/**
+ * potArmingDetail — the per-lane rows behind ONE chip, which P-007's popover
+ * switches individually. The chip's own `lanes` is an aggregate (`3/4`), and
+ * you cannot arm three-quarters of something, so this is the second read of the
+ * same arming — and it goes through the model for the same reason the first
+ * one does: a component that reached past it would re-derive the pot rules and
+ * eventually get one backwards.
+ */
+describe('potArmingDetail — the rows behind a chip', () => {
+  it('returns this pot’s gym row and ONLY this pot’s lanes', () => {
+    const detail = potArmingDetail(
+      arming({
+        gymPots: [gym('alpha', true), gym('beta', true)],
+        lanes: [lane('a1', 'alpha', true), lane('b1', 'beta', true), lane('a2', 'alpha', false)],
+        potScope: scope([]),
+      }),
+      'alpha',
+    );
+    expect(detail.gym?.harnessSlug).toBe('alpha');
+    expect(detail.lanes.map((l) => l.loopId).sort()).toEqual(['a1', 'a2']);
+  });
+
+  it('reports a pot with no gym row as null rather than inventing one', () => {
+    const detail = potArmingDetail(
+      arming({ lanes: [lane('l1', 'alpha', true)], potScope: scope([]) }),
+      'alpha',
+    );
+    expect(detail.gym).toBeNull();
+    expect(detail.lanes).toHaveLength(1);
+  });
+
+  it('orders lanes armed-first, then by name, so switches do not reshuffle mid-reach', () => {
+    const detail = potArmingDetail(
+      arming({
+        lanes: [
+          lane('zeta', 'alpha', false),
+          lane('beta', 'alpha', true),
+          lane('alpha', 'alpha', false),
+          lane('gamma', 'alpha', true),
+        ],
+        potScope: scope([]),
+      }),
+      'alpha',
+    );
+    expect(detail.lanes.map((l) => l.loopId)).toEqual(['beta', 'gamma', 'alpha', 'zeta']);
+  });
+
+  it('is nullish-safe on an older-server payload, like every other read here', () => {
+    const stale = (over: Record<string, unknown>) => over as unknown as AutomationArming;
+    expect(() => potArmingDetail(stale({}), 'alpha')).not.toThrow();
+    expect(potArmingDetail(stale({}), 'alpha')).toEqual({
+      potSlug: 'alpha',
+      gym: null,
+      lanes: [],
+    });
+    expect(potArmingDetail(stale({ gymPots: [null], lanes: [null] }), 'alpha').lanes).toEqual([]);
+    expect(potArmingDetail(null, 'alpha').gym).toBeNull();
+    expect(potArmingDetail(undefined, 'alpha').lanes).toEqual([]);
   });
 });
 

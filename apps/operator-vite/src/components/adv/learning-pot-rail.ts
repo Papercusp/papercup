@@ -102,6 +102,55 @@ export function learningPotSlugs(arming: AutomationArming): string[] {
   return [...slugs];
 }
 
+/**
+ * The individual arming rows behind ONE pot's chip — what the P-007 popover
+ * needs in order to offer a switch per lane rather than the aggregate the chip
+ * shows.
+ *
+ * WHY THIS IS IN THE MODEL AND NOT THE COMPONENT. `LearningPotChip.lanes` is
+ * deliberately an AGGREGATE (`3/4 armed`), which is right for a chip and
+ * useless for a control surface — you cannot arm "3/4". The popover therefore
+ * needs the rows themselves, and the temptation is to reach past the model into
+ * the raw `arming` inside the component. That is exactly how the pot-scope rule
+ * gets re-derived and inverted somewhere new (see the module header), so the
+ * second read lives here too, under the same nullish discipline (D-006).
+ *
+ * ORDER IS DETERMINISTIC — armed first, then by display name — matching the
+ * chip's own `enabled DESC, slug ASC` ordering so the popover does not reshuffle
+ * its switches between polls while someone is reaching for one.
+ */
+export interface PotArmingDetail {
+  potSlug: string;
+  /** null = this pot has no gym autoloop row at all (never configured). */
+  gym: AutomationGymArm | null;
+  lanes: AutomationLaneArm[];
+}
+
+export function potArmingDetail(
+  arming: AutomationArming | null | undefined,
+  potSlug: string,
+): PotArmingDetail {
+  if (!arming) return { potSlug, gym: null, lanes: [] };
+
+  let gym: AutomationGymArm | null = null;
+  for (const g of arming.gymPots ?? []) {
+    if (g?.harnessSlug === potSlug) {
+      gym = g;
+      break;
+    }
+  }
+
+  const lanes = (arming.lanes ?? [])
+    .filter((l) => l != null && laneBelongsToPot(l, potSlug))
+    .slice()
+    .sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return (a.displayName ?? a.loopId).localeCompare(b.displayName ?? b.loopId);
+    });
+
+  return { potSlug, gym, lanes };
+}
+
 function masterSwitch(arming: AutomationArming, potSlug: string): PotSegmentState {
   // Rule 2: a failed read is 'unknown', never 'on'.
   // NULLISH, not `=== null`. The type says `AutomationPotScope | null`, which
