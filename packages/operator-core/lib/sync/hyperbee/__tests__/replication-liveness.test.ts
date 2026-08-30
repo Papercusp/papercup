@@ -308,12 +308,50 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     sampleQueued();
 
     expect(episodes.filter((e) => e.kind === 'frozen')).toHaveLength(0);
-    const row = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!;
+    const view = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!;
+    const row = view.logs[0]!;
     expect(row.verdict).toBe('live');
     expect(row.localLength).toBe(62_356);
     expect(row.mergeQueueIndex).toBe(1);
     expect(row.mergeQueueHeadKeyHex).toBe(HEAD);
     expect(row.msSinceMergeQueueHead).toBeNull();
+    // WI-6873: a live-but-behind log must report its ops-behind count and be
+    // counted in the harness-level catchingUp rollup — this is exactly the
+    // "still catching up" signal that was previously indistinguishable from
+    // a fully-caught-up 'live' row.
+    expect(row.backlogOps).toBe(100);
+    expect(view.counts.catchingUp).toBe(1);
+  });
+
+  it('WI-6873: a fully caught-up live log reports zero backlog and is not counted as catching up', () => {
+    const { on } = collect();
+    let now = 1_000_000;
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 500, localLength: 500, mergedPosition: 500, peersCount: 1 },
+      { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+    );
+    const view = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!;
+    expect(view.logs[0]!.verdict).toBe('live');
+    expect(view.logs[0]!.backlogOps).toBe(0);
+    expect(view.counts.catchingUp).toBe(0);
+  });
+
+  it('WI-6873: backlogOps is nulled on a sampling_stale row, same convention as the other derived fields', () => {
+    const { on } = collect();
+    let now = 1_000_000;
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 700_000, localLength: 100_000, mergedPosition: 100_000, peersCount: 1 },
+      { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+    );
+    now += SAMPLING_STALE_AFTER_MS + 1_000;
+    const view = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!;
+    expect(view.logs[0]!.verdict).toBe('sampling_stale');
+    expect(view.logs[0]!.backlogOps).toBeNull();
+    expect(view.counts.catchingUp).toBe(0);
   });
 
   it('starts a fresh frozen grace window when a queued log becomes merge head', () => {
