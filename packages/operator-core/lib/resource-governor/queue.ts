@@ -347,6 +347,9 @@ function describeAdmissionCause(error: unknown): string {
   return parts.join(' | ');
 }
 
+/** EI-1211660: default coalescing window for reconcileExpired() — see the field doc below. */
+const DEFAULT_RECONCILE_COALESCE_MS = 2_000;
+
 export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   private readonly namespace: string;
   private readonly now: () => number;
@@ -358,6 +361,16 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   private readonly admissionRetryBackoffsMs: readonly number[] | undefined;
   private readonly sleep: ((ms: number) => Promise<void>) | undefined;
 
+  /** EI-1211660: how long a settled reconcile result is shared with concurrent/soon-after
+   *  callers before the next call issues a fresh store round-trip. Injectable so a test can
+   *  prove coalescing without waiting out the real window. */
+  private readonly reconcileCoalesceMs: number;
+  /** EI-1211660: the in-flight (or most recently settled, within the window) reconcile
+   *  promise, shared across concurrent callers — see reconcileExpired() below. */
+  private reconcileInFlight: Promise<QueueReconciliationResult> | undefined;
+  /** EI-1211660: `this.now()` at which reconcileInFlight was started/last refreshed. */
+  private reconcileStartedAtMs = -Infinity;
+
   constructor(
     private readonly store: DurableAdmissionQueueStore,
     options: {
@@ -366,6 +379,7 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       leaseIdFactory?: () => string;
       admissionRetryBackoffsMs?: readonly number[];
       sleep?: (ms: number) => Promise<void>;
+      reconcileCoalesceMs?: number;
       onActualDemand?: (input: {
         readonly receiptId: string;
         readonly context: AdmissionContext;
@@ -380,6 +394,10 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     this.namespace = options.namespace?.trim() || 'operator';
     this.now = options.now ?? (() => Date.now());
     this.leaseIdFactory = options.leaseIdFactory ?? (() => randomUUID());
+    this.reconcileCoalesceMs =
+      options.reconcileCoalesceMs !== undefined && options.reconcileCoalesceMs >= 0
+        ? options.reconcileCoalesceMs
+        : DEFAULT_RECONCILE_COALESCE_MS;
     this.onActualDemand = options.onActualDemand;
   }
 
@@ -457,12 +475,44 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     };
   }
 
-  /** Reconcile stale protected receipts in this namespace without selecting new work. */
+  /**
+   * Reconcile stale protected receipts in this namespace without selecting new work.
+   *
+   * EI-1211660: every inference-gateway admission calls this before enqueueing (see
+   * durable-admission.ts) so a crashed/abandoned request can never keep its idempotency
+   * key pinned forever. Under real fleet concurrency that made this a namespace-wide
+   * `UPDATE harness_shared.work_items ...` fired once PER CONCURRENT ADMISSION — live
+   * pg_stat_activity showed dozens of backends simultaneously contending the identical
+   * statement's row tuple locks, starving unrelated work_items writes fleet-wide
+   * (scheduler:get_next claims, checkpoints) with 57014 statement_timeout aborts.
+   *
+   * Reconciliation is idempotent and only meaningfully changes state at the granularity of
+   * lease TTLs (seconds to minutes), so concurrent/rapid-succession callers do not need their
+   * own store round-trip each — sharing one in-flight (or just-settled) result within a short
+   * window is behaviorally equivalent and collapses N concurrent admits to ~1 DB write. A
+   * rejected reconcile is never cached, so a real failure surfaces to every caller and the
+   * very next call retries fresh.
+   */
   reconcileExpired(): Promise<QueueReconciliationResult> {
-    return (
-      this.store.reconcileExpired?.(this.namespace, this.now()) ??
+    const nowMs = this.now();
+    if (this.reconcileInFlight && nowMs - this.reconcileStartedAtMs < this.reconcileCoalesceMs) {
+      return this.reconcileInFlight;
+    }
+    this.reconcileStartedAtMs = nowMs;
+    const pending = (
+      this.store.reconcileExpired?.(this.namespace, nowMs) ??
       Promise.resolve({ requeued: 0, expired: 0, total: 0 })
-    );
+    ).catch((error: unknown) => {
+      // Don't let a failed reconcile poison the coalescing window — the next caller (which
+      // may arrive within the same window) should get a fresh attempt, not a cached rejection.
+      if (this.reconcileInFlight === pending) {
+        this.reconcileInFlight = undefined;
+        this.reconcileStartedAtMs = -Infinity;
+      }
+      throw error;
+    });
+    this.reconcileInFlight = pending;
+    return pending;
   }
 
   async status(idempotencyKey: string): Promise<AdmissionStatus> {
