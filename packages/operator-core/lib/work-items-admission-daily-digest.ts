@@ -410,13 +410,13 @@ export function clampDailyDigestPayload(payload: unknown): {
   clamps: DailyDigestClamps;
 } {
   if (typeof payload !== 'object' || payload === null || !('umbrellas' in payload)) {
-    return { payload, clamps: EMPTY_CLAMPS };
+    return { payload, clamps: freshClamps() };
   }
   const raw = (payload as { umbrellas: unknown }).umbrellas;
-  if (!Array.isArray(raw)) return { payload, clamps: EMPTY_CLAMPS };
+  if (!Array.isArray(raw)) return { payload, clamps: freshClamps() };
 
   const clamps: DailyDigestClamps = {
-    ...EMPTY_CLAMPS,
+    ...freshClamps(),
     umbrellasReturned: raw.length,
     umbrellasDropped: Math.max(0, raw.length - MAX_DAILY_DIGEST_UMBRELLAS),
     maxOverageChars: { title: 0, body: 0, reason: 0 },
@@ -800,6 +800,13 @@ function parseClamps(value: unknown): DailyDigestClamps | null {
       body: Number(overage.body ?? 0),
       reason: Number(overage.reason ?? 0),
     },
+    unknownMemberIdsDropped: Number(v.unknownMemberIdsDropped ?? 0),
+    unknownMemberIdSample: Array.isArray(v.unknownMemberIdSample)
+      ? v.unknownMemberIdSample.filter((id): id is string => typeof id === 'string')
+      : [],
+    duplicateMemberAssignmentsDropped: Number(v.duplicateMemberAssignmentsDropped ?? 0),
+    duplicateTitleUmbrellasDropped: Number(v.duplicateTitleUmbrellasDropped ?? 0),
+    undersizedUmbrellasDropped: Number(v.undersizedUmbrellasDropped ?? 0),
   };
 }
 
