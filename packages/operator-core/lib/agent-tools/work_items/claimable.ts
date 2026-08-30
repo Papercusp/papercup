@@ -92,6 +92,12 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().min(1).max(80).describe('the harness lane to read claimable issue-family work for'),
+    rigAvailable: z
+      .boolean()
+      .optional()
+      .describe(
+        'WI-2796: pass true ONLY when you actually have/coordinate a live ≥2-machine or Hetzner federation rig. Default (false/omitted): items tagged payload.needs_2_machine_rig are excluded from this caller\'s claimable read.',
+      ),
     kind: z
       .union([z.enum(ISSUE_KINDS), z.array(z.enum(ISSUE_KINDS)).min(1)])
       .optional()
@@ -252,7 +258,7 @@ export default defineTool({
     // masquerade as "measured none" when the answer drives a drain/wind-down call.
     const { breakdown, rows: claimable, sample: excludedSample, admitted } = await readIssueClaimability(
       filter,
-      { harness, states, assignee, spec },
+      { harness, states, assignee, rigAvailable: args.rigAvailable, spec },
       { limit, breakdownOnly: args.breakdownOnly, sampleLimit: args.sampleExcluded },
     );
 

@@ -335,6 +335,17 @@ describe('work_items:claimable handler', () => {
     expect(readM.mock.calls[0]![2]).toEqual(expect.objectContaining({ limit: 5 }));
   });
 
+  it('EI-21667003842480166: accepts and threads rigAvailable so rig-equipped callers see the same floor as scheduler:get_next', async () => {
+    const parsed = (tool.args as { safeParse: (value: unknown) => { success: boolean } }).safeParse({
+      harness: 'papercup',
+      rigAvailable: true,
+    });
+    expect(parsed.success).toBe(true);
+
+    await run({ harness: 'papercup', rigAvailable: true });
+    expect(readM.mock.calls[0]![1]).toEqual(expect.objectContaining({ rigAvailable: true }));
+  });
+
   describe('WI-6673: admittedBreakdown + the composition warning', () => {
     it('surfaces admittedBreakdown UNCONDITIONALLY — no opt-in flag, because the failure is quoting a count without asking what is in it', async () => {
       const out = await run({ harness: 'papercup' });
