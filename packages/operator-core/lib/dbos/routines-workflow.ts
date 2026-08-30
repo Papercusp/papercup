@@ -438,6 +438,32 @@ export const routineFireWorkflow = idempotentRegisterWorkflow('routineFire', () 
   }),
 );
 
+/**
+ * Re-arm parked loop routines even during a critical PG-pool shed. A pure loop is parked at
+ * `next_fire_at = infinity` while its turn runs; skipping this pass strands it until the next
+ * non-shed tick (the 20–70 minute gaps measured in EI-21859486764076047).
+ */
+async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { reconcileLoopRoutines } = await import('../harness/routines/reconcile-loop-routines');
+        const loop = await reconcileLoopRoutines({ sql });
+        if (loop.terminated.length > 0) {
+          console.warn(
+            `[loop-reconcile] terminated ${loop.terminated.length} dead-owner loop(s) this pass: ${loop.terminated
+              .map((t) => `${t.id} (owner ${t.targetOwnerId})`)
+              .join(', ')}`,
+          );
+        }
+      } catch (e) {
+        console.warn(`[loop-reconcile] rebase pass failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'loop-rebase-sweep' },
+  );
+}
+
 /** The scheduled tick: list due routines, claim + enqueue a deduped fire for each. */
 async function routinesTickImpl(): Promise<void> {
   // WI-3351: routinesTick is the LIGHTWEIGHT scheduler. Heavy periodic jobs
@@ -580,10 +606,13 @@ async function routinesTickImpl(): Promise<void> {
     }
   }
 
-  // EI-11171 critical-routine floor (cont.): under a pool-starvation shed the critical-queue
-  // routines have now fired; skip the loop-rebase + heavy sweeps below (they stay shed exactly
-  // as before this floor existed — the shed's protective behaviour is unchanged).
-  if (poolCritical) return;
+  // EI-11171 critical-routine floor (cont.): heavy sweeps stay shed, but loop completion-rebase
+  // is liveness-critical and MUST still run. Otherwise pure loops remain parked at infinity
+  // until a non-shed tick, producing the 20–70 minute cadence gaps in EI-21859486764076047.
+  if (poolCritical) {
+    await runLoopRebaseSweep(sql);
+    return;
+  }
 
   // Loop completion-rebase (B-LOOP-2) — its OWN step, FIRST after the fire loop
   // (Task-#8 / su-cold-auto 2026-07-03): a loop fire parks at next_fire_at='infinity'
@@ -594,26 +623,7 @@ async function routinesTickImpl(): Promise<void> {
   // between 60s wakes while fires for other routines kept flowing. Placing it
   // here bounds its delay to the fire loop only. Fail-soft: a rebase failure
   // must never block the watchdog sweeps below.
-  await DBOS.runStep(
-    async () => {
-      try {
-        const { reconcileLoopRoutines } = await import('../harness/routines/reconcile-loop-routines');
-        const loop = await reconcileLoopRoutines({ sql });
-        // WI-1399: loops auto-paused because their owner is permanently unreachable.
-        // Loud, not silent — a terminated loop is a real dead-owner finding.
-        if (loop.terminated.length > 0) {
-          console.warn(
-            `[loop-reconcile] terminated ${loop.terminated.length} dead-owner loop(s) this pass: ${loop.terminated
-              .map((t) => `${t.id} (owner ${t.targetOwnerId})`)
-              .join(', ')}`,
-          );
-        }
-      } catch (e) {
-        console.warn(`[loop-reconcile] rebase pass failed: ${e instanceof Error ? e.message : e}`);
-      }
-    },
-    { name: 'loop-rebase-sweep' },
-  );
+  await runLoopRebaseSweep(sql);
 
   // EI-19408412473830336: auto-resolve leg for the loop-death / loop-lifecycle-death
   // watchdog escalations opened above (via reconcileLoopRoutines's terminateDeadLoop /
