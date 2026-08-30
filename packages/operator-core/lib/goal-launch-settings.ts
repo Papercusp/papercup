@@ -1620,7 +1620,11 @@ export async function resolveGoalLaunchForGoal(args: {
         message:
           `goal ${goalId} allows ${ceilings.maxAgents} concurrent agent(s)${provenance(settings?.maxAgents)}; ` +
           `${headcount.total} live, so launching ${count} more would exceed it. Raise maxAgents in the goal's ` +
-          `launch settings (or set it to '${UNLIMITED_CEILING}'), or wind down finished sessions first.`,
+          `launch settings (or set it to '${UNLIMITED_CEILING}'), or wind down finished sessions first. ` +
+          `To free a slot, end each finished session with \`session:end\` (self-only). If the direct ` +
+          `\`session:end\` wrapper is unavailable, use \`tools:find\` to locate \`session:end\`, then ` +
+          `\`tools:invoke\` the returned exact tool name with \`{}\`. Do not idle or park the session: ` +
+          `idle/parked sessions still retain this goal's concurrency slot until \`session:end\` completes.`,
       };
     } else if (
       ceilings.maxPerFleet != null &&

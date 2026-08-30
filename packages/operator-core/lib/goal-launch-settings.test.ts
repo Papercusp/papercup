@@ -973,6 +973,23 @@ describe('resolveGoalLaunch — the D-015 system defaults', () => {
     expect(r.refusal?.message).toContain('system default');
   });
 
+  it('gives the exact self-end fallback and warns that idle or parked sessions retain the slot', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        headcount: { g1: { total: GOAL_LAUNCH_DEFAULTS.maxAgents, fleet: 0 } },
+      }),
+    });
+    const message = r.refusal?.message ?? '';
+    expect(message).toContain('session:end');
+    expect(message).toContain('tools:find');
+    expect(message).toContain('tools:invoke');
+    expect(message).toMatch(/tools:find.*session:end.*tools:invoke/s);
+    expect(message).toMatch(/idle or park.*idle\/parked sessions still retain.*concurrency slot/i);
+  });
+
   it('does NOT claim a default when the owner pinned the number themselves', async () => {
     const r = await resolveGoalLaunch({
       workspaceId: WS,
