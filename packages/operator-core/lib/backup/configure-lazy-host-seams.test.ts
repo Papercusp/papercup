@@ -168,18 +168,19 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
         connection: { application_name: 'pcbackup-workspace' },
       }),
     );
-    expect(pg.client).toHaveBeenCalledTimes(1);
-    expect(String(pg.client.mock.calls[0]![0])).toContain('pg_advisory_lock');
+    expect(pg.client).toHaveBeenCalledTimes(2);
+    expect(String(pg.client.mock.calls[0]![0])).toContain('SET lock_timeout = 0');
+    expect(String(pg.client.mock.calls[1]![0])).toContain('pg_advisory_lock');
 
     await lock.release();
-    expect(pg.client).toHaveBeenCalledTimes(2);
-    expect(String(pg.client.mock.calls[1]![0])).toContain('pg_advisory_unlock');
+    expect(pg.client).toHaveBeenCalledTimes(3);
+    expect(String(pg.client.mock.calls[2]![0])).toContain('pg_advisory_unlock');
     expect(pg.client.end).toHaveBeenCalledTimes(1);
 
     // The release handle is idempotent, so a defensive double-finally cannot
     // issue an unlock against a session that has already been closed.
     await lock.release();
-    expect(pg.client).toHaveBeenCalledTimes(2);
+    expect(pg.client).toHaveBeenCalledTimes(3);
     expect(pg.client.end).toHaveBeenCalledTimes(1);
   });
 

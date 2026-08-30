@@ -71,6 +71,11 @@ configureBackup({
       connection: { application_name: WORKSPACE_BACKUP_APPLICATION_NAME },
     });
     try {
+      // The harness_admin role carries a finite lock_timeout. This rendezvous
+      // deliberately waits for the current migration/backup holder to finish;
+      // mirror the boot migrator's explicit reset instead of letting the role
+      // default turn a valid in-flight snapshot into a failed safety rail.
+      await client`SET lock_timeout = 0`;
       await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
     } catch (error) {
       await client.end({ timeout: 5 }).catch(() => {});
