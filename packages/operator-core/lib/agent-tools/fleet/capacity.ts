@@ -411,7 +411,7 @@ function hasMeasuredCodexTierCapacity(
   if (!Number.isInteger(report.dispatchBudget) || report.dispatchBudget <= 0) return false;
   const beeTier = report.capByTier?.find((row) => row.tier === report.beeTier);
   return beeTier != null &&
-    [beeTier.cap, beeTier.inFlight, beeTier.queued].every(
+    [beeTier.minShare, beeTier.inFlight, beeTier.queued].every(
       (value) => Number.isInteger(value) && value >= 0,
     );
 }
