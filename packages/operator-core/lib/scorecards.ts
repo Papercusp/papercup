@@ -804,10 +804,22 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // can overlap grading/audit writes. Keep it in a READ ONLY transaction with a
   // DB-side timeout, retry transient lock/statement contention, and only normalize
   // an exhausted contention sequence after the shared retry helper gives up.
-  let rows: ScorecardRowDb[];
-  try {
-    rows = await acquireWithContentionRetry(() =>
-      boundedPgReadTxn<ScorecardRowDb[]>((tx) => tx<ScorecardRowDb[]>`
+  //
+  // The SQL limit is a RAW-row batch size, not the public page size. The canonical
+  // parser deliberately drops malformed historical observations below, so a single
+  // LIMIT can otherwise underfill a page and make `hasMore` lie. Walk the immutable
+  // `(created_at, issue_id)` keyset until we have `limit` valid scorecard rows (or
+  // the raw population is exhausted). `listScorecardPage` asks for one extra valid
+  // row, making its boundedness bit authoritative even when malformed rows intervene.
+  let rows: ScorecardRowDb[] = [];
+  let before = filter.before;
+  let exhausted = false;
+  while (rows.length < limit && !exhausted) {
+    const batchLimit = Math.max(limit - rows.length, 1);
+    let batch: ScorecardRowDb[];
+    try {
+      batch = await acquireWithContentionRetry(() =>
+        boundedPgReadTxn<ScorecardRowDb[]>((tx) => tx<ScorecardRowDb[]>`
     SELECT scorecard.issue_id, scorecard.created_by, scorecard.created_at, scorecard.payload,
            (
              SELECT superseder.issue_id
@@ -828,8 +840,8 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
        AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
        AND ${filter.since ? tx`scorecard.created_at >= ${filter.since}` : tx`TRUE`}
        AND ${
-         filter.before
-           ? tx`(scorecard.created_at, scorecard.issue_id) < (${filter.before.createdAt}::timestamptz, ${filter.before.issueId}::text)`
+         before
+           ? tx`(scorecard.created_at, scorecard.issue_id) < (${before.createdAt}::timestamptz, ${before.issueId}::text)`
            : tx`TRUE`
        }
        AND ${filter.includeSynthesized ? tx`TRUE` : tx`scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
@@ -847,12 +859,31 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
        }
        AND ${filter.includeRetracted ? tx`TRUE` : tx`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
      ORDER BY scorecard.created_at DESC, scorecard.issue_id DESC
-     LIMIT ${limit}`),
+     LIMIT ${batchLimit}`),
+      );
+    } catch (error) {
+      const pgCode = scorecardContentionPgCode(error);
+      if (pgCode) throw new OrgTxnTimeoutError(pgCode, error);
+      throw error;
+    }
+
+    if (batch.length === 0) {
+      exhausted = true;
+      break;
+    }
+
+    // Advance by every raw row, including malformed ones. Only structurally valid
+    // scorecards count toward the requested page. This keeps malformed history
+    // auditable without letting it consume a visible page slot.
+    rows.push(
+      ...batch.filter((row) => {
+        const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
+        return Boolean(observation?.rubricRef && observation.ratings);
+      }),
     );
-  } catch (error) {
-    const pgCode = scorecardContentionPgCode(error);
-    if (pgCode) throw new OrgTxnTimeoutError(pgCode, error);
-    throw error;
+    const tail = batch[batch.length - 1]!;
+    before = { createdAt: tsIso(tail.created_at), issueId: tail.issue_id };
+    if (batch.length < batchLimit) exhausted = true;
   }
 
   // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics):

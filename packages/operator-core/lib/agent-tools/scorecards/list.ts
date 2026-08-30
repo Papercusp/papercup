@@ -15,13 +15,13 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
-import { listScorecards } from '../../scorecards';
+import { listScorecardPage } from '../../scorecards';
 
 export default defineTool({
   name: 'scorecards:list',
   profile: 'engineer',
   description:
-    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness).',
+    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.',
   guidance: {
     when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did the Kettle emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.',
     notWhen:
@@ -81,7 +81,7 @@ export default defineTool({
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     try {
-      const scorecards = await listScorecards({
+      const page = await listScorecardPage({
         rubricRef: args.rubricRef,
         sourceHive: args.sourceHive,
         subjectRef: args.subjectRef,
@@ -95,7 +95,13 @@ export default defineTool({
         includeLinks: true,
       });
       return {
-        data: { ok: true, count: scorecards.length, scorecards },
+        data: {
+          ok: true,
+          count: page.rows.length,
+          hasMore: page.hasMore,
+          truncatedByLimit: page.hasMore,
+          scorecards: page.rows,
+        },
       };
     } catch (error) {
       // EI-21592547181442895: an exhausted, transient read contention sequence is
