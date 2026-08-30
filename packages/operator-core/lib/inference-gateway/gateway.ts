@@ -5291,13 +5291,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
   async function executeCodexLegacyTransport(
     executor: GatewayLegacyExecutorId,
     execution: CodexLegacyTransportExecution,
+    kernelAdmission: LegacyGatewayKernelAdmission,
   ): Promise<void> {
     switch (executor) {
       case 'serveCodexOAuthProxy':
-        await serveCodexOAuthProxy(execution.req, execution.res, execution.cli, execution.url, execution.routing);
+        await serveCodexOAuthProxy(
+          execution.req,
+          execution.res,
+          execution.cli,
+          execution.url,
+          kernelAdmission,
+          execution.routing,
+        );
         return;
       case 'serveCodexCliBridge':
-        await serveCodexCliBridge(execution.req, execution.res, execution.cli, execution.preBody, execution.routing);
+        await serveCodexCliBridge(
+          execution.req,
+          execution.res,
+          execution.cli,
+          kernelAdmission,
+          execution.preBody,
+          execution.routing,
+        );
         return;
       default:
         throw new Error(`inference-gateway: executor '${executor}' is not a ChatGPT-subscription transport`);
@@ -5312,6 +5327,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     cli: CodexCliAccount,
+    kernelAdmission: LegacyGatewayKernelAdmission,
     preBody?: Buffer,
     routing: CodexLegacyRouting = { hardPin: false, pinned: null },
   ) {
@@ -5523,9 +5539,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         telemetry: requestStageTelemetry,
         span: stageSpan,
         admission: {
-          // PASS-THROUGH: this handler already runs inside executeLegacyLaneTask's
-          // Governor.admit, so re-admitting would deadlock on its own slot.
-          run: (_context, task) => task(),
+          // P-011 / D-023: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`.
+          // Pass-through while `openai-responses` is still bridge-admitted (this handler runs
+          // inside executeLegacyLaneTask's Governor.admit, so re-admitting would deadlock on
+          // its own slot); step (iv) swaps in the real controller at the top of that chain.
+          run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, error }) => {
             const account = context.route.accountId ?? cli.accountId;
             // Follow the attempt, exactly as the old loop's `cli = nextCli` did: the
@@ -5685,6 +5703,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res: http.ServerResponse,
     cli: CodexCliAccount,
     url: string,
+    kernelAdmission: LegacyGatewayKernelAdmission,
     routing: CodexLegacyRouting,
   ) {
     const stageSpan = requestSpan(req);
@@ -5742,14 +5761,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stageSpan?.setModel(bodyModel || null);
     stageSpan?.setStreaming(wantStream);
     if (!wantStream && !codexOAuthNonStreamEnabled) {
-      await executeCodexLegacyTransport(legacyExecutorForGatewayTransport(providerAdapters.codex.lane, 'cli-exec'), {
-        req,
-        res,
-        cli,
-        url,
-        preBody: bodyBuf,
-        routing,
-      });
+      await executeCodexLegacyTransport(
+        legacyExecutorForGatewayTransport(providerAdapters.codex.lane, 'cli-exec'),
+        { req, res, cli, url, preBody: bodyBuf, routing },
+        // Same request, same slot: the OAuth->CLI fallback hands its own admission down
+        // rather than minting a second one, so the delegated transport cannot re-admit.
+        kernelAdmission,
+      );
       return;
     }
     if (!wantStream) {
@@ -5902,9 +5920,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         telemetry: requestStageTelemetry,
         span: stageSpan,
         admission: {
-          // PASS-THROUGH: this handler already runs inside executeLegacyLaneTask's
-          // Governor.admit, so re-admitting would deadlock on its own slot.
-          run: (_context, task) => task(),
+          // P-011 / D-023: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`.
+          // Pass-through while `openai-responses` is still bridge-admitted (this handler runs
+          // inside executeLegacyLaneTask's Governor.admit, so re-admitting would deadlock on
+          // its own slot); step (iv) swaps in the real controller at the top of that chain.
+          run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, response, error }) => {
             attemptsSeen = context.attempt;
             const account = context.route.accountId ?? lastAccountId;
@@ -6186,7 +6206,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+  async function proxyOpenAi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: string,
+    kernelAdmission: LegacyGatewayKernelAdmission,
+  ) {
     const stageSpan = requestSpan(req);
     const adapter = providerAdapters.codex;
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
@@ -6271,13 +6296,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ? dynPin.hard
           : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
-      await executeCodexLegacyTransport(legacyExecutorForGatewayTransport(adapter.lane, transport), {
-        req,
-        res,
-        cli,
-        url,
-        routing: { hardPin, pinned: pinnedCli, ownerId: wantOwner },
-      });
+      await executeCodexLegacyTransport(
+        legacyExecutorForGatewayTransport(adapter.lane, transport),
+        { req, res, cli, url, routing: { hardPin, pinned: pinnedCli, ownerId: wantOwner } },
+        kernelAdmission,
+      );
       return;
     }
     const hardPin =
@@ -6461,10 +6484,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // kernel would begin a SECOND span and double-count the request.
         span: stageSpan,
         admission: {
-          // PASS-THROUGH, deliberately. `proxyOpenAi` already runs inside
-          // `executeLegacyLaneTask`'s Governor.admit, so re-admitting here would
-          // deadlock against the slot this request already holds.
-          run: (_context, task) => task(),
+          // P-011 / D-023: arrives from this executor's caller. Pass-through while
+          // `openai-responses` is still bridge-admitted — `proxyOpenAi` runs inside
+          // `executeLegacyLaneTask`'s Governor.admit, so re-admitting here would deadlock
+          // against the slot this request already holds. Step (iv) swaps in the real
+          // controller and drops the bridge's, so exactly one of the two admits.
+          run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, response, error }) => {
             attemptsSeen = context.attempt;
             const account = context.route.accountId ?? lastAccountId;
@@ -7622,7 +7647,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         req,
         lane: providerAdapters.codex.lane,
         admission: unqueuedLegacyAdmission,
-        task: (executor) => legacyGatewayEntryExecutors[executor](req, res, url),
+        // The /v1/models bypass is UNQUEUED by design (see the comment above), so its kernel
+        // admission stays pass-through even after step (iv) re-homes the provider path that
+        // shares this lane — the bypass is the property being preserved, not scaffolding.
+        task: (executor) => legacyGatewayEntryExecutors[executor](req, res, url, passThroughKernelAdmission),
       }).catch((e) => {
         codexUpstreamErrors++;
         log('error', `codex models handler crashed: ${(e as Error).message}`);
@@ -7702,7 +7730,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               },
             });
             try {
-              await legacyGatewayEntryExecutors[executor](req, res, url);
+              await legacyGatewayEntryExecutors[executor](req, res, url, passThroughKernelAdmission);
             } finally {
               const entry = inFlightReg.get(reqId);
               if (entry) {
@@ -7713,7 +7741,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
         : async (executor: GatewayLegacyEntryExecutorId) => {
             markProviderAdmitted();
-            await legacyGatewayEntryExecutors[executor](req, res, url);
+            await legacyGatewayEntryExecutors[executor](req, res, url, passThroughKernelAdmission);
           };
     executeLegacyLaneTask({
       req,
