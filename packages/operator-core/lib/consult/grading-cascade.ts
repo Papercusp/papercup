@@ -1,0 +1,205 @@
+/**
+ * grading-cascade.ts — the ACCEPTANCE-GRADING flavour of the shared consult
+ * cascade (unified-responder-selection-critique-and-grading-2026-08-30, D-003 +
+ * D-005 [owner]).
+ *
+ * WHAT CHANGED AND WHY THERE IS A FILE HERE AT ALL. Grading used to select
+ * exactly one grader and wake them once. D-001/D-003 make the grader menu min 1
+ * / max 2 delivered as a CASCADE: grader 2 is woken only after grader 1 replies,
+ * declines or expires, and is woken HOLDING grader 1's card. D-005 then ruled
+ * that the advance mechanism is not to be re-implemented here — grading consumes
+ * `cascade-core`'s existing CAS-guarded advance, the same one the critique
+ * consult, the decline verb and the expiry sweep share.
+ *
+ * So the only thing grading legitimately owns is COPY: what the next grader is
+ * told when the cursor moves. The consult copy is not merely stylistically wrong
+ * for a grader, it is substantively wrong — it instructs the woken agent to
+ * "answer FROM your transcript, citing evidence", which is precisely what a
+ * grader must NOT do. A grade is made from the plan, the rubric and the code.
+ *
+ * HOW THE COPY REACHES THE ADVANCE, without every trigger having to know.
+ * The flavour rides on the PERSISTED routing snapshot (`routing.cascade`), and
+ * `cascade-core` derives the copy writer from the row it is already reading.
+ * That matters because three of the four triggers are generic: the decline verb
+ * and the expiry sweep advance whatever row they find, and neither has any way
+ * to know it is holding a grading cascade. Had the copy been a parameter each
+ * caller passes, a grader woken by an expiry would silently get consult copy —
+ * the same cascade producing different instructions depending on which trigger
+ * happened to fire. Deriving it from the row makes that unrepresentable.
+ *
+ * This module is deliberately PURE (types + string building, no I/O and no
+ * import of `cascade-core`'s runtime): `cascade-core` imports the writer, so a
+ * runtime dependency back the other way would be a genuine module cycle.
+ * Orchestration — opening the cascade row, and advancing it when a card is filed
+ * — lives with the gate in `acceptance-grader.ts`.
+ */
+import type { CascadeWakeContext, CascadeWakeCopy, CascadeWakeCopyWriter } from './cascade-core';
+import type { ObservationRatings } from '../harness/improvements/observation-types';
+
+/** The persisted `routing.cascade.flavor` discriminator. */
+export const GRADING_CASCADE_FLAVOR = 'acceptance-grading';
+
+/**
+ * What a grading cascade must carry on its row so ANY trigger can render the
+ * next wake. Kept to identity only — everything else (position, via, digest)
+ * comes from the cascade state itself, so this block cannot go stale mid-chain.
+ */
+export interface GradingCascadeMeta {
+  flavor: typeof GRADING_CASCADE_FLAVOR;
+  planSlug: string;
+  rubricId: string;
+  /** The plan's harness; null when the plan is not harness-scoped. Carried
+   * because a grader's session may sit in a different hive and every read the
+   * brief asks for has to name the subject tree explicitly. */
+  harnessSlug: string | null;
+}
+
+/**
+ * Read the grading flavour back off a persisted routing snapshot. Tolerant of
+ * the jsonb-as-string round trip the driver can hand back (the same quirk
+ * `selectionFromRouting` absorbs), and returns null for every non-grading row —
+ * absence is the ordinary case, never an error.
+ */
+export function gradingCascadeMetaFromRouting(routing: unknown): GradingCascadeMeta | null {
+  let snap: unknown = routing;
+  if (typeof snap === 'string') {
+    try {
+      snap = JSON.parse(snap) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  const block = (snap as { cascade?: unknown } | null)?.cascade as Partial<GradingCascadeMeta> | undefined;
+  if (!block || block.flavor !== GRADING_CASCADE_FLAVOR) return null;
+  if (typeof block.planSlug !== 'string' || typeof block.rubricId !== 'string') return null;
+  return {
+    flavor: GRADING_CASCADE_FLAVOR,
+    planSlug: block.planSlug,
+    rubricId: block.rubricId,
+    harnessSlug: typeof block.harnessSlug === 'string' ? block.harnessSlug : null,
+  };
+}
+
+/**
+ * How a grader spot-checks the implementer's audit citations.
+ *
+ * A superproject records a nested submodule as a gitlink, not as a tree of
+ * blobs, so asking the superproject to resolve a file below that gitlink is an
+ * expected miss rather than evidence that the audit fabricated the path.
+ */
+export const ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE =
+  "For manual citation spot-checks, first resolve the subject harness checkout (a fresh judge is launched in it; a cross-hive judge can use `harness:phase_path` for the subject staging path), then use `capability:read` on the cited repository-relative path there. Do not use the grader's checkout as a substitute. For a path below a git submodule (for example `libs/papercusp/...`), the superproject stores only a gitlink: `git rev-parse <superproject-ref>:<nested-path>` and `git show <superproject-ref>:<nested-path>` are expected to fail and are not evidence of a fabricated citation. Inspect the working-tree file or, when history is required, inspect the superproject gitlink and run `capability:git` with `cwd` set to the nested submodule and its pinned submodule SHA. Mark a citation unresolved only when the subject root or the relevant submodule cannot resolve it.";
+
+/** The reads a grader has to do, rendered with the subject harness pinned. */
+function graderReadingInstructions(planSlug: string, harnessSlug: string | null, rubricId: string): string {
+  const planRead = harnessSlug
+    ? `plans:get { slug:${JSON.stringify(planSlug)}, harness:${JSON.stringify(harnessSlug)} }`
+    : `plans:get { slug:${JSON.stringify(planSlug)} }`;
+  const targetHive = harnessSlug ? `, targetHive:${JSON.stringify(harnessSlug)}` : '';
+  return (
+    `Because your session may be in a different hive, keep the plan harness explicit: read the plan ` +
+    `(${planRead}) + the acceptance rubric '${rubricId}' + the completion evidence, then emit ONE complete ` +
+    `scorecard: scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
+    `with concrete evidence per rating. The targetHive makes deterministic checks run against the subject ` +
+    `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} The verdict is YOURS — ` +
+    `consult if you need to, but the grade is not delegable.`
+  );
+}
+
+/**
+ * The FIRST grader's brief (cursor 0 — nobody has graded yet, so there is no
+ * carry). Kept in the same module as the cascade copy so the two cannot drift
+ * into telling a grader different things depending on their position.
+ */
+export function buildAssignedAcceptanceGraderBrief(
+  planSlug: string,
+  harnessSlug: string | null,
+  rubricId: string,
+): string {
+  return (
+    `The relevance router selected you to grade plan '${planSlug}' — your transcript history matched the ` +
+    `plan + rubric above the precision floor and you are outside its implementer/consult-participant ` +
+    `exclusion set (D-009 independence). ${graderReadingInstructions(planSlug, harnessSlug, rubricId)}`
+  );
+}
+
+/**
+ * The FIRST grader's brief when they are a MINIMUM-FILL pick (D-002 [owner]:
+ * below-floor now fills instead of minting a fresh session). Honest by
+ * construction — claiming router relevance for a below-floor pick is the
+ * specific dishonesty D-002's own text warns about, and a grader who believes
+ * they were matched on expertise grades with unearned confidence.
+ */
+export function buildMinimumFillAcceptanceGraderBrief(
+  planSlug: string,
+  harnessSlug: string | null,
+  rubricId: string,
+): string {
+  return (
+    `You were selected to grade plan '${planSlug}' as the BEST-AVAILABLE independent grader — BELOW the ` +
+    `relevance floor. Your transcript is NOT claimed to cover this plan; you were chosen because you are ` +
+    `outside its implementer/consult-participant exclusion set and grading requires an independent grader. ` +
+    `Grade it FIRST-PRINCIPLES from the plan, the rubric and the code — do not decline solely for lack of ` +
+    `prior context, and do not present unfamiliarity as a finding. ` +
+    `${graderReadingInstructions(planSlug, harnessSlug, rubricId)}`
+  );
+}
+
+/**
+ * Compress a filed card into the digest excerpt grader k+1 carries.
+ *
+ * RATINGS, NOT EVIDENCE. `makeDigestEntry` caps an excerpt at 400 characters, so
+ * a card that spent its budget on one criterion's evidence would arrive at
+ * grader 2 as a truncated fragment of a single rating — worse than useless,
+ * because a partial view of one criterion reads as the whole verdict. The
+ * per-criterion RATINGS are what grader 2 must be able to contest; the evidence
+ * behind them is one `scorecards:list` away and the wake body names the thread.
+ */
+export function gradingCardDigestExcerpt(ratings: ObservationRatings): string {
+  const entries = Object.entries(ratings);
+  if (entries.length === 0) return 'filed a card with no ratings';
+  return entries.map(([criterion, entry]) => `${criterion}=${entry.rating}`).join(', ');
+}
+
+/** Why THIS grader, for a cascade wake — one line, honest about `via`. */
+function whyThisGrader(next: CascadeWakeContext['next']): string {
+  return next.via === 'minimum'
+    ? `You are the BEST-AVAILABLE independent grader (blended score ${next.score.toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). Your transcript is not claimed to cover this plan: grade it FIRST-PRINCIPLES from the plan, the rubric and the code, and do not decline solely for lack of prior context.`
+    : `You matched the plan + rubric above the relevance floor (blended score ${next.score.toFixed(2)}, sim ${next.similarity.toFixed(2)}) and are outside the implementer/consult-participant exclusion set.`;
+}
+
+/**
+ * The cascade wake copy for grader k+1.
+ *
+ * The carried digest is grader k's card. D-003 [owner] chose this over a blind
+ * fan-out with its cost stated: a carried card ANCHORS the second grader, so
+ * the second grading is a REVIEW of the first, not an independent second sample.
+ * The copy says exactly that rather than letting the grader assume otherwise —
+ * and nothing downstream may describe the pair as two independent gradings.
+ */
+export function gradingCascadeWakeCopy(meta: GradingCascadeMeta): CascadeWakeCopyWriter {
+  return (ctx: CascadeWakeContext): CascadeWakeCopy => {
+    const priorLines =
+      ctx.digest.length === 0
+        ? '(none — every earlier grader declined or expired without filing a card)'
+        : ctx.digest.map((entry) => `- ${entry.ownerId} (${entry.kind}): ${entry.excerpt}`).join('\n');
+    return {
+      summary:
+        `⚖️ acceptance grading (grader ${ctx.position}/${ctx.menuSize}` +
+        `${ctx.extension ? `, ${ctx.extension}` : ''}): plan ${meta.planSlug}`,
+      body:
+        `ACCEPTANCE GRADING — you are grader ${ctx.position}/${ctx.menuSize} for plan '${meta.planSlug}' ` +
+        `(rubric ${meta.rubricId}). The chain advanced to you because the previous grader replied, declined ` +
+        `or expired.\n` +
+        `${whyThisGrader(ctx.next)}\n` +
+        `GRADING SO FAR — this is a REVIEW of it, not a blind second sample; you have SEEN the card below, ` +
+        `so do not let it stand unchallenged if it is wrong, and do not treat agreement with it as ` +
+        `independent corroboration (D-003). The full thread is conversation ${ctx.conversationId}:\n` +
+        `${priorLines}\n` +
+        `${graderReadingInstructions(meta.planSlug, meta.harnessSlug, meta.rubricId)}\n` +
+        `After you emit your scorecard, post it into the conversation with ` +
+        `consult:reply { conversation_id:${JSON.stringify(ctx.conversationId)}, kind:'answer', ... } so the ` +
+        `chain records your verdict; consult:decline closes your slot and advances to the next grader.`,
+    };
+  };
+}

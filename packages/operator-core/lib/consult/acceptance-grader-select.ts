@@ -10,30 +10,50 @@
  * participants on the plan's threads are excluded EVEN WHEN ABOVE-FLOOR
  * (independence outranks familiarity).
  *
- * THE FLOOR ASYMMETRY (D-009, the principle that makes launch-fresh right here
- * and wrong elsewhere): for CONSULTS, MISSING context is the disqualifier —
- * below-floor NEVER launches a fresh agent (a fresh session has nothing to
- * consult FROM; correct below-floor result is "proceed yourself", D-003). For
- * GRADING, WRONG or CONFLICTED context is the disqualifier and a grader MUST
- * exist (the gate requires one) — so below-floor mints FRESH instead of
- * stalling the gate or settling for a confidently-stale grader. Owner's line,
- * policy-grade: "a fresh session agent is better than an agent with THE WRONG
- * context."
+ * ⚠ THE FLOOR ASYMMETRY IS GONE — SUPERSEDED, NOT SOFTENED.
+ * unified-responder-selection-critique-and-grading-2026-08-30 D-002 [owner]
+ * overturns D-009's grading half. D-009 held that for GRADING, WRONG or
+ * CONFLICTED context is the disqualifier and a grader MUST exist, so below-floor
+ * minted a FRESH session rather than settle for a confidently-stale grader
+ * ("a fresh session agent is better than an agent with THE WRONG context").
+ * That ruling is recorded here because it explains the code this module used to
+ * contain — it is NOT the live policy. Grading now MINIMUM-FILLS exactly as a
+ * consult does: the best-available below-floor candidate is selected, labelled
+ * `via:'minimum'`, and woken with honest first-principles copy.
  *
- * Agent-proposed refinement (ratify at review, like D-009's own refinements):
- * a top candidate whose context is DEAD (ended/recorded — the shared
- * DEAD_RESPONDER_STATES) cannot be woken to grade, so dead candidates are
- * skipped toward the next non-dead qualified one; ALL dead ⇒ fresh. An
- * unreachable grader stalls the gate exactly like no grader — and the fresh
- * session that replaces it is precisely the cold reader the owner rule prefers.
+ * D-002 states the cost plainly rather than denying it: a below-floor grader IS
+ * the confidently-stale grader D-009 preferred to avoid. What makes it
+ * acceptable is that grading is no longer n=1 — under this plan's D-001/D-003
+ * the menu is min 1 / max 2 delivered as a cascade, so a minimum-fill pick is
+ * normally a SECOND opinion arriving after an above-floor grader, and P-004
+ * makes the gate refuse to let a `via:'minimum'` card supersede an above-floor
+ * one. Where no above-floor grader exists at all, this is a knowing regression
+ * against D-009's intent.
+ *
+ * WHAT STILL MINTS FRESH: only an EMPTY menu. Nothing to select is not the same
+ * epistemic state as selecting weakly — the embedder being unavailable
+ * (relevance never measured), a measured-empty non-excluded actor pool, or a
+ * pool in which nobody is reachable. A candidate whose context is DEAD
+ * (ended/recorded — the shared DEAD_RESPONDER_STATES) cannot be woken to grade,
+ * so deadness is the selectability gate passed into the generic selector: it
+ * skips dead candidates for BOTH floor picks and minimum fills, which is why an
+ * all-dead pool yields an empty menu rather than an unusable pick.
+ *
+ * SELECTION ITSELF IS NOT WRITTEN HERE. The bounds come from the shared registry
+ * (`selection-policies.ts`, key ACCEPTANCE_GRADING_POLICY) and the algorithm is
+ * `@papercusp/ranked-selection` — the same two things the critique consult
+ * reads (D-001 [owner]: neither step may carry its own copy of the policy).
  *
  * Deps-injected (route, sql) relevance-router style; the plan-acceptance-gate
  * wires the prod embedder + liveness oracle, mirroring get-feedback/plans:start.
  */
 import type { Sql } from 'postgres';
+import { selectRanked, selectionPolicy, type Selected } from '@papercusp/ranked-selection';
 import { COORD_ROLES, canonicalCoordRole } from '../agent-tools/coordination/roles';
-import type { ConsultRouteParams, RouteResult, RoutingCandidate } from './relevance-router';
+import type { ConsultRouteParams, RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
+import { selectionSnapshot } from './relevance-router';
 import { DEAD_RESPONDER_STATES } from './get-feedback-core';
+import { ACCEPTANCE_GRADING_POLICY } from './selection-policies';
 
 export const GRADER_QUERY_MAX_CHARS = 4000;
 
@@ -57,10 +77,38 @@ export interface GraderSelectDeps {
   getCandidateRoles: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string | null>>;
 }
 
+/** One selected grader with the provenance of HOW it was selected. `via` is on
+ * the record because P-004 has to be able to refuse a `'minimum'` card that
+ * would otherwise supersede a `'floor'` one under latest-wins. */
+export type SelectedGrader = Selected<RoutingCandidate>;
+
 export interface GraderSelection {
   verdict: 'assigned' | 'fresh';
-  /** The selected grader (verdict 'assigned'). */
-  grader?: RoutingCandidate;
+  /**
+   * The ordered grader MENU (non-empty exactly when verdict is 'assigned').
+   * CASCADE order, never a parallel-wake set: head is grader 1, and grader k+1
+   * is woken only after k replies, declines or expires — carrying k's card
+   * (D-003 [owner]). Bounded by the ACCEPTANCE_GRADING_POLICY registry entry,
+   * not by a number written here.
+   */
+  graders: SelectedGrader[];
+  /**
+   * EXACTLY the routing snapshot to persist on the grading cascade's row — the
+   * router's own snapshot with two deliberate adjustments:
+   *
+   *  - `selection` stamped with this menu's provenance (min/max + per-selectee
+   *    via/score/liveness). It is the same `SnapshotSelection` record the
+   *    critique consult persists, which is what lets cascade-core advance a
+   *    grading cascade with no grading-specific parsing.
+   *  - `candidates` narrowed to the COORD-CAPABLE eligible pool. cascade-core's
+   *    post-exhaustion refill leg extends the menu from `candidates`, so
+   *    persisting the router's unfiltered list would let a refill wake a
+   *    principal that `coord:send` cannot reach — a grader selected here can
+   *    never be one this module already refused.
+   *
+   * Absent when the menu is empty (verdict 'fresh'): there is no cascade.
+   */
+  routing?: RoutingSnapshot;
   /** The full exclusion set applied — the D-009 independence audit trail. */
   excluded: string[];
   /**
@@ -73,10 +121,21 @@ export interface GraderSelection {
   eligibility: GraderEligibility;
   /** A structured escalation for a measured empty non-excluded actor pool. */
   escalation?: GraderEscalation;
-  /** Why fresh. 'no_qualified_non_excluded' folds below-floor and all-excluded
-   * (D-009 treats them identically); 'all_qualified_dead' is the liveness
-   * refinement; 'degraded' = the embedder was unavailable (cannot measure). */
-  freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded';
+  /**
+   * Why the menu came back EMPTY. Renamed from the pre-D-002 set on purpose:
+   * the old `no_qualified_non_excluded` / `all_qualified_dead` were statements
+   * about the QUALIFIED (above-floor) pool, because above-floor was the only
+   * pool that could be selected from. Under minimum-fill the whole eligible
+   * pool is selectable, so a name that still said "qualified" would describe a
+   * condition that no longer causes a fresh mint at all.
+   *
+   * 'no_eligible_non_excluded' — measured, and the non-excluded actor pool is
+   * empty (the `zero_eligible` escalation). 'all_eligible_unselectable' — the
+   * pool is populated but every member is dead (ended/recorded).
+   * 'degraded' — relevance was never measured, so there is no ranking to fill
+   * from; see the branch comment at the selection site.
+   */
+  freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded';
 }
 
 export interface GraderEligibility {
@@ -218,26 +277,51 @@ export async function selectAcceptanceGrader(
     ? { code: eligibility.reason }
     : undefined;
 
-  if (route.snapshot.degraded === 'embed-unavailable') {
-    return { verdict: 'fresh', excluded, eligibility, freshReason: 'degraded' };
+  // UNMEASURED is not below-floor. D-002 replaces below-floor fresh-mint with
+  // minimum-fill, but a fill is a pick from a RANKING — with no embedder there
+  // is no ranking to fill from, only an arbitrary row order. Minting fresh here
+  // is the honest outcome, not a survival of the overturned asymmetry.
+  if (route.snapshot.degraded === 'embed-unavailable' || route.verdict === 'relevance_unmeasured') {
+    return { verdict: 'fresh', graders: [], excluded, eligibility, freshReason: 'degraded' };
   }
-  if (route.verdict !== 'routed' || qualifiedCandidates.length === 0) {
+
+  // D-001 [owner]: bounds from the shared registry, algorithm from the shared
+  // library. `qualifiedCandidates` are the above-floor picks; `eligibleCandidates`
+  // is the full ranked non-excluded pool the minimum-fill reaches into. Deadness
+  // is the selectability gate, so an unreachable candidate is skipped for BOTH —
+  // an honest short menu beats a grader who can never answer.
+  const bounds = selectionPolicy(ACCEPTANCE_GRADING_POLICY);
+  const graders = selectRanked<RoutingCandidate>({
+    qualified: qualifiedCandidates,
+    allCandidates: eligibleCandidates,
+    bounds,
+    identity: (candidate) => candidate.ownerId,
+    isSelectable: (candidate) => !DEAD_RESPONDER_STATES.has(candidate.liveness),
+  });
+
+  if (graders.length === 0) {
     return {
       verdict: 'fresh',
+      graders: [],
       excluded,
       eligibility,
       ...(escalation ? { escalation } : {}),
-      freshReason: 'no_qualified_non_excluded',
+      // Two genuinely different empty menus, kept apart because they imply
+      // different repairs: nobody to ask at all vs. a populated pool in which
+      // nobody is reachable (all ended/recorded).
+      freshReason: eligibleCandidates.length === 0 ? 'no_eligible_non_excluded' : 'all_eligible_unselectable',
     };
   }
-  const reachable = qualifiedCandidates.find((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
-  if (!reachable) {
-    return {
-      verdict: 'fresh',
-      excluded,
-      eligibility,
-      freshReason: 'all_qualified_dead',
-    };
-  }
-  return { verdict: 'assigned', grader: reachable, excluded, eligibility };
+
+  return {
+    verdict: 'assigned',
+    graders,
+    routing: {
+      ...route.snapshot,
+      candidates: eligibleCandidates,
+      selection: selectionSnapshot(bounds.min, bounds.max, graders),
+    },
+    excluded,
+    eligibility,
+  };
 }

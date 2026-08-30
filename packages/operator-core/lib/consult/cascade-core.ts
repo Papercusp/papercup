@@ -27,6 +27,7 @@ import {
   revivalBudgetSpent,
 } from './get-feedback-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
+import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy } from './grading-cascade';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the two non-reply advance triggers. */
@@ -89,17 +90,45 @@ export function makeDigestEntry(ownerId: string, kind: CascadeEventKind, at: str
   return { ownerId, kind, at, excerpt: t.length <= CASCADE_EXCERPT_MAX ? t : `${t.slice(0, CASCADE_EXCERPT_MAX - 1)}…` };
 }
 
-/** The next selectee's wake body: why-them framing (honest for a minimum-fill
- * pick, mirroring get-feedback-core's D-002 body), the prior-feedback digest,
- * and the typed-reply protocol. */
-export function cascadeWakeBody(input: {
+/**
+ * Everything a wake-copy writer is entitled to know about the advance it is
+ * announcing. Deliberately data-only: the copy seam decides WORDS, never who is
+ * woken, when, or under what CAS guard.
+ */
+export interface CascadeWakeContext {
   question: string;
   conversationId: string;
-  position: number; // 1-based position in the menu of the responder being woken
+  /** 1-based position in the menu of the responder being woken. */
+  position: number;
   menuSize: number;
   next: CascadeSelectionEntry;
   digest: CascadeDigestEntry[];
-}): string {
+  /** Set when this wake is the ONE post-exhaustion menu extension, naming which
+   * kind — the copy may want to say so; the mechanism does not change. */
+  extension?: 'min-answers refill' | 'refill-exhaustion revival';
+}
+
+/** Notification summary + body for one cascade advance. */
+export interface CascadeWakeCopy {
+  summary: string;
+  body: string;
+}
+
+/**
+ * The wake-copy seam (unified-responder-selection-critique-and-grading-2026-08-30
+ * D-005). ONE advance path serves every cascading flow, but not every flow is a
+ * consult: acceptance grading advances through this same CAS-guarded cursor and
+ * must wake its next grader with grading instructions, not a consult verb menu.
+ * Copy is the ONLY thing that legitimately differs between them, so copy is the
+ * only thing that varies — a second advance loop for grading is exactly what
+ * D-005 forbids.
+ */
+export type CascadeWakeCopyWriter = (ctx: CascadeWakeContext) => CascadeWakeCopy;
+
+/** The next selectee's wake body: why-them framing (honest for a minimum-fill
+ * pick, mirroring get-feedback-core's D-002 body), the prior-feedback digest,
+ * and the typed-reply protocol. */
+export function cascadeWakeBody(input: CascadeWakeContext): string {
   const { next } = input;
   const why =
     next.via === 'minimum'
@@ -123,6 +152,32 @@ export function cascadeWakeBody(input: {
         'answer requires evidence; labeled first-principles reasoning is admissible for a best-available pick',
     })
   );
+}
+
+/** The DEFAULT copy writer — the consult cascade's own. Every pre-existing
+ * caller gets exactly the summary and body it got before the seam existed. */
+export const consultCascadeWakeCopy: CascadeWakeCopyWriter = (ctx) => ({
+  summary:
+    `🧭 consult cascade (reviewer ${ctx.position}/${ctx.menuSize}` +
+    `${ctx.extension ? `, ${ctx.extension}` : ''}): ${ctx.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+  body: cascadeWakeBody(ctx),
+});
+
+/**
+ * Resolve the copy writer FROM THE ROW, not from the caller.
+ *
+ * Deliberately derived rather than passed as a parameter. Three of the four
+ * advance triggers are generic — the decline verb, the expiry sweep and a
+ * failed-wake advance all move whatever cursor they find, and none of them has
+ * any way to know it is holding an acceptance-grading cascade. A `wakeCopy`
+ * argument would therefore have been correct only on the triggers that happen to
+ * know, and a grader woken by an expiry would silently receive consult copy
+ * telling them to answer from their transcript. Reading the flavour off the
+ * snapshot the advance is already parsing makes that unrepresentable.
+ */
+export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWriter {
+  const grading = gradingCascadeMetaFromRouting(routing);
+  return grading ? gradingCascadeWakeCopy(grading) : consultCascadeWakeCopy;
 }
 
 /** The revival seam advanceCascade's refill-exhaustion leg calls
@@ -396,18 +451,20 @@ export async function advanceCascade(
         let woke = 0;
         if (reach) {
           const menuSize = selected.length + add.length;
+          const copy = cascadeWakeCopyForRouting(params.routing)({
+            question: params.question,
+            conversationId: params.conversationId,
+            position: cursorIdx + 1,
+            menuSize,
+            next: first,
+            digest,
+            extension: revivedEntry ? 'refill-exhaustion revival' : 'min-answers refill',
+          });
           const r = await reach({
             responder: first.ownerId,
             conversationId: params.conversationId,
-            summary: `🧭 consult cascade (reviewer ${cursorIdx + 1}/${menuSize}, ${revivedEntry ? 'refill-exhaustion revival' : 'min-answers refill'}): ${params.question.replace(/\s+/g, ' ').slice(0, 72)}`,
-            body: cascadeWakeBody({
-              question: params.question,
-              conversationId: params.conversationId,
-              position: cursorIdx + 1,
-              menuSize,
-              next: first,
-              digest,
-            }),
+            summary: copy.summary,
+            body: copy.body,
           });
           woke = r.woke;
         }
@@ -492,18 +549,19 @@ export async function advanceCascade(
 
   let woke = 0;
   if (reach) {
+    const copy = cascadeWakeCopyForRouting(params.routing)({
+      question: params.question,
+      conversationId: params.conversationId,
+      position: nextIdx + 1,
+      menuSize: selected.length,
+      next,
+      digest,
+    });
     const r = await reach({
       responder: next.ownerId,
       conversationId: params.conversationId,
-      summary: `🧭 consult cascade (reviewer ${nextIdx + 1}/${selected.length}): ${params.question.replace(/\s+/g, ' ').slice(0, 72)}`,
-      body: cascadeWakeBody({
-        question: params.question,
-        conversationId: params.conversationId,
-        position: nextIdx + 1,
-        menuSize: selected.length,
-        next,
-        digest,
-      }),
+      summary: copy.summary,
+      body: copy.body,
     });
     woke = r.woke;
   }

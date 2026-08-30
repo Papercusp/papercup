@@ -116,8 +116,11 @@ export interface RoutingSnapshot {
    * D-001/D-002/D-003) — stamped by the CONSULT layer at selection time and
    * persisted with the snapshot, so the D-003 honesty feed can always
    * distinguish a floor-qualified responder from a best-available minimum
-   * fill. Absent on pre-min/max rows and on surfaces that route without
-   * selecting (grader discovery). */
+   * fill. Absent on pre-min/max rows and on a route that did not select at all
+   * (an empty grader menu). Acceptance grading STAMPS it — since
+   * unified-responder-selection-critique-and-grading-2026-08-30 D-001 the gate
+   * selects a menu through the same library as the consult, so "surfaces that
+   * route without selecting" is no longer a standing category. */
   selection?: SnapshotSelection;
 }
 
