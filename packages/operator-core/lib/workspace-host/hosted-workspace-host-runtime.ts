@@ -23,6 +23,8 @@
  * bearer therefore ends the runtime (`onTerminal('revoked')`) rather than being
  * retried — see `hosted-connector-client.ts` for why retrying it is harmful.
  */
+import { pinModuleState } from '@papercusp/module-singleton';
+import { activeWorkspaceId } from '../workspace-registry';
 import { listDesktopSessions, touchDesktopSession } from '../desktop/desktop-session-registry';
 import { leasedDesktopBySessionId } from '../agent-tools/computer/desktop-lease';
 import {
@@ -207,6 +209,56 @@ export function createHostedWorkspaceHostRuntime(
       return binding;
     },
   };
+}
+
+/**
+ * The one runtime this process runs, pinned to `globalThis`.
+ *
+ * Pinned rather than a bare module-scoped `let` for the reason `@papercusp/module-singleton`
+ * exists: several ordinary loader seams here produce two module records, and two
+ * records would mean two outbound connectors dialling the control plane under ONE
+ * enrollment — which the broker would see as a connector replacing itself in a loop,
+ * not as an error anyone gets told about.
+ */
+const started = pinModuleState<{ runtime: HostedWorkspaceHostRuntime | null }>(
+  '@papercusp/operator-core.hosted-workspace-host-runtime',
+  () => ({ runtime: null }),
+);
+
+/**
+ * Start this host's connector if it is an enrolled hosted workspace. Idempotent.
+ *
+ * Returns null when unenrolled, which is the NORMAL answer on a dev box, on the
+ * control plane, and on every non-BYOC operator — so callers treat null as "nothing
+ * to do", never as a failure.
+ *
+ * ⚠ CALL THIS FROM A PRIMARY-ONLY BOOT PATH. A forked request worker inherits the
+ * environment, so an unguarded call would open one connector PER worker (17 on the
+ * :3070 release cluster) against a single-connector-per-binding broker.
+ */
+export function ensureHostedWorkspaceHostRuntime(
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: Partial<HostedWorkspaceHostRuntimeOptions> = {},
+): HostedWorkspaceHostRuntime | null {
+  if (started.runtime) return started.runtime;
+  const config = readHostedWorkspaceHostConfig(env);
+  if (!config) return null;
+  const runtime = createHostedWorkspaceHostRuntime({
+    ...config,
+    ...(overrides.desktop === undefined
+      ? { desktop: createDefaultDesktopBackend(activeWorkspaceId()) }
+      : { desktop: overrides.desktop }),
+    ...overrides,
+  });
+  started.runtime = runtime;
+  runtime.start();
+  return runtime;
+}
+
+/** Test seam — drop the pinned runtime so a suite can start a fresh one. */
+export function __resetHostedWorkspaceHostRuntime(): void {
+  started.runtime?.stop('test_reset');
+  started.runtime = null;
 }
 
 export interface HostedWorkspaceHostEnvironmentConfig {

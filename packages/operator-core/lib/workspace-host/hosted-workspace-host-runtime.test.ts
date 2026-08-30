@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   createHostedWorkspaceHostRuntime,
+  ensureHostedWorkspaceHostRuntime,
   hostedAuditRow,
   readHostedWorkspaceHostConfig,
+  __resetHostedWorkspaceHostRuntime,
 } from './hosted-workspace-host-runtime';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
 import type { HostedHostAuditEvent } from './hosted-session-host';
@@ -229,6 +231,58 @@ describe('createHostedWorkspaceHostRuntime', () => {
     });
     const frames = sockets[0]!.sent.map((raw) => JSON.parse(raw));
     expect(frames).toContainEqual({ type: 'relay.close', channelId: 'c1', reason: 'desktop_unsupported' });
+  });
+
+  it('is wired into boot: ensure() dials once, is idempotent, and no-ops when unenrolled', () => {
+    // The point of this test is the WIRING, not the config parse. WI-1064431 was
+    // exactly this defect one layer down — a correct adapter that nothing ever
+    // constructed — so a runtime with no live caller would just move the gap up.
+    __resetHostedWorkspaceHostRuntime();
+    const sockets: FakeSocket[] = [];
+    const env = {
+      PAPERCUSP_HOSTED_CONNECTOR_BEARER: 'b',
+      PAPERCUSP_HOSTED_CONTROL_PLANE_URL: 'https://app.papercusp.com',
+      PAPERCUSP_HOSTED_WORKSPACE_ROOT: '/srv/workspace',
+    } as NodeJS.ProcessEnv;
+    const overrides = {
+      // Supplied so the composition root does not reach for the live registry.
+      desktop: {
+        lookup: async () => null,
+        dial: async () => {
+          throw new Error('unused');
+        },
+        heartbeat: () => {},
+        roster: async () => [],
+        thumbnail: async () => null,
+      },
+      createClient: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) =>
+        new HostedWorkspaceConnectorClient({
+          ...options,
+          minBackoffMs: 10,
+          random: () => 1,
+          createSocket: (url, headers) => {
+            const socket = new FakeSocket(url, headers);
+            sockets.push(socket);
+            return socket;
+          },
+        }),
+    };
+
+    // Unenrolled is the normal state on a dev box and the control plane: silent null.
+    expect(ensureHostedWorkspaceHostRuntime({} as NodeJS.ProcessEnv, overrides)).toBeNull();
+    expect(sockets).toHaveLength(0);
+
+    const first = ensureHostedWorkspaceHostRuntime(env, overrides);
+    expect(first).not.toBeNull();
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.headers.Authorization).toBe('Bearer b');
+
+    // Idempotent: a second boot-path call (or a module re-evaluation) must not open a
+    // SECOND connector under one enrollment — the broker keys connectors by binding,
+    // so two would silently evict each other rather than erroring.
+    expect(ensureHostedWorkspaceHostRuntime(env, overrides)).toBe(first);
+    expect(sockets).toHaveLength(1);
+    __resetHostedWorkspaceHostRuntime();
   });
 
   it('stop() closes the adapter and never reconnects', () => {
