@@ -479,6 +479,11 @@ export interface CheckpointDeps {
     green: boolean;
     summary: string;
     failingTests?: string[];
+    /** WI-41765 / D-010: failing CASE names attributed to the file they failed in, so the
+     *  promotion split can ask whether a failing test FILE's cases are ALL coverage-class.
+     *  Optional, and absent on a green run: without it every test file classifies product,
+     *  which is the pre-WI-41765 behaviour exactly. */
+    failingCasesByFile?: ReadonlyMap<string, readonly string[]>;
     flakeSuspects?: string[];
     /** Exact files/diagnostics recovered from an early changed-file typecheck failure. */
     typecheckPreflight?: CheckpointTypecheckPreflight;
@@ -9310,6 +9315,7 @@ async function runGreenCheckpointInner(
     green,
     summary,
     failingTests,
+    failingCasesByFile,
     flakeSuspects,
     failingFiles = [],
     logPath,
@@ -9619,7 +9625,12 @@ async function runGreenCheckpointInner(
       ? decidePromotion({
           failures: failingTests ?? [],
           verdictRendered: true,
-          ctx: { rootScripts: deps.readRootScripts() },
+          ctx: {
+            rootScripts: deps.readRootScripts(),
+            // Absent ⇒ every test file stays product. This can only ever ADMIT a file
+            // whose failing cases are ALL registered coverage-class, never hold one.
+            ...(failingCasesByFile ? { failingCasesByFile } : {}),
+          },
         })
       : null;
   if (!green && !hygieneSplit?.promote) {
@@ -15070,6 +15081,12 @@ export function realCheckpointDeps(
         green,
         summary,
         failingTests,
+        // Only on a RED run: a green one has no failing cases, and emitting an empty map
+        // would assert "nothing failed here" rather than "nothing was measured".
+        // fullOutput, never `summary` — summary is narration and would parse nothing.
+        ...(green
+          ? {}
+          : { failingCasesByFile: extractFailingCasesByFile(fullOutput) }),
         postSuiteMeasured: legs.ran,
         ...(legs.ran ? { postSuiteLegs: legs.records.slice(0, 32) } : {}),
         ...(flakeSuspects?.length ? { flakeSuspects } : {}),
