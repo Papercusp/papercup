@@ -166,7 +166,10 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     recurrenceTest: 'capacity-inventory.test.ts source-anchor + capless expansion tests',
     durableSource: 'per-class controller state learned from outcomes',
     telemetry: 'serviceability count with observation time and pool generation',
-    contextPath: 'serviceableAdmissionCapFn → applyAdmissionCap',
+    // P-015 anchor repair: the old value named `applyAdmissionCap`, which exists NOWHERE in the
+    // tree (it was deleted with the clamp application path). A dangling anchor is how the next
+    // reader concludes the clamp still binds; the real consumer chain is diagnostics-only.
+    contextPath: 'serviceableAdmissionCapFn → refreshServiceableDiagnostics → GET /stats clamp.recommendation',
   }),
   writer({
     id: 'gateway-serviceable-minimum',
@@ -803,12 +806,54 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_SCHEMA_VERSION =
 export const INFERENCE_GATEWAY_COMPATIBILITY_MATRIX_SCHEMA_VERSION =
   INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_SCHEMA_VERSION;
 
+/**
+ * `remove-after-gate` is the ONLY non-terminal disposition: it names a gate that has not run
+ * yet.  Every other member is terminal — the migration question for that family is settled —
+ * and P-015 requires a terminal disposition to carry `dispositionEvidence`.
+ */
 export type CapacityCompatibilityDisposition =
   | 'remove-after-gate'
+  | 'removed'
   | 'feedback-only'
   | 'readback-only'
   | 'retain-semantic-safety'
   | 'retain-measured-physical-contract';
+
+/** Dispositions whose migration question is settled; only these may close a plan (P-015). */
+export const TERMINAL_CAPACITY_COMPATIBILITY_DISPOSITIONS: ReadonlySet<CapacityCompatibilityDisposition> =
+  new Set<CapacityCompatibilityDisposition>([
+    'removed',
+    'feedback-only',
+    'readback-only',
+    'retain-semantic-safety',
+    'retain-measured-physical-contract',
+  ]);
+
+/**
+ * What a terminal disposition actually claims.  `deleted` means the binding writer is gone from
+ * the tree; `non-capacity` means the writer is still live but was MEASURED not to bind productive
+ * admission.  The two are checked against `writerIds`, so the claim cannot drift from the census.
+ */
+export type CapacityDispositionVerdict = 'deleted' | 'non-capacity';
+
+/**
+ * Attestation for a terminal disposition (the derived-truth ladder's rung 3: a claim about
+ * runtime state paired with the probe that falsifies it).  A disposition is a statement about
+ * live behaviour that no static check can prove, so it is recorded WITH its measurement and its
+ * recheck rather than asserted as prose — an undated "this no longer binds" is precisely the
+ * hand-maintained metadata this inventory exists to eliminate.
+ */
+export interface CapacityDispositionEvidence {
+  readonly verdict: CapacityDispositionVerdict;
+  /** UTC date of the measurement that settled the verdict, `YYYY-MM-DD`. */
+  readonly measuredAt: string;
+  /** What was observed — source trace and/or live values, including the numbers. */
+  readonly measurement: string;
+  /** The concrete probe that would FALSIFY this verdict. */
+  readonly recheck: string;
+  /** A stated condition under which the verdict does not hold (for example, a non-default path). */
+  readonly caveat?: string;
+}
 
 export type CapacityCompatibilityConsumerKind = 'docs' | 'runbook' | 'api' | 'state' | 'test';
 
@@ -850,6 +895,8 @@ export interface InferenceGatewayCapacityCompatibilityGroup {
   /** Unified consumer list for generic migration/reporting clients. */
   readonly consumers: readonly CapacityCompatibilityConsumer[];
   readonly disposition: CapacityCompatibilityDisposition;
+  /** Required for every TERMINAL disposition (P-015). Absent only while `remove-after-gate`. */
+  readonly dispositionEvidence?: CapacityDispositionEvidence;
 }
 
 /** One flattened row per exact P-001 writer, suitable for lint/report joins. */
@@ -908,6 +955,9 @@ function compatibilityGroup(
     rollbackNeverReinstatesNumericCap: true,
     rollbackForbiddenValues: INFERENCE_GATEWAY_LEGACY_CAP_VALUES,
     consumers,
+    ...(row.dispositionEvidence
+      ? { dispositionEvidence: Object.freeze({ ...row.dispositionEvidence }) }
+      : {}),
   });
 }
 
@@ -946,7 +996,15 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
         'packages/operator-core/lib/fleet-rate-status.ts',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'readback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'P-010 deleted every read of PAPERCUSP_GATEWAY_CONCURRENCY on the gateway/launch/sidecar path; what survives is the systemd unit Environment= line and one sidecar-main.ts comment, and a present value is warned on through RETIRED_CAPACITY_ENV_VARS. Live GET /stats 2026-08-30T00:17Z: aimd.effective = aimd.cap = 503 against aimd.floor = 4, reached by 495 recorded increases and 0 decreases — the live window is learned from outcomes and was never seeded to the legacy 24.',
+        recheck:
+          'grep -rn PAPERCUSP_GATEWAY_CONCURRENCY packages libs apps --include=*.ts must return comments and the retired-env table only; retired-capacity-env.test.ts asserts the warn-on-present readback. A /stats.aimd.cap that stops moving at a configured value would falsify.',
+      },
     }),
     compatibilityGroup({
       id: 'provider-admission-seed',
@@ -972,6 +1030,14 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
       ],
       disposition: 'feedback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'INITIAL_PROVIDER_ADMISSION_WINDOW = 8 is the only bootstrap number left and it is applied identically to both lanes. Live GET /stats 2026-08-30T00:17Z, 8h13m uptime and 27,329 requests: the Claude window is 503 and the Codex window 231, both learned upward (aimd.increases 495, codexAimd.increases 2,287) — 63x and 29x the seed. A seed acting as a ceiling could not be exceeded at all, let alone by that margin.',
+        recheck:
+          'curl /stats: aimd.effective or codexAimd.effective sitting at 8 (or at a supplied opts.concurrency) while pressure is 0 would falsify. In source, the seed reaching setMaxConcurrent as a maximum rather than an initial window would falsify.',
+      },
     }),
     compatibilityGroup({
       id: 'gateway-codex-concurrency',
@@ -1003,7 +1069,15 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/admission-context.ts',
         'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'removed',
+      dispositionEvidence: {
+        verdict: 'deleted',
+        measuredAt: '2026-08-30',
+        measurement:
+          'Every Codex-specific capacity writer is deleted: writerIds is empty, readCodexConcurrencyOverride no longer exists (only a gateway.ts comment names it), and CODEX_ADMISSION_SLOTS_PER_ACCOUNT is gone. Live GET /stats 2026-08-30T00:17Z: codexAdmission.maxConcurrent = 231 with 39 running — the Codex lane rides the same shared capless window as Claude rather than an account-scaled ceiling.',
+        recheck:
+          'grep -rn "readCodexConcurrencyOverride|CODEX_ADMISSION_SLOTS_PER_ACCOUNT|accountScaledCodexConcurrency" packages libs --include=*.ts must find no declaration; CAPACITY_WRITER_SYMBOL_PATTERN reds the census test if any of them is re-declared in scope.',
+      },
     }),
     compatibilityGroup({
       id: 'gateway-max-queued',
@@ -1027,7 +1101,17 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
         'packages/operator-core/lib/system-health/compute.ts',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'retain-semantic-safety',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'gateway.ts resolves the queue bound as `deps.maxQueued ?? (payloadSpool ? 0 : DEFAULT_MAX_QUEUED)`, and 0 is PriorityAdmissionQueue\'s uncapped sentinel (its shed test is `maxQueued > 0 && …`). Live GET /stats 2026-08-30T00:17Z with the durable payload spool active: maxQueued = 0 and shed429 = 0 across 27,329 requests — not one request has been refused for resident queue depth.',
+        recheck:
+          'curl /stats and read maxQueued + shed429: a non-zero maxQueued, or any shed429 growth, with the spool active would falsify. admission-loadshed-retirement.test.ts pins the sentinel behaviour.',
+        caveat:
+          'Retirement is conditional on the durable payload spool. With NO spool the resident queue still bounds at `PAPERCUSP_GATEWAY_MAX_QUEUED || 256`, and an explicit deps.maxQueued still wins. That bound is retained deliberately and is why this row is semantic-safety rather than removed: it protects process memory for requests that have nowhere durable to spill, and it never bounds the admission window itself.',
+      },
     }),
     compatibilityGroup({
       id: 'serviceable-admission',
@@ -1062,7 +1146,15 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
         'packages/operator-core/lib/inference-gateway/account-failover.ts',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'readback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'serviceableAdmissionCapFn has exactly one consumer, refreshServiceableDiagnostics → lastServiceableRecommendation → GET /stats clamp.recommendation and a mode-change log; serviceableClampTimer is hard-undefined, so nothing applies the value on a timer. Live GET /stats 2026-08-30T00:17Z: clamp = { mode:"off", recommendation:28, applied:503, overridden:true, serviceableAccounts:7 } — applied admission is 18x the recommendation, so the serviceability arithmetic reports and does not bind.',
+        recheck:
+          'curl /stats and compare clamp.applied against clamp.recommendation: applied falling to the recommendation, or clamp.mode leaving "off", would falsify. In source, any assignment of serviceableClampTimer or any path feeding the recommendation into setMaxConcurrent would falsify.',
+      },
     }),
     compatibilityGroup({
       id: 'aimd-floor-and-tuning',
@@ -1099,6 +1191,14 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/admission-ceiling.ts',
       ],
       disposition: 'feedback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'What survives of the AIMD family is a FLOOR and response-curve tuning, never a ceiling. Live GET /stats 2026-08-30T00:17Z: aimd = { effective: 503, cap: 503, floor: 4, increases: 495, decreases: 0 } and codexAimd = { effective: 231, cap: 1318, floor: 4, increases: 2287, decreases: 7 }. Each cap is the controller\'s own learned high-water mark, not a configured bound — the Codex cap sits at 1318 while its live window is 231, so the cap is demonstrably not what holds that lane. The only configured term in either lane is the floor of 4.',
+        recheck:
+          'curl /stats: an aimd.cap that stops advancing at a value that appears in the source (24, 45, 64, 256) across hundreds of clean increases, or an effective window clamped below cap while pressure is 0, would falsify.',
+      },
     }),
     compatibilityGroup({
       id: 'priority-reserve-and-map',
@@ -1137,7 +1237,17 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
         'packages/operator-core/lib/system-health/compute.ts',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'retain-semantic-safety',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'The per-tier share stopped being a hard ceiling in WI-4541 (priority-admission.ts records the relaxation: a tier at its share BORROWS an idle slot unless an outranking tier is waiting). Live GET /stats 2026-08-30T00:17Z: Claude tier 2 ran inFlight 377 against a stated share of 6 — 63x — with nothing refused, which is only possible because the share does not cap. The one live bound is the tier-1 reserve, a deliberate un-starving guarantee for the interactive lane under D-007 (priority is work-conserving scheduling, not capacity): it partitions a 503-slot pool, it does not bound it, and tier 1 may use the whole pool.',
+        recheck:
+          'curl /stats and read admission.tier1Reserve / admission.maxConcurrent — it must track GATEWAY_T1_RESERVE_FRAC (0.15). A byTier entry whose inFlight is pinned at its stated share while the pool has idle slots and no higher tier is queued would falsify the borrowing claim.',
+        caveat:
+          'Measured at 0.2505 (Claude 126/503) and 0.2511 (Codex 58/231) BEFORE the P-015 fix, not the intended 0.15: the queue re-derived its reserve fraction as reserve/maxConcurrent at construction, where ceil(8 * 0.15) / 8 = 0.25 inflated it permanently. P-015 makes the configured fraction authoritative; the corrected ratio only appears live after the next gateway construction, and is pinned meanwhile by priority-admission.test.ts.',
+      },
     }),
     compatibilityGroup({
       id: 'provider-governor-floors',
@@ -1176,6 +1286,16 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/fleet-rate-status.ts',
       ],
       disposition: 'feedback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'The global gate is uncapped by construction: governor-registry initialises globalCap = Infinity and globalFloor = 1, and the window probes upward whenever aimdEff < globalCap. The baked numbers that remain are cold-start FLOORS (DEFAULT_FLOORS.anthropic = { maxConcurrent: 3, rpm: 45 }) which a provider header supersedes through the recordResponse auto-tune. Live GET /stats 2026-08-30T00:17Z: every account reports rpmFactor 1.0 (no contraction in force) and gateway in-flight admission is 503 — two orders of magnitude above the 3-slot cold floor, so that floor is not the binding term.',
+        recheck:
+          'curl /stats and read smoothing.byAccount[*].rpmFactor and effRpm; read the governor global gate for a FINITE cap. A finite globalCap, or an effRpm held below a header-advertised limit, would falsify.',
+        caveat:
+          'Measured honestly: on accounts where no provider response has yet supplied an rpm header, the anthropic bucket still paces at the baked cold-start 45 rpm (effectivePaceMs 1334). That is a floor awaiting evidence rather than a ceiling — nothing clamps a higher header-learned value down to it — but it does mean those accounts are paced by a configured number, and only a header-bearing response replaces it.',
+      },
     }),
     compatibilityGroup({
       id: 'operator-rate-limit',
@@ -1201,7 +1321,15 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/fleet-rate-status.ts',
         'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'readback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'P-009 deleted the baked 256 provider-override ceiling; clampProviderFloors carries that record and the only surviving bound is RATE_LIMIT_SANITY_BOUND = 100_000, which validates an operator-supplied number rather than sizing productive admission. Live GET /stats 2026-08-30T00:17Z: gateway admission is 503 — three orders of magnitude below the sanity bound, so it cannot be the binding term.',
+        recheck:
+          'grep -n RATE_LIMIT_MAX_CEILING packages/operator-core/lib/rate-limit-config.ts must find no live ceiling. Any code path clamping a healthy desired window down to a persisted operator maximum would falsify.',
+      },
     }),
     compatibilityGroup({
       id: 'resource-profile-limits',
@@ -1232,7 +1360,17 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/fleet-rate-status.ts',
         'packages/operator-core/lib/resource-governor/state-snapshot.ts',
       ],
-      disposition: 'remove-after-gate',
+      disposition: 'feedback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'rate-limit-config.ts states plainly that maxSimultaneousAgents is the fleet-wide cap on concurrently-running agent SPAWNS, and P-009 added maxSimultaneousAgentsSource ("user" | "seed") to record whether an operator actually chose it. It is clamped only to [1, RATE_LIMIT_SANITY_BOUND]. For THIS matrix\'s subject — gateway admission — the profile values are attribution and one-time bootstrap telemetry: live GET /stats 2026-08-30T00:17Z shows admission at 503, derived by the controller from outcomes, with no profile term in the chain.',
+        recheck:
+          'Trace any host-profile field into setMaxConcurrent or the AIMD window: a profile-derived value reaching gateway admission would falsify. Live, an admission window that tracks a host formula instead of aimd increases/decreases would falsify.',
+        caveat:
+          'This row is NOT a deletion candidate. maxSimultaneousAgents is a real fleet-spawn control that an operator owns; removing it would delete a live placement bound in a different subsystem, not a gateway cap. The disposition says only that it does not bind gateway admission.',
+      },
     }),
     compatibilityGroup({
       id: 'local-backend-physical-slots',
@@ -1257,6 +1395,16 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
       ],
       disposition: 'retain-measured-physical-contract',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'The one registered backend on this deployment is ornith-llamaserver (kind llama-server, on-demand) with max_concurrent = 2 in harness_shared.local_backends, and its llama-server unit provisions exactly 2 parallel slots x 90112 ctx. The registered number therefore equals the engine\'s own partition rather than a gateway policy choice — which is precisely what makes it a measured physical contract and not a cap.',
+        recheck:
+          'Compare harness_shared.local_backends.max_concurrent against the engine unit\'s provisioned --parallel slots: a registered value ABOVE the engine partition, or one applied to a backend whose engine reports no slot count, would falsify. physical-constraints.ts holds the retention rule.',
+        caveat:
+          'This row is evidenced per BACKEND, not once for the family. A newly registered backend carries no evidence until its engine reports matching slots, and until then its maxConcurrent is a configured number wearing a physical label.',
+      },
     }),
     compatibilityGroup({
       id: 'load-shed-retry-after',
@@ -1280,6 +1428,14 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/inference-gateway/observability.ts',
       ],
       disposition: 'retain-semantic-safety',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'The retry-after hint is emitted only on the QueueFullError path, and that path is unreached on the spooled deployment: live GET /stats 2026-08-30T00:17Z reports shed429 = 0 across 27,329 requests with maxQueued = 0. The number is an HTTP protocol courtesy for a client that was refused, and it never enters an admission decision.',
+        recheck:
+          'curl /stats: any growth in shed429 means the path is live again — inspect whether the emitted hint claims to measure capacity. In source, the hint reaching setMaxConcurrent or the AIMD window would falsify.',
+      },
     }),
     compatibilityGroup({
       id: 'probe-concurrency',
@@ -1303,6 +1459,14 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/resource-governor/state-snapshot.ts',
       ],
       disposition: 'feedback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'Probe parallelism paces an observation sweep on its own timer, structurally separate from productive admission. Live GET /stats 2026-08-30T00:17Z: proactiveEgressProbe = { enabled: true, intervalMs: 45000, circuitOpens: 0 } while 416 productive requests were in flight — the probe budget and the admission window are different numbers moving independently.',
+        recheck:
+          'curl /stats: a productive in-flight count that tracks the probe concurrency, or a probe result feeding setMaxConcurrent, would falsify. capacity-probe.test.ts pins the separation.',
+      },
     }),
     compatibilityGroup({
       id: 'status-and-readiness',
@@ -1345,6 +1509,14 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'packages/operator-core/lib/resource-governor/state-snapshot.ts',
       ],
       disposition: 'readback-only',
+      dispositionEvidence: {
+        verdict: 'non-capacity',
+        measuredAt: '2026-08-30',
+        measurement:
+          'Every capacity number the status surfaces publish now travels with its binding term, which is what makes them readbacks rather than authorities. Live GET /stats 2026-08-30T00:17Z: clamp publishes recommendation 28 NEXT TO applied 503 and overridden true, so a reader cannot mistake the recommendation for what is in force; aimd publishes effective, cap and floor together; admission publishes maxConcurrent beside running, queued and tier1Reserve.',
+        recheck:
+          'curl /stats: a capacity figure published without its binding term (a bare recommendation, a cap with no effective, a tier share with no in-flight) would falsify. D-009 is the rule; observability.test.ts pins the shape.',
+      },
     }),
   ]);
 
@@ -1449,6 +1621,62 @@ export function validateInferenceGatewayCapacityCompatibilityMatrix(
   }
   for (const row of inventory) {
     if (!covered.has(row.id)) findings.push('compatibility-uncovered-writer:' + row.id);
+  }
+  // A group whose writers are all DELETED flattens to zero rows, so the per-writer loop above
+  // never sees it — the exact case that most needs checking. Fold the group-level contract in
+  // whenever we are validating the real matrix, so no caller has to remember to ask for it.
+  if (rows === INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_MATRIX) {
+    findings.push(...validateInferenceGatewayCapacityCompatibilityGroups());
+  }
+  return findings;
+}
+
+/**
+ * Group-level contract (P-015): a disposition is terminal or it names a pending gate, and a
+ * terminal one must carry evidence whose verdict agrees with the census.
+ *
+ * This is separate from the per-writer validator above because it must also see groups with NO
+ * live writers — `gateway-codex-concurrency` flattens to zero rows precisely BECAUSE P-010
+ * deleted every writer in it, and a contract that stops checking a family at the moment it is
+ * emptied is checking the wrong thing.
+ */
+export function validateInferenceGatewayCapacityCompatibilityGroups(
+  groups: readonly InferenceGatewayCapacityCompatibilityGroup[] = INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS,
+): string[] {
+  const findings: string[] = [];
+  for (const group of groups) {
+    const terminal = TERMINAL_CAPACITY_COMPATIBILITY_DISPOSITIONS.has(group.disposition);
+    const evidence = group.dispositionEvidence;
+    if (!terminal) {
+      // `remove-after-gate` means "a gate is still pending". P-015 ran the last of them, so a row
+      // still parked here is either unfinished work or a new writer that was filed and forgotten.
+      findings.push('compatibility-non-terminal:' + group.id);
+      if (evidence) findings.push('compatibility-evidence-on-pending:' + group.id);
+      continue;
+    }
+    if (!evidence) {
+      findings.push('compatibility-evidence-missing:' + group.id);
+      continue;
+    }
+    for (const field of ['measurement', 'recheck'] as const) {
+      if (typeof evidence[field] !== 'string' || evidence[field].trim().length === 0) {
+        findings.push('compatibility-evidence-field:' + group.id + ':' + field);
+      }
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(evidence.measuredAt ?? '')) {
+      findings.push('compatibility-evidence-date:' + group.id);
+    }
+    // The verdict is cross-checked against the census rather than believed: "deleted" is only
+    // true when no live writer remains, and "non-capacity" is a claim ABOUT a live writer.
+    if (evidence.verdict === 'deleted') {
+      if (group.writerIds.length > 0) findings.push('compatibility-evidence-verdict-deleted-has-writers:' + group.id);
+      if (group.disposition !== 'removed') findings.push('compatibility-evidence-verdict-deleted-not-removed:' + group.id);
+    } else if (evidence.verdict === 'non-capacity') {
+      if (group.writerIds.length === 0) findings.push('compatibility-evidence-verdict-live-has-no-writers:' + group.id);
+      if (group.disposition === 'removed') findings.push('compatibility-evidence-verdict-live-marked-removed:' + group.id);
+    } else {
+      findings.push('compatibility-evidence-verdict:' + group.id);
+    }
   }
   return findings;
 }
