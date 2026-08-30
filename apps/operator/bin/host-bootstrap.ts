@@ -554,6 +554,15 @@ export function runBootstrap(): void {
         console.error(`[bespoke-active-seeds] MISSING: "${e.name}" has no row for "${e.installSlug}" — never seeded. Fix: tsx packages/operator-core/lib/harness/routines/${e.seedScript}`);
       for (const e of r.inactive)
         console.error(`[bespoke-active-seeds] INACTIVE: "${e.name}" is seeded but active=false for "${e.installSlug}" (reason: ${e.pauseReason ?? 'NONE RECORDED — flipped by an unaudited path'})`);
+      // Present + ACTIVE but not executing — the case this check was blind to until the
+      // ephemeral executor's boot-only rescan left `frozen-candidate-drift-sweep` permanently
+      // dark with active=true. Reported separately because the repair differs from un-pausing.
+      for (const e of r.dark)
+        console.error(
+          e.neverFired
+            ? `[bespoke-active-seeds] DARK: "${e.name}" is ACTIVE for "${e.installSlug}" but has NEVER fired in the ${Math.round(e.ageSec / 60)}m since it was created — nothing is executing it (an ephemeral row seeded after this host booted gets no timer until the next boot or a syncEphemeralRoutine event)`
+            : `[bespoke-active-seeds] DARK: "${e.name}" is ACTIVE for "${e.installSlug}" but last fired ${Math.round(e.ageSec / 60)}m ago, far past its declared ${e.intervalSec}s cadence`,
+        );
       // Only the un-re-affirmed ones wake a human; a dated `reviewBy` is a deliberate hold.
       if (r.escalatable.length === 0) return;
       const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
