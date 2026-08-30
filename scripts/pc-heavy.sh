@@ -152,11 +152,11 @@
 #                         PSI controller defers an active freeze for this
 #                         window, then applies normal freeze behavior.
 #   PC_HEAVY_SCOPED_TIMEOUT_SEC  bounded wait for `test:file`'s
-#                         `scripts/test-files.mjs` command (default 30). Exact-file
-#                         verification is deliberately narrow and must not inherit
-#                         a broad sweep's 15-minute queue budget. An explicit
-#                         PC_HEAVY_TIMEOUT_SEC still wins for callers that need a
-#                         different bound.
+#                         `scripts/test-files.mjs` command or an explicitly scoped
+#                         `test:affected --changed-paths …` command (default 30).
+#                         Narrow verification must not inherit a broad sweep's
+#                         15-minute queue budget. An explicit PC_HEAVY_TIMEOUT_SEC
+#                         still wins for callers that need a different bound.
 #   PC_HEAVY_FOCUSED_SLOTS  concurrent focused `test:file` or explicitly scoped
 #                         `lint:tsc* --files=…` runs allowed in the separate lane
 #                         while a release-gate reserve or exclusive materialization
@@ -1908,6 +1908,16 @@ if [ -z "${PC_HEAVY_TIMEOUT_SEC:-}" ]; then
       scripts/test-files.mjs|lint:tsc|lint:tsc:*)
       _timeout="${PC_HEAVY_SCOPED_TIMEOUT_SEC:-30}"
       break
+      ;;
+      scripts/affected-tests.mjs|*/scripts/affected-tests.mjs)
+      # A plain test:affected invocation is a broad sweep and retains the
+      # generous default. Only an explicit changed-path selector is narrow
+      # enough to use the scoped queue deadline; without this distinction a
+      # caller-side deadline can kill it before any child exists.
+      if [ "$_has_changed_paths" = 1 ]; then
+        _timeout="${PC_HEAVY_SCOPED_TIMEOUT_SEC:-30}"
+        break
+      fi
       ;;
     esac
   done

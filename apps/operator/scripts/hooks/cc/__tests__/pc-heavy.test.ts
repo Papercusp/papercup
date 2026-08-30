@@ -1814,6 +1814,41 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('EI-21860262943616012: explicitly scoped test:affected uses the bounded queue wait', async () => {
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
+    try {
+      const t0 = Date.now();
+      const r = runSync(
+        [
+          'node',
+          'scripts/affected-tests.mjs',
+          '--changed-paths',
+          'packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts',
+        ],
+        {
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_SCOPED_TIMEOUT_SEC: '1',
+        },
+      );
+      const waited = Date.now() - t0;
+
+      // The fixture command need not resolve from this temporary cwd. The
+      // contract is that explicit path-scoped affected verification reaches
+      // the handoff after the narrow bound instead of waiting behind the
+      // broad 900-second default until its caller kills the wrapper.
+      expect(r.stderr).toContain('waiting up to 1s');
+      expect(r.stderr).toContain('[pc-heavy] slot acquired — starting real work');
+      expect(waited).toBeLessThan(5000);
+    } finally {
+      killGroup(holder);
+    }
+  });
+
   it('EI-21361359358514189: a caller TERM while queued is retryable and reports the live holder', async () => {
     const env = {
       PC_HEAVY_SLOTS: '1',
