@@ -45,6 +45,7 @@ import { reapEndedPresenceRows } from '../agent-tools/coordination/presence-reap
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { gcGovernorReceipts } from '../resource-governor/receipt-gc';
+import { PgWorkItemAdmissionQueueStore } from '../resource-governor/queue';
 import {
   reconcileStaleEscalationsOnce,
   reconcileUnanswerableEscalationsOnce,
@@ -95,12 +96,16 @@ async function telemetryFlushTick(): Promise<void> {
   // itself (STORAGE_RETAIN_TELEMETRY) — NOT here, so disabling retention still lets
   // the flush archive + forward telemetry; only the delete-old step is skipped.
   await DBOS.runStep(() => flushTelemetry(), {
-    name: 'flush-telemetry', retriesAllowed: true, maxAttempts: 2, intervalSeconds: 30,
+    name: 'flush-telemetry',
+    retriesAllowed: true,
+    maxAttempts: 2,
+    intervalSeconds: 30,
   });
 }
 const telemetryFlushWorkflow = idempotentRegisterWorkflow('telemetryFlush', () =>
   DBOS.registerWorkflow(telemetryFlushTick, {
-    name: 'telemetryFlush', maxRecoveryAttempts: 5,
+    name: 'telemetryFlush',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(telemetryFlushWorkflow, { name: 'telemetryFlush', crontab: '0 0 * * * *' });
@@ -108,14 +113,18 @@ DBOS.registerScheduled(telemetryFlushWorkflow, { name: 'telemetryFlush', crontab
 // Daily 03:00: scratch-storage GC sweep (retention + dead-workspace + quota).
 async function scratchGcTick(): Promise<void> {
   if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_SCRATCH))) return;
-  await DBOS.runStep(async () => {
-    const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
-    runScratchGc({ workspaceRegistry });
-  }, { name: 'scratch-gc' });
+  await DBOS.runStep(
+    async () => {
+      const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
+      runScratchGc({ workspaceRegistry });
+    },
+    { name: 'scratch-gc' },
+  );
 }
 const scratchGcWorkflow = idempotentRegisterWorkflow('scratchGc', () =>
   DBOS.registerWorkflow(scratchGcTick, {
-    name: 'scratchGc', maxRecoveryAttempts: 5,
+    name: 'scratchGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: '0 0 3 * * *' });
@@ -127,26 +136,30 @@ DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: '0 0 3 *
 // Every 5min: embed-backfill sweep (battery-aware). The sweep's own batching
 // is the rate limit on the embedding API (P-010).
 async function embedBackfillTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('embed-backfill')) return;
-    try {
-      await runEmbedBackfillOnce();
-    } catch (err) {
-      // F1/F4 (infra-perf-reliability-audit-2026-06-19): a transient embedder
-      // failure (embedder_disabled / openai_api_key_missing / a gateway or HTTP
-      // error) must NOT throw out of the scheduled step. DBOS would retry, then
-      // mark the workflow permanently dead (exceeded maxRecoveryAttempts) — which
-      // silently STOPS all future backfill (the cosine/embedding leg that mem0
-      // search depends on). This was the observed failure: `embedBackfill` dead,
-      // memory:search degraded to ~50% errors / 19.5s p95. Log + skip; the next
-      // 5-min tick retries once the embedder recovers.
-      console.warn(`[embed-backfill] sweep skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'embed-backfill' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('embed-backfill')) return;
+      try {
+        await runEmbedBackfillOnce();
+      } catch (err) {
+        // F1/F4 (infra-perf-reliability-audit-2026-06-19): a transient embedder
+        // failure (embedder_disabled / openai_api_key_missing / a gateway or HTTP
+        // error) must NOT throw out of the scheduled step. DBOS would retry, then
+        // mark the workflow permanently dead (exceeded maxRecoveryAttempts) — which
+        // silently STOPS all future backfill (the cosine/embedding leg that mem0
+        // search depends on). This was the observed failure: `embedBackfill` dead,
+        // memory:search degraded to ~50% errors / 19.5s p95. Log + skip; the next
+        // 5-min tick retries once the embedder recovers.
+        console.warn(`[embed-backfill] sweep skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'embed-backfill' },
+  );
 }
 const embedBackfillWorkflow = idempotentRegisterWorkflow('embedBackfill', () =>
   DBOS.registerWorkflow(embedBackfillTick, {
-    name: 'embedBackfill', maxRecoveryAttempts: 5,
+    name: 'embedBackfill',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
@@ -156,22 +169,26 @@ DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: 
 // so a longer cadence is fine — this only needs to catch a desync well
 // before it silently degrades search, not react to it instantly.
 async function embedSpaceSelfCheckTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('embed-space-self-check')) return;
-    try {
-      await runEmbedSpaceSelfCheckTick();
-    } catch (err) {
-      // Same rationale as embedBackfillTick just above: a transient failure
-      // (embedder unavailable, a PG hiccup) must never throw out of the
-      // scheduled step, or DBOS retries it into permanent-dead territory and
-      // silently stops the detector for good.
-      console.warn(`[embed-space-self-check] tick skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'embed-space-self-check' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('embed-space-self-check')) return;
+      try {
+        await runEmbedSpaceSelfCheckTick();
+      } catch (err) {
+        // Same rationale as embedBackfillTick just above: a transient failure
+        // (embedder unavailable, a PG hiccup) must never throw out of the
+        // scheduled step, or DBOS retries it into permanent-dead territory and
+        // silently stops the detector for good.
+        console.warn(`[embed-space-self-check] tick skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'embed-space-self-check' },
+  );
 }
 const embedSpaceSelfCheckWorkflow = idempotentRegisterWorkflow('embedSpaceSelfCheck', () =>
   DBOS.registerWorkflow(embedSpaceSelfCheckTick, {
-    name: 'embedSpaceSelfCheck', maxRecoveryAttempts: 5,
+    name: 'embedSpaceSelfCheck',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(embedSpaceSelfCheckWorkflow, { name: 'embedSpaceSelfCheck', crontab: '0 */15 * * * *' });
@@ -184,7 +201,8 @@ async function backupTick(): Promise<void> {
 }
 const backupWorkflow = idempotentRegisterWorkflow('backupCadence', () =>
   DBOS.registerWorkflow(backupTick, {
-    name: 'backupCadence', maxRecoveryAttempts: 5,
+    name: 'backupCadence',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(backupWorkflow, { name: 'backupCadence', crontab: '0 * * * * *' });
@@ -197,7 +215,8 @@ async function coordNotifyGcTick(): Promise<void> {
 }
 const coordNotifyGcWorkflow = idempotentRegisterWorkflow('coordNotifyGc', () =>
   DBOS.registerWorkflow(coordNotifyGcTick, {
-    name: 'coordNotifyGc', maxRecoveryAttempts: 5,
+    name: 'coordNotifyGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
@@ -217,15 +236,19 @@ DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: 
 // That is what keeps coord HISTORY out of a release seed; live federation is
 // untouched.
 async function coordMessagesGcTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    await gcOldCoordMessages();
-    await gcOldPlanEvents();
-    await gcTerminalHandoffFamilies();
-  }, { name: 'coord-messages-gc' });
+  await DBOS.runStep(
+    async () => {
+      await gcOldCoordMessages();
+      await gcOldPlanEvents();
+      await gcTerminalHandoffFamilies();
+    },
+    { name: 'coord-messages-gc' },
+  );
 }
 const coordMessagesGcWorkflow = idempotentRegisterWorkflow('coordMessagesGc', () =>
   DBOS.registerWorkflow(coordMessagesGcTick, {
-    name: 'coordMessagesGc', maxRecoveryAttempts: 5,
+    name: 'coordMessagesGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(coordMessagesGcWorkflow, { name: 'coordMessagesGc', crontab: '0 5 4 * * *' });
@@ -241,7 +264,8 @@ async function coordEscalationGcTick(): Promise<void> {
 }
 const coordEscalationGcWorkflow = idempotentRegisterWorkflow('coordEscalationGc', () =>
   DBOS.registerWorkflow(coordEscalationGcTick, {
-    name: 'coordEscalationGc', maxRecoveryAttempts: 5,
+    name: 'coordEscalationGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(coordEscalationGcWorkflow, { name: 'coordEscalationGc', crontab: '0 15 4 * * *' });
@@ -284,46 +308,58 @@ function logCodexHomeInvariant(
 }
 
 async function sessionArchiveReconcileTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    try {
-      const { runSessionArchiveReconcileOnce, runCodexHomeConfigInvariant } = await import(
-        '../session-archive-reconciler'
-      );
-      const enabled = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
-      if (!enabled) {
-        // The invariant is READ-ONLY and detects damage that OUTLIVES the
-        // archiver, so it must NOT be gated on the archiver's own flag —
-        // doing so reproduces WI-38706's actual failure (nobody noticing) for
-        // exactly as long as the flag is off, and it demonstrably has been off.
-        try {
-          const only = await runCodexHomeConfigInvariant();
-          logCodexHomeInvariant(only.missing, only.scanned, only.missingDirs);
-        } catch (e) {
-          logCodexHomeInvariant(null, null, [], (e as Error)?.message ?? String(e));
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { runSessionArchiveReconcileOnce, runCodexHomeConfigInvariant } =
+          await import('../session-archive-reconciler');
+        const enabled = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
+        if (!enabled) {
+          // The invariant is READ-ONLY and detects damage that OUTLIVES the
+          // archiver, so it must NOT be gated on the archiver's own flag —
+          // doing so reproduces WI-38706's actual failure (nobody noticing) for
+          // exactly as long as the flag is off, and it demonstrably has been off.
+          try {
+            const only = await runCodexHomeConfigInvariant();
+            logCodexHomeInvariant(only.missing, only.scanned, only.missingDirs);
+          } catch (e) {
+            logCodexHomeInvariant(null, null, [], (e as Error)?.message ?? String(e));
+          }
+          return;
         }
-        return;
-      }
-      const s = await runSessionArchiveReconcileOnce();
-      if (s.dbArchived || s.diskSessionsArchived || s.ompFilesArchived || s.dbStampedEmpty || s.dbFailed || s.diskFailed || s.diskSkippedFresh || s.skippedDisk) {
-        console.log(
-          `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
+        const s = await runSessionArchiveReconcileOnce();
+        if (
+          s.dbArchived ||
+          s.diskSessionsArchived ||
+          s.ompFilesArchived ||
+          s.dbStampedEmpty ||
+          s.dbFailed ||
+          s.diskFailed ||
+          s.diskSkippedFresh ||
+          s.skippedDisk
+        ) {
+          console.log(
+            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
+          );
+        }
+        // INVARIANT (EI-20419472483823685) — always emitted, see the helper.
+        logCodexHomeInvariant(
+          s.codexHomesMissingConfig,
+          s.codexHomesScanned,
+          s.codexHomesMissingConfigDirs,
+          s.codexHomeInvariantError,
         );
+      } catch (e) {
+        console.warn(`[session-archive-reconciler] tick failed: ${(e as Error)?.message ?? e}`);
       }
-      // INVARIANT (EI-20419472483823685) — always emitted, see the helper.
-      logCodexHomeInvariant(
-        s.codexHomesMissingConfig,
-        s.codexHomesScanned,
-        s.codexHomesMissingConfigDirs,
-        s.codexHomeInvariantError,
-      );
-    } catch (e) {
-      console.warn(`[session-archive-reconciler] tick failed: ${(e as Error)?.message ?? e}`);
-    }
-  }, { name: 'session-archive-reconcile' });
+    },
+    { name: 'session-archive-reconcile' },
+  );
 }
 const sessionArchiveReconcileWorkflow = idempotentRegisterWorkflow('sessionArchiveReconcile', () =>
   DBOS.registerWorkflow(sessionArchiveReconcileTick, {
-    name: 'sessionArchiveReconcile', maxRecoveryAttempts: 5,
+    name: 'sessionArchiveReconcile',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(sessionArchiveReconcileWorkflow, { name: 'sessionArchiveReconcile', crontab: '0 20 * * * *' });
@@ -346,31 +382,35 @@ DBOS.registerScheduled(sessionArchiveReconcileWorkflow, { name: 'sessionArchiveR
 // before the janitor looks) with a 2h window floors it at ~tens — the P-013
 // goal. The sweep is cheap: a 23,671-dir scan measured 7s.
 async function sessionDirGcTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    try {
-      const { runSessionDirGc, DEFAULT_RETENTION_MS, LEGACY_RETENTION_MS } = await import('../session-dir-gc');
-      const archiveOn = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
-      const retentionMs = archiveOn ? DEFAULT_RETENTION_MS : LEGACY_RETENTION_MS;
-      // archiveGuard tracks the flag: with the archive ON, a dir is deleted only
-      // once its sessions are committed to session_archives (the 24h retention
-      // is a race guard, NOT the safety net). With it OFF there is no archive to
-      // verify against and the legacy 7d window is the only protection.
-      const r = await runSessionDirGc({ retentionMs, archiveGuard: archiveOn });
-      console.log(
-        `[session-dir-gc] scanned ${r.scanned} dir(s) → removed ${r.removed.length}, ` +
-          `kept ${r.keptProtected} live/resumable + ${r.keptFresh} within retention` +
-          (r.keptUnarchived ? ` + ${r.keptUnarchived} not-yet-archived` : '') +
-          (r.errors.length ? `, ${r.errors.length} error(s)` : '') +
-          ` (retention ${Math.round(retentionMs / 3_600_000)}h, archive ${archiveOn ? 'on' : 'off'})`,
-      );
-    } catch (e) {
-      console.warn(`[session-dir-gc] tick failed: ${(e as Error)?.message ?? e}`);
-    }
-  }, { name: 'session-dir-gc' });
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { runSessionDirGc, DEFAULT_RETENTION_MS, LEGACY_RETENTION_MS } = await import('../session-dir-gc');
+        const archiveOn = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
+        const retentionMs = archiveOn ? DEFAULT_RETENTION_MS : LEGACY_RETENTION_MS;
+        // archiveGuard tracks the flag: with the archive ON, a dir is deleted only
+        // once its sessions are committed to session_archives (the 24h retention
+        // is a race guard, NOT the safety net). With it OFF there is no archive to
+        // verify against and the legacy 7d window is the only protection.
+        const r = await runSessionDirGc({ retentionMs, archiveGuard: archiveOn });
+        console.log(
+          `[session-dir-gc] scanned ${r.scanned} dir(s) → removed ${r.removed.length}, ` +
+            `kept ${r.keptProtected} live/resumable + ${r.keptFresh} within retention` +
+            (r.keptUnarchived ? ` + ${r.keptUnarchived} not-yet-archived` : '') +
+            (r.errors.length ? `, ${r.errors.length} error(s)` : '') +
+            ` (retention ${Math.round(retentionMs / 3_600_000)}h, archive ${archiveOn ? 'on' : 'off'})`,
+        );
+      } catch (e) {
+        console.warn(`[session-dir-gc] tick failed: ${(e as Error)?.message ?? e}`);
+      }
+    },
+    { name: 'session-dir-gc' },
+  );
 }
 const sessionDirGcWorkflow = idempotentRegisterWorkflow('sessionDirGc', () =>
   DBOS.registerWorkflow(sessionDirGcTick, {
-    name: 'sessionDirGc', maxRecoveryAttempts: 5,
+    name: 'sessionDirGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0 50 * * * *' });
@@ -385,7 +425,8 @@ async function planRevisionsGcTick(): Promise<void> {
 }
 const planRevisionsGcWorkflow = idempotentRegisterWorkflow('planRevisionsGc', () =>
   DBOS.registerWorkflow(planRevisionsGcTick, {
-    name: 'planRevisionsGc', maxRecoveryAttempts: 5,
+    name: 'planRevisionsGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(planRevisionsGcWorkflow, { name: 'planRevisionsGc', crontab: '0 45 4 * * *' });
@@ -402,7 +443,8 @@ async function decisionLedgerGcTick(): Promise<void> {
 }
 const decisionLedgerGcWorkflow = idempotentRegisterWorkflow('decisionLedgerGc', () =>
   DBOS.registerWorkflow(decisionLedgerGcTick, {
-    name: 'decisionLedgerGc', maxRecoveryAttempts: 5,
+    name: 'decisionLedgerGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
@@ -421,7 +463,8 @@ async function operatorTurnsGcTick(): Promise<void> {
 }
 const operatorTurnsGcWorkflow = idempotentRegisterWorkflow('operatorTurnsGc', () =>
   DBOS.registerWorkflow(operatorTurnsGcTick, {
-    name: 'operatorTurnsGc', maxRecoveryAttempts: 5,
+    name: 'operatorTurnsGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(operatorTurnsGcWorkflow, { name: 'operatorTurnsGc', crontab: '0 55 4 * * *' });
@@ -433,18 +476,22 @@ DBOS.registerScheduled(operatorTurnsGcWorkflow, { name: 'operatorTurnsGc', cront
 // conservative 48h-undrained / 24h-drained windows preserve every in-flight row.
 // P-012 / operator-memory-and-psu-resilience-2026-06-14 D-016.
 async function outboxBackstopGcTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('substrate-outbox-backstop-gc')) return;
-    // WI-1634 (WI-900 M3 residual): exempt currently-started hives' undrained rows
-    // from the 48h orphan reap — a started hive's drain may be legitimately halted
-    // on a recoverable cause (e.g. an epoch key not yet local), not truly orphaned.
-    const { listStartedPots } = await import('../pot/started');
-    await runSubstrateOutboxBackstopGc({ startedHives: await listStartedPots() });
-  }, { name: 'substrate-outbox-backstop-gc' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('substrate-outbox-backstop-gc')) return;
+      // WI-1634 (WI-900 M3 residual): exempt currently-started hives' undrained rows
+      // from the 48h orphan reap — a started hive's drain may be legitimately halted
+      // on a recoverable cause (e.g. an epoch key not yet local), not truly orphaned.
+      const { listStartedPots } = await import('../pot/started');
+      await runSubstrateOutboxBackstopGc({ startedHives: await listStartedPots() });
+    },
+    { name: 'substrate-outbox-backstop-gc' },
+  );
 }
 const outboxBackstopGcWorkflow = idempotentRegisterWorkflow('outboxBackstopGc', () =>
   DBOS.registerWorkflow(outboxBackstopGcTick, {
-    name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
+    name: 'outboxBackstopGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
@@ -456,19 +503,23 @@ DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', cro
 // (a DELETE on DBOS's own system tables is arm-deliberately); only terminal statuses,
 // batched, NEVER in-flight (PENDING/ENQUEUED) rows. Heavy DELETE → shed under loop pressure.
 async function dbosWorkflowGcTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('dbos-workflow-gc')) return;
-    const r = await runDbosWorkflowGcOnce();
-    if (!r.skipped && (r.deletedWorkflows > 0 || r.deletedOutputs > 0)) {
-      console.log(
-        `[dbos-workflow-gc] pruned ${r.deletedWorkflows} terminal workflow(s) + ${r.deletedOutputs} operation_output(s) (${r.batches} batch(es), cutoff ${r.cutoffMs})`,
-      );
-    }
-  }, { name: 'dbos-workflow-gc' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('dbos-workflow-gc')) return;
+      const r = await runDbosWorkflowGcOnce();
+      if (!r.skipped && (r.deletedWorkflows > 0 || r.deletedOutputs > 0)) {
+        console.log(
+          `[dbos-workflow-gc] pruned ${r.deletedWorkflows} terminal workflow(s) + ${r.deletedOutputs} operation_output(s) (${r.batches} batch(es), cutoff ${r.cutoffMs})`,
+        );
+      }
+    },
+    { name: 'dbos-workflow-gc' },
+  );
 }
 const dbosWorkflowGcWorkflow = idempotentRegisterWorkflow('dbosWorkflowGc', () =>
   DBOS.registerWorkflow(dbosWorkflowGcTick, {
-    name: 'dbosWorkflowGc', maxRecoveryAttempts: 5,
+    name: 'dbosWorkflowGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(dbosWorkflowGcWorkflow, { name: 'dbosWorkflowGc', crontab: '0 30 4 * * *' });
@@ -482,10 +533,13 @@ DBOS.registerScheduled(dbosWorkflowGcWorkflow, { name: 'dbosWorkflowGc', crontab
 // Batch-limited (500/tick) to drain a large backlog without a coord-log write
 // burst. queue-pending-accuracy-and-drift P-003/P-005.
 async function attentionReconcileTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('attention-reconcile')) return;
-    await reconcileStaleEscalationsOnce();
-  }, { name: 'attention-reconcile' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('attention-reconcile')) return;
+      await reconcileStaleEscalationsOnce();
+    },
+    { name: 'attention-reconcile' },
+  );
   // EI-19411323991062966: the sweep above deliberately never touches
   // NON-operational escalations, so an ask whose AUTHOR no longer exists is
   // unanswerable AND unclosable — 365 of 550 open rows, 304 past 48h, oldest
@@ -497,35 +551,39 @@ async function attentionReconcileTick(): Promise<void> {
   // no-op — and the result was discarded, so a permanently-degraded reaper was
   // indistinguishable from a healthy idle one. Best-effort is still the right
   // policy here; being QUIET about it was not.
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('attention-reconcile-unanswerable')) {
-      console.log('[attention-reconcile-unanswerable] shed: heavy-tick budget — no pass this tick');
-      return;
-    }
-    try {
-      const r = await reconcileUnanswerableEscalationsOnce();
-      if (r.outcome === 'aborted') {
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('attention-reconcile-unanswerable')) {
+        console.log('[attention-reconcile-unanswerable] shed: heavy-tick budget — no pass this tick');
+        return;
+      }
+      try {
+        const r = await reconcileUnanswerableEscalationsOnce();
+        if (r.outcome === 'aborted') {
+          console.warn(
+            '[attention-reconcile-unanswerable] ABORTED (non-fatal): a liveness/presence read threw, so ' +
+              `0 of ${r.scanned} scanned were resolved. The backlog is NOT draining — this is not an idle tick.`,
+          );
+        } else {
+          console.log(
+            `[attention-reconcile-unanswerable] ${r.outcome}: scanned=${r.scanned} stale=${r.stale} ` +
+              `resolved=${r.resolved}${r.truncated ? ' (truncated — more next tick)' : ''}`,
+          );
+        }
+      } catch (e) {
+        // best-effort: next tick retries
         console.warn(
-          '[attention-reconcile-unanswerable] ABORTED (non-fatal): a liveness/presence read threw, so ' +
-            `0 of ${r.scanned} scanned were resolved. The backlog is NOT draining — this is not an idle tick.`,
-        );
-      } else {
-        console.log(
-          `[attention-reconcile-unanswerable] ${r.outcome}: scanned=${r.scanned} stale=${r.stale} ` +
-            `resolved=${r.resolved}${r.truncated ? ' (truncated — more next tick)' : ''}`,
+          `[attention-reconcile-unanswerable] pass failed (non-fatal): ${e instanceof Error ? e.message : e}`,
         );
       }
-    } catch (e) {
-      // best-effort: next tick retries
-      console.warn(
-        `[attention-reconcile-unanswerable] pass failed (non-fatal): ${e instanceof Error ? e.message : e}`,
-      );
-    }
-  }, { name: 'attention-reconcile-unanswerable' });
+    },
+    { name: 'attention-reconcile-unanswerable' },
+  );
 }
 const attentionReconcileWorkflow = idempotentRegisterWorkflow('attentionReconcile', () =>
   DBOS.registerWorkflow(attentionReconcileTick, {
-    name: 'attentionReconcile', maxRecoveryAttempts: 5,
+    name: 'attentionReconcile',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile', crontab: '0 20 * * * *' });
@@ -535,14 +593,18 @@ DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile',
 // TTL they are backlog noise, not durable human decisions. Blocker/question rows
 // are never auto-expired.
 async function advisoryEscalationExpiryTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('advisory-escalation-expiry')) return;
-    await expireStaleAdvisoryEscalations();
-  }, { name: 'advisory-escalation-expiry' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('advisory-escalation-expiry')) return;
+      await expireStaleAdvisoryEscalations();
+    },
+    { name: 'advisory-escalation-expiry' },
+  );
 }
 const advisoryEscalationExpiryWorkflow = idempotentRegisterWorkflow('advisoryEscalationExpiry', () =>
   DBOS.registerWorkflow(advisoryEscalationExpiryTick, {
-    name: 'advisoryEscalationExpiry', maxRecoveryAttempts: 5,
+    name: 'advisoryEscalationExpiry',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(advisoryEscalationExpiryWorkflow, { name: 'advisoryEscalationExpiry', crontab: '0 32 * * * *' });
@@ -561,29 +623,33 @@ DBOS.registerScheduled(advisoryEscalationExpiryWorkflow, { name: 'advisoryEscala
 // tick is idempotent + batch-limited (500) so running it twice an hour is harmless.
 // Both passes are independently fail-soft; one failing never blocks the other.
 async function handoffReconcileTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('handoff-reconcile')) return;
-    // live-configurability-audit P-014 + P-003: apply the handoff TTL / re-ping
-    // overrides (undefined ⇒ baked defaults: 12h expire, 30m re-ping).
-    const { readCoordLivenessConfig } = await import('../coord-liveness-config');
-    const livenessCfg = await readCoordLivenessConfig();
-    // EXPIRE pass (12h backstop) — unchanged.
-    await reconcileStalePendingHandoffsOnce({ ttlMs: livenessCfg.handoffTtlMs });
-    // RE-PING pass (~30m offerer nudge) — isolated so an expire failure never skips
-    // it and vice versa.
-    try {
-      await reconcileHandoffRepingsOnce({
-        repingMs: livenessCfg.handoffRepingMs,
-        ttlMs: livenessCfg.handoffTtlMs,
-      });
-    } catch (e) {
-      console.warn(`[handoff-reconcile] re-ping pass failed: ${e instanceof Error ? e.message : e}`);
-    }
-  }, { name: 'handoff-reconcile' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('handoff-reconcile')) return;
+      // live-configurability-audit P-014 + P-003: apply the handoff TTL / re-ping
+      // overrides (undefined ⇒ baked defaults: 12h expire, 30m re-ping).
+      const { readCoordLivenessConfig } = await import('../coord-liveness-config');
+      const livenessCfg = await readCoordLivenessConfig();
+      // EXPIRE pass (12h backstop) — unchanged.
+      await reconcileStalePendingHandoffsOnce({ ttlMs: livenessCfg.handoffTtlMs });
+      // RE-PING pass (~30m offerer nudge) — isolated so an expire failure never skips
+      // it and vice versa.
+      try {
+        await reconcileHandoffRepingsOnce({
+          repingMs: livenessCfg.handoffRepingMs,
+          ttlMs: livenessCfg.handoffTtlMs,
+        });
+      } catch (e) {
+        console.warn(`[handoff-reconcile] re-ping pass failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'handoff-reconcile' },
+  );
 }
 const handoffReconcileWorkflow = idempotentRegisterWorkflow('handoffReconcile', () =>
   DBOS.registerWorkflow(handoffReconcileTick, {
-    name: 'handoffReconcile', maxRecoveryAttempts: 5,
+    name: 'handoffReconcile',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(handoffReconcileWorkflow, { name: 'handoffReconcile', crontab: '0 26,56 * * * *' });
@@ -632,14 +698,18 @@ DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep',
 // doubles as the per-msg idempotency marker — see allhive-broadcast-sweep.ts).
 // Cheap: the query rides the mig-576 partial index.
 async function allHiveBroadcastSweepTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('allhive-broadcast-sweep')) return;
-    await runAllHiveBroadcastSweepOnce();
-  }, { name: 'allhive-broadcast-sweep' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('allhive-broadcast-sweep')) return;
+      await runAllHiveBroadcastSweepOnce();
+    },
+    { name: 'allhive-broadcast-sweep' },
+  );
 }
 const allHiveBroadcastSweepWorkflow = idempotentRegisterWorkflow('allHiveBroadcastSweep', () =>
   DBOS.registerWorkflow(allHiveBroadcastSweepTick, {
-    name: 'allHiveBroadcastSweep', maxRecoveryAttempts: 5,
+    name: 'allHiveBroadcastSweep',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(allHiveBroadcastSweepWorkflow, { name: 'allHiveBroadcastSweep', crontab: '45 */5 * * * *' });
@@ -655,21 +725,25 @@ DBOS.registerScheduled(allHiveBroadcastSweepWorkflow, { name: 'allHiveBroadcastS
 // flip takes effect on the next tick; fail-safe like retentionEnabled (a flag
 // read error runs the sweep — its default is ON).
 async function deliveryLadderSweepTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('delivery-ladder-sweep')) return;
-    let enabled = true;
-    try {
-      enabled = await getFlag(FLAGS.COORD_DELIVERY_LADDER, DELIVERY_LADDER_OWNER);
-    } catch {
-      enabled = true;
-    }
-    if (!enabled) return;
-    await runDeliveryLadderSweepOnce();
-  }, { name: 'delivery-ladder-sweep' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('delivery-ladder-sweep')) return;
+      let enabled = true;
+      try {
+        enabled = await getFlag(FLAGS.COORD_DELIVERY_LADDER, DELIVERY_LADDER_OWNER);
+      } catch {
+        enabled = true;
+      }
+      if (!enabled) return;
+      await runDeliveryLadderSweepOnce();
+    },
+    { name: 'delivery-ladder-sweep' },
+  );
 }
 const deliveryLadderSweepWorkflow = idempotentRegisterWorkflow('deliveryLadderSweep', () =>
   DBOS.registerWorkflow(deliveryLadderSweepTick, {
-    name: 'deliveryLadderSweep', maxRecoveryAttempts: 5,
+    name: 'deliveryLadderSweep',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(deliveryLadderSweepWorkflow, { name: 'deliveryLadderSweep', crontab: '30 */2 * * * *' });
@@ -681,13 +755,17 @@ DBOS.registerScheduled(deliveryLadderSweepWorkflow, { name: 'deliveryLadderSweep
 // affect the workflows it watches. Logs a WARN summary; not a per-instance human
 // escalation (round-1 D-005: don't flood the human channel with operational noise).
 async function deadWorkflowMonitorTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    await runDeadWorkflowMonitorOnce();
-  }, { name: 'dead-workflow-monitor' });
+  await DBOS.runStep(
+    async () => {
+      await runDeadWorkflowMonitorOnce();
+    },
+    { name: 'dead-workflow-monitor' },
+  );
 }
 const deadWorkflowMonitorWorkflow = idempotentRegisterWorkflow('deadWorkflowMonitor', () =>
   DBOS.registerWorkflow(deadWorkflowMonitorTick, {
-    name: 'deadWorkflowMonitor', maxRecoveryAttempts: 5,
+    name: 'deadWorkflowMonitor',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(deadWorkflowMonitorWorkflow, { name: 'deadWorkflowMonitor', crontab: '0 23 * * * *' });
@@ -696,11 +774,17 @@ DBOS.registerScheduled(deadWorkflowMonitorWorkflow, { name: 'deadWorkflowMonitor
 // job — its only legacy start site was the dead instrumentation-node, so this
 // both ports it to DBOS and re-activates it (D-003).
 async function orphanCleanupTick(): Promise<void> {
-  await DBOS.runStep(async () => { await sweepOrphanSnapshots(); }, { name: 'backup-orphan-cleanup' });
+  await DBOS.runStep(
+    async () => {
+      await sweepOrphanSnapshots();
+    },
+    { name: 'backup-orphan-cleanup' },
+  );
 }
 const orphanCleanupWorkflow = idempotentRegisterWorkflow('backupOrphanCleanup', () =>
   DBOS.registerWorkflow(orphanCleanupTick, {
-    name: 'backupOrphanCleanup', maxRecoveryAttempts: 5,
+    name: 'backupOrphanCleanup',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', crontab: '0 */5 * * * *' });
@@ -713,11 +797,17 @@ DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', cro
 // actually reclaims the disk space (a conservative 14-day age floor — see
 // DEFAULT_DEBRIS_MAX_AGE_MS — so a recent recovery stays inspectable).
 async function recoveryDebrisCleanupTick(): Promise<void> {
-  await DBOS.runStep(async () => { await sweepRecoveryDebrisTick(); }, { name: 'backup-recovery-debris-cleanup' });
+  await DBOS.runStep(
+    async () => {
+      await sweepRecoveryDebrisTick();
+    },
+    { name: 'backup-recovery-debris-cleanup' },
+  );
 }
 const recoveryDebrisCleanupWorkflow = idempotentRegisterWorkflow('backupRecoveryDebrisCleanup', () =>
   DBOS.registerWorkflow(recoveryDebrisCleanupTick, {
-    name: 'backupRecoveryDebrisCleanup', maxRecoveryAttempts: 5,
+    name: 'backupRecoveryDebrisCleanup',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(recoveryDebrisCleanupWorkflow, { name: 'backupRecoveryDebrisCleanup', crontab: '0 0 4 * * *' });
@@ -733,11 +823,17 @@ DBOS.registerScheduled(recoveryDebrisCleanupWorkflow, { name: 'backupRecoveryDeb
 // (per the bug's own fix-sketch reasoning: a per-tick ranked scan there would be
 // wasteful for a sweep this infrequent).
 async function scheduledPlanRunsGcTick(): Promise<void> {
-  await DBOS.runStep(async () => { await gcScheduledPlanRuns(); }, { name: 'scheduled-plan-runs-gc' });
+  await DBOS.runStep(
+    async () => {
+      await gcScheduledPlanRuns();
+    },
+    { name: 'scheduled-plan-runs-gc' },
+  );
 }
 const scheduledPlanRunsGcWorkflow = idempotentRegisterWorkflow('scheduledPlanRunsGc', () =>
   DBOS.registerWorkflow(scheduledPlanRunsGcTick, {
-    name: 'scheduledPlanRunsGc', maxRecoveryAttempts: 5,
+    name: 'scheduledPlanRunsGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(scheduledPlanRunsGcWorkflow, { name: 'scheduledPlanRunsGc', crontab: '0 10 5 * * *' });
@@ -750,7 +846,8 @@ async function pushCredentialsTick(): Promise<void> {
 }
 const pushCredentialsWorkflow = idempotentRegisterWorkflow('pushCredentialsRefresh', () =>
   DBOS.registerWorkflow(pushCredentialsTick, {
-    name: 'pushCredentialsRefresh', maxRecoveryAttempts: 5,
+    name: 'pushCredentialsRefresh',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(pushCredentialsWorkflow, { name: 'pushCredentialsRefresh', crontab: '0 */30 * * * *' });
@@ -760,14 +857,18 @@ DBOS.registerScheduled(pushCredentialsWorkflow, { name: 'pushCredentialsRefresh'
 // (migration 083 — keep 50 rows per file_path/branch). Fail-soft inside the SQL fn.
 async function testRunsPruneTick(): Promise<void> {
   if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_TEST_RUNS))) return;
-  await DBOS.runStep(async () => {
-    const { sql } = getOrgPg();
-    await sql`SELECT harness_shared.prune_test_runs(50)`;
-  }, { name: 'test-runs-prune' });
+  await DBOS.runStep(
+    async () => {
+      const { sql } = getOrgPg();
+      await sql`SELECT harness_shared.prune_test_runs(50)`;
+    },
+    { name: 'test-runs-prune' },
+  );
 }
 const testRunsPruneWorkflow = idempotentRegisterWorkflow('testRunsPrune', () =>
   DBOS.registerWorkflow(testRunsPruneTick, {
-    name: 'testRunsPrune', maxRecoveryAttempts: 5,
+    name: 'testRunsPrune',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: '0 17 4 * * *' });
@@ -779,25 +880,29 @@ DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: 
 // its absolute ceiling. Default ON; kill-switch PAPERCUSP_STORAGE_GROWTH_ALARM=0.
 // Never throws → can't affect what it watches. Shed under loop pressure.
 async function storageGrowthAlarmTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_STORAGE_GROWTH_ALARM === '0') return;
-    if (shouldShedHeavyTick('storage-growth-alarm')) return;
-    const r = await runStorageGrowthAlarmOnce();
-    if (r.breaches.length > 0) {
-      console.log(
-        `[storage-growth-alarm] ${r.breaches.length} categor(y/ies) over ceiling: ${r.breaches.map((b) => `${b.id}=${(b.bytes / 1024 ** 3).toFixed(1)}GB`).join(', ')}`,
-      );
-    }
-    if (r.undeclared.length > 0) {
-      console.log(
-        `[storage-growth-alarm] ${r.undeclared.length} table(s) over floor with NO retention decision: ${r.undeclared.map((u) => `${u.table}=${Math.round(u.bytes / 1024 ** 2)}MB`).join(', ')}`,
-      );
-    }
-  }, { name: 'storage-growth-alarm' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_STORAGE_GROWTH_ALARM === '0') return;
+      if (shouldShedHeavyTick('storage-growth-alarm')) return;
+      const r = await runStorageGrowthAlarmOnce();
+      if (r.breaches.length > 0) {
+        console.log(
+          `[storage-growth-alarm] ${r.breaches.length} categor(y/ies) over ceiling: ${r.breaches.map((b) => `${b.id}=${(b.bytes / 1024 ** 3).toFixed(1)}GB`).join(', ')}`,
+        );
+      }
+      if (r.undeclared.length > 0) {
+        console.log(
+          `[storage-growth-alarm] ${r.undeclared.length} table(s) over floor with NO retention decision: ${r.undeclared.map((u) => `${u.table}=${Math.round(u.bytes / 1024 ** 2)}MB`).join(', ')}`,
+        );
+      }
+    },
+    { name: 'storage-growth-alarm' },
+  );
 }
 const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlarm', () =>
   DBOS.registerWorkflow(storageGrowthAlarmTick, {
-    name: 'storageGrowthAlarm', maxRecoveryAttempts: 5,
+    name: 'storageGrowthAlarm',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
@@ -810,20 +915,24 @@ DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm',
 // on the normal 0-slot steady state. Default ON; kill-switch
 // PAPERCUSP_REPLICATION_SLOT_ALARM=0. Never throws → can't affect what it watches.
 async function replicationSlotAlarmTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_REPLICATION_SLOT_ALARM === '0') return;
-    if (shouldShedHeavyTick('replication-slot-alarm')) return;
-    const r = await runReplicationSlotAlarmOnce();
-    if (r.breaches.length > 0) {
-      console.log(
-        `[replication-slot-alarm] ${r.breaches.length} slot(s) over WAL ceiling: ${r.breaches.map((b) => `${b.slotName}=${(b.retainedWalBytes / 1024 ** 3).toFixed(1)}GB/${b.reason}`).join(', ')}`,
-      );
-    }
-  }, { name: 'replication-slot-alarm' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_REPLICATION_SLOT_ALARM === '0') return;
+      if (shouldShedHeavyTick('replication-slot-alarm')) return;
+      const r = await runReplicationSlotAlarmOnce();
+      if (r.breaches.length > 0) {
+        console.log(
+          `[replication-slot-alarm] ${r.breaches.length} slot(s) over WAL ceiling: ${r.breaches.map((b) => `${b.slotName}=${(b.retainedWalBytes / 1024 ** 3).toFixed(1)}GB/${b.reason}`).join(', ')}`,
+        );
+      }
+    },
+    { name: 'replication-slot-alarm' },
+  );
 }
 const replicationSlotAlarmWorkflow = idempotentRegisterWorkflow('replicationSlotAlarm', () =>
   DBOS.registerWorkflow(replicationSlotAlarmTick, {
-    name: 'replicationSlotAlarm', maxRecoveryAttempts: 5,
+    name: 'replicationSlotAlarm',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(replicationSlotAlarmWorkflow, { name: 'replicationSlotAlarm', crontab: '0 40 * * * *' });
@@ -838,20 +947,24 @@ DBOS.registerScheduled(replicationSlotAlarmWorkflow, { name: 'replicationSlotAla
 // PAPERCUSP_TEST_DESKTOP_REAPER=0. Never throws → can't affect what it watches.
 // Shed under loop pressure.
 async function testDesktopReaperTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_TEST_DESKTOP_REAPER === '0') return;
-    if (shouldShedHeavyTick('test-desktop-reaper')) return;
-    const r = await runTestDesktopReaperOnce();
-    if (r.alarmed) {
-      console.log(
-        `[test-desktop-reaper] alarmed: ${r.candidates.filter((c) => c.reason === 'runaway-test-desktop').length} runaway desktop(s), ${r.candidates.filter((c) => c.reason === 'zombie').length} zombie(s) (sampled ${r.sampled})`,
-      );
-    }
-  }, { name: 'test-desktop-reaper' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_TEST_DESKTOP_REAPER === '0') return;
+      if (shouldShedHeavyTick('test-desktop-reaper')) return;
+      const r = await runTestDesktopReaperOnce();
+      if (r.alarmed) {
+        console.log(
+          `[test-desktop-reaper] alarmed: ${r.candidates.filter((c) => c.reason === 'runaway-test-desktop').length} runaway desktop(s), ${r.candidates.filter((c) => c.reason === 'zombie').length} zombie(s) (sampled ${r.sampled})`,
+        );
+      }
+    },
+    { name: 'test-desktop-reaper' },
+  );
 }
 const testDesktopReaperWorkflow = idempotentRegisterWorkflow('testDesktopReaper', () =>
   DBOS.registerWorkflow(testDesktopReaperTick, {
-    name: 'testDesktopReaper', maxRecoveryAttempts: 5,
+    name: 'testDesktopReaper',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(testDesktopReaperWorkflow, { name: 'testDesktopReaper', crontab: '0 7,22,37,52 * * * *' });
@@ -864,21 +977,25 @@ DBOS.registerScheduled(testDesktopReaperWorkflow, { name: 'testDesktopReaper', c
 // PAPERCUSP_DISK_SPACE_ALARM=0. Never throws → can't affect what it watches. Shed
 // under loop pressure.
 async function diskSpaceAlarmTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_DISK_SPACE_ALARM === '0') return;
-    if (shouldShedHeavyTick('disk-space-alarm')) return;
-    const r = await runDiskSpaceAlarmOnce();
-    if (r.breaches.length > 0) {
-      const crit = r.breaches.filter((b) => b.severity === 'critical').length;
-      console.log(
-        `[disk-space-alarm] ${r.breaches.length} filesystem(s) low${crit > 0 ? ` (${crit} CRITICAL${r.escalated ? ', escalated' : ', within cooldown'})` : ''}: ${r.breaches.map((b) => `${b.path}=${(b.freePct * 100).toFixed(1)}%`).join(', ')}`,
-      );
-    }
-  }, { name: 'disk-space-alarm' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_DISK_SPACE_ALARM === '0') return;
+      if (shouldShedHeavyTick('disk-space-alarm')) return;
+      const r = await runDiskSpaceAlarmOnce();
+      if (r.breaches.length > 0) {
+        const crit = r.breaches.filter((b) => b.severity === 'critical').length;
+        console.log(
+          `[disk-space-alarm] ${r.breaches.length} filesystem(s) low${crit > 0 ? ` (${crit} CRITICAL${r.escalated ? ', escalated' : ', within cooldown'})` : ''}: ${r.breaches.map((b) => `${b.path}=${(b.freePct * 100).toFixed(1)}%`).join(', ')}`,
+        );
+      }
+    },
+    { name: 'disk-space-alarm' },
+  );
 }
 const diskSpaceAlarmWorkflow = idempotentRegisterWorkflow('diskSpaceAlarm', () =>
   DBOS.registerWorkflow(diskSpaceAlarmTick, {
-    name: 'diskSpaceAlarm', maxRecoveryAttempts: 5,
+    name: 'diskSpaceAlarm',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab: '0 13,43 * * * *' });
@@ -905,45 +1022,47 @@ DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab
 // meaningfully faster than that. Default ON; kill-switch PAPERCUSP_EMBED_COVERAGE_ALARM=0.
 // Never throws → can't affect what it watches. Shed under loop pressure.
 async function embedCoverageAlarmTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_EMBED_COVERAGE_ALARM === '0') return;
-    if (shouldShedHeavyTick('embed-coverage-alarm')) return;
-    const r = await runEmbedCoverageAlarmOnce();
-    if (r.breaches.length > 0) {
-      console.log(
-        `[embed-coverage] ${r.breaches.length} breach(es): ` +
-          r.breaches.map((b) => `${b.surface}/${b.kind}`).join(', '),
-      );
-    }
-
-    // P-004 (context-injection-retrieval-reach-and-visibility-2026-08-03): the same
-    // pass, re-read for ONE consumer — the pre-turn context block. It re-measures
-    // nothing and re-derives no floor; it filters the verdicts above to the surfaces
-    // the injection corpus leg actually reads, with union-aware (best-leg) semantics.
-    //
-    // It rides HERE, not on the query-time coverage snapshot, because the recurrence
-    // signal (`settledCoverage`) is evaluated instantaneously and is never persisted to
-    // embed_coverage_samples — inside this pass is the only place it exists.
-    try {
-      const reach = assessInjectionReach(r.surfaces, r.breaches);
-      if (reach.breaches.length > 0) {
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_EMBED_COVERAGE_ALARM === '0') return;
+      if (shouldShedHeavyTick('embed-coverage-alarm')) return;
+      const r = await runEmbedCoverageAlarmOnce();
+      if (r.breaches.length > 0) {
         console.log(
-          `[injection-coverage] ${reach.breaches.length} breach(es): ` +
-            reach.breaches.map((b) => `${b.source ?? 'corpus'}/${b.kind}`).join(', '),
+          `[embed-coverage] ${r.breaches.length} breach(es): ` +
+            r.breaches.map((b) => `${b.surface}/${b.kind}`).join(', '),
         );
-        await emitCoverageToast(formatInjectionReachToast(reach));
       }
-    } catch (err) {
-      // Never let the derived read affect the alarm it derives from.
-      console.warn(
-        `[injection-coverage] skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`,
-      );
-    }
-  }, { name: 'embed-coverage-alarm' });
+
+      // P-004 (context-injection-retrieval-reach-and-visibility-2026-08-03): the same
+      // pass, re-read for ONE consumer — the pre-turn context block. It re-measures
+      // nothing and re-derives no floor; it filters the verdicts above to the surfaces
+      // the injection corpus leg actually reads, with union-aware (best-leg) semantics.
+      //
+      // It rides HERE, not on the query-time coverage snapshot, because the recurrence
+      // signal (`settledCoverage`) is evaluated instantaneously and is never persisted to
+      // embed_coverage_samples — inside this pass is the only place it exists.
+      try {
+        const reach = assessInjectionReach(r.surfaces, r.breaches);
+        if (reach.breaches.length > 0) {
+          console.log(
+            `[injection-coverage] ${reach.breaches.length} breach(es): ` +
+              reach.breaches.map((b) => `${b.source ?? 'corpus'}/${b.kind}`).join(', '),
+          );
+          await emitCoverageToast(formatInjectionReachToast(reach));
+        }
+      } catch (err) {
+        // Never let the derived read affect the alarm it derives from.
+        console.warn(`[injection-coverage] skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`);
+      }
+    },
+    { name: 'embed-coverage-alarm' },
+  );
 }
 const embedCoverageAlarmWorkflow = idempotentRegisterWorkflow('embedCoverageAlarm', () =>
   DBOS.registerWorkflow(embedCoverageAlarmTick, {
-    name: 'embedCoverageAlarm', maxRecoveryAttempts: 5,
+    name: 'embedCoverageAlarm',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(embedCoverageAlarmWorkflow, { name: 'embedCoverageAlarm', crontab: '0 21,51 * * * *' });
@@ -960,22 +1079,26 @@ DBOS.registerScheduled(embedCoverageAlarmWorkflow, { name: 'embedCoverageAlarm',
 // safe to run unattended against a db the live desktop app has open. Default
 // ON; kill-switch PAPERCUSP_WAL_GUARD=0. Never throws. Shed under loop pressure.
 async function localstorageWalGuardTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_WAL_GUARD === '0') return;
-    if (shouldShedHeavyTick('localstorage-wal-guard')) return;
-    const r = runWalCheckpointSweep();
-    if (r.overThreshold > 0) {
-      console.log(
-        `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} over-threshold WAL(s) checkpointed, ` +
-          `~${(r.bytesReclaimed / 1024 ** 2).toFixed(0)}MB reclaimed` +
-          (r.errors.length ? `, ${r.errors.length} error(s): ${r.errors.map((e) => e.dbPath).join(', ')}` : ''),
-      );
-    }
-  }, { name: 'localstorage-wal-guard' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_WAL_GUARD === '0') return;
+      if (shouldShedHeavyTick('localstorage-wal-guard')) return;
+      const r = runWalCheckpointSweep();
+      if (r.overThreshold > 0) {
+        console.log(
+          `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} over-threshold WAL(s) checkpointed, ` +
+            `~${(r.bytesReclaimed / 1024 ** 2).toFixed(0)}MB reclaimed` +
+            (r.errors.length ? `, ${r.errors.length} error(s): ${r.errors.map((e) => e.dbPath).join(', ')}` : ''),
+        );
+      }
+    },
+    { name: 'localstorage-wal-guard' },
+  );
 }
 const localstorageWalGuardWorkflow = idempotentRegisterWorkflow('localstorageWalGuard', () =>
   DBOS.registerWorkflow(localstorageWalGuardTick, {
-    name: 'localstorageWalGuard', maxRecoveryAttempts: 5,
+    name: 'localstorageWalGuard',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(localstorageWalGuardWorkflow, { name: 'localstorageWalGuard', crontab: '0 8 * * * *' });
@@ -995,20 +1118,24 @@ DBOS.registerScheduled(localstorageWalGuardWorkflow, { name: 'localstorageWalGua
 // step → DBOS marks the workflow permanently dead → silent stop forever) → can't
 // poison the scheduler. Shed under loop pressure (git ls-files + N UPDATEs).
 async function memoryAnchorAuditTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_MEMORY_ANCHOR_AUDIT === '0') return;
-    if (shouldShedHeavyTick('memory-anchor-audit')) return;
-    try {
-      const r = await runMemoryAnchorAuditOnce();
-      console.log(`[memory-anchor-audit] ${r.skipped ? `skipped: ${r.reason ?? 'no-op'}` : (r.summary ?? 'done')}`);
-    } catch (err) {
-      console.warn(`[memory-anchor-audit] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'memory-anchor-audit' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_MEMORY_ANCHOR_AUDIT === '0') return;
+      if (shouldShedHeavyTick('memory-anchor-audit')) return;
+      try {
+        const r = await runMemoryAnchorAuditOnce();
+        console.log(`[memory-anchor-audit] ${r.skipped ? `skipped: ${r.reason ?? 'no-op'}` : (r.summary ?? 'done')}`);
+      } catch (err) {
+        console.warn(`[memory-anchor-audit] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'memory-anchor-audit' },
+  );
 }
 const memoryAnchorAuditWorkflow = idempotentRegisterWorkflow('memoryAnchorAudit', () =>
   DBOS.registerWorkflow(memoryAnchorAuditTick, {
-    name: 'memoryAnchorAudit', maxRecoveryAttempts: 5,
+    name: 'memoryAnchorAudit',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(memoryAnchorAuditWorkflow, { name: 'memoryAnchorAudit', crontab: '0 0 5 * * *' });
@@ -1026,21 +1153,25 @@ DBOS.registerScheduled(memoryAnchorAuditWorkflow, { name: 'memoryAnchorAudit', c
 // throws (a thrown step → DBOS marks the workflow permanently dead → silent
 // stop forever). Shed under loop pressure (a scan + N inserts).
 async function specTriadSweepTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_SPEC_TRIAD_SWEEP === '0') return;
-    if (shouldShedHeavyTick('spec-triad-sweep')) return;
-    try {
-      const { runSpecTriadSweepOnce } = await import('../agent-tools/plans/spec-triad-sweep');
-      const r = await runSpecTriadSweepOnce();
-      console.log(`[spec-triad-sweep] ${r.summary}`);
-    } catch (err) {
-      console.warn(`[spec-triad-sweep] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'spec-triad-sweep' });
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_SPEC_TRIAD_SWEEP === '0') return;
+      if (shouldShedHeavyTick('spec-triad-sweep')) return;
+      try {
+        const { runSpecTriadSweepOnce } = await import('../agent-tools/plans/spec-triad-sweep');
+        const r = await runSpecTriadSweepOnce();
+        console.log(`[spec-triad-sweep] ${r.summary}`);
+      } catch (err) {
+        console.warn(`[spec-triad-sweep] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'spec-triad-sweep' },
+  );
 }
 const specTriadSweepWorkflow = idempotentRegisterWorkflow('specTriadSweep', () =>
   DBOS.registerWorkflow(specTriadSweepTick, {
-    name: 'specTriadSweep', maxRecoveryAttempts: 5,
+    name: 'specTriadSweep',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(specTriadSweepWorkflow, { name: 'specTriadSweep', crontab: '0 20 5 * * *' });
@@ -1060,51 +1191,55 @@ DBOS.registerScheduled(specTriadSweepWorkflow, { name: 'specTriadSweep', crontab
 // PAPERCUSP_TOOL_SEQUENCE_PROMOTION=off (the filing leg only). Never throws → can't
 // poison the scheduler. Shed under load.
 async function recipeHygieneTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_RECIPE_HYGIENE === '0') return;
-    if (shouldShedHeavyTick('recipe-hygiene')) return;
-    try {
-      const { runRecipeHygieneOnce } = await import('../recipe-hygiene');
-      const { captureImprovement } = await import('../harness/improvements/capture-core');
-      const { sql } = getOrgPg();
-      const r = await runRecipeHygieneOnce(sql, {
-        sequenceDeps: {
-          capture: captureImprovement,
-          log: (m) => console.warn(`[recipe-hygiene] ${m}`),
-        },
-      });
-      if (r.sweptIds.length > 0 || r.promoteCandidates > 0 || r.mergeClusters > 0) {
-        console.log(
-          `[recipe-hygiene] retired ${r.sweptIds.length} stale one-off recipe(s); ` +
-            `${r.promoteCandidates} promote candidate(s), ${r.mergeClusters} merge cluster(s) awaiting Mug review`,
-        );
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_RECIPE_HYGIENE === '0') return;
+      if (shouldShedHeavyTick('recipe-hygiene')) return;
+      try {
+        const { runRecipeHygieneOnce } = await import('../recipe-hygiene');
+        const { captureImprovement } = await import('../harness/improvements/capture-core');
+        const { sql } = getOrgPg();
+        const r = await runRecipeHygieneOnce(sql, {
+          sequenceDeps: {
+            capture: captureImprovement,
+            log: (m) => console.warn(`[recipe-hygiene] ${m}`),
+          },
+        });
+        if (r.sweptIds.length > 0 || r.promoteCandidates > 0 || r.mergeClusters > 0) {
+          console.log(
+            `[recipe-hygiene] retired ${r.sweptIds.length} stale one-off recipe(s); ` +
+              `${r.promoteCandidates} promote candidate(s), ${r.mergeClusters} merge cluster(s) awaiting Mug review`,
+          );
+        }
+        if (r.sequenceError) {
+          console.warn(`[recipe-hygiene] tool-sequence promotion failed (non-fatal): ${r.sequenceError}`);
+        } else if (r.sequences && (r.sequences.filed > 0 || r.sequences.graduated > 0)) {
+          console.log(
+            `[recipe-hygiene] tool-sequences: ${r.sequences.graduated} graduated across ` +
+              `${r.sequences.targets.length} workspace(s) → filed ${r.sequences.filed}, ` +
+              `coalesced ${r.sequences.coalesced}, suppressed ${r.sequences.suppressed} nested prefix candidate(s), ` +
+              `${r.sequences.heldForEvidence} still accruing evidence`,
+          );
+        }
+        // Say it whether or not anything graduated: a truncated read makes a degraded
+        // sweep look like a quiet week, which is the one failure that hides itself.
+        if (r.sequences?.truncated) {
+          console.warn(
+            '[recipe-hygiene] tool-sequence read hit its row ceiling — this sweep judged a SHORTER ' +
+              'span than configured; raise maxRows (see DEFAULT_MAX_ROWS in tool-sequence-patterns.ts)',
+          );
+        }
+      } catch (err) {
+        console.warn(`[recipe-hygiene] run skipped (non-fatal): ${(err as Error).message}`);
       }
-      if (r.sequenceError) {
-        console.warn(`[recipe-hygiene] tool-sequence promotion failed (non-fatal): ${r.sequenceError}`);
-      } else if (r.sequences && (r.sequences.filed > 0 || r.sequences.graduated > 0)) {
-        console.log(
-          `[recipe-hygiene] tool-sequences: ${r.sequences.graduated} graduated across ` +
-            `${r.sequences.targets.length} workspace(s) → filed ${r.sequences.filed}, ` +
-            `coalesced ${r.sequences.coalesced}, suppressed ${r.sequences.suppressed} nested prefix candidate(s), ` +
-            `${r.sequences.heldForEvidence} still accruing evidence`,
-        );
-      }
-      // Say it whether or not anything graduated: a truncated read makes a degraded
-      // sweep look like a quiet week, which is the one failure that hides itself.
-      if (r.sequences?.truncated) {
-        console.warn(
-          '[recipe-hygiene] tool-sequence read hit its row ceiling — this sweep judged a SHORTER ' +
-            'span than configured; raise maxRows (see DEFAULT_MAX_ROWS in tool-sequence-patterns.ts)',
-        );
-      }
-    } catch (err) {
-      console.warn(`[recipe-hygiene] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'recipe-hygiene' });
+    },
+    { name: 'recipe-hygiene' },
+  );
 }
 const recipeHygieneWorkflow = idempotentRegisterWorkflow('recipeHygiene', () =>
   DBOS.registerWorkflow(recipeHygieneTick, {
-    name: 'recipeHygiene', maxRecoveryAttempts: 5,
+    name: 'recipeHygiene',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: '0 30 5 * * 0' });
@@ -1121,67 +1256,73 @@ DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: 
 // resolution rule. Default ON; kill-switch PAPERCUSP_REPLICATION_ORPHAN_SWEEP=0.
 // Never throws → can't poison the scheduler. Shed under load.
 async function replicationStallOrphanSweepTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (process.env.PAPERCUSP_REPLICATION_ORPHAN_SWEEP === '0') return;
-    if (shouldShedHeavyTick('replication-stall-orphan-sweep')) return;
-    try {
-      const { runReplicationStallOrphanSweepOnce } = await import('../sync/hyperbee/replication-stall-orphan-sweep');
-      const r = await runReplicationStallOrphanSweepOnce();
-      // WI-37499: log UNCONDITIONALLY with the skip census. This used to log only
-      // when it resolved something, so "ran, saw 45 rows, none orphaned" and "saw
-      // nothing because its selector was blind" were byte-identical from outside —
-      // and the sweep ran daily for weeks in the second state. A checked=0 line is
-      // the signal that matters most here, so it must not be the silent case.
-      console.log(
-        `[replication-stall-orphan-sweep] checked ${r.checked} open stall EI(s): ` +
-          `resolved ${r.resolvedIds.length} across ${r.orphanedTargets.length} no-longer-existing target(s), ` +
-          `skipped ${r.skipped.targetExists} (target still exists) + ` +
-          `${r.skipped.unparseableTarget} (unparseable target)` +
-          `${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''}`,
-      );
-    } catch (err) {
-      console.warn(`[replication-stall-orphan-sweep] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-    // WI-6986: same topic, same cadence — collapse DUPLICATE open stall EIs
-    // (several open rows carrying one stable title) down to a single survivor.
-    // Distinct from the orphan sweep above: that retires EIs whose TARGET is
-    // gone, this retires redundant ROWS for a target that may still be live.
-    // Measured 2026-08-02: 88 open replication-liveness EIs covering only 48
-    // distinct conditions — 40 pure duplicates, minted by the cross-machine
-    // file() race that no pre-read can win (see collapseDuplicateOpenEis).
-    try {
-      const { collapseDuplicateOpenEis } = await import('../escalation/episodic-ei');
-      const { REPLICATION_LIVENESS_TOPIC, REPLICATION_STALL_EI_TITLE_PREFIX } = await import(
-        '../sync/hyperbee/replication-stall-ei'
-      );
-      const c = await collapseDuplicateOpenEis(
-        REPLICATION_LIVENESS_TOPIC,
-        'duplicate open EI for an identical stable title — collapsed to the oldest row for this ' +
-          'condition (WI-6986). No signal lost: the condition itself is still represented by the survivor.',
-        undefined,
-        // WI-37499: see the sweep above — the duplicates were concentrated in the
-        // rows the topic tag misses (measured: all 12 rows in duplicate groups
-        // were untagged), so a topic-only read could not collapse any of them.
-        { titlePrefix: REPLICATION_STALL_EI_TITLE_PREFIX },
-      );
-      if (c.collapsedIds.length > 0 || c.skippedUnmutable > 0) {
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_REPLICATION_ORPHAN_SWEEP === '0') return;
+      if (shouldShedHeavyTick('replication-stall-orphan-sweep')) return;
+      try {
+        const { runReplicationStallOrphanSweepOnce } = await import('../sync/hyperbee/replication-stall-orphan-sweep');
+        const r = await runReplicationStallOrphanSweepOnce();
+        // WI-37499: log UNCONDITIONALLY with the skip census. This used to log only
+        // when it resolved something, so "ran, saw 45 rows, none orphaned" and "saw
+        // nothing because its selector was blind" were byte-identical from outside —
+        // and the sweep ran daily for weeks in the second state. A checked=0 line is
+        // the signal that matters most here, so it must not be the silent case.
         console.log(
-          `[episodic-ei-duplicate-collapse] collapsed ${c.collapsedIds.length} duplicate open EI(s) ` +
-            `across ${c.duplicatedTitles} title(s) (checked ${c.checked}` +
-            `${c.skippedUnmutable > 0 ? `, ${c.skippedUnmutable} peer-authored left to their author` : ''})`,
+          `[replication-stall-orphan-sweep] checked ${r.checked} open stall EI(s): ` +
+            `resolved ${r.resolvedIds.length} across ${r.orphanedTargets.length} no-longer-existing target(s), ` +
+            `skipped ${r.skipped.targetExists} (target still exists) + ` +
+            `${r.skipped.unparseableTarget} (unparseable target)` +
+            `${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''}`,
         );
+      } catch (err) {
+        console.warn(`[replication-stall-orphan-sweep] run skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[episodic-ei-duplicate-collapse] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'replication-stall-orphan-sweep' });
+      // WI-6986: same topic, same cadence — collapse DUPLICATE open stall EIs
+      // (several open rows carrying one stable title) down to a single survivor.
+      // Distinct from the orphan sweep above: that retires EIs whose TARGET is
+      // gone, this retires redundant ROWS for a target that may still be live.
+      // Measured 2026-08-02: 88 open replication-liveness EIs covering only 48
+      // distinct conditions — 40 pure duplicates, minted by the cross-machine
+      // file() race that no pre-read can win (see collapseDuplicateOpenEis).
+      try {
+        const { collapseDuplicateOpenEis } = await import('../escalation/episodic-ei');
+        const { REPLICATION_LIVENESS_TOPIC, REPLICATION_STALL_EI_TITLE_PREFIX } =
+          await import('../sync/hyperbee/replication-stall-ei');
+        const c = await collapseDuplicateOpenEis(
+          REPLICATION_LIVENESS_TOPIC,
+          'duplicate open EI for an identical stable title — collapsed to the oldest row for this ' +
+            'condition (WI-6986). No signal lost: the condition itself is still represented by the survivor.',
+          undefined,
+          // WI-37499: see the sweep above — the duplicates were concentrated in the
+          // rows the topic tag misses (measured: all 12 rows in duplicate groups
+          // were untagged), so a topic-only read could not collapse any of them.
+          { titlePrefix: REPLICATION_STALL_EI_TITLE_PREFIX },
+        );
+        if (c.collapsedIds.length > 0 || c.skippedUnmutable > 0) {
+          console.log(
+            `[episodic-ei-duplicate-collapse] collapsed ${c.collapsedIds.length} duplicate open EI(s) ` +
+              `across ${c.duplicatedTitles} title(s) (checked ${c.checked}` +
+              `${c.skippedUnmutable > 0 ? `, ${c.skippedUnmutable} peer-authored left to their author` : ''})`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[episodic-ei-duplicate-collapse] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'replication-stall-orphan-sweep' },
+  );
 }
 const replicationStallOrphanSweepWorkflow = idempotentRegisterWorkflow('replicationStallOrphanSweep', () =>
   DBOS.registerWorkflow(replicationStallOrphanSweepTick, {
-    name: 'replicationStallOrphanSweep', maxRecoveryAttempts: 5,
+    name: 'replicationStallOrphanSweep',
+    maxRecoveryAttempts: 5,
   }),
 );
-DBOS.registerScheduled(replicationStallOrphanSweepWorkflow, { name: 'replicationStallOrphanSweep', crontab: '0 25 4 * * *' });
+DBOS.registerScheduled(replicationStallOrphanSweepWorkflow, {
+  name: 'replicationStallOrphanSweep',
+  crontab: '0 25 4 * * *',
+});
 
 // Daily (04:40 UTC, in the 04:xx GC cluster, offset from the orphan sweep above): the
 // WIDER, flag-gated staleness sweep for still-registered-but-abandoned harnesses
@@ -1192,37 +1333,45 @@ DBOS.registerScheduled(replicationStallOrphanSweepWorkflow, { name: 'replication
 // pure no-op everywhere until the owner enables it. Never throws → can't poison the
 // scheduler. Shed under load.
 async function replicationLivenessStalenessSweepTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('replication-liveness-staleness-sweep')) return;
-    try {
-      const { runReplicationLivenessStalenessSweepOnce } = await import('../sync/hyperbee/replication-liveness-staleness-sweep');
-      const r = await runReplicationLivenessStalenessSweepOnce();
-      // Log UNCONDITIONALLY, including the per-reason skip census (WI-5563). This
-      // used to log only when it resolved something, which made "the sweep cannot
-      // fire" and "the sweep correctly found nothing" byte-identical from outside —
-      // and the sweep then no-op'd for 13 days after the flag went on without
-      // emitting one line. A daily census is the cheapest thing that tells the two
-      // apart: `resolved=0 unknown-activity-fail-closed=15` is a broken activity
-      // source, `resolved=0 ei-too-new=15` is a healthy sweep with nothing to do.
-      const census = Object.entries(r.skipped)
-        .filter(([, n]) => n > 0)
-        .map(([reason, n]) => `${reason}=${n}`)
-        .join(' ');
-      console.log(
-        `[replication-liveness-staleness-sweep] resolved=${r.resolvedIds.length} checked=${r.checked}` +
-          `${r.errors > 0 ? ` errors=${r.errors}` : ''}${census ? ` | skipped: ${census}` : ''}`,
-      );
-    } catch (err) {
-      console.warn(`[replication-liveness-staleness-sweep] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'replication-liveness-staleness-sweep' });
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('replication-liveness-staleness-sweep')) return;
+      try {
+        const { runReplicationLivenessStalenessSweepOnce } =
+          await import('../sync/hyperbee/replication-liveness-staleness-sweep');
+        const r = await runReplicationLivenessStalenessSweepOnce();
+        // Log UNCONDITIONALLY, including the per-reason skip census (WI-5563). This
+        // used to log only when it resolved something, which made "the sweep cannot
+        // fire" and "the sweep correctly found nothing" byte-identical from outside —
+        // and the sweep then no-op'd for 13 days after the flag went on without
+        // emitting one line. A daily census is the cheapest thing that tells the two
+        // apart: `resolved=0 unknown-activity-fail-closed=15` is a broken activity
+        // source, `resolved=0 ei-too-new=15` is a healthy sweep with nothing to do.
+        const census = Object.entries(r.skipped)
+          .filter(([, n]) => n > 0)
+          .map(([reason, n]) => `${reason}=${n}`)
+          .join(' ');
+        console.log(
+          `[replication-liveness-staleness-sweep] resolved=${r.resolvedIds.length} checked=${r.checked}` +
+            `${r.errors > 0 ? ` errors=${r.errors}` : ''}${census ? ` | skipped: ${census}` : ''}`,
+        );
+      } catch (err) {
+        console.warn(`[replication-liveness-staleness-sweep] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'replication-liveness-staleness-sweep' },
+  );
 }
 const replicationLivenessStalenessSweepWorkflow = idempotentRegisterWorkflow('replicationLivenessStalenessSweep', () =>
   DBOS.registerWorkflow(replicationLivenessStalenessSweepTick, {
-    name: 'replicationLivenessStalenessSweep', maxRecoveryAttempts: 5,
+    name: 'replicationLivenessStalenessSweep',
+    maxRecoveryAttempts: 5,
   }),
 );
-DBOS.registerScheduled(replicationLivenessStalenessSweepWorkflow, { name: 'replicationLivenessStalenessSweep', crontab: '0 40 4 * * *' });
+DBOS.registerScheduled(replicationLivenessStalenessSweepWorkflow, {
+  name: 'replicationLivenessStalenessSweep',
+  crontab: '0 40 4 * * *',
+});
 
 // Every 2min (offset :30s — off the :00 minute-tick stampede): session-transcript
 // ingest (session-search-scope-2026-07-05 P-003). Tails claude/omp/codex JSONL +
@@ -1235,34 +1384,38 @@ DBOS.registerScheduled(replicationLivenessStalenessSweepWorkflow, { name: 'repli
 // the read-time self live-tail (ingestFileNow) covers the last-seconds window
 // for compaction recovery (compaction-context-loss D-002).
 async function sessionIngestTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('session-ingest')) return;
-    try {
-      const { runSessionIngestOnce } = await import('../search/session-ingest');
-      const r = await runSessionIngestOnce();
-      // `parts` is in BOTH the predicate and the line on purpose
-      // (session-turn-storage-2026-07-28 P-001). The faithful-parts writer is
-      // best-effort by contract — a parts failure is swallowed so it can never
-      // cost the recall index — which means a silently-zero parts count is
-      // indistinguishable from a healthy sweep unless the number is printed.
-      // It went unnoticed for a full night exactly this way: bg-host was
-      // running a pre-parts build, wrote 0 parts on every tick, and logged a
-      // perfectly healthy-looking "+N turn(s)" each time.
-      const parts = r.partsInserted ?? 0;
-      if (!r.skipped && (r.turnsInserted > 0 || parts > 0 || r.errors > 0)) {
-        console.log(
-          `[session-ingest] +${r.turnsInserted} turn(s) +${parts} part(s) from ${r.filesIngested} file(s) ` +
-            `+ ${r.chatsIngested} chat turn(s) (${r.filesScanned} scanned, ${r.errors} error(s), ${r.durationMs}ms)`,
-        );
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('session-ingest')) return;
+      try {
+        const { runSessionIngestOnce } = await import('../search/session-ingest');
+        const r = await runSessionIngestOnce();
+        // `parts` is in BOTH the predicate and the line on purpose
+        // (session-turn-storage-2026-07-28 P-001). The faithful-parts writer is
+        // best-effort by contract — a parts failure is swallowed so it can never
+        // cost the recall index — which means a silently-zero parts count is
+        // indistinguishable from a healthy sweep unless the number is printed.
+        // It went unnoticed for a full night exactly this way: bg-host was
+        // running a pre-parts build, wrote 0 parts on every tick, and logged a
+        // perfectly healthy-looking "+N turn(s)" each time.
+        const parts = r.partsInserted ?? 0;
+        if (!r.skipped && (r.turnsInserted > 0 || parts > 0 || r.errors > 0)) {
+          console.log(
+            `[session-ingest] +${r.turnsInserted} turn(s) +${parts} part(s) from ${r.filesIngested} file(s) ` +
+              `+ ${r.chatsIngested} chat turn(s) (${r.filesScanned} scanned, ${r.errors} error(s), ${r.durationMs}ms)`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[session-ingest] sweep skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[session-ingest] sweep skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'session-ingest' });
+    },
+    { name: 'session-ingest' },
+  );
 }
 const sessionIngestWorkflow = idempotentRegisterWorkflow('sessionIngest', () =>
   DBOS.registerWorkflow(sessionIngestTick, {
-    name: 'sessionIngest', maxRecoveryAttempts: 5,
+    name: 'sessionIngest',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(sessionIngestWorkflow, { name: 'sessionIngest', crontab: '30 */2 * * * *' });
@@ -1286,49 +1439,58 @@ DBOS.registerScheduled(sessionIngestWorkflow, { name: 'sessionIngest', crontab: 
 // Bounded per tick (PASSES_PER_TICK × PROVENANCE_BACKFILL_BATCH), shed under
 // loop pressure, and never throws — same contract as the ingest tick above.
 async function turnProvenanceBackfillTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('turn-provenance-backfill')) return;
-    try {
-      const { runTurnProvenanceBackfillOnce } = await import('../search/session-ingest');
-      const r = await runTurnProvenanceBackfillOnce();
-      if (r.updated > 0) {
-        console.log(
-          `[turn-provenance-backfill] re-derived ${r.updated} turn(s) ` +
-            `(${r.scanned} scanned${r.more ? ', more pending' : ', backlog drained'})`,
-        );
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('turn-provenance-backfill')) return;
+      try {
+        const { runTurnProvenanceBackfillOnce } = await import('../search/session-ingest');
+        const r = await runTurnProvenanceBackfillOnce();
+        if (r.updated > 0) {
+          console.log(
+            `[turn-provenance-backfill] re-derived ${r.updated} turn(s) ` +
+              `(${r.scanned} scanned${r.more ? ', more pending' : ', backlog drained'})`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[turn-provenance-backfill] sweep skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[turn-provenance-backfill] sweep skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'turn-provenance-backfill' });
+    },
+    { name: 'turn-provenance-backfill' },
+  );
 }
 const turnProvenanceBackfillWorkflow = idempotentRegisterWorkflow('turnProvenanceBackfill', () =>
   DBOS.registerWorkflow(turnProvenanceBackfillTick, {
-    name: 'turnProvenanceBackfill', maxRecoveryAttempts: 5,
+    name: 'turnProvenanceBackfill',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(turnProvenanceBackfillWorkflow, {
-  name: 'turnProvenanceBackfill', crontab: '45 */5 * * * *',
+  name: 'turnProvenanceBackfill',
+  crontab: '45 */5 * * * *',
 });
 
 // Daily 05:20 (after the 03:00–05:00 GC cluster): session_turns retention prune —
 // the index stays bounded (~45d window); the JSONL files remain the archive.
 async function sessionTurnsPruneTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    try {
-      const { pruneSessionTurnsOnce } = await import('../search/session-ingest');
-      const r = await pruneSessionTurnsOnce();
-      if (r.deleted > 0 || r.partsDeleted > 0) {
-        console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s), ${r.partsDeleted} faithful part(s)`);
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { pruneSessionTurnsOnce } = await import('../search/session-ingest');
+        const r = await pruneSessionTurnsOnce();
+        if (r.deleted > 0 || r.partsDeleted > 0) {
+          console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s), ${r.partsDeleted} faithful part(s)`);
+        }
+      } catch (err) {
+        console.warn(`[session-turns-prune] run skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[session-turns-prune] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'session-turns-prune' });
+    },
+    { name: 'session-turns-prune' },
+  );
 }
 const sessionTurnsPruneWorkflow = idempotentRegisterWorkflow('sessionTurnsPrune', () =>
   DBOS.registerWorkflow(sessionTurnsPruneTick, {
-    name: 'sessionTurnsPrune', maxRecoveryAttempts: 5,
+    name: 'sessionTurnsPrune',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(sessionTurnsPruneWorkflow, { name: 'sessionTurnsPrune', crontab: '0 20 5 * * *' });
@@ -1347,20 +1509,24 @@ DBOS.registerScheduled(sessionTurnsPruneWorkflow, { name: 'sessionTurnsPrune', c
 // other retention ticks): a thrown step would mark the workflow permanently dead.
 async function coordPresenceReaperTick(): Promise<void> {
   if (!(await retentionEnabled(FLAGS.COORD_PRESENCE_REAPER))) return;
-  await DBOS.runStep(async () => {
-    try {
-      const r = await reapEndedPresenceRows({});
-      if (r.reaped > 0) {
-        console.log(`[coord-presence-reaper] reaped ${r.reaped} ended coord_presence row(s) (${r.skipped} skipped)`);
+  await DBOS.runStep(
+    async () => {
+      try {
+        const r = await reapEndedPresenceRows({});
+        if (r.reaped > 0) {
+          console.log(`[coord-presence-reaper] reaped ${r.reaped} ended coord_presence row(s) (${r.skipped} skipped)`);
+        }
+      } catch (err) {
+        console.warn(`[coord-presence-reaper] run skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[coord-presence-reaper] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'coord-presence-reaper' });
+    },
+    { name: 'coord-presence-reaper' },
+  );
 }
 const coordPresenceReaperWorkflow = idempotentRegisterWorkflow('coordPresenceReaper', () =>
   DBOS.registerWorkflow(coordPresenceReaperTick, {
-    name: 'coordPresenceReaper', maxRecoveryAttempts: 5,
+    name: 'coordPresenceReaper',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(coordPresenceReaperWorkflow, { name: 'coordPresenceReaper', crontab: '0 12 * * * *' });
@@ -1378,35 +1544,39 @@ DBOS.registerScheduled(coordPresenceReaperWorkflow, { name: 'coordPresenceReaper
 // thrown step would mark the workflow permanently dead.
 async function dbIndexBloatReindexTick(): Promise<void> {
   if (!(await retentionEnabled(FLAGS.DB_INDEX_BLOAT_REINDEX))) return;
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('db-index-bloat-reindex')) return;
-    try {
-      const { runIndexBloatReindexOnce } = await import('../db-index-bloat-reindex');
-      const { sql } = getOrgPg();
-      const r = await runIndexBloatReindexOnce(sql);
-      if (r.skipped) {
-        console.log(`[db-index-bloat-reindex] skipped: ${r.skipped}`);
-        return;
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('db-index-bloat-reindex')) return;
+      try {
+        const { runIndexBloatReindexOnce } = await import('../db-index-bloat-reindex');
+        const { sql } = getOrgPg();
+        const r = await runIndexBloatReindexOnce(sql);
+        if (r.skipped) {
+          console.log(`[db-index-bloat-reindex] skipped: ${r.skipped}`);
+          return;
+        }
+        const okCount = r.reindexed.filter((x) => !x.error).length;
+        const failCount = r.reindexed.length - okCount;
+        if (okCount > 0 || r.orphansDropped.length > 0 || failCount > 0) {
+          const mb = (r.bytesReclaimed / (1024 * 1024)).toFixed(0);
+          console.log(
+            `[db-index-bloat-reindex] rebuilt ${okCount} index(es), reclaimed ${mb} MB` +
+              `${r.orphansDropped.length > 0 ? `, dropped ${r.orphansDropped.length} orphan(s)` : ''}` +
+              `${failCount > 0 ? `, ${failCount} failed` : ''}` +
+              `${r.truncated ? ' (truncated by budget)' : ''}`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[db-index-bloat-reindex] run skipped (non-fatal): ${(err as Error).message}`);
       }
-      const okCount = r.reindexed.filter((x) => !x.error).length;
-      const failCount = r.reindexed.length - okCount;
-      if (okCount > 0 || r.orphansDropped.length > 0 || failCount > 0) {
-        const mb = (r.bytesReclaimed / (1024 * 1024)).toFixed(0);
-        console.log(
-          `[db-index-bloat-reindex] rebuilt ${okCount} index(es), reclaimed ${mb} MB` +
-            `${r.orphansDropped.length > 0 ? `, dropped ${r.orphansDropped.length} orphan(s)` : ''}` +
-            `${failCount > 0 ? `, ${failCount} failed` : ''}` +
-            `${r.truncated ? ' (truncated by budget)' : ''}`,
-        );
-      }
-    } catch (err) {
-      console.warn(`[db-index-bloat-reindex] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'db-index-bloat-reindex' });
+    },
+    { name: 'db-index-bloat-reindex' },
+  );
 }
 const dbIndexBloatReindexWorkflow = idempotentRegisterWorkflow('dbIndexBloatReindex', () =>
   DBOS.registerWorkflow(dbIndexBloatReindexTick, {
-    name: 'dbIndexBloatReindex', maxRecoveryAttempts: 5,
+    name: 'dbIndexBloatReindex',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(dbIndexBloatReindexWorkflow, { name: 'dbIndexBloatReindex', crontab: '0 50 4 * * *' });
@@ -1423,54 +1593,56 @@ DBOS.registerScheduled(dbIndexBloatReindexWorkflow, { name: 'dbIndexBloatReindex
 // retention ticks): a thrown step would mark the workflow permanently dead.
 async function dbPgssOrphanStatsReclaimTick(): Promise<void> {
   if (!(await retentionEnabled(FLAGS.DB_PGSS_ORPHAN_STATS_RECLAIM))) return;
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('db-pgss-orphan-stats-reclaim')) return;
-    try {
-      const { reclaimOrphanPgssStatsOnce } = await import('../db-pgss-orphan-stats-reclaim');
-      const { sql } = getOrgPg();
-      const r = await reclaimOrphanPgssStatsOnce(sql);
-      if (r.skipped) {
-        // 'no-privilege' is the one worth saying out loud: it means migration 756's GRANT
-        // did not take, so the sweep is inert and the residue is still growing.
-        const how = r.skipped === 'no-privilege' ? console.warn : console.log;
-        how(
-          `[db-pgss-orphan-stats-reclaim] skipped: ${r.skipped}` +
-            (r.skipped === 'no-privilege'
-              ? ' — run: GRANT EXECUTE ON FUNCTION pg_stat_statements_reset(oid,oid,bigint,boolean) TO harness_admin;'
-              : ''),
-        );
-        return;
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('db-pgss-orphan-stats-reclaim')) return;
+      try {
+        const { reclaimOrphanPgssStatsOnce } = await import('../db-pgss-orphan-stats-reclaim');
+        const { sql } = getOrgPg();
+        const r = await reclaimOrphanPgssStatsOnce(sql);
+        if (r.skipped) {
+          // 'no-privilege' is the one worth saying out loud: it means migration 756's GRANT
+          // did not take, so the sweep is inert and the residue is still growing.
+          const how = r.skipped === 'no-privilege' ? console.warn : console.log;
+          how(
+            `[db-pgss-orphan-stats-reclaim] skipped: ${r.skipped}` +
+              (r.skipped === 'no-privilege'
+                ? ' — run: GRANT EXECUTE ON FUNCTION pg_stat_statements_reset(oid,oid,bigint,boolean) TO harness_admin;'
+                : ''),
+          );
+          return;
+        }
+        const okCount = r.reclaimed.filter((x) => !x.error).length;
+        const failCount = r.reclaimed.length - okCount;
+        if (okCount > 0 || failCount > 0) {
+          const pct = r.capMax > 0 ? ((r.entriesAfter / r.capMax) * 100).toFixed(1) : '?';
+          console.log(
+            `[db-pgss-orphan-stats-reclaim] reclaimed ${r.entriesReclaimed} entr(ies) from ` +
+              `${okCount} dropped database(s); ${r.entriesBefore} -> ${r.entriesAfter}/${r.capMax} (${pct}% full)` +
+              `${failCount > 0 ? `, ${failCount} failed` : ''}` +
+              `${r.truncated ? ' (truncated by per-run cap)' : ''}`,
+          );
+        }
+        if (r.capStillPressured) {
+          // The sweep must not MASK an undersized cap by partially relieving it.
+          // pg_stat_statements.max is postmaster-context, so raising it needs a restart.
+          console.warn(
+            `[db-pgss-orphan-stats-reclaim] cap STILL pressured after sweep ` +
+              `(${r.entriesAfter}/${r.capMax}) — eviction will keep discarding live ` +
+              `statistics; raising pg_stat_statements.max requires a postmaster restart.`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[db-pgss-orphan-stats-reclaim] run skipped (non-fatal): ${(err as Error).message}`);
       }
-      const okCount = r.reclaimed.filter((x) => !x.error).length;
-      const failCount = r.reclaimed.length - okCount;
-      if (okCount > 0 || failCount > 0) {
-        const pct = r.capMax > 0 ? ((r.entriesAfter / r.capMax) * 100).toFixed(1) : '?';
-        console.log(
-          `[db-pgss-orphan-stats-reclaim] reclaimed ${r.entriesReclaimed} entr(ies) from ` +
-            `${okCount} dropped database(s); ${r.entriesBefore} -> ${r.entriesAfter}/${r.capMax} (${pct}% full)` +
-            `${failCount > 0 ? `, ${failCount} failed` : ''}` +
-            `${r.truncated ? ' (truncated by per-run cap)' : ''}`,
-        );
-      }
-      if (r.capStillPressured) {
-        // The sweep must not MASK an undersized cap by partially relieving it.
-        // pg_stat_statements.max is postmaster-context, so raising it needs a restart.
-        console.warn(
-          `[db-pgss-orphan-stats-reclaim] cap STILL pressured after sweep ` +
-            `(${r.entriesAfter}/${r.capMax}) — eviction will keep discarding live ` +
-            `statistics; raising pg_stat_statements.max requires a postmaster restart.`,
-        );
-      }
-    } catch (err) {
-      console.warn(
-        `[db-pgss-orphan-stats-reclaim] run skipped (non-fatal): ${(err as Error).message}`,
-      );
-    }
-  }, { name: 'db-pgss-orphan-stats-reclaim' });
+    },
+    { name: 'db-pgss-orphan-stats-reclaim' },
+  );
 }
 const dbPgssOrphanStatsReclaimWorkflow = idempotentRegisterWorkflow('dbPgssOrphanStatsReclaim', () =>
   DBOS.registerWorkflow(dbPgssOrphanStatsReclaimTick, {
-    name: 'dbPgssOrphanStatsReclaim', maxRecoveryAttempts: 5,
+    name: 'dbPgssOrphanStatsReclaim',
+    maxRecoveryAttempts: 5,
   }),
 );
 // 05:20 UTC daily — clear of the :00 backup tick, the 04:xx GC cluster and the 04:50
@@ -1491,27 +1663,29 @@ DBOS.registerScheduled(dbPgssOrphanStatsReclaimWorkflow, { name: 'dbPgssOrphanSt
 // ticks in this file — retrying via DBOS's `maxRecoveryAttempts` would only
 // re-run the whole 10-minute suite, which is not what an infra hiccup needs.
 async function desktopPerfScheduledRunTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('desktop-perf-scheduled-run')) return;
-    try {
-      const r = await runDesktopPerfScheduledRun();
-      if (!r.ran) {
-        console.log(`[desktop-perf-scheduled-run] skipped: ${r.skippedReason}`);
-      } else if (r.timedOut) {
-        console.warn(`[desktop-perf-scheduled-run] timed out after ${r.durationMs}ms`);
-      } else {
-        console.log(
-          `[desktop-perf-scheduled-run] ran in ${r.durationMs}ms, wdio exit ${r.exitCode}`,
-        );
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('desktop-perf-scheduled-run')) return;
+      try {
+        const r = await runDesktopPerfScheduledRun();
+        if (!r.ran) {
+          console.log(`[desktop-perf-scheduled-run] skipped: ${r.skippedReason}`);
+        } else if (r.timedOut) {
+          console.warn(`[desktop-perf-scheduled-run] timed out after ${r.durationMs}ms`);
+        } else {
+          console.log(`[desktop-perf-scheduled-run] ran in ${r.durationMs}ms, wdio exit ${r.exitCode}`);
+        }
+      } catch (err) {
+        console.warn(`[desktop-perf-scheduled-run] run skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[desktop-perf-scheduled-run] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'desktop-perf-scheduled-run' });
+    },
+    { name: 'desktop-perf-scheduled-run' },
+  );
 }
 const desktopPerfScheduledRunWorkflow = idempotentRegisterWorkflow('desktopPerfScheduledRun', () =>
   DBOS.registerWorkflow(desktopPerfScheduledRunTick, {
-    name: 'desktopPerfScheduledRun', maxRecoveryAttempts: 3,
+    name: 'desktopPerfScheduledRun',
+    maxRecoveryAttempts: 3,
   }),
 );
 DBOS.registerScheduled(desktopPerfScheduledRunWorkflow, {
@@ -1533,28 +1707,32 @@ DBOS.registerScheduled(desktopPerfScheduledRunWorkflow, {
 // cooldown-gated), not the release/green-checkpoint gate — WI-40086 owns
 // that gate separately and this plan deliberately never touches it.
 async function guiE2eSurfaceScheduledRunTick(): Promise<void> {
-  await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('gui-e2e-surface-scheduled-run')) return;
-    try {
-      const r = await runGuiE2eSurfaceScheduledRun();
-      if (!r.ran) {
-        console.log(`[gui-e2e-surface-scheduled-run] skipped: ${r.skippedReason}`);
-      } else if (r.timedOut) {
-        console.warn(`[gui-e2e-surface-scheduled-run] timed out after ${r.durationMs}ms`);
-      } else {
-        console.log(
-          `[gui-e2e-surface-scheduled-run] ran in ${r.durationMs}ms, exit ${r.exitCode}, ` +
-            `${(r.legs ?? []).length} leg(s) parsed, escalated=${r.escalated ?? false}`,
-        );
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('gui-e2e-surface-scheduled-run')) return;
+      try {
+        const r = await runGuiE2eSurfaceScheduledRun();
+        if (!r.ran) {
+          console.log(`[gui-e2e-surface-scheduled-run] skipped: ${r.skippedReason}`);
+        } else if (r.timedOut) {
+          console.warn(`[gui-e2e-surface-scheduled-run] timed out after ${r.durationMs}ms`);
+        } else {
+          console.log(
+            `[gui-e2e-surface-scheduled-run] ran in ${r.durationMs}ms, exit ${r.exitCode}, ` +
+              `${(r.legs ?? []).length} leg(s) parsed, escalated=${r.escalated ?? false}`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[gui-e2e-surface-scheduled-run] run skipped (non-fatal): ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.warn(`[gui-e2e-surface-scheduled-run] run skipped (non-fatal): ${(err as Error).message}`);
-    }
-  }, { name: 'gui-e2e-surface-scheduled-run' });
+    },
+    { name: 'gui-e2e-surface-scheduled-run' },
+  );
 }
 const guiE2eSurfaceScheduledRunWorkflow = idempotentRegisterWorkflow('guiE2eSurfaceScheduledRun', () =>
   DBOS.registerWorkflow(guiE2eSurfaceScheduledRunTick, {
-    name: 'guiE2eSurfaceScheduledRun', maxRecoveryAttempts: 3,
+    name: 'guiE2eSurfaceScheduledRun',
+    maxRecoveryAttempts: 3,
   }),
 );
 DBOS.registerScheduled(guiE2eSurfaceScheduledRunWorkflow, {
@@ -1574,17 +1752,33 @@ DBOS.registerScheduled(guiE2eSurfaceScheduledRunWorkflow, {
 // unbounded delete burst. At the measured rate the steady state is far under one
 // batch per tick; the limit only bites on a first drain.
 async function governorReceiptGcTick(): Promise<void> {
-  if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_GOVERNOR_RECEIPTS))) return;
-  await DBOS.runStep(async () => {
-    const deleted = await gcGovernorReceipts();
-    if (deleted > 0) {
-      console.log(`[governor-receipt-gc] deleted ${deleted} terminal admission receipt(s)`);
-    }
-  }, { name: 'governor-receipt-gc' });
+  const deleteTerminalReceipts = await retentionEnabled(FLAGS.STORAGE_RETAIN_GOVERNOR_RECEIPTS);
+  await DBOS.runStep(
+    async () => {
+      // Targeted gateway admissions reconcile their namespace before leasing, but
+      // an entirely idle namespace has no admission edge to drive that cleanup.
+      // Reuse the existing hourly receipt-maintenance tick as the backstop instead
+      // of creating another timer/supervisor.
+      const reconciled = await new PgWorkItemAdmissionQueueStore().reconcileExpiredAll();
+      if (reconciled.total > 0) {
+        console.log(
+          `[governor-receipt-gc] reconciled ${reconciled.requeued} expired lease(s) and ` +
+            `${reconciled.expired} overdue receipt(s)`,
+        );
+      }
+      if (!deleteTerminalReceipts) return;
+      const deleted = await gcGovernorReceipts();
+      if (deleted > 0) {
+        console.log(`[governor-receipt-gc] deleted ${deleted} terminal admission receipt(s)`);
+      }
+    },
+    { name: 'governor-receipt-gc' },
+  );
 }
 const governorReceiptGcWorkflow = idempotentRegisterWorkflow('governorReceiptGc', () =>
   DBOS.registerWorkflow(governorReceiptGcTick, {
-    name: 'governorReceiptGc', maxRecoveryAttempts: 5,
+    name: 'governorReceiptGc',
+    maxRecoveryAttempts: 5,
   }),
 );
 DBOS.registerScheduled(governorReceiptGcWorkflow, {

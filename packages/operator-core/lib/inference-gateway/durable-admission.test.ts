@@ -5,10 +5,7 @@ import { AdmissionPersistenceError, Governor } from '../resource-governor/admiss
 // store that survives driver reconstruction, so the copy was promoted to a shared
 // seam rather than duplicated a fourth time.
 import { MemoryAdmissionQueueStore } from '../resource-governor/memory-admission-queue-store';
-import {
-  DurableGatewayAdmissionDriver,
-  createDurableGatewayAdmissionGovernor,
-} from './durable-admission';
+import { DurableGatewayAdmissionDriver, createDurableGatewayAdmissionGovernor } from './durable-admission';
 
 function request() {
   return {
@@ -64,5 +61,31 @@ describe('DurableGatewayAdmissionDriver', () => {
     ).rejects.toBeInstanceOf(AdmissionPersistenceError);
     await first.release(outcome.context);
     expect(store.state('gateway-test', request().idempotencyKey)).toBe('completed');
+  });
+
+  it('reconciles an expired running receipt before an idempotent targeted retry', async () => {
+    const store = new MemoryAdmissionQueueStore();
+    const first = createDurableGatewayAdmissionGovernor({
+      store,
+      namespace: 'gateway-test',
+      now: () => 1_000,
+      leaseTtlMs: 100,
+      leaseIdFactory: () => 'lease-expired',
+    });
+    const original = await first.admit(request());
+    expect(original).toMatchObject({ kind: 'admitted', lease: { leaseId: 'lease-expired' } });
+
+    const retry = createDurableGatewayAdmissionGovernor({
+      store,
+      namespace: 'gateway-test',
+      now: () => 1_101,
+      leaseTtlMs: 100,
+      leaseIdFactory: () => 'lease-retry',
+    });
+    await expect(retry.admit(request())).resolves.toMatchObject({
+      kind: 'admitted',
+      lease: { leaseId: 'lease-retry', generation: 4 },
+    });
+    expect(store.state('gateway-test', request().idempotencyKey)).toBe('running');
   });
 });

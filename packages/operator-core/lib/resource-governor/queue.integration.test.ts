@@ -151,11 +151,13 @@ describe('PgWorkItemAdmissionQueueStore', () => {
       { feature_id: first.receipt.receiptId, state: 'queued', taken_by: null },
       { feature_id: second.receipt.receiptId, state: 'leased', taken_by: 'targeted-worker' },
     ]);
-    expect(await restarted.driver.leaseReceipt({
-      receiptId: second.receipt.receiptId,
-      owner: 'other-worker',
-      ttlMs: 5_000,
-    })).toBeNull();
+    expect(
+      await restarted.driver.leaseReceipt({
+        receiptId: second.receipt.receiptId,
+        owner: 'other-worker',
+        ttlMs: 5_000,
+      }),
+    ).toBeNull();
   });
 
   it('persists cancellation and latest-wins coalescing across driver restart', async () => {
@@ -210,6 +212,82 @@ describe('PgWorkItemAdmissionQueueStore', () => {
     await expect(instance('reader', () => clock.now).governor.status('deadline')).resolves.toMatchObject({
       state: 'expired',
     });
+  });
+
+  it('reconciles an expired running receipt before a targeted lease in the same namespace', async () => {
+    const clock = { now: 30_000 };
+    const producer = instance('producer', () => clock.now);
+    const first = await producer.governor.admit({
+      idempotencyKey: 'target-expired-running',
+      admissionClass: 'inference',
+    });
+    const second = await producer.governor.admit({
+      idempotencyKey: 'target-next',
+      admissionClass: 'inference',
+    });
+    if (first.kind !== 'queued' || second.kind !== 'queued') throw new Error('expected queued receipts');
+
+    const oldClaim = await producer.driver.leaseReceipt({
+      receiptId: first.receipt.receiptId,
+      owner: 'worker-old',
+      ttlMs: 100,
+    });
+    if (!oldClaim) throw new Error('expected old targeted lease');
+    await producer.driver.markRunning(oldClaim.receiptId, oldClaim.lease.leaseId);
+    clock.now += 101;
+
+    const nextClaim = await instance('replacement', () => clock.now).driver.leaseReceipt({
+      receiptId: second.receipt.receiptId,
+      owner: 'worker-new',
+      ttlMs: 100,
+    });
+    expect(nextClaim).toMatchObject({ receiptId: second.receipt.receiptId, lease: { owner: 'worker-new' } });
+
+    const rows = await db.sql<Array<{ feature_id: string; state: string; taken_by: string | null; reason: string }>>`
+      SELECT feature_id,
+             payload->'resource_governor'->>'state' AS state,
+             taken_by,
+             payload->'resource_governor'->'decision'->>'reason' AS reason
+        FROM harness_shared.work_items
+       WHERE feature_id IN (${first.receipt.receiptId}, ${second.receipt.receiptId})
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: first.receipt.receiptId, state: 'queued', taken_by: null, reason: 'lease-expired' },
+      {
+        feature_id: second.receipt.receiptId,
+        state: 'leased',
+        taken_by: 'worker-new',
+        reason: 'observe-only-targeted-lease',
+      },
+    ]);
+  });
+
+  it('globally reconciles expired leases for idle namespaces without selecting work', async () => {
+    const clock = { now: 40_000 };
+    const first = instance('first', () => clock.now);
+    const admitted = await first.governor.admit({
+      idempotencyKey: 'idle-expired-running',
+      admissionClass: 'inference',
+    });
+    if (admitted.kind !== 'queued') throw new Error('expected queued receipt');
+    const claim = await first.driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'idle-worker',
+      ttlMs: 100,
+    });
+    if (!claim) throw new Error('expected idle targeted lease');
+    await first.driver.markRunning(claim.receiptId, claim.lease.leaseId);
+    clock.now += 101;
+
+    await expect(first.store.reconcileExpiredAll(clock.now)).resolves.toEqual({
+      requeued: 1,
+      expired: 0,
+      total: 1,
+    });
+    await expect(first.governor.status('idle-expired-running')).resolves.toMatchObject({ state: 'queued' });
+    const rows = await db.sql<Array<{ taken_by: string | null }>>`
+      SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${admitted.receipt.receiptId}`;
+    expect(rows[0]).toEqual({ taken_by: null });
   });
 
   it('persists nested receipt lineage and exact actual-cost release across restart', async () => {

@@ -26,10 +26,7 @@ import {
   WorkItemAdmissionQueueDriver,
   type DurableAdmissionQueueStore,
 } from '../resource-governor/queue';
-import {
-  GATEWAY_ADMISSION_BYPASS_REGISTRY,
-  type GatewayAdmissionGovernor,
-} from './admission-context';
+import { GATEWAY_ADMISSION_BYPASS_REGISTRY, type GatewayAdmissionGovernor } from './admission-context';
 
 const DEFAULT_NAMESPACE = 'inference-gateway';
 const DEFAULT_LEASE_TTL_MS = 15 * 60_000;
@@ -93,6 +90,11 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
   }
 
   async admit(request: NormalizedAdmissionRequest, context: AdmissionContext): Promise<AdmissionOutcome> {
+    // The gateway targets a freshly-persisted receipt directly and never calls
+    // leaseNext, so opportunistic lease cleanup there cannot protect this
+    // namespace. Reconcile first so a crashed/abandoned request cannot keep its
+    // owner pinned forever or make an idempotent retry look permanently running.
+    await this.queue.reconcileExpired();
     const queued = await this.queue.admit(request, context);
     if (queued.kind !== 'queued') return queued;
 
@@ -112,10 +114,10 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
       ttlMs: leaseTtlFor(context, this.leaseTtlMs, this.#now()),
     });
     if (!claim) {
-      await this.queue.cancel(request.idempotencyKey, 'durable gateway receipt could not be leased').catch(() => undefined);
-      throw new AdmissionPersistenceError(
-        `durable gateway receipt '${queued.receipt.receiptId}' could not be leased`,
-      );
+      await this.queue
+        .cancel(request.idempotencyKey, 'durable gateway receipt could not be leased')
+        .catch(() => undefined);
+      throw new AdmissionPersistenceError(`durable gateway receipt '${queued.receipt.receiptId}' could not be leased`);
     }
 
     let running: Awaited<ReturnType<WorkItemAdmissionQueueDriver['markRunning']>>;
@@ -123,15 +125,17 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
       running = await this.queue.markRunning(claim.receiptId, claim.lease.leaseId);
     } catch (error) {
       await this.queue.releaseLease(claim.receiptId, claim.lease.leaseId).catch(() => undefined);
-      await this.queue.cancel(request.idempotencyKey, 'durable gateway running transition failed').catch(() => undefined);
+      await this.queue
+        .cancel(request.idempotencyKey, 'durable gateway running transition failed')
+        .catch(() => undefined);
       throw error;
     }
     if (!running?.changed) {
       await this.queue.releaseLease(claim.receiptId, claim.lease.leaseId).catch(() => undefined);
-      await this.queue.cancel(request.idempotencyKey, 'durable gateway running transition was rejected').catch(() => undefined);
-      throw new AdmissionPersistenceError(
-        `durable gateway receipt '${claim.receiptId}' could not enter running state`,
-      );
+      await this.queue
+        .cancel(request.idempotencyKey, 'durable gateway running transition was rejected')
+        .catch(() => undefined);
+      throw new AdmissionPersistenceError(`durable gateway receipt '${claim.receiptId}' could not enter running state`);
     }
 
     return {
@@ -187,7 +191,9 @@ export class DurableGatewayAdmissionGovernor implements GatewayAdmissionGovernor
 }
 
 /** Build a gateway governor configured for the registered control bypasses. */
-export function createDurableGatewayAdmissionGovernor(options: DurableGatewayAdmissionOptions = {}): DurableGatewayAdmissionGovernor {
+export function createDurableGatewayAdmissionGovernor(
+  options: DurableGatewayAdmissionOptions = {},
+): DurableGatewayAdmissionGovernor {
   return new DurableGatewayAdmissionGovernor(options);
 }
 

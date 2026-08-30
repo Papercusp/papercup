@@ -94,6 +94,12 @@ export interface QueueMutationResult extends StoredAdmissionRecord {
   readonly changed: boolean;
 }
 
+export interface QueueReconciliationResult {
+  readonly requeued: number;
+  readonly expired: number;
+  readonly total: number;
+}
+
 export interface AdmissionQueueLeaseClaim extends StoredAdmissionRecord {
   readonly context: AdmissionContext;
   readonly lease: AdmissionLease & { readonly owner: string };
@@ -159,6 +165,8 @@ export interface DurableAdmissionQueueStore {
     nowMs: number,
   ): Promise<QueueMutationResult | null>;
   supersede(receiptId: string, replacementReceiptId: string, nowMs: number): Promise<QueueMutationResult | null>;
+  /** Reconcile lapsed leases and overdue deadlines before selecting work. */
+  reconcileExpired?(namespace: string, nowMs: number): Promise<QueueReconciliationResult>;
 }
 
 interface QueueDbRow {
@@ -410,6 +418,14 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     };
   }
 
+  /** Reconcile stale protected receipts in this namespace without selecting new work. */
+  reconcileExpired(): Promise<QueueReconciliationResult> {
+    return (
+      this.store.reconcileExpired?.(this.namespace, this.now()) ??
+      Promise.resolve({ requeued: 0, expired: 0, total: 0 })
+    );
+  }
+
   async status(idempotencyKey: string): Promise<AdmissionStatus> {
     const stored = await this.store.find(this.namespace, idempotencyKey);
     if (!stored) return { idempotencyKey, state: 'unknown' };
@@ -596,6 +612,77 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     return rows[0] ?? null;
   }
 
+  private async reconcileExpiredRows(
+    tx: SqlClient,
+    namespace: string | null,
+    nowMs: number,
+  ): Promise<QueueReconciliationResult> {
+    const namespacePredicate =
+      namespace === null ? tx`` : tx`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
+    const requeued = await tx<QueueDbRow[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               payload,
+               ARRAY['resource_governor']::text[],
+               ((payload->'resource_governor') - 'lease') || jsonb_build_object(
+                 'state', 'queued',
+                 'updatedAtMs', ${nowMs}::bigint,
+                 'decision', jsonb_build_object(
+                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'atMs', ${nowMs}::bigint,
+                   'reason', 'lease-expired',
+                   'evidence', '{}'::jsonb
+                 )
+               ),
+               true
+             ),
+             status = 'open', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+       WHERE workspace_id = ${this.workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         ${namespacePredicate}
+         AND payload->'resource_governor'->>'state' IN ('leased', 'running')
+         AND jsonb_typeof(payload->'resource_governor'->'lease'->'expiresAtMs') = 'number'
+         AND (payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision <= ${nowMs}
+       RETURNING feature_id, payload, status, taken_by, created_ts`;
+
+    const expired = await tx<QueueDbRow[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               payload,
+               ARRAY['resource_governor']::text[],
+               ((payload->'resource_governor') - 'lease') || jsonb_build_object(
+                 'state', 'expired',
+                 'updatedAtMs', ${nowMs}::bigint,
+                 'decision', jsonb_build_object(
+                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'atMs', ${nowMs}::bigint,
+                   'reason', 'deadline-expired',
+                   'evidence', '{}'::jsonb
+                 )
+               ),
+               true
+             ),
+             status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+       WHERE workspace_id = ${this.workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         ${namespacePredicate}
+         AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
+         AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
+         AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}
+       RETURNING feature_id, payload, status, taken_by, created_ts`;
+
+    return { requeued: requeued.length, expired: expired.length, total: requeued.length + expired.length };
+  }
+
+  async reconcileExpired(namespace: string, nowMs: number): Promise<QueueReconciliationResult> {
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, namespace, nowMs));
+  }
+
+  /** Reconcile every governor namespace for the periodic maintenance workflow. */
+  async reconcileExpiredAll(nowMs = Date.now()): Promise<QueueReconciliationResult> {
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, null, nowMs));
+  }
+
   private async writeRecord(
     sql: SqlClient,
     receiptId: string,
@@ -735,54 +822,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     selection?: QueueLeaseSelection,
   ): Promise<QueueMutationResult | null> {
     return this.transaction(async (tx) => {
-      await tx`
-        UPDATE harness_shared.work_items
-           SET payload = jsonb_set(
-                 payload,
-                 ARRAY['resource_governor']::text[],
-                 ((payload->'resource_governor') - 'lease') || jsonb_build_object(
-                   'state', 'queued',
-                   'updatedAtMs', ${nowMs}::bigint,
-                   'decision', jsonb_build_object(
-                     'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
-                     'atMs', ${nowMs}::bigint,
-                     'reason', 'lease-expired',
-                     'evidence', '{}'::jsonb
-                   )
-                 ),
-                 true
-               ),
-               status = 'open', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-         WHERE workspace_id = ${this.workspaceId}
-           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-           AND payload->'resource_governor'->>'namespace' = ${namespace}
-           AND payload->'resource_governor'->>'state' IN ('leased', 'running')
-           AND (payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision <= ${nowMs}`;
-
-      await tx`
-        UPDATE harness_shared.work_items
-           SET payload = jsonb_set(
-                 payload,
-                 ARRAY['resource_governor']::text[],
-                 ((payload->'resource_governor') - 'lease') || jsonb_build_object(
-                   'state', 'expired',
-                   'updatedAtMs', ${nowMs}::bigint,
-                   'decision', jsonb_build_object(
-                     'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
-                     'atMs', ${nowMs}::bigint,
-                     'reason', 'deadline-expired',
-                     'evidence', '{}'::jsonb
-                   )
-                 ),
-                 true
-               ),
-               status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-         WHERE workspace_id = ${this.workspaceId}
-           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-           AND payload->'resource_governor'->>'namespace' = ${namespace}
-           AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
-           AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
-           AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}`;
+      await this.reconcileExpiredRows(tx, namespace, nowMs);
 
       let rows: QueueDbRow[];
       if (!selection) {
@@ -923,6 +963,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     nowMs: number,
   ): Promise<QueueMutationResult | null> {
     return this.transaction(async (tx) => {
+      await this.reconcileExpiredRows(tx, namespace, nowMs);
       const row = await this.findReceiptRow(tx, receiptId, true);
       if (!row) return null;
       const stored = storedFromRow(row);

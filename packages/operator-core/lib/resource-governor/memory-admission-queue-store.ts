@@ -87,6 +87,66 @@ export class MemoryAdmissionQueueStore implements DurableAdmissionQueueStore {
     return this.#get(namespace, idempotencyKey);
   }
 
+  async reconcileExpired(namespace: string, nowMs: number) {
+    let requeued = 0;
+    let expired = 0;
+    for (const stored of this.#all()) {
+      if (stored.record.namespace !== namespace) continue;
+      let record = stored.record;
+      if (
+        (record.state === 'leased' || record.state === 'running') &&
+        record.lease &&
+        record.lease.expiresAtMs <= nowMs
+      ) {
+        record = {
+          ...record,
+          state: 'queued',
+          updatedAtMs: nowMs,
+          decision: {
+            generation: record.decision.generation + 1,
+            atMs: nowMs,
+            reason: 'lease-expired',
+            evidence: {},
+          },
+          lease: undefined,
+        };
+        this.#replace(stored, record);
+        requeued += 1;
+      }
+      if (
+        (record.state === 'queued' || record.state === 'eligible') &&
+        record.deadlineAtMs !== null &&
+        record.deadlineAtMs <= nowMs
+      ) {
+        this.#replace(stored, {
+          ...record,
+          state: 'expired',
+          updatedAtMs: nowMs,
+          decision: {
+            generation: record.decision.generation + 1,
+            atMs: nowMs,
+            reason: 'deadline-expired',
+            evidence: {},
+          },
+          lease: undefined,
+        });
+        expired += 1;
+      }
+    }
+    return { requeued, expired, total: requeued + expired };
+  }
+
+  async reconcileExpiredAll(nowMs: number) {
+    let requeued = 0;
+    let expired = 0;
+    for (const namespace of new Set(this.#all().map((row) => row.record.namespace))) {
+      const result = await this.reconcileExpired(namespace, nowMs);
+      requeued += result.requeued;
+      expired += result.expired;
+    }
+    return { requeued, expired, total: requeued + expired };
+  }
+
   async cancel(namespace: string, idempotencyKey: string, reason: string | undefined, nowMs: number) {
     const stored = this.#get(namespace, idempotencyKey);
     if (!stored) return null;
