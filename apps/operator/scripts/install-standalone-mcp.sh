@@ -319,6 +319,11 @@ CC_CONTENT_LINT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-content-lint.mjs"
 # PostToolUse MDX compiler nudge (EI-19450114644493388): reads the complete
 # resulting .mdx file and reports a real compiler error before git-sync quarantine.
 CC_MDX_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-mdx-nudge.mjs"
+# PostToolUse frozen-candidate edit nudge (frozen-candidate-compliance-enforcement-2026-08-30
+# P-004/P-005): you edited a path the FROZEN gate candidate is failing on, so the fix lands
+# above the judged sha and the gate cannot see it. Reads a marker file projected by the
+# queue's own write path; costs one failed read when nothing is frozen.
+CC_FROZEN_CANDIDATE_EDIT_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-frozen-candidate-edit-nudge.mjs"
 # PreToolUse hard-DENY hook (su-papercusp-way-gate-2026-07-06 P-006, wired WI-5542):
 # blocks a key-shaped secret (sk-/ghp_/AKIA…/PEM block) from ever reaching a
 # shared git-sync tree file. Was orphaned at repo-root scripts/cc-hooks/ and never
@@ -1078,6 +1083,42 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# merge_frozen_candidate_edit_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+# (frozen-candidate-compliance-enforcement-2026-08-30 P-004). Advisory only; warns that an
+# edit to one of the frozen candidate's failing paths lands ABOVE the sha the gate is judging,
+# and names the single sanctioned command that puts it on the judged lineage.
+merge_frozen_candidate_edit_hook() {
+  python3 - "$1" "$CC_FROZEN_CANDIDATE_EDIT_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
+arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # merge_mdx_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
 # (EI-19450114644493388). Advisory only; the hook reads the complete resulting
 # file and invokes the same MDX compiler stack as the commit-path detector.
@@ -1749,6 +1790,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_CONTENT_LINT_HOOK" ] && merge_content_lint_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_MDX_NUDGE_HOOK" ] && merge_mdx_nudge_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_FROZEN_CANDIDATE_EDIT_HOOK" ] && merge_frozen_candidate_edit_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SECRETS_GUARD_HOOK" ] && merge_secrets_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK" ] && merge_schedule_wakeup_provenance_hook "$CLAUDE_SETTINGS"

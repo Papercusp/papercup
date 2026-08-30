@@ -80,6 +80,16 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.disks.createSnapshot',
   'compute.disks.use',
   'compute.disks.setLabels',
+  // The workspace-host release path mints and promotes images (gcp-image-family-adapter POSTs
+  // /global/images for both the candidate build and the family promote), and the offline image
+  // scan creates its candidate disk from an image. Without these the preflight passes and the
+  // first image operation fails instead.
+  'compute.images.create',
+  'compute.images.delete',
+  'compute.images.get',
+  'compute.images.list',
+  'compute.images.setLabels',
+  'compute.images.useReadOnly',
   'compute.instances.create',
   'compute.instances.get',
   'compute.instances.getGuestAttributes',
@@ -510,6 +520,8 @@ function suggestedRoles(missing: readonly string[]): string[] {
   if (missing.some((permission) => permission.startsWith('compute.routers.'))) roles.add('roles/compute.networkAdmin');
   if (missing.some((permission) => permission.startsWith('compute.firewalls.')))
     roles.add('roles/compute.securityAdmin');
+  if (missing.some((permission) => permission.startsWith('compute.images.')))
+    roles.add('roles/compute.storageAdmin');
   if (
     missing.some(
       (permission) =>

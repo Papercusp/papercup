@@ -16,11 +16,13 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 }
 
-function successFetch(overrides: Record<string, Response | (() => Response)> = {}): typeof fetch {
+function successFetch(
+  overrides: Record<string, Response | ((init?: RequestInit) => Response)> = {},
+): typeof fetch {
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     for (const [needle, response] of Object.entries(overrides)) {
-      if (url.includes(needle)) return typeof response === 'function' ? response() : response.clone();
+      if (url.includes(needle)) return typeof response === 'function' ? response(init) : response.clone();
     }
     if (url.includes('cloudresourcemanager.googleapis.com/v3/projects/')) return json({ state: 'ACTIVE' });
     if (url.includes('cloudbilling.googleapis.com')) return json({ billingEnabled: true });
