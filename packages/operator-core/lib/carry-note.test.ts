@@ -595,6 +595,53 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(bothRepairs.some((r) => r.detail.includes('canonical id was kept'))).toBe(true);
   });
 
+  it('normalizes boolean `ok` check rows to the canonical evidence slot (EI-21828094173087688)', () => {
+    const verifiedRepairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          claim: 'ok true with evidence',
+          recheck: 'run probe A',
+          ok: true,
+          evidence: 'observed probe A pass',
+        },
+        'checks[0]',
+        verifiedRepairs,
+      ),
+    ).toEqual({
+      claim: 'ok true with evidence',
+      recheck: 'run probe A',
+      verified: 'observed probe A pass',
+    });
+    expect(verifiedRepairs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'checks[0].ok', kind: 'renamed' })]),
+    );
+
+    const predictedRepairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          claim: 'ok false ignores stray evidence',
+          ok: false,
+          evidence: 'discarded because the result was false',
+        },
+        'checks[1]',
+        predictedRepairs,
+      ),
+    ).toEqual({ claim: 'ok false ignores stray evidence' });
+    expect(predictedRepairs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'checks[1].ok', kind: 'renamed' })]),
+    );
+
+    const evidenceFreeRepairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape({ claim: 'ok true without evidence stays predicted', ok: true }, 'checks[2]', evidenceFreeRepairs),
+    ).toEqual({ claim: 'ok true without evidence stays predicted' });
+    expect(evidenceFreeRepairs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'checks[2].ok', kind: 'renamed' })]),
+    );
+  });
+
   it('maps structured verification kind/command/result rows to claim/recheck/verified', () => {
     const repairs: CarryArgRepair[] = [];
     expect(

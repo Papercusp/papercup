@@ -1301,6 +1301,41 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('evidence: observed probe C pass');
     });
 
+    it('EI-21828094173087688: accepts boolean `ok` compatibility rows in shorthand checks', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'ok alias compatibility',
+        checks: [
+          {
+            claim: 'ok true with evidence is verified',
+            recheck: 'run probe A',
+            ok: true,
+            evidence: 'observed probe A pass',
+          },
+          {
+            claim: 'ok false with stray evidence stays predicted',
+            recheck: 'run probe B',
+            ok: false,
+            evidence: 'discarded because the result was false',
+          },
+          {
+            claim: 'ok true without evidence stays predicted',
+            recheck: 'run probe C',
+            ok: true,
+          },
+        ],
+      });
+
+      expect(r).toMatchObject({ ok: true, checks: 3 });
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ ok true with evidence is verified');
+      expect(stored).toContain('evidence: observed probe A pass');
+      expect(stored).toContain('- ? ok false with stray evidence stays predicted');
+      expect(stored).toContain('- ? ok true without evidence stays predicted');
+      expect(stored).not.toContain('discarded because the result was false');
+    });
+
     it('accepts descriptive label/name rows and preserves an explicit canonical claim', async () => {
       withPrior(null);
       const r = await one({
@@ -1463,6 +1498,31 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       expect(out.results[0]).toMatchObject({ ok: true, id: 'WI-7' });
       expect(await lastStored()).toContain('- ? nested row');
+    });
+
+    it('EI-21828094173087688: accepts boolean `ok` compatibility rows inside items[]', async () => {
+      withPrior(null);
+      const out = await env({
+        items: [
+          {
+            id: 'WI-7',
+            checkpoint: 'nested ok alias compatibility',
+            checks: [
+              {
+                claim: 'nested ok true with evidence is verified',
+                recheck: 'run nested probe A',
+                ok: true,
+                evidence: 'observed nested probe A pass',
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(out.results[0]).toMatchObject({ ok: true, id: 'WI-7', checks: 1 });
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ nested ok true with evidence is verified');
+      expect(stored).toContain('evidence: observed nested probe A pass');
     });
 
     it('renders ✓ for a claim WITH evidence and ? for one without — the whole point of the field', async () => {
