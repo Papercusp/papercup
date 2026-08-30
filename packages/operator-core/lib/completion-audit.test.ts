@@ -302,6 +302,33 @@ describe('completion-audit predicates (EI-10867)', () => {
       expect(f.text).toContain('state IS NULL OR');
     });
 
+    /**
+     * ⚠ THE FALSE-POSITIVE GUARD, and the most expensive thing this bucket got wrong
+     * before it shipped.
+     *
+     * `ISSUE_TERMINAL_STATES` is resolved/closed/deprecated/done and omits `dropped`.
+     * Negating the CALLER's family list therefore reclassified every dropped issue as
+     * open: measured live 2026-08-30, 645 issue-family hits of which 263 (41%, the
+     * single largest category) were dropped — deliberately closed work presented to a
+     * reader as abandoned. An open scope must negate the CROSS-FAMILY union, because a
+     * state terminal in either family means the row is closed whichever view read it.
+     */
+    it('an OPEN scope negates the cross-family union, so `dropped` is never treated as open', () => {
+      // The caller passes the NARROW issue list, exactly as issues-engineer.ts does.
+      const f = frag(auditWhereSql(composingSql(), 'worked-then-abandoned', issueOpts));
+      const closed = f.params.find((p): p is string[] => Array.isArray(p)) ?? [];
+      expect(closed).toContain('dropped'); // absent from issueOpts.terminalStates
+      expect(closed).toContain('passed'); // likewise feature-only
+      for (const s of issueOpts.terminalStates) expect(closed).toContain(s);
+    });
+
+    it('a TERMINAL scope still honours the caller family list (existing buckets unchanged)', () => {
+      const f = frag(auditWhereSql(composingSql(), 'reconciler-sourced', issueOpts));
+      const states = f.params.find((p): p is string[] => Array.isArray(p)) ?? [];
+      expect(states).toEqual(issueOpts.terminalStates);
+      expect(states).not.toContain('dropped');
+    });
+
     it('a TERMINAL bucket still gets the positive membership test through the same helper', () => {
       const f = frag(auditWhereSql(composingSql(), 'reconciler-sourced', issueOpts));
       expect(f.text).toMatch(/\(\s*state = ANY\(/);

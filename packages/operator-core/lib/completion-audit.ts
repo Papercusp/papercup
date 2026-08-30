@@ -41,6 +41,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { WorkItemCompletionAuthority } from './work-item-completion-authority';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
@@ -579,6 +580,24 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: WorkItemAudit, alias: s
  * A NULL state counts as NON-terminal. `NOT (state = ANY(...))` is NULL for a NULL
  * state, which would silently drop such a row from an open-scope audit; a malformed row
  * missing its own state is exactly the kind this should surface, never hide.
+ *
+ * ⚠ AN OPEN SCOPE NEGATES THE CROSS-FAMILY UNION, NOT THE CALLER'S `terminalStates`.
+ * The two scopes fail in OPPOSITE directions, so they cannot share one state list:
+ *
+ *   - TERMINAL scope asks "is this row closed?" — it uses the caller's own family list,
+ *     which is what preserves every existing bucket's behaviour exactly.
+ *   - OPEN scope asks "is this row NOT closed?" — and a terminal list that is too NARROW
+ *     silently reclassifies closed rows as open. A false negative here hides a row; a
+ *     false positive puts finished work in front of a reader as if it were abandoned.
+ *
+ * That is not hypothetical. `ISSUE_TERMINAL_STATES` is `resolved/closed/deprecated/done`
+ * and omits `dropped`, while the cross-family union includes it. Measured live
+ * 2026-08-30 before this was fixed: negating the issue-family list returned 645 rows, of
+ * which **263 were in state `dropped`** — deliberately closed work, 41% of the result,
+ * and the single largest category. A reader would have been handed a "these look
+ * abandoned" list whose plurality had already been decided. So the open branch negates
+ * {@link ANY_FAMILY_TERMINAL_STATES}: a row in a state that is terminal in EITHER family
+ * is closed, whichever view the query happens to read it through.
  */
 export function auditWhereSql(
   sql: OrgSql,
@@ -589,11 +608,11 @@ export function auditWhereSql(
   const predicate = opts.alias
     ? auditPredicateSqlFor(sql, audit, opts.alias)
     : auditPredicateSql(sql, audit);
-  const terminal = opts.terminalStates as string[];
   if (auditStateScope(audit) === 'open') {
-    return sql`((${state} IS NULL OR NOT (${state} = ANY(${terminal}::text[]))) AND ${predicate})`;
+    const closed = ANY_FAMILY_TERMINAL_STATES as string[];
+    return sql`((${state} IS NULL OR NOT (${state} = ANY(${closed}::text[]))) AND ${predicate})`;
   }
-  return sql`(${state} = ANY(${terminal}::text[]) AND ${predicate})`;
+  return sql`(${state} = ANY(${opts.terminalStates as string[]}::text[]) AND ${predicate})`;
 }
 
 /**
