@@ -1687,6 +1687,53 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         !/(?:\.test|\.spec)\.[cm]?[jt]sx?$/.test(f)),
   },
   {
+    // WI-1341291 — the P-004 anti-rot gate requires every `category: 'watchdog'`
+    // managedSetInterval in the tree to be declared in RECOVERY_MECHANISMS. Its population
+    // comes from a filesystem scan over SCAN_ROOTS = packages, libs, apps
+    // (recovery-dependency-scan.ts), but the gate itself lives in operator-core — so the
+    // population it polices and the workspace that runs it are two different things, and
+    // they only coincide by accident.
+    //
+    // MEASURED divergence (`--print-affected`, 2026-08-30), which is the whole reason this
+    // entry exists — the gap is exactly one scan root wide, not general:
+    //   packages/operator-core/**            -> operator-core selected  (gate runs)
+    //   libs/generic/scheduled-registry/**   -> operator-core selected  (gate runs, via the
+    //                                           dependency graph — incidental, not by design)
+    //   apps/operator/bin/serve.ts           -> @papercusp/web ONLY     (gate does NOT run)
+    // So a watchdog timer added under apps/** is inside the scan population but outside the
+    // selection reach: its author gets no local signal, and it reds the gate FLEET-WIDE at the
+    // next green-checkpoint for some unrelated agent to diagnose. apps/ is not hypothetical —
+    // apps/operator/bin/serve.ts and apps/operator/lib/release/green-checkpoint.ts already
+    // register managed timers.
+    //
+    // Declaring the routing here is what stops scan population and selection reach from
+    // drifting apart again, rather than special-casing the one root that happens to be
+    // exposed today.
+    //
+    // hostSuiteRatchet: the gate IS a vitest file in operator-core, so whenever operator-core's
+    // full suite is selected the invariant is already re-run and this narrow task is skipped —
+    // the apps/**-only change is the sole case that pays for it.
+    //
+    // TRIGGER SCOPE mirrors the scanner's own walk (SCAN_ROOTS + `.ts`, minus `.test.ts`,
+    // `.integration.test.ts`, `.d.ts` and SKIP_DIRS) so the trigger cannot be narrower than the
+    // population being policed. Keep the two in step: widening SCAN_ROOTS without widening this
+    // predicate silently re-opens the same blind spot.
+    workspace: "@papercusp/operator-core",
+    script: "lint:recovery-timers-declared",
+    hostSuiteRatchet:
+      "packages/operator-core/lib/system-health/recovery-dependency-audit.test.ts",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/lib/system-health/recovery-dependency-scan.ts" ||
+      f === "packages/operator-core/lib/system-health/recovery-dependency-audit.ts" ||
+      (/^(?:apps|packages|libs)\//.test(f) &&
+        /\.ts$/.test(f) &&
+        !/\.(?:test|integration\.test|d)\.ts$/.test(f) &&
+        !/(?:^|\/)(?:node_modules|dist|build|\.next|target|coverage|\.turbo)\//.test(
+          f,
+        )),
+  },
+  {
     // EI-15951 — registry visibility is not execution. A canonical test can
     // match .papercusp/testing-domains.json while every real runner excludes
     // it; that exact hole left tools/eslint-rules tests permanently dead while
