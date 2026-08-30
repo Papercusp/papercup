@@ -84,7 +84,6 @@ const ALLOW = new Set([
   'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
   'libs/generic/sse/src/server/channel.ts',
   'libs/generic/tooldef/src/tool-projection.ts',
-  'packages/operator-core/lib/commands/leader-bridge.ts',
   'packages/operator-core/lib/pot/wake.ts',
   'packages/operator-core/lib/search/embed-backfill.ts',
   'packages/operator-core/lib/sync-sse.ts',
