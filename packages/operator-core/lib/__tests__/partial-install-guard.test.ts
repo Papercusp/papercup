@@ -20,14 +20,39 @@
  */
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import {
-  findHollowPackages,
-  expandWorkspaceDirs,
-} from '../../../../scripts/check-partial-install.mjs';
+type Finding = { workspace: string; pkg: string; kind: string };
+type Census = {
+  findings: Finding[];
+  workspacesScanned: number;
+  nodeModulesScanned: number;
+  packagesScanned: number;
+};
+
+let findHollowPackages: (root: string) => Census;
+let expandWorkspaceDirs: (patterns: string[] | undefined, root: string) => string[];
+
+beforeAll(async () => {
+  // PROBE_SCRIPT points the WHOLE suite at a mutated COPY outside the tree, so
+  // scripts/mutation-probe.sh can prove this guard falsifiable without ever mutating the
+  // shared working tree (git-sync would commit the mutant mid-probe).
+  //
+  // ⚠ EVERY binding this suite asserts on MUST come from this one dynamic import. A suite that
+  // hardcodes the real path while the probe mutates a copy runs happily, reports "MUTANT
+  // SURVIVED", and was measuring the REAL module the whole time — a false verdict that reads as
+  // evidence a perfectly good guard is weak. Caught in bghost-watchdog.test.ts, 2026-08-10.
+  ({ findHollowPackages, expandWorkspaceDirs } = await import(
+    /* @vite-ignore */ process.env.PROBE_SCRIPT ||
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        '../../../../scripts/check-partial-install.mjs',
+      )
+  ));
+});
 
 let root: string;
 const roots: string[] = [];
