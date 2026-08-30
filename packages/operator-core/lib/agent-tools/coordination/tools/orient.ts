@@ -3388,6 +3388,18 @@ export default defineTool({
     } catch {
       result.governor = null;
     }
+    // EI-21589715378243224: refresh the aggregate fallback after the handler-owned
+    // enrichment folds have settled. The compose progress callback above preserves
+    // the useful core snapshot, but recovery/continuity are assembled here and the
+    // governor is attached here; a later handler fold (for example disclosure
+    // recording) may still exceed the aggregate deadline. Keep those enriched
+    // values in the stable partial response instead of returning a pre-handler
+    // snapshot that falsely reads as if recovery never ran.
+    snapshotOrientAggregate(aggregateFallback, {
+      ...result,
+      ...(recovery !== undefined ? { recovery } : {}),
+      ...(continuityProbes !== undefined ? { continuityProbes } : {}),
+    } as OrientResult);
     // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
     // disclosure markers this payload carried, so the HUD sessions popup can
     // show a human what THIS agent was actually told about what its reads left
