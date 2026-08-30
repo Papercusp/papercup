@@ -384,6 +384,41 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
 }
 
 /**
+ * Every name this file still exports as a VALUE, in any form.
+ *
+ * Deliberately BROADER than collectExportedSignatures, and that width is the entire point:
+ * that map records only callables whose parameter list this collector can read, so several
+ * ordinary refactors drop a name out of it while the export itself survives untouched —
+ * `export function foo(){}` becoming `export const foo = memoize(fn)` (a call-expression
+ * initializer, not an arrow), the same name de-inlined to `function foo(){}` +
+ * `export { foo }`, or re-exported under an alias. Gating removal on THIS set rather than on
+ * the signature map is what stops all of those reading as a deleted callable, which is the
+ * false positive that would get the removal check switched back off within a week.
+ */
+export function collectExportedValueNames(sourceText, fileName = 'f.ts') {
+  const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const names = new Set();
+
+  for (const stmt of sf.statements) {
+    // `export { foo }` / `export { foo as bar }` — callers import the ALIAS, so the alias is
+    // the name whose disappearance would actually strand them.
+    if (ts.isExportDeclaration(stmt) && stmt.exportClause && ts.isNamedExports(stmt.exportClause)) {
+      for (const spec of stmt.exportClause.elements) names.add(spec.name.text);
+      continue;
+    }
+    if (!isExported(stmt)) continue;
+    if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) && stmt.name) {
+      names.add(stmt.name.text);
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const d of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(d.name)) names.add(d.name.text);
+      }
+    }
+  }
+  return names;
+}
+
+/**
  * Signature changes in `after` that strand EXISTING call sites.
  *
  * Same suppression as diffRequiredAdditions: a callable that did not EXIST at `before` is
@@ -430,6 +465,24 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
       breaks.push({ path: `${name} → ${now.ret}`, reason: 'return-type-changed' });
     }
   }
+
+  // The loop above walks the AFTER map, so a callable present at `before` and absent at
+  // `after` is structurally invisible to it. That left the LOUDEST break in this class
+  // uncovered: removing an exported callable strands every caller at once, not merely the
+  // ones passing a particular argument.
+  //
+  // Suppressed against the file's whole export SURFACE rather than against `after`, because
+  // a name can leave the signature map while remaining perfectly importable — see
+  // collectExportedValueNames for the refactors that do it. An interface member (a dotted
+  // key) has no value export to test against, so the suppression correctly never applies to
+  // one: dropping a method from an exported interface is always reported.
+  const stillExported = collectExportedValueNames(afterText, fileName);
+  for (const name of before.keys()) {
+    if (after.has(name)) continue;
+    if (!name.includes('.') && stillExported.has(name)) continue;
+    breaks.push({ path: `${name}()`, reason: 'callable-removed' });
+  }
+
   return breaks;
 }
 
@@ -793,6 +846,7 @@ function main() {
     'param-removed': 'parameter removed',
     'param-type-changed': 'parameter type changed',
     'return-type-changed': 'return type changed',
+    'callable-removed': 'exported callable removed',
   };
   const SIGNATURE_REASONS = new Set([
     'param-added-required',
@@ -800,6 +854,7 @@ function main() {
     'param-removed',
     'param-type-changed',
     'return-type-changed',
+    'callable-removed',
   ]);
 
   if (!json) {

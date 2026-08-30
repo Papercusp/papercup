@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFil
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSignatures, collectExportedTypeNames, diffRequiredAdditions, diffSignatureBreaks, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
+import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSignatures, collectExportedTypeNames, collectExportedValueNames, diffRequiredAdditions, diffSignatureBreaks, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
@@ -934,6 +934,102 @@ describe('diffSignatureBreaks', () => {
   it('stays SILENT when a non-exported callable changes shape', () => {
     const before = 'function internal(a: string): void {}';
     const after = 'function internal(a: string, b: number): void {}';
+
+    expect(diffSignatureBreaks(before, after)).toEqual([]);
+  });
+});
+
+describe('collectExportedValueNames — the export SURFACE, not the callable map', () => {
+  it('collects functions, classes, consts, and named re-export aliases', () => {
+    const names = collectExportedValueNames(`
+export function a(): void {}
+export class B {}
+export const c = 1, d = 2;
+function e(): void {}
+export { e, e as f };
+`);
+
+    expect([...names].sort()).toEqual(['B', 'a', 'c', 'd', 'e', 'f']);
+  });
+
+  it('ignores non-exported bindings and a bare star re-export', () => {
+    // `export * from` carries no local name to strand, and resolving what it forwards needs
+    // the module graph — that is WI-1324625 item 5, deliberately not attempted here.
+    const names = collectExportedValueNames('const hidden = 1;\nfunction alsoHidden() {}\nexport * from "./other";');
+
+    expect(names.size).toBe(0);
+  });
+});
+
+/**
+ * WI-1324625 item 1 — the break diffSignatureBreaks structurally could not see.
+ *
+ * The original loop walks the AFTER map, so a symbol present at `before` and absent at
+ * `after` was never visited once. That left the LOUDEST member of this class silent:
+ * deleting an exported callable strands every caller at once, not merely the ones passing
+ * some particular argument.
+ *
+ * The controls below carry the real design risk. A removal check that reads the signature
+ * map alone fires on refactors that strand nobody — a callable re-bound to a non-arrow
+ * initializer, or de-inlined behind `export { … }` — and a guard with false blocks gets
+ * switched off. Gating on the export SURFACE is what makes those three silent.
+ */
+describe('diffSignatureBreaks — an exported callable removed entirely', () => {
+  const reasons = (after: string, before = SIG_BEFORE) =>
+    diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason);
+
+  it('flags a deleted exported function — every call site in every other file just broke', () => {
+    const after = SIG_BEFORE.replace('export function claimNext(owner: string, harness?: string): Promise<Claim> {}', '');
+
+    expect(reasons(after)).toEqual(['callable-removed']);
+  });
+
+  it('flags a RENAMED export — callers import the old name, which no longer exists', () => {
+    const after = SIG_BEFORE.replace('claimNext(owner', 'claimNextV2(owner');
+
+    expect(reasons(after)).toEqual(['callable-removed']);
+  });
+
+  it('flags a method dropped from an exported interface', () => {
+    const after = SIG_BEFORE.replace('  read(id: string): Claim;\n', '');
+
+    expect(reasons(after)).toEqual(['callable-removed']);
+  });
+
+  // ——— The controls. Each of these is a refactor that strands NOBODY. ———
+
+  it('stays SILENT when the callable survives as a non-arrow initializer', () => {
+    // `memoize(fn)` is a CallExpression, so collectExportedSignatures cannot read a
+    // parameter list off it and drops the name — but callers import exactly what they did.
+    const after = SIG_BEFORE.replace(
+      "export const formatClaim = (c: Claim, verbose?: boolean): string => '';",
+      'export const formatClaim = memoize(rawFormatClaim);',
+    );
+
+    expect(reasons(after)).toEqual([]);
+  });
+
+  it('stays SILENT when a declaration is de-inlined to `function f(){}` + `export { f }`', () => {
+    const after = SIG_BEFORE.replace(
+      'export function claimNext(owner: string, harness?: string): Promise<Claim> {}',
+      'function claimNext(owner: string, harness?: string): Promise<Claim> {}\nexport { claimNext };',
+    );
+
+    expect(reasons(after)).toEqual([]);
+  });
+
+  it('stays SILENT when the export is re-aliased back to the name callers already use', () => {
+    const after = SIG_BEFORE.replace(
+      'export function claimNext(owner: string, harness?: string): Promise<Claim> {}',
+      'function claimNextImpl(owner: string, harness?: string): Promise<Claim> {}\nexport { claimNextImpl as claimNext };',
+    );
+
+    expect(reasons(after)).toEqual([]);
+  });
+
+  it('stays SILENT when a NON-exported callable is deleted — it had no cross-file callers', () => {
+    const before = 'function internal(a: string): void {}\nexport function kept(b: number): void {}';
+    const after = 'export function kept(b: number): void {}';
 
     expect(diffSignatureBreaks(before, after)).toEqual([]);
   });
