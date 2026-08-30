@@ -4,16 +4,23 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: One account runs ~15 agents — never read rate flags as "no headroom"
-description: The inference gateway paces ~15 concurrent agents per account. Do not treat healthyAccounts=1 / sustainedlyLimited / utilization7d=1.0 as "no capacity" or refuse to launch a fleet — that is a fabricated wall.
+title: "One account runs ~15 agents — never read rate flags as \"no headroom\""
+description: "The inference gateway paces ~15 concurrent agents per account. Do not treat healthyAccounts=1 / sustainedlyLimited / utilization7d=1.0 as \"no capacity\" or refuse to launch a fleet — that is a fabricated wall."
 type: Insight
+discovered: 2026-08-30
+status: active
+documents:
+  - "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts"
+  - "packages/operator-core/lib/agent-tools/capability/launch-agent.ts"
+  - "packages/operator-core/lib/agent-tools/capability/terminal.ts"
+  - "apps/operator/prompts/pot-instances/papercup-pot.su.md"
 generated:
   by: agent
   at: 2026-07-06
 ---
 
 **Owner directive (the owner, 2026-07-06):** *"AVIYNW HAS HEADROOM. DON'T MAKE UP
-THAT THERE IS NO HEADROOM. WE CAN RUN 15 SIMULTANEOUS AGENTS ON 1 ACCOUNT."*
+that there is no headroom. WE CAN RUN 15 SIMULTANEOUS AGENTS ON 1 ACCOUNT."*
 
 ## The mistake this prevents
 
@@ -26,13 +33,13 @@ not exist and strands the owner's request.
 ## The reality
 
 - **One Anthropic account paces ~15 simultaneous agents** through the inference
-  gateway (`:8788`). The rate **governor** cap is `maxSimultaneousAgents: 16`
-  (`dev:rate_governor_status` → `config.maxSimultaneousAgents`). Account count
-  is **NOT** a per-agent cap — the gateway spaces/queues calls so many
-  concurrent sessions share one account without tripping its per-window limit.
+gateway (`:8788`). The rate **governor** cap is `maxSimultaneousAgents: 16`
+(`dev:rate_governor_status` → `config.maxSimultaneousAgents`). Account count
+is **NOT** a per-agent cap — the gateway spaces/queues calls so many
+concurrent sessions share one account without tripping its per-window limit.
 - The launch advisory says this itself: *"ONE account paces many concurrent
-  Claude sessions through the gateway, so account count is NOT a per-member cap.
-  All N members WILL still launch."*
+Claude sessions through the gateway, so account count is NOT a per-member cap.
+All N members WILL still launch."*
 
 ## Flags that do NOT mean "cannot launch"
 
@@ -61,17 +68,17 @@ capability:terminal {
   fleet: '<fleet-slug>',            // color only — the --fleet flag below is what joins
   terminals: [
     { command: 'psu --no-picker --fleet=<slug> --agent=claude --harness=<h> --plan=<plan> --account=auto --model=sonnet:high --launch-context=<composed-brief-path>', label: 'bd-N' },
-    // …one entry per remaining member (max 12 per call)
+    // …one entry per remaining member (bulk batches accept up to 12 entries per call; repeat as needed — there is no fixed fleet-size ceiling)
   ]
 }
 ```
 
 - The `--fleet=<slug>` flag **inside the psu command** is what actually joins the
-  member to the fleet (`capability:terminal`'s own `fleet` arg is window-color
-  only).
+member to the fleet (`capability:terminal`'s own `fleet` arg is window-color
+only).
 - Reuse the fleet-composed launch-context path that `fleet:launch-on-plan`
-  reported (`…/launch-context/fleet-<slug>-launch-context.md`) so the raw members
-  get the same brief layered under the member baseline.
+reported (`…/launch-context/fleet-<slug>-launch-context.md`) so the raw members
+get the same brief layered under the member baseline.
 - `--account=auto` lets the gateway pace + fail over across the pool.
 
 ## When capacity IS genuinely constrained
