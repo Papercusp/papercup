@@ -166,6 +166,7 @@ describe('workspace-host image scan policy', () => {
           denyVulnerabilitiesAtOrAbove: 'high',
           maxSecretFindings: -1,
           requireCoverageProof: false,
+          evaluatedScope: 'all',
         }),
       ).toEqual(['invalid-policy']);
       // A non-boolean requireCoverageProof is itself an unusable policy: a truthy
