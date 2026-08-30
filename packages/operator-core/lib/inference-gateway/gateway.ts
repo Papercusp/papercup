@@ -78,6 +78,10 @@ import {
   parseCodexRequestShape,
   type CodexBearerFetchResponse,
 } from './codex-bearer-kernel-adapter';
+import {
+  createCodexOAuthKernelAdapter,
+  type CodexOAuthFetchResponse,
+} from './codex-oauth-kernel-adapter';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -5483,18 +5487,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
     codexRequests++;
     recordOwnerOutcome(routing.ownerId, 'request');
 
-    const rotateCli = (resetAt: number): boolean => {
-      if (routing.hardPin || !codexCliPool) return false;
-      const next = codexCliPool.onExhausted(cli.accountId, resetAt);
-      if (!next || next.accountId === cli.accountId) return false;
-      const nextCli = codexCliAccounts().find((a) => a.accountId === next.accountId);
-      if (!nextCli) return false;
-      codexFailovers++;
-      stageSpan?.recordFailover();
-      cli = nextCli;
-      return true;
-    };
-
+    /*
+     * KERNEL ADOPTION — plan `gateway-kernel-adoption-2026-08-29`, P-004.
+     *
+     * Everything below this point used to be a hand-rolled ladder: a re-armed
+     * stall timer (headers TTFB → per-chunk body idle), a request ceiling, an
+     * attempt loop, and a rotate-don't-surface failover cascade with its own
+     * OAuth refresh and sibling-egress retries. Those are SHARED request
+     * invariants, not Codex protocol, so they now live in
+     * `executeGatewayRequestKernel`, and the oauth-specific half (account
+     * selection, token resolve/refresh, egress choice, header construction, the
+     * upstream call, retryability normalization) lives in
+     * `createCodexOAuthKernelAdapter`.
+     *
+     * What stays HERE is genuinely this gateway's: the legacy counters, the
+     * owner-outcome ledger, the routed/pin-yield response headers, the cache-usage
+     * probe, and the non-streaming SSE→JSON aggregation, which is a DOWNSTREAM
+     * presentation concern rather than a transport one.
+     *
+     * The two same-account re-attempts this lane needs — a 401 refresh and a
+     * sibling egress IP — are expressed as the adapter's `selectReattempt`
+     * routes (D-011). Neither is gated on the hard pin and neither counts as a
+     * failover, which is why `observeAttempt` below counts failovers by ACCOUNT
+     * change rather than by route-key change as the bearer lane does.
+     */
     const reqAbort = new AbortController();
     const abortRequest = (reason: string) => {
       if (!reqAbort.signal.aborted) reqAbort.abort(new Error(reason));
@@ -5504,421 +5520,383 @@ export function createInferenceGateway(deps: GatewayDeps) {
     req.once('aborted', onReqAborted);
     res.once('close', onResClose);
     res.setTimeout(downstreamIdleMs, () => res.destroy());
-    const ceilingTimer = setTimeout(() => {
-      abortRequest(`codex request ceiling: ${requestCeilingMs}ms`);
-      try {
-        req.destroy();
-      } catch {
-        /* torn down */
-      }
-      try {
-        res.destroy();
-      } catch {
-        /* torn down */
-      }
-    }, requestCeilingMs);
-    ceilingTimer.unref?.();
+
+    // Per-attempt bookkeeping the kernel deliberately does NOT own.
+    let attemptsSeen = 0;
+    let lastAccountId = cli.accountId;
+    let cacheProbe: PassThrough | null = null;
+    const endCacheProbe = () => {
+      if (!cacheProbe) return;
+      cacheProbe.end();
+      cacheProbe = null;
+    };
+
+    // Non-streaming aggregation state. The ChatGPT backend returns SSE even when
+    // the public caller asked for a non-streaming response; the downstream head is
+    // withheld until the final `response.completed` object is in hand.
+    let aggregateSource: PassThrough | null = null;
+    let aggregatePromise: Promise<Buffer> | null = null;
+    let pendingHead: { status: number; headers: Record<string, string> } | null = null;
+
+    const toKernelResponseBody = (web: Response['body']): CodexOAuthFetchResponse['body'] => {
+      if (!web) return null;
+      const node = Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
+      const iterable = node as unknown as AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void };
+      iterable.cancel = () => {
+        node.destroy();
+      };
+      return iterable;
+    };
+
+    const kernelAdapter = createCodexOAuthKernelAdapter({
+      // D-010: the account was resolved by `proxyOpenAi` BEFORE this handler was
+      // entered, and `AccountPool.active()` advances. The adapter replays it and
+      // never selects an initial account itself.
+      initialAccount: cli,
+      accounts: () => codexCliAccounts(),
+      pool: codexCliPool,
+      upstreamUrl: codexBackendUrl(url),
+      method: req.method ?? 'POST',
+      requestHeaders: req.headers,
+      stripRequestHeaders: STRIP_REQUEST,
+      streaming: wantStream,
+      tokenTimeoutMs,
+      failoverBackoffMs: bare429FailoverBackoffMs,
+      ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
+      transportCooldownMs: IP_TRANSPORT_COOLDOWN_MS,
+      resolveAccessToken: (home) => resolveCodexAccessToken(home),
+      refreshAccessToken: (home, current) => refreshCodexToken(home, current),
+      buildHeaders: buildCodexUpstreamHeaders,
+      pickEgress: (account, at) => pickEgress(account, at),
+      siblingEgressAvailable: (account, at, currentKey) => siblingEgressAvailable(account, at, currentKey),
+      coolIp: (key, ms) => coolIp(key, ms),
+      dispatcherFor: (account, entry) => dispatcherFor(account, entry as AccountEgress | undefined),
+      rateReset: (headers) => {
+        const parsed = parseRateReset(headers);
+        return { resetAt: parsed.resetAt ?? null, retryAfterMs: parsed.retryAfterMs ?? null };
+      },
+      onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
+      onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
+      fetch: async (target, init) => {
+        const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
+        if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+        if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
+        const upstream = await doFetch(target, fetchInit as RequestInit);
+        return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
+      },
+    });
 
     try {
-      // Base headers from the codex CLI request, minus hop-by-hop/auth/host (STRIP_REQUEST).
-      const baseHeaders: Record<string, string> = {};
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
-        baseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
-      }
-      const upstreamUrl = codexBackendUrl(url);
-      let auth: CodexAuth | undefined;
-      let authAccount = '';
-      let refreshedAccount = '';
-
-      // The request body is buffered, so every retry is clean. A soft pin may yield only after its
-      // account is unserviceable; a hard pin never calls rotateCli. OAuth resolution, refresh,
-      // transport, 429, and retryable 5xx failures all share this bounded failover ladder.
-      for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
-        const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1;
-        if (!auth || authAccount !== cli.accountId) {
-          stageSpan?.beginStage('auth');
-          try {
-            auth = await withDeadline(
-              resolveCodexAccessToken(cli.home),
-              tokenTimeoutMs,
-              `codex oauth token '${cli.accountId}'`,
-            );
-            authAccount = cli.accountId;
-          } catch (e) {
-            codexUpstreamErrors++;
-            recordOwnerOutcome(routing.ownerId, 'upstream_error', {
-              account: cli.accountId,
-              detail: 'oauth-token-resolve',
-            });
-            log(
-              'error',
-              `inference-gateway: codex OAuth token resolve failed on '${cli.accountId}': ${(e as Error).message}`,
-            );
-            if (canRetry && rotateCli(Date.now() + bare429FailoverBackoffMs)) {
-              auth = undefined;
-              continue;
-            }
-            if (!res.headersSent)
-              sendJson(
-                res,
-                503,
-                {
-                  type: 'error',
-                  error: {
-                    type: 'overloaded_error',
-                    message: `inference-gateway: codex OAuth token unavailable for '${cli.accountId}'`,
-                  },
-                  gateway: true,
-                },
-                { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: cli.accountId },
+      await executeGatewayRequestKernel({
+        request: {
+          lane: providerAdapters.codex.lane,
+          // Already read, normalized, cache-rewritten and (for a non-streaming
+          // caller) converted to the upstream streaming shape above — the body is
+          // what SELECTS this transport, so it cannot be read inside the kernel.
+          body: (async function* () {
+            yield bodyBuf;
+          })(),
+          ownerId: routing.ownerId ?? null,
+          pin: routing.pinned
+            ? { accountId: routing.pinned.accountId, mode: routing.hardPin ? 'hard' : 'soft' }
+            : null,
+          signal: reqAbort.signal,
+        },
+        policy: {
+          maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+          bodyReadTimeoutMs: requestCeilingMs,
+          requestCeilingMs,
+          // Always the SHORT deadline. Unlike the bearer and Claude lanes this one
+          // does not need D-007's request-derived resolver: the ChatGPT backend
+          // answers every request with a stream, so the live handler armed the
+          // stream deadline unconditionally.
+          ttfbTimeoutMs: upstreamStreamHeadersTimeoutMs,
+          bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
+          downstreamIdleTimeoutMs: downstreamIdleMs,
+          maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+        },
+        telemetry: requestStageTelemetry,
+        span: stageSpan,
+        admission: {
+          // PASS-THROUGH: this handler already runs inside executeLegacyLaneTask's
+          // Governor.admit, so re-admitting would deadlock on its own slot.
+          run: (_context, task) => task(),
+          observeAttempt: ({ context, response, error }) => {
+            attemptsSeen = context.attempt;
+            const account = context.route.accountId ?? lastAccountId;
+            // A same-account re-attempt (refreshed token, sibling IP) changes the
+            // ROUTE KEY but is not a failover — `rotateCli` only counted account
+            // changes, so count those.
+            if (account !== lastAccountId) codexFailovers++;
+            lastAccountId = account;
+            if (error) {
+              // The STATUS discriminates the token-resolve throw (503) from the
+              // transport throw (502); a TTFB timeout, the request ceiling and a
+              // downstream abort all surfaced through the old transport catch, so
+              // they classify the same way here.
+              const tokenResolve = error.status === 503;
+              codexUpstreamErrors++;
+              recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+                account,
+                detail: tokenResolve ? 'oauth-token-resolve' : 'oauth-transport',
+              });
+              log(
+                'error',
+                `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed on '${account}': ${error.message}`,
               );
-            return;
-          } finally {
-            stageSpan?.endStage('auth');
-          }
-        }
-        const ac = new AbortController();
-        const onAbort = () =>
-          ac.abort(
-            reqAbort.signal.reason instanceof Error ? reqAbort.signal.reason : new Error('codex request aborted'),
-          );
-        if (reqAbort.signal.aborted) onAbort();
-        else reqAbort.signal.addEventListener('abort', onAbort, { once: true });
-        let stallTimer: ReturnType<typeof setTimeout> | undefined;
-        const clearStall = () => {
-          if (stallTimer) {
-            clearTimeout(stallTimer);
-            stallTimer = undefined;
-          }
-        };
-        const armStall = (ms: number) => {
-          clearStall();
-          stallTimer = setTimeout(() => ac.abort(new Error(`codex upstream stall: no activity for ${ms}ms`)), ms);
-          stallTimer.unref?.();
-        };
-        const detach = () => {
-          reqAbort.signal.removeEventListener('abort', onAbort);
-          clearStall();
-        };
-
-        const headers = buildCodexUpstreamHeaders({
-          base: baseHeaders,
-          accessToken: auth.accessToken,
-          accountId: auth.accountId,
-        });
-        const activeCli: ActiveAccount = {
-          accountId: cli.accountId,
-          token: async () => auth!.accessToken,
-          egress: cli.egress,
-          egressPool: cli.egressPool,
-        };
-        const pickedEgress = pickEgress(activeCli, Date.now());
-        let up: Response;
-        try {
-          const init: FetchInit = {
-            method: req.method ?? 'POST',
-            headers,
-            body: new Uint8Array(bodyBuf),
-            signal: ac.signal,
-          };
-          const dispatcher = await dispatcherFor(activeCli, pickedEgress.entry);
-          if (dispatcher) init.dispatcher = dispatcher;
-          egressAttemptsByAccount.set(cli.accountId, (egressAttemptsByAccount.get(cli.accountId) ?? 0) + 1);
-          armStall(upstreamStreamHeadersTimeoutMs); // SHORT TTFB — this is always a stream
-          stageSpan?.recordAttempt();
-          stageSpan?.beginStage('upstreamTtfb');
-          up = await doFetch(upstreamUrl, init as RequestInit);
-          stageSpan?.endStage('upstreamTtfb');
-          armStall(upstreamBodyIdleTimeoutMs);
-        } catch (e) {
-          stageSpan?.endStage('upstreamTtfb');
-          detach();
-          codexUpstreamErrors++;
-          egressFailsByAccount.set(cli.accountId, (egressFailsByAccount.get(cli.accountId) ?? 0) + 1);
-          coolIp(pickedEgress.key, IP_TRANSPORT_COOLDOWN_MS);
-          recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'oauth-transport' });
-          if (
-            canRetry &&
-            (siblingEgressAvailable(activeCli, Date.now(), pickedEgress.key) ||
-              rotateCli(Date.now() + bare429FailoverBackoffMs))
-          ) {
-            if (authAccount !== cli.accountId) auth = undefined;
-            continue;
-          }
-          if (!res.headersSent)
-            sendJson(
-              res,
-              502,
-              {
-                type: 'error',
-                error: {
-                  type: 'api_error',
-                  message: `inference-gateway: codex OAuth upstream failed: ${(e as Error).message}`,
-                },
-                gateway: true,
-              },
-              { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
-            );
-          else res.destroy();
-          return;
-        }
-
-        // WI-38582: feed the ChatGPT backend's x-codex-* rate-limit headers to the SAME
-        // observer the Anthropic path uses (deps.onResponse → makeWindowProjector →
-        // recordAccountWindow), so codex accounts get live capacity readings instead of
-        // reading `never-observed` forever. Every attempt's response counts — a 429
-        // carries the authoritative window too.
-        deps.onResponse?.(headersToObject(up.headers), up.status, bodyModel, cli.accountId);
-
-        // 401 → refresh the token ONCE and retry (before any bytes are written).
-        if (up.status === 401 && refreshedAccount !== cli.accountId) {
-          detach();
-          try {
-            await up.body?.cancel();
-          } catch {
-            /* drain */
-          }
-          try {
-            auth = await withDeadline(
-              refreshCodexToken(cli.home, auth),
-              tokenTimeoutMs,
-              `codex oauth refresh '${cli.accountId}'`,
-            );
-            authAccount = cli.accountId;
-            refreshedAccount = cli.accountId;
-            continue;
-          } catch (e) {
-            codexUpstreamErrors++;
-            log(
-              'error',
-              `inference-gateway: codex OAuth refresh failed on '${cli.accountId}': ${(e as Error).message}`,
-            );
-            if (canRetry && rotateCli(Date.now() + bare429FailoverBackoffMs)) {
-              auth = undefined;
-              continue;
+              return;
             }
-            if (!res.headersSent)
-              sendJson(
-                res,
-                502,
-                {
-                  type: 'error',
-                  error: {
-                    type: 'api_error',
-                    message: `inference-gateway: codex OAuth token refresh failed: ${(e as Error).message}`,
-                  },
-                  gateway: true,
-                },
-                { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
-              );
-            return;
-          }
-        }
-        if (up.status === 429) {
-          codexUpstream429++;
-          providerAdmission.recordThrottle('codex');
-          recordOwnerOutcome(routing.ownerId, 'upstream_429', { account: cli.accountId, status: 429 });
-          if (canRetry) {
-            const reset = parseRateReset(headersToObject(up.headers));
-            detach();
+            if (!response) return;
+            // WI-38582: feed the ChatGPT backend's x-codex-* rate-limit headers to
+            // the SAME observer the Anthropic path uses. Every attempt counts — a
+            // 429 carries the authoritative window too.
+            deps.onResponse?.(response.metadata.headers, response.status, bodyModel, account);
+            if (response.status === 429) {
+              codexUpstream429++;
+              providerAdmission.recordThrottle('codex');
+              recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429 });
+            } else if (response.status >= 200 && response.status < 300) {
+              providerAdmission.recordSuccess('codex');
+              lastEgressOkAt.set(account, Date.now());
+              ipTransportFailStreak.delete(response.metadata.egressKey);
+            }
+          },
+        },
+        adapter: kernelAdapter,
+        // The old handler never registered in `inFlightReg`, and D-003 forbids
+        // folding a behaviour change into an extraction.
+        inFlight: { register: () => ({ unregister: () => undefined }) },
+        downstream: {
+          start: ({ status, metadata }) => {
+            const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
+            for (const [key, value] of Object.entries(metadata.headers)) {
+              if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
+            }
+            if (metadata.pinYieldedFrom) {
+              outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
+              recordOwnerOutcome(routing.ownerId, 'pin_yield', {
+                account: metadata.accountId,
+                detail: outHeaders[PIN_YIELDED_HEADER],
+              });
+            }
+            recordRoute(routing.ownerId, metadata.accountId, 'codex');
+            recordOwnerOutcome(
+              routing.ownerId,
+              status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
+              { account: metadata.accountId, status },
+            );
+
+            cacheProbe = new PassThrough();
+            // Keep the tee flowing for the stream's whole life: the observer detaches
+            // its own 'data' listener once it has the usage record.
+            cacheProbe.on('data', () => undefined);
+            cacheProbe.on('error', () => undefined);
+            observeOpenAiCacheUsage(
+              cacheProbe,
+              metadata.accountId,
+              attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
+            );
+
+            // Do not expose the transport detail that a non-streaming request was
+            // served by SSE: withhold the head and aggregate. Error statuses
+            // (including a hard-pinned 429) stay byte-transparent.
+            if (!wantStream && status >= 200 && status < 300) {
+              pendingHead = { status, headers: { ...outHeaders, 'content-type': 'application/json' } };
+              aggregateSource = new PassThrough();
+              aggregateSource.on('error', () => undefined);
+              // `res.setTimeout` measures DOWNSTREAM socket inactivity, while this
+              // path withholds every downstream byte until aggregation completes.
+              // Give aggregation its full budget plus one normal drain window.
+              res.setTimeout(downstreamIdleMs > 0 ? codexOAuthNonStreamTimeoutMs + downstreamIdleMs : 0);
+              aggregatePromise = aggregateCodexNonStreamResponse(aggregateSource, {
+                contentType: metadata.headers['content-type'] ?? null,
+                maxBytes: codexOAuthNonStreamMaxBytes,
+                timeoutMs: codexOAuthNonStreamTimeoutMs,
+                signal: reqAbort.signal,
+                onTimeout: () =>
+                  abortRequest(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`),
+              });
+              return;
+            }
+            res.writeHead(status, outHeaders);
+          },
+          write: async (chunk) => {
+            cacheProbe?.write(chunk);
+            if (aggregateSource) {
+              aggregateSource.write(chunk);
+              return;
+            }
+            // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)` did.
+            if (!res.write(chunk)) {
+              await new Promise<void>((resolve) => {
+                const settle = () => {
+                  res.off('drain', settle);
+                  res.off('close', settle);
+                  res.off('error', settle);
+                  resolve();
+                };
+                res.once('drain', settle);
+                res.once('close', settle);
+                res.once('error', settle);
+              });
+            }
+          },
+          end: async () => {
+            endCacheProbe();
+            if (!aggregateSource || !aggregatePromise || !pendingHead) {
+              res.end();
+              return;
+            }
+            const source = aggregateSource;
+            const pending = aggregatePromise;
+            const head = pendingHead;
+            aggregateSource = null;
+            source.end();
+            let aggregated: Buffer;
             try {
-              await up.body?.cancel();
-            } catch {
-              /* drain */
-            }
-            coolIp(pickedEgress.key, Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, IP_COOLDOWN_MAX_MS));
-            if (
-              siblingEgressAvailable(activeCli, Date.now(), pickedEgress.key) ||
-              rotateCli(reset.resetAt ?? Date.now() + bare429FailoverBackoffMs)
-            ) {
-              if (authAccount !== cli.accountId) auth = undefined;
-              continue;
-            }
-          }
-        } else if (up.status >= 500 && canRetry) {
-          detach();
-          try {
-            await up.body?.cancel();
-          } catch {
-            /* drain */
-          }
-          if (rotateCli(Date.now() + bare429FailoverBackoffMs)) {
-            auth = undefined;
-            continue;
-          }
-        } else if (up.ok) {
-          providerAdmission.recordSuccess('codex');
-          lastEgressOkAt.set(cli.accountId, Date.now());
-          ipTransportFailStreak.delete(pickedEgress.key);
-        }
-
-        const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
-        up.headers.forEach((v, k) => {
-          if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
-        });
-        if (routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId) {
-          outHeaders[PIN_YIELDED_HEADER] = `${routing.pinned.accountId}->${cli.accountId}`;
-          recordOwnerOutcome(routing.ownerId, 'pin_yield', {
-            account: cli.accountId,
-            detail: outHeaders[PIN_YIELDED_HEADER],
-          });
-        }
-
-        // The ChatGPT backend returns SSE even when the public caller requested a non-streaming
-        // response. Do not expose that transport detail: aggregate only successful responses and
-        // hold downstream headers until the final response.completed object is available. Error
-        // statuses (including a hard-pinned/single-account 429) remain byte-transparent below.
-        if (!wantStream && up.ok) {
-          const nodeStream = up.body
-            ? Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0])
-            : Readable.from([]);
-          observeOpenAiCacheUsage(
-            nodeStream,
-            cli.accountId,
-            attempt > 0 || (!!routing.pinned && routing.pinned.accountId !== cli.accountId),
-          );
-          nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
-          // `res.setTimeout` measures DOWNSTREAM socket inactivity, while this adapter
-          // intentionally withholds every downstream byte until the upstream SSE has been
-          // aggregated. The ordinary idle window can therefore destroy a healthy caller before
-          // the longer aggregation deadline fires (four 2-minute socket kills made one staged
-          // bulk action fail after ~8 minutes). Give aggregation its full budget plus one normal
-          // downstream-drain window, then restore the ordinary bound before emitting JSON.
-          const aggregateDownstreamIdleMs = downstreamIdleMs > 0 ? codexOAuthNonStreamTimeoutMs + downstreamIdleMs : 0;
-          res.setTimeout(aggregateDownstreamIdleMs);
-          stageSpan?.beginStage('stream');
-          try {
-            const aggregated = await aggregateCodexNonStreamResponse(nodeStream, {
-              contentType: up.headers.get('content-type'),
-              maxBytes: codexOAuthNonStreamMaxBytes,
-              timeoutMs: codexOAuthNonStreamTimeoutMs,
-              signal: reqAbort.signal,
-              onTimeout: () =>
-                ac.abort(
-                  new Error(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`),
-                ),
-            });
-            stageSpan?.endStage('stream');
-            res.setTimeout(downstreamIdleMs);
-            if (reqAbort.signal.aborted || ac.signal.aborted) {
-              try {
-                nodeStream.destroy();
-              } catch {
-                /* already torn down */
+              aggregated = await pending;
+            } catch (e) {
+              res.setTimeout(downstreamIdleMs);
+              const aggregateError =
+                e instanceof CodexNonStreamAggregateError
+                  ? e
+                  : new CodexNonStreamAggregateError(
+                      'invalid',
+                      `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`,
+                    );
+              // `onTimeout` aborts the request so the socket is torn down. That abort
+              // is an aggregation timeout, not a downstream cancellation, so only the
+              // helper's explicit aborted code suppresses a gateway response.
+              if (aggregateError.code === 'aborted') {
+                if (!res.destroyed && !res.writableEnded) res.destroy();
+                return;
+              }
+              codexUpstreamErrors++;
+              recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+                account: lastAccountId,
+                detail: `oauth-nonstream-${aggregateError.code}`,
+              });
+              log(
+                'error',
+                `inference-gateway: codex OAuth non-stream aggregation failed on '${lastAccountId}': ${aggregateError.message}`,
+              );
+              if (!res.headersSent) {
+                sendJson(
+                  res,
+                  aggregateError.code === 'timeout' ? 504 : 502,
+                  {
+                    type: 'error',
+                    error: {
+                      type: aggregateError.code === 'timeout' ? 'timeout_error' : 'api_error',
+                      message: `inference-gateway: codex OAuth non-stream response ${aggregateError.message}`,
+                    },
+                    gateway: true,
+                  },
+                  { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+                );
               }
               return;
             }
-            outHeaders['content-type'] = 'application/json';
-            recordRoute(routing.ownerId, cli.accountId, 'codex');
-            recordOwnerOutcome(routing.ownerId, 'ok', { account: cli.accountId, status: up.status });
-            res.writeHead(up.status, outHeaders);
-            res.end(aggregated);
-            detach();
-            clearStall();
-            return;
-          } catch (e) {
-            stageSpan?.endStage('stream');
             res.setTimeout(downstreamIdleMs);
-            try {
-              nodeStream.destroy();
-            } catch {
-              /* already torn down */
-            }
-            detach();
-            clearStall();
-            const aggregateError =
-              e instanceof CodexNonStreamAggregateError
-                ? e
-                : new CodexNonStreamAggregateError(
-                    'invalid',
-                    `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`,
-                  );
-            // `onTimeout` intentionally aborts this attempt so the fetch/socket is torn down. That
-            // abort is an aggregation timeout, not a downstream cancellation, so only the stable
-            // request signal (or the helper's explicit aborted code) suppresses a gateway response.
-            if (aggregateError.code === 'aborted' || reqAbort.signal.aborted) {
+            if (reqAbort.signal.aborted) {
               if (!res.destroyed && !res.writableEnded) res.destroy();
               return;
             }
-            codexUpstreamErrors++;
-            recordOwnerOutcome(routing.ownerId, 'upstream_error', {
-              account: cli.accountId,
-              detail: `oauth-nonstream-${aggregateError.code}`,
+            res.writeHead(head.status, head.headers);
+            res.end(aggregated);
+          },
+        },
+      });
+    } catch (error) {
+      endCacheProbe();
+      const failure =
+        error instanceof GatewayRequestKernelError
+          ? error
+          : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+              code: 'gateway-error',
+              outcome: 'gateway-error',
+              status: 500,
+              cause: error,
             });
-            log(
-              'error',
-              `inference-gateway: codex OAuth non-stream aggregation failed on '${cli.accountId}': ${aggregateError.message}`,
-            );
-            if (!res.headersSent) {
-              sendJson(
-                res,
-                aggregateError.code === 'timeout' ? 504 : 502,
-                {
-                  type: 'error',
-                  error: {
-                    type: aggregateError.code === 'timeout' ? 'timeout_error' : 'api_error',
-                    message: `inference-gateway: codex OAuth non-stream response ${aggregateError.message}`,
-                  },
-                  gateway: true,
-                },
-                { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
-              );
-            }
-            return;
-          }
-        }
 
-        recordRoute(routing.ownerId, cli.accountId, 'codex');
-        recordOwnerOutcome(
-          routing.ownerId,
-          up.status < 400 ? 'ok' : up.status === 429 ? 'upstream_429' : 'upstream_error',
-          { account: cli.accountId, status: up.status },
+      if (failure.code === 'request-ceiling') {
+        log(
+          'error',
+          `inference-gateway: codex OAuth request hit the ${requestCeilingMs}ms hard ceiling on '${lastAccountId}' — force-terminating`,
         );
-        res.writeHead(up.status, outHeaders);
-        if (wantStream) stageSpan?.beginStage('stream');
-        if (!up.body) {
-          detach();
-          res.end();
-          return;
+        try {
+          req.destroy();
+        } catch {
+          /* already torn down */
         }
-        const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
-        observeOpenAiCacheUsage(
-          nodeStream,
-          cli.accountId,
-          attempt > 0 || (!!routing.pinned && routing.pinned.accountId !== cli.accountId),
-        );
-        nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
-        nodeStream.pipe(res);
-        await new Promise<void>((resolve) => {
-          res.on('finish', () => resolve());
-          res.on('close', () => resolve());
-          res.on('error', () => resolve());
-          nodeStream.on('error', () => {
-            res.destroy();
-            resolve();
-          });
-          const tearDown = () => {
-            try {
-              nodeStream.destroy();
-            } catch {
-              /* torn down */
-            }
-            try {
-              res.destroy();
-            } catch {
-              /* torn down */
-            }
-            resolve();
-          };
-          if (ac.signal.aborted) tearDown();
-          else ac.signal.addEventListener('abort', tearDown, { once: true });
-        });
-        detach();
+        try {
+          res.destroy();
+        } catch {
+          /* already torn down */
+        }
         return;
       }
+
+      if (failure.code === 'body-read-timeout' || failure.code === 'body-too-large') {
+        try {
+          req.destroy();
+        } catch {
+          /* already torn down */
+        }
+        if (!reqAbort.signal.aborted && !res.headersSent) {
+          sendJson(res, 503, {
+            type: 'error',
+            error: {
+              type: 'overloaded_error',
+              message: 'inference-gateway: codex request body read stalled; retry shortly',
+            },
+            gateway: true,
+          });
+        }
+        return;
+      }
+
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+
+      if (failure.code === 'upstream-error' && failure.status === 503) {
+        // OAuth resolution never produced a usable token on any account.
+        sendJson(
+          res,
+          503,
+          { type: 'error', error: { type: 'overloaded_error', message: failure.message }, gateway: true },
+          { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+        );
+        return;
+      }
+      if (failure.code === 'invalid-route' || failure.code === 'invalid-pin') {
+        sendJson(
+          res,
+          failure.status ?? 503,
+          { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
+          { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+        );
+        return;
+      }
+      sendJson(
+        res,
+        502,
+        {
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: failure.message.startsWith('inference-gateway:')
+              ? failure.message
+              : `inference-gateway: codex OAuth upstream failed: ${failure.message}`,
+          },
+          gateway: true,
+        },
+        { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+      );
     } finally {
-      clearTimeout(ceilingTimer);
+      endCacheProbe();
       req.off('aborted', onReqAborted);
       res.off('close', onResClose);
     }
