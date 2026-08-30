@@ -100,8 +100,8 @@ import {
 } from '@papercusp/chat-protocol';
 import { launchAgent, openPuiSuSession, type PuiSuSessionBinding } from './launch-agent';
 import {
-  DISPLAY_TERMINAL_LAUNCH,
   getAdvSession,
+  listPendingWorkbenchLaunches,
   markAdvSessionLaunched,
   markAdvSessionEnded,
 } from './adv-sessions';
@@ -1532,8 +1532,62 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // legitimate outcome of the previous case rather than a fault in this
       // one. When it is gone the disturbance half (4) is vacuous and skipped;
       // the path-discrimination half (1-3) — the actual point — still runs.
-      const managedBefore = await discoverPsuPtyByAdvSessionId(advSessionId);
-      const managedWasLive = Boolean(managedBefore?.pid && pidAlive(managedBefore.pid));
+      // END ran two cases ago, and ITS TEARDOWN IS ASYNCHRONOUS. Measured twice
+      // on the codex leg: the managed session closes itself — endedBy='self',
+      // exitCode=0, endedSignal=null, i.e. a clean voluntary exit, never a kill
+      // — somewhere between 142ms and several seconds after the end command,
+      // and it does so whether the pty host reported the shutdown honoured or
+      // REFUSED. A refusal is the HOST declining to kill a not-agent-launched
+      // process; it is not a promise that the session survives.
+      //
+      //   run 1: shutdown-refused 19:19:33.565Z -> row 21312 closed 19:19:33.707Z
+      //   run 2: row 21315 closed 19:29:05.495Z, mid-launch-window
+      //
+      // That teardown overlaps this case's ~8s launch window, so "the managed
+      // pid died while an unrelated bare launch ran" comes out true, at random,
+      // for a session that was already closing on its own. It is an ordering
+      // coincidence, and reading it as causation produced four false regression
+      // reports against a correct product.
+      //
+      // So SETTLE FIRST and let the end resolve, then decide whether there is
+      // anything here to measure at all. A session still open AND alive for
+      // several consecutive seconds after END is one that genuinely intends to
+      // keep running, and a death across the launch then means something.
+      // Anything else is teardown: the disturbance half is VACUOUS, and says so
+      // out loud rather than going red or silently pretending it measured.
+      const SETTLE_STABLE_MS = 3_000;
+      const settleDeadline = Date.now() + 12_000;
+      let managedBefore: PsuPtyDiscovery | null = null;
+      let stableSince: number | null = null;
+      while (Date.now() < settleDeadline) {
+        const row = await getAdvSession(advSessionId);
+        const disc = await discoverPsuPtyByAdvSessionId(advSessionId);
+        // BOTH halves, deliberately: the row states whether the session is meant
+        // to be running, the pid states whether it is. The psu-launcher host
+        // outlives its session by seconds while tearing down, so the pid alone
+        // reports an already-closed session as live.
+        if (!(row && row.endedAt == null && disc?.pid && pidAlive(disc.pid))) {
+          managedBefore = null;
+          stableSince = null;
+          break;
+        }
+        managedBefore = disc;
+        stableSince ??= Date.now();
+        if (Date.now() - stableSince >= SETTLE_STABLE_MS) break;
+        await delay(500);
+      }
+      const managedMeasurable =
+        managedBefore != null && stableSince != null && Date.now() - stableSince >= SETTLE_STABLE_MS;
+      if (!managedMeasurable) {
+        // Loud on purpose. A check that quietly stops measuring is the
+        // false-GREEN twin of the false-RED this replaces.
+        console.warn(
+          `[matrix] ${backend} BARE-PSU: the managed session did not stay open+alive for ` +
+            `${SETTLE_STABLE_MS}ms after END, so the DISTURBANCE half of this case was NOT ` +
+            'measured (it is vacuous against a session that is already closing). The ' +
+            'path-discrimination half — the actual point of this case — still runs below.',
+        );
+      }
 
       const bare = await launchAgent({
         agent: backend as 'claude' | 'codex' | 'omp',
@@ -1570,24 +1624,37 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // and launch-su.ts's own reply comment) and contradicts the line directly
       // beside it, which returns the id.
       //
-      // The field the CODE branches on is `display`. launch-su sets
-      // DISPLAY_TERMINAL_LAUNCH ('terminal') on the ordinary path and says why:
-      // "never 'workbench': that value is D-006's pui pane queue". The pui pane
-      // consumer selects exactly `WHERE display = 'workbench'`. So THAT is the
-      // reroute signature — assert against it, not against a comment.
+      // The field the CODE branches on is `display` — but DO NOT read it back
+      // through getAdvSession. That produced this case's SECOND false regression
+      // report in one day (2026-08-30): the row was stored correctly as
+      // display='terminal' (confirmed in Postgres), yet the assertion read null
+      // and reported a reroute. mapAdvSessionRow's own input type says why —
+      // "optional — only the pending-launch query SELECTs them; every other
+      // query omits them and they map to null" — so getAdvSession cannot
+      // distinguish NOT-SELECTED from a genuine null, and a working product
+      // reads as a regression. (Contrast `last_active_at` three fields below,
+      // which maps to `undefined` precisely so that distinction survives.)
+      //
+      // Both false reports came from trusting PROSE over the query that runs:
+      // the first a stale WRITER comment, the second a READER that never selects
+      // the column. So assert through the CONSUMER. The pane queue is
+      // listPendingWorkbenchLaunches — display='workbench' AND launched_at IS
+      // NULL AND ended_at IS NULL — the exact rows the pui reactively panes. A
+      // bare launch absent from it was not rerouted onto D-006, and that
+      // predicate cannot go stale without breaking the feature itself.
       expect(bare.ownerId, 'launch-su returned no pre-pinned owner id for a bare launch').toBeTruthy();
       expect(
         bare.deferred === true,
         `an ordinary ${backend} launch reported deferred:true — it was routed onto the PUI deferred path`,
       ).toBe(false);
       if (bare.advSessionId != null) {
-        const bareRow = await getAdvSession(bare.advSessionId);
+        const paneQueue = await listPendingWorkbenchLaunches();
         expect(
-          bareRow?.display,
-          `an ordinary ${backend} launch recorded adv row ${bare.advSessionId} with ` +
-            `display=${String(bareRow?.display)}; 'workbench' is D-006's PUI pane queue, so the ` +
-            'bare path has been rerouted through it.',
-        ).toBe(DISPLAY_TERMINAL_LAUNCH);
+          paneQueue.some((row) => row.id === bare.advSessionId),
+          `an ordinary ${backend} launch left adv row ${bare.advSessionId} sitting in the PUI ` +
+            "pane queue (display='workbench', unconsumed) — the bare path has been rerouted " +
+            'onto D-006.',
+        ).toBe(false);
       }
 
       const bareOwnerId = bare.ownerId!;
@@ -1652,18 +1719,53 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           `the ordinary ${backend} launch adopted the managed PUI row ${advSessionId} instead of recording its own`,
         ).not.toBe(advSessionId);
 
-        // 4. THE MANAGED SESSION IS UNDISTURBED — same pid, still alive. Only
-        //    meaningful while it survived END; see the note above.
-        if (managedWasLive) {
-          const managedAfter = await discoverPsuPtyByAdvSessionId(advSessionId);
+        // 4. THE MANAGED SESSION IS UNDISTURBED. Measurable ONLY when END was
+        //    explicitly REFUSED — that is the case where the managed session is
+        //    deliberately still running, so disturbing it would be a real fault.
+        //
+        //    Measurable ONLY against a managed session that SETTLED open and
+        //    alive after END (see the wait above). Two weaker gates were tried
+        //    here first and both produced false regression reports:
+        //      - `managedWasLive` alone — a live pid is a projection of a
+        //        process, not a statement that the session is meant to run, and
+        //        the psu-launcher host outlives its session while tearing down.
+        //      - `endOutcome === 'refused'` — describes a different subject
+        //        entirely (the pty host declining a shutdown), and the session
+        //        self-exits after a refusal anyway.
+        //    Only after the end has demonstrably NOT taken the session down
+        //    does a death across the launch mean interference.
+        if (managedMeasurable) {
+          const managedPid = managedBefore!.pid!;
+          // Carry the death's PROVENANCE into the failure, so a future red
+          // states how the session died instead of costing the next reader the
+          // dig that produced the comment above. exitCode 0 alone is not a
+          // clean exit — adv-sessions.ts:171 says to read endedBy for that.
+          const rowAfter = await getAdvSession(advSessionId);
+          const howItDied = rowAfter
+            ? `adv row ${advSessionId} now: endedAt=${String(rowAfter.endedAt ?? 'null')} ` +
+              `endedBy=${String(rowAfter.endedBy ?? 'null')} ` +
+              `exitCode=${String(rowAfter.exitCode ?? 'null')} ` +
+              `endedSignal=${String(rowAfter.endedSignal ?? 'null')}`
+            : `adv row ${advSessionId} no longer resolves`;
           expect(
-            managedAfter?.pid,
-            `the managed ${backend} session's pid changed (${managedBefore?.pid} -> ${managedAfter?.pid}) across an unrelated bare launch`,
-          ).toBe(managedBefore?.pid);
-          expect(
-            pidAlive(managedAfter?.pid),
-            `the managed ${backend} session died during an unrelated bare launch`,
+            pidAlive(managedPid),
+            `the managed ${backend} session (pid ${managedPid}) died during an unrelated bare ` +
+              'launch while its adv row was still OPEN — so it was still meant to be running. ' +
+              `${howItDied}. If endedBy is 'self' with a timestamp preceding the launch, this is ` +
+              'teardown that started before the launch, not interference by it.',
           ).toBe(true);
+          // Secondary, and only when the record still resolves: a DIFFERENT live
+          // pid is the real respawn/adoption signature. An absent record while
+          // the pid is alive is a discovery gap, not a disturbance, and must not
+          // be reported as one.
+          const managedAfter = await discoverPsuPtyByAdvSessionId(advSessionId);
+          if (managedAfter?.pid != null) {
+            expect(
+              managedAfter.pid,
+              `the managed ${backend} session was replaced by a different process ` +
+                `(${managedPid} -> ${managedAfter.pid}) across an unrelated bare launch`,
+            ).toBe(managedPid);
+          }
         }
       } finally {
         // 5. NO ORPHAN. This test created a real process; it owns ending it,
