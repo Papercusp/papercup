@@ -2052,6 +2052,57 @@ describe('scoped-superuser hive clamp', () => {
     expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
   });
 
+  // WI-1345963: a harness can also be named through `scope` — improvements:capture
+  // takes scope:'harness:<slug>' (the spelling its own schema RECOMMENDS over the
+  // `harness` alias), and facts:* take scope:'harness' + scopeRef. Both bypassed the
+  // clamp: a hive-'papercusp' session planted EI-21891461660239266 into hive
+  // 'calendar' and could then neither claim, comment on, nor close it.
+  it("flag ON: rejects scope:'harness:<slug>' naming a SIBLING hive (the confirmed bypass)", async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { scope: 'harness:hiveB-home' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(textOf(res)).toContain('hiveB-home');
+  });
+
+  it("flag ON: rejects scope:'harness' + scopeRef naming a SIBLING hive (facts:* spelling)", async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { scope: 'harness', scopeRef: 'hiveB-home' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it("flag ON: rejects the scope:'harness:all' global escape", async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { scope: 'harness:all' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  // The other direction: the gate must not over-block, or it would be indistinguishable
+  // from a broken clamp that rejects everything.
+  it("flag ON: ALLOWS scope:'harness:<slug>' WITHIN the hive subtree", async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('gatingtest:scoped', { scope: 'harness:hiveA-member' }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
+  });
+
+  it('flag ON: leaves a NON-harness scope selector untouched (workspace/owner/role)', async () => {
+    h.scopedClampFlag.value = true;
+    for (const scope of ['workspace', 'owner', 'role', 'work_item']) {
+      const res = await callTool('gatingtest:scoped', { scope, scopeRef: 'hiveB-home' }, hiveScoped());
+      expect(res.isError, `scope:'${scope}' must not be treated as a harness name`).not.toBe(true);
+    }
+  });
+
+  it("flag OFF: a hive-harness session may pass a foreign scope:'harness:<slug>' (unchanged)", async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool('gatingtest:scoped', { scope: 'harness:hiveB-home' }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:scoped-ok');
+  });
+
   it('flag OFF: a hive-harness session may pass a foreign `hive` arg (unchanged)', async () => {
     h.scopedClampFlag.value = false;
     const res = await callTool('gatingtest:scoped', { hive: 'hiveB-home' }, hiveScoped());

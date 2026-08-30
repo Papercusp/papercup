@@ -2443,6 +2443,66 @@ const handler = createMcpHandler(
                   };
                 }
               }
+              // WI-1345963: the two checks above key on the arg NAMES `harness` and
+              // `harness_slug`, but several tools name a harness through `scope`:
+              //   • improvements:capture takes scope:'harness:<slug>' — and its OWN
+              //     schema recommends that spelling ("prefer scope:'harness:foo' for
+              //     new calls") while documenting `harness` as a mere compatibility
+              //     alias. So the RECOMMENDED spelling escaped this gate while the
+              //     deprecated one hit it — exactly backwards.
+              //   • facts:assert / facts:list take scope:'harness' + scopeRef
+              //     (aliases scope_ref / ref).
+              // Confirmed hole, not theory (harness_shared.tool_invocations @
+              // 2026-08-30T15:15:24.754Z): a session confined to hive 'papercusp'
+              // passed NO `harness` arg and scope:'harness:calendar', and planted
+              // EI-21891461660239266 in hive 'calendar'. It could then neither claim,
+              // comment on, nor close the row it had created — work_items:get/claim/
+              // comment all refuse it — so the item is stranded `open` forever and
+              // reads to every later agent as outstanding work.
+              // Every harness-naming spelling belongs in the ONE list below: adding a
+              // new one is a line here, not a sixth bypass found in production.
+              const scopeArgRaw =
+                args && typeof args === 'object' && typeof (args as Record<string, unknown>).scope === 'string'
+                  ? ((args as Record<string, unknown>).scope as string).trim()
+                  : '';
+              if (scopeArgRaw) {
+                const scopeRefRaw = ((): string => {
+                  if (!args || typeof args !== 'object') return '';
+                  const a = args as Record<string, unknown>;
+                  for (const k of ['scopeRef', 'scope_ref', 'ref']) {
+                    if (typeof a[k] === 'string') {
+                      const v = (a[k] as string).trim();
+                      if (v) return v;
+                    }
+                  }
+                  return '';
+                })();
+                // Only the harness-naming forms; 'workspace' | 'owner' | 'role' |
+                // 'work_item' | 'all' | 'hive' name no harness and are left to the
+                // dedicated checks below (coord:presence) and to the tools themselves.
+                const scopeNamedHarness = scopeArgRaw.startsWith('harness:')
+                  ? scopeArgRaw.slice('harness:'.length).trim()
+                  : scopeArgRaw === 'harness'
+                    ? scopeRefRaw
+                    : '';
+                if (scopeNamedHarness) {
+                  const escapes =
+                    scopeNamedHarness === 'all' ||
+                    scopeNamedHarness === '*' ||
+                    (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, scopeNamedHarness)) !== scopeHive;
+                  if (escapes) {
+                    return {
+                      isError: true,
+                      content: [
+                        {
+                          type: 'text' as const,
+                          text: `harness_forbidden: scope "${scopeArgRaw}" names harness "${scopeNamedHarness}", which is outside this session's hive "${scopeHive}". A cross-hive item filed this way could not later be claimed, commented on, or closed by this session.`,
+                        },
+                      ],
+                    };
+                  }
+                }
+              }
               // P-016/P-014b: confine the workspace-GLOBAL read surfaces (coord/
               // fleet/presence) per-hive. The harness-arg + cross_harness checks
               // above cover the harness-keyed reads; this closes the surfaces that
