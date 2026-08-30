@@ -20,6 +20,7 @@ import {
   DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA,
   DEFAULT_DAILY_DIGEST_MAX_TOKENS,
   MAX_DAILY_DIGEST_UMBRELLAS,
+  MAX_UNKNOWN_MEMBER_RATIO,
   maxUmbrellasForOutputBudget,
   type DailyDigestContext,
   type DailyDigestItem,
@@ -86,23 +87,74 @@ describe('work-item admission daily digest', () => {
       'WI-2',
       'WI-3',
     ]);
+    // D-034: a lone umbrella whose membership is 1/3 fabricated is over the
+    // trust ceiling, so the reply is refused rather than repaired.
     expect(() => parseDailyDigestProposals({ umbrellas: [{ ...proposal, memberIds: ['WI-1', 'WI-2', 'WI-X'] }] }, allowed)).toThrow(
-      'non-corpus member',
+      'fabricated',
     );
+    // Deduped to 2 real members, under the minimum: the umbrella is dropped, and
+    // with nothing left the run still fails loudly rather than filing an empty digest.
     expect(() => parseDailyDigestProposals({ umbrellas: [{ ...proposal, memberIds: ['WI-1', 'WI-1', 'WI-2'] }] }, allowed)).toThrow(
-      'needs 3 distinct members',
+      'none survived validation',
     );
-    expect(() =>
-      parseDailyDigestProposals(
-        {
-          umbrellas: [
-            proposal,
-            { ...proposal, title: 'Second cause', memberIds: ['WI-2', 'WI-3', 'WI-4'] },
-          ],
-        },
-        allowed,
-      ),
-    ).toThrow('multiple umbrellas');
+  });
+
+  it('keeps a contested member on the higher-ranked umbrella instead of failing the run (D-034)', () => {
+    const allowed = new Set(['WI-1', 'WI-2', 'WI-3', 'WI-4', 'WI-5', 'WI-6']);
+    const base = {
+      body: 'One dead child leaves a shared checkout lock held.',
+      reason: 'Three independent consumers report the same lock boundary.',
+    };
+    const { proposals, clamps } = parseDailyDigestProposals(
+      {
+        umbrellas: [
+          { ...base, title: 'First cause', memberIds: ['WI-1', 'WI-2', 'WI-3'] },
+          { ...base, title: 'Second cause', memberIds: ['WI-3', 'WI-4', 'WI-5', 'WI-6'] },
+        ],
+      },
+      allowed,
+    );
+    expect(proposals).toHaveLength(2);
+    expect(proposals[0]?.memberIds).toEqual(['WI-1', 'WI-2', 'WI-3']);
+    // WI-3 stays with the first, higher-ranked umbrella and is dropped from the second.
+    expect(proposals[1]?.memberIds).toEqual(['WI-4', 'WI-5', 'WI-6']);
+    expect(clamps.duplicateMemberAssignmentsDropped).toBe(1);
+  });
+
+  it('drops a stray fabricated id but keeps the digest, and discloses it (D-034)', () => {
+    const allowed = new Set(Array.from({ length: 30 }, (_, i) => `WI-${i}`));
+    const umbrellas = Array.from({ length: 6 }, (_, i) => ({
+      title: `Cause ${i}`,
+      body: 'b',
+      reason: 'r',
+      memberIds: [`WI-${i * 5}`, `WI-${i * 5 + 1}`, `WI-${i * 5 + 2}`, `WI-${i * 5 + 3}`],
+    }));
+    // One invention among 24 proposed ids = 4.2%, under the 10% trust ceiling.
+    umbrellas[2]!.memberIds = [...umbrellas[2]!.memberIds.slice(0, 3), 'EI-21462267124852221'];
+    const { proposals, clamps } = parseDailyDigestProposals({ umbrellas }, allowed);
+    expect(proposals).toHaveLength(6);
+    expect(clamps.unknownMemberIdsDropped).toBe(1);
+    expect(clamps.unknownMemberIdSample).toContain('EI-21462267124852221');
+    expect(proposals[2]?.memberIds).not.toContain('EI-21462267124852221');
+    expect(proposals[2]?.memberIds).toHaveLength(3);
+  });
+
+  /**
+   * CONTROL — the threshold is what keeps D-034 a repair rather than a blindfold.
+   * If someone removes it, a model fabricating membership wholesale would produce a
+   * confident, entirely worthless digest. This pins that it still fails.
+   */
+  it('CONTROL: refuses a reply whose membership is fabricated past the trust ceiling (D-034)', () => {
+    const allowed = new Set(Array.from({ length: 30 }, (_, i) => `WI-${i}`));
+    const umbrellas = Array.from({ length: 6 }, (_, i) => ({
+      title: `Cause ${i}`,
+      body: 'b',
+      reason: 'r',
+      memberIds: [`WI-${i * 5}`, `WI-${i * 5 + 1}`, `FAKE-${i}a`, `FAKE-${i}b`],
+    }));
+    // 12 of 24 proposed ids invented = 50%, far past MAX_UNKNOWN_MEMBER_RATIO.
+    expect(() => parseDailyDigestProposals({ umbrellas }, allowed)).toThrow('fabricated');
+    expect(MAX_UNKNOWN_MEMBER_RATIO).toBeLessThan(0.5);
   });
 
   it('derives a stable normalized watchdog key', () => {
