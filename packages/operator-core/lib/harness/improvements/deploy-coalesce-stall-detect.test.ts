@@ -143,6 +143,59 @@ describe('evaluateDeployCoalesceStreak — holder liveness reporting', () => {
   });
 });
 
+describe('currency window — an alarm must be clearable by fixing the problem', () => {
+  const NOW = 1_700_000_000_000;
+  const aged = (minutesAgo: number, holderAlive: boolean | null = true): DeployCoalesceEvent => ({
+    status: 'coalesced',
+    detail: { holder: 'release-deploy:1:x', holderAlive },
+    createdAtMs: NOW - minutesAgo * 60_000,
+  });
+
+  it('a RECENT streak escalates', () => {
+    const v = evaluateDeployCoalesceStreak({
+      events: [aged(2), aged(5), aged(9)],
+      threshold: 3,
+      now: NOW,
+      maxAgeMs: 60 * 60_000,
+    });
+    expect(v.escalate).toBe(true);
+  });
+
+  it('a STALE streak does NOT — deploy attempts stopped, so it is history, not a live stall', () => {
+    // Without this bound the last three rows stay coalesces forever once attempts stop, and
+    // the alarm re-fires indefinitely with no action that can clear it.
+    const v = evaluateDeployCoalesceStreak({
+      events: [aged(180), aged(190), aged(200)],
+      threshold: 3,
+      now: NOW,
+      maxAgeMs: 60 * 60_000,
+    });
+    expect(v.escalate).toBe(false);
+    expect(v.streak).toBe(3); // the run is still REPORTED, just not escalated
+    expect(v.reason).toContain('history, not a live stall');
+  });
+
+  it('the currency window also gates the dead-holder fast path', () => {
+    const v = evaluateDeployCoalesceStreak({
+      events: [aged(300, false)],
+      threshold: 3,
+      now: NOW,
+      maxAgeMs: 60 * 60_000,
+    });
+    expect(v.escalate).toBe(false);
+  });
+
+  it('events with NO timestamp are read unbounded — a caller supplying none gets what it asked for', () => {
+    const v = evaluateDeployCoalesceStreak({
+      events: [coalesce(), coalesce(), coalesce()],
+      threshold: 3,
+      now: NOW,
+      maxAgeMs: 60 * 60_000,
+    });
+    expect(v.escalate).toBe(true);
+  });
+});
+
 describe('kill switch', () => {
   it('threshold<=0 disables the alarm even on a long dead-holder run', () => {
     const v = evaluateDeployCoalesceStreak({
@@ -170,14 +223,33 @@ describe('detectDeployCoalesceStall — finding shape', () => {
   });
 
   it('the title carries no counts, so search-first dedup matches across ticks', () => {
-    // A title with "3x" in it stops matching the next tick's "4x" and re-files a new EI
-    // every attempt — the spam mode the stable-key convention exists to prevent.
-    const three = detectDeployCoalesceStall(
+    // WatchdogSignal.title is the search-first dedup key and is documented as STABLE — no
+    // counts, no timestamps. A title reading "coalesced 3x" stops matching the next tick's
+    // "4x" and re-files a brand-new EI on every single attempt. Both triggers are covered
+    // here: an earlier draft of this detector embedded the streak count in the STREAK title
+    // only, and a dead-holder-only assertion did not catch it.
+    const streak3 = detectDeployCoalesceStall(
+      evaluateDeployCoalesceStreak({ events: [coalesce(), coalesce(), coalesce()], threshold: 3 }),
+    )[0];
+    const streak5 = detectDeployCoalesceStall(
+      evaluateDeployCoalesceStreak({
+        events: [coalesce(), coalesce(), coalesce(), coalesce(), coalesce()],
+        threshold: 3,
+      }),
+    )[0];
+    expect(streak3?.title).toBe(streak5?.title);
+    expect(streak3?.title).not.toMatch(/\d/);
+
+    const dead1 = detectDeployCoalesceStall(
       evaluateDeployCoalesceStreak({ events: [coalesce('h', false)], threshold: 3 }),
     )[0];
-    const four = detectDeployCoalesceStall(
+    const dead2 = detectDeployCoalesceStall(
       evaluateDeployCoalesceStreak({ events: [coalesce('h', false), coalesce('h', false)], threshold: 3 }),
     )[0];
-    expect(three?.title).toBe(four?.title);
+    expect(dead1?.title).toBe(dead2?.title);
+    expect(dead1?.title).not.toMatch(/\d/);
+
+    // ...but the counts must still be REPORTED, just in the body where they belong.
+    expect(streak5?.body).toContain('5');
   });
 });

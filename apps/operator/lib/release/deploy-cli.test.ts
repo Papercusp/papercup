@@ -254,6 +254,52 @@ describe('deploy-cli main() — the gate chokepoint', () => {
     expect(runUnderDeployLock).toHaveBeenCalledTimes(1);
   });
 
+  it('EI-18835078701597295: a COALESCED attempt is RECORDED durably, with the holder and its liveness', async () => {
+    // The CLI is one process per attempt, so "how many attempts in a row coalesced" cannot
+    // live in memory here. Without this durable row the consecutive-coalesce alarm has
+    // nothing to count and a wedged holder halts delivery with nothing paging.
+    const recordCoalesced = vi.fn(async () => {});
+    const code = await main({
+      ...silent,
+      runUnderDeployLock: vi.fn(async () => ({
+        acquired: false as const,
+        holder: 'release-deploy:9999:abc',
+        holderAlive: false,
+      })),
+      recordCoalesced,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: vi.fn<GatherFn>(async () => makePlan({ green: true })),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: vi.fn<ExecuteFn>(),
+    });
+
+    expect(code).toBe(0);
+    // holderAlive must survive verbatim — it is what separates a healthy queue behind a
+    // live deploy from a leaked lease the reclaim should already have taken.
+    expect(recordCoalesced).toHaveBeenCalledWith({ holder: 'release-deploy:9999:abc', holderAlive: false });
+  });
+
+  it('EI-18835078701597295: a telemetry failure on the coalesce path never changes the exit code', async () => {
+    // Best-effort by construction: the deploy path must not fail because recording did.
+    const recordCoalesced = vi.fn(async () => {
+      throw new Error('pipeline_events unreachable');
+    });
+    const code = await main({
+      ...silent,
+      runUnderDeployLock: vi.fn(async () => ({ acquired: false as const, holder: 'h', holderAlive: true })),
+      recordCoalesced,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: vi.fn<GatherFn>(async () => makePlan({ green: true })),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: vi.fn<ExecuteFn>(),
+    });
+
+    expect(recordCoalesced).toHaveBeenCalledTimes(1);
+    expect(code).toBe(0);
+  });
+
   it('a PLAN-ONLY invocation (no --execute) never consults the deploy lock', async () => {
     const runUnderDeployLock = vi.fn(alwaysAcquires);
     const code = await main({

@@ -137,7 +137,39 @@ describe('foldPipelineWindow', () => {
       ],
       0,
     );
-    expect(w.deploy).toEqual({ total: 9, ok: 5, rolledBack: 1, failed: 1, refused: 2 });
+    expect(w.deploy).toEqual({
+      total: 9,
+      ok: 5,
+      rolledBack: 1,
+      failed: 1,
+      refused: 2,
+      coalesced: 0,
+      staleLockReclaimed: 0,
+      other: 0,
+    });
+  });
+
+  it('EI-18835078701597295: the deploy chain is TOTAL — every produced status lands in a bucket', () => {
+    // The statuses below are all REAL production emitters that previously landed in NO
+    // bucket: coalesced (deploy-cli), stale-lock-reclaimed (deploy-deps), and
+    // certification-* (release-actions). The sub-buckets silently undercounted against
+    // `total` and a reader diffing them saw an unnamed gap — the same defect
+    // EI-20702428259478130 fixed for greenCheckpoint (12.3% of events unbucketed).
+    const w = foldPipelineWindow(
+      [
+        { kind: 'deploy', status: 'ok', n: 2 },
+        { kind: 'deploy', status: 'coalesced', n: 4 },
+        { kind: 'deploy', status: 'stale-lock-reclaimed', n: 1 },
+        { kind: 'deploy', status: 'certification-launched', n: 3 },
+        { kind: 'deploy', status: 'a-status-invented-next-year', n: 7 },
+      ],
+      0,
+    );
+    expect(w.deploy.coalesced).toBe(4);
+    expect(w.deploy.staleLockReclaimed).toBe(1);
+    expect(w.deploy.other).toBe(10); // certification-launched + the unknown future status
+    const { total, ...buckets } = w.deploy;
+    expect(Object.values(buckets).reduce((a, b) => a + b, 0)).toBe(total);
   });
 
   it('emptyWindow is all zeros', () => {

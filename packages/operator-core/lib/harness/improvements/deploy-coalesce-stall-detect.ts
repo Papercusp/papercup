@@ -67,11 +67,33 @@ export interface DeployCoalesceEvent {
   createdAtMs?: number;
 }
 
+/**
+ * How recent the newest coalesce must be for the condition to count as CURRENT. Default 1h
+ * (well past the ≤15-min release-trigger cadence, so an ordinary gap never trips it).
+ *
+ * Without this bound the decider reads pure history: if deploy attempts simply STOP after a
+ * coalesce run — the fleet quiets down, or the stall is cleared by something that emits no
+ * deploy event — the last three rows stay coalesces forever and this alarms on them forever,
+ * re-firing long after the condition cleared. That is the same false-alarm shape
+ * EI-20101010229759029 hit on the sibling staleness watchdog, where a clock that also ran
+ * during red-gate windows left the alarm pre-tripped before auto-serve got a single chance.
+ * An alarm nobody can clear by fixing the problem is worse than no alarm: it trains readers
+ * to ignore the channel.
+ */
+export function deployCoalesceMaxAgeMs(): number {
+  const n = Number(process.env.PAPERCUSP_DEPLOY_COALESCE_MAX_AGE_MS ?? 3_600_000);
+  return Number.isFinite(n) && n > 0 ? n : 3_600_000;
+}
+
 export interface DeployCoalesceStreakInput {
   /** `deploy`-kind pipeline events, NEWEST FIRST (as `recentPipelineEvents` returns them). */
   events: DeployCoalesceEvent[];
   /** Consecutive coalesces required to escalate; `<=0` disables. */
   threshold: number;
+  /** epoch ms "now" — injected so the decider stays deterministic in tests. */
+  now?: number;
+  /** Newest coalesce must be within this window to count as CURRENT (see above). */
+  maxAgeMs?: number;
 }
 
 export interface DeployCoalesceStreakVerdict {
@@ -136,6 +158,26 @@ export function evaluateDeployCoalesceStreak(input: DeployCoalesceStreakInput): 
 
   const { holder, holderAlive } = readHolder(head?.detail);
   const holderLabel = holder ?? 'unknown holder';
+
+  // Is the condition CURRENT? A streak read out of pure history keeps alarming after the
+  // stall clears (see deployCoalesceMaxAgeMs). Only applied when the row actually carries a
+  // timestamp — a caller that supplies none gets the unbounded read it asked for.
+  const now = input.now ?? Date.now();
+  const maxAgeMs = input.maxAgeMs ?? deployCoalesceMaxAgeMs();
+  const headAgeMs = head?.createdAtMs != null ? now - head.createdAtMs : null;
+  if (headAgeMs != null && headAgeMs > maxAgeMs) {
+    return {
+      escalate: false,
+      streak,
+      trigger: null,
+      holder,
+      holderAlive,
+      reason:
+        `${streak} consecutive coalesce(s), but the most recent is ${Math.round(headAgeMs / 60_000)}m old ` +
+        `(older than the ${Math.round(maxAgeMs / 60_000)}m currency window) — deploy attempts have stopped ` +
+        `rather than piling up, so this is history, not a live stall.`,
+    };
+  }
 
   if (streak > 0 && holderAlive === false) {
     return {
