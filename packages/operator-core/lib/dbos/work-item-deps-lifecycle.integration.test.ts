@@ -142,6 +142,7 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '734-repoint-qualified-refs-on-rehome.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '988-work-item-dependency-delete-guard.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '991-work-item-dependency-lifecycle-transition-guard.sql'));
+  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '992-work-item-dependency-satisfaction.sql'));
 }, 180_000);
 
 afterAll(async () => {
@@ -288,8 +289,8 @@ describe('P-011 named claim, progress, settle, and removal ordering', () => {
 });
 
 // @covers INV-19
-describe('P-011 blocker reopen — untouched dependants pass, progressed dependants refuse', () => {
-  it('allows reopen while the dependant is untouched, open, and unclaimed', async () => {
+describe('P-011/992 blocker reopen — untouched dependants pass, progressed dependants refuse', () => {
+  it('992 allows reopen while the dependant is untouched, open, and unclaimed', async () => {
     await seedItem('DEP');
     await seedItem('BLOCK', { status: 'done' });
     await addEdge(endpoint('issue', 'DEP'), endpoint('issue', 'BLOCK'));
@@ -318,7 +319,7 @@ describe('P-011 blocker reopen — untouched dependants pass, progressed dependa
         UPDATE harness_shared.work_items
            SET status = 'open'
          WHERE workspace_id = ${ITEM_WS} AND feature_id = 'BLOCK'`,
-      /cannot reopen dependency blocker issue:BLOCK/i,
+      /cannot make dependency blocker issue:BLOCK unsatisfied while nonterminal dependant issue:DEP remains/i,
     );
     expect(await itemState('BLOCK')).toMatchObject({ status: 'done' });
   });
