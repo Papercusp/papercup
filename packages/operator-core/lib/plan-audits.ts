@@ -563,11 +563,61 @@ export function independentSiblingRepos(repoRoot: string): ReadonlySet<string> {
   return names;
 }
 
-/** Real-filesystem deps rooted at the monorepo, plus independent sibling repos. */
-export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
+/**
+ * Registered project checkouts that may contribute citation evidence.
+ *
+ * `ProjectEntry.path` is the registry's authoritative content path, but not every
+ * registered path is a checkout: a repo-less Hive home is a state directory, and
+ * release/checkpoint worktrees expose a `.git` pointer FILE. Only paths with a real
+ * `.git` DIRECTORY are admitted, matching `independentSiblingRepos`'s worktree
+ * exclusion without requiring callers to know the workspace layout.
+ */
+export function registeredCitationRepoRoots(
+  reg: Pick<HarnessRegistry, 'projects'>,
+): ReadonlyArray<string> {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const project of reg.projects) {
+    const root = path.resolve(project.path);
+    try {
+      if (!fs.statSync(path.join(root, '.git')).isDirectory()) continue;
+      const key = fs.realpathSync(root);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      roots.push(root);
+    } catch {
+      // Missing/stale registry paths and pointer-file worktrees are not evidence roots.
+    }
+  }
+  return roots;
+}
+
+/** Real-filesystem deps rooted at the monorepo, plus admitted sibling/registered repos. */
+export function repoCitationDeps(
+  repoRoot: string = REPO_ROOT,
+  registeredRoots: readonly string[] = [],
+): CitationDeps {
   const workspaceRoot = path.dirname(repoRoot);
   let siblings: ReadonlySet<string> | null = null;
   const trackedCache = new Map<string, boolean | null>();
+  let realRepo: string | null = null;
+  try {
+    realRepo = fs.realpathSync(repoRoot);
+  } catch {
+    /* keep the literal root for containment; registered-root dedupe is best effort */
+  }
+  const admittedRegisteredRoots = [...new Set(
+    registeredRoots
+      .map((root) => path.resolve(root))
+      .filter((root) => {
+        try {
+          if (!fs.statSync(path.join(root, '.git')).isDirectory()) return false;
+          return realRepo === null || fs.realpathSync(root) !== realRepo;
+        } catch {
+          return false;
+        }
+      }),
+  )];
 
   const contained = (root: string, rel: string): string | null => {
     const abs = path.resolve(root, rel);
@@ -589,6 +639,13 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
         const inWorkspace = contained(workspaceRoot, rel);
         if (inWorkspace !== null) return inWorkspace;
       }
+    }
+    // Registered project roots are explicit admission, so nested app checkouts do
+    // not need to be moved/symlinked to a workspace sibling before they can be
+    // cited. The selected root and direct siblings retain precedence above.
+    for (const registeredRoot of admittedRegisteredRoots) {
+      const inRegisteredRoot = contained(registeredRoot, rel);
+      if (inRegisteredRoot !== null && fs.existsSync(inRegisteredRoot)) return inRegisteredRoot;
     }
     // A genuine miss still reports against the repo, so `file_not_found` names the
     // path the caller actually wrote rather than a sibling guess.
@@ -650,10 +707,10 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
       trackedCache.set(abs, tracked);
       return tracked;
     },
-    // Report the roots this rel was ACTUALLY tried under, not the admitted-sibling
-    // catalogue: naming every sibling would bury the one root that matters. The repo
-    // root is always consulted; the workspace root only when the first segment names
-    // an admitted sibling, which is exactly when the `sibling/...` prefix is the fix.
+    // Report the roots this rel was ACTUALLY tried under, not the whole ambient
+    // filesystem. The repo root is always consulted; the workspace root only when
+    // the first segment names an admitted sibling; registered roots are explicit
+    // citation candidates and are consulted after those two precedence tiers.
     describeRoots: (rel) => {
       const roots = [repoRoot];
       const first = rel.split('/')[0];
@@ -661,6 +718,7 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
         siblings ??= independentSiblingRepos(repoRoot);
         if (siblings.has(first)) roots.push(path.join(workspaceRoot, first));
       }
+      roots.push(...admittedRegisteredRoots);
       return roots.join(', ');
     },
   };
@@ -734,13 +792,14 @@ export function selectHarnessCitationRepoRoot(
   citations: readonly AuditCitation[],
   discoveredRoots: readonly string[] = [],
   canonicalRepoRoot: string = REPO_ROOT,
+  registeredRoots: readonly string[] = [],
 ): SelectedCitationRoot | null {
   const canonical = harnessCitationRepoRoot(reg, harnessSlug);
   if (!canonical) return null;
 
   const verifying = citations.filter(isVerifyingCitation);
   const resolvesEveryCitation = (root: string): boolean => {
-    const deps = repoCitationDeps(root);
+    const deps = repoCitationDeps(root, registeredRoots);
     return verifying.every((citation) => resolveCitation(citation, deps).ok);
   };
   const project = reg.projects.find((entry) => entry.slug === harnessSlug);
@@ -781,13 +840,25 @@ export async function repoCitationContextForHarness(
   try {
     const reg = await loadHarnessRegistry();
     const project = reg.projects.find((entry) => entry.slug === harnessSlug);
+    const registeredRoots = registeredCitationRepoRoots(reg);
     const fallbackRoots = project?.harness_kind === 'hive' && !project.self_repo
       ? discoverKnownHiveCheckoutRoots()
       : [];
-    const selected = selectHarnessCitationRepoRoot(reg, harnessSlug, citations, fallbackRoots);
+    const selected = selectHarnessCitationRepoRoot(
+      reg,
+      harnessSlug,
+      citations,
+      fallbackRoots,
+      REPO_ROOT,
+      registeredRoots,
+    );
     return selected
-      ? { repoRoot: selected.root, deps: repoCitationDeps(selected.root), rootSource: selected.source }
-      : citationFailureForAvailableRoots(reg, harnessSlug, citations, fallbackRoots);
+      ? {
+          repoRoot: selected.root,
+          deps: repoCitationDeps(selected.root, registeredRoots),
+          rootSource: selected.source,
+        }
+      : citationFailureForAvailableRoots(reg, harnessSlug, citations, fallbackRoots, registeredRoots);
   } catch {
     return null;
   }
@@ -803,6 +874,7 @@ function citationFailureForAvailableRoots(
   harnessSlug: string,
   citations: readonly AuditCitation[],
   discoveredRoots: readonly string[],
+  registeredRoots: readonly string[] = [],
 ): CitationContextFailure | null {
   const canonical = harnessCitationRepoRoot(reg, harnessSlug);
   if (!canonical) return null;
@@ -823,7 +895,7 @@ function citationFailureForAvailableRoots(
   if (verifying.length === 0) return null;
 
   const failures = verifying.flatMap((citation): CitationFailure[] => {
-    const results = roots.map((root) => resolveCitation(citation, repoCitationDeps(root)));
+    const results = roots.map((root) => resolveCitation(citation, repoCitationDeps(root, registeredRoots)));
     if (results.some((result) => result.ok)) return [];
     const firstFailure = results.find(
       (result): result is Extract<CitationResolution, { ok: false }> => !result.ok,
