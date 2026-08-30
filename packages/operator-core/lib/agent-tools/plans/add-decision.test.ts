@@ -183,6 +183,51 @@ describe('plans:add-decision — measure before you rule', () => {
       'relay-provenance.ts:212 owns this field.\nMeasured (2026-08-29, working tree vs HEAD):',
     )).toMatchObject({ code: 'tree_fact_measurement_missing' });
   });
+
+  // Regression pins for EI-21900576470401486 / EI-21850043257707007: the guard
+  // false-fired at authors who HAD measured, because the old pattern anchored on
+  // a literal `M` after leading whitespace and capped the qualifier at 80 chars.
+  // A false alarm is a bug in the alarm — it trains readers to ignore the one
+  // warning that catches an unmeasured tree claim. Both reporters' diagnoses of
+  // the mechanism were wrong, so the forms are pinned here rather than reasoned
+  // about from the regex.
+  it.each([
+    ['bold', '**Measured:** grep -n failover adapters -> 37 hits across 5 files'],
+    ['underscore emphasis', '__Measured:__ grep -n failover -> 37 hits'],
+    ['single-star emphasis', '*Measured:* grep -n failover -> 37 hits'],
+    ['dash list marker', '- Measured: 22 cited paths, 7 drifted'],
+    ['star list marker', '* Measured: 22 cited paths, 7 drifted'],
+    ['numbered list marker', '1. Measured: 22 cited paths, 7 drifted'],
+    ['blockquote marker', '> Measured: 22 cited paths, 7 drifted'],
+    ['list marker plus emphasis', '- **Measured:** 22 cited paths, 7 drifted'],
+    ['indented emphasis', '   **Measured:** 22 cited paths, 7 drifted'],
+  ])('accepts a Measured line decorated with %s', (_label, measured) => {
+    expect(decisionMeasurementAdvisory(`relay-provenance.ts:212 owns this field.\n${measured}`)).toBeNull();
+  });
+
+  it('accepts a qualifier longer than the old 80-char cap, with evidence on the next line', () => {
+    // The exact heading from EI-21850043257707007: a 166-char parenthetical.
+    const heading =
+      'Measured (content evidence only; per repo convention neither `git blame` nor a commit subject is '
+      + 'evidence here, and the boundary is established by comparing blobs, not dates):';
+    expect(decisionMeasurementAdvisory(
+      `relay-provenance.ts:212 owns this field.\n${heading}\n    git rev-parse a:b -> deadbeef`,
+    )).toBeNull();
+  });
+
+  it('still fires when a decorated label carries no evidence after it', () => {
+    // The tolerance is about how the label is WRITTEN, never about whether
+    // evidence follows: a bare promise must keep failing.
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\n**Measured:**',
+    )).toMatchObject({ code: 'tree_fact_measurement_missing' });
+  });
+
+  it('does not mistake ordinary prose containing the word for a measurement', () => {
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\nWe Measured the thing and found: nothing conclusive.',
+    )).toMatchObject({ code: 'tree_fact_measurement_missing' });
+  });
 });
 
 describe('plans:add-decision — affects uses the cross-plan slug namespace', () => {

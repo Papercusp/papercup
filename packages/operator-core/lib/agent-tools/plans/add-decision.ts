@@ -120,7 +120,29 @@ export interface DecisionMeasurementAdvisory {
 // failures. The returned warning is nevertheless machine-visible on the exact
 // write that needs review, rather than relying on a prompt sentence alone.
 const SOURCE_PATH_RE = /\b(?:[A-Za-z0-9_@.-]+\/)*[A-Za-z0-9_@.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|sql|rs|go|py)(?::\d+)?\b/g;
-const MEASURED_LINE_RE = /^\s*Measured\b[^:\n]{0,80}:\s+\S.+$/im;
+// Deliberately tolerant of how the label is WRITTEN, strict about whether
+// evidence FOLLOWS it. A false alarm here is the expensive failure: this
+// advisory's whole job is to catch a decision asserting tree facts it never
+// verified, so firing it at an author who DID measure teaches "this warning is
+// noise", and then it protects nothing when a genuinely unmeasured decision
+// arrives. Measured 2026-08-30 against the anchored `^\s*Measured\b` form it
+// replaces: that version demanded a literal `M` immediately after leading
+// whitespace, so every markdown-decorated form silently read as absent —
+// `**Measured:**`, `- Measured:`, `> Measured:` — and its 80-char qualifier cap
+// rejected a 166-char parenthetical heading. TWO reporters filed it
+// (EI-21900576470401486 bold, EI-21850043257707007 long qualifier) and BOTH
+// diagnoses of the mechanism were wrong — one blamed colon adjacency, the other
+// an inner colon in the qualifier; measurement showed neither. A THIRD variant
+// (`- Measured:`) nobody had reported fell out of the same root cause. That is
+// why the accepted and rejected forms are pinned as tests below rather than
+// argued from the pattern.
+//
+// Accepts: an optional list/quote marker, optional markdown emphasis around the
+// label, an optional `(...)`/`[...]` qualifier up to 200 chars (or a short bare
+// one, as before), and evidence that may begin on the following line.
+// Still rejects: a label with nothing after it — a promise is not a measurement.
+const MEASURED_LINE_RE =
+  /^[ \t]*(?:(?:[-*+>]|\d+[.)])[ \t]*)?(?:\*\*|__|\*|_)?[ \t]*Measured\b(?:[ \t]*[(\[][^\n]{0,200}[)\]]|[^:\n]{0,80})?[ \t]*:(?:\*\*|__|\*|_)?\s+\S.+$/im;
 
 export function decisionMeasurementAdvisory(body: string): DecisionMeasurementAdvisory | null {
   const paths = [...new Set(body.match(SOURCE_PATH_RE) ?? [])].slice(0, 12);
