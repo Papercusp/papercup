@@ -457,9 +457,9 @@ describe('always-on self-feedback guards (WI-4500)', () => {
   // WI-954890 — the defect the cooldown above could not see, and the reason it
   // is now only a fail-closed fallback. isSelfAudioLikely is evaluated at
   // DISPATCH, but it guards audio captured much earlier: end-of-speech detection
-  // costs 683ms on the shipped energy-VAD path and whisper's measured floor on
-  // the local server is a further ~827ms, so an echo transcript could not arrive
-  // in under ~1.5s — always past the 700ms window. These pin the replacement
+  // costs 683ms on the shipped energy-VAD path and whisper adds 588ms even in the
+  // fastest run measured, so an echo transcript could not arrive in under 1271ms
+  // — always past the 700ms window. These pin the replacement
   // property: the verdict follows the AUDIO, so lateness cannot defeat it.
   it('isSelfEchoCapture rejects audio recorded during playout REGARDLESS of dispatch time', async () => {
     const mod = await import('./voice-mode');
