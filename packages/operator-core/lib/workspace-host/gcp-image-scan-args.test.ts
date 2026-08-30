@@ -9,6 +9,10 @@ import {
   buildImageScannerInstanceCreateArgs,
   // @ts-expect-error -- side-effect-free .mjs argv builder, deliberately untyped.
 } from '../../bin/gcp-image-scan-args.mjs';
+import {
+  CommandGcpImageFamilyScanRunner,
+  type GcpImageFamilyCommandRunner,
+} from './gcp-image-family-adapter';
 
 const BASE = {
   instanceName: 'pc-scan-vm-test123',
@@ -66,6 +70,36 @@ describe('buildImageScannerInstanceCreateArgs', () => {
         buildImageScannerInstanceCreateArgs({ ...BASE, subnetwork }),
       ).toThrow(/subnetwork is required/i);
     }
+  });
+
+  it('serializes the request-bound subnet through the adapter command protocol', async () => {
+    const calls: Array<{ command: string; args: readonly string[]; stdin?: string }> = [];
+    const commandRunner: GcpImageFamilyCommandRunner = {
+      run: async (command, args = [], options = {}) => {
+        calls.push({
+          command: typeof command === 'string' ? command : command.command,
+          args: typeof command === 'string' ? args : command.args,
+          ...(options.stdin ? { stdin: options.stdin } : {}),
+        });
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    };
+    const runner = new CommandGcpImageFamilyScanRunner(commandRunner, 'papercusp-image-scan-test');
+
+    await runner.run({
+      projectId: BASE.projectId,
+      subnetwork: BASE.subnetwork,
+      imageId: `projects/${BASE.projectId}/global/images/candidate`,
+      buildManifestIdentity: 'manifest-identity',
+      releaseSha256: 'a'.repeat(64),
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ command: 'papercusp-image-scan-test', args: ['--json-stdin'] });
+    expect(JSON.parse(calls[0].stdin ?? '{}')).toMatchObject({
+      projectId: BASE.projectId,
+      subnetwork: BASE.subnetwork,
+    });
   });
 
   it('wires the production scanner through the private argv builder and IAP preflight', () => {

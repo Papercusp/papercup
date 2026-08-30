@@ -147,6 +147,8 @@ export interface GcpImageFamilyReleaseAdapter {
   }): Promise<{ imageId: string }>;
   scanImage(input: {
     projectId: string;
+    /** The request-bound NAT-backed subnet for the private scanner VM. */
+    subnetwork: string;
     imageId: string;
     buildManifestIdentity: string;
     releaseSha256: string;
@@ -488,6 +490,7 @@ export async function executeGcpImageFamilyRelease(
   }
   const scan = await adapter.scanImage({
     projectId,
+    subnetwork: request.cleanRoom.subnetwork,
     imageId: candidate.imageId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseSha256: artifact.release.bundleSha256,

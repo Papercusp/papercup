@@ -66,7 +66,11 @@ function artifact(): WorkspaceHostImageArtifact {
       sha256: RELEASE_SHA,
       sizeBytes: 42_000,
     },
-    baseImage: { reference: 'ubuntu-24.04-amd64', architecture: 'x86_64', sha256: 'd'.repeat(64) },
+    baseImage: {
+      reference: `projects/${PROJECT}/global/images/ubuntu-base`,
+      architecture: 'x86_64',
+      sha256: 'd'.repeat(64),
+    },
     builder: {
       strategy: 'shared',
       kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
@@ -251,6 +255,7 @@ function inspection(
 
 class FakeAdapter implements GcpImageFamilyReleaseAdapter {
   readonly calls: string[] = [];
+  readonly scanInputs: Array<Parameters<GcpImageFamilyReleaseAdapter['scanImage']>[0]> = [];
   readonly inspections = new Map<string, GcpImageInspection>();
   readonly pins = new Map<string, GcpImageFamilyPin>();
   activePin: GcpImageFamilyPin = PREVIOUS;
@@ -276,6 +281,7 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
 
   async scanImage(input: Parameters<GcpImageFamilyReleaseAdapter['scanImage']>[0]): Promise<GcpImageScanEvidence> {
     this.calls.push('scan-candidate');
+    this.scanInputs.push(input);
     return {
       imageId: input.imageId,
       buildManifestIdentity: input.buildManifestIdentity,
@@ -355,13 +361,20 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
 describe('GCP workspace-host image family release', () => {
   it('scans and boots outside the family, promotes only the green exact image, and preserves one active rollback target', async () => {
     const adapter = new FakeAdapter();
-    const result = await executeGcpImageFamilyRelease(request(), adapter);
+    const releaseRequest = request();
+    const result = await executeGcpImageFamilyRelease(releaseRequest, adapter);
 
     expect(result.releaseGate.accepted).toBe(true);
     expect(result.candidateImageId).toBe(CANDIDATE_ID);
     expect(result.active).toEqual({ projectId: PROJECT, family: FAMILY, imageId: IMAGE_ID, version: VERSION });
     expect(result.rollbackTarget).toEqual(PREVIOUS);
     expect(result.retired).toEqual([OLDER]);
+    expect(adapter.scanInputs).toHaveLength(1);
+    expect(adapter.scanInputs[0]).toMatchObject({
+      projectId: PROJECT,
+      subnetwork: releaseRequest.cleanRoom.subnetwork,
+      imageId: CANDIDATE_ID,
+    });
     expect(adapter.calls).toEqual([
       'build-candidate',
       'scan-candidate',
