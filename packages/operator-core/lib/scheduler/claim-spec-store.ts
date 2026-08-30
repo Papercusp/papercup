@@ -24,6 +24,7 @@ import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 import { recordClaimAttempt } from '../orchestrator/claim-audit';
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
+import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 /**
@@ -91,7 +92,7 @@ export async function getActiveClaimsForBee(
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ${args.cupId}
-       AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')`) as Array<{
+       AND status NOT IN ${sql([...ALL_TERMINAL_STATUSES])}`) as Array<{
     id: string;
     kind: string;
   }>;

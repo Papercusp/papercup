@@ -117,6 +117,22 @@ describe('cup_claim_specs store (mig 372)', () => {
     expect(await countActiveClaimsForBee({ cupId: 'su-bee-active' }, db.sql)).toBe(0);
   });
 
+  // WI-1250584: the terminal-status exclusion list drifted from the canonical
+  // ALL_TERMINAL_STATUSES set (work-item-blocking.ts) — it had 'passed'/'deprecated'/
+  // 'resolved'/'closed' but was missing 'done' and 'dropped', so a `taken_by`-tagged
+  // row left in either of THOSE two terminal statuses (e.g. a system-created
+  // resource-governor admission receipt, or any ordinary issue-family item closed via
+  // 'done') was miscounted as an active claim forever, permanently pinning a bee's
+  // concurrency slot even though the item was already finished.
+  it("does not count 'done' or 'dropped' rows as active claims (WI-1250584)", async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+      VALUES ('default', 'WI-1250584-done', 'su-bee-terminal-drift', 'done'),
+             ('default', 'WI-1250584-dropped', 'su-bee-terminal-drift', 'dropped')`;
+
+    expect(await countActiveClaimsForBee({ cupId: 'su-bee-terminal-drift' }, db.sql)).toBe(0);
+  });
+
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {
     const r1 = await setClaimSpec({ cupId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(r1.ok).toBe(true);
