@@ -557,6 +557,9 @@ function makeOrgDisallowedDeactivator(
               atRiskOwners,
               // P-004 (surface-only): the leader's concrete reclaim list, structured.
               orphanedClaims: orphanedClaims.map((o) => ({ ownerId: o.ownerId, claimIds: o.claims.map((c) => c.id) })),
+              // EI-21843060786178076 audit: same read-then-write race as credential-health —
+              // stable per-account subjectSignature so a raced double-fire still coalesces.
+              subjectSignature: `inference-gateway:account-org-disallowed:${accountId}`,
             },
           });
         }
