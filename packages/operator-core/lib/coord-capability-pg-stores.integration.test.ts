@@ -193,6 +193,6 @@ test('PgEntitySubscriptionStore reads event subscribers before migration 602', a
       },
     ]);
   } finally {
-    await db.cleanup();
+    await db?.cleanup();
   }
 });

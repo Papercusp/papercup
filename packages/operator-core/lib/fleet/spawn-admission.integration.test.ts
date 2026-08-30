@@ -80,7 +80,7 @@ beforeAll(async () => {
   await db.sql.unsafe(ISSUES_DDL);
   await db.sql.unsafe(PLAN_CLAIMS_DDL);
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`TRUNCATE harness_shared.spawned_agents`; });
 
 describe('admitSpawn (P-017 + P-039, real PG)', () => {

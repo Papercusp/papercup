@@ -187,7 +187,7 @@ beforeAll(async () => {
   // reserved-plan-lane floor reads them); the reserved-lane describe below seeds into them.
 }, 180_000);
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,

@@ -31,7 +31,7 @@ beforeAll(async () => {
   await db.sql.unsafe(SAGAS_DDL);
   await db.sql.unsafe(TOMBSTONES_DDL);
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`TRUNCATE harness_shared.fleet_sagas, harness_shared.fleet_tombstones`; });
 
 describe('saga — forward + compensation (D-006, real PG)', () => {

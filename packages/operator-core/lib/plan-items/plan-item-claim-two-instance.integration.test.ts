@@ -117,7 +117,7 @@ afterAll(async () => {
   __resetPeerRpcTransportForTests();
   __resetAuthorityOpsForTests();
   resetClaimAuthority();
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 beforeEach(async () => {

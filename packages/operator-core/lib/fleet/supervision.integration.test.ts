@@ -77,7 +77,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(PLAN_ITEM_CLAIMS_DDL);
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   escalations = []; lockCalls = []; relaunchCalls = [];
   await db.sql`TRUNCATE harness_shared.spawned_agents, harness_shared.work_items, harness_shared.plan_item_claims `;

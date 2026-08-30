@@ -30,7 +30,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('governor');
   await db.sql.unsafe(FLEET_GOVERNOR_DDL);
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`TRUNCATE harness_shared.fleet_governor`; });
 
 describe('governor — token bucket spend ceiling (D-005)', () => {

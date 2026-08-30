@@ -129,7 +129,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
 
   afterAll(async () => {
     delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
-    await db.cleanup();
+    await db?.cleanup();
     await rm(root, { recursive: true, force: true });
   });
 

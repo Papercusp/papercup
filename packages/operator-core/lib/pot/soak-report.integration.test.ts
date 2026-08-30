@@ -90,7 +90,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('readContextBurnMetrics', () => {

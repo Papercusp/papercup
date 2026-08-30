@@ -118,7 +118,7 @@ beforeAll(async () => {
   await ensureConversationsTable(sql);
 });
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.coord_conversations,

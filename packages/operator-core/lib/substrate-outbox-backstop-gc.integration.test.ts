@@ -91,7 +91,7 @@ describe('substrate-outbox backstop GC', () => {
     `);
   }, 60_000);
   afterAll(async () => {
-    await db.cleanup();
+    await db?.cleanup();
   });
   beforeEach(async () => {
     await sql`DELETE FROM harness_shared.substrate_outbox`;

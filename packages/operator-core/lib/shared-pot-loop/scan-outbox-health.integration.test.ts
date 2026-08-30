@@ -66,7 +66,7 @@ describe('scanOutboxHealth — quarantined-row exclusion (EI-21009625512310918)'
     `);
   }, 60_000);
   afterAll(async () => {
-    await db.cleanup();
+    await db?.cleanup();
   });
   beforeEach(async () => {
     await sql`DELETE FROM harness_shared.substrate_outbox`;
@@ -170,7 +170,7 @@ describe('scanOutboxHealth — residentInProcess dormancy exception (EI-21096375
     `);
   }, 60_000);
   afterAll(async () => {
-    await db.cleanup();
+    await db?.cleanup();
   });
   beforeEach(async () => {
     await sql`DELETE FROM harness_shared.substrate_outbox`;

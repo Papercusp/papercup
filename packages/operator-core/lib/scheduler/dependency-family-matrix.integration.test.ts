@@ -117,7 +117,7 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 beforeEach(async () => {

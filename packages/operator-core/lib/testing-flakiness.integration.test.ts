@@ -84,7 +84,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('computeFlakiness workspace scoping (regression)', () => {

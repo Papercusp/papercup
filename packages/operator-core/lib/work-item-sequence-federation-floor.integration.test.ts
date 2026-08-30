@@ -36,7 +36,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('work-item sequence federation floor', () => {

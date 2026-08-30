@@ -90,7 +90,7 @@ describe('memory_canonical row_kind discriminator — migration 757 (real PG)', 
   });
 
   afterAll(async () => {
-    await db.cleanup();
+    await db?.cleanup();
   });
 
   beforeEach(async () => {

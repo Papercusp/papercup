@@ -673,7 +673,7 @@ describe('federation COMMS matrix — harness-scoped coordination surfaces feder
   it('M5: coord_entity_subscriptions (delivery) is NOT in the captured/federated set', async () => {
     const db = await createOrgTestDb();
     cleanups.push(async () => {
-      await db.cleanup();
+      await db?.cleanup();
     });
 
     // No capture_substrate_outbox trigger is attached to the delivery table.

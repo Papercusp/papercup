@@ -66,7 +66,7 @@ beforeAll(async () => {
   await db.sql.unsafe(PRESENCE_DDL);
 }, 90_000);
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.agent_seat_consumptions`;

@@ -51,7 +51,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('diagnoseFleetScopeRetiredPlans against real Postgres (EI-20263410682554156)', () => {

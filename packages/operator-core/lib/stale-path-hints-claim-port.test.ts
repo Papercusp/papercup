@@ -137,6 +137,62 @@ describe('getClaimTimeStalePathHints', () => {
   ])('returns null for %s', async (_label, payload) => {
     await expect(getClaimTimeStalePathHints({ payload })).resolves.toBe(null);
   });
+
+  describe.runIf(gitAvailable)('repoRoot resolution precedence (EI-21895925841807401)', () => {
+    // The bug: every current caller omits `repoRoot`, and the port used to fall
+    // straight through to `process.cwd()` — on the :3070 operator that cwd is the
+    // RELEASE checkout (a separate, days-stale git tree), not the staging tree
+    // PAPERCUSP_INTEGRATION_ROOT names. During this test run process.cwd() is
+    // this real repository's own checkout, which does NOT contain the throwaway
+    // fixture path below — so if the env-var fallback regressed back to
+    // `process.cwd()`, these assertions would see it as 'missing' (or crash
+    // trying to walk a nonexistent rename history for it) instead of resolving
+    // it in the temp `repo` fixture.
+    const ENV_KEY = 'PAPERCUSP_INTEGRATION_ROOT';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV_KEY];
+      delete process.env[ENV_KEY];
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = savedEnv;
+    });
+
+    function commitAt(root: string, rel: string): void {
+      writeFileAt(root, rel, 'export {};\n');
+      sh(root, ['add', rel]);
+      sh(root, ['commit', '-q', '-m', `add ${rel}`]);
+    }
+
+    it('falls back to PAPERCUSP_INTEGRATION_ROOT — not process.cwd() — when repoRoot is omitted', async () => {
+      commitAt(repo, 'src/env-integration-root-fallback-fixture-a.ts');
+      process.env[ENV_KEY] = repo;
+      await expect(
+        getClaimTimeStalePathHints({
+          payload: { paths: ['src/env-integration-root-fallback-fixture-a.ts'] },
+        }),
+      ).resolves.toBe(null);
+    });
+
+    it('an explicit repoRoot still wins over PAPERCUSP_INTEGRATION_ROOT', async () => {
+      commitAt(repo, 'src/env-integration-root-fallback-fixture-b.ts');
+      const wrongRoot = mkdtempSync(join(tmpdir(), 'stale-path-hints-wrong-root-'));
+      try {
+        process.env[ENV_KEY] = wrongRoot; // a git-less dir; must NOT be consulted
+        await expect(
+          getClaimTimeStalePathHints({
+            payload: { paths: ['src/env-integration-root-fallback-fixture-b.ts'] },
+            repoRoot: repo,
+          }),
+        ).resolves.toBe(null);
+      } finally {
+        rmSync(wrongRoot, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe('stalePathHintsNote', () => {

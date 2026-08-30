@@ -128,7 +128,7 @@ async function seedPlacement(id: string, status: string, opts: { harness?: strin
 }
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 beforeEach(async () => {

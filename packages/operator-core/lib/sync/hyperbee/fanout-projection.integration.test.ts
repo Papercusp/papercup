@@ -82,7 +82,7 @@ beforeAll(async () => {
   await setupSchema(sql);
 });
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.coord_event_log,

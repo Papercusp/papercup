@@ -99,7 +99,7 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
 }, 180_000);
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   // harness_features_consolidated is a VIEW over work_items (see _work-items-schema.ts) —

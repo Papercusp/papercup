@@ -107,7 +107,20 @@ export async function getClaimTimeStalePathHints(ref: {
   try {
     // Resolve against the WORK-TREE ROOT, not process.cwd(): the host may run
     // from any depth inside the checkout, and stored paths are repo-relative.
-    const topLevel = (await git(['rev-parse', '--show-toplevel'], resolve(ref.repoRoot ?? process.cwd())))?.trim();
+    //
+    // EI-21895925841807401: `process.cwd()` alone is also the WRONG CHECKOUT on
+    // :3070 — that operator's cwd is the release checkout (papercup-release,
+    // pinned to green `main`, days stale by design), not the staging tree the
+    // agent actually edits. `PAPERCUSP_INTEGRATION_ROOT` is exported into both
+    // the :3070 and :3170 operator units specifically to name the staging root
+    // (mirrors dev-deploy-state.ts's `resolveConfig()`, which resolves the same
+    // integration root the same way for the identical reason). Honoring it here
+    // fixes every current caller (scheduler:get_next, work_items:claim,
+    // work_items:claim_next, claim-time-enrichment) without touching any of
+    // them; `ref.repoRoot` — when a caller does supply it, e.g. these tests —
+    // still wins over both.
+    const defaultRoot = process.env.PAPERCUSP_INTEGRATION_ROOT || process.cwd();
+    const topLevel = (await git(['rev-parse', '--show-toplevel'], resolve(ref.repoRoot ?? defaultRoot)))?.trim();
     if (!topLevel) return null;
     const candidates = requestedPaths.filter((p) => isConcretePath(p) && !existsSync(join(topLevel, p)));
     if (candidates.length === 0) return null;

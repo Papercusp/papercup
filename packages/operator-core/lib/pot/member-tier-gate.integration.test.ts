@@ -87,7 +87,7 @@ beforeAll(async () => {
 }, 90_000);
 afterAll(async () => {
   setFlagOverridesForTest(null);
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.pot_members, harness_shared.shared_repo_binding_cache`;

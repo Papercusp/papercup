@@ -204,7 +204,7 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('the shipped oracle over random DAGs (P-010) — @covers INV-04 INV-09 INV-11', () => {

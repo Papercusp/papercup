@@ -69,7 +69,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 }, 60_000);
 
 describe('Learning Improve bounded projection — real Postgres', () => {

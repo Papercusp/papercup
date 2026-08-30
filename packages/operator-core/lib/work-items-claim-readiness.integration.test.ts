@@ -114,7 +114,7 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
 });

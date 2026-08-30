@@ -52,7 +52,7 @@ afterAll(async () => {
   if (db) {
     await db.adminSql`DELETE FROM harness_shared.testing_surfaces WHERE workspace_id = ${WS}`;
     await db.adminSql`DELETE FROM harness_shared.census_provider_registrations WHERE workspace_id = ${WS}`;
-    await db.cleanup();
+    await db?.cleanup();
   }
 });
 

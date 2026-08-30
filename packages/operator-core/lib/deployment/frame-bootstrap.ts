@@ -355,6 +355,19 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       'sudo -u postgres psql -qc "CREATE ROLE harness_zero LOGIN" || true',
       'sudo -u postgres psql -qc "ALTER ROLE harness_zero WITH LOGIN PASSWORD \'$HARNESS_ZERO_PWD\'"',
       'sudo -u postgres createdb -O harness_admin papercusp || true',
+      // Database-level safety net (EI-21879861039988274): harness_admin/harness_app
+      // get their own 60s idle-in-tx bound above, but a plain `postgres` connection
+      // (e.g. pg_dump in the backup hook) or any OTHER role that ever logs into this
+      // database has none. idle_in_transaction_session_timeout only fires when a
+      // backend is genuinely IDLE (no statement running) inside an open transaction —
+      // it never touches a session actively executing a query, including one blocked
+      // waiting on a lock — so this cannot abort a running pg_dump/COPY/VACUUM. A
+      // role-level SET (above) still takes precedence over this database default, so
+      // harness_admin/harness_app are unaffected; this only closes the gap for roles
+      // with no override of their own. Observed live: a leaked idle-in-tx backend
+      // pinned VACUUM's dead-tuple reclaim horizon on gateway_payload_blobs for 59
+      // minutes, which cascaded into work_items:checkpoint timing out fleet-wide.
+      'sudo -u postgres psql -qc "ALTER DATABASE papercusp SET idle_in_transaction_session_timeout = \'60s\'"',
       // Export for every later step (single bootstrap shell): the operator + the
       // invoke-once pg-bootstrap read this DSN. No ~/.papercusp/embedded-pg.json is
       // written, so the operator's discovery cleanly falls through to DATABASE_URL.

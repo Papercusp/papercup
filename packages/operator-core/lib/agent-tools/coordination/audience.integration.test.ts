@@ -89,7 +89,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('@plan scoping (real PG subscriptions + tags + injected presence)', () => {

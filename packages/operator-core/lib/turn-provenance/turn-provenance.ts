@@ -351,15 +351,54 @@ export function readLedgerRows(
 }
 
 /**
+ * RECLAMATION GRACE — how far PAST its own TTL a row is retained before GC may
+ * delete it. Not a tuning knob: it is what keeps deletion verdict-neutral.
+ *
+ * THE INVARIANT (plan D-007): GC must never delete a row while its ABSENCE
+ * would produce a MORE authoritative verdict than its PRESENCE. Expiry and
+ * absence are not the same verdict on every branch:
+ *
+ *   envelope + expired row      → unverified-claim   (:540)
+ *   envelope + NO row           → unverified-claim   (:550)   ← same, safe
+ *   no envelope + expired row   → unverified-claim   (:591)
+ *   no envelope + NO row        → machine-surface, else OWNER (:604/:617)  ← NOT the same
+ *
+ * On the envelope-LESS branch, deleting an expired row PROMOTES the turn from
+ * `unverified-claim` to an affirmative OWNER stamp. That branch is not exotic:
+ * `cli-schedule-wakeup` rows are hash-only by construction (the Claude-native
+ * ScheduleWakeup tool types its prompt from inside the CLI, so no injector can
+ * prefix an envelope), and they carry a per-row ttlMs of up to
+ * MAX_DELAY_SEC + TTL_SLACK_MS. A wake that fires past that slack finds an
+ * expired row — safe — unless the hourly sweep deleted it first, in which case
+ * the same machine-scheduled turn is stamped OWNER (interactive).
+ *
+ * So the grace must comfortably exceed the largest window in which a row can
+ * still be matched. The maximum scheduled delay is 1h; 24h is ~24x that and
+ * still bounds the dir to about one day of rows (~690 files/day measured), the
+ * growth problem this sweep exists to solve. Sizing it from the reachable
+ * window rather than from disk pressure is the point: disk is the reason to
+ * delete, the invariant is the constraint on when.
+ */
+export const LEDGER_GC_GRACE_MS = 24 * 60 * 60_000;
+
+/**
  * Directory GC (for a janitor sweep): rewrite each ledger file keeping only
- * live rows; unlink files with none. Best-effort per file.
+ * rows still within TTL + LEDGER_GC_GRACE_MS; unlink files with none.
+ * Best-effort per file.
+ *
+ * NOTE the asymmetry with `readLedgerRows`, which drops rows the moment they
+ * pass TTL: an expired row is not USED, but it must remain PRESENT, because
+ * presence is what holds the turn at `unverified-claim` instead of letting it
+ * fall through to the OWNER default. Reclamation is deliberately lazier than
+ * expiry.
  */
 export function gcLedgerDir(
-  opts: { dir?: string; nowMs?: number; ttlMs?: number } = {},
+  opts: { dir?: string; nowMs?: number; ttlMs?: number; graceMs?: number } = {},
 ): { filesRemoved: number; rowsDropped: number } {
   const dir = opts.dir ?? turnProvenanceDir();
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
+  const graceMs = opts.graceMs ?? LEDGER_GC_GRACE_MS;
   let filesRemoved = 0;
   let rowsDropped = 0;
   let files: string[];
@@ -372,7 +411,8 @@ export function gcLedgerDir(
     const p = join(dir, f);
     try {
       const rows = parseRows(readFileSync(p, 'utf8'));
-      const live = rows.filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs));
+      // Retain until TTL + grace, NOT until TTL — see LEDGER_GC_GRACE_MS.
+      const live = rows.filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs) + graceMs);
       rowsDropped += rows.length - live.length;
       if (live.length === 0) {
         unlinkSync(p);

@@ -81,7 +81,7 @@ describe('memory taxonomy backfill — migration 747 (real PG)', () => {
   });
 
   afterAll(async () => {
-    await db.cleanup();
+    await db?.cleanup();
   });
 
   beforeEach(async () => {

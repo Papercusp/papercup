@@ -92,7 +92,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('fetchRedTestRows excludes scratch-config runs (EI-18767688096795873)', () => {

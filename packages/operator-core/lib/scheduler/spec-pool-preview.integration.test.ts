@@ -101,7 +101,7 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
 }, 90_000);
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps `;

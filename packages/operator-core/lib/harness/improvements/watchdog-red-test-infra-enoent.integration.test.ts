@@ -145,7 +145,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 describe('fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-20770395938680312)', () => {

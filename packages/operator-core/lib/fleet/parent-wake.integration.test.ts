@@ -52,7 +52,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('parent-wake');
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.spawned_agents`;
   vi.clearAllMocks();

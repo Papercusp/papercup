@@ -86,7 +86,7 @@ afterAll(async () => {
       DELETE FROM harness_shared.testing_surfaces
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
     `;
-    await db.cleanup();
+    await db?.cleanup();
   }
 });
 

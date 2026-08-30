@@ -20,6 +20,7 @@ import {
   isTurnOrigin,
   ledgerPathForSid,
   ledgerTtlMs,
+  LEDGER_GC_GRACE_MS,
   LEDGER_TTL_MS_DEFAULT,
   mintNonce,
   normalizeForHash,
@@ -379,14 +380,80 @@ describe('ledger write/read/GC', () => {
     expect(appendLedgerRow(row(), { dir: join(plainFile, 'sub'), nowMs: NOW })).toBe(false);
   });
 
-  it('gcLedgerDir drops expired rows and unlinks fully-dead files', () => {
-    appendLedgerRow(row({ sid: 'dead-sid', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
+  it('gcLedgerDir drops rows past TTL + grace and unlinks fully-dead files', () => {
+    // Aged past TTL + grace — the point at which reclamation is verdict-neutral.
+    // (This case previously aged rows only past TTL and asserted they were
+    // dropped, which is the behaviour D-007 identifies as unsafe; see the
+    // retention test below for why presence outlives usefulness.)
+    const dead = NOW - TTL - LEDGER_GC_GRACE_MS - 1000;
+    appendLedgerRow(row({ sid: 'dead-sid', ts: dead }), { dir, nowMs: NOW, ttlMs: TTL });
     appendLedgerRow(row({ sid: 'live-sid', nonce: 'cccccccccccccccc', ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL });
-    appendLedgerRow(row({ sid: 'live-sid', nonce: 'dddddddddddddddd', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
+    appendLedgerRow(row({ sid: 'live-sid', nonce: 'dddddddddddddddd', ts: dead }), { dir, nowMs: NOW, ttlMs: TTL });
     const res = gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
     expect(res.filesRemoved).toBe(1);
     expect(res.rowsDropped).toBe(2);
     expect(readLedgerRows('live-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true })).toHaveLength(1);
+  });
+
+  it('gcLedgerDir RETAINS an expired row still inside the grace window (D-007)', () => {
+    // Expired means "no longer USED" (readLedgerRows drops it); it does not mean
+    // "safe to delete". On the envelope-less branch, presence is what holds the
+    // turn at unverified-claim instead of the OWNER default.
+    appendLedgerRow(row({ sid: 'grace-sid', ts: NOW - TTL - 1000 }), { dir, nowMs: NOW, ttlMs: TTL });
+    const res = gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
+    expect(res.rowsDropped).toBe(0);
+    expect(res.filesRemoved).toBe(0);
+    expect(readLedgerRows('grace-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true })).toHaveLength(1);
+    // …and it is still not USED: the expiry semantics are unchanged.
+    expect(readLedgerRows('grace-sid', { dir, nowMs: NOW, ttlMs: TTL })).toHaveLength(0);
+  });
+
+  it('GC never PROMOTES a turn: the same envelope-less turn keeps its verdict across a sweep (D-007)', () => {
+    // The invariant itself, end-to-end and independent of the constant: run the
+    // real classifier over rows read from disk BEFORE and AFTER a real sweep.
+    // If GC ever deletes a row whose absence changes the branch, this flips from
+    // unverified-claim to owner-interactive — the failure the plan exists to stop.
+    const text = 'continue the drain';
+    const r = row({ sid: 'gc-verdict-sid', ts: NOW - TTL - 1000, sha256: payloadSha256(text) });
+    appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL });
+
+    const before = classify(text, readLedgerRows('gc-verdict-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true }), { nowMs: NOW, ttlMs: TTL });
+    expect(before.verdict).toBe('unverified-claim');
+
+    gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL });
+
+    const after = classify(text, readLedgerRows('gc-verdict-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true }), { nowMs: NOW, ttlMs: TTL });
+    expect(after.verdict).toBe(before.verdict);
+    expect(after.verdict).not.toBe('owner-interactive');
+  });
+
+  it('FALSIFIABLE control: a TTL-only sweep DOES promote that turn to owner-interactive', () => {
+    // Proves the guard above can fail. graceMs:0 reproduces the pre-D-007 sweep;
+    // if this ever stops promoting, the invariant test has stopped testing
+    // anything and both cases must be re-examined.
+    const text = 'continue the drain';
+    const r = row({ sid: 'gc-control-sid', ts: NOW - TTL - 1000, sha256: payloadSha256(text) });
+    appendLedgerRow(r, { dir, nowMs: NOW, ttlMs: TTL });
+
+    gcLedgerDir({ dir, nowMs: NOW, ttlMs: TTL, graceMs: 0 });
+
+    const after = classify(text, readLedgerRows('gc-control-sid', { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true }), { nowMs: NOW, ttlMs: TTL });
+    expect(after.verdict).toBe('owner-interactive');
+  });
+
+  it('the grace window exceeds the longest in-flight ScheduleWakeup row (D-007)', () => {
+    // Sizing pinned to the hook that mints the hash-only rows, not to a number
+    // repeated here: widening MAX_DELAY_SEC there without widening the grace
+    // re-opens the window, and this fails.
+    const hook = readFileSync(
+      join(__dirname, '../../../../apps/operator/scripts/hooks/cc/pretooluse-schedule-wakeup-provenance.mjs'),
+      'utf8',
+    );
+    const maxDelaySec = Number(/const MAX_DELAY_SEC = (\d+)/.exec(hook)?.[1]);
+    const slackMs = Number(/const TTL_SLACK_MS = (\d+) \* 60_000/.exec(hook)?.[1]) * 60_000;
+    expect(Number.isFinite(maxDelaySec)).toBe(true);
+    expect(Number.isFinite(slackMs)).toBe(true);
+    expect(LEDGER_GC_GRACE_MS).toBeGreaterThan(maxDelaySec * 1000 + slackMs);
   });
 
   it('sanitizeSid maps unsafe chars and bounds length (lockstep with psu-pty sanitizeKey)', () => {
