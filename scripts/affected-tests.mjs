@@ -3843,21 +3843,28 @@ if (dry) {
 // box hit this and had to hand-triage (re-run + isolate) every time. Rather
 // than flip the default globally (which would silently retry away a genuine
 // regression on a quiet box too), auto-enable the SAME retry only when the
-// box is actually loaded enough to plausibly cause it — load1 above the
-// threshold the gate's own comment cites as its affected regime (70-95) with
-// headroom to catch it earlier. An explicit AFFECTED_RETRY_FAILED=0/1 always
-// wins (still lets a caller force fail-fast even on a loaded box, or force
-// retry on a quiet one).
-const AUTO_RETRY_LOAD1_THRESHOLD = 40;
+// box is actually loaded enough to plausibly cause it. loadavg is only
+// comparable across machines after normalizing by the parallelism available
+// to this process, so the threshold is expressed as loadavg per core. An
+// explicit AFFECTED_RETRY_FAILED=0/1 always wins (still lets a caller force
+// fail-fast even on a loaded box, or force retry on a quiet one).
+const AUTO_RETRY_LOAD1_THRESHOLD = 1.0;
+const RETRY_LOAD1_CORES = Math.max(1, availableParallelism());
 const explicitRetryFailed = process.env.AFFECTED_RETRY_FAILED;
 const currentLoad1 = loadavg()[0];
+const currentLoadPerCore = currentLoad1 / RETRY_LOAD1_CORES;
+// The load-suspect classifier and its output intentionally retain the raw
+// load1 unit. Derive its equivalent raw threshold from the same per-core
+// policy so the enabling and attribution comparisons cannot drift apart.
+const retryLoad1Threshold =
+  AUTO_RETRY_LOAD1_THRESHOLD * RETRY_LOAD1_CORES;
 const retryFailed =
   explicitRetryFailed != null
     ? explicitRetryFailed === "1"
-    : currentLoad1 > AUTO_RETRY_LOAD1_THRESHOLD;
+    : currentLoadPerCore > AUTO_RETRY_LOAD1_THRESHOLD;
 if (explicitRetryFailed == null && retryFailed) {
   outSync(
-    `>>> load1=${currentLoad1.toFixed(0)} > ${AUTO_RETRY_LOAD1_THRESHOLD} — auto-enabling flake-absorbing retry ` +
+    `>>> load1=${currentLoad1.toFixed(0)} (${currentLoadPerCore.toFixed(2)}/core) > ${AUTO_RETRY_LOAD1_THRESHOLD}/core — auto-enabling flake-absorbing retry ` +
       `(EI-9103; set AFFECTED_RETRY_FAILED=0 to force fail-fast anyway)`,
   );
 }
@@ -4212,7 +4219,7 @@ const taskVerdictGateConfig = {
   captureOutput: captureOutput(),
   scheduler: SCHEDULER_CONFIG,
   retryFailed,
-  retryLoad1Threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+  retryLoad1Threshold,
   freshRetryMaxFiles: FRESH_RETRY_MAX_FILES,
   runIntegration,
   runAll,
@@ -5483,7 +5490,7 @@ for (const scheduled of initialPool.results) {
         absorptionRan,
         rerunStatus: absorptionRan ? r.status : null,
         load1AtRerun,
-        threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+        threshold: retryLoad1Threshold,
       });
       if (residualClass === "load-suspect") {
         loadSuspectTasks.push({
@@ -5495,7 +5502,7 @@ for (const scheduled of initialPool.results) {
           formatLoadSuspectNotice({
             workspace: t.ws.name,
             load1AtRerun,
-            threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+            threshold: retryLoad1Threshold,
             files: residualFiles,
           }),
         );
@@ -5764,7 +5771,7 @@ if (failed) {
         tasks: loadSuspectTasks.length,
         files: loadSuspectTasks.reduce((n, e) => n + e.files.length, 0),
         maxLoad1: Math.max(...loadSuspectTasks.map((e) => e.load1AtRerun)),
-        threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+        threshold: retryLoad1Threshold,
       }),
     );
   }

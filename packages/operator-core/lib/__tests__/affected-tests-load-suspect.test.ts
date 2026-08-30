@@ -207,7 +207,20 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // If the enabling comparison and the blaming comparison ever used different constants, a
     // run could switch absorption on for a load it then refuses to blame — the exact
     // incoherence WI-38300 is about, reintroduced one constant over.
-    expect(src).toMatch(/threshold:\s*AUTO_RETRY_LOAD1_THRESHOLD/);
+    expect(src).toMatch(/threshold:\s*retryLoad1Threshold/);
+  });
+
+  it('normalizes the auto-retry trigger by the process available parallelism', () => {
+    // A raw load1 threshold is machine-size dependent: load1=40 is severe on a 16-core box
+    // but only 0.31 runnable tasks per core on the 128-core host this runner shares. The
+    // policy is therefore expressed in loadavg/core and the raw threshold used for residual
+    // attribution is derived from that same policy.
+    expect(src).toContain('const AUTO_RETRY_LOAD1_THRESHOLD = 1.0;');
+    expect(src).toMatch(/const currentLoadPerCore = currentLoad1 \/ RETRY_LOAD1_CORES;/);
+    expect(src).toMatch(/:\s*currentLoadPerCore > AUTO_RETRY_LOAD1_THRESHOLD;/);
+    expect(src).toMatch(
+      /const retryLoad1Threshold\s*=\s*AUTO_RETRY_LOAD1_THRESHOLD\s*\*\s*RETRY_LOAD1_CORES;/,
+    );
   });
 
   it('samples the load AFTER each absorption re-run, never before it', () => {
