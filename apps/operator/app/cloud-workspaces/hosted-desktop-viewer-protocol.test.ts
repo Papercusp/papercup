@@ -216,4 +216,25 @@ describe("hosted desktop browser protocol", () => {
     expect(channel.inputAllowed).toBe(false);
     expect(onClose).toHaveBeenCalledWith({ code: 1000, reason: "done" });
   });
+
+  it("does not invoke noVNC onopen after onready closes a mismatched channel", () => {
+    const socket = new FakeSocket();
+    const channel = new HostedDesktopRelayChannel(socket);
+    const onReady = vi.fn(() => channel.close(1008, "desktop_action_mismatch"));
+    const onOpen = vi.fn();
+    channel.onready = onReady;
+    channel.onopen = onOpen;
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "desktop.ready",
+        action: "watch",
+        inputAllowed: false,
+      }),
+    });
+
+    expect(onReady).toHaveBeenCalledOnce();
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(channel.readyState).toBe(channel.CLOSED);
+  });
 });
