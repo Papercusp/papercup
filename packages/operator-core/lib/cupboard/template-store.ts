@@ -20,6 +20,7 @@
  * self-describing dir into the user layer" — the seam that makes v2 user-install
  * reuse this exact resolution + materialize path, with no first-party special case.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '../papercusp-root';
@@ -258,6 +259,52 @@ export function resolveLocalTemplate(
   roots: TemplateRoot[] = templateRoots(),
 ): LocalTemplate | null {
   return resolveLocalTemplateWithShadows(idOrRef, roots).template;
+}
+
+/** Identity of the checkout a resolved template dir was read FROM. */
+export interface CheckoutProvenance {
+  /** Absolute path of the git repo root containing the resolved dir. */
+  root: string;
+  /** Full HEAD commit sha, or null if unresolved. */
+  sha: string | null;
+  /** Current branch name, or null on detached HEAD / unresolved. */
+  branch: string | null;
+}
+
+/**
+ * Resolve which checkout a template's local dir was read from — its git root,
+ * HEAD sha, and branch (EI-21909845207308404). `templates:new-app` executes
+ * inside the operator, and the operator's serving checkout is NOT always the
+ * canonical templates repo (e.g. the release checkout can lag staging by a
+ * whole green-checkpoint window) — a stale-checkout mismatch is invisible in
+ * the tool's result today. Reporting the source checkout's identity alongside
+ * the materialized files makes that mismatch diagnosable in the result itself
+ * instead of a filesystem-wide grep.
+ *
+ * Tolerant of a non-git dir: `dir` is normally inside a real checkout, but a
+ * provenance lookup failing must never turn into a materialize failure — it
+ * returns null rather than throwing.
+ */
+export function resolveCheckoutProvenance(dir: string): CheckoutProvenance | null {
+  const git = (args: string[]): string | null => {
+    try {
+      const out = execFileSync('git', args, {
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      return out.trim() || null;
+    } catch {
+      return null;
+    }
+  };
+  const root = git(['rev-parse', '--show-toplevel']);
+  if (!root) return null;
+  const sha = git(['rev-parse', 'HEAD']);
+  const branchRaw = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = branchRaw && branchRaw !== 'HEAD' ? branchRaw : null;
+  return { root, sha, branch };
 }
 
 // ── GUIDE read (local mirror of fetchTemplateGuide) ───────────────────────────

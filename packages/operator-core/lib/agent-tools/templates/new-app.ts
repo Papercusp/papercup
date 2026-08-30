@@ -27,7 +27,12 @@ import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { gitCloneShallow } from '../../cupboard/install-io';
 import { papercuspRoot } from '../../papercusp-root';
 import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templates';
-import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
+import {
+  resolveLocalTemplate,
+  readLocalGuide,
+  resolveCheckoutProvenance,
+  type CheckoutProvenance,
+} from '../../cupboard/template-store';
 import {
   resolveGenericLibsRoot,
   describeSupplyChain,
@@ -59,6 +64,13 @@ export interface ResolvedTemplateSource {
   guide: string | null;
   guideTruncated: boolean;
   guideBranch: string | null;
+  /**
+   * Identity of the checkout this template's files were read FROM (git root +
+   * HEAD sha + branch), or null when unresolved — e.g. the local store dir is
+   * not itself a git repo, or the source is a fresh marketplace clone whose
+   * provenance is not yet known at resolve time (EI-21909845207308404).
+   */
+  sourceCheckout: CheckoutProvenance | null;
   acquireSourceDir: () => Promise<TemplateSourceDir>;
 }
 
@@ -384,6 +396,7 @@ export async function resolveTemplateSource(
       guide: 'error' in g ? null : g.guide,
       guideTruncated: 'error' in g ? false : g.guideTruncated,
       guideBranch: 'local',
+      sourceCheckout: resolveCheckoutProvenance(local.dir),
       acquireSourceDir: localSourceAcquire(local.dir),
     };
   }
@@ -400,6 +413,9 @@ export async function resolveTemplateSource(
     guide: 'error' in g ? null : g.guide,
     guideTruncated: 'error' in g ? false : g.guideTruncated,
     guideBranch: 'error' in g ? null : g.branch,
+    // The clone happens lazily inside acquireSourceDir — there is no checkout
+    // yet at resolve time, so its provenance is genuinely unknown here.
+    sourceCheckout: null,
     acquireSourceDir: cloneSourceAcquire({
       githubUrl: listing.githubUrl,
       ref: listing.ref,
@@ -612,6 +628,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
     filesCopied: materialized.filesCopied,
     template: { id: src.listing.id, ref: src.listing.ref, title: src.listing.title },
     guideBranch: src.guideBranch,
+    sourceCheckout: src.sourceCheckout,
     supplyChain,
     releaseGateTestCommand,
     builder,
@@ -628,6 +645,11 @@ export default defineTool({
       'Just browsing what exists → templates:list. Only reading how a template builds (no new harness) → templates:get-guide. Creating a harness from a blueprint (not a template) → harness:create.',
     chaining: 'templates:list → templates:get-guide { template } → templates:new-app { template, slug }.',
     seeAlso: ['templates:list', 'templates:get-guide', 'harness:create'],
+    returns:
+      '{ ok, harnessSlug, path, filesCopied, template, guideBranch, sourceCheckout, supplyChain, releaseGateTestCommand, builder }. ' +
+      '`sourceCheckout` (EI-21909845207308404) is { root, sha, branch } | null — the git identity of the checkout the operator actually read the template FROM ' +
+      '(this can lag the canonical templates repo, e.g. a release checkout behind a green-checkpoint window). null on a marketplace clone (v2, provenance not yet known at resolve time) or a non-git dir. ' +
+      'A materialized app failing its own template checks on first run is diagnosable from this field instead of a filesystem-wide grep across checkouts.',
   },
   capability: 'harness:write',
   // Fresh pot creation includes repo initialization, registry/schema setup and
