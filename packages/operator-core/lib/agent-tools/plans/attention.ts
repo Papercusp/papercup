@@ -61,6 +61,11 @@ import {
 } from "../../attention/sources";
 import { buildAttentionGroups } from "../../attention/group";
 import {
+  MAX_ATTENTION_OFFSET,
+  MAX_ATTENTION_PAGE_SIZE,
+  paginateAttentionGroups,
+} from "../../attention/window";
+import {
   applyTriage,
   deriveAuthorization,
   groupByTier,
@@ -79,6 +84,7 @@ import {
 import { runWithWorkspace } from "../../workspace-als";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { ownerAttentionSourcesFor, type OwnerAttentionSource } from "../../interest-profiles";
+import { attachListMeta } from "../../sync-resolver/list-meta";
 
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
@@ -126,6 +132,26 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe("Include items from archived plans. Default false."),
+  /** Presentation-only page over the complete cached attention aggregation.
+   * Omitted preserves the historical unbounded agent read; null is an explicit
+   * unbounded escape hatch for aggregate/detail consumers. */
+  limit: z
+    .union([
+      z.number().int().positive().max(MAX_ATTENTION_PAGE_SIZE),
+      z.null(),
+    ])
+    .optional()
+    .describe(
+      `Maximum distinct attention items to return (1..${MAX_ATTENTION_PAGE_SIZE}); null is unbounded.`,
+    ),
+  /** Zero-based offset into the deterministic attention ordering. */
+  offset: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_ATTENTION_OFFSET)
+    .optional()
+    .describe(`Zero-based item offset (maximum ${MAX_ATTENTION_OFFSET}).`),
   harness: harnessArg,
 });
 
@@ -243,7 +269,7 @@ export default defineTool({
     // another from cache). Tags are ONLY the trigger-covered plan tables; the other
     // sources (coord_event_log escalations/messages — append-heavy, the coord:inbox
     // D-006 problem) are deliberately un-tagged and bounded by the short SWR softTtl.
-    const { groups, tierCounts, itemCount } = await cachedRead(
+    const { groups, tierCounts } = await cachedRead(
       ctx as CachedReadCtx,
       {
         tool: "plans:attention",
@@ -987,15 +1013,37 @@ export default defineTool({
       },
     );
 
+    // Apply the presentation window only after the complete source aggregation
+    // has been built and cached. Counts/detail consumers can therefore request
+    // `limit:null` (or call the cached read directly) without losing rows, while
+    // the normal UI path sends a small deterministic page.
+    const windowed = paginateAttentionGroups(groups, {
+      limit: args.limit,
+      offset: args.offset,
+    });
+    // Sync reads are flat arrays. Carry the window metadata on the first group
+    // using the shared list-meta convention; delta merges may move that group,
+    // so clients search all rows for `_meta` rather than assuming row zero.
+    const groupsWithMeta = attachListMeta(windowed.groups, {
+      ...windowed.meta,
+      // This is the complete-feed count, not the page count. It keeps badges
+      // honest when a bounded page is being rendered.
+      tierCounts,
+    });
+
     ctxAny.metadata?.({
-      itemCount,
-      groupCount: groups.length,
+      itemCount: windowed.meta.returned,
+      totalItemCount: windowed.meta.total,
+      groupCount: groupsWithMeta.length,
       decisions: tierCounts.decision,
       scope: harnessFilter ?? "all",
+      ...(windowed.meta.hasMore
+        ? { hasMore: true, nextOffset: windowed.meta.nextOffset }
+        : {}),
     });
 
     // {data} envelope so the payload-tier shapers apply; HTTP/sync consumers
     // still read identical `{"groups":[...],"tierCounts":{...}}` JSON text.
-    return { data: { groups, tierCounts } };
+    return { data: { groups: groupsWithMeta, tierCounts } };
   },
 });
