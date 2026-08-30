@@ -3500,7 +3500,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
   }
 
-  async function proxy(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+  async function proxy(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: string,
+    kernelAdmission: LegacyGatewayKernelAdmission,
+  ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('oauth-http');
     // `let` (not const): WI-1073 may rewrite this to a sonnet body as a last resort when opus is walled
@@ -4500,9 +4505,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // would begin a SECOND one and double-count the request.
             span: stageSpan,
             admission: {
-              // PASS-THROUGH: this request already holds its slot from the
-              // `gov.acquire` above, so re-admitting would deadlock on itself.
-              run: (_context, task) => task(),
+              // P-011 / D-023: the lane's admission arrives from the entry executor's caller.
+              // While `anthropic-messages` is still bridge-admitted this is the pass-through
+              // (this request already holds its slot from the `gov.acquire` above, so
+              // re-admitting would deadlock on itself); step (iii-b) swaps in the real
+              // controller HERE and drops the bridge's, so exactly one of the two admits.
+              run: (context, task) => kernelAdmission.run(context, task),
               observeAttempt: ({ context, response, error }) => {
                 // Settle the previous attempt's deferred effects now that the
                 // adapter's routing answer is visible on THIS attempt's route.
@@ -6653,7 +6661,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  type LegacyGatewayEntryExecutor = (req: http.IncomingMessage, res: http.ServerResponse, url: string) => Promise<void>;
+  /**
+   * P-011 / D-023: the admission controller an entry executor threads down to its kernel
+   * call(s). This is the seam that lets a lane's REAL admission live at the kernel's own
+   * `admission.run` — where the kernel takes ONE slot per request around the WHOLE attempt
+   * loop (request-kernel.ts:886, loop at :928) and fires `span.admitted()` itself (:887) —
+   * instead of at the strangler bridge above it.
+   *
+   * `context` is deliberately `unknown`. Each kernel site parameterises the controller over
+   * its OWN route type, and a lane controller closes over `pri`/`tier`/`stageSpan` rather
+   * than reading kernel route internals; typing it `unknown` states that honestly and keeps
+   * one shared seam usable at every site instead of one bespoke type per transport.
+   */
+  type LegacyGatewayKernelAdmission = {
+    run<TResult>(context: unknown, task: () => Promise<TResult>): Promise<TResult>;
+  };
+
+  /**
+   * The `admission` parameter is REQUIRED, never optional. An optional one would let a
+   * re-homed lane silently fall back to pass-through and run UNQUEUED while every suite
+   * stayed green — the exact "green while testing nothing" failure step (ii) hit three
+   * separate times (WI-1213880 breakages a/b/c). Required means a lane that forgets to pass
+   * its controller fails to COMPILE.
+   */
+  type LegacyGatewayEntryExecutor = (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: string,
+    admission: LegacyGatewayKernelAdmission,
+  ) => Promise<void>;
+
+  /**
+   * The pass-through every site uses until its lane is re-homed. Named rather than inlined
+   * so a `grep` counts the REMAINING un-re-homed kernel sites — the ratchet P-011 shrinks.
+   */
+  const passThroughKernelAdmission: LegacyGatewayKernelAdmission = {
+    run: (_context, task) => task(),
+  };
 
   // P-011 / D-022: `proxyLocal` is deliberately ABSENT — its lane is entered directly via
   // `withDurableGatewayAdmission`. This map loses one entry per re-homed lane and disappears
