@@ -20,6 +20,21 @@
  * The sentinel now has a single exported definition, which stops THAT drift; this
  * lint is the class guard, so the next silently-corrupted file fails a test
  * instead of shipping a dead code path.
+ *
+ * ── How to VERIFY absence — NOT with grep (EI-19393869052335703) ────────────
+ * Checking by hand whether some ref is clean? Do NOT reach for
+ * `git grep -lIP '\x00'`. `-I` skips files it classifies as binary, and a raw
+ * NUL is precisely what makes a file binary — so the flag excludes exactly the
+ * population that would match. It returns empty on a tree that provably
+ * contains one, and empty reads as a confident "clean". Measured against
+ * candidate 060ea000 (2 NUL bytes in contested-fold.ts): the `-I` form found
+ * nothing, the same query without `-I` found the file. It fired fleet-wide
+ * once — an agent verified a candidate that way, reported GREEN, and told five
+ * agents to stand down and expect a green that could not happen.
+ *
+ * Sound instead: this test; `node scripts/check-no-nul-in-source.mjs`;
+ * `git grep -lP '\x00' <ref>` (same query, no -I); or
+ * `git show <ref>:<file> | tr -dc '\000' | wc -c`.
  */
 
 import { execFileSync } from 'node:child_process';

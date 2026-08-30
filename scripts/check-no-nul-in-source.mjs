@@ -24,6 +24,25 @@
  * real misdiagnosis: an agent concluded its own notes were wrong about a line
  * it could see in `sed` output, because grep insisted the string did not exist.
  *
+ * ── How to VERIFY absence — NOT with grep (EI-19393869052335703) ────────────
+ * The corollary nobody wrote down: the one question grep CANNOT answer is
+ * whether a NUL is absent. `-I` excludes exactly the population that would
+ * match, so `git grep -lIP '\x00'` returns empty on a tree that provably
+ * contains one — and empty reads as a confident "clean". Measured against
+ * candidate 060ea000, which carries 2 NUL bytes in contested-fold.ts:
+ *
+ *     git grep -lIP '\x00' 060ea000 -- '*.ts'   → (empty)      ← FALSE CLEAN
+ *     git grep -lP  '\x00' 060ea000 -- '*.ts'   → …/contested-fold.ts
+ *
+ * Same query, one flag apart, opposite answers. It fired fleet-wide once: an
+ * agent verified a candidate with the `-I` form, reported GREEN, and told five
+ * agents to stand down and expect a green that could not happen.
+ *
+ * SOUND ways to answer "is there a NUL here":
+ *   node scripts/check-no-nul-in-source.mjs        ← authoritative; use this
+ *   git grep -lP '\x00' <ref>                      ← same query WITHOUT -I
+ *   git show <ref>:<file> | tr -dc '\000' | wc -c  ← byte count, ref-scoped
+ *
  * ── How the NUL gets there ──────────────────────────────────────────────────
  * Always the same idiom: a composite Map key joined with a delimiter that
  * cannot occur in the data —
@@ -140,6 +159,16 @@ if (hits.length === 0) {
     `✓ no literal NUL bytes in ${scannedFiles.length} tracked source file(s) ` +
       `(superproject + ${scanned.length}/${declared.length} submodule(s))` +
       describeUnscanned({ declared, scanned, unscanned }, ROOT),
+  );
+  // EI-19393869052335703: hand the next agent a SOUND re-check instead of
+  // letting one be invented. Same reasoning as the WI-6776 coverage line above,
+  // on a different axis: there, a bare ✓ could not be told from an enumeration
+  // that reached nothing; here, the obvious re-check (`git grep -lIP '\x00'`)
+  // CANNOT ever answer the question, because -I skips exactly the files a NUL
+  // makes binary — so it reports clean on a dirty tree.
+  console.log(
+    `  Re-checking elsewhere? grep CANNOT answer this: \`-I\` skips the very files a NUL makes binary.\n` +
+      `  Sound: this script, or \`git grep -lP '\\x00' <ref>\` (no -I), or \`git show <ref>:<file> | tr -dc '\\000' | wc -c\`.`,
   );
   process.exit(0);
 }
