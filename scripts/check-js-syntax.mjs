@@ -184,8 +184,14 @@ function loadLinter() {
  *
  * Returns `null` for a file that does not PARSE: that is the `--check` leg's
  * class, and double-reporting one break as two would misstate the offender count.
+ *
+ * @param {string} absPath
+ * @param {string | null} [source] Pass the module's source text directly to skip
+ *   the disk read (callers that already hold it, e.g. tests). Defaults to
+ *   reading `absPath` — bare `= null` alone left the generated declaration
+ *   inferring `source` as `null`-only, rejecting every real string caller.
  */
-export async function findJsLoadError(absPath, source) {
+export async function findJsLoadError(absPath, source = null) {
   const linter = await loadLinter();
   const text = source ?? readFileSync(absPath, 'utf8');
   const result = undeclaredWriteIn(linter, text);

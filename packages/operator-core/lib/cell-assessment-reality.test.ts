@@ -318,7 +318,17 @@ const CONTROLS: Record<string, readonly Control[]> = {
     },
   ],
   'gate.greenCheckpoint.candidate': [
-    { label: 'no run in flight', expect: assessGateCandidate({ judgingSha: null, verdictUnknownLegs: [] }) },
+    {
+      // EI-21862849770458561: EXPLICITLY measured absence (checkpointRunInFlight: { active:
+      // false }) — distinct from the "unmeasured" control appended below, which omits the
+      // field and used to fall through to this same 'no-active-run' code by mistake.
+      label: 'no run in flight',
+      expect: assessGateCandidate({
+        judgingSha: null,
+        verdictUnknownLegs: [],
+        checkpointRunInFlight: { active: false },
+      }),
+    },
     {
       label: 'run active before its candidate is published',
       expect: assessGateCandidate({
@@ -357,6 +367,13 @@ const CONTROLS: Record<string, readonly Control[]> = {
         judgingContainsPath: null,
         verdictUnknownLegs: [],
       }),
+    },
+    {
+      // EI-21862849770458561: checkpointRunInFlight is omitted (unmeasured — neither cache
+      // nor live-lock answered), never a measured "not running". Must be `null`, not
+      // 'no-active-run' — the exact conflation this fix closes.
+      label: 'unmeasured checkpointRunInFlight is unknown, not a measured no-active-run',
+      expect: assessGateCandidate({ judgingSha: null, verdictUnknownLegs: [] }),
     },
   ],
   'gate.greenCheckpoint.ownership': [
@@ -614,6 +631,8 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'inferred-candidate',
     'judging-current-path',
     'judging-without-current-path',
+    null,
+    // EI-21862849770458561: the unmeasured-checkpointRunInFlight control appended above.
     null,
   ],
   'gate.greenCheckpoint.ownership': [

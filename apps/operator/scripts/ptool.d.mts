@@ -450,6 +450,32 @@ export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, c
     client?: string;
     contextTier?: string;
 }): URL;
+/**
+ * EI-21860372620642128 — `npm run install:safe` rewrites shared node_modules
+ * IN PLACE while holding a repo-keyed fs mutex (scripts/lib/fs-mutex.mjs), so
+ * a ptool invocation launched during that window can hit a transiently
+ * missing `@modelcontextprotocol/sdk` deep import and fail outright, even
+ * though the identical import succeeds moments later once the install
+ * finishes (reproduced 2026-08-30: five ptool calls retried ~78-81 times over
+ * ~120s, then failed `Cannot find module`).
+ *
+ * ptool itself must never be wrapped in install:safe's own reader guard
+ * (EI-21267836337650976 / EI-21250765620092599 — that swallowed a completed
+ * write into a near-silent no-op), so this coordinates IN-PROCESS instead:
+ * on a MODULE_NOT_FOUND for one of these deep SDK imports, confirm — via the
+ * mutex's own non-blocking `peekFsMutexSync` diagnostic peek, never a
+ * blocking reader marker, which would reintroduce that exact class of hang —
+ * that an install:safe write is ACTUALLY in flight for this repo before
+ * retrying. A MODULE_NOT_FOUND with no install in flight is a genuine
+ * missing dependency and is rethrown immediately, unretried.
+ */
+export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, sleep, loadInstallMutex, totalMs, intervalMs, }?: {
+    doImport?: ((spec: any) => Promise<any>) | undefined;
+    sleep?: ((ms: any) => Promise<any>) | undefined;
+    loadInstallMutex?: (() => Promise<[typeof import("../../../scripts/lib/fs-mutex.mjs"), typeof import("../../../scripts/npm-install-safe.mjs")]>) | undefined;
+    totalMs?: number | undefined;
+    intervalMs?: number | undefined;
+}): Promise<any>;
 /** List every tool, following pagination if the server returns a cursor. */
 export function listAllTools(client: any, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
     timeoutMs?: number | undefined;

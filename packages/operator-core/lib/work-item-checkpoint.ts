@@ -250,6 +250,22 @@ export async function setWorkItemCheckpointWithPrior(
   // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
   // The scope harness is CANONICALIZED (EI-8805) so a harness-null item keys under
   // one namespace on every write/read seam.
+  //
+  // EI-21864672058763701 / EI-21864782390076614: `bounded: true` was ADDED here.
+  // Before this fix, a work-item checkpoint used setCarryNoteWithPrior's UNBOUNDED
+  // `sql.begin(write)` branch (the same `SELECT ... FOR UPDATE` on
+  // harness_shared.carry_notes that loop:checkpoint hits, but WITHOUT
+  // loop:checkpoint's `bounded: true`) — so under admin-pool/row-lock contention it
+  // waited indefinitely for the client-side MCP transport to give up, surfacing an
+  // AMBIGUOUS "commit status unknown" timeout instead of a clear, retryable error —
+  // even though facts:assert / work_items:get / loop:checkpoint on the SAME item
+  // returned instantly, because they either don't compete for this lock or already
+  // use the bounded fast-fail path. `loop:checkpoint`'s own comment (below, in
+  // setCarryNoteWithPrior) already states the correct policy for exactly this
+  // scope's lock ("must fail fast... so the MCP transport does not time out"); a
+  // work-item checkpoint is the SAME kind of durable-continuity write a successor
+  // inherits, so it deserves the SAME fail-fast + typed-error contract, not the
+  // strictly worse "hang until the client times out with an unknown outcome" one.
   const { stored, priorLength, blockedReason } = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
@@ -260,6 +276,7 @@ export async function setWorkItemCheckpointWithPrior(
       guard: opts?.guard,
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
+      bounded: true,
     },
   );
   // A blocked write is a no-op — never bump the progress anchor for it.

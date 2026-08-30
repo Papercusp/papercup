@@ -227,6 +227,66 @@ export function deriveGeneratedArtifactHygiene(
   return derived;
 }
 
+/** The file half of `scriptIdOf`'s `null` branch: the entries that are test-file paths,
+ *  as opposed to bare workspaces or unparseable text. Mirrors `scriptIdOf`'s ordering
+ *  deliberately — `@papercusp/web` contains a `/` too, and is a whole suite, not a file. */
+function testFilePathOf(entry: string): string | null {
+  const trimmed = entry.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("@")) return null;
+  if (!trimmed.includes("/")) return null;
+  return trimmed;
+}
+
+/** WI-41765 / D-010. Admits a failing test FILE as hygiene only when every one of its
+ *  failing cases is a registered coverage-class case.
+ *
+ *  Every early return here is a fall-through to `product`, and each is a distinct way the
+ *  evidence could be too weak to promote on:
+ *    no attribution map  — the gate did not supply one; cannot know what failed inside.
+ *    not a file path     — a bare workspace names a whole suite, never one case.
+ *    no parsed cases     — the file failed with no `×` rows we could read (a crash, a
+ *                          collection error, a reporter shape we do not parse). A file that
+ *                          died before naming a case has NOT shown its failures are benign.
+ *    any unregistered    — THE ONE THAT MATTERS: a file whose failing cases are not ALL
+ *                          coverage-class stays product, so a substantive red sharing a
+ *                          file with a coverage red still holds `main`. */
+function classifyCoverageClassFailure(
+  entry: string,
+  ctx: HygieneClassificationContext,
+): ClassifiedGateFailure | null {
+  const byFile = ctx.failingCasesByFile;
+  if (!byFile) return null;
+
+  const filePath = testFilePathOf(entry);
+  if (filePath === null) return null;
+
+  const failingCases = byFile.get(filePath);
+  if (!failingCases || failingCases.length === 0) return null;
+
+  const registeredNames = new Set(
+    COVERAGE_CLASS_TEST_CASES.filter((c) => c.file === filePath).map((c) => c.caseName),
+  );
+  if (registeredNames.size === 0) return null;
+
+  const unregistered = failingCases.filter((name) => !registeredNames.has(name));
+  if (unregistered.length > 0) return null;
+
+  return {
+    entry,
+    klass: "hygiene",
+    category: "detector-coverage-drift",
+    reason:
+      `Every failing case in '${filePath}' is a registered coverage-class case ` +
+      `(${failingCases.map((n) => `'${n}'`).join(", ")}) — an assertion about whether the ` +
+      `detector can still SEE what it measures, not about whether the system is correct.`,
+    remedy:
+      "Widen the detector to the shape it stopped recognising — never lower the floor it " +
+      "asserts. Lowering it converts a loud instrument failure into a quiet false-clean, " +
+      "which is strictly worse than the red it removes.",
+  };
+}
+
 export function classifyGateFailure(
   entry: string,
   ctx: HygieneClassificationContext,
@@ -234,6 +294,8 @@ export function classifyGateFailure(
   const scriptId = scriptIdOf(entry);
 
   if (scriptId === null) {
+    const coverageClass = classifyCoverageClassFailure(entry, ctx);
+    if (coverageClass) return coverageClass;
     return {
       entry,
       klass: "product",
