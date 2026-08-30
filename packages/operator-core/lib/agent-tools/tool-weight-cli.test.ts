@@ -38,4 +38,27 @@ describe('tool-weight CLI', () => {
     expect(runToolWeightCli(['missing:tool'], weights, vi.fn(), error)).toBe(1);
     expect(error).toHaveBeenCalledWith('No runtime-projected tool named missing:tool');
   });
+
+  it('returns 0 for a tool within budget', () => {
+    expect(runToolWeightCli(['small:tool'], weights, vi.fn(), vi.fn())).toBe(0);
+  });
+
+  it('returns non-zero for a tool over the HARD CAP (EI-21863941004984235)', () => {
+    expect(runToolWeightCli(['over:hard-cap'], weights, vi.fn(), vi.fn())).not.toBe(0);
+  });
+
+  it('returns non-zero for a tool over budget but under the hard cap (EI-21863792505619206)', () => {
+    expect(runToolWeightCli(['over:budget'], weights, vi.fn(), vi.fn())).not.toBe(0);
+  });
+
+  it('returns non-zero on an unfiltered run when any tool in the catalog violates, even outside the printed top-20 slice', () => {
+    // The default (no selector, no --all) run prints only the top-20 heaviest
+    // rows, but the exit code must reflect the WHOLE catalog, not the slice.
+    expect(runToolWeightCli([], weights, vi.fn(), vi.fn())).not.toBe(0);
+  });
+
+  it('returns 0 when every tool in the catalog is within budget', () => {
+    const cleanWeights: NamedToolWeight[] = [{ name: 'small:tool', weight: 200 }];
+    expect(runToolWeightCli([], cleanWeights, vi.fn(), vi.fn())).toBe(0);
+  });
 });

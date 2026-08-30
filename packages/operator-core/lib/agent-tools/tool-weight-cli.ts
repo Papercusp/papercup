@@ -140,5 +140,17 @@ export function runToolWeightCli(
     ? [...measured].sort((a, b) => b.weight - a.weight)
     : [...measured].sort((a, b) => b.weight - a.weight).slice(0, 20);
   write(formatToolWeightReport(rows, weights.length, { json: parsed.json, selector: parsed.selector }));
-  return 0;
+
+  // EI-21863941004984235 / EI-21863792505619206: a budget or hard-cap violation
+  // in the MEASURED set (not just the truncated `rows` slice shown, which top-20
+  // trims on an unfiltered run) must exit non-zero. This CLI's own exit code is
+  // NOT wired into the green-checkpoint gate (that protection is the separate
+  // Vitest budget guard, tools-md-sync.test.ts, plus tool-weight-selfcheck.ts's
+  // hard-cap escalation) — but the report ALREADY prints "OVER BUDGET"/"OVER
+  // HARD CAP" for these rows, so an exit-0 alongside that text is a false-green
+  // an agent can (and did — EI-21863792505619206) cite as "0 violations" when
+  // deciding whether a real gate breach exists. Make the exit code agree with
+  // the report it just printed.
+  const hasViolation = measured.some((row) => row.overBudget || row.overHardCap);
+  return hasViolation ? 1 : 0;
 }
