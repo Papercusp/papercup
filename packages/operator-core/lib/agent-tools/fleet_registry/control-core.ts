@@ -142,6 +142,251 @@ function shortHandle(ownerId: string): string {
   return (ownerId ?? '').replace(/^su-/, '').slice(0, 5) || ownerId;
 }
 
+interface FleetControlPostSagaResult {
+  effectiveReason: string | null;
+  drainStamp?: import('./drain-stamp').FleetDrainStamp;
+  pauseHolds?: FleetPauseHoldResult;
+  notified: string[];
+  cueMsgId: string | null;
+  record?: AgentFleetRecord;
+  degraded: boolean;
+}
+
+/**
+ * Start an optional leg and retain its original promise so a dependent leg can
+ * wait for settlement after the caller has already received its bounded receipt.
+ * `withBoundedTimeout` deliberately does not cancel work; keeping the promise here
+ * lets the wind-down saga preserve pause-holds-before-cue even when the hold write
+ * outlives the response budget.
+ */
+async function startBoundedOptional<T>(
+  work: Promise<T> | (() => Promise<T>),
+  opts: { fallback: T; timeoutMs: number; label: string },
+): Promise<{
+  result: Awaited<ReturnType<typeof withBoundedTimeout<T>>>;
+  settled: Promise<T>;
+}> {
+  const settled = Promise.resolve().then(() => (typeof work === 'function' ? work() : work));
+  return {
+    result: await withBoundedTimeout(settled, opts),
+    settled,
+  };
+}
+
+/**
+ * Best-effort work after the typed state flip. The response caller is bounded
+ * by the outer `withBoundedTimeout` in `applyFleetControl`; this function keeps
+ * dependent legs ordered in the background if one of the underlying promises
+ * outlives an individual optional-leg budget.
+ */
+async function runFleetControlPostSaga(args: {
+  action: FleetControlAction;
+  alreadyInState: boolean;
+  ctx: ResolveIdentityCtx;
+  effectiveReason: string | null;
+  fleet: AgentFleetRecord;
+  identity: Parameters<typeof sendMessage>[0];
+  ownerId: string;
+  slug: string;
+  workspaceId: string;
+  opts?: {
+    harness?: string | null;
+    rigAvailable?: boolean;
+    sessionHarness?: string | null;
+  };
+}): Promise<FleetControlPostSagaResult> {
+  let effectiveReason = args.effectiveReason;
+  let drainStamp: import('./drain-stamp').FleetDrainStamp | undefined;
+  let pauseHolds: FleetPauseHoldResult | undefined;
+  let record: AgentFleetRecord | undefined;
+  let degraded = false;
+
+  if (args.action === 'wind-down') {
+    const { buildFleetDrainStamp } = await import('./drain-stamp');
+    const stampWork = await startBoundedOptional(
+      () =>
+        buildFleetDrainStamp({
+          fleetSlug: args.slug,
+          ownerId: args.ownerId,
+          workspaceId: args.workspaceId,
+          harnessCandidates: [
+            args.opts?.harness,
+            args.opts?.sessionHarness ?? (args.ctx as { harnessSlug?: string | null }).harnessSlug,
+          ],
+          rigAvailable: args.opts?.rigAvailable,
+        }),
+      { fallback: null, timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:wind-down:drainStamp' },
+    );
+    if (stampWork.result.degraded) {
+      degraded = true;
+      // A late stamp must not race the hold/cue legs with a reason that may
+      // otherwise be persisted below.
+      await stampWork.settled.catch(() => null);
+    }
+    const stamp = stampWork.result.value;
+    if (stamp) {
+      drainStamp = stamp;
+      effectiveReason = args.effectiveReason ? `${args.effectiveReason} | ${stamp.summary}` : stamp.summary;
+
+      // The state boundary already landed. Refresh only the optional reason
+      // metadata so the durable row retains the auto-drain stamp when it is
+      // available, without putting the stamp read on the receipt's critical
+      // path.
+      const reasonWork = await startBoundedOptional(
+        () =>
+          setFleetControlState(
+            args.workspaceId,
+            args.slug,
+            { state: ACTION_TO_STATE[args.action], reason: effectiveReason, by: args.ownerId },
+            undefined,
+            args.fleet.leaderOwnerId,
+          ),
+        {
+          fallback: null,
+          timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS,
+          label: 'fleet:wind-down:reasonStamp',
+        },
+      );
+      if (reasonWork.result.degraded) {
+        degraded = true;
+        await reasonWork.settled.catch(() => null);
+      }
+      if (reasonWork.result.value) record = reasonWork.result.value;
+    }
+  }
+
+  const { applyFleetPauseHolds, clearFleetPauseHolds } = await import('./pause-holds');
+  const pauseWork = await startBoundedOptional(
+    () =>
+      args.action === 'wind-down'
+        ? applyFleetPauseHolds({
+            fleetSlug: args.slug,
+            workspaceId: args.workspaceId,
+            byOwnerId: args.ownerId,
+            leaderOwnerId: args.fleet.leaderOwnerId,
+            reason: effectiveReason,
+          })
+        : clearFleetPauseHolds({ fleetSlug: args.slug, workspaceId: args.workspaceId }),
+    {
+      fallback: null,
+      timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS,
+      label: `fleet:${args.action}:pauseHolds`,
+    },
+  );
+  if (pauseWork.result.degraded) degraded = true;
+  const held = pauseWork.result.value;
+  if (held && (held.items.length > 0 || held.failed.length > 0)) pauseHolds = held;
+  // The cue MUST remain after the hold promise settles. This wait happens in
+  // the post-flip saga, so a slow hold cannot take the durable receipt down.
+  if (pauseWork.result.degraded) await pauseWork.settled.catch(() => null);
+
+  if (args.fleet.leaderOwnerId) {
+    const { ensureFleetLeaderControl, retireFleetLeaderWatches } = await import('./leader-control');
+    const leaderWork = await startBoundedOptional(
+      () =>
+        args.action === 'wind-down'
+          ? retireFleetLeaderWatches(args.fleet.leaderOwnerId!, args.slug)
+          : ensureFleetLeaderControl({
+              workspaceId: args.workspaceId,
+              ownerId: args.fleet.leaderOwnerId!,
+              fleetSlug: args.slug,
+              harnessSlug: args.opts?.harness ?? (args.ctx as { harnessSlug?: string | null }).harnessSlug,
+            }),
+      {
+        fallback: null,
+        timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS,
+        label: `fleet:${args.action}:leaderControl`,
+      },
+    );
+    if (leaderWork.result.degraded) degraded = true;
+  }
+
+  let liveMembers: string[] | undefined;
+  if (args.action === 'wind-down') {
+    const membersWork = await startBoundedOptional(
+      () => listFleetControlMembers(args.slug),
+      { fallback: [] as string[], timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:wind-down:members' },
+    );
+    if (membersWork.result.degraded) degraded = true;
+    liveMembers = membersWork.result.value.filter((id) => id !== args.ownerId);
+    const releasedAt = new Date().toISOString();
+    const releaseWork = await startBoundedOptional(
+      () =>
+        Promise.allSettled(
+          liveMembers!.map((memberOwnerId) =>
+            markSessionBriefReleased(memberOwnerId, args.workspaceId, {
+              fleet: args.slug,
+              at: releasedAt,
+              by: args.ownerId,
+            }),
+          ),
+        ),
+      { fallback: [] as PromiseSettledResult<unknown>[], timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:wind-down:release' },
+    );
+    if (releaseWork.result.degraded) degraded = true;
+  } else {
+    const releaseWork = await startBoundedOptional(
+      () => clearSessionBriefReleasedForFleet(args.workspaceId, args.slug),
+      { fallback: 0, timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:resume:release' },
+    );
+    if (releaseWork.result.degraded) degraded = true;
+  }
+
+  let notified: string[] = [];
+  let cueMsgId: string | null = null;
+  if (!args.alreadyInState) {
+    const cueWork = await startBoundedOptional(
+      async () => {
+        const members =
+          liveMembers ??
+          (await listFleetControlMembers(args.slug)).filter((id) => id !== args.ownerId);
+        if (members.length === 0) return { notified: [], cueMsgId: null as string | null };
+
+        const { summary } = fleetControlCueText(
+          args.action,
+          args.slug,
+          effectiveReason,
+          shortHandle(args.ownerId),
+        );
+        const env = await sendMessage(args.identity, {
+          to: members,
+          summary,
+          bodyWithMsgId: (cueMsgId) =>
+            fleetControlCueText(args.action, args.slug, effectiveReason, shortHandle(args.ownerId), cueMsgId).body,
+          extra: {
+            [CUE_AUTHORITY_FIELD]: fleetScopedCueAuthority(args.slug),
+            ...(args.action === 'wind-down'
+              ? {
+                  [EXPECTED_LIFECYCLE_ACK_FIELD]: expectedFleetWindDownAck(args.slug),
+                  wakeOnReply: true,
+                }
+              : {}),
+          },
+        });
+        return { notified: members, cueMsgId: (env as { msg_id?: string })?.msg_id ?? null };
+      },
+      {
+        fallback: { notified: [], cueMsgId: null as string | null },
+        timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS,
+        label: `fleet:${args.action}:cue`,
+      },
+    );
+    if (cueWork.result.degraded) degraded = true;
+    notified = cueWork.result.value.notified;
+    cueMsgId = cueWork.result.value.cueMsgId;
+  }
+
+  return {
+    effectiveReason,
+    ...(drainStamp ? { drainStamp } : {}),
+    ...(pauseHolds ? { pauseHolds } : {}),
+    notified,
+    cueMsgId,
+    ...(record ? { record } : {}),
+    degraded,
+  };
+}
+
 /**
  * The shared handler: guard → persist → cue. `fleetArg` accepts a slug or a
  * human name (slugified like every other registry surface).
@@ -240,67 +485,15 @@ export async function applyFleetControl(
     }
   }
 
-  // P-006 (work-item-claimability-clarity-2026-07-20): on a WIND-DOWN, snapshot the
-  // live scheduler-oracle drain breakdown and AUTO-STAMP it onto the reason, so the
-  // durable control_reason records WHY the lane is (or is not) drained in the ONE
-  // vocabulary the whole plan makes trustworthy — the authoritative floors, not a
-  // hand-rolled `status='open'` count — plus the exact re-verify command. Fails soft:
-  // a null stamp leaves the caller's bare reason untouched, never blocking the flip.
-  let drainStamp: import('./drain-stamp').FleetDrainStamp | undefined;
-  let effectiveReason = reason ?? null;
-  if (action === 'wind-down') {
-    const { buildFleetDrainStamp } = await import('./drain-stamp');
-    const stamp = await buildFleetDrainStamp({
-      fleetSlug: slug,
-      ownerId,
-      workspaceId,
-      harnessCandidates: [
-        opts?.harness,
-        opts?.sessionHarness ?? (ctx as { harnessSlug?: string | null }).harnessSlug,
-      ],
-      rigAvailable: opts?.rigAvailable,
-    }).catch(() => null);
-    if (stamp) {
-      drainStamp = stamp;
-      effectiveReason = reason ? `${reason} | ${stamp.summary}` : stamp.summary;
-    }
-  }
-
-  // EI-20199397615670608: PROTECT THE LANE BEFORE CUEING IT TO STAND DOWN.
-  // The wind-down cue below tells every member to "release your claims" — and until this
-  // leg existed, that release dropped the item straight back into the claimable pool,
-  // where the next scheduler:get_next silently resumed the paused work. Complying with
-  // the pause was what created the exposure, so the fix belongs HERE and not in member
-  // discipline. See pause-holds.ts for why this is a durable park (claim_hold_*) rather
-  // than a liveness-bound hold-open lease, and why resume clears only its own marker.
-  //
-  // ORDER IS LOAD-BEARING: the holds are set BEFORE the cue is sent (step 3), so the
-  // fastest-complying member cannot release into an unprotected window. Fails soft on
-  // both legs, exactly like the drain stamp above — a hold-write failure must never
-  // wedge the control flip, and must never make a fleet impossible to RESUME.
-  let pauseHolds: FleetPauseHoldResult | undefined;
-  {
-    const { applyFleetPauseHolds, clearFleetPauseHolds } = await import('./pause-holds');
-    const held =
-      action === 'wind-down'
-        ? await applyFleetPauseHolds({
-            fleetSlug: slug,
-            workspaceId,
-            byOwnerId: ownerId,
-            leaderOwnerId: fleet.leaderOwnerId,
-            reason: effectiveReason,
-          }).catch(() => null)
-        : await clearFleetPauseHolds({ fleetSlug: slug, workspaceId }).catch(() => null);
-    if (held && (held.items.length > 0 || held.failed.length > 0)) pauseHolds = held;
-  }
-
-  // 2. PERSIST the typed state (idempotent — a re-invoke refreshes reason/by/at).
+  // 2. PERSIST the typed state FIRST. Every drain stamp, hold, release, leader
+  // watch, roster, and cue operation below is optional and runs only after this
+  // durable boundary has landed.
   const targetState = ACTION_TO_STATE[action];
   const alreadyInState = fleet.controlState === targetState;
   const updated = await setFleetControlState(
     workspaceId,
     slug,
-    { state: targetState, reason: effectiveReason, by: ownerId },
+    { state: targetState, reason: reason ?? null, by: ownerId },
     undefined,
     fleet.leaderOwnerId,
   );
@@ -311,100 +504,44 @@ export async function applyFleetControl(
       message: `Fleet '${slug}' changed leaders after this control action was authorized; re-orient before retrying.`,
     };
   }
-  const record: AgentFleetRecord = updated ?? fleet;
-
-  // A wound-down fleet has no live leader-monitoring job to service. Retire the
-  // durable transition watches at the same typed state boundary; otherwise every
-  // later fleet event keeps waking the former leader after shutdown.
-  if (fleet.leaderOwnerId) {
-    const { ensureFleetLeaderControl, retireFleetLeaderWatches } = await import('./leader-control');
-    if (action === 'wind-down') {
-      await retireFleetLeaderWatches(fleet.leaderOwnerId, slug).catch(() => 0);
-    } else {
-      // Resume is the inverse boundary: restore the leader's monitor loop and exact
-      // transition watches so a later fleet failure remains push-driven.
-      await ensureFleetLeaderControl({
+  const record: AgentFleetRecord = updated;
+  const post = await withBoundedTimeout(
+    () =>
+      runFleetControlPostSaga({
+        action,
+        alreadyInState,
+        ctx,
+        effectiveReason: reason ?? null,
+        fleet,
+        identity,
+        ownerId,
+        slug,
         workspaceId,
-        ownerId: fleet.leaderOwnerId,
-        fleetSlug: slug,
-        harnessSlug: opts?.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug,
-      }).catch(() => null);
-    }
-  }
-
-  // EI-203843: make the release durable BEFORE sending the cue. Queued event
-  // wakes and cold carry-respawns can arrive after this function returns, so a
-  // message alone cannot stop them from re-animating a released member.
-  let liveMembers: string[] | undefined;
-  if (action === 'wind-down') {
-    try {
-      liveMembers = (await listFleetControlMembers(slug)).filter((id) => id !== ownerId);
-      const releasedAt = new Date().toISOString();
-      await Promise.allSettled(
-        liveMembers.map((memberOwnerId) =>
-          markSessionBriefReleased(memberOwnerId, workspaceId, {
-            fleet: slug,
-            at: releasedAt,
-            by: ownerId,
-          }),
-        ),
-      );
-    } catch {
-      /* best-effort: registry state remains authoritative for orient admission */
-    }
-  } else {
-    // Clear every matching row, including members that already left presence;
-    // clearing only today's live audience would strand their next resume.
-    await clearSessionBriefReleasedForFleet(workspaceId, slug).catch(() => 0);
-  }
-
-  // 3. CUE the live member set — typed, fleet-scope-stamped, best-effort. A
-  // repeat invoke that changed nothing sends no duplicate cue (spam guard);
-  // the refreshed row still carries the newest reason/by/at.
-  let notified: string[] = [];
-  let cueMsgId: string | null = null;
-  if (!alreadyInState) {
-    try {
-      const members =
-        liveMembers ??
-        (await listFleetControlMembers(slug)).filter((id) => id !== ownerId);
-      if (members.length > 0) {
-        const { summary } = fleetControlCueText(action, slug, effectiveReason, shortHandle(ownerId));
-        const env = await sendMessage(identity, {
-          to: members,
-          summary,
-          bodyWithMsgId: (cueMsgId) =>
-            fleetControlCueText(action, slug, effectiveReason, shortHandle(ownerId), cueMsgId).body,
-          extra: {
-            [CUE_AUTHORITY_FIELD]: fleetScopedCueAuthority(slug),
-            ...(action === 'wind-down'
-              ? {
-                  [EXPECTED_LIFECYCLE_ACK_FIELD]: expectedFleetWindDownAck(slug),
-                  wakeOnReply: true,
-                }
-              : {}),
-          },
-        });
-        notified = members;
-        cueMsgId = (env as { msg_id?: string })?.msg_id ?? null;
-      }
-    } catch {
-      /* best-effort: the registry state is the source of truth; orient folds it */
-    }
-  }
+        opts,
+      }),
+    {
+      fallback: null,
+      timeoutMs: FLEET_CONTROL_RESPONSE_TIMEOUT_MS,
+      label: `fleet:${action}:post-control`,
+    },
+  );
+  const postResult = post.value;
+  const responseRecord = postResult?.record ?? record;
 
   return {
     ok: true,
     fleet: slug,
-    controlState: record.controlState,
-    reason: record.controlReason,
+    controlState: responseRecord.controlState,
+    reason: responseRecord.controlReason,
     by: ownerId,
     invokedAs,
     ...(alreadyInState ? { alreadyInState: true } : {}),
-    notified,
-    cueMsgId,
-    ...(drainStamp ? { drainStamp } : {}),
-    ...(pauseHolds ? { pauseHolds } : {}),
+    notified: postResult?.notified ?? [],
+    cueMsgId: postResult?.cueMsgId ?? null,
+    ...(postResult?.drainStamp ? { drainStamp: postResult.drainStamp } : {}),
+    ...(postResult?.pauseHolds ? { pauseHolds: postResult.pauseHolds } : {}),
+    ...(post.degraded ? { postControlPending: true } : {}),
+    ...(post.degraded || postResult?.degraded ? { postControlDegraded: true } : {}),
   };
 }
 
