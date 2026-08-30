@@ -29,6 +29,7 @@ import {
   type BashJob,
 } from './bash-jobs';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
+import { capturedExitMismatch } from './captured-exit-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
 import { getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, serviceUnitForTask, type TaskRow } from '../../task-manager/types';
@@ -1281,6 +1282,11 @@ export default defineTool({
           // old branch treated every terminal row as job_process_gone, causing
           // successful Vitest/typecheck jobs to be reported as errors (EI-20232536598731015).
           if (terminal?.status === 'completed') {
+            const exitMismatch = capturedExitMismatch({
+              status: terminal.status,
+              exitCode: terminal.exitCode,
+              log: recoveredStrandedOutput,
+            });
             return {
               content: [
                 {
@@ -1295,11 +1301,15 @@ export default defineTool({
                     ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                     recovered_from_ledger: true,
                     ...selfRedirectFields,
+                    ...(exitMismatch
+                      ? { exit_code_verdict: exitMismatch.headline, advice: exitMismatch.advice }
+                      : {}),
                     ...strandedOutput,
                     output: recoveredStrandedOutput,
                   }),
                 },
               ],
+              ...(exitMismatch ? { isError: true } : {}),
             };
           }
           const exitDetail =
@@ -1448,6 +1458,12 @@ export default defineTool({
       exitCode: job.exitCode,
       log: jobLog,
     });
+    // Only checked when deadTypecheck didn't already claim the headline/advice
+    // fields — the two verdicts share that slot and a dead typecheck is the
+    // more specific, more actionable diagnosis when both would fire.
+    const exitMismatch = deadTypecheck
+      ? null
+      : capturedExitMismatch({ status: job.status, exitCode: job.exitCode, log: jobLog });
     let terminalLedgerRow = attachedLedgerRow;
     if (job.status !== 'running' && (!terminalLedgerRow || !isTerminalState(terminalLedgerRow.state)) && job.taskId) {
       terminalLedgerRow = await getTask(job.taskId).catch(() => terminalLedgerRow);
@@ -1475,12 +1491,18 @@ export default defineTool({
                   headline: deadTypecheck.headline,
                   advice: deadTypecheck.advice,
                 }
-              : {}),
+              : exitMismatch
+                ? {
+                    exit_code_verdict: 'captured_exit_mismatch',
+                    headline: exitMismatch.headline,
+                    advice: exitMismatch.advice,
+                  }
+                : {}),
             output,
           }),
         },
       ],
-      ...(deadTypecheck ? { isError: true } : {}),
+      ...(deadTypecheck || exitMismatch ? { isError: true } : {}),
     };
   },
 });
