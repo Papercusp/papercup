@@ -111,12 +111,30 @@ const HOUR = 3600;
  *   retirement condition is now met. P-014 landed the mechanism: both viewer lanes
  *   heartbeat (see `desktopViewerHeartbeatMs` below) and both tear a dead stream
  *   down, which is what let `VIEWER_HOLD_SEC` drop from six hours to twenty
- *   minutes. What has NOT happened is the measurement — no KasmVNC viewer has
- *   carried a real frame end-to-end yet, so nothing has observed how this
- *   heartbeat behaves against a live encoder under load. Retiring a backstop on
- *   the strength of unit tests alone is how a margin gets removed the week before
- *   it was needed. This drops to the 2h sandbox shape when P-014's measurement
- *   half runs, not before.
+ *   minutes. What has NOT happened is the measurement of THE HEARTBEAT, and the
+ *   distinction now matters, because a partial measurement exists that looks like
+ *   the missing one:
+ *
+ *   ⛔ D-035 IS NOT THIS EVIDENCE — do not retire the backstop on it (WI-1267126).
+ *   P-014's egress half HAS since run, and KasmVNC viewers did carry real frames
+ *   end-to-end against a saturated encoder (~4,400 framebuffer updates, 2.1
+ *   Gpixels per 72s session on a GPU-less 4-vCPU VM). But that rig was a MINIMAL
+ *   relay that imported only the grant + loopback guard and then raw-piped the
+ *   socket; it never went through `workspace-host/hosted-session-host.ts`, which
+ *   is where the heartbeat actually lives. ZERO beats were emitted for the whole
+ *   matrix, so it observed the ENCODER under load and told us nothing whatsoever
+ *   about the heartbeat under load — which is the only thing this 4h margin is
+ *   holding for.
+ *
+ *   What would actually retire it: a viewer driven through the PRODUCTION
+ *   hosted-session-host adapter against a live KasmVNC encoder under load,
+ *   showing `last_active_at` still advancing at the derived cadence while the
+ *   encoder is saturated. The risk being covered is specific — the cadence is the
+ *   shortest `idleAfterSec` / 5 (60s), so the documented tolerance is four
+ *   consecutive missed beats, and a saturated event loop is exactly what could eat
+ *   them. Retiring a backstop on the strength of unit tests, or of a measurement
+ *   that bypassed the mechanism, is how a margin gets removed the week before it
+ *   was needed. This drops to the 2h sandbox shape when THAT runs, not before.
  */
 export const DESKTOP_LIFECYCLE_POLICY: Readonly<Record<DesktopKind, DesktopLifecyclePolicy>> = {
   'xvfb-local': { idleAfterSec: 15 * 60, freezeAfterSec: 2 * HOUR, reapAfterFrozenSec: 6 * HOUR },
