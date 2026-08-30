@@ -365,7 +365,14 @@ export async function releaseDesktopProcesses(
     return;
   }
 
-  if (managedOutcome && !managedOutcome.ok) {
+  // `already_gone` is this function's GOAL STATE, not a refusal (WI-1199802): the scope was
+  // collected when its payload exited, or holds no processes, so the subtree we exist to kill
+  // is already dead. Treating it as a failure was wrong twice over — it logged a teardown
+  // warning on the ordinary path (which vitest-fail-on-console then turned into red tests in
+  // suites that had actually passed), and it took the early return below, skipping the
+  // client-handle sweep that the success path runs. Falling through is also strictly safer:
+  // the sweep is a no-op on dead handles, so this can only ever kill MORE, never less.
+  if (managedOutcome && !managedOutcome.ok && managedOutcome.error !== 'already_gone') {
     clearTeardownMarkers();
     console.warn(
       `[desktop-provisioner] managed desktop teardown refused for ${root.taskId ?? root.scopeUnit ?? 'unknown root'}: ` +
