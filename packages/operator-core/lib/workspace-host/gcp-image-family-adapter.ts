@@ -1096,6 +1096,54 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
     return { imageId };
   }
 
+  /**
+   * Prove the credential PACKER will use can still mint a token, before anything billable runs.
+   *
+   * ⚠ Packer does NOT use this release's `cloudCredentialRef`. The release resolves that ref
+   * (typically `gcloud://active-user`) for its own API calls, while `packer build` is a
+   * subprocess that authenticates with Application Default Credentials. They are two different
+   * credentials and only the unused one was ever checked: a perfectly healthy active-user
+   * credential passed the release preflight while ADC was reauth-dead, so the build was
+   * certified green and then died ~6s in with "All options for deriving the OSLogin user have
+   * been exhausted" — an error that reads as an OS Login/IAM misconfiguration and points away
+   * from the credential entirely. A preflight that validates a credential the build does not
+   * use is worse than no preflight: it converts "unauthenticated" into a green light plus a
+   * confusing error minutes later (EI-21847008443626335).
+   *
+   * ⚠ THE PROBE MUST RUN THROUGH `this.commands`, AND THAT IS LOAD-BEARING, NOT STYLE. That
+   * runner strips GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_OAUTH_ACCESS_TOKEN /
+   * CLOUDSDK_AUTH_ACCESS_TOKEN exactly as the packer invocation does, so the probe resolves the
+   * same credential the build will. Run the identical gcloud command against an unsanitised
+   * environment and it answers from whatever service-account key those variables select,
+   * reporting a healthy ADC while ADC is dead — reproducing the very false green this exists to
+   * prevent. That is not hypothetical: the operator-facing re-check command recorded on this
+   * bug did precisely that and a build was launched on its say-so.
+   */
+  private async assertAdcCanMintForPacker(): Promise<void> {
+    const gcloud = safeExecutable(this.options.gcloudExecutable, 'gcloud', 'gcloudExecutable');
+    const remedy = 'Refresh it with: gcloud auth application-default login';
+    let result: GcpImageFamilyCommandResult;
+    try {
+      result = await this.commands.run(gcloud, ['auth', 'application-default', 'print-access-token', '--quiet']);
+    } catch (error) {
+      fail(
+        'Application Default Credentials could not be probed before the build. Packer ' +
+          "authenticates with ADC, not with this release's cloudCredentialRef. " +
+          `${redactDiagnostic(error instanceof Error ? error.message : String(error))} ${remedy}`,
+      );
+      return;
+    }
+    if (!Number.isSafeInteger(result.exitCode) || result.exitCode !== 0 || !result.stdout.trim()) {
+      const diagnostic = redactDiagnostic(result.stderr) || `exit ${String(result.exitCode)}`;
+      fail(
+        'Application Default Credentials cannot mint an access token, so `packer build` would ' +
+          "fail after a builder VM had already been created. Packer authenticates with ADC — NOT " +
+          "this release's cloudCredentialRef, which may itself be perfectly healthy. " +
+          `${remedy}. Probe: ${diagnostic}`,
+      );
+    }
+  }
+
   async scanImage(input: Parameters<GcpImageFamilyReleaseAdapter['scanImage']>[0]): Promise<GcpImageScanEvidence> {
     const context = this.context();
     inputMatchesContext(input, context);
