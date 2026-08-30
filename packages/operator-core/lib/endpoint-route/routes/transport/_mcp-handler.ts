@@ -2346,6 +2346,12 @@ const handler = createMcpHandler(
           // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
           if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
             const { potHomeSlugForHarness } = await import('../../../hive-federation');
+            // EI-21910110662818467: the generic harness-arg sweep below. Kept in its
+            // own module so the SAME predicate that decides "this arg names a
+            // harness" is what the coverage detector
+            // (scripts/check-harness-arg-coverage.ts) audits the registry with —
+            // clamp and detector cannot drift apart into two opinions.
+            const { collectHarnessSlugArgs } = await import('../../hive-harness-arg-coverage');
             const scopeHive = await potHomeSlugForHarness(spawnRes.ctx.workspaceId, spawnRes.ctx.harnessSlug);
             if (scopeHive) {
               if (toolName.startsWith('cross_harness:')) {
@@ -2533,6 +2539,42 @@ const handler = createMcpHandler(
                     },
                   ],
                 };
+              }
+              // (c) EI-21910110662818467: GENERIC sweep over every OTHER top-level
+              // arg whose NAME designates a harness. The four branches above read
+              // fixed spellings LITERALLY, and that list has only ever grown
+              // reactively — after each bypass was found in production
+              // (harness -> harness_slug -> hive -> scope -> scope:'harness:<slug>').
+              // A census of the live registry (837 tools / 3996 top-level args)
+              // measured 12 further harness-naming spellings that no branch read,
+              // several of which genuinely route: `harnessSlug` alone is declared by
+              // 34 tools and OVERRIDES ctx (roles/list.ts:38 passes it straight to
+              // resolveConcreteHarnessSlug), so a confined session could read another
+              // hive through it with nothing to stop the call.
+              //
+              // This sweep covers new spellings automatically instead of waiting for
+              // a sixth bypass. It deliberately SKIPS the four literal args above:
+              // those carry bespoke narrow exemptions (engineering-docs surfaces, the
+              // plans:get / plans:add-decision fleet-leader case) that re-checking
+              // generically would silently discard. Non-string values yield nothing,
+              // so a numeric `harnessLimit` or a boolean widener is skipped without
+              // needing an allowlist entry.
+              for (const { arg, slug } of collectHarnessSlugArgs(args)) {
+                const escapesHive =
+                  slug === 'all' ||
+                  slug === '*' ||
+                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, slug)) !== scopeHive;
+                if (escapesHive) {
+                  return {
+                    isError: true,
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `harness_forbidden: ${arg} "${slug}" names a harness outside this session's hive "${scopeHive}". A cross-hive call made this way could not later be claimed, commented on, or closed by this session.`,
+                      },
+                    ],
+                  };
+                }
               }
               const targetedPresenceOwner =
                 toolName === 'coord:presence' &&

@@ -30,6 +30,7 @@ import {
   ownerQuestionSlotField,
   type TypedSlotLintMatch,
 } from './carry-surface-typed-slots';
+import { gateClaimCarryLint, type GateClaimCarryLint } from './release/gate-claim-carry-lint';
 import {
   suppressProvenActionClaims,
   type SuccessfulActionInvocation,
@@ -346,6 +347,12 @@ export interface CarryProvenanceFields {
     /** P-005: [owner:…] tags auto-verified by the owner-typed current turn. */
     ownerTagsAutoVerified?: number;
   };
+  /**
+   * P-007 (frozen-candidate-compliance-enforcement-2026-08-30): this text asserts GATE
+   * PROGRESS while a repair queue is frozen. Sibling of `provenanceLint` and here for the
+   * same reason — both catch a claim that a successor would otherwise inherit as fact.
+   */
+  gateClaimLint?: GateClaimCarryLint;
 }
 
 export async function carryProvenanceFields(
@@ -357,8 +364,12 @@ export async function carryProvenanceFields(
     successfulActions: options.successfulActions,
   });
   const retainedProvenance = options.retainedText ? provenanceLintField(options.retainedText) : undefined;
-  if (!stamp && !retainedProvenance) return {};
+  // P-007: silent unless a repair queue is actually frozen, so this costs one failed marker
+  // read in the ordinary case and never depends on the stamp having produced anything.
+  const gateClaimLint = gateClaimCarryLint(text);
+  if (!stamp && !retainedProvenance && !gateClaimLint) return {};
   const out: CarryProvenanceFields = {};
+  if (gateClaimLint) out.gateClaimLint = gateClaimLint;
   if (stamp?.lint) out.provenanceLint = stamp.lint;
   if (retainedProvenance) out.retainedProvenance = retainedProvenance;
   if (stamp?.slotLint) out.typedSlotLint = stamp.slotLint;

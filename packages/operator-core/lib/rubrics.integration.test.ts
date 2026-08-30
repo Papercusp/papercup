@@ -701,7 +701,9 @@ Preserve this plan body.
               'Retired acceptance subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
               false, NULL, '{}'::text::jsonb, NULL, 'local')`;
 
-    const initialCriteria = [{ key: 'original-outcome', title: 'Original outcome' }];
+    const initialCriteria = [
+      { key: 'original-outcome', title: 'Original outcome', driftMarkers: 'the original outcome regresses' },
+    ];
     const first = await rubrics.proposeRubric({
       rubricId,
       kind: 'acceptance',
@@ -733,7 +735,10 @@ Preserve this plan body.
       subjectPlan,
       characteristic: 'retired-acceptance-contract',
       title: 'Retired acceptance contract',
-      criteria: [...initialCriteria, { key: 'added-after-ship', title: 'Added after ship' }],
+      criteria: [
+        ...initialCriteria,
+        { key: 'added-after-ship', title: 'Added after ship', driftMarkers: 'the added-after-ship outcome regresses' },
+      ],
       by: 'su-reviser',
     });
 

@@ -235,6 +235,79 @@ describe('GCP workspace-host preflight', () => {
     expect(report.checks.find((check) => check.id === 'quotas')?.remediation?.code).toBe('increase-quota');
   });
 
+  it('requires the image permissions the workspace-host release path actually calls', () => {
+    // gcp-image-family-adapter POSTs /global/images for the candidate build AND the family
+    // promote; the offline image scan creates its candidate disk from an image. A preflight that
+    // omits these passes and then the first image operation fails.
+    for (const permission of [
+      'compute.images.create',
+      'compute.images.delete',
+      'compute.images.get',
+      'compute.images.list',
+      'compute.images.setLabels',
+      'compute.images.useReadOnly',
+    ]) {
+      expect(GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS).toContain(permission);
+    }
+  });
+
+  it('suggests a remediation role for every compute resource family it requires', async () => {
+    // The defect this closes is structural, not specific to images: a permission listed as
+    // REQUIRED but absent from suggestedRoles() is reported as missing with no way to fix it.
+    // Asserting the invariant over the whole list also catches the next family added without a
+    // role, which is what makes this a guard rather than a regression test for one bug.
+    const families = [
+      ...new Set(
+        GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS.filter((permission) => permission.startsWith('compute.')).map(
+          (permission) => permission.split('.').slice(0, 2).join('.'),
+        ),
+      ),
+    ];
+    expect(families).toContain('compute.images');
+
+    const unremediated: string[] = [];
+    for (const family of families) {
+      // Grant everything EXCEPT this one family, so the resulting suggestedRoles is attributable
+      // to it alone rather than to some other missing permission.
+      const report = await runGcpWorkspaceHostPreflight(
+        {},
+        deps({
+          fetch: successFetch({
+            ':testIamPermissions': (init) => {
+              const requested =
+                (JSON.parse(String(init?.body ?? '{}')) as { permissions?: string[] }).permissions ?? [];
+              return json({ permissions: requested.filter((p) => !p.startsWith(`${family}.`)) });
+            },
+          }),
+        }),
+      );
+
+      const iam = report.checks.find((check) => check.id === 'iam.project');
+      expect(iam?.remediation?.missingPermissions?.some((p) => p.startsWith(`${family}.`))).toBe(true);
+      if (!iam?.remediation?.suggestedRoles?.length) unremediated.push(family);
+    }
+
+    expect(unremediated).toEqual([]);
+  });
+
+  it('points a missing image permission at roles/compute.storageAdmin', async () => {
+    const report = await runGcpWorkspaceHostPreflight(
+      {},
+      deps({
+        fetch: successFetch({
+          ':testIamPermissions': (init) => {
+            const requested = (JSON.parse(String(init?.body ?? '{}')) as { permissions?: string[] }).permissions ?? [];
+            return json({ permissions: requested.filter((p) => !p.startsWith('compute.images.')) });
+          },
+        }),
+      }),
+    );
+
+    const iam = report.checks.find((check) => check.id === 'iam.project');
+    expect(iam?.remediation?.missingPermissions).toContain('compute.images.create');
+    expect(iam?.remediation?.suggestedRoles).toContain('roles/compute.storageAdmin');
+  });
+
   it('checks iam.serviceAccounts.actAs on the selected runtime identity only', async () => {
     const fetchImpl = successFetch({
       'iam.googleapis.com': () => json({ permissions: [] }),

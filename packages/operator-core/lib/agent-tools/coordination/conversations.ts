@@ -374,6 +374,7 @@ export async function supersedeConversation(
 ): Promise<
   | SupersedeConversationResult
   | { error: 'not_found' }
+  | { error: 'not_owner' }
   | { error: 'already_superseded' }
   | { error: 'already_terminal' }
   | { error: 'invalid_replacement' }

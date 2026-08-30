@@ -118,6 +118,18 @@ export interface DeltaSweepRunOptions {
   recentWindowMinutes?: number;
   titleWindowHours?: number;
   clusterExemplarsPerShard?: number;
+  /**
+   * Model spec for this run's burst-detection call. Defaults to
+   * {@link LEARNING_MODEL_SPEC}.
+   *
+   * Same D-035 seam the promoter, bulk-dedup and daily-digest runners carry:
+   * the default is the owner-directed learning policy and stays that way, but
+   * ONE run must be steerable onto another backend when the canonical model's
+   * account is rejecting it, without re-pointing every learning path. Resolving
+   * it once into a local `model` is also what keeps `admission_runs.model_id`
+   * naming the model the run actually called.
+   */
+  model?: string;
 }
 
 interface DeltaItemRow {
@@ -398,6 +410,7 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
   const recentWindowMinutes = positiveInteger(opts.recentWindowMinutes, DEFAULT_DELTA_WINDOW_MINUTES);
   const titleWindowHours = positiveInteger(opts.titleWindowHours, DEFAULT_DELTA_TITLE_WINDOW_HOURS);
   const clusterExemplarsPerShard = positiveInteger(opts.clusterExemplarsPerShard, DEFAULT_DELTA_CLUSTER_EXEMPLARS);
+  const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
   await beginRun(sql, {
     runId,
     workspaceId: opts.workspaceId,
@@ -421,7 +434,7 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
     if (context.recentItems.length > 0) {
       const prompt = buildDeltaSweepPrompt(context, { recentWindowMinutes, titleWindowHours });
       const response = await opts.llmCall({
-        model: LEARNING_MODEL_SPEC,
+        model,
         system: prompt.system,
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
@@ -480,7 +493,7 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
          SET finished_at = ${new Date(now()).toISOString()}::timestamptz,
              batch_size = ${context.recentItems.length},
              promoted = 0, merged = 0, held = 0, auto_promoted_unreviewed = 0,
-             model_id = ${modelCalled ? LEARNING_MODEL_SPEC : null},
+             model_id = ${modelCalled ? model : null},
              tokens_in = ${tokensIn}, tokens_out = ${tokensOut}, latency_ms = ${latencyMs},
              detail = ${JSON.stringify(detail)}::text::jsonb
        WHERE id = ${runId}`;

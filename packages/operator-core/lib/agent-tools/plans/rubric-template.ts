@@ -414,7 +414,10 @@ export const rubricTemplateDataSchema = z
       .describe(
         'the gradeable criteria (a structured observation grades each). Standard kind: >=1 required, each ' +
           'with full model/method/driftMarkers (the per-kind superRefine enforces it). Acceptance kind: ' +
-          'may be empty ONLY with a classRef (plan D-009); model/method/driftMarkers optional per criterion',
+          'may be empty ONLY with a classRef (plan D-009); model/method optional per criterion, but ' +
+          'driftMarkers (the concrete falsifier) is REQUIRED on every bespoke criterion — the write-time ' +
+          'authoring profile (rubricTemplateDataAuthoringSchema) enforces this even though the base schema ' +
+          'reports it as optional',
       ),
     ratingScale: z
       .array(z.string().min(1))

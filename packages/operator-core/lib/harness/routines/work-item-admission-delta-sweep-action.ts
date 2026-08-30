@@ -5,6 +5,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { captureImprovement } from '../improvements/capture-core';
 import { gatewayLlmEnv } from '../../inference-gateway/spawn-env';
+import { optionalModelSpec } from '../../learning/model-policy';
 import { notifySyncInvalidate } from '../../sync-sse';
 import { linkWorkItem, resolveWorkItemRef } from '../../work-items';
 import {
@@ -101,6 +102,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<DeltaSweepRunResult>
     recentWindowMinutes: positiveInteger(payload.recentWindowMinutes, DEFAULT_DELTA_WINDOW_MINUTES),
     titleWindowHours: positiveInteger(payload.titleWindowHours, DEFAULT_DELTA_TITLE_WINDOW_HOURS),
     clusterExemplarsPerShard: positiveInteger(payload.clusterExemplarsPerShard, DEFAULT_DELTA_CLUSTER_EXEMPLARS),
+    model: optionalModelSpec(payload.model, 'delta sweep'),
     llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
     fileUmbrella: productionFileUmbrella,
     linkUmbrella: productionLinkUmbrella,

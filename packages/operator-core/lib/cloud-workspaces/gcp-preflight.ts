@@ -522,6 +522,18 @@ function suggestedRoles(missing: readonly string[]): string[] {
     roles.add('roles/compute.securityAdmin');
   if (missing.some((permission) => permission.startsWith('compute.images.')))
     roles.add('roles/compute.storageAdmin');
+  // Read-only compute metadata. compute.projects.get is a DIFFERENT permission from the
+  // resourcemanager.projects.get handled below, and roles/browser does not grant it.
+  if (
+    missing.some(
+      (permission) =>
+        permission.startsWith('compute.projects.') ||
+        permission.startsWith('compute.regions.') ||
+        permission.startsWith('compute.zones.') ||
+        permission.startsWith('compute.machineTypes.'),
+    )
+  )
+    roles.add('roles/compute.viewer');
   if (
     missing.some(
       (permission) =>

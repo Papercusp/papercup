@@ -3587,7 +3587,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 ? ":3070 refused connections for the whole retry window (restart took too long or is down)"
                 : fwd.klass === "opaque"
                   ? "upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)"
-                  : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
+                  : fwd.klass === "keyed"
+                    ? // EI-21568680890986171: a keyed write is NEVER auto-retried here — postConnectRetryable
+                      // only admits 'idempotent'/'readonly' — so postConnectRetries stays 0 and the old
+                      // "retried N×" phrasing falsely implied a retry was attempted. The call carries a
+                      // proxy-injected idempotencyKey, so IF the caller resends the identical body :3070
+                      // dedups server-side instead of double-applying — but the proxy itself does not know
+                      // whether the first attempt's write landed, so it surfaces honestly rather than guess.
+                      "upstream errored AFTER connecting — not auto-retried (the write's outcome is unknown; " +
+                        "resending the same call is safe server-side dedup if the caller preserves its idempotency key)"
+                    : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
             }),
           );
           log(

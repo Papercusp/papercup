@@ -95,6 +95,7 @@ import {
   insufficientEvidenceReason,
   reconcileStampedAuthority,
 } from '../../work-item-completion-authority';
+import { gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -2877,6 +2878,13 @@ async function completeOne(
       `before re-calling.`
     : undefined;
 
+  // P-006 (frozen-candidate-compliance-enforcement-2026-08-30): this close asserts gate-red
+  // progress, but names failing paths the JUDGED sha does not carry. Sibling of the check
+  // above and warn-only for the same reason — the fix is real, it just landed above the
+  // frozen candidate, so the gate cannot see it and the claim would enter the record as fact.
+  const gateRedClaim = gateRedCompletionClaimWarning(completionEvidenceForGate);
+  const gateRedClaimWarning = gateRedClaim ? `completion for ${it.id}: ${gateRedClaim.detail}` : undefined;
+
   // EI-20288629053504794: a positive path claim is not evidence that this item touched
   // the path. Surface target files whose last commit predates the item, but never block
   // or accuse when git history cannot be observed.
@@ -3220,6 +3228,13 @@ async function completeOne(
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
+    ...(gateRedClaimWarning
+      ? {
+          gateRedClaimWarning,
+          gateRedClaimUncontainedPaths: gateRedClaim?.uncontainedPaths,
+          gateRedClaimJudgedSha: gateRedClaim?.judgedSha,
+        }
+      : {}),
     ...(preExistingPathsWarning ? { preExistingPathsWarning } : {}),
     ...(prescribedGuardWarning ? { prescribedGuardWarning } : {}),
     ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
