@@ -555,6 +555,50 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  it('refuses a grade when every one of several vetting critics resolves to the grader', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    // WI-905074 regression. Both recorded critics are the SAME party as the grader
+    // (an alias/rebind of one identity). The old guard tested `critics.length === 1`,
+    // so a second row made the identity comparison unreachable and this bypassed the
+    // refusal entirely — no independent party ever challenged the rubric.
+    lineageRelatedM.mockImplementation(
+      async (author, candidate) =>
+        author === candidate || (author === 'su-critic-rebound' && candidate === 'su-critic'),
+    );
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-vetting',
+        createdAt: '2026-08-25T21:00:12Z',
+        createdBy: 'su-vetting-author',
+        rubricRef: 'meta-acceptance-rubric',
+        subject: { kind: 'rubric', ref: 'acceptance-rubric' },
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 7,
+          critiquePosts: 2,
+          critics: ['su-critic', 'su-critic-rebound'],
+        },
+      } as unknown as ScorecardRow,
+    ]);
+
+    await expect(
+      emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-critic' }),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: 'grader_is_sole_vetting_critic',
+      error: expect.stringContaining('only distinct party among the 2'),
+    });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('allows one of several vetting critics to grade because another critic preserves independent challenge', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
     listM.mockResolvedValue([

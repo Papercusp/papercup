@@ -419,8 +419,9 @@ export async function emitScorecard(
       // self-sealing: the grader is least able to notice the omissions in their
       // own critique. Read the same canonical meta-scorecards the acceptance gate
       // trusts, restricted to the current rubric revision. Several critics do not
-      // trigger this narrow refusal; another critic still independently challenged
-      // the rubric in that case.
+      // trigger this narrow refusal PROVIDED at least one of them is independent of
+      // the grader — that critic still independently challenged the rubric. A list
+      // of critics who all resolve to the grader is not independence (WI-905074).
       if (!callerIsImplementer) {
         const currentRevision = rubricRevision;
         const vettingCards = await listScorecards({
@@ -437,18 +438,32 @@ export async function emitScorecard(
             (currentRevision == null || card.vetting?.rubricRevision === currentRevision),
         );
         const critics = currentVetting?.vetting?.critics ?? [];
-        if (
-          critics.length === 1 &&
-          (await lineageRelated(critics[0]!, input.createdBy, { workspaceId: identityWorkspace }))
-        ) {
-          return {
-            ok: false as const,
-            code: 'grader_is_sole_vetting_critic' as const,
-            error:
-              `grader '${input.createdBy}' is the sole recorded vetting critic for acceptance rubric ` +
-              `'${rubric.rubricId}' — use a different independent grader so rubric fitness and work ` +
-              `compliance are not attested by the same party`,
-          };
+        // WI-905074: what preserves the three-party chain is an INDEPENDENT critic,
+        // not a second row in the list. The old `critics.length === 1` made the
+        // identity comparison unreachable for two or more critics, so a vetting
+        // record whose critics all resolved to the grader's own identity/lineage
+        // was never compared and sailed through the guard written to trip on it.
+        if (critics.length > 0) {
+          const criticResolvesToGrader = await Promise.all(
+            critics.map((critic) =>
+              lineageRelated(critic, input.createdBy, { workspaceId: identityWorkspace }),
+            ),
+          );
+          if (criticResolvesToGrader.every(Boolean)) {
+            const standing =
+              critics.length === 1
+                ? 'is the sole recorded vetting critic'
+                : `is the only distinct party among the ${critics.length} recorded vetting critics`;
+            return {
+              ok: false as const,
+              code: 'grader_is_sole_vetting_critic' as const,
+              error:
+                `grader '${input.createdBy}' ${standing} for acceptance rubric ` +
+                `'${rubric.rubricId}' — no recorded critic is independent of the grader, so rubric ` +
+                `fitness and work compliance would be attested by the same party; use a different ` +
+                `independent grader`,
+            };
+          }
         }
       }
       if (!callerIsImplementer && acceptance) {
