@@ -94,6 +94,40 @@ function capture(display: string): Uint8Array {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Capture `display` repeatedly until the frame carries content, or `timeoutMs` elapses.
+ *
+ * WHY THIS EXISTS, and why it is not the `await wait(3000)` it replaced (WI-1105361): a fixed
+ * sleep before a pixel assertion encodes a GUESS about how long provisioning plus first paint
+ * takes, and that guess is load-dependent. Measured on a 128-core host whose 1-minute loadavg
+ * ranged 92-384, the 3s form failed TWO RUNS IN THREE while passing the third with byte-identical
+ * code — the frame simply had not painted yet at the single instant it was sampled. Both GL
+ * assertions in this file shared the constant, which is why they always failed together and
+ * looked like one deterministic regression rather than one shared flake.
+ *
+ * This keeps the guarantee the sleep was there to provide. A desktop that NEVER paints still
+ * returns a blank report and still fails the caller; polling only removes the false negative
+ * where the app painted slightly later than one hardcoded constant allowed. It is deliberately
+ * NOT "raise 3000 to something bigger" — that trades a fast flake for a slow one and leaves the
+ * defect class in place.
+ *
+ * `elapsedMs` comes back so a genuinely slow first paint stays VISIBLE in the failure message
+ * instead of being silently absorbed by a longer timeout: a frame that needed 20s is a real
+ * finding about the desktop, even on the run where it eventually passes.
+ */
+async function captureWhenPainted(
+  display: string,
+  timeoutMs = 30_000,
+): Promise<{ report: ReturnType<typeof analyzeImageBlankness>; elapsedMs: number }> {
+  const startedAt = Date.now();
+  let report = analyzeImageBlankness(capture(display));
+  while (report.verdict !== 'has-content' && Date.now() - startedAt < timeoutMs) {
+    await wait(250);
+    report = analyzeImageBlankness(capture(display));
+  }
+  return { report, elapsedMs: Date.now() - startedAt };
+}
+
 describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints real pixels', () => {
   let desktop: SandboxDesktop | undefined;
 
@@ -131,12 +165,12 @@ describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints re
       `no GL on this host (${desktop.gl.reason}) — install ${'libgl1-mesa-dri'} before running the live GL suite`,
     ).not.toBe('none');
 
-    await wait(3000); // let gears render a few frames into the framebuffer
-
-    const report = analyzeImageBlankness(capture(desktop.display));
+    // Poll for first paint rather than sleeping a fixed interval and hoping — see
+    // captureWhenPainted. A desktop that never paints still fails here.
+    const { report, elapsedMs } = await captureWhenPainted(desktop.display);
     expect(
       report.verdict,
-      `GL app screenshot judged ${report.verdict} (${report.reason}) on a desktop reporting gl.tier=${desktop.gl.tier} via ${desktop.gl.id} — this is the blank-screenshot trap: the strategy claimed GL, the pixels disagree`,
+      `GL app screenshot judged ${report.verdict} (${report.reason}) after ${elapsedMs}ms of polling on a desktop reporting gl.tier=${desktop.gl.tier} via ${desktop.gl.id} — this is the blank-screenshot trap: the strategy claimed GL, the pixels disagree`,
     ).toBe('has-content');
 
     // Beyond the verdict: the measured margin should be nowhere near the threshold. A frame
@@ -231,11 +265,10 @@ describe.each(BACKENDS)('P-012 — $xServer backend parity', ({ xServer, enabled
       `no GL on this host (${desktop.gl.reason}) — the ${xServer} desktop cannot be trusted for ` +
         'pixel evidence, which is a recorded capability, not a test failure to route around',
     ).not.toBe('none');
-    await wait(3000);
-    const report = analyzeImageBlankness(capture(desktop.display));
+    const { report, elapsedMs } = await captureWhenPainted(desktop.display);
     expect(
       report.verdict,
-      `GL app screenshot judged ${report.verdict} on a ${xServer} desktop reporting ` +
+      `GL app screenshot judged ${report.verdict} after ${elapsedMs}ms of polling on a ${xServer} desktop reporting ` +
         `gl.tier=${desktop.gl.tier} via ${desktop.gl.id} — the strategy claimed GL, the pixels disagree`,
     ).toBe('has-content');
     expect(report.distinctColors ?? 0).toBeGreaterThan(8);
