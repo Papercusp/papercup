@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-08-29T23:41:55.177Z",
-  "migrationCountAtGeneration": 866,
+  "generatedAt": "2026-08-30T06:01:37.544Z",
+  "migrationCountAtGeneration": 873,
   "indexes": [
     {
       "schema": "audit",
@@ -711,6 +711,20 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "agent_usage_samples",
       "definition": "CREATE INDEX agent_usage_samples_ws_ts_idx ON harness_shared.agent_usage_samples USING btree (workspace_id, ts DESC)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "app_owner_mappings_owner_unique",
+      "table": "app_owner_mappings",
+      "definition": "CREATE UNIQUE INDEX app_owner_mappings_owner_unique ON harness_shared.app_owner_mappings USING btree (workspace_id, app, owner_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "app_owner_mappings_pkey",
+      "table": "app_owner_mappings",
+      "definition": "CREATE UNIQUE INDEX app_owner_mappings_pkey ON harness_shared.app_owner_mappings USING btree (workspace_id, user_id, app)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",
@@ -9391,6 +9405,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "user_trust_list",
       "definition": "CREATE INDEX user_trust_list_ws_idx ON harness_shared.user_trust_list USING btree (workspace_id)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "users_pkey",
+      "table": "users",
+      "definition": "CREATE UNIQUE INDEX users_pkey ON harness_shared.users USING btree (id)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",
