@@ -674,6 +674,77 @@ function evidenceRefOf(e: EscalationRerouteInput): string | null {
   return raw?.ref ?? null;
 }
 
+/**
+ * Word-bounded WI-/EI-/F- id extraction from free prose — the same convention
+ * used for exact-string validation elsewhere (e.g. attention/adapters.ts's
+ * `/^(?:WI|EI|F)-\d+$/i`), unanchored so it matches inside a sentence. Only the
+ * FIRST match is used: an escalation naming its subject typically names it once,
+ * and the eligibility check below is deliberately narrow (see
+ * {@link subjectAlreadyActivelyWorked}).
+ */
+const SUBJECT_WORK_ITEM_ID_RE = /\b((?:WI|EI|F)-\d+)\b/i;
+
+/**
+ * The escalation's SUBJECT work-item id, if any: the first WI-/EI-/F- id named
+ * in its summary prose, falling back to its cited evidence ref (some
+ * escalations cite the item they are about there rather than in prose). `null`
+ * when neither resolves — the caller's fail-closed default applies.
+ */
+function extractSubjectWorkItemId(escalation: EscalationRerouteInput): string | null {
+  const fromSummary = SUBJECT_WORK_ITEM_ID_RE.exec(escalation.summary ?? '');
+  if (fromSummary) return fromSummary[1].toUpperCase();
+  const evidenceRef = evidenceRefOf(escalation);
+  const fromEvidence = evidenceRef ? SUBJECT_WORK_ITEM_ID_RE.exec(evidenceRef) : null;
+  return fromEvidence ? fromEvidence[1].toUpperCase() : null;
+}
+
+/**
+ * EI-21834041480805949: does the escalation's SUBJECT work-item ALREADY have a
+ * live, actively-progressing assignee by the time the SLA reroute would fire?
+ * If so, waking a second member is pure noise — the escalation itself stays
+ * open (only the human resolution path is authoritative); this only suppresses
+ * the automatic reroute NOTICE.
+ *
+ * Deliberately MINIMAL and FAIL-CLOSED (returns false — proceed with the
+ * reroute) on every path except the one well-evidenced case: no subject id
+ * found, the item can't be resolved, it is already terminal, it has no
+ * assignee, or the assignee's liveness is unknown to the roster this pass
+ * already fetched. Reuses {@link classifyItemActivity}/{@link isActivelyWorked}
+ * (item-activity.ts) rather than re-deriving a staleness threshold, and the
+ * `rosterByOwner` map {@link rerouteUnackedEscalationsOnce} already built from
+ * `resolveSessionStates` — no second presence fetch.
+ */
+async function subjectAlreadyActivelyWorked(
+  escalation: EscalationRerouteInput,
+  rosterByOwner: ReadonlyMap<string, EscalationRerouteDriver>,
+  nowMs: number,
+): Promise<boolean> {
+  const subjectId = extractSubjectWorkItemId(escalation);
+  if (!subjectId) return false;
+  const harness = concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined;
+  let item: Awaited<ReturnType<typeof getWorkItem>>;
+  try {
+    item = await getWorkItem(subjectId, harness);
+  } catch {
+    // A lookup failure must never manufacture a suppression — fail closed.
+    return false;
+  }
+  if (!item) return false;
+  if (TERMINAL_WORK_ITEM_STATES.includes(item.state)) return false;
+  if (!item.assignee) return false;
+  const driver = rosterByOwner.get(item.assignee);
+  // Deliberately narrower than the fleet-wide "alive" set (parked/recorded count
+  // there): this guard's own title is "live, actively-progressing assignee", so
+  // only `sessionState === 'live'` counts as alive here. Absent from the roster
+  // entirely is UNKNOWN (undefined), never assumed dead.
+  const holderAlive = driver ? driver.sessionState === 'live' : undefined;
+  const activity = classifyItemActivity(
+    { takenBy: item.assignee, takenAt: item.takenAt, lastProgressAt: item.lastProgressAt, holderAlive },
+    { now: nowMs },
+  );
+  return isActivelyWorked(activity);
+}
+
 function unknownPredicateValidation(reason: string): EscalationPredicateValidation {
   return {
     status: 'unknown',
@@ -788,6 +859,7 @@ export async function rerouteUnackedEscalationsOnce(
       predicateSkipped: 0,
       artifactUnknownSkipped: 0,
       artifactMissingWarnings: 0,
+      subjectActivelyWorkedSkipped: 0,
     };
   }
 
@@ -833,6 +905,7 @@ export async function rerouteUnackedEscalationsOnce(
   const artifactValidations = new Map<string, EscalationArtifactValidation>();
   let predicateSkipped = 0;
   let artifactUnknownSkipped = 0;
+  let subjectActivelyWorkedSkipped = 0;
   const validatedRows: EscalationRerouteInput[] = [];
 
   // Revalidation is deliberately BEFORE selection. A stale predicate must not
@@ -901,6 +974,15 @@ export async function rerouteUnackedEscalationsOnce(
           );
           return;
         }
+      }
+      // EI-21834041480805949: never wake a second member when the escalation's
+      // own subject work-item already has a live, actively-progressing
+      // assignee. No notice is sent — this is a good outcome, not an anomaly,
+      // unlike the predicate/artifact skips above (which flag something the
+      // original escalation should know changed).
+      if (await subjectAlreadyActivelyWorked(escalation, rosterByOwner, nowMs)) {
+        subjectActivelyWorkedSkipped += 1;
+        return;
       }
       validatedRows.push(escalation);
     }),
