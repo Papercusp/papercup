@@ -321,7 +321,21 @@ export async function resolveMaxObservedStaging(
   repoPath: string,
   devicePubkeysBase64: readonly string[],
   runGit: RunGit = defaultRunGit,
+  /**
+   * The last staging SHA accepted by the bridge, when the caller has one.
+   * A tokenless crash takeover must never let an unrelated namespace history
+   * become its base: only heads that descend from this accepted SHA are
+   * admissible. The accepted SHA itself is a safe synthetic base when no
+   * descendant namespace is available (the bridge already proved it).
+   */
+  acceptedBaseSha?: string | null,
 ): Promise<MaxObservedStaging | null> {
+  const baseSha = acceptedBaseSha && SHA_RE.test(acceptedBaseSha)
+    ? (await runGit(['rev-parse', '--verify', '-q', `${acceptedBaseSha}^{commit}`], repoPath)).code === 0
+      ? acceptedBaseSha
+      : null
+    : null;
+
   // Observed (deviceHex, sha), deduped by sha keeping the lowest device hex.
   const byDevice: { deviceHex: string; sha: string }[] = [];
   // ONE `for-each-ref` for every device, not one `git` spawn per device —
@@ -329,8 +343,21 @@ export async function resolveMaxObservedStaging(
   const shas = await readNamespaceRefForDevices(repoPath, devicePubkeysBase64, STAGING_REF, runGit);
   for (const dev of devicePubkeysBase64) {
     const sha = shas.get(dev);
-    if (sha) byDevice.push({ deviceHex: deviceNamespaceKey(dev), sha });
+    if (!sha) continue;
+    // When the bridge supplied a trusted base, a namespace on an unrelated
+    // root/history is not a candidate for takeover. Keeping it in the mirror
+    // is fine (the member may still reconcile it later), but allowing it into
+    // the maximal-base set wedges the successor forever on
+    // `blocked-crash-reconciliation`.
+    if (baseSha) {
+      const descends = await runGit(['merge-base', '--is-ancestor', baseSha, sha], repoPath);
+      if (descends.code !== 0) continue;
+    }
+    byDevice.push({ deviceHex: deviceNamespaceKey(dev), sha });
   }
+  // The accepted bridge watermark is itself a proven publish base. Use it as
+  // a deterministic floor when every observed namespace is stale/unrelated.
+  if (baseSha) byDevice.push({ deviceHex: '0'.repeat(64), sha: baseSha });
   if (byDevice.length === 0) return null;
   const bySha = new Map<string, string>(); // sha → lowest deviceHex
   for (const o of byDevice.sort((a, b) => a.deviceHex.localeCompare(b.deviceHex))) {

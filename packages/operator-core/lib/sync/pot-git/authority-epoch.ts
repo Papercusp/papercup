@@ -134,6 +134,9 @@ export interface DeriveIntegratorGrantInput {
   /** This machine's last ACCEPTED foreign advance (routine metadata
    *  `worktree_bridge.epochSeq`), null when none accepted yet. */
   bridgeWatermark: EpochSeq | null;
+  /** The SHA carried by the last accepted bridge advance. Used as the trusted
+   *  crash-takeover base so unrelated namespace histories cannot wedge repair. */
+  bridgeStagingSha?: string | null;
   runGit?: RunGit;
 }
 
@@ -232,7 +235,12 @@ export async function deriveIntegratorGrant(input: DeriveIntegratorGrantInput): 
 
   // Crash takeover: seed from the ancestry-maximal observed staging so our
   // first publish fast-forwards receivers from the dead authority's last one.
-  const max = await resolveMaxObservedStaging(input.repoPath, input.memberDevicePubkeysBase64, runGit);
+  const max = await resolveMaxObservedStaging(
+    input.repoPath,
+    input.memberDevicePubkeysBase64,
+    runGit,
+    input.bridgeStagingSha,
+  );
   if (!max) {
     return {
       ready: false,

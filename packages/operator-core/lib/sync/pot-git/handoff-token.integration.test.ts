@@ -490,6 +490,39 @@ describe('P-505 authority epoch grant policy (real bare repo)', () => {
     expect(await readStaging(repo, successor.pubkeyBase64)).toBeNull();
   });
 
+  it('uses the accepted bridge staging as a floor and ignores an unrelated namespace history', async () => {
+    const repo = await freshRepo();
+    const oldAuthority = device();
+    const unrelated = device();
+    const successor = device();
+    const base = await commit(repo, { 'base.txt': 'base' });
+    const validHead = await commit(repo, { 'base.txt': 'base', 'valid.txt': 'valid' }, base);
+    // This head has no common ancestor with the accepted bridge staging. It is
+    // stale mirror debris, not a safe crash-takeover base.
+    const unrelatedHead = await commit(repo, { 'unrelated.txt': 'unrelated' });
+    await writeNamespaceRef(repo, oldAuthority.pubkeyBase64, 'refs/heads/staging', validHead);
+    await writeNamespaceRef(repo, unrelated.pubkeyBase64, 'refs/heads/staging', unrelatedHead);
+
+    const grant = await deriveIntegratorGrant({
+      repoPath: repo,
+      selfDevicePubkeyBase64: successor.pubkeyBase64,
+      memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, unrelated.pubkeyBase64, successor.pubkeyBase64],
+      priorIntegrator: { epoch: 2, seq: 6 },
+      bridgeWatermark: { epoch: 5, seq: 8 },
+      bridgeStagingSha: base,
+    });
+    expect(grant).toMatchObject({
+      ready: true,
+      basis: 'crash-takeover',
+      epoch: 6,
+      priorSeq: 0,
+    });
+    const reconciled = await readStaging(repo, successor.pubkeyBase64);
+    expect(reconciled).toBe(validHead);
+    expect(await isAncestor(repo, base, reconciled!)).toBe(true);
+    expect(grant.detail).not.toContain('blocked-crash-reconciliation');
+  });
+
   it('reconciles every clean ancestry-maximal staging before a tokenless crash grant', async () => {
     const repo = await freshRepo();
     const deadA = device();

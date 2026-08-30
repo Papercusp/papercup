@@ -4756,6 +4756,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       memberDevicePubkeysBase64,
       priorIntegrator: prior,
       bridgeWatermark: rows[0]?.worktree_bridge?.epochSeq ?? null,
+      bridgeStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
     });
     if (!grant.ready) {
       console.warn(`[git-sync] ${slug}: ${grant.detail}`);
