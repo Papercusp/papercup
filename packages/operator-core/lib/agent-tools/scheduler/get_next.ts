@@ -152,6 +152,15 @@ export const GET_NEXT_BUDGET_MS = 30_000;
 export const GET_NEXT_TOTAL_BUDGET_MS = 45_000;
 
 /**
+ * Leave enough headroom inside the whole-handler ceiling for the final miss
+ * response after the database-side issue-floor diagnosis settles. The
+ * diagnosis itself also owns a shorter PostgreSQL statement/acquire bound;
+ * this outer watchdog is the last-resort handler guarantee if that helper (or
+ * a test double) never settles.
+ */
+export const GET_NEXT_ISSUE_DIAG_BUDGET_MS = 12_000;
+
+/**
  * The fast, self-describing miss the tool returns when its DB path exceeds GET_NEXT_BUDGET_MS,
  * instead of hanging until the MCP client's 300s idle-timeout abort (EI-18167154191955470).
  * Distinct `error: 'timeout'` + `retryable: true` so a caller can distinguish it from a genuine
@@ -1245,14 +1254,26 @@ export default defineTool({
     let terminalExhaustion: import('../../scheduler/fleet-scope-admission').FleetScopeTerminalExhaustion | null = null;
     let planTerminality: import('../../scheduler/fleet-scope-admission').FleetScopePlanTerminality | null = null;
     let leaderLiveness: boolean | null = null;
+    const diagnoseIssueFloorMissWithinBudget = async () => {
+      const budgetMs = remainingBudgetMs(GET_NEXT_ISSUE_DIAG_BUDGET_MS);
+      const diagnosis = await withBoundedTimeout(
+        diagnoseFleetScopeIssueFloorMiss({
+          scope: reconciliation.scope!,
+          harness: args.harness,
+          workspaceId: ident.workspaceId,
+          states: args.states,
+          rigAvailable: args.rigAvailable,
+        }),
+        {
+          fallback: null,
+          timeoutMs: budgetMs,
+          label: 'scheduler:get_next:issueFloorMiss',
+        },
+      );
+      return diagnosis.value;
+    };
     if (!res && reconciliation.scope) {
-      issueBreakdown = await diagnoseFleetScopeIssueFloorMiss({
-        scope: reconciliation.scope,
-        harness: args.harness,
-        workspaceId: ident.workspaceId,
-        states: args.states,
-        rigAvailable: args.rigAvailable,
-      });
+      issueBreakdown = await diagnoseIssueFloorMissWithinBudget();
       if (issueBreakdown && issueBreakdown.claimable > 0) {
         const divergenceBudgetMs = remainingBudgetMs();
         const retry = await withBoundedTimeout(
@@ -1277,13 +1298,7 @@ export default defineTool({
         } else if (!retry.degraded) {
           // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
           // on (the racing row is now taken), this collapses to an ordinary floor-gated miss.
-          const recheck = await diagnoseFleetScopeIssueFloorMiss({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-            states: args.states,
-            rigAvailable: args.rigAvailable,
-          });
+          const recheck = await diagnoseIssueFloorMissWithinBudget();
           if (recheck) issueBreakdown = recheck;
           if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
         }

@@ -47,6 +47,7 @@ const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const getFlagM = vi.hoisted(() => vi.fn(async () => true));
 const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
 const readFleetPauseStateM = vi.hoisted(() => vi.fn());
+const diagnoseFleetScopeIssueFloorMissM = vi.hoisted(() => vi.fn(async () => null));
 const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => null as boolean | null));
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
@@ -110,7 +111,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
   // WI-5561: real fn returns null (no issue-floor-breakdown signal) by default — these tests
   // don't exercise the issue-floor-breakdown path, only fleetScopedMiss's existing shapes.
-  diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
+  diagnoseFleetScopeIssueFloorMiss: diagnoseFleetScopeIssueFloorMissM,
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 (the issueFloorMiss
   // mock above always returns null, so this path is unreachable here) — defensive stub only.
   diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
@@ -158,7 +159,11 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   }),
 }));
 
-import getNextTool, { GET_NEXT_BUDGET_MS, GET_NEXT_TOTAL_BUDGET_MS } from './get_next';
+import getNextTool, {
+  GET_NEXT_BUDGET_MS,
+  GET_NEXT_ISSUE_DIAG_BUDGET_MS,
+  GET_NEXT_TOTAL_BUDGET_MS,
+} from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -180,6 +185,7 @@ beforeEach(() => {
     windingDown: scopeState.windingDown,
     reason: scopeState.pauseReason,
   }));
+  diagnoseFleetScopeIssueFloorMissM.mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
@@ -657,6 +663,41 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(body.budgetMs).toBeLessThan(GET_NEXT_BUDGET_MS);
     expect(Date.now() - startedAt).toBe(GET_NEXT_TOTAL_BUDGET_MS + 100);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
+    warnSpy.mockRestore();
+  });
+
+  it('bounds a hanging fleet issue-floor diagnosis below the whole-handler deadline', async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      workspaceId: 'ws-1',
+      record: {
+        source: 'fleet',
+        spec: {
+          specId: 'bugs-rev1',
+          revision: 1,
+          states: ['open'],
+          view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+        },
+      },
+    };
+    getNextM.mockResolvedValue(null);
+    diagnoseFleetScopeIssueFloorMissM.mockImplementation(() => new Promise(() => {}));
+
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_ISSUE_DIAG_BUDGET_MS + 100);
+    const out = await p;
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, windDown: true });
+    expect(Date.now() - startedAt).toBeLessThan(GET_NEXT_TOTAL_BUDGET_MS);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:issueFloorMiss exceeded'));
     warnSpy.mockRestore();
   });
 
