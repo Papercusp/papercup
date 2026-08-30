@@ -121,6 +121,14 @@ export interface ProviderLaneWindowSnapshot {
   readonly contractions: number;
   readonly expansions: number;
   readonly hardFailures: number;
+  /** EPOCH for `contractions` / `expansions` / `hardFailures`: epoch-ms of this lane's REGISTRATION.
+   *
+   *  These counters are monotonic for the life of the PROCESS, not for the life of the deployment: a lane
+   *  is registered exactly once per `ProviderAdmissionLifecycle` (`#register` throws on a duplicate) and is
+   *  never evicted, so they only ever reset when the gateway process restarts. Publishing the epoch is what
+   *  stops a consumer reading `contractions: 0` on a freshly-restarted gateway as "this lane has never
+   *  contracted" — the misreading recorded in EI-21842988251907640. */
+  readonly countersSinceMs: number;
   readonly lastChangeAtMs: number | null;
 }
 
@@ -168,6 +176,8 @@ interface LaneState {
   contractions: number;
   expansions: number;
   hardFailures: number;
+  /** Epoch-ms at which this lane was registered — the reset point for the three counters above. */
+  readonly countersSinceMs: number;
   lastChangeAtMs: number | null;
 }
 
@@ -230,6 +240,11 @@ export class ProviderAdmissionLifecycle {
       contractions: 0,
       expansions: 0,
       hardFailures: 0,
+      // The counters above start at zero HERE, so registration time is their epoch. Recorded rather than
+      // inferred so a reader never has to guess whether a 0 means "never" or "not since this process".
+      // Uses the injected clock (assigned first in the constructor, before any #register call) rather than
+      // Date.now(), so the epoch is deterministic under test like every other timestamp this class emits.
+      countersSinceMs: this.#now(),
       lastChangeAtMs: null,
     };
     this.#lanes.set(registration.id, state);
@@ -337,6 +352,7 @@ export class ProviderAdmissionLifecycle {
       contractions: lane.contractions,
       expansions: lane.expansions,
       hardFailures: lane.hardFailures,
+      countersSinceMs: lane.countersSinceMs,
       lastChangeAtMs: lane.lastChangeAtMs,
     });
   }

@@ -1873,6 +1873,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       decreases: s.contractions,
       increases: s.expansions,
       hardFailures: s.hardFailures,
+      // PER-PROCESS, not lifetime: these three come from ProviderAdmissionLifecycle lane counters that are
+      // reset when the gateway process restarts. Publishing the epoch beside them is what stops a reader
+      // taking `decreases: 0` on a freshly-restarted gateway as "this lane has never contracted"
+      // (EI-21842988251907640; the same class of misreading admission-ceiling.ts's header documents).
+      countersSinceMs: s.countersSinceMs,
     };
   };
 
