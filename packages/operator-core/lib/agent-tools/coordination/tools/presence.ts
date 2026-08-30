@@ -34,7 +34,7 @@ import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle'
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List the live coordination roster and who can take work. Read summary.wakeable plus row sessionState/wakeable; ended rows require targeting. Default scope is your Hive; use scope/pot for explicit scope. `owner` is singular; ownerId is its compatibility alias, while owners targets a bounded set. In a hive-scoped SU session, scope:'workspace'/all returns hive_forbidden; use targeted owner for a workspace peer. An unscoped/admin session is required for workspace-wide browsing. Broad census: coord:roster { view:'live', project:'ids' }. Plan-scoped claims: coord:roster { view:'claims', plan } or fleet:assignments { plan }. Legacy harness, ownerIds, plan, includeStale, and include_stale keys are invalid. Use since:<etag> for cheap unchanged reads.",
+    "List the live coordination roster and who can take work. Read summary.wakeable plus row sessionState/wakeable; ended rows require targeting. Default scope is your Hive; use scope/pot for explicit scope. `owner` is singular; ownerId is its compatibility alias, while owners targets a bounded set (ownerIds is its compatibility alias). In a hive-scoped SU session, scope:'workspace'/all returns hive_forbidden; use targeted owner for a workspace peer. An unscoped/admin session is required for workspace-wide browsing. Broad census: coord:roster { view:'live', project:'ids' }. Plan-scoped claims: coord:roster { view:'claims', plan } or fleet:assignments { plan }. Legacy harness, plan, includeStale, and include_stale keys are invalid. Use since:<etag> for cheap unchanged reads.",
   guidance: {
     when: "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, send a required coord:send wake and inspect its result; ended rows need relaunch. Use owner:<id> (or the ownerId compatibility alias for older callers) for one agent, owners:[...] for a bounded dependency set, and coord:roster { view:'live', project:'ids' } for a broad census.",
     notWhen:
@@ -117,6 +117,14 @@ export default defineTool({
       .describe(
         'BOUNDED TARGETED lookup: return the union of rows matching these agent ids/labels, including ended rows. Use for an explicit dependency/holder set so response-budget truncation cannot omit a requested owner. Mutually exclusive with owner.',
       ),
+    ownerIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(50)
+      .optional()
+      .describe(
+        'Compatibility alias for `owners` for callers using the roster row field name (mirrors the ownerId → owner singular alias). Normalized to the canonical `owners` selector before lookup. Pass `owners` OR `ownerIds`, not both, and do not combine either with `owner`/`ownerId`.',
+      ),
     include_detail: z
       .boolean()
       .optional()
@@ -156,6 +164,21 @@ export default defineTool({
         message: 'Pass owner (or ownerId as its compatibility alias) for one target OR owners for a bounded target set, not both.',
       });
     }
+    if ((args.owner || args.ownerId) && args.ownerIds?.length) {
+      issue.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ownerIds'],
+        message:
+          'Pass owner (or ownerId as its compatibility alias) for one target OR ownerIds (the compatibility alias for owners) for a bounded target set, not both.',
+      });
+    }
+    if (args.owners?.length && args.ownerIds?.length) {
+      issue.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ownerIds'],
+        message: 'Pass owners (the canonical bounded selector) OR ownerIds as its compatibility alias, not both.',
+      });
+    }
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get projected roster
   // rows (dispatch core only — see presence-shape.ts); summary stays verbatim.
@@ -171,8 +194,9 @@ export default defineTool({
     // the coord:inbox re-bootstrap uses, so the roster never diverges.
     const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
     // Keep the public compatibility alias at the boundary: all downstream snapshot
-    // and scope code consumes the canonical `owner` selector only.
+    // and scope code consumes the canonical `owner`/`owners` selectors only.
     const owner = args.owner ?? args.ownerId;
+    const owners = args.owners ?? args.ownerIds;
     // F-M2 (workspace-data-isolation-leaks): scope=all (EVERY workspace's roster) is an
     // admin/Mug view — gate it behind superuser. A non-SU caller asking for 'all' is
     // downgraded to 'workspace' (its own), so a bee can't snoop other workspaces' agents.
@@ -184,7 +208,7 @@ export default defineTool({
       // EI-18653888556683414: a targeted owner lookup defaults to workspace-wide
       // (not hive-narrowed) so a live peer outside the caller's own Hive is
       // still found instead of reading as "no such agent".
-      targetedOwner: !!owner || !!args.owners?.length,
+      targetedOwner: !!owner || !!owners?.length,
     });
     // The lock store is keyed by coordinationDomain (the repo root, not
     // workspaceId) — resolved defensively so an anonymous caller never breaks the
@@ -215,7 +239,7 @@ export default defineTool({
     const detail = args.include_detail && coordinationDomain ? { coordinationDomain } : undefined;
     const snapshot = await assemblePresenceSnapshot(resolved, {
       ...(owner ? { owner } : {}),
-      ...(args.owners?.length ? { owners: args.owners } : {}),
+      ...(owners?.length ? { owners } : {}),
       ...(detail ? { detail } : {}),
     });
     // Self-identification overlay (caller-dependent, so applied HERE, after the
