@@ -110,7 +110,65 @@ export interface CodexBearerAdapterOptions {
   dispatcherFor?(account: ActiveAccount): unknown | Promise<unknown>;
   /** Parses `x-ratelimit-reset*` into an epoch-ms retry instant. */
   rateResetAt?(headers: Record<string, string>): number | null;
+  /**
+   * Once-per-request shaping of the buffered body — the gateway wires its
+   * prompt-cache policy rewrite here (`rewriteOpenAiCacheBody` + its
+   * `recordCachePolicy` / `setCacheRouting` side-effects).
+   *
+   * Called EXACTLY ONCE per request, on the first `prepareAttempt`, so a
+   * failover re-sends the same shaped bytes and the cache-policy counters are
+   * not double-counted — matching the live handler, which rewrites `bodyBuf`
+   * before its attempt loop rather than inside it.
+   *
+   * ORDERING NOTE (why this does not need a kernel hook, unlike D-007's TTFB
+   * resolver): the kernel resolves the TTFB deadline from its own PRE-shape
+   * buffer, before any attempt. That is safe here only because the shaping
+   * this seam exists for provably cannot change the fields the deadline is
+   * derived from — `applyOpenAiCachePolicy` writes `prompt_cache_retention`,
+   * `prompt_cache_options` and `prompt_cache_key` and nothing else, and only
+   * when they are unset. A future shaper that touched `stream` WOULD need the
+   * kernel-side hook; assert that in a test rather than assuming it.
+   */
+  shapeRequestBody?(body: Buffer, context: { accountId: string; ownerId: string | null }): Buffer;
+  /**
+   * Reports the request-derived shape once it is known, so the caller can put
+   * it on its telemetry span. The live handler emits `setModel` / `setStreaming`
+   * from exactly these values; the kernel emits `setStreaming` itself from the
+   * response, and does not emit the model at all.
+   */
+  onRequestShape?(shape: CodexRequestShape): void;
   now?(): number;
+}
+
+/** Request-derived facts the live handler parses out of the body before its loop. */
+export interface CodexRequestShape {
+  model: string | null;
+  streaming: boolean;
+}
+
+/**
+ * Parse the request-derived shape exactly as `proxyOpenAi` does.
+ *
+ * EXPORTED because two independent consumers must agree on it: this adapter
+ * (which reports `streaming` on the upstream response) and the gateway's D-007
+ * `ttfbTimeoutMs` resolver (which picks the short stream deadline). Deriving
+ * the same fact twice from two hand-written parsers is precisely the drift
+ * D-007 was raised to correct, so they share this one.
+ *
+ * A non-JSON or unparseable body yields `streaming:false` — the generous
+ * non-stream deadline — mirroring the live handler's `catch`.
+ */
+export function parseCodexRequestShape(body: Buffer): CodexRequestShape {
+  if (!body.length) return { model: null, streaming: false };
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as { stream?: boolean; model?: string };
+    return {
+      model: typeof parsed.model === 'string' ? parsed.model : null,
+      streaming: parsed.stream === true,
+    };
+  } catch {
+    return { model: null, streaming: false };
+  }
 }
 
 export type CodexBearerKernelAdapter = GatewayKernelAdapter<
@@ -165,6 +223,25 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
   // soft-pin yield can be reported on the response metadata.
   let pinnedAccountId: string | null = null;
 
+  // Body shaping + request-derived facts, computed ONCE and reused by every
+  // attempt. The live handler does this before its attempt loop; memoizing
+  // here reproduces that placement without a kernel-side hook (see
+  // `shapeRequestBody`'s ordering note).
+  let shaped: { body: Buffer; shape: CodexRequestShape } | null = null;
+  const shapeOnce = (context: GatewayKernelAttemptContext<CodexBearerRouteValue>) => {
+    if (shaped) return shaped;
+    const body = opts.shapeRequestBody
+      ? opts.shapeRequestBody(context.body, {
+          accountId: context.route.value.account.accountId,
+          ownerId: context.ownerId,
+        })
+      : context.body;
+    const shape = parseCodexRequestShape(body);
+    shaped = { body, shape };
+    opts.onRequestShape?.(shape);
+    return shaped;
+  };
+
   const resolveFailoverResetAt = (
     context: GatewayKernelRouteContext<CodexBearerRouteValue, CodexBearerChunk, CodexBearerResponseMetadata>,
   ): number => {
@@ -218,6 +295,10 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
       context: GatewayKernelAttemptContext<CodexBearerRouteValue>,
     ): Promise<CodexBearerPreparedAttempt> {
       const account = context.route.value.account;
+      // Shape BEFORE the token read so the cache-policy side-effects fire on
+      // the same attempt the live handler fires them on, even if the token
+      // read then throws and rotates.
+      const body = shapeOnce(context).body;
       let token: string;
       try {
         token = await withTokenDeadline(account.token(), opts.tokenTimeoutMs, `codex token '${account.accountId}'`);
@@ -242,7 +323,7 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
         url: `${opts.upstreamBase}${opts.urlPath}`,
         method: opts.method,
         headers,
-        body: context.body.length ? new Uint8Array(context.body) : null,
+        body: body.length ? new Uint8Array(body) : null,
         accountId: account.accountId,
         dispatcher: (await opts.dispatcherFor?.(account)) ?? undefined,
       };
@@ -278,7 +359,14 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
 
       return {
         status: upstream.status,
-        streaming: (headers['content-type'] ?? '').includes('text/event-stream'),
+        // D-007: request-derived, NOT the response content-type. The live
+        // handler parses `stream:true` out of the REQUEST body and uses that
+        // one fact for both its TTFB choice and its span; an error response to
+        // a streaming request (a JSON 429 body) is therefore still `streaming`
+        // there. Deriving it from the response content-type agreed on the happy
+        // path and silently disagreed everywhere else — the D-006 overstatement
+        // this replaces.
+        streaming: shapeOnce(context).shape.streaming,
         transport: BEARER_TRANSPORT,
         metadata: { accountId: account.accountId, headers, pinYieldedFrom },
         body: upstream.body,

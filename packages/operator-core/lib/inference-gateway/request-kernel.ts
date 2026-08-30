@@ -3,6 +3,7 @@ import {
   GatewayRequestTelemetry,
   classifyGatewayTelemetryOutcome,
   type GatewayRequestOutcome,
+  type GatewayRequestSpan,
   type GatewayRequestTimeline,
   type GatewayTelemetryProvider,
 } from './request-stage-telemetry';
@@ -177,6 +178,22 @@ export interface ExecuteGatewayRequestKernelOptions<TRoute, TPrepared, TChunk, T
   request: GatewayKernelRequest;
   policy: GatewayKernelPolicy;
   telemetry: GatewayRequestTelemetry;
+  /**
+   * Adopt the caller's EXISTING request span instead of beginning a new one.
+   *
+   * Required when the kernel runs inside a handler whose surrounding gateway
+   * already opened a span for the same HTTP request (the legacy proxy entries
+   * do — `beginRequestTelemetry` opens one per request and finishes it from
+   * `res` finish/close). Without this the kernel would `telemetry.begin()` a
+   * SECOND span for one request, double-counting it in the stage telemetry.
+   *
+   * Finishing stays safe either way: `GatewayRequestSpan.finish` is idempotent,
+   * so whichever of the kernel or the surrounding `res` handler settles first
+   * wins and the other is a no-op. When adopted, `requestId`, `ownerId` and
+   * `startedAt` come from the caller's span, which is what keeps one request
+   * reporting under one id.
+   */
+  span?: GatewayRequestSpan;
   admission: GatewayKernelAdmissionController<TRoute, TChunk, TMetadata>;
   adapter: GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata>;
   downstream: GatewayKernelDownstream<TChunk, TMetadata>;
@@ -594,11 +611,13 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
 ): Promise<GatewayKernelExecutionResult<TRoute>> {
   validatePolicy(opts.policy);
   const provider = telemetryProviderForLane(opts.request.lane);
-  const span = opts.telemetry.begin({
-    ownerId: opts.request.ownerId,
-    provider,
-    protocol: opts.request.lane.protocol,
-  });
+  const span =
+    opts.span ??
+    opts.telemetry.begin({
+      ownerId: opts.request.ownerId,
+      provider,
+      protocol: opts.request.lane.protocol,
+    });
   const correlationId = boundedCorrelationId(opts.request.correlationId, `gateway-${span.requestId}`);
   const pin = opts.request.pin ?? null;
   const requestController = new AbortController();
