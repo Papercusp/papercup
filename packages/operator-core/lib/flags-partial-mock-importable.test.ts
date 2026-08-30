@@ -80,6 +80,14 @@ import { issuesScopeWorkspace } from './issues-engineer';
 // under a partial mock), but note it CANNOT join the reader-throws assertion below: calling its
 // reader returns a promise, so the arm's throw would surface as a rejection, not a throw.
 import { isWorkspaceCoordinationOn } from './workspace-brain-scope';
+// EI-19416650993725684's ORIGINALLY REPORTED entry point, added 2026-08-30 — every import above is a
+// module that was itself migrated, so together they guard the CLASS; this one guards the reported
+// REPRODUCTION. The filed chain is `agent-tools/locks/configure.ts` → `txn-timeouts-config.ts`, whose
+// module-scope onFlagChange killed any file that mocked the flags surface without that key. It is a
+// side-effect-only module (no exports), so a bare import is the whole assertion — and it is the only
+// entry here that reaches the arm through a THIRD party rather than being the migrated module itself,
+// which is exactly the shape that made this class read as unrelated to whoever grew the import edge.
+import './agent-tools/locks/configure';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
