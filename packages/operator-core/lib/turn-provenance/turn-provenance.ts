@@ -532,13 +532,21 @@ export interface ClassifyResult {
  * rows from `readLedgerRows(sid, { includeExpired: true })` so a stale nonce
  * is distinguishable from an unknown one; `nowMs`/`ttlMs` bound liveness.
  *
- * D-002 rules:
+ * D-002 rules (SEVEN paths — every return site below must appear here; a
+ * grader or reader counting fewer than seven is hitting the exact drift this
+ * list exists to prevent):
  *  - envelope + LIVE nonce row       → verified-agent (hash corroborates;
  *                                      a hash miss is textMangled, not a demotion)
  *  - envelope + expired nonce row    → unverified-claim (stale/replay)
  *  - envelope + no row               → unverified-claim (spoof — text alone
  *                                      never proves origin)
  *  - no envelope + live hash match   → verified-agent (envelope lost in transit)
+ *  - no envelope + EXPIRED hash
+ *      match                        → unverified-claim (D-006: an absent or
+ *                                      expired row must never yield a MORE
+ *                                      authoritative verdict than a live row
+ *                                      would have — replay/lagged injection,
+ *                                      not owner input)
  *  - no envelope + no match + known
  *      machine-surface banner        → machine-surface (a CLI-internal surface,
  *                                      e.g. a background-task notification —
