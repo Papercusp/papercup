@@ -15,7 +15,10 @@
  *
  * THE SAFETY POSTURE, in the order the code applies it (D-002/D-003). This sweep DISABLES
  * EXECUTION, so unlike its read-only siblings it fails CLOSED at every step:
- *   1. Kill switch first — `PAPERCUSP_DEAD_TARGET_REAPER=0` disables it entirely.
+ *   1. Both kill switches first, before any I/O — the registered flag
+ *      `FLAGS.DEAD_TARGET_REAPER` (default ON, flippable from `/admin/features` without a
+ *      restart, and treated as OFF if it cannot be read) AND the process-level emergency
+ *      override `PAPERCUSP_DEAD_TARGET_REAPER=0`. Either one closed ⇒ nothing is probed.
  *   2. The home harness is removed from the candidate set BEFORE any probing, compared on
  *      CANONICAL slugs so a retired alias (`papercup` → `papercusp`) is protected too. Parking
  *      the operator's own git-sync and green-checkpoint would take the fleet's pipeline down.
@@ -38,6 +41,8 @@
  * that could break dispatch would be a worse bug than the one it reports.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../operator-home-harness';
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
@@ -201,7 +206,10 @@ async function clearHealth(sql: any, routineId: string): Promise<void> {
  */
 export async function deadTargetReaperSweep(now = Date.now()): Promise<DeadTargetResult[]> {
   const results: DeadTargetResult[] = [];
+  // Both gates, cheapest first: the env override needs no I/O, so a host pinned off never
+  // pays for a flag read. Neither probes anything, so an OFF sweep is observably inert.
   if (!reaperEnabled()) return results;
+  if (!(await reaperFlagOn())) return results;
 
   let sql: any;
   let workspaceId: string;

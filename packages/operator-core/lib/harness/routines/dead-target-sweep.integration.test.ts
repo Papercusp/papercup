@@ -34,6 +34,8 @@ const h = vi.hoisted(() => ({
   probed: [] as string[],
   /** Every observation the sweep filed. */
   captured: [] as Array<Record<string, unknown>>,
+  /** What the (mocked) flag store answers for FLAGS.DEAD_TARGET_REAPER: true | false | throw. */
+  flag: 'on' as 'on' | 'off' | 'unreadable',
 }));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -59,6 +61,14 @@ vi.mock('../improvements/capture-core', () => ({
   captureImprovement: async (a: Record<string, unknown>) => {
     h.captured.push(a);
     return { ok: true };
+  },
+}));
+// The registered gate. `unreadable` is not decoration: a flag lookup that throws must land on
+// the same inert behaviour as an explicit OFF, and that is only observable end-to-end here.
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: async () => {
+    if (h.flag === 'unreadable') throw new Error('flag store unreachable');
+    return h.flag === 'on';
   },
 }));
 
@@ -154,6 +164,7 @@ beforeEach(async () => {
   h.probes.clear();
   h.probed.length = 0;
   h.captured.length = 0;
+  h.flag = 'on';
 });
 
 afterEach(() => {
@@ -225,6 +236,32 @@ describe('dead-target sweep — one tick', () => {
     const rows = await rowsFor('dead-pot');
     expect(rows[0]?.active).toBe(true);
     expect(rows[0]?.stamp).toBeNull();
+  });
+
+  // The two gates are independent on purpose, so each needs its own inertness proof against a
+  // pot the sweep would otherwise park. Asserting `probed` empty is the load-bearing half: a
+  // gate that returned [] but still probed would read as inert here while doing real I/O.
+  it('touches nothing at all when the registered feature flag is off', async () => {
+    await seedRoutine('dead-pot', 'system:git-sync');
+    h.probes.set('dead-pot', rootGone('dead-pot'));
+    h.flag = 'off';
+
+    expect(await deadTargetReaperSweep(T0)).toEqual([]);
+    expect(h.probed).toEqual([]);
+    const rows = await rowsFor('dead-pot');
+    expect(rows[0]?.active).toBe(true);
+    expect(rows[0]?.stamp).toBeNull();
+  });
+
+  it('treats an unreadable flag store as OFF, never as permission to park', async () => {
+    await seedRoutine('dead-pot', 'system:git-sync');
+    h.probes.set('dead-pot', rootGone('dead-pot'));
+    h.flag = 'unreadable';
+
+    expect(await deadTargetReaperSweep(T0)).toEqual([]);
+    expect(h.probed).toEqual([]);
+    const rows = await rowsFor('dead-pot');
+    expect(rows[0]?.active).toBe(true);
   });
 });
 
