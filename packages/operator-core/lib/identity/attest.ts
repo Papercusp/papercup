@@ -128,6 +128,14 @@ export function clearAttestationQuotaGuards(): void {
 
 // ─── keypair lifecycle ────────────────────────────────────────────────────────
 
+// `keychainLoad` single-flights only the read. On a true first run, every
+// caller waiting on that shared `not_found` result used to continue
+// independently through generate + store. Concurrent harness boots could
+// therefore mint several device identities for the same keychain id, with the
+// last store winning on disk while each harness retained a different pubkey in
+// memory. Keep the whole load/generate/store critical section single-flight.
+const inflightDeviceKeypairs = new Map<string, Promise<DeviceKeypairId>>();
+
 /**
  * Load the existing device keypair from the keychain, or generate +
  * persist a new one on first call. Idempotent: repeated calls with the
@@ -136,7 +144,7 @@ export function clearAttestationQuotaGuards(): void {
  * The private key NEVER leaves the keychain after this function returns —
  * callers receive only `DeviceKeypairId` (pubkey + id for lookup).
  */
-export async function loadOrGenerateDeviceKeypair(
+async function loadOrGenerateDeviceKeypairOnce(
   keychainId: string,
 ): Promise<DeviceKeypairId> {
   const loaded = await keychainLoad(keychainId);
@@ -175,6 +183,24 @@ export async function loadOrGenerateDeviceKeypair(
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
   await keychainStore(keychainId, privateKeyDer);
   return { keychainId, pubkeyBase64 };
+}
+
+export function loadOrGenerateDeviceKeypair(
+  keychainId: string,
+): Promise<DeviceKeypairId> {
+  const existing = inflightDeviceKeypairs.get(keychainId);
+  if (existing) return existing;
+
+  const pending = loadOrGenerateDeviceKeypairOnce(keychainId).finally(() => {
+    // A failed attempt must be retryable, and a completed attempt should fall
+    // back to the persisted keychain on the next call. Identity equality also
+    // protects a future replacement from an older promise's cleanup.
+    if (inflightDeviceKeypairs.get(keychainId) === pending) {
+      inflightDeviceKeypairs.delete(keychainId);
+    }
+  });
+  inflightDeviceKeypairs.set(keychainId, pending);
+  return pending;
 }
 
 /**

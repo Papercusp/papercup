@@ -230,6 +230,46 @@ describe('loadOrGenerateDeviceKeypair — WI-2018 unreadable-keychain guard', ()
     expect(r.pubkeyBase64.length).toBe(44);
     expect(store).toHaveBeenCalledTimes(1);
   });
+
+  it('single-flights concurrent first-run callers through generate + store', async () => {
+    vi.resetModules();
+    const load = vi.fn(async () => ({
+      kind: 'error' as const,
+      error: { kind: 'not_found' as const },
+    }));
+    const store = vi.fn(async () => {});
+    vi.doMock('./keychain', () => ({ keychainLoad: load, keychainStore: store }));
+    const { loadOrGenerateDeviceKeypair } = await import('./attest');
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => loadOrGenerateDeviceKeypair('id-concurrent-first-run')),
+    );
+
+    expect(new Set(results.map((result) => result.pubkeyBase64)).size).toBe(1);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(store).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a failed single-flight so a later call can retry', async () => {
+    vi.resetModules();
+    const load = vi.fn(async () => ({
+      kind: 'error' as const,
+      error: { kind: 'not_found' as const },
+    }));
+    const store = vi.fn(async () => {});
+    store.mockRejectedValueOnce(new Error('transient store failure'));
+    vi.doMock('./keychain', () => ({ keychainLoad: load, keychainStore: store }));
+    const { loadOrGenerateDeviceKeypair } = await import('./attest');
+
+    await expect(loadOrGenerateDeviceKeypair('id-retry-after-store-failure')).rejects.toThrow(
+      'transient store failure',
+    );
+    const recovered = await loadOrGenerateDeviceKeypair('id-retry-after-store-failure');
+
+    expect(recovered.pubkeyBase64).toHaveLength(44);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(store).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ─── verifyAttestation ────────────────────────────────────────────────────────
