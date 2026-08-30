@@ -93,40 +93,52 @@ describe('schemaMayCarrySlug', () => {
 });
 
 describe('findUnguardedHarnessArgs — NEGATIVE CONTROLS (must flag)', () => {
-  it('flags a tool that declares an unguarded harness-naming arg', () => {
-    const findings = findUnguardedHarnessArgs([tool('control:unguarded', { targetHarness: str })]);
-    expect(findings).toEqual([{ tool: 'control:unguarded', arg: 'targetHarness' }]);
+  // The detector's job AFTER the clamp sweeps `designatesHarness` args: catch the
+  // spelling the predicate does not RECOGNISE. These controls are permanent, so
+  // the suite fails if the detector ever stops detecting.
+  it('flags a routing-shaped *Slug arg the predicate does not recognise', () => {
+    // Exactly the shape of `installSlug` / `potSlug` BEFORE anyone thought to
+    // add them by hand — a slug-shaped identifier naming something hive-like.
+    const findings = findUnguardedHarnessArgs([tool('control:realm', { realmSlug: str })]);
+    expect(findings).toEqual([{ tool: 'control:realm', arg: 'realmSlug' }]);
   });
 
-  it('TRAP (1) REGRESSION CONTROL: flags camelCase harnessSlug even though harness_slug is guarded', () => {
-    // This is the live hole the detector found on its first run (34 tools).
-    // The clamp reads properties LITERALLY, so `harnessSlug` is a different key
-    // from the guarded `harness_slug`. An earlier draft normalized both to
-    // "harnessslug" and reported this as GUARDED — the detector concealing the
-    // exact bug it exists to find. If this test ever goes green-by-normalizing
-    // again, that regression is back.
-    const findings = findUnguardedHarnessArgs([tool('control:camel', { harnessSlug: str })]);
-    expect(findings).toEqual([{ tool: 'control:camel', arg: 'harnessSlug' }]);
-  });
-
-  it('flags a slug-bearing ARRAY arg', () => {
+  it('does NOT chase descriptions (measured dead end — see the module note)', () => {
+    // Description-matching flagged ~30 unrelated args in the live registry.
+    // Pinned so the noisy leg cannot quietly come back.
     const findings = findUnguardedHarnessArgs([
-      tool('control:array', { harness_slugs: { type: 'array', items: { type: 'string' } } }),
+      tool('control:described', { note: { type: 'string', description: 'a note about the harness' } }),
     ]);
-    expect(findings.map((f) => f.arg)).toEqual(['harness_slugs']);
+    expect(findings).toEqual([]);
   });
 
-  it('flags an untyped harness arg (fail-closed)', () => {
-    const findings = findUnguardedHarnessArgs([tool('control:untyped', { someHarnessRef: {} })]);
-    expect(findings.map((f) => f.arg)).toEqual(['someHarnessRef']);
+  it('flags a suspicious arg with no declared type (fail-closed)', () => {
+    const findings = findUnguardedHarnessArgs([tool('control:untyped', { podSlug: {} })]);
+    expect(findings.map((f) => f.arg)).toEqual(['podSlug']);
   });
 });
 
 describe('findUnguardedHarnessArgs — CALIBRATION (must NOT flag)', () => {
   // Without these, a detector that flagged everything would pass the controls
   // above and still be useless.
-  it('does not flag the args the clamp guards literally', () => {
-    const t = tool('calib:guarded', Object.fromEntries(HIVE_CLAMP_LITERAL_ARGS.map((a) => [a, str])));
+  it('does not flag the args the clamp reads literally', () => {
+    const t = tool('calib:literal', Object.fromEntries(HIVE_CLAMP_LITERAL_ARGS.map((a) => [a, str])));
+    expect(findUnguardedHarnessArgs([t])).toEqual([]);
+  });
+
+  it('does not flag args the clamp now SWEEPS generically', () => {
+    // The 12 spellings the first census found unguarded are covered by the
+    // generic sweep, so they are answers, not open questions. `harnessSlug`
+    // here is the live hole this work closed.
+    const t = tool('calib:swept', {
+      harnessSlug: str,
+      targetHarness: str,
+      hive_slug: str,
+      sourceHive: str,
+      potSlug: str,
+      installSlug: str,
+      harness_slugs: { type: 'array', items: { type: 'string' } },
+    });
     expect(findUnguardedHarnessArgs([t])).toEqual([]);
   });
 
@@ -150,6 +162,26 @@ describe('findUnguardedHarnessArgs — CALIBRATION (must NOT flag)', () => {
     for (const [name, reason] of Object.entries(HIVE_CLAMP_ARG_EXEMPTIONS)) {
       expect(reason.trim().length, `exemption ${name} must state why it is safe`).toBeGreaterThan(20);
     }
+  });
+});
+
+describe('the clamp SWEEP is wired (not just the module)', () => {
+  // isClampEnforcedArg claims the generic sweep covers every designatesHarness
+  // arg. That claim is only true while _mcp-handler.ts actually calls the sweep;
+  // if the call is removed, coverage silently collapses back to four literals
+  // and the detector — which trusts the claim — would report all-clear.
+  const source = readFileSync(
+    fileURLToPath(new URL('./routes/transport/_mcp-handler.ts', import.meta.url)),
+    'utf8',
+  );
+
+  it('_mcp-handler.ts calls collectHarnessSlugArgs', () => {
+    expect(source).toContain('collectHarnessSlugArgs(args)');
+  });
+
+  it('the sweep rejects rather than merely logging', () => {
+    const sweepBlock = source.slice(source.indexOf('for (const { arg, slug } of collectHarnessSlugArgs(args))'));
+    expect(sweepBlock.slice(0, 1200)).toContain('harness_forbidden');
   });
 });
 

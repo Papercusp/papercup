@@ -131,19 +131,26 @@ export function schemaMayCarrySlug(propSchema: unknown): boolean {
  * `installSlug` and `potSlug` are exactly the shape this would have caught
  * BEFORE anyone thought to add them by hand.
  */
-export function suspectsHarness(argName: string, propSchema?: unknown): boolean {
+export function suspectsHarness(argName: string, _propSchema?: unknown): boolean {
   if (designatesHarness(argName)) return true;
   const n = argName.toLowerCase().replace(/[_-]/g, '');
   // Any *Slug-shaped identifier is a candidate routing key.
-  if (n.endsWith('slug') || n.endsWith('slugs')) return true;
-  // A description that talks about harnesses/hives/pots, whatever the name.
-  const desc =
-    propSchema && typeof propSchema === 'object'
-      ? (propSchema as Record<string, unknown>).description
-      : undefined;
-  if (typeof desc === 'string' && /\b(harness|hive|pot)\b/i.test(desc)) return true;
-  return false;
+  return n.endsWith('slug') || n.endsWith('slugs');
 }
+
+/**
+ * ⛔ DEAD END, measured — do not re-add: matching an argument's DESCRIPTION for
+ * /\b(harness|hive|pot)\b/ was tried and rejected. Run against the live registry
+ * it flagged `note`, `ownerId`, `path`, `payload`, `phase`, `position`,
+ * `section`, `spec`, `tags`, `tasks`, `toDir`, `view` and ~20 more, because tool
+ * descriptions mention "harness"/"pot" incidentally all the time. Dispositioning
+ * that many unrelated args is precisely the parking-lot this detector exists to
+ * avoid, and a check nobody can keep green gets deleted or ignored. The
+ * `*Slug`-suffix leg carries the load instead: it is precise, and it is the
+ * shape the two spellings nobody anticipated (`installSlug`, `potSlug`) both
+ * had. A tighter description leg may be worth revisiting, but only with a
+ * measured false-positive count attached.
+ */
 
 /** A registered tool, reduced to what this detector needs. */
 export interface HarnessArgCoverageTool {
