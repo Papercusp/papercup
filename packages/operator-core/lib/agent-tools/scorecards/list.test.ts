@@ -183,4 +183,14 @@ describe('scorecards:list correctness payload', () => {
       includeLinks: true,
     });
   });
+
+  it('documents the scalar subjectRef list filter separately from emit\'s structured subject', () => {
+    const projected = lookupByMcpName('scorecards:list');
+    expect(projected).toBeDefined();
+    expect(projected?.description).toContain('subjectRef');
+    expect(projected?.description).toContain('scorecards:emit');
+    expect(projected?.guidance?.when).toContain('subjectRef');
+    expect(projected?.guidance?.when).toContain('subject:{kind,ref}');
+    expect(projected?.guidance?.chaining).toContain('subjectRef: "EI-123"');
+  });
 });
