@@ -60,6 +60,7 @@ describe('design-phase plugin registry search', () => {
       'control.select',
       'control.checkbox',
       'control.text',
+      'control.theme',
       'feedback.tooltip',
     ]);
   });
@@ -86,6 +87,11 @@ describe('design-phase plugin registry search', () => {
     const result = await search('Seller dock');
 
     expect(result.results).toEqual([]);
+  });
+
+  it('publishes the shared controlled theme switcher for light/dark/system shells', async () => {
+    const result = await search('theme system');
+    expect(result.results.map((entry) => entry.id)).toEqual(['control.theme']);
   });
 });
 

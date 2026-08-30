@@ -101,8 +101,27 @@ const HANDCURATED: RegistryEntry[] = [
     states: ['focus', 'disabled'],
     ecosystems: {
       [ECOSYSTEM]: {
-        sourcePointer: { path: `${LIVE_HARNESS}/TextInput.tsx`, symbol: 'TextInput' },
-        importHint: "import { TextInput } from '@/app/harness/TextInput'",
+        sourcePointer: { path: 'libs/generic/ui-primitives/src/controls/TextInput.tsx', symbol: 'TextInput' },
+        importHint: "import { TextInput } from '@papercusp/ui-primitives/controls'",
+      },
+    },
+  },
+  {
+    id: 'control.theme',
+    kind: 'component',
+    summary: 'Controlled or locally persisted semantic theme segmented switcher',
+    searchTerms: ['theme', 'light', 'dark', 'system', 'segmented', 'toggle'],
+    inputs: [
+      { name: 'themes', type: 'ThemeOption[]', required: true },
+      { name: 'value', type: 'string' },
+      { name: 'onChange', type: '(id:string)=>void' },
+    ],
+    variants: ['controlled-account', 'local-persisted'],
+    states: ['light', 'dark', 'system'],
+    ecosystems: {
+      [ECOSYSTEM]: {
+        sourcePointer: { path: 'libs/generic/ui-primitives/src/theme/ThemeSwitcher.tsx', symbol: 'ThemeSwitcher' },
+        importHint: "import { ThemeSwitcher } from '@papercusp/ui-primitives/theme'",
       },
     },
   },
