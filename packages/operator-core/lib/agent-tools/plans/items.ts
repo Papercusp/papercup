@@ -117,6 +117,17 @@ const argsSchema = z.object({
     .regex(/^P-\d{3,}$/, "P-NNN form required")
     .optional()
     .describe("Compatibility alias for itemIds (a single P-NNN id); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
+  // EI-21913867956922477: a caller reached for the plural `ids` (the
+  // work_items:get id/ids naming convention) instead of this tool's
+  // `itemIds` and hit invalid_args before any read ran. Accept it as a
+  // second compatibility alias alongside the singular `item`; `itemIds`
+  // wins when more than one of itemIds/item/ids is supplied.
+  ids: z
+    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Compatibility alias for itemIds (plural naming); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
   status: z
     .enum([...ITEM_STATUSES] as [string, ...string[]])
     .optional()
@@ -144,7 +155,7 @@ const argsSchema = z.object({
     ),
   harness: harnessArg,
 }).refine(
-  (args) => !(args.itemIds || args.item) || Boolean(args.slug),
+  (args) => !(args.itemIds || args.item || args.ids) || Boolean(args.slug),
   "itemIds requires an exact plan slug; cross-plan item selection is not supported",
 );
 
@@ -176,7 +187,7 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
+    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous — `ids:[…]` is an accepted alias for `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
     when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `item:"P-NNN"` (one, matching plans:get-item\'s convention) or `itemIds:[…]` (many) with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
     notWhen:
@@ -224,9 +235,9 @@ export default defineTool({
     }
     const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
-    // Resolve the singular `item` compatibility alias into the canonical
-    // `itemIds` array; an explicit `itemIds` always wins when both are given.
-    const itemIds = args.itemIds ?? (args.item ? [args.item] : undefined);
+    // Resolve the singular `item` and plural `ids` compatibility aliases into
+    // the canonical `itemIds` array; an explicit `itemIds` always wins.
+    const itemIds = args.itemIds ?? (args.item ? [args.item] : undefined) ?? args.ids;
 
     // okf-frontmatter-adoption H(b). Read OUTSIDE the cached closure so the flag
     // is part of the cache KEY — flipping the kill-switch must change the answer

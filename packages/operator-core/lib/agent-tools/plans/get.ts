@@ -189,6 +189,18 @@ const argsSchema = z
       .describe(
         "Also return the EXACT raw markdown file bytes as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole document through plans:set-content (whose CAS hashes the raw bytes) and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.",
       ),
+    // EI-21913230259449717: a caller reached for the generic `include` (the
+    // shape other read tools use for a boolean opt-in) instead of this tool's
+    // specific `includeRaw` and hit invalid_args before any read ran. Accept
+    // it as a compatibility alias, same precedent as plans:items' `item`/
+    // `itemIds` and add-decision's `itemRefs`/`refs`; `includeRaw` wins when
+    // both are supplied.
+    include: z
+      .boolean()
+      .optional()
+      .describe(
+        "Compatibility alias for `includeRaw`; `includeRaw` wins when both are supplied.",
+      ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
     message: "Provide slug or slugs; decisionId/decisions select within a plan because D-NNN ids are plan-local.",
@@ -594,6 +606,9 @@ export default defineTool({
       ownerId?: string | null;
     };
     const slugs = mergeIds(args.slug, args.slugs);
+    // EI-21913230259449717: resolve the `include` compatibility alias into the
+    // canonical `includeRaw`; an explicit `includeRaw` always wins.
+    const includeRaw = args.includeRaw ?? args.include ?? false;
     // EI-21194994217912029: exact-slug scope recovery. A recovery call often
     // carries an exact plan slug but NO resolvable harness; instead of failing
     // bare `harness_required`, resolve the owning harness from the slug itself
@@ -680,7 +695,7 @@ export default defineTool({
               harness: opts.harnessSlug,
               mode: args.mode ?? "sections",
               heading: args.heading ?? null,
-              includeRaw: args.includeRaw ?? false,
+              includeRaw,
               items: requestedItemIds,
               decisions: requestedDecisionIds,
             },
@@ -746,7 +761,7 @@ export default defineTool({
                 payload = {
                   ...legacyBase,
                   prose: parsed.prose,
-                  ...(args.includeRaw ? { raw: parsed.raw } : {}),
+                  ...(includeRaw ? { raw: parsed.raw } : {}),
                 };
               }
               return { ok: true as const, ...payload };
@@ -1041,7 +1056,7 @@ export default defineTool({
                     // Edit mode round-trips the whole document through set-content,
                     // whose CAS hashes the raw bytes — prose+frontmatter reconstructed
                     // would not byte-match.
-                    ...(args.includeRaw ? { raw: parsed.raw } : {}),
+                    ...(includeRaw ? { raw: parsed.raw } : {}),
                   }
                 : structured;
             return { ok: true as const, ...payload };
