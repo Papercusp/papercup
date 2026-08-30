@@ -328,6 +328,38 @@ describe('listFleetClaimSpecCandidates (the "unrecognized spec" error diagnostic
     const c1 = candidates.find((c) => c.fleetSlug === 'cand-fleet-1');
     expect(c1?.specId).toBe('cand-fleet-1-lane');
   });
+
+  it('EI-21857753284071679: `revision` returns every fleet at that revision even when the default recency window would drop one', async () => {
+    // Two fleets share revision N. Reproduce the field bug: with a tight `limit`, the default
+    // (unfiltered) window can only show ONE of them — exactly the misleading "1 candidate"
+    // symptom a caller sees for a genuinely-ambiguous revN shorthand.
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey('rev-collide-old'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'rev-collide-old-lane' } },
+      db.sql,
+    );
+    // A steer bumps a spec's revision by 1 per call; three steers land 'rev-collide-old' and
+    // 'rev-collide-new' on the SAME revision number without hand-picking one.
+    await setClaimSpec({ cupId: fleetSpecBeeKey('rev-collide-old'), spec: DEFAULT_CLAIM_SPEC }, db.sql); // rev 1
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey('rev-collide-new'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'rev-collide-new-lane' } },
+      db.sql,
+    );
+    await setClaimSpec({ cupId: fleetSpecBeeKey('rev-collide-new'), spec: DEFAULT_CLAIM_SPEC }, db.sql); // rev 1
+
+    // A `limit:1` mimics the "collision fell outside the top-N recency window" symptom: the
+    // default (unfiltered) call is allowed to return only ONE row, so it cannot reveal the
+    // true match set for revision 1 — this is the bug, asserted as a baseline before the fix.
+    const unfiltered = await listFleetClaimSpecCandidates({ limit: 1 }, db.sql);
+    expect(unfiltered).toHaveLength(1);
+
+    // `revision:1` must surface BOTH — the fix's whole point: the true ambiguity-causing set,
+    // not whatever happened to be most-recently-updated.
+    const filtered = await listFleetClaimSpecCandidates({ revision: 1 }, db.sql);
+    const filteredSlugs = filtered.map((c) => c.fleetSlug);
+    expect(filteredSlugs).toContain('rev-collide-old');
+    expect(filteredSlugs).toContain('rev-collide-new');
+    expect(filtered.every((c) => c.revision === 1)).toBe(true);
+  });
 });
 
 describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {

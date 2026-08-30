@@ -296,6 +296,28 @@ describe('work_items:claimable handler', () => {
     expect(out.candidates).toEqual([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }]);
     // never widened to the unfiltered lane — the snapshot read was never even issued.
     expect(readM).not.toHaveBeenCalled();
+    // no revN shape in the caller's spec — candidates come from the general (unfiltered) window.
+    expect(candM).toHaveBeenCalledWith({ workspaceId: 'ws-1', revision: undefined });
+  });
+
+  it('an AMBIGUOUS revN shorthand ERRORS with candidates filtered to the true match set for that revision — EI-21857753284071679', async () => {
+    // resolveFleetClaimSpec rejects `rev13` as ambiguous (>=2 live fleet specs at revision 13).
+    recM.mockResolvedValue(null as never);
+    // The general most-recently-updated-20 window only surfaces ONE of the (actually 3) live
+    // revision-13 fleets — that's the exact bug: listFleetClaimSpecCandidates must be called
+    // WITH revision:13 so the full match set (the real cause of the ambiguity) is returned.
+    candM.mockResolvedValue([
+      { fleetSlug: 'goal-drain-work-on-everything-070565', specId: null, revision: 13 },
+      { fleetSlug: 'nonp2p-bug-drain-0816', specId: null, revision: 13 },
+      { fleetSlug: 'p2p-parity-lanes', specId: null, revision: 13 },
+    ] as never);
+    const out = await run({ harness: 'papercup', spec: 'rev13' });
+    expect(out.ok).toBe(false);
+    expect(candM).toHaveBeenCalledWith({ workspaceId: 'ws-1', revision: 13 });
+    expect(out.candidates).toHaveLength(3);
+    // the error explains WHY 3 candidates at one revision means "ambiguous", not "broken".
+    expect(out.error).toMatch(/filtered to every live fleet spec currently at revision 13/);
+    expect(readM).not.toHaveBeenCalled();
   });
 
   it('spec ∧ kind AND-combine into one filter tree', async () => {
