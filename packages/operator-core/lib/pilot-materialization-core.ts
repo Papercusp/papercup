@@ -529,6 +529,41 @@ const SELECT_ROWS_SQL =
   'FROM harness_shared.work_items WHERE workspace_id = $1 AND harness_slug = $2 ' +
   'AND feature_id = ANY($3::text[]) ORDER BY feature_id';
 
+/**
+ * "Is this dep's BLOCKER still unsatisfied?" — the blocker-side half of the dependency floor.
+ *
+ * WI-524909 / WI-521425. Match by SPLITTING the dep-side scalar, never by CONCATENATING the
+ * candidate side. The previous form here was
+ *   bf.harness_slug || '#' || bf.feature_id = d.blocker_ref
+ * which no index can serve: EXPLAIN demoted the probe to an Index Scan whose ONLY Index Cond
+ * was workspace_id (~510k rows in harness_features_consolidated), leaving the real selectivity
+ * as a post-scan Filter — cost 40,840 and ~592ms PER PROBE. ORed with the issue-family EXISTS
+ * it also defeated PostgreSQL's hashed-subplan plan. Splitting instead lets that table's
+ * PRIMARY KEY (harness_slug, feature_id) serve the probe.
+ *
+ * EQUIVALENT: the concatenation is harness_slug + '#' + feature_id and no harness_slug contains
+ * '#', so the FIRST '#' is always the separator and splitting exactly inverts the concat. The
+ * position() guard keeps the no-'#' case matching nothing, exactly as the concat form did (its
+ * output always contains a '#', so it could never equal a ref without one). That invariant is
+ * pinned by blocker-ref-join-indexable.test.ts.
+ *
+ * ONE constant, used by BOTH queries below, deliberately: this predicate previously existed as
+ * two byte-identical copies, which is how one of them kept the slow form after the other was
+ * fixed. Note this covers only the BLOCKER side — the BLOCKED-side ref form stays per-family
+ * (bare for issues, harness-qualified for features) and must NOT be unified, which would
+ * over-gate the feature family (D-007's retraction).
+ */
+const UNSATISFIED_BLOCKER_EXISTS_SQL =
+  'EXISTS (SELECT 1 FROM harness_shared.harness_features_consolidated bf ' +
+  "WHERE d.blocker_kind = 'feature' AND bf.workspace_id = wi.workspace_id " +
+  "AND position('#' in d.blocker_ref) > 0 " +
+  "AND bf.harness_slug = split_part(d.blocker_ref, '#', 1) " +
+  "AND bf.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1) " +
+  "AND bf.status NOT IN ('passed','deprecated','done','dropped')) OR " +
+  'EXISTS (SELECT 1 FROM harness_shared.engineer_issues bi ' +
+  "WHERE d.blocker_kind = 'issue' AND bi.workspace_id = wi.workspace_id " +
+  "AND bi.issue_id = d.blocker_ref AND bi.state NOT IN ('resolved','closed','done','dropped'))";
+
 class PgPilotMaterializationTransaction implements PilotMaterializationTransaction {
   constructor(private readonly sql: OrgSql) {}
 
@@ -550,13 +585,7 @@ class PgPilotMaterializationTransaction implements PilotMaterializationTransacti
         "JOIN harness_shared.work_item_deps d ON d.workspace_id = $4 AND d.dep_type = 'blocks' " +
         "AND (d.blocked_ref = wi.feature_id OR d.blocked_ref = wi.harness_slug || '#' || wi.feature_id) " +
         'WHERE wi.workspace_id = $1 AND wi.harness_slug = $2 AND wi.feature_id = ANY($3::text[]) AND (' +
-        'EXISTS (SELECT 1 FROM harness_shared.harness_features_consolidated bf ' +
-        "WHERE d.blocker_kind = 'feature' AND bf.workspace_id = wi.workspace_id " +
-        "AND bf.harness_slug || '#' || bf.feature_id = d.blocker_ref " +
-        "AND bf.status NOT IN ('passed','deprecated','done','dropped')) OR " +
-        'EXISTS (SELECT 1 FROM harness_shared.engineer_issues bi ' +
-        "WHERE d.blocker_kind = 'issue' AND bi.workspace_id = wi.workspace_id " +
-        "AND bi.issue_id = d.blocker_ref AND bi.state NOT IN ('resolved','closed','done','dropped'))" +
+        UNSATISFIED_BLOCKER_EXISTS_SQL +
         ') ORDER BY wi.feature_id',
       [scope.workspaceId, scope.harnessSlug, [...ids], scope.dependencyWorkspaceId],
     )) as unknown as Array<{ feature_id: string }>;
@@ -606,13 +635,7 @@ class PgPilotMaterializationTransaction implements PilotMaterializationTransacti
         "AND NOT (COALESCE(wi.payload, '{}'::jsonb) ?| $6::text[]) AND NOT EXISTS (" +
         "SELECT 1 FROM harness_shared.work_item_deps d WHERE d.workspace_id = $3 AND d.dep_type = 'blocks' " +
         "AND (d.blocked_ref = wi.feature_id OR d.blocked_ref = wi.harness_slug || '#' || wi.feature_id) AND (" +
-        'EXISTS (SELECT 1 FROM harness_shared.harness_features_consolidated bf ' +
-        "WHERE d.blocker_kind = 'feature' AND bf.workspace_id = wi.workspace_id " +
-        "AND bf.harness_slug || '#' || bf.feature_id = d.blocker_ref " +
-        "AND bf.status NOT IN ('passed','deprecated','done','dropped')) OR " +
-        'EXISTS (SELECT 1 FROM harness_shared.engineer_issues bi ' +
-        "WHERE d.blocker_kind = 'issue' AND bi.workspace_id = wi.workspace_id " +
-        "AND bi.issue_id = d.blocker_ref AND bi.state NOT IN ('resolved','closed','done','dropped'))" +
+        UNSATISFIED_BLOCKER_EXISTS_SQL +
         ')) FOR UPDATE), cohort_gate AS MATERIALIZED (SELECT count(*)::int AS n FROM eligible), updated AS (' +
         "UPDATE harness_shared.work_items wi SET payload = COALESCE(wi.payload, '{}'::jsonb) || e.patch, " +
         'updated_ts = e.next_updated_ts FROM expected e, eligible el, cohort_gate g ' +
