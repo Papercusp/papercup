@@ -136,11 +136,11 @@ describe('runRecurrenceEscalation — glue', () => {
   ];
 
   const baseDeps = (over: Partial<EscalationDeps> = {}): EscalationDeps => ({
-    readItems: vi.fn(async () => glueItems()),
+    readItems: vi.fn<EscalationDeps['readItems']>(async () => glueItems()),
     // Mirrors projectImprovementItemsForBoundedRead: the phase-1 census runs the
     // caller's projector over the whole corpus. The double reads from `over.readItems`
     // when supplied so a test that stubs the corpus still drives both phases.
-    scanCorpus: vi.fn(async (_opts, projection) =>
+    scanCorpus: vi.fn<EscalationDeps['scanCorpus']>(async (_opts, projection) =>
       projection.project(await (over.readItems ?? (async () => glueItems()))()),
     ),
     updateIssue: vi.fn(async () => null),
@@ -152,7 +152,7 @@ describe('runRecurrenceEscalation — glue', () => {
   });
 
   it('WI-1216687: censuses the WHOLE corpus on cheap columns — never a per-scope newest-N window', async () => {
-    const scanCorpus = vi.fn(async () => []);
+    const scanCorpus = vi.fn<EscalationDeps['scanCorpus']>(async () => []);
     await runRecurrenceEscalation({}, baseDeps({ scanCorpus }));
 
     // The old read was `{ windowPerScope: true }` with no `limit`, which read-items
@@ -167,13 +167,13 @@ describe('runRecurrenceEscalation — glue', () => {
   });
 
   it('WI-1216687: hydrates phase 2 by explicit member ids, so counting is a SET read and not a recency window', async () => {
-    const readItems = vi.fn(async () => glueItems());
+    const readItems = vi.fn<EscalationDeps['readItems']>(async () => glueItems());
     await runRecurrenceEscalation({}, baseDeps({ readItems }));
 
     // Both glue groups clear the threshold, so every member id is hydrated by id.
-    const call = readItems.mock.calls.find((c) => c[0] && 'issueIds' in c[0]!);
+    const call = readItems.mock.calls.find((c) => c[0]?.issueIds);
     expect(call, 'phase 2 must re-read by issueIds').toBeTruthy();
-    expect([...(call![0]!.issueIds as string[])].sort()).toEqual(['a', 'b', 'c', 'x1', 'x2', 'x3']);
+    expect([...(call![0]!.issueIds ?? [])].sort()).toEqual(['a', 'b', 'c', 'x1', 'x2', 'x3']);
     // The limit must not silently re-cap the very read that exists to be exact.
     expect(call![0]!.limit).toBe(6);
   });
@@ -184,10 +184,10 @@ describe('runRecurrenceEscalation — glue', () => {
     const huge = Array.from({ length: RECURRING_MEMBER_HYDRATION_CAP + 1 }, (_, i) =>
       cand({ id: `h${i}`, title: 'huge recurring signature group here' }),
     );
-    const readItems = vi.fn(async () => huge);
+    const readItems = vi.fn<EscalationDeps['readItems']>(async () => huge);
     await runRecurrenceEscalation({}, baseDeps({ readItems }));
 
-    const hydration = readItems.mock.calls.find((c) => c[0] && 'issueIds' in c[0]!);
+    const hydration = readItems.mock.calls.find((c) => c[0]?.issueIds);
     expect(hydration, 'an over-budget group must not be hydrated at all').toBeFalsy();
   });
 
