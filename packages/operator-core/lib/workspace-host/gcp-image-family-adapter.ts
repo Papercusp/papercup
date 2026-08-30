@@ -708,10 +708,15 @@ function scanEvidence(
   ) {
     fail('GCP image scanner evidence is untrusted or bound to a different subject');
   }
-  // Integer/shape validation and the severity threshold both live in the policy
-  // module, so the adapter and the release gate cannot drift into disagreeing about
-  // what a usable measurement is. Every rejection there fails CLOSED.
-  const scanPolicy = evaluateImageScanPolicy(evidence);
+  // Integer/shape validation, the severity threshold, and the coverage proof all
+  // live in the policy module, so the adapter and the release gate cannot drift into
+  // disagreeing about what a usable measurement is. Every rejection there fails CLOSED.
+  //
+  // GCP_IMAGE_SCAN_POLICY requires the coverage pair. Note the interaction with the
+  // conditional spread above (`typeof result.mountedFilesystems === 'number'`): a
+  // guest that emits a malformed value has it DROPPED there, so it arrives here as
+  // absent and is denied as missing rather than mis-read. Both roads fail closed.
+  const scanPolicy = evaluateImageScanPolicy(evidence, GCP_IMAGE_SCAN_POLICY);
   if (!scanPolicy.accepted) {
     fail(
       `GCP image scanner evidence violates the workspace-host release policy: ${scanPolicy.failures
