@@ -24,7 +24,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { findJsSyntaxError, isJsSyntaxScanned } from '../../../scripts/check-js-syntax.mjs';
+import {
+  LOAD_CHECK_MAX_BYTES,
+  findJsLoadError,
+  findJsSyntaxError,
+  isJsSyntaxScanned,
+} from '../../../scripts/check-js-syntax.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const GUARD = path.join(ROOT, 'scripts/check-js-syntax.mjs');
@@ -83,6 +88,71 @@ describe('check-js-syntax detector — capability (both directions)', () => {
     const hit = await findJsSyntaxError(write('line.mjs', 'export const a = 1;\nexport const b = ;\n'));
     expect(hit).not.toBeNull();
     expect(hit!.line).toBe(2);
+  });
+});
+
+/**
+ * The LOAD leg (EI-21892432987434951). `node --check` only parses, so a module that
+ * assigns to an undeclared binding passed the guard while being unimportable — the
+ * shape that took `npm run test:file` down fleet-wide on 2026-08-30 for ~17 minutes
+ * while this guard reported the tree clean.
+ */
+describe('check-js-syntax LOAD detector — capability (both directions)', () => {
+  // Verbatim reduction of the incident: a replace_all of 'export const ' -> 'const'
+  // that dropped the trailing space, gluing the keyword onto the identifier.
+  const GLUED_KEYWORD_BREAK = 'constEMPTY_MARKER_DEBRIS_MS = 5000;\nexport const other = 1;\n';
+
+  it('FLAGS the glued-keyword break that node --check passes', async () => {
+    const p = write('glued-keyword.mjs', GLUED_KEYWORD_BREAK);
+    // The premise of this whole leg: the PARSE detector is silent here.
+    expect(await findJsSyntaxError(p)).toBeNull();
+
+    const hit = await findJsLoadError(p);
+    expect(hit).not.toBeNull();
+    expect(hit!.name).toBe('constEMPTY_MARKER_DEBRIS_MS');
+    expect(hit!.line).toBe(1);
+  });
+
+  it('CALIBRATION: STAYS SILENT on valid ESM — so it is not simply flagging everything', async () => {
+    const clean = ['import path from "node:path";', 'export const joined = path.join("a", "b");', ''].join('\n');
+    expect(await findJsLoadError(write('load-clean.mjs', clean))).toBeNull();
+  });
+
+  it('stays silent on a READ of an unknown global — writes only', async () => {
+    // apps/operator/probe-adv-tmp.mjs is exactly this: `document` inside a playwright
+    // page.evaluate() callback is correct code that resolves in the BROWSER. A
+    // read-flagging predicate reports it as an offender; this one must not, which is
+    // why the guard needs no globals list and no allowlist.
+    const browserCallback = [
+      'export const run = async (page) =>',
+      '  page.evaluate(() => document.querySelectorAll("h1").length);',
+      '',
+    ].join('\n');
+    expect(await findJsLoadError(write('read-unknown-global.mjs', browserCallback))).toBeNull();
+  });
+
+  it('defers an UNPARSEABLE file to the parse leg, so one break is not counted twice', async () => {
+    const p = write('load-unparseable.mjs', 'export function f() {\n  return 1;\n');
+    expect(await findJsSyntaxError(p)).not.toBeNull(); // the parse leg owns it
+    expect(await findJsLoadError(p)).toBeNull();
+  });
+
+  it('REGRESSION: analyses a file given by ABSOLUTE path', async () => {
+    // The first draft passed the real absolute path to eslint as its filename. eslint
+    // then treats the file as outside its base path and SKIPS it: `verify` returns a
+    // message and `getSourceCode()` is null, so the analyser examined nothing and every
+    // file — including deliberately broken ones — came back clean. The guard now passes
+    // a constant synthetic basename instead. Every path handed in here is absolute, so
+    // this test fails if that regresses.
+    const p = write('absolute-path.mjs', GLUED_KEYWORD_BREAK);
+    expect(path.isAbsolute(p)).toBe(true);
+    const hit = await findJsLoadError(p);
+    expect(hit?.name).toBe('constEMPTY_MARKER_DEBRIS_MS');
+  });
+
+  it('accepts source text directly, so a caller need not round-trip through disk', async () => {
+    expect((await findJsLoadError('unused.mjs', GLUED_KEYWORD_BREAK))?.name).toBe('constEMPTY_MARKER_DEBRIS_MS');
+    expect(await findJsLoadError('unused.mjs', 'const a = 1;\nexport default a;\n')).toBeNull();
   });
 });
 
@@ -173,6 +243,26 @@ describe('check-js-syntax CLI', () => {
     const r = run(['--files= ']);
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/scanned 0 files/);
+  });
+
+  it('FAILS the CLI on a file that parses but cannot load', () => {
+    const glued = write('cli-glued.mjs', 'constEMPTY_MARKER_DEBRIS_MS = 5000;\nexport const other = 1;\n');
+    const r = run([`--files=${glued}`]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/UNLOADABLE/);
+    expect(r.out).toMatch(/constEMPTY_MARKER_DEBRIS_MS/);
+  });
+
+  it('NAMES an over-cap file as load-skipped instead of folding it silently into the ✓', () => {
+    // Scope-analysing the tree's 44.7 MB vendored bundle exhausted the 4 GB heap and
+    // killed the guard outright, so the load leg is size-capped. A capped file is
+    // UNMEASURED by that leg, and the failure mode this guard exists to fix is exactly
+    // an unmeasured file reading as a cleared one — so the ✓ has to say so out loud.
+    const big = write('cli-oversize.mjs', `export const pad = "${'x'.repeat(LOAD_CHECK_MAX_BYTES + 1000)}";\n`);
+    const r = run([`--files=${big}`]);
+    expect(r.code).toBe(0); // still parse-checked, and genuinely clean
+    expect(r.out).toMatch(/load check skipped for 1 file\(s\)/);
+    expect(r.out).toMatch(/cli-oversize\.mjs/);
   });
 });
 
