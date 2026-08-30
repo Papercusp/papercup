@@ -79,7 +79,21 @@ test('startGatewayService sizes both provider priority-tier layers from the ONE 
       makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
       // P-010: ONE seed feeds both lanes. There is no Codex-only size to pass, so the
       // observable property flips from "each lane sized from its own pool" to "both
-      // lanes derive the same reserve from the same seed". 8 slots ⇒ ceil(8*0.15) = 2.
+      // lanes derive the same reserve from the same seed".
+      //
+      // The reserve is derived TWICE, by two different rules, and this test pins both
+      // (EI-21833234632961797):
+      //   1. CONSTRUCTION — resolvePriorityTiers → defaultTierCaps rounds UP:
+      //      max(1, ceil(8 * 0.15)) = 2. This is what the launch log reports, because
+      //      the log is emitted from the resolved TierAdmissionConfig.
+      //   2. SERVING — provider-admission-lifecycle publishes the starting window at
+      //      lane registration ("a lane never serves traffic at whatever its queue was
+      //      constructed with"), so setMaxConcurrent(8) immediately rescales the reserve
+      //      from the CONFIGURED fraction: round(8 * 0.15) = 1. This is what /stats reports.
+      // Before the EI-21833234632961797 fix the queue INFERRED its fraction from the
+      // construction absolute (2/8 = 0.25), so the rescale was a no-op at the seed and
+      // /stats also read 2 — while every later cap held 25%. Asserting 1 here is the
+      // falsifier for that regression: a queue that ignores `reserveFrac` reads 2.
       concurrency: 8,
       observePool: () => () => {},
       poolReloadIntervalMs: 0,
@@ -92,11 +106,19 @@ test('startGatewayService sizes both provider priority-tier layers from the ONE 
     };
     assert.equal(stats.concurrencyCap, 8, 'the compat readback reports the lane high-water mark, which starts at the seed');
     assert.equal(stats.codexAdmission.maxConcurrent, 8, 'Codex starts at the shared seed, not a Codex-specific size');
-    assert.equal(stats.codexAdmission.tier1Reserve, 2, 'Codex reserve is ceil(8 * 0.15) from the shared seed');
+    assert.equal(
+      stats.codexAdmission.tier1Reserve,
+      1,
+      'the SERVED Codex reserve is round(8 * 0.15) — the configured fraction rescaled onto the published window, not the ceil() construction absolute',
+    );
     assert.equal(stats.codexAimd.cap, 8, 'the compat AIMD readback reports the lane high-water mark');
     assert.equal(stats.codexAimd.floor, 4, 'the AIMD floor survives P-010 — a floor is a minimum, never a ceiling');
-    assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=2')), 'launch resolves Claude tiers from the shared seed');
-    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=2')), 'launch resolves Codex tiers from the same seed');
+    // The launch log reports the CONSTRUCTION reserve (rule 1 above), which is 2 and
+    // deliberately differs from the served 1 asserted from /stats. Pinning both here
+    // keeps that divergence a documented property instead of a latent surprise for the
+    // next reader who compares the boot log against a live readback.
+    assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=2')), 'launch resolves Claude tiers from the shared seed (construction reserve, pre-publish)');
+    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=2')), 'launch resolves Codex tiers from the same seed (construction reserve, pre-publish)');
   } finally {
     if (previousFlag === undefined) delete process.env[flagEnv];
     else process.env[flagEnv] = previousFlag;
