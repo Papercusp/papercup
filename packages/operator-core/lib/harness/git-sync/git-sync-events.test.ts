@@ -52,6 +52,41 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     }
   });
 
+  it('captures producer time before a delayed prior emit can reach a later no-SHA boundary', async () => {
+    let releaseEmit!: () => void;
+    const emitGate = new Promise<void>((resolve) => {
+      releaseEmit = resolve;
+    });
+    const emit = vi.fn(async (_opts: EmitOpts) => {
+      await emitGate;
+      return { ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 };
+    });
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
+    await Promise.resolve();
+
+    const delayedPayload = emit.mock.calls[0]?.[0].payload;
+    expect(delayedPayload).toMatchObject({
+      sha: SHA,
+      ...SCOPE_A,
+      committedAtMs: 1_000,
+    });
+    expect(
+      payloadMatchesFilter(
+        { ...SCOPE_A, committedAtMs: { gt: 2_000 } },
+        delayedPayload,
+      ),
+    ).toBe(false);
+
+    releaseEmit();
+    await emitGate;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(emit).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
   it('is an awaiter-only signal — no `to` push (audience is whoever awaited)', async () => {
     const emit = typedEmit();
     emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
@@ -87,7 +122,8 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     const globalPayload = emit.mock.calls.find((call) => call[0].key === 'git-sync:committed')?.[0].payload;
-    expect(globalPayload).toEqual({ sha: SHA, ...SCOPE_A });
+    expect(globalPayload).toMatchObject({ sha: SHA, ...SCOPE_A });
+    expect(globalPayload).toMatchObject({ committedAtMs: expect.any(Number) });
     expect(payloadMatchesFilter(SCOPE_A, globalPayload)).toBe(true);
     expect(payloadMatchesFilter(SCOPE_B, globalPayload)).toBe(false);
   });

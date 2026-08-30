@@ -378,6 +378,47 @@ function agoMin(ms: number | null, now: number): string {
   return `${Math.round(min / 60)}h ago`;
 }
 
+type GitSyncFreshnessDeriver = (
+  metadata: Record<string, unknown> | null,
+  cron: string | null,
+  active: boolean,
+  nowMs: number,
+) => Record<string, unknown>;
+
+interface GitSyncRoutineRead {
+  active: boolean;
+  trigger_config: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/**
+ * Apply the shared routines:list freshness verdict to the system-health headline.
+ *
+ * The routine writer's `last_status` is intentionally sticky across skipped fires, so
+ * a raw `synced` value can outlive the completed-outcome proof that made it true. Keep
+ * the derivation in routines:list as the single source of freshness semantics, but let
+ * this collector choose the effective DeployHealth status without importing the whole
+ * agent-tool module at system-health module load time.
+ */
+export function deriveSystemHealthGitSyncStatus(
+  row: GitSyncRoutineRead,
+  nowMs: number,
+  deriveFreshness: GitSyncFreshnessDeriver,
+): { status: DeployHealth['gitSyncStatus']; freshness: Record<string, unknown> } {
+  const cron = typeof row.trigger_config?.cron === 'string' ? row.trigger_config.cron : null;
+  const freshness = deriveFreshness(row.metadata, cron, row.active, nowMs);
+  const rawStatus =
+    typeof row.metadata?.last_status === 'string'
+      ? (row.metadata.last_status as DeployHealth['gitSyncStatus'])
+      : 'nothing';
+  return {
+    // A stale completed-outcome clock or a wedged in-flight fire is a distinct
+    // derived state. Preserve the writer's raw outcome for every other verdict.
+    status: freshness.status === 'degraded' ? 'degraded' : rawStatus,
+    freshness,
+  };
+}
+
 /** "in 4m" / "in 2h" for a future timestamp; "—" if null, "overdue" if past. */
 function untilMin(ms: number | null, now: number): string {
   if (ms === null) return '—';
@@ -1492,7 +1533,7 @@ async function collectWatchdog(ctx: HealthCtx): Promise<HealthPanel<WatchdogHeal
   });
 }
 
-async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>> {
+export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>> {
   return panelSafe<DeployHealth>('deploy', async () => {
     const { devDeployState } = await import('../dev-deploy-state');
     const s = await devDeployState();
@@ -1510,18 +1551,24 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
     let gitSyncFailingLeg: DeployHealth['gitSyncFailingLeg'] = null;
     try {
       const { sql } = getOrgPg();
-      const rows = await sql<Array<{ install_slug: string; metadata: Record<string, unknown> | null }>>`
-        SELECT install_slug, metadata FROM harness_shared.routines
+      const { deriveGitSyncFreshness } = await import('../agent-tools/routines/list');
+      const rows = await sql<Array<GitSyncRoutineRead & { install_slug: string }>>`
+        SELECT install_slug, trigger_config, metadata FROM harness_shared.routines
          WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${ctx.ws}`;
       for (const r of rows) {
         const md = (r.metadata ?? {}) as Record<string, unknown>;
+        const derived = deriveSystemHealthGitSyncStatus(r, ctx.now, deriveGitSyncFreshness);
         const rawEt = Number(md.consecutive_error_ticks ?? 0) || 0;
         const backlog = rawEt > 0 ? await liveGitSyncPushBacklog(r.install_slug) : null;
         if (backlog !== null) gitSyncPushBacklog = Math.max(gitSyncPushBacklog ?? 0, backlog);
         const et = backlog === 0 ? 0 : rawEt;
         // worst-wins: the most-failing routine drives the panel status.
-        if (gitSyncStatus === null || et > gitSyncConsecutiveErrorTicks) {
-          gitSyncStatus = (md.last_status as DeployHealth['gitSyncStatus']) ?? 'nothing';
+        if (
+          gitSyncStatus === null ||
+          et > gitSyncConsecutiveErrorTicks ||
+          (et === gitSyncConsecutiveErrorTicks && derived.status === 'degraded' && gitSyncStatus !== 'degraded')
+        ) {
+          gitSyncStatus = derived.status;
           gitSyncConsecutiveErrorTicks = et;
           // EI-19275994927087666: carry WHOSE failure won worst-wins and WHICH leg
           // failed. Guard on et > 0 — the `gitSyncStatus === null` arm above also
@@ -1536,7 +1583,12 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
                 )
               : null;
         }
-        const ls = typeof md.last_synced_at === 'string' ? Date.parse(md.last_synced_at) : NaN;
+        const ls =
+          typeof derived.freshness.last_synced_at === 'number'
+            ? derived.freshness.last_synced_at
+            : typeof derived.freshness.last_synced_at === 'string'
+              ? Date.parse(derived.freshness.last_synced_at)
+              : NaN;
         if (!Number.isNaN(ls) && (gitSyncLastSyncedAtMs === null || ls > gitSyncLastSyncedAtMs)) gitSyncLastSyncedAtMs = ls;
         if (Array.isArray(md.last_oversized)) gitSyncOversizedCount += md.last_oversized.length;
       }
@@ -1564,6 +1616,10 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
     // pot. The old comment here claimed "deployStatus reds ONLY on git-sync
     // push-failure", which is false and is what the summary below was built on.
     const syncFailing = status === 'crit';
+    const syncMetricTone: PanelStatus | undefined =
+      syncFailing || data.gitSyncStatus === 'degraded' || data.gitSyncOversizedCount > 0
+        ? syncFailing ? 'crit' : 'warn'
+        : undefined;
     return {
       status,
       summary: syncFailing
@@ -1580,7 +1636,7 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
         m('last sync', agoMin(data.lastCommitAtMs, ctx.now)),
         m('green tip', data.greenPinAtStagingHead === null ? '?' : data.greenPinAtStagingHead ? 'yes' : 'no'),
         // Label is 'git-sync', not 'git-sync push' — the metric covers every leg.
-        m('git-sync', syncFailing ? `${data.gitSyncFailingLeg ?? 'error'} FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), syncFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
+        m('git-sync', syncFailing ? `${data.gitSyncFailingLeg ?? 'error'} FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), syncMetricTone),
         m('failing install', data.gitSyncWorstInstallSlug ?? '—'),
       ],
     };

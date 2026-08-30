@@ -21,10 +21,14 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_DESKTOP_LIFECYCLE_POLICY,
   DESKTOP_LIFECYCLE_POLICY,
+  DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
   PROTECTED_DISPLAYS,
   PROVISIONING_STUCK_SEC,
+  VIEWER_HOLD_MARGIN_SEC,
   VIEWER_HOLD_SEC,
+  VIEWER_STREAM_TEARDOWN_CEILING_SEC,
   classifyDesktopSession,
+  desktopViewerHeartbeatMs,
   policyFor,
 } from './desktop-lifecycle';
 import type { DesktopSessionRecord } from './desktop-session-registry';
@@ -161,13 +165,37 @@ describe('classifyDesktopSession — the viewer hold is real but BOUNDED', () =>
     });
 
   it('does not freeze a desktop out from under someone watching it', () => {
-    // 40 minutes: twice the guest freeze threshold, well inside the viewer hold.
-    // frame-vnc binds the viewer when the stream OPENS and writes nothing until
-    // teardown, so a quiet 40-minute binding is a person still watching — this is
-    // the exact case a short hold got wrong.
-    const v = classifyDesktopSession(watched(40 * MIN), NOW);
+    // 15 minutes: three times the guest idle threshold and inside the viewer hold.
+    // Both viewer lanes clear a dead binding within
+    // VIEWER_STREAM_TEARDOWN_CEILING_SEC, so a binding still present at this age
+    // is a live viewer, and freezing it would be indistinguishable from a crash.
+    const v = classifyDesktopSession(watched(15 * MIN), NOW);
     expect(v.action).toBe('keep');
     expect(v.reason).toMatch(/viewer bound/);
+  });
+
+  it('the identical session with NO viewer goes idle at the same age (the positive control)', () => {
+    // Without this, the assertion above would pass against a classifier that never
+    // touches a vm-guest at fifteen minutes for any reason.
+    const v = classifyDesktopSession(
+      session({ kind: 'vm-guest', lastActiveAt: ago(15 * MIN) }),
+      NOW,
+    );
+    expect(v.action).toBe('idle');
+  });
+
+  it('a binding quiet for 40 minutes is now FROZEN — the premise changed, not our nerve', () => {
+    // This case used to be a `keep`, and the reason it flipped is the point of
+    // P-014. When frame-vnc wrote the row only at open and close, a quiet
+    // forty-minute binding was overwhelmingly a person still watching, and the
+    // six-hour hold was the correct reading of an untrustworthy signal. Now both
+    // lanes heartbeat while a viewer is attached and tear the stream down when it
+    // stops carrying viewer traffic, so forty minutes of silence is not a quiet
+    // human — it is a binding whose lane already gave up, twice over.
+    //
+    // Left as its own case rather than folded into the one below because a
+    // successor reading only the constants would reasonably expect the old answer.
+    expect(classifyDesktopSession(watched(40 * MIN), NOW).action).toBe('freeze');
   });
 
   it('freezes the SAME session once the binding outlives any plausible session', () => {
@@ -308,5 +336,77 @@ describe('drift guard — the protected-display set', () => {
         .filter(Boolean),
     );
     expect([...theirs].sort()).toEqual([...PROTECTED_DISPLAYS].sort());
+  });
+});
+
+/**
+ * P-014 — the viewer hold stopped being a guess and became a derivation.
+ *
+ * The old six-hour value could only be tested by restating it, because it was a
+ * judgement about how long a person watches. The new one is a statement about the
+ * code: it covers the window in which a lane has not yet noticed its stream died.
+ * That IS falsifiable, and these are the properties that make it so.
+ */
+describe('VIEWER_HOLD_SEC is derived from what the lanes guarantee (P-014)', () => {
+  it('covers the slowest lane teardown with the declared margin', () => {
+    // Not `toBe(20 * MIN)`: pinning the arithmetic result would pass against a
+    // hardcoded constant that happens to equal today's sum. This asserts the
+    // RELATIONSHIP, so changing either input must move the hold with it.
+    expect(VIEWER_HOLD_SEC).toBe(VIEWER_STREAM_TEARDOWN_CEILING_SEC + VIEWER_HOLD_MARGIN_SEC);
+    expect(VIEWER_HOLD_SEC).toBeGreaterThan(VIEWER_STREAM_TEARDOWN_CEILING_SEC);
+  });
+
+  it('leaves room for several missed beats before the hold itself lapses', () => {
+    // If the hold were shorter than the heartbeat cadence times its own tolerance,
+    // a viewer could lose the desktop over a hiccup the cadence was explicitly
+    // sized to survive — the two constants would be describing different policies.
+    expect(VIEWER_HOLD_SEC * 1000).toBeGreaterThan(
+      desktopViewerHeartbeatMs() * DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
+    );
+  });
+
+  it('is dramatically shorter than the pre-heartbeat backstop it replaced', () => {
+    // The point of the change, stated as a property rather than a comment: the
+    // cost of a skipped teardown fell from an evening to a coffee break. A future
+    // edit that quietly restores hours would pass every test above and fail here.
+    expect(VIEWER_HOLD_SEC).toBeLessThan(HOUR);
+  });
+
+  it('still outlives every idle window, so a bound viewer is honoured for every kind', () => {
+    // The property the six-hour value also had. Kept explicitly, because the whole
+    // risk of shortening this constant is losing a guarantee nobody restated.
+    for (const [kind, p] of Object.entries(DESKTOP_LIFECYCLE_POLICY)) {
+      expect(VIEWER_HOLD_SEC, `${kind} idles before the viewer hold expires`).toBeGreaterThan(
+        p.idleAfterSec,
+      );
+    }
+  });
+
+  it('a heartbeating viewer is held regardless of how long it has been watching', () => {
+    // The behavioural consequence, and the reason a short hold is now safe at all.
+    // A beat lands every desktopViewerHeartbeatMs(), so `lastActiveAt` is always
+    // recent no matter how long the session has run — this is the four-hour
+    // viewing session that the old 30-minute bound got wrong.
+    const beatenRecently = session({
+      kind: 'vm-guest',
+      viewerMode: 'watch',
+      viewerActor: 'owner',
+      lastActiveAt: ago(Math.ceil(desktopViewerHeartbeatMs() / 1000)),
+      createdAt: ago(4 * HOUR),
+    });
+    expect(classifyDesktopSession(beatenRecently, NOW).action).toBe('keep');
+  });
+
+  it('the same session stops being held once the beats stop (the positive control)', () => {
+    // Without this, the assertion above would pass against a classifier that never
+    // freezes a bound session at all — which is precisely the old behaviour.
+    const beatsStopped = session({
+      kind: 'vm-guest',
+      viewerMode: 'watch',
+      viewerActor: 'owner',
+      lastActiveAt: ago(VIEWER_HOLD_SEC + MIN),
+      createdAt: ago(4 * HOUR),
+    });
+    expect(classifyDesktopSession(beatsStopped, NOW).action).not.toBe('keep');
   });
 });

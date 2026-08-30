@@ -14,7 +14,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org/connection';
 import { serializeDeleteCookie, serializeSetCookie } from '../endpoint-route/cookies';
 
 export const HOSTED_SESSION_COOKIE = '__Host-papercusp_session';
@@ -478,4 +478,3 @@ export function revokeHostedSessionsByUpstreamSession(
 ): Promise<number> {
   return defaultStore().revokeByUpstreamSession(upstreamProvider, upstreamSessionId, reason);
 }
-

@@ -8069,6 +8069,9 @@ async function runGreenCheckpointInner(
         : {}),
       lineage: result.lineage ?? null,
       candidateSource,
+      ...(result.fossilAbandonment
+        ? { fossilAbandonment: result.fossilAbandonment }
+        : {}),
     };
     const cancelSiblingKeysFor = [
       "release:green",
@@ -9554,6 +9557,7 @@ async function runGreenCheckpointInner(
       ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
+      ...(fossilAbandonment ? { fossilAbandonment } : {}),
     })
     .catch((e) =>
       deps.log(
@@ -10085,6 +10089,7 @@ async function runGreenCheckpointInner(
         // coord:orient, a release-fixer) can read commitsBehind / changed-in-range
         // as FIELDS instead of re-parsing the prose line above.
         lineage: lineage ?? null,
+        ...(fossilAbandonment ? { fossilAbandonment } : {}),
       };
       // EI-12457: this candidate resolved red — a subscriber's still-pending green
       // await for this pipeline can now never legitimately fire.
@@ -10999,6 +11004,7 @@ async function runGreenCheckpointInner(
       pipeline,
       candidateSource,
       runId: deps.runId ?? null,
+      ...(fossilAbandonment ? { fossilAbandonment } : {}),
     };
     // EI-12457: this candidate resolved green — a subscriber's still-pending red
     // await for this pipeline can now never legitimately fire.

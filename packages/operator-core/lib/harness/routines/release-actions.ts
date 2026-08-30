@@ -65,6 +65,7 @@ import {
   parseFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
   buildFrozenRepairConvergenceGateHealth,
+  type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
 import {
@@ -767,6 +768,8 @@ export interface CheckpointVerdict {
    * together, and a hand-copied subset already drifted at schema v3
    * (EI-21222252991281747). */
   repairQueue?: FrozenCandidateRepairQueue;
+  /** EI-21763163890991789: durable evidence for a cleared fossilized repair pin. */
+  fossilAbandonment?: FrozenCandidateFossilAbandonment;
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
@@ -948,6 +951,16 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   // persisted `crashed: false` would assert a clean exit that nobody actually verified.
   if (v.summary) detail.summary = v.summary.slice(0, 2000);
   if (v.crashed === true) detail.crashed = true;
+  // The frozen repair queue is intentionally cleared when its candidate becomes a fossil.
+  // Preserve bounded evidence so the queue's disappearance is not mistaken for a no-op.
+  if (v.fossilAbandonment) {
+    detail.fossilAbandonment = {
+      abandonedCandidate: v.fossilAbandonment.abandonedCandidate.slice(0, 12),
+      ageMs: Math.max(0, Math.floor(v.fossilAbandonment.ageMs)),
+      thresholdMs: Math.max(0, Math.floor(v.fossilAbandonment.thresholdMs)),
+      reason: v.fossilAbandonment.reason,
+    };
+  }
   if (v.repairQueue) {
     detail.repairQueue = {
       phase: v.repairQueue.phase,

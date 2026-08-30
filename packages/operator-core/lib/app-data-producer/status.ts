@@ -105,9 +105,11 @@ export interface AppProducerStatusDeps extends AppDeliveryOptions {
    * The two data edges, injectable for orchestration tests.
    *
    * ⚠ Stubbing these leaves their SQL at ZERO coverage while the suite stays
-   * green — the exact hazard P-005 hit. Both queries are therefore ALSO
-   * exercised against the live corpus, and that check is the only thing
-   * covering them; do not read a green suite as covering the SQL.
+   * green — the exact hazard P-005 hit. status.test.ts stubs BOTH in every
+   * case, so it covers this function's orchestration and none of the SQL.
+   * The SQL is covered instead by status.integration.test.ts, which calls
+   * readPushRollup and countPendingRows against a real database. Do not read a
+   * green status.test.ts as covering them.
    */
   readRollup?: typeof readPushRollup;
   countPending?: typeof countPendingRows;
@@ -304,7 +306,21 @@ async function statusForMapping(
     return finish(base, 'misconfigured', `${appBaseUrlEnvVar(app)} is unset — delivery is configured but has nowhere to send`);
   }
 
-  if (!ctx.probe) return finish(base, 'ok', null);
+  // `failing` is a LEDGER fact — it needs no network, so it must be reported
+  // whether or not the caller opted into probing. The production wiring IS the
+  // no-probe path (routines-workflow.ts passes probeApps:false), so gating this
+  // behind the probe made the fault code unreachable in exactly the wiring
+  // P-007 exists to serve: a mapping with N failed push deliveries reported
+  // health 'ok', fault false, and the caller's fault loop printed nothing.
+  // `behind` is different and stays probe-only below — it needs the app's own
+  // cursor, which only the probe can supply.
+  // Precedence is preserved on both paths: with a probe, `unreachable` still
+  // outranks `failing` because the failures are usually its consequence; with
+  // no probe there is no cause available to name, only the symptom.
+  if (!ctx.probe) {
+    if (base.push.failed > 0) return finish(base, 'failing', failingDetail(base.push));
+    return finish(base, 'ok', null);
+  }
 
   const probe = await ctx.fetchCursor(app, ownerId, ctx.deps);
   base.appReachable = probe.reachable;
@@ -324,12 +340,17 @@ async function statusForMapping(
   // A failing push path outranks a backlog: the backlog is usually its
   // CONSEQUENCE, and reporting `behind` would name the symptom over the cause.
   if (base.push.failed > 0) {
-    return finish(base, 'failing', `${base.push.failed} failed push deliver${base.push.failed === 1 ? 'y' : 'ies'}: ${base.push.lastError ?? 'no error text recorded'}`);
+    return finish(base, 'failing', failingDetail(base.push));
   }
   if ((base.pendingRows ?? 0) > 0) {
     return finish(base, 'behind', `${base.pendingRows} canonical row(s) after the app's cursor — the reconcile sweep should drain these`);
   }
   return finish(base, 'ok', null);
+}
+
+/** The `failing` detail line, shared by the probe and no-probe paths so they cannot drift. */
+function failingDetail(push: AppProducerPushRollup): string {
+  return `${push.failed} failed push deliver${push.failed === 1 ? 'y' : 'ies'}: ${push.lastError ?? 'no error text recorded'}`;
 }
 
 function finish(status: AppProducerStatus, health: AppProducerHealth, detail: string | null): AppProducerStatus {

@@ -1,4 +1,4 @@
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org/connection';
 import type { WorkOSSealedSessionRecord, WorkOSSealedSessionVault } from './workos-provider';
 
 type SqlClient = ReturnType<typeof getOrgPg>['sql'];

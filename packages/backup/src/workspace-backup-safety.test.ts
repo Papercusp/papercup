@@ -28,6 +28,10 @@ vi.mock('./password', () => ({ deriveRepoPassword: async () => 'test-password' }
 import {
   configureBackup,
   configureBackupStepRunner,
+  evaluateLatestPreDestructiveSnapshot,
+  isCompletedPreDestructiveSnapshotReceipt,
+  preDestructiveSnapshotAdmissionGuardSql,
+  requiresPreDestructiveSnapshotAdmission,
   WorkspaceBackup,
   type StepRunner,
 } from './index';
@@ -61,6 +65,60 @@ describe('backup cadence safety floor', () => {
   it('allows hourly or slower recurring schedules', () => {
     expect(() => assertSafeBackupCadence('interval', 60)).not.toThrow();
     expect(() => assertSafeBackupCadence('both', 1440)).not.toThrow();
+  });
+});
+
+describe('pre-destructive snapshot admission', () => {
+  const complete = {
+    status: 'ok',
+    finishedAt: '2026-08-30T05:00:00.000Z',
+    kopiaSnapshotId: 'kopia-complete',
+    dbDumpOk: true,
+  };
+
+  it('accepts only a completed artifact-backed database snapshot', () => {
+    expect(isCompletedPreDestructiveSnapshotReceipt(complete)).toBe(true);
+    expect(isCompletedPreDestructiveSnapshotReceipt({ ...complete, dbDumpOk: false })).toBe(false);
+    expect(isCompletedPreDestructiveSnapshotReceipt({ ...complete, finishedAt: null })).toBe(false);
+    expect(isCompletedPreDestructiveSnapshotReceipt({ ...complete, kopiaSnapshotId: null })).toBe(false);
+    expect(isCompletedPreDestructiveSnapshotReceipt({ ...complete, status: 'degraded' })).toBe(false);
+  });
+
+  it.each([
+    ['running', { status: 'running', finishedAt: null, kopiaSnapshotId: null, dbDumpOk: null }],
+    ['failed', { status: 'failed', finishedAt: '2026-08-30T05:01:00.000Z', kopiaSnapshotId: null, dbDumpOk: false }],
+    ['degraded', { status: 'degraded', finishedAt: '2026-08-30T05:01:00.000Z', kopiaSnapshotId: 'kopia-stale', dbDumpOk: false }],
+    ['unknown', { status: 'ok', finishedAt: '2026-08-30T05:01:00.000Z', kopiaSnapshotId: 'kopia-unknown', dbDumpOk: null }],
+  ])('rejects a newest %s receipt even when an older receipt completed', (_label, latest) => {
+    expect(evaluateLatestPreDestructiveSnapshot([latest, complete])).toMatchObject({
+      admitted: false,
+      latest,
+    });
+  });
+
+  it('rejects when there is no pre-destructive receipt', () => {
+    expect(evaluateLatestPreDestructiveSnapshot([])).toMatchObject({
+      admitted: false,
+      latest: null,
+      reason: 'missing',
+    });
+  });
+
+  it('builds one fail-closed SQL predicate over the newest receipt', () => {
+    const guard = preDestructiveSnapshotAdmissionGuardSql('workspace-with-quote');
+    expect(guard).toContain("trigger_reason = 'pre_destructive'");
+    expect(guard).toContain('ORDER BY started_at DESC, id DESC');
+    expect(guard).toContain("latest.status = 'ok'");
+    expect(guard).toContain('latest.finished_at IS NOT NULL');
+    expect(guard).toContain('latest.kopia_snapshot_id IS NOT NULL');
+    expect(guard).toContain('latest.db_dump_ok IS TRUE');
+    expect(guard).toContain("workspace-with-quote");
+  });
+
+  it('leaves baseline and db_dump_ok-introducing migrations unguarded, then guards later files', () => {
+    expect(requiresPreDestructiveSnapshotAdmission('000-baseline.sql')).toBe(false);
+    expect(requiresPreDestructiveSnapshotAdmission('1006-backup-snapshot-db-dump-integrity.sql')).toBe(false);
+    expect(requiresPreDestructiveSnapshotAdmission('1016-trigger-direct-work-item.sql')).toBe(true);
   });
 });
 
@@ -116,6 +174,54 @@ describe('snapshot concurrency guard (EI-21378460739616032)', () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(secondResult).toEqual(firstResult);
     expect(firstResult).toMatchObject({ snapshotId: 7, kopiaSnapshotId: 'kopia-7' });
+  });
+});
+
+describe('pre-destructive snapshot intent lifecycle (EI-217072)', () => {
+  it('inserts the intent before the advisory-lock wait and finalizes lock failure durably', async () => {
+    const order: string[] = [];
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push({ text, values });
+      if (text.includes('INSERT INTO harness_shared.backup_snapshots')) {
+        order.push('insert');
+        return Promise.resolve([{ id: 77 }]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+      acquireMigrationLock: async () => {
+        order.push('lock');
+        throw new Error('canceling statement due to lock timeout');
+      },
+    });
+    configureBackupStepRunner({
+      runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        return fn();
+      },
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    vi.spyOn(w, 'ensureRepo').mockResolvedValue(undefined);
+
+    await expect(w.snapshot('pre_destructive')).rejects.toThrow(/lock timeout/);
+
+    expect(order).toEqual(['insert', 'lock']);
+    const finalized = queries.find(
+      (query) =>
+        /UPDATE harness_shared\.backup_snapshots/.test(query.text) &&
+        /SET finished_at/.test(query.text) &&
+        /status/.test(query.text),
+    );
+    expect(finalized?.values).toEqual(expect.arrayContaining([
+      'canceling statement due to lock timeout',
+      null,
+      77,
+    ]));
   });
 });
 

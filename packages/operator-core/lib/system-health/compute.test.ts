@@ -6,17 +6,48 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-const { backgroundWorkersEnabledMock, getFlagMock, readSharedSnapshotMock, statfsMock, homedirMock, tmpdirMock } = vi.hoisted(() => ({
+const {
+  backgroundWorkersEnabledMock,
+  getFlagMock,
+  readSharedSnapshotMock,
+  statfsMock,
+  homedirMock,
+  tmpdirMock,
+  sqlMock,
+  devDeployStateMock,
+  computeNextFireAtMock,
+} = vi.hoisted(() => ({
   backgroundWorkersEnabledMock: vi.fn(() => false),
   getFlagMock: vi.fn(async () => true),
   readSharedSnapshotMock: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
   statfsMock: vi.fn(),
   homedirMock: vi.fn(() => '/home/tester'),
   tmpdirMock: vi.fn(() => '/tmp'),
+  sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+  devDeployStateMock: vi.fn(async () => ({
+    deployed: { shortSha: 'deployed' },
+    deployedBehindStaging: 0,
+    greenPinBehindStaging: 0,
+    deployedBehindGreenPin: 0,
+    greenPinAtStagingHead: true,
+    deployedAtMs: 0,
+    stagingHead: { committedAtMs: 0 },
+    errors: [],
+  })),
+  computeNextFireAtMock: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
 }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
   getFlag: getFlagMock,
+}));
+vi.mock('../dev-deploy-state', () => ({ devDeployState: devDeployStateMock }));
+vi.mock('../harness/routines/cron', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../harness/routines/cron')>()),
+  computeNextFireAt: computeNextFireAtMock,
 }));
 vi.mock('../background-workers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../background-workers')>()),
@@ -35,7 +66,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
@@ -890,6 +921,115 @@ describe('panelSafe — per-panel fail-soft', () => {
     });
     expect(panel.status).toBe('unknown');
     expect(panel.error).toBe('string failure');
+  });
+});
+
+describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
+  const now = Date.parse('2026-08-30T06:20:00.000Z');
+  const cron = '0 */3 * * * *';
+
+  const ctx = (at = now): Parameters<typeof collectDeploy>[0] => ({
+    ws: 'ws-ei-218',
+    now: at,
+    potSlug: null,
+    started: false,
+    openPlacements: null,
+    gatewayEnabled: false,
+    gatewayReachable: null,
+    overwatchAlive: null,
+    openImprovements: async () => [],
+  });
+
+  const routine = (metadata: Record<string, unknown>) => ({
+    install_slug: 'home-harness',
+    trigger_config: { cron },
+    metadata,
+    active: true,
+  });
+
+  beforeEach(() => {
+    sqlMock.mockReset();
+    devDeployStateMock.mockReset().mockResolvedValue({
+      deployed: { shortSha: 'deployed' },
+      deployedBehindStaging: 0,
+      greenPinBehindStaging: 0,
+      deployedBehindGreenPin: 0,
+      greenPinAtStagingHead: true,
+      deployedAtMs: now - 1_000,
+      stagingHead: { committedAtMs: now - 1_000 },
+      errors: [],
+    });
+    computeNextFireAtMock.mockReset().mockImplementation((_expression: unknown, from: Date) =>
+      new Date(from.getTime() + 3 * 60_000),
+    );
+  });
+
+  it('overrides a stale raw synced outcome and selects trigger_config for the cadence', async () => {
+    sqlMock.mockResolvedValue([
+      routine({ last_status: 'synced', last_synced_at: now - 10 * 60_000 }),
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    expect(panel.status).toBe('warn');
+    expect(panel.data).toMatchObject({
+      gitSyncStatus: 'degraded',
+      gitSyncLastSyncedAtMs: now - 10 * 60_000,
+    });
+    expect(panel.metrics.find((metric) => metric.label === 'git-sync')).toMatchObject({
+      value: 'degraded',
+      tone: 'warn',
+    });
+
+    const [template] = sqlMock.mock.calls[0] ?? [];
+    expect(String((template as TemplateStringsArray).join(' '))).toContain('trigger_config');
+    expect(computeNextFireAtMock.mock.calls.map(([expression]) => expression)).toEqual([cron, cron]);
+  });
+
+  it('overrides raw synced when a fire is stuck in-flight despite a recent completed outcome', async () => {
+    sqlMock.mockResolvedValue([
+      routine({
+        last_status: 'synced',
+        last_synced_at: now - 60_000,
+        git_sync_activity: {
+          active: true,
+          phase: 'push',
+          started_at: now - 10 * 60_000,
+        },
+      }),
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    expect(panel.status).toBe('warn');
+    expect(panel.data).toMatchObject({
+      gitSyncStatus: 'degraded',
+      gitSyncLastSyncedAtMs: now - 60_000,
+    });
+  });
+
+  it('preserves a recent raw status when the completed outcome is fresh', async () => {
+    sqlMock.mockResolvedValue([
+      routine({ last_status: 'synced', last_synced_at: now - 60_000 }),
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    expect(panel.status).toBe('ok');
+    expect(panel.data).toMatchObject({
+      gitSyncStatus: 'synced',
+      gitSyncLastSyncedAtMs: now - 60_000,
+    });
+  });
+
+  it('keeps the deploy panel fail-soft when the routine metadata read fails', async () => {
+    sqlMock.mockRejectedValue(new Error('routine metadata unavailable'));
+
+    const panel = await collectDeploy(ctx());
+    expect(panel.status).toBe('ok');
+    expect(panel.data).toMatchObject({
+      gitSyncStatus: null,
+      gitSyncConsecutiveErrorTicks: 0,
+      gitSyncPushBacklog: null,
+    });
+    expect(panel.error).toBeUndefined();
   });
 });
 

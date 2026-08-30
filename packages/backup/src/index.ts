@@ -46,6 +46,18 @@ export {
   type StepRunner,
   type VerifyResult,
 } from './types';
+export {
+  PRE_DESTRUCTIVE_SNAPSHOT_SCHEMA_MIGRATION,
+  PRE_DESTRUCTIVE_SNAPSHOT_TRIGGER,
+  completedPreDestructiveSnapshotQuerySql,
+  evaluateLatestPreDestructiveSnapshot,
+  isCompletedPreDestructiveSnapshotReceipt,
+  preDestructiveSnapshotAdmissionGuardSql,
+  requiresPreDestructiveSnapshotAdmission,
+  type PreDestructiveSnapshotAdmission,
+  type PreDestructiveSnapshotAdmissionReason,
+  type PreDestructiveSnapshotReceiptLike,
+} from './snapshot-admission';
 export { deriveRepoPassword } from './password';
 export {
   BACKUP_APPLICATION_NAMES,

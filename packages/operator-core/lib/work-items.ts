@@ -165,6 +165,8 @@ import {
   issuesScopeWorkspace,
   resolveIssuesScopeWorkspace,
   resolveIssueWorkspace,
+  deriveLeaderDispatchAdmission,
+  isLeaderDispatchAdmission,
   mergeIssuePayload,
   planItemSourceFromPayloadPatch,
   markIssueProgress,
@@ -4705,10 +4707,18 @@ export async function claimWorkItem(
   let prior: WorkItem | null = null;
   if (issue) {
     prior = issueToWorkItem(issue);
+    // EI-217141: thread only the server-derived current-leader dispatch
+    // capability into the issue mutation. Feature-family rows have no
+    // assignedBy provenance, so they never mint this exception and keep the
+    // ordinary admission floor below unchanged.
+    const leaderDispatchAdmission = prior.assignedBy
+      ? await deriveLeaderDispatchAdmission(prior, assignee, issueWs)
+      : null;
     const updated = await claimIssue(id, assignee, {
       workspaceId: issueWs,
       fromHolder: opts.fromHolder,
       expectedAssignee: opts.expectedAssignee,
+      ...(isLeaderDispatchAdmission(leaderDispatchAdmission) ? { leaderDispatchAdmission } : {}),
     });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {

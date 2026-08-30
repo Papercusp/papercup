@@ -8,7 +8,8 @@
  *   `git-sync:committed` — the GLOBAL "a commit just landed" signal: any agent that
  *   left an edit in the tree and wants to know "is my edit a local git commit yet"
  *   awaits this and is WOKEN on the next successful local sync. The waiter checks
- *   `payload.sha`, `payload.installSlug`, and `payload.workspaceId` to see which
+ *   `payload.sha`, `payload.installSlug`, `payload.workspaceId`, and the
+ *   producer-time `payload.committedAtMs` freshness boundary to see which
  *   commit and harness produced it.
  *
  *   `git-sync:committed:<sha>` — the PRECISE per-sha key: an agent that already knows
@@ -149,12 +150,13 @@ function emitGitSyncEventPair(
   sha: string,
   summary: string,
   deps: GitSyncEventsDeps,
+  payloadExtra?: Record<string, unknown>,
 ): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   const shortSha = sha.slice(0, 12);
   void Promise.resolve()
     .then(async () => {
-      const payload = { sha, ...deps.scope };
+      const payload = { sha, ...deps.scope, ...payloadExtra };
       await emit({ key: `git-sync:${kind}`, summary, payload, source: 'git-sync' });
       await emit({ key: `git-sync:${kind}:${sha}`, summary, payload, source: 'git-sync' });
     })
@@ -168,7 +170,18 @@ function emitGitSyncEventPair(
  */
 export function emitGitSyncCommittedEvent(sha: string, deps: GitSyncEventsDeps): void {
   const shortSha = sha.slice(0, 12);
-  emitGitSyncEventPair('committed', sha, `git-sync committed ${shortSha} in the local harness checkout`, deps);
+  // Capture this synchronously at the producer boundary. Capturing inside the
+  // Promise below would timestamp the eventual dispatch instead, allowing a
+  // delayed event from a prior sync cycle to look newer than a wait registered
+  // after that cycle.
+  const committedAtMs = Date.now();
+  emitGitSyncEventPair(
+    'committed',
+    sha,
+    `git-sync committed ${shortSha} in the local harness checkout`,
+    deps,
+    { committedAtMs },
+  );
 }
 
 function emitGitSyncEgressEventPair(

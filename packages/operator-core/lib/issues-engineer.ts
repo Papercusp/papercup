@@ -86,6 +86,72 @@ import {
 import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
 
 /**
+ * EI-217141: a fleet leader's explicit assignment is the one narrow exception to
+ * the born-pending admission floor. The capability is minted only after the
+ * scheduler admission seam has re-derived the target's current fleet scope,
+ * pause state, claim-spec source, and durable current leader. Callers cannot
+ * forge a valid capability: claimIssue validates object identity through this
+ * module-private WeakSet before using it in the mutation predicate.
+ */
+export interface LeaderDispatchAdmission {
+  readonly itemId: string;
+  readonly target: string;
+  readonly workspaceId: string;
+  readonly assignedBy: string;
+}
+
+const leaderDispatchAdmissions = new WeakSet<object>();
+
+function mintLeaderDispatchAdmission(args: {
+  itemId: string;
+  target: string;
+  workspaceId: string;
+  assignedBy: string;
+}): LeaderDispatchAdmission {
+  const admission = Object.freeze({ ...args });
+  leaderDispatchAdmissions.add(admission);
+  return admission;
+}
+
+export function isLeaderDispatchAdmission(value: unknown): value is LeaderDispatchAdmission {
+  return typeof value === 'object' && value !== null && leaderDispatchAdmissions.has(value);
+}
+
+/**
+ * Derive the internal leader-dispatch capability for a by-id claim. This keeps
+ * the exception server-derived and preserves the existing fleet admission
+ * ordering: winding-down and the default claim spec still refuse before the
+ * current-leader check. A scheduler/fleet-store failure fails closed.
+ */
+export async function deriveLeaderDispatchAdmission(
+  item: Pick<EngineerIssue, 'id' | 'assignedBy'>,
+  target: string,
+  workspaceId: string,
+): Promise<LeaderDispatchAdmission | null> {
+  if (!item.assignedBy) return null;
+  try {
+    const {
+      resolveFleetScopeContext,
+      fleetControlWindDownRefusal,
+      leaderDispatchedAdmission,
+    } = await import('./scheduler/fleet-scope-admission');
+    const scope = await resolveFleetScopeContext(target, workspaceId);
+    if (!scope) return null;
+    if (await fleetControlWindDownRefusal(scope, workspaceId)) return null;
+    if (scope.record.source === 'default') return null;
+    if (!(await leaderDispatchedAdmission(item, scope))) return null;
+    return mintLeaderDispatchAdmission({
+      itemId: item.id,
+      target,
+      workspaceId,
+      assignedBy: item.assignedBy,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
  * `WORK_ITEMS_MAX_LIMIT` (work-items.ts) — the unified work-items list requests
  * up to that many, and a lower inner cap here was silently truncating the issue
@@ -2550,11 +2616,25 @@ export async function claimIssue(
      * changes between the guard read and the write.
      */
     expectedAssignee?: string;
+    /**
+     * EI-217141: private capability minted by deriveLeaderDispatchAdmission.
+     * It is deliberately not a boolean or caller-supplied bypass; claimIssue
+     * accepts only an object identity minted by this module's server-side
+     * admission check, and still CASes the durable assigned_by provenance.
+     */
+    leaderDispatchAdmission?: LeaderDispatchAdmission;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? issuesScopeWorkspace();
   const expectedAssignee = opts.expectedAssignee?.trim() || null;
+  const leaderDispatchAdmission =
+    isLeaderDispatchAdmission(opts.leaderDispatchAdmission) &&
+    opts.leaderDispatchAdmission.itemId === id &&
+    opts.leaderDispatchAdmission.target === assignee &&
+    opts.leaderDispatchAdmission.workspaceId === ws
+      ? opts.leaderDispatchAdmission
+      : null;
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
@@ -2575,8 +2655,21 @@ export async function claimIssue(
          ${expectedAssignee ? sql` OR assignee = ${expectedAssignee}` : sql``}
        )
        -- Born-pending admission is orthogonal to lifecycle status. A named claim
-       -- cannot jump the promoter any more than scheduler:get_next can.
-       AND ${admittedWhereSql(sql)}
+       -- cannot jump the promoter any more than scheduler:get_next can, EXCEPT
+       -- for the one server-derived current-leader dispatch capability. Keep the
+       -- assigned_by CAS in the exception so a row changed after capability
+       -- derivation cannot inherit the old leader's authorization.
+       AND ${
+         leaderDispatchAdmission
+           ? sql`(
+               ${admittedWhereSql(sql)}
+               OR (
+                 admission = 'pending'
+                 AND assigned_by = ${leaderDispatchAdmission.assignedBy}
+               )
+             )`
+           : admittedWhereSql(sql)
+       }
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
        -- "a completed row is STILL directly claimable by id — the floor only gates

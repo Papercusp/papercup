@@ -26,7 +26,7 @@
  * from the current row on every single request (`hosted-role-permissions.ts`),
  * so a demotion takes effect immediately whether or not the version moved.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org/connection';
 import {
   hostedPermissionsForMembership,
   isHostedMembershipStatus,

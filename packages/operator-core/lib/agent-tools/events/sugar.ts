@@ -913,14 +913,26 @@ defineTool({
   async handler(args, ctx) {
     const scope = gitSyncAwaitScope(args.harness, ctx);
     if (!args.sha && !scope) return harnessRequiredResult("git-sync:await", ctx);
+    // A global commit event is emitted asynchronously. Capture the boundary before
+    // registering the wait so an event produced by an earlier cycle but delayed in
+    // the fire-and-forget queue cannot satisfy this new no-SHA wait.
+    const registrationBoundaryMs = !args.sha ? Date.now() : undefined;
+    const payloadFilter = scope
+      ? {
+          ...scope,
+          ...(registrationBoundaryMs != null
+            ? { committedAtMs: { gt: registrationBoundaryMs } }
+            : {}),
+        }
+      : undefined;
     return reply(
       await armAwaits(
         ctx,
         [buildKey("git-sync", { sha: args.sha })],
         args.note ?? "git-sync:await — blocked until locally committed",
         args.timeout_sec,
-        scope
-          ? { payloadFilter: scope, timeoutBehavior: args.on_timeout }
+        payloadFilter
+          ? { payloadFilter, timeoutBehavior: args.on_timeout }
           : { timeoutBehavior: args.on_timeout },
       ),
     );

@@ -212,3 +212,83 @@ describe('P-007 — a silently-idle producer is reported, not omitted', () => {
     expect(hasProducerFault(rows)).toBe(true);
   });
 });
+
+/**
+ * REGRESSION — EI-21857366890440494, found during independent acceptance grading.
+ *
+ * The ONLY production caller is routines-workflow.ts, which passes
+ * `{ probeApps: false }`. The probe gate used to return 'ok' before the
+ * `failing` check ran, so the ledger rollup was computed and then discarded:
+ * a mapping with N failed push deliveries reported health 'ok', fault false,
+ * and the caller's `filter(r => r.fault)` console.error loop printed nothing —
+ * in exactly the wiring P-007 exists to serve.
+ */
+describe('P-007 — the no-probe path is the production path, so ledger faults must reach it', () => {
+  it('reports `failing` with probeApps:false when the ledger shows failed deliveries', async () => {
+    const rows = await readAppProducerStatus(SQL, WORKSPACE, deps({
+      probeApps: false,
+      listMappings: vi.fn(async () => [mapping('email')]),
+      readRollup: vi.fn(async () => ({ ...NO_PUSH, delivered: 3, failed: 2, lastError: 'HTTP 500 from app' })),
+    }));
+
+    const email = forApp(rows, 'email');
+    expect(email.health).toBe('failing');
+    expect(email.fault).toBe(true);
+    expect(email.detail).toContain('2 failed push deliveries');
+    expect(email.detail).toContain('HTTP 500 from app');
+    expect(hasProducerFault(rows)).toBe(true);
+  });
+
+  it('singularises the detail for exactly one failure', async () => {
+    const rows = await readAppProducerStatus(SQL, WORKSPACE, deps({
+      probeApps: false,
+      listMappings: vi.fn(async () => [mapping('email')]),
+      readRollup: vi.fn(async () => ({ ...NO_PUSH, failed: 1, lastError: 'boom' })),
+    }));
+    expect(forApp(rows, 'email').detail).toContain('1 failed push delivery');
+  });
+
+  it('still reports `ok` with probeApps:false when the ledger is clean — no false alarm', async () => {
+    const rows = await readAppProducerStatus(SQL, WORKSPACE, deps({
+      probeApps: false,
+      listMappings: vi.fn(async () => [mapping('email')]),
+      readRollup: vi.fn(async () => ({ ...NO_PUSH, delivered: 5 })),
+    }));
+
+    expect(forApp(rows, 'email').health).toBe('ok');
+    expect(hasProducerFault(rows)).toBe(false);
+  });
+
+  it('reaches that verdict WITHOUT a network probe', async () => {
+    // The whole point of probeApps:false — the fix must not smuggle a probe in.
+    const fetchCursor = vi.fn(async () => ({ reachable: true, cursor: null }));
+    await readAppProducerStatus(SQL, WORKSPACE, deps({
+      probeApps: false,
+      fetchCursor,
+      listMappings: vi.fn(async () => [mapping('email')]),
+      readRollup: vi.fn(async () => ({ ...NO_PUSH, failed: 1, lastError: 'boom' })),
+    }));
+    expect(fetchCursor).not.toHaveBeenCalled();
+  });
+
+  it('keeps `unreachable` outranking `failing` WHEN probing, because the failures are its consequence', async () => {
+    // Precedence must survive the fix: with a probe there IS a cause to name.
+    const rows = await readAppProducerStatus(SQL, WORKSPACE, deps({
+      listMappings: vi.fn(async () => [mapping('email')]),
+      fetchCursor: vi.fn(async () => ({ reachable: false, cursor: null, error: 'ECONNREFUSED' })),
+      readRollup: vi.fn(async () => ({ ...NO_PUSH, failed: 4, lastError: 'HTTP 500' })),
+    }));
+    expect(forApp(rows, 'email').health).toBe('unreachable');
+  });
+
+  it('still reports `misconfigured` ahead of a ledger fault on the no-probe path', async () => {
+    // A missing base URL is the more actionable answer and outranks both.
+    const rows = await readAppProducerStatus(SQL, WORKSPACE, deps({
+      probeApps: false,
+      listMappings: vi.fn(async () => [mapping('email')]),
+      readEnv: () => undefined,
+      readRollup: vi.fn(async () => ({ ...NO_PUSH, failed: 2, lastError: 'boom' })),
+    }));
+    expect(forApp(rows, 'email').health).toBe('misconfigured');
+  });
+});

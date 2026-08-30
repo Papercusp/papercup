@@ -8,7 +8,7 @@
  * session id, and current permissions are derived by later authorization code.
  */
 import { createHash, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
-import { defineTool, type RouteDefinition } from '@papercusp/agent-mcp';
+import { defineTool, type RouteDefinition } from '@papercusp/tooldef';
 import {
   HostedSessionCookieCodec,
   type CreateHostedSessionInput,

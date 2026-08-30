@@ -87,6 +87,94 @@ describe('GatewayRequestTelemetry', () => {
     expect(snapshot.missingStageByName.upstreamTtfb).toBe(1);
   });
 
+  it('attributes aggregate queueWait to typed durable/provider admission segments with queue state', () => {
+    let now = 1_000;
+    const telemetry = new GatewayRequestTelemetry({ now: () => now });
+    const span = telemetry.begin({
+      ownerId: 'su-latency',
+      provider: 'codex',
+      protocol: 'openai-responses',
+      transport: 'oauth-http',
+    });
+    span.routeSelected();
+
+    span.admissionQueued('durable', { priority: 20 });
+    now += 12;
+    span.admissionAdmitted('durable', { priority: 20 });
+
+    span.admissionQueued('provider', {
+      priority: 20,
+      tier: 2,
+      queue: {
+        running: 849,
+        queued: 17,
+        maxConcurrent: 850,
+        tier1Reserve: 128,
+        byTier: [{ tier: 2, minShare: 1, inFlight: 721, queued: 16 }],
+      },
+    });
+    now += 66_110;
+    span.admissionAdmitted('provider', {
+      priority: 20,
+      tier: 2,
+      queue: {
+        running: 850,
+        queued: 16,
+        maxConcurrent: 850,
+        tier1Reserve: 128,
+        byTier: [{ tier: 2, minShare: 1, inFlight: 722, queued: 15 }],
+      },
+    });
+    span.admitted();
+    span.beginStage('bodyRead');
+    span.endStage('bodyRead');
+    span.beginStage('auth');
+    span.endStage('auth');
+    span.recordAttempt();
+    span.beginStage('upstreamTtfb');
+    now += 3;
+    span.endStage('upstreamTtfb');
+    const timeline = span.finish('ok', 200)!;
+    assertCompleteGatewayRequestTimeline(timeline);
+
+    expect(timeline.durationsMs.queueWait).toBe(66_122);
+    expect(timeline.admission).toEqual({
+      durable: {
+        queued: expect.objectContaining({ offsetMs: 0, priority: 20 }),
+        admitted: expect.objectContaining({ offsetMs: 12, priority: 20 }),
+        waitMs: 12,
+      },
+      provider: {
+        queued: {
+          offsetMs: 12,
+          priority: 20,
+          tier: 2,
+          running: 849,
+          queued: 17,
+          maxConcurrent: 850,
+          tier1Reserve: 128,
+          tierMinShare: 1,
+          tierInFlight: 721,
+          tierQueued: 16,
+        },
+        admitted: {
+          offsetMs: 66_122,
+          priority: 20,
+          tier: 2,
+          running: 850,
+          queued: 16,
+          maxConcurrent: 850,
+          tier1Reserve: 128,
+          tierMinShare: 1,
+          tierInFlight: 722,
+          tierQueued: 15,
+        },
+        waitMs: 66_110,
+      },
+    });
+    expect(telemetry.snapshotForOwner('su-latency').recent[0]?.admission.provider?.waitMs).toBe(66_110);
+  });
+
   it('never retains arbitrary bodies, credentials, headers, URLs, or error prose', () => {
     let now = 100;
     const telemetry = new GatewayRequestTelemetry({ now: () => now });

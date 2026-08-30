@@ -30,6 +30,7 @@
 import type postgres from 'postgres';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
@@ -106,6 +107,24 @@ export const OUTBOX_GC_BATCH = 5000;
 export const OUTBOX_GC_BUDGET_MS = 30_000;
 
 /**
+ * Maximum live outbox batches across the whole process.
+ *
+ * `boot-all` already caps handle construction at four, but every
+ * `startOutboxDrain` detaches its immediate catch-up pass. The construction cap
+ * therefore did not cover the work it spawned: a 103-harness host issued 103
+ * concurrent `SELECT ... LIMIT 200` reads, and V8's live heap sampler attributed
+ * 1.58 GB / 88% of sampled live allocations to postgres JSONB `DataRow` parsing
+ * before the host recycled repeatedly (EI-21855287664853515).
+ *
+ * Four preserves the existing boot-wave concurrency while bounding decoded row
+ * batches to 4 * DEFAULT_DRAIN_BATCH. The gate is FIFO, so a busy harness cannot
+ * starve a quiet one, and each serialized harness loop joins the queue at most
+ * once. Queue time sits OUTSIDE DRAIN_PASS_TIMEOUT_MS below: the watchdog still
+ * measures a real admitted pass, never time spent waiting for safe capacity.
+ */
+export const DEFAULT_OUTBOX_DRAIN_CONCURRENCY = 4;
+
+/**
  * Process-wide admission for inline outbox GC.
  *
  * Every booted harness owns a drain loop, and every newly-wired loop starts an
@@ -122,18 +141,37 @@ export const OUTBOX_GC_BUDGET_MS = 30_000;
  * directly to its undrained-row SELECT. Pinning keeps the guard shared across
  * duplicate module evaluation in the long-lived host.
  */
-const inlineGcAdmission = pinModuleState('@papercusp/operator-core.hyperbeeOutboxInlineGc', () => ({
-  inFlight: false,
-}));
+interface OutboxProcessAdmissionState {
+  /** Backward-compatible field owned by the original inline-GC try-lock. */
+  inFlight: boolean;
+  /** Whole-pass FIFO gate added by EI-21855287664853515. Optional because a
+   * live process may retain the pre-fix pinned object across module re-eval. */
+  drainGate?: ConcurrencyGate;
+}
+
+const outboxProcessAdmission = pinModuleState<OutboxProcessAdmissionState>(
+  '@papercusp/operator-core.hyperbeeOutboxInlineGc',
+  () => ({
+    inFlight: false,
+    drainGate: createConcurrencyGate(DEFAULT_OUTBOX_DRAIN_CONCURRENCY),
+  }),
+);
+
+// Upgrade a pre-fix pinned singleton in place rather than minting a parallel
+// process-global surface. Re-evaluation also restores the safety cap if a test
+// or diagnostic retuned the shared gate.
+outboxProcessAdmission.drainGate ??= createConcurrencyGate(DEFAULT_OUTBOX_DRAIN_CONCURRENCY);
+outboxProcessAdmission.drainGate.setLimit(DEFAULT_OUTBOX_DRAIN_CONCURRENCY);
+const outboxDrainAdmission = outboxProcessAdmission.drainGate;
 
 function tryAcquireInlineGc(): (() => void) | null {
-  if (inlineGcAdmission.inFlight) return null;
-  inlineGcAdmission.inFlight = true;
+  if (outboxProcessAdmission.inFlight) return null;
+  outboxProcessAdmission.inFlight = true;
   let held = true;
   return () => {
     if (!held) return;
     held = false;
-    inlineGcAdmission.inFlight = false;
+    outboxProcessAdmission.inFlight = false;
   };
 }
 
@@ -964,6 +1002,9 @@ export function startOutboxDrain(
   const wantPayload = `${handle.workspaceId}::${handle.harnessSlug}`;
 
   let stopped = false;
+  // A stopped handle must leave the process-wide queue immediately. Once an
+  // admitted pass starts, its existing stop/error semantics remain unchanged.
+  const drainAdmissionAbort = new AbortController();
   // Serialize drains so a NOTIFY + poll + initial pass can't overlap (a half-
   // applied batch racing another). A pending drain is coalesced (run-again flag).
   let draining = false;
@@ -983,6 +1024,7 @@ export function startOutboxDrain(
   async function stopInternal(): Promise<void> {
     if (stopped) return;
     stopped = true;
+    drainAdmissionAbort.abort();
     if (pollTimer) {
       try {
         pollTimer.stop();
@@ -1372,12 +1414,15 @@ export function startOutboxDrain(
         // signature). The abandoned zombie pass is swallowed — if it settles
         // later its work is either complete (drained_at already stamped) or
         // re-attempted by a fresh pass (at-least-once tolerates the duplicate).
-        const pass = drainOutboxOnce(handle, pg, drainOpts);
-        let drainedThisPass = 0;
-        if (passTimeoutMs > 0) {
+        const drainedThisPass = await outboxDrainAdmission.run(async () => {
+          // Start the pass + watchdog only AFTER FIFO admission. Counting queue
+          // time as a pass timeout would create abandoned zombie drains before
+          // their SELECT even began and defeat the memory bound.
+          const pass = drainOutboxOnce(handle, pg, drainOpts);
+          if (passTimeoutMs <= 0) return pass;
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
-            drainedThisPass = await Promise.race([
+            return await Promise.race([
               pass,
               new Promise<never>((_, reject) => {
                 timer = setTimeout(() => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)), passTimeoutMs);
@@ -1390,9 +1435,7 @@ export function startOutboxDrain(
             // become an unhandled rejection after we've moved on.
             pass.catch(() => {});
           }
-        } else {
-          drainedThisPass = await pass;
-        }
+        }, drainAdmissionAbort.signal);
         // WI-2009 leg 3: a drained row is forward progress — reset the
         // no-progress clock + clear the escalation latch (recovered).
         if (drainedThisPass > 0) {
@@ -1420,6 +1463,9 @@ export function startOutboxDrain(
         }
       } while (runAgain && !stopped);
     } catch (e) {
+      // stopInternal aborts a queued (not yet executing) admission. That is a
+      // normal lifecycle edge, not a drain fault or stall episode.
+      if (stopped && drainAdmissionAbort.signal.aborted) return;
       console.error(`[outbox-drain] drain failed for ${wantPayload}:`, e instanceof Error ? e.message : String(e));
       if (e instanceof DrainPassTimeoutError) {
         // WI-6997: latch it so the next successful pass has an edge to resolve on.

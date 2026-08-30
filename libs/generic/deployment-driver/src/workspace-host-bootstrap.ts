@@ -1,4 +1,9 @@
-import { workspaceHostReleaseAddressingErrors } from './workspace-host-build-manifest';
+import {
+  WORKSPACE_HOST_PUI_COMPANION_PATH,
+  WORKSPACE_HOST_PUI_ENTRYPOINT,
+  WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+  workspaceHostReleaseAddressingErrors,
+} from './workspace-host-build-manifest';
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
 
 /**
@@ -259,6 +264,8 @@ export const WORKSPACE_HOST_BOOTSTRAP_CHECKS = [
   'node-runtime',
   'embedded-postgres-migration',
   'agent-cli-prerequisites',
+  'pui-generation',
+  'pui-operator-freshness',
   'loopback-service',
   'service-identity',
   'runtime-permissions',
@@ -293,6 +300,8 @@ export interface WorkspaceHostBootstrapEntrypoints {
   operator: string;
   health: string;
   psu: string;
+  /** Native PUI executable installed with its companion + generation manifest. */
+  pui: string;
   claude: string;
   codex: string;
   omp: string;
@@ -313,6 +322,7 @@ export const DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS: Readonly<WorkspaceHos
     operator: 'bin/papercusp-server',
     health: 'bin/papercusp-health',
     psu: 'bin/psu',
+    pui: WORKSPACE_HOST_PUI_ENTRYPOINT,
     claude: 'bin/claude',
     codex: 'bin/codex',
     omp: 'bin/omp',
@@ -378,6 +388,7 @@ export interface WorkspaceHostBootstrapAttestation {
     nodeMajor: number;
     minimumNodeMajor: number;
     psu: true;
+    pui: true;
     claude: true;
     codex: true;
     omp: true;
@@ -691,6 +702,12 @@ export function buildWorkspaceHostBootstrap(
     assignment('OPERATOR_ENTRYPOINT', entrypoints.operator),
     assignment('HEALTH_ENTRYPOINT', entrypoints.health),
     assignment('PSU_ENTRYPOINT', entrypoints.psu),
+    assignment('PUI_ENTRYPOINT', entrypoints.pui),
+    assignment('PUI_COMPANION_PATH', WORKSPACE_HOST_PUI_COMPANION_PATH),
+    assignment(
+      'PUI_INSTALL_MANIFEST_PATH',
+      WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+    ),
     assignment('CLAUDE_ENTRYPOINT', entrypoints.claude),
     assignment('CODEX_ENTRYPOINT', entrypoints.codex),
     assignment('OMP_ENTRYPOINT', entrypoints.omp),
@@ -804,9 +821,11 @@ export function buildWorkspaceHostBootstrap(
     'chmod -R g-w,o-rwx "$RELEASE_DIR"',
     'find "$RELEASE_DIR" -type d -exec chmod g+rx {} +',
     'find "$RELEASE_DIR" -type f -exec chmod g+r {} +',
-    'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT" "$REMOTE_INITIALIZER_ENTRYPOINT"; do',
+    'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$PUI_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT" "$REMOTE_INITIALIZER_ENTRYPOINT"; do',
     '  [[ -x "$RELEASE_DIR/$entrypoint" ]] || die "missing executable release entrypoint: $entrypoint"',
     'done',
+    '[[ -s "$RELEASE_DIR/$PUI_COMPANION_PATH" ]] || die "missing or empty PUI companion: $PUI_COMPANION_PATH"',
+    '[[ -s "$RELEASE_DIR/$PUI_INSTALL_MANIFEST_PATH" ]] || die "missing or empty PUI install manifest: $PUI_INSTALL_MANIFEST_PATH"',
     '"$RELEASE_DIR/$INSTALL_ENTRYPOINT" --action "$BOOTSTRAP_ACTION" --release-root "$RELEASE_DIR" --state-root "$STATE_ROOT"',
     'if [[ "$BOOTSTRAP_ACTION" == "rollback" ]]; then',
     '  "$RELEASE_DIR/$ROLLBACK_ENTRYPOINT" --from "$PREVIOUS_TARGET" --to "$RELEASE_DIR" --state-root "$STATE_ROOT"',
@@ -838,6 +857,8 @@ export function buildWorkspaceHostBootstrap(
     'Environment=PAPERCUSP_PORT=$SERVICE_PORT',
     'Environment=PAPERCUSP_EMBEDDED_PG_ROOT=$STATE_ROOT/embedded-pg',
     'Environment=PAPERCUSP_WORKSPACE_ROOT=$WORKSPACE_ROOT',
+    'Environment=PUI_COMPANION_WASM=$RUNTIME_ROOT/current/$PUI_COMPANION_PATH',
+    'Environment=PUI_INSTALL_MANIFEST=$RUNTIME_ROOT/current/$PUI_INSTALL_MANIFEST_PATH',
     // CONTENT ROOTS — pinned to the release, NOT to the working directory.
     //
     // WorkingDirectory above is the STATE root (it has to be: it is the only writable place
@@ -947,6 +968,7 @@ export function buildWorkspaceHostBootstrap(
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[6]}'`,
     'systemctl is-active --quiet "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service is not active after start"; }',
     '"$RUNTIME_ROOT/current/$HEALTH_ENTRYPOINT" --host 127.0.0.1 --port "$SERVICE_PORT"',
+    'PUI_OPERATOR="http://127.0.0.1:$SERVICE_PORT" PUI_COMPANION_WASM="$RUNTIME_ROOT/current/$PUI_COMPANION_PATH" PUI_INSTALL_MANIFEST="$RUNTIME_ROOT/current/$PUI_INSTALL_MANIFEST_PATH" "$RUNTIME_ROOT/current/$PUI_ENTRYPOINT" doctor',
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property User --value)" == "$SERVICE_USER" ]] || die "workspace service is not running under the dedicated service user"',
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',
     '[[ "$(stat -c %U "$RUNTIME_ROOT")" == "root" ]] || die "runtime root must be owned by root"',
@@ -963,7 +985,7 @@ export function buildWorkspaceHostBootstrap(
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
     'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
@@ -1124,6 +1146,7 @@ export function validateWorkspaceHostBootstrapAttestation(
   addMismatch(
     errors,
     candidate.runtime.psu === true &&
+      candidate.runtime.pui === true &&
       candidate.runtime.claude === true &&
       candidate.runtime.codex === true &&
       candidate.runtime.omp === true,

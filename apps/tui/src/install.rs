@@ -65,6 +65,8 @@ impl BuildStamp {
 pub struct LocalInstallCheck {
     pub manifest_path: PathBuf,
     pub manifest: InstallManifest,
+    pub binary_path: PathBuf,
+    pub companion_path: PathBuf,
     pub binary_sha256: String,
     pub companion_sha256: String,
     pub binary_modified_epoch: Option<u64>,
@@ -268,6 +270,8 @@ pub fn inspect_paths(
     Ok(LocalInstallCheck {
         manifest_path: manifest_path.to_path_buf(),
         manifest,
+        binary_path,
+        companion_path,
         binary_sha256,
         companion_sha256,
         binary_modified_epoch,
@@ -277,14 +281,76 @@ pub fn inspect_paths(
     })
 }
 
-pub fn operator_source_relation(operator_sha: Option<&str>) -> String {
-    match operator_sha {
-        Some(sha) if sha == BUILD_SHA => "same source generation as the selected operator".into(),
-        Some(sha) => format!(
-            "different source generation (pui {}, selected operator {sha}); valid only when intentionally comparing staging/release planes",
-            BUILD_SHA
-        ),
-        None => "selected operator did not expose a source SHA".into(),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallFreshnessStatus {
+    Ok,
+    Stale,
+    Error,
+}
+
+impl InstallFreshnessStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Stale => "STALE",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorInstallFreshness {
+    pub status: InstallFreshnessStatus,
+    pub detail: String,
+    pub repair: Option<String>,
+}
+
+impl OperatorInstallFreshness {
+    pub fn is_ok(&self) -> bool {
+        self.status == InstallFreshnessStatus::Ok
+    }
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// Compare the installed PUI generation with the selected operator's build identity.
+///
+/// This is a hard doctor verdict rather than the old informational "source compare"
+/// line. An explicitly selected remote operator can otherwise keep accepting a stale
+/// client indefinitely even though it exposes the exact source identity needed to
+/// detect the mismatch. The repair reuses P-021's one supported install/update path;
+/// `PUI_OPERATOR` remains scoped to the selected remote target.
+pub fn operator_install_freshness(
+    installed_sha: &str,
+    operator_sha: Option<&str>,
+    endpoint: &str,
+) -> OperatorInstallFreshness {
+    match operator_sha.map(str::trim).filter(|sha| !sha.is_empty()) {
+        Some(sha) if sha == installed_sha => OperatorInstallFreshness {
+            status: InstallFreshnessStatus::Ok,
+            detail: format!("installed source {installed_sha} matches the selected operator"),
+            repair: None,
+        },
+        Some(sha) => OperatorInstallFreshness {
+            status: InstallFreshnessStatus::Stale,
+            detail: format!(
+                "installed pui source {installed_sha} differs from selected operator source {sha}"
+            ),
+            repair: Some(format!(
+                "PUI_OPERATOR={} {INSTALL_COMMAND}",
+                shell_single_quote(endpoint)
+            )),
+        },
+        None => OperatorInstallFreshness {
+            status: InstallFreshnessStatus::Error,
+            detail: "selected operator did not expose a source SHA, so install freshness cannot be verified"
+                .to_string(),
+            repair: Some(format!(
+                "upgrade the selected operator, then run `PUI_OPERATOR={endpoint} pui doctor`"
+            )),
+        },
     }
 }
 
@@ -441,6 +507,8 @@ mod tests {
         )
         .unwrap();
         assert!(check.is_ok(), "{:?}", check.problems);
+        assert_eq!(check.binary_path, binary);
+        assert_eq!(check.companion_path, companion);
         assert!(check.warnings.is_empty());
 
         fs::write(&companion, b"wasm-v2").unwrap();
@@ -524,9 +592,26 @@ mod tests {
     }
 
     #[test]
-    fn operator_relation_is_explicit_about_plane_drift() {
-        assert!(operator_source_relation(Some(BUILD_SHA)).starts_with("same source"));
-        assert!(operator_source_relation(Some("other")).contains("different source generation"));
-        assert!(operator_source_relation(None).contains("did not expose"));
+    fn operator_freshness_uses_local_verdicts_and_the_same_remote_update_path() {
+        let current =
+            operator_install_freshness("build-a", Some("build-a"), "https://operator.example:9443");
+        assert_eq!(current.status.label(), "OK");
+        assert!(current.is_ok());
+        assert!(current.repair.is_none());
+
+        let stale =
+            operator_install_freshness("build-a", Some("build-b"), "https://operator.example:9443");
+        assert_eq!(stale.status.label(), "STALE");
+        assert!(!stale.is_ok());
+        assert!(stale.detail.contains("build-a"));
+        assert!(stale.detail.contains("build-b"));
+        let repair = stale.repair.expect("stale install has a repair command");
+        assert!(repair.contains("PUI_OPERATOR='https://operator.example:9443'"));
+        assert!(repair.contains(INSTALL_COMMAND));
+
+        let unknown = operator_install_freshness("build-a", None, "https://operator.example:9443");
+        assert_eq!(unknown.status.label(), "ERROR");
+        assert!(!unknown.is_ok());
+        assert!(unknown.repair.is_some());
     }
 }

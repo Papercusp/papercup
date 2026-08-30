@@ -458,8 +458,10 @@ export interface DeployHealth {
   // refs alone are blind to a stalled push — the EI-18 silent-failure class (a push
   // failed every tick for ~20h with zero fleet-visible signal). Read from the worst
   // active `system:git-sync` routine's metadata that git-sync-action.ts persists.
-  /** Worst active git-sync routine's last push outcome, or null if none/unreadable. */
-  gitSyncStatus: 'synced' | 'conflict' | 'error' | 'nothing' | 'skipped' | null;
+  /** Worst active git-sync routine's effective status, or null if none/unreadable.
+   * `degraded` is a read-time freshness override when the raw writer outcome is stale
+   * or an in-flight fire has exceeded the scheduled stale window. */
+  gitSyncStatus: 'synced' | 'conflict' | 'error' | 'nothing' | 'skipped' | 'degraded' | null;
   /** Max consecutive FAILING git-sync ticks across active routines, whatever the
    *  failing leg was. EI-19275994927087666: this is NOT a push-failure counter —
    *  it counts commit failures, conflicts and push failures alike, and reading it

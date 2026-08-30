@@ -43,7 +43,7 @@
  * alert on WHY sign-in was refused without widening the port or leaking the
  * distinction to the browser.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org/connection';
 import {
   hostedMembershipAuthority,
   type HostedMembershipAuthorityReader,

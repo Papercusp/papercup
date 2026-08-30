@@ -398,6 +398,9 @@ describe('deployStatus', () => {
   it('warn (not crit) on a single git-sync error tick below the threshold', () => {
     expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: 1 }), now)).toBe('warn');
   });
+  it('warns when the read-time freshness verdict degrades a raw synced outcome', () => {
+    expect(deployStatus(dp({ gitSyncStatus: 'degraded' }), now)).toBe('warn');
+  });
   it('warn when git-sync excluded an oversized blob (it will never push)', () => {
     expect(deployStatus(dp({ gitSyncOversizedCount: 1 }), now)).toBe('warn');
   });

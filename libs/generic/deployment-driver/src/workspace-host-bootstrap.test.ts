@@ -79,6 +79,7 @@ function attestation(
       nodeMajor: 22,
       minimumNodeMajor: 22,
       psu: true,
+      pui: true,
       claude: true,
       codex: true,
       omp: true,
@@ -151,10 +152,25 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).toContain('PAPERCUSP_WORKSPACE_ROOT=$WORKSPACE_ROOT');
     expect(first).toContain('bin/papercusp-migrate');
     expect(first).toContain('bin/psu');
+    expect(first).toContain("PUI_ENTRYPOINT='bin/pui'");
+    expect(first).toContain("PUI_COMPANION_PATH='pui-companion.wasm'");
+    expect(first).toContain("PUI_INSTALL_MANIFEST_PATH='pui-install.json'");
+    expect(first).toContain('missing or empty PUI companion');
+    expect(first).toContain('missing or empty PUI install manifest');
     expect(first).toContain('bin/claude');
     expect(first).toContain('bin/codex');
     expect(first).toContain('bin/omp');
     expect(first).toContain('Environment=PAPERCUSP_BIND_HOST=127.0.0.1');
+    expect(first).toContain(
+      'Environment=PUI_COMPANION_WASM=$RUNTIME_ROOT/current/$PUI_COMPANION_PATH',
+    );
+    expect(first).toContain(
+      'Environment=PUI_INSTALL_MANIFEST=$RUNTIME_ROOT/current/$PUI_INSTALL_MANIFEST_PATH',
+    );
+    expect(first).toContain(
+      'PUI_OPERATOR="http://127.0.0.1:$SERVICE_PORT" PUI_COMPANION_WASM=',
+    );
+    expect(first).toContain('"$RUNTIME_ROOT/current/$PUI_ENTRYPOINT" doctor');
     expect(first).toContain('ReadOnlyPaths=$RUNTIME_ROOT');
     expect(first).toContain('ReadWritePaths=$STATE_ROOT $WORKSPACE_ROOT');
     expect(first).toContain('chown -R "root:$SERVICE_GROUP" "$RELEASE_DIR"');
@@ -452,7 +468,11 @@ describe('workspace-host bootstrap attestation', () => {
           .bundleUrl,
       },
       migration: { id: 'schema-old', applied: true },
-      runtime: { ...attestation().runtime, nodeMajor: 20 },
+      runtime: {
+        ...attestation().runtime,
+        nodeMajor: 20,
+        pui: false as true,
+      },
       service: {
         ...attestation().service,
         user: 'unexpected-service',

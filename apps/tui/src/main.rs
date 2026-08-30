@@ -63,7 +63,6 @@ use crossterm::{
 };
 use ratatui::{backend::Backend, backend::CrosstermBackend, Terminal};
 use std::io::stdout;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -815,13 +814,26 @@ async fn run_doctor() -> Result<()> {
                 identity.build.sha.as_deref().unwrap_or("sha unavailable")
             );
             println!(
-                "source compare: {}",
-                install::operator_source_relation(identity.build.sha.as_deref())
-            );
-            println!(
                 "agent chat:     {} via {}",
                 identity.agent_chat.scope, identity.agent_chat.route
             );
+            let installed_sha = local
+                .as_ref()
+                .map(|check| check.manifest.source_sha.as_str())
+                .unwrap_or(install::BUILD_SHA);
+            let freshness = install::operator_install_freshness(
+                installed_sha,
+                identity.build.sha.as_deref(),
+                &identity.endpoint,
+            );
+            println!("PUI operator install: {}", freshness.status.label());
+            println!("freshness:      {}", freshness.detail);
+            if let Some(repair) = freshness.repair.as_deref() {
+                println!("repair:         {repair}");
+            }
+            if !freshness.is_ok() {
+                failures += 1;
+            }
         }
         Err(error) => {
             failures += 1;
@@ -832,7 +844,7 @@ async fn run_doctor() -> Result<()> {
     }
 
     if let Ok(check) = &local {
-        let panes = install::stale_zellij_panes(Path::new(&check.manifest.binary_path));
+        let panes = install::stale_zellij_panes(&check.binary_path);
         if panes.is_empty() {
             println!("zellij panes:   OK (no stale installed pui process)");
         } else {

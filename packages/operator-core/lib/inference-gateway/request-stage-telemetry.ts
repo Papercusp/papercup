@@ -33,6 +33,56 @@ export type GatewayRequestOutcome =
   | 'gateway-error'
   | 'unclassified';
 
+/** The admission layers one HTTP request crosses before provider work starts.
+ * `durable` is the resource-governor receipt/admission boundary;
+ * `provider` is the live PriorityAdmissionQueue; `account` is reserved for a
+ * per-account governor when a lane exposes that boundary explicitly. */
+export const GATEWAY_ADMISSION_LAYERS = ['durable', 'provider', 'account'] as const;
+export type GatewayAdmissionLayer = (typeof GATEWAY_ADMISSION_LAYERS)[number];
+
+/** Structural subset of PriorityAdmissionQueue.snapshot(). Keeping this type
+ * local avoids coupling the privacy-safe telemetry module to one queue
+ * implementation while still accepting the established queue's exact shape. */
+export interface GatewayAdmissionQueueSnapshotInput {
+  running: number;
+  queued: number;
+  maxConcurrent: number;
+  tier1Reserve?: number;
+  byTier?: readonly {
+    tier: number;
+    minShare: number | null;
+    inFlight: number;
+    queued: number;
+  }[];
+}
+
+export interface GatewayAdmissionObservationInput {
+  priority?: number | null;
+  tier?: number | null;
+  queue?: GatewayAdmissionQueueSnapshotInput | null;
+}
+
+/** One bounded, numeric-only observation at a queue boundary. It contains no
+ * request body, headers, credential/account id, URL, or error prose. */
+export interface GatewayAdmissionObservation {
+  offsetMs: number;
+  priority: number | null;
+  tier: number | null;
+  running: number | null;
+  queued: number | null;
+  maxConcurrent: number | null;
+  tier1Reserve: number | null;
+  tierMinShare: number | null;
+  tierInFlight: number | null;
+  tierQueued: number | null;
+}
+
+export interface GatewayAdmissionSegment {
+  queued: GatewayAdmissionObservation | null;
+  admitted: GatewayAdmissionObservation | null;
+  waitMs: number | null;
+}
+
 export interface GatewayStageEvent {
   stage: GatewayRequestStageName;
   phase: 'start' | 'end';
@@ -56,6 +106,9 @@ export interface GatewayRequestTimeline {
   outcome: GatewayRequestOutcome;
   streaming: boolean;
   durationsMs: Partial<Record<GatewayRequestStageName, number>>;
+  /** Layer-specific evidence behind the aggregate `queueWait` duration. A
+   * missing layer means that boundary was not instrumented on this lane. */
+  admission: Partial<Record<GatewayAdmissionLayer, GatewayAdmissionSegment>>;
   events: GatewayStageEvent[];
   missingStages: GatewayRequestStageName[];
 }
@@ -130,6 +183,31 @@ function boundedOwnerId(value: string | null | undefined): string | null {
   // The owner header is one coord/spawn identifier. Never let whitespace-delimited arbitrary text
   // piggyback on that dimension (for example, a copied Authorization value after the real id).
   return boundedIdentifier(value.trim().split(/\s/, 1)[0], 120);
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  const n = finiteNumber(value);
+  return n == null ? null : Math.max(0, Math.floor(n));
+}
+
+function cloneAdmission(
+  admission: Partial<Record<GatewayAdmissionLayer, GatewayAdmissionSegment>>,
+): Partial<Record<GatewayAdmissionLayer, GatewayAdmissionSegment>> {
+  const out: Partial<Record<GatewayAdmissionLayer, GatewayAdmissionSegment>> = {};
+  for (const layer of GATEWAY_ADMISSION_LAYERS) {
+    const segment = admission[layer];
+    if (!segment) continue;
+    out[layer] = {
+      queued: segment.queued ? { ...segment.queued } : null,
+      admitted: segment.admitted ? { ...segment.admitted } : null,
+      waitMs: segment.waitMs,
+    };
+  }
+  return out;
 }
 
 class BoundedSamples {
@@ -207,6 +285,7 @@ export class GatewayRequestSpan {
   private failovers = 0;
   private streaming = false;
   private finished = false;
+  private readonly admission: Partial<Record<GatewayAdmissionLayer, GatewayAdmissionSegment>> = {};
 
   constructor(
     private readonly collector: GatewayRequestTelemetry,
@@ -255,6 +334,48 @@ export class GatewayRequestSpan {
 
   admitted(): void {
     this.endStage('queueWait');
+  }
+
+  private admissionObservation(input: GatewayAdmissionObservationInput = {}): GatewayAdmissionObservation {
+    const tier = nonNegativeInteger(input.tier);
+    const queue = input.queue ?? null;
+    const tierRow = tier == null ? null : queue?.byTier?.find((row) => row.tier === tier) ?? null;
+    return {
+      offsetMs: Math.max(0, this.now() - this.startedAt),
+      priority: finiteNumber(input.priority),
+      tier,
+      running: nonNegativeInteger(queue?.running),
+      queued: nonNegativeInteger(queue?.queued),
+      maxConcurrent: nonNegativeInteger(queue?.maxConcurrent),
+      tier1Reserve: nonNegativeInteger(queue?.tier1Reserve),
+      tierMinShare: tierRow?.minShare == null ? null : nonNegativeInteger(tierRow.minShare),
+      tierInFlight: nonNegativeInteger(tierRow?.inFlight),
+      tierQueued: nonNegativeInteger(tierRow?.queued),
+    };
+  }
+
+  /** Record entry into one admission layer. Duplicate entry calls are ignored:
+   * a retry must update its own attempt telemetry, not rewrite the request's
+   * original queue evidence. */
+  admissionQueued(layer: GatewayAdmissionLayer, input: GatewayAdmissionObservationInput = {}): void {
+    if (this.finished || this.admission[layer]?.queued) return;
+    this.admission[layer] = {
+      queued: this.admissionObservation(input),
+      admitted: null,
+      waitMs: null,
+    };
+  }
+
+  /** Record the moment one admission layer let the request through. */
+  admissionAdmitted(layer: GatewayAdmissionLayer, input: GatewayAdmissionObservationInput = {}): void {
+    if (this.finished || this.admission[layer]?.admitted) return;
+    const admitted = this.admissionObservation(input);
+    const queued = this.admission[layer]?.queued ?? null;
+    this.admission[layer] = {
+      queued,
+      admitted,
+      waitMs: queued ? Math.max(0, admitted.offsetMs - queued.offsetMs) : null,
+    };
   }
 
   setTransport(transport: GatewayTelemetryTransport): void {
@@ -329,6 +450,7 @@ export class GatewayRequestSpan {
       outcome,
       streaming: this.streaming,
       durationsMs: { ...this.durations },
+      admission: cloneAdmission(this.admission),
       events: this.events.map((event) => ({ ...event })),
       missingStages,
     };
@@ -430,6 +552,7 @@ export class GatewayRequestTelemetry {
       recent: this.recent.map((timeline) => ({
         ...timeline,
         durationsMs: { ...timeline.durationsMs },
+        admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),
         missingStages: [...timeline.missingStages],
       })),
@@ -461,6 +584,7 @@ export class GatewayRequestTelemetry {
       recent: timelines.map((timeline) => ({
         ...timeline,
         durationsMs: { ...timeline.durationsMs },
+        admission: cloneAdmission(timeline.admission),
         events: timeline.events.map((event) => ({ ...event })),
         missingStages: [...timeline.missingStages],
       })),

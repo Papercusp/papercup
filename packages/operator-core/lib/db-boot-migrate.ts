@@ -52,6 +52,11 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RESERVATION_ENFORCED_FROM, migrationNumberOf, reservationFilenameConflicts } from './migration-reservation';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
+import {
+  preDestructiveSnapshotAdmissionGuardSql,
+  requiresPreDestructiveSnapshotAdmission,
+} from '@papercusp/backup/snapshot-admission';
+import { activeWorkspaceId } from './workspace-registry';
 
 export { RESERVATION_ENFORCED_FROM, migrationNumberOf } from './migration-reservation';
 
@@ -377,6 +382,9 @@ export async function applyPendingMigrationsNow(
     });
     if (!verdict.ok) throw new Error(`[migration-deploy-guard] ${verdict.error}`);
     await assertMigrationReservation(client, file);
+    if (requiresPreDestructiveSnapshotAdmission(file)) {
+      await client.unsafe(preDestructiveSnapshotAdmissionGuardSql(activeWorkspaceId()));
+    }
   };
 
   // A DEDICATED max:1 client — the runner applies each file as a raw

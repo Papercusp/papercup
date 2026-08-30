@@ -11,10 +11,16 @@ import {
   vncBridgeScript,
   localVncCommand,
   VNC_TICKET_TTL_MS,
+  VNC_STREAM_IDLE_MS,
   _setFrameVncDepsForTests,
   _resetFrameVncForTests,
   type VncBridgeWs,
 } from './frame-vnc';
+import {
+  DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
+  VIEWER_STREAM_TEARDOWN_CEILING_SEC,
+  desktopViewerHeartbeatMs,
+} from '../desktop/desktop-lifecycle';
 import type { DesktopSessionRecord } from '../desktop/desktop-session-registry';
 
 const FRAME: Frame = {
@@ -456,5 +462,175 @@ describe('local desktop VNC target (P-004)', () => {
     const live = activeVncSessions('h1');
     expect(live.map((s) => s.target).sort()).toEqual(['frame', 'local']);
     expect(audits.filter((x) => x.action.endsWith('-started'))).toHaveLength(2);
+  });
+});
+
+/**
+ * P-014 — connected-viewer heartbeat + idle-stream teardown on the LOCAL lane.
+ *
+ * Why this suite exists at all: `VIEWER_HOLD_SEC` used to be six hours precisely
+ * because this lane wrote the registry row twice — open, close — and nothing in
+ * between, so a binding could not be read as liveness. These tests are what make
+ * the shorter hold safe, and each is written so it would FAIL against the old
+ * behaviour rather than merely describe the new one.
+ *
+ * The timer is injected rather than armed: `managedSetInterval` is deliberately
+ * inert under Vitest, so a test that armed a real one would assert on a timer
+ * that never fires and pass for the wrong reason.
+ */
+describe('viewer heartbeat + idle-stream teardown (P-014 / D-008 rule 4)', () => {
+  /** Wire a local session with a captured tick and a controllable clock. */
+  async function bridgedLocalSession(mode: 'watch' | 'takeover' = 'watch') {
+    const child = fakeChild();
+    const beats: string[] = [];
+    let clock = 1_000_000;
+    let tick: (() => void) | null = null;
+    let armedIntervalMs: number | null = null;
+    let stopped = 0;
+    const { audits, viewerWrites } = localDeps(
+      { ':110': localRecord() },
+      {
+        spawn: (() => child) as unknown as typeof import('node:child_process').spawn,
+        now: () => clock,
+        touchSession: async (id: string) => {
+          beats.push(id);
+        },
+        armHeartbeat: (intervalMs: number, fn: () => void) => {
+          armedIntervalMs = intervalMs;
+          tick = fn;
+          return { stop: () => { stopped += 1; } };
+        },
+      },
+    );
+    const t = await createVncSession({
+      slug: 'h1', workspaceId: 'ws', display: 110, mode, actor: 'user:a', target: 'local',
+    });
+    const ws = fakeWs();
+    bridgeVncSession(ws, consumeTicket(t.ticket)! as never);
+    await Promise.resolve();
+    return {
+      ws,
+      child,
+      beats,
+      audits,
+      viewerWrites,
+      advance: (ms: number) => { clock += ms; },
+      tick: async () => { tick?.(); await Promise.resolve(); },
+      get armedIntervalMs() { return armedIntervalMs; },
+      get stopped() { return stopped; },
+    };
+  }
+
+  it('touches the registry row on every tick while the stream is live', async () => {
+    const s = await bridgedLocalSession();
+    await s.tick();
+    await s.tick();
+    // The old lane produced ZERO writes here — the binding was written at open and
+    // then never again, which is the whole reason the hold had to be six hours.
+    expect(s.beats).toEqual(['ds-local-1', 'ds-local-1']);
+  });
+
+  it('arms at the cadence derived from the lifecycle policy, not a local constant', async () => {
+    // Pinned to the shared derivation so the two lanes cannot drift apart: the
+    // hosted adapter arms from the same function.
+    const s = await bridgedLocalSession();
+    expect(s.armedIntervalMs).toBe(desktopViewerHeartbeatMs());
+  });
+
+  it('ends a stream that has carried no viewer bytes for longer than the idle window', async () => {
+    const s = await bridgedLocalSession();
+    s.advance(VNC_STREAM_IDLE_MS + 1);
+    await s.tick();
+    expect(s.audits.at(-1)).toMatchObject({ action: 'frame-vnc.ended', details: { why: 'stream-idle' } });
+    // And the binding is CLEARED, which is what actually lets the governor act —
+    // a teardown that left the row advertising a watcher would just move the leak.
+    expect(s.viewerWrites.at(-1)).toEqual({ id: 'ds-local-1', mode: 'none', actor: null });
+  });
+
+  it('does NOT heartbeat on the tick that tears the stream down', async () => {
+    // The ordering guard. Beating first and checking idle second would keep
+    // asserting "a human is watching" for a viewer already known to be gone —
+    // survivable under a six-hour hold, not under a twenty-minute one.
+    const s = await bridgedLocalSession();
+    s.advance(VNC_STREAM_IDLE_MS + 1);
+    await s.tick();
+    expect(s.beats).toEqual([]);
+  });
+
+  it('a byte FROM the viewer resets the idle clock', async () => {
+    // RFB is client-pull, so this is the signal that a viewer is genuinely there:
+    // a live one keeps requesting framebuffer updates, a wedged one stops.
+    const s = await bridgedLocalSession();
+    s.advance(VNC_STREAM_IDLE_MS - 1);
+    s.ws.emit('message', Buffer.from([0x03]));
+    s.advance(VNC_STREAM_IDLE_MS - 1);
+    await s.tick();
+    expect(s.beats).toEqual(['ds-local-1']);
+    expect(s.audits.some((a) => a.action === 'frame-vnc.ended')).toBe(false);
+  });
+
+  it('server→viewer traffic alone does NOT keep the stream alive', async () => {
+    // The negative control for the test above, and the reason the direction is
+    // specified rather than "any traffic": x11vnc keeps writing into a half-open
+    // socket long after the human is gone, so counting outbound bytes as liveness
+    // would resurrect exactly the stale-binding leak this suite exists to close.
+    const s = await bridgedLocalSession();
+    s.advance(VNC_STREAM_IDLE_MS - 1);
+    // A desktop that keeps repainting: frames flow OUT continuously even though
+    // nobody is receiving them.
+    s.child.stdout?.emit('data', Buffer.from([0x00, 0x01, 0x02]));
+    s.advance(2);
+    await s.tick();
+    expect(s.ws.sent.length).toBeGreaterThan(0); // the frames really were sent
+    expect(s.audits.at(-1)).toMatchObject({ details: { why: 'stream-idle' } });
+  });
+
+  it('stops the heartbeat on teardown, whatever ended the session', async () => {
+    // A per-connection timer that outlives its connection is a leak that scales
+    // with viewers; `instanced` timers all share one display name, so a leaked one
+    // hides in the inventory rather than standing out.
+    const s = await bridgedLocalSession();
+    s.ws.emit('close');
+    await Promise.resolve();
+    expect(s.stopped).toBe(1);
+    await s.tick();
+    expect(s.beats).toEqual([]);
+  });
+
+  it('a frame session (no registry row) arms the timer but writes nothing', async () => {
+    // Frame displays have no DesktopSession row of their own; beating for them
+    // would touch a row that does not exist.
+    const child = fakeChild();
+    const beats: string[] = [];
+    // A holder rather than a bare `let`: TS narrows a let assigned only inside a
+    // callback back to `null` at the call site below.
+    const armed: { tick: (() => void) | null } = { tick: null };
+    deps({
+      spawn: (() => child) as unknown as typeof import('node:child_process').spawn,
+      touchSession: async (id: string) => { beats.push(id); },
+      armHeartbeat: (_ms: number, fn: () => void) => { armed.tick = fn; return { stop: () => undefined }; },
+    });
+    const t = await createVncSession({
+      slug: 'h1', workspaceId: 'ws', display: 99, mode: 'watch', actor: 'user:a', target: 'frame',
+    });
+    bridgeVncSession(fakeWs(), consumeTicket(t.ticket)! as never);
+    await Promise.resolve();
+    expect(armed.tick, 'the timer must be armed — otherwise this asserts nothing').toBeTruthy();
+    armed.tick?.();
+    await Promise.resolve();
+    expect(beats).toEqual([]);
+  });
+
+  it('the idle window fits inside the ceiling the governor derives its hold from', async () => {
+    // The pin. `VIEWER_HOLD_SEC` is computed from that ceiling, so lengthening
+    // this lane's window without raising the ceiling would silently make the hold
+    // too short for it — freezing a desktop this lane had not yet given up on.
+    expect(VNC_STREAM_IDLE_MS / 1000).toBeLessThanOrEqual(VIEWER_STREAM_TEARDOWN_CEILING_SEC);
+    // And the window must be long enough to survive the missed beats the cadence
+    // is explicitly sized to tolerate, or the teardown would fire first and the
+    // tolerance would be fiction.
+    expect(VNC_STREAM_IDLE_MS).toBeGreaterThan(
+      desktopViewerHeartbeatMs() * DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
+    );
   });
 });

@@ -38,6 +38,10 @@ import {
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
 } from '@papercusp/backup/application-names';
+import {
+  preDestructiveSnapshotAdmissionGuardSql,
+  requiresPreDestructiveSnapshotAdmission,
+} from '@papercusp/backup/snapshot-admission';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
@@ -568,6 +572,9 @@ export default defineTool({
     const coordIdentity = resolveAgentIdentity(ctx);
     const enabled = process.env.PAPERCUSP_ALLOW_DB_MIGRATE === '1';
     const effectiveMaxDrainSec = args.max_drain_sec ?? DEFAULT_DRAIN_SEC;
+    const snapshotAdmissionGuard = requiresPreDestructiveSnapshotAdmission(path.basename(resolvedFile))
+      ? preDestructiveSnapshotAdmissionGuardSql(activeWorkspaceId())
+      : '';
 
     // EI-18769559897594065: capture ctx.progress safely (older shapes / shim
     // callers may not have it — same defensive pattern as locks:acquire's own
@@ -748,6 +755,11 @@ export default defineTool({
             // The guard raises the normal retryable lock-timeout shape before
             // `\\i`, so no migration statement is issued behind the backup.
             backupLockGuard +
+            // EI-217072: the advisory rendezvous proves only that a snapshot
+            // and migration are not concurrent. Require the newest
+            // pre_destructive receipt to be a completed database-backed
+            // restore point before issuing any DDL.
+            snapshotAdmissionGuard +
             reservationGuard +
             `\\i ${resolvedFile}\n` +
             `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +

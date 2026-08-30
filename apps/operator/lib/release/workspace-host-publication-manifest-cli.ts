@@ -55,6 +55,11 @@ import {
   type WorkspaceHostImageArtifact,
 } from "@papercusp/deployment-driver";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import { activeWorkspaceId } from "@papercusp/operator-core/lib/workspace-registry";
+import {
+  governedExecutionLeaseTtlForTimeout,
+  runGovernedOperation,
+} from "@papercusp/operator-core/lib/resource-governor/execution";
 import {
   evaluateArtifactTrust,
   type ArtifactTrustAdapters,
@@ -107,6 +112,7 @@ export const WORKSPACE_HOST_PROVENANCE_BUILD_TYPE =
 const SHA256 = /^[a-f0-9]{64}$/;
 const NODE_VERSION = /^v(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const execFile = promisify(execFileCallback);
+const BUNDLED_NODE_PROBE_TIMEOUT_MS = 30_000;
 
 export interface PublicationManifestCliArgs {
   publicationDir: string;
@@ -823,6 +829,46 @@ export interface BundledNodeRuntime {
   major: number;
 }
 
+export type BundledNodeProbeRunner = <T>(
+  operation: () => Promise<T>,
+) => Promise<T>;
+
+export interface BundledNodeProbeOptions {
+  /**
+   * Test seam for the bounded archive probe. Production uses the durable
+   * Governor.admit/release lifecycle below; hermetic tests may execute the
+   * operation directly without opening the operator's database.
+   */
+  readonly runGoverned?: BundledNodeProbeRunner;
+}
+
+function governedBundledNodeProbe(bundlePath: string): BundledNodeProbeRunner {
+  return <T>(operation: () => Promise<T>): Promise<T> =>
+    runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: "workspace-host-publication-node-probe",
+        owner: "release:workspace-host-publication-manifest",
+        admissionClass: "process",
+        demand: {
+          cpuWeight: 0.25,
+          memoryBytes: 128 * 1024 * 1024,
+          fileDescriptors: 3,
+        },
+        payloadRef: `release:workspace-host-publication-node-probe:${bundlePath}`,
+        metadata: {
+          operation: "inspect-bundled-node-runtime",
+          bundlePath,
+        },
+        leaseTtlMs: governedExecutionLeaseTtlForTimeout(
+          BUNDLED_NODE_PROBE_TIMEOUT_MS,
+        ),
+        dedicatedClient: true,
+      },
+      operation,
+    );
+}
+
 /**
  * Parse the exact output of the bundled runtime's `--version` command.
  *
@@ -870,65 +916,85 @@ function bundledNodeArchiveMember(raw: string): BundledNodeArchiveMember | undef
  */
 export async function inspectBundledNodeRuntime(
   bundlePath: string,
+  options: BundledNodeProbeOptions = {},
 ): Promise<BundledNodeRuntime> {
   const probeDir = await mkdtemp(join(tmpdir(), "papercusp-bundled-node-"));
+  const runProbe = options.runGoverned ?? governedBundledNodeProbe(bundlePath);
   try {
-    const listing = await execFile(
-      "tar",
-      ["--list", "--gzip", "--file", bundlePath],
-      { encoding: "utf8", maxBuffer: 1 << 20 },
-    );
-    const nodeMembers = String(listing.stdout)
-      .split(/\r?\n/u)
-      .map(bundledNodeArchiveMember)
-      .filter(
-        (member): member is BundledNodeArchiveMember => member !== undefined,
-      );
-    const uniqueNodeMembers = [
-      ...new Map(nodeMembers.map((member) => [member.normalized, member])).values(),
-    ];
-    if (uniqueNodeMembers.length === 0) {
-      throw new Error("release archive does not contain a bin/node member");
-    }
-    if (uniqueNodeMembers.length > 1) {
-      throw new Error(
-        `release archive contains multiple bin/node members: ${uniqueNodeMembers
-          .map((member) => member.normalized)
-          .join(", ")}`,
-      );
-    }
-    const [nodeMember] = uniqueNodeMembers;
-    await execFile(
-      "tar",
-      [
-        "--extract",
-        "--gzip",
-        "--file",
-        bundlePath,
-        "--directory",
-        probeDir,
-        "--no-same-owner",
-        "--no-same-permissions",
-        nodeMember.raw,
-      ],
-      { encoding: "utf8", maxBuffer: 1 << 20 },
-    );
-    const nodePath = join(probeDir, nodeMember.normalized);
-    const nodeStats = await lstat(nodePath).catch(() => null);
-    if (!nodeStats?.isFile()) {
-      throw new Error(`archive member '${nodeMember.normalized}' is not a regular file`);
-    }
-    const version = await execFile(nodePath, ["--version"], {
-      encoding: "utf8",
-      maxBuffer: 4096,
+    return await runProbe(async () => {
+      try {
+        const listing = await execFile(
+          "tar",
+          ["--list", "--gzip", "--file", bundlePath],
+          {
+            encoding: "utf8",
+            maxBuffer: 1 << 20,
+            timeout: BUNDLED_NODE_PROBE_TIMEOUT_MS,
+          },
+        );
+        const nodeMembers = String(listing.stdout)
+          .split(/\r?\n/u)
+          .map(bundledNodeArchiveMember)
+          .filter(
+            (member): member is BundledNodeArchiveMember =>
+              member !== undefined,
+          );
+        const uniqueNodeMembers = [
+          ...new Map(
+            nodeMembers.map((member) => [member.normalized, member]),
+          ).values(),
+        ];
+        if (uniqueNodeMembers.length === 0) {
+          throw new Error("release archive does not contain a bin/node member");
+        }
+        if (uniqueNodeMembers.length > 1) {
+          throw new Error(
+            `release archive contains multiple bin/node members: ${uniqueNodeMembers
+              .map((member) => member.normalized)
+              .join(", ")}`,
+          );
+        }
+        const [nodeMember] = uniqueNodeMembers;
+        await execFile(
+          "tar",
+          [
+            "--extract",
+            "--gzip",
+            "--file",
+            bundlePath,
+            "--directory",
+            probeDir,
+            "--no-same-owner",
+            "--no-same-permissions",
+            nodeMember.raw,
+          ],
+          {
+            encoding: "utf8",
+            maxBuffer: 1 << 20,
+            timeout: BUNDLED_NODE_PROBE_TIMEOUT_MS,
+          },
+        );
+        const nodePath = join(probeDir, nodeMember.normalized);
+        const nodeStats = await lstat(nodePath).catch(() => null);
+        if (!nodeStats?.isFile()) {
+          throw new Error(
+            `archive member '${nodeMember.normalized}' is not a regular file`,
+          );
+        }
+        const version = await execFile(nodePath, ["--version"], {
+          encoding: "utf8",
+          maxBuffer: 4096,
+          timeout: BUNDLED_NODE_PROBE_TIMEOUT_MS,
+        });
+        return parseBundledNodeVersion(String(version.stdout));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `cannot inspect bundled Node runtime in '${bundlePath}': ${message}`,
+          { cause: error },
+        );
+      }
     });
-    return parseBundledNodeVersion(String(version.stdout));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `cannot inspect bundled Node runtime in '${bundlePath}': ${message}`,
-      { cause: error },
-    );
   } finally {
     await rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -941,9 +1007,10 @@ export async function inspectBundledNodeRuntime(
 export async function assertBundledNodeMeetsMinimum(
   bundlePath: string,
   minimumNodeMajor: number,
+  options: BundledNodeProbeOptions = {},
 ): Promise<BundledNodeRuntime> {
   const floor = requiredNodeMajor(minimumNodeMajor, "minimumNodeMajor");
-  const runtime = await inspectBundledNodeRuntime(bundlePath);
+  const runtime = await inspectBundledNodeRuntime(bundlePath, options);
   if (runtime.major < floor) {
     throw new Error(
       `REFUSING TO PUBLISH: minimumNodeMajor ${floor} exceeds the bundled runtime ${runtime.version} ` +

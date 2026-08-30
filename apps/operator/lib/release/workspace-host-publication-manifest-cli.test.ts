@@ -21,6 +21,7 @@ import {
   secretScanTool,
   serializeProvenanceStatement,
   verifyProvenanceStatement,
+  type BundledNodeProbeRunner,
   type PublicationManifestAssemblyInput,
   type PublicationManifestCliInput,
 } from "./workspace-host-publication-manifest-cli";
@@ -248,13 +249,20 @@ describe("bundled Node publication guard", () => {
       { encoding: "utf8" },
     );
 
-    expect(await assertBundledNodeMeetsMinimum(archive, 24)).toEqual({
+    let governedCalls = 0;
+    const runGoverned: BundledNodeProbeRunner = async (operation) => {
+      governedCalls += 1;
+      return operation();
+    };
+
+    expect(await assertBundledNodeMeetsMinimum(archive, 24, { runGoverned })).toEqual({
       version: "v24.18.1",
       major: 24,
     });
-    await expect(assertBundledNodeMeetsMinimum(archive, 25)).rejects.toThrow(
-      /minimumNodeMajor 25 exceeds the bundled runtime v24\.18\.1/u,
-    );
+    await expect(
+      assertBundledNodeMeetsMinimum(archive, 25, { runGoverned }),
+    ).rejects.toThrow(/minimumNodeMajor 25 exceeds the bundled runtime v24\.18\.1/u);
+    expect(governedCalls).toBe(2);
   });
 });
 

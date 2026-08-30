@@ -239,6 +239,10 @@ export {
   verifyWorkspaceHostBuildManifest,
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_PUI_ENTRYPOINT,
+  WORKSPACE_HOST_PUI_COMPANION_PATH,
+  WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+  WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS,
   WORKSPACE_HOST_ARTIFACT_ORIGIN,
   WORKSPACE_HOST_ARTIFACT_PATH_PREFIX,
   deriveWorkspaceHostCanonicalArtifactUrls,
@@ -247,6 +251,7 @@ export type {
   WorkspaceHostReleasePins,
   WorkspaceHostReleaseProvenanceResult,
   WorkspaceHostCanonicalArtifactUrls,
+  WorkspaceHostRequiredReleaseMaterial,
 } from "./workspace-host-build-manifest";
 export type {
   WorkspaceHostImageAction,

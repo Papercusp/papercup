@@ -34,6 +34,11 @@ const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 const releaseReclaimedWorkItemLocks = vi.hoisted(() => vi.fn());
+const leaderDispatchAdmission = vi.hoisted(() => ({
+  resolveFleetScopeContext: vi.fn(),
+  fleetControlWindDownRefusal: vi.fn(),
+  leaderDispatchedAdmission: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -44,6 +49,11 @@ vi.mock('./workspace-registry', async () => {
 });
 vi.mock('./work-item-lock-release', () => ({
   releaseReclaimedWorkItemLocks: (...args: unknown[]) => releaseReclaimedWorkItemLocks(...args),
+}));
+vi.mock('./scheduler/fleet-scope-admission', () => ({
+  resolveFleetScopeContext: (...args: unknown[]) => leaderDispatchAdmission.resolveFleetScopeContext(...args),
+  fleetControlWindDownRefusal: (...args: unknown[]) => leaderDispatchAdmission.fleetControlWindDownRefusal(...args),
+  leaderDispatchedAdmission: (...args: unknown[]) => leaderDispatchAdmission.leaderDispatchedAdmission(...args),
 }));
 
 const wi = await import('./work-items');
@@ -59,12 +69,13 @@ async function seedFeature(
     takenBy?: string | null;
     origin?: string;
     auditVerdict?: string | null;
+    admission?: string | null;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, audit_verdict)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, audit_verdict, admission)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null}, ${opts.admission ?? null})`;
 }
 
 // WI-3649: the issue-family (bug/change/task) counterpart of seedFeature — inserted
@@ -80,16 +91,21 @@ async function seedIssue(
     status?: string;
     takenBy?: string | null;
     origin?: string;
+    assignedBy?: string | null;
+    admission?: string | null;
     // work-item-status-full-unify: the substrate author key. A row whose author is one this
     // workspace ALSO wrote locally is OUR own-node work even when it round-trips federation as
     // origin='remote' (issueOwnAuthorWhereSql). NULL ⇒ anonymous (the default federated row).
     authorPubkey?: string | null;
   } = {},
 ) {
+  const payload = opts.assignedBy === undefined
+    ? null
+    : JSON.stringify({ _ei: { assigned_by: opts.assignedBy } });
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, author_pubkey)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.authorPubkey ?? null})`;
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, author_pubkey, payload, admission)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.origin ?? 'local'}, ${opts.authorPubkey ?? null}, ${payload}::text::jsonb, ${opts.admission ?? null})`;
 }
 
 beforeAll(async () => {
@@ -136,6 +152,9 @@ beforeEach(async () => {
              harness_shared.predicate_watches`;
   releaseReclaimedWorkItemLocks.mockReset();
   releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
+  leaderDispatchAdmission.resolveFleetScopeContext.mockReset().mockResolvedValue(null);
+  leaderDispatchAdmission.fleetControlWindDownRefusal.mockReset().mockResolvedValue(null);
+  leaderDispatchAdmission.leaderDispatchedAdmission.mockReset().mockResolvedValue(false);
 });
 
 describe('work_items claim — atomic `in` (D-004, real PG)', () => {
@@ -200,6 +219,164 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       await seedIssue('EI-race-3');
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+    });
+
+    it('claims an admission-pending issue durably dispatched by the current fleet leader', async () => {
+      await seedIssue('EI-leader-dispatch-pending', {
+        admission: 'pending',
+        assignedBy: 'su-leader',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+      leaderDispatchAdmission.leaderDispatchedAdmission.mockResolvedValue(true);
+
+      const claimed = await wi.claimWorkItem('EI-leader-dispatch-pending', 'su-member', { harness: H });
+
+      expect(claimed?.assignee).toBe('su-member');
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-leader-dispatch-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'su-member', admission: 'pending' });
+    });
+
+    it('keeps an ordinary admission-pending issue refused without the leader capability', async () => {
+      await seedIssue('EI-ordinary-pending', { admission: 'pending' });
+
+      expect(await wi.claimWorkItem('EI-ordinary-pending', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-ordinary-pending'`)[0];
+      expect(row.taken_by).toBeNull();
+      expect(leaderDispatchAdmission.resolveFleetScopeContext).not.toHaveBeenCalled();
+    });
+
+    it('keeps a stale or foreign leader assignment refused', async () => {
+      await seedIssue('EI-stale-leader-pending', {
+        admission: 'pending',
+        assignedBy: 'su-former-leader',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+      leaderDispatchAdmission.leaderDispatchedAdmission.mockResolvedValue(false);
+
+      expect(await wi.claimWorkItem('EI-stale-leader-pending', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-stale-leader-pending'`)[0];
+      expect(row.taken_by).toBeNull();
+    });
+
+    it('keeps a pending issue refused while the target fleet is winding down', async () => {
+      await seedIssue('EI-paused-leader-pending', {
+        admission: 'pending',
+        assignedBy: 'su-leader',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+      leaderDispatchAdmission.fleetControlWindDownRefusal.mockResolvedValue({
+        allowed: false,
+        scoped: true,
+        code: 'fleet_winding_down',
+        scope: {},
+        reason: 'fleet winding down',
+      });
+      leaderDispatchAdmission.leaderDispatchedAdmission.mockResolvedValue(true);
+
+      expect(await wi.claimWorkItem('EI-paused-leader-pending', 'su-member', { harness: H })).toBeNull();
+      expect(leaderDispatchAdmission.leaderDispatchedAdmission).not.toHaveBeenCalled();
+    });
+
+    it('keeps a pending issue refused when the target uses the default fleet spec', async () => {
+      await seedIssue('EI-default-spec-pending', {
+        admission: 'pending',
+        assignedBy: 'su-leader',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'default' },
+      });
+      leaderDispatchAdmission.leaderDispatchedAdmission.mockResolvedValue(true);
+
+      expect(await wi.claimWorkItem('EI-default-spec-pending', 'su-member', { harness: H })).toBeNull();
+      expect(leaderDispatchAdmission.leaderDispatchedAdmission).not.toHaveBeenCalled();
+    });
+
+    it('does not let leader dispatch bypass the feature-family pending gate', async () => {
+      await seedFeature('F-leader-dispatch-pending', { admission: 'pending' });
+
+      expect(await wi.claimWorkItem('F-leader-dispatch-pending', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = 'F-leader-dispatch-pending'`)[0];
+      expect(row).toEqual({ taken_by: null, admission: 'pending' });
+      expect(leaderDispatchAdmission.resolveFleetScopeContext).not.toHaveBeenCalled();
+    });
+
+    it('does not let leader dispatch bypass the remote-origin issue guard', async () => {
+      await seedIssue('EI-remote-leader-pending', {
+        admission: 'pending',
+        assignedBy: 'su-leader',
+        origin: 'remote',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+      leaderDispatchAdmission.leaderDispatchedAdmission.mockResolvedValue(true);
+
+      expect(await wi.claimWorkItem('EI-remote-leader-pending', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null; origin: string | null }[]>`
+        SELECT taken_by, origin
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-remote-leader-pending'`)[0];
+      expect(row).toEqual({ taken_by: null, origin: 'remote' });
+    });
+
+    it('rejects a caller-forged leader-dispatch capability', async () => {
+      await seedIssue('EI-forged-leader-dispatch', {
+        admission: 'pending',
+        assignedBy: 'su-leader',
+      });
+      const issues = await import('./issues-engineer');
+      const forged = {
+        itemId: 'EI-forged-leader-dispatch',
+        target: 'su-member',
+        workspaceId: 'default',
+        assignedBy: 'su-leader',
+      };
+
+      expect(
+        await issues.claimIssue('EI-forged-leader-dispatch', 'su-member', {
+          workspaceId: 'default',
+          leaderDispatchAdmission: forged,
+        }),
+      ).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-forged-leader-dispatch'`)[0];
+      expect(row.taken_by).toBeNull();
     });
 
     it('caller can atomically transfer an issue-family claim to a named assignee', async () => {

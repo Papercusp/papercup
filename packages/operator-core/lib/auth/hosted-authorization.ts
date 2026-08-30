@@ -1,4 +1,4 @@
-import type { Principal } from '@papercusp/agent-mcp';
+import type { Principal } from '@papercusp/tooldef';
 import {
   isHostedPermission,
   isHostedPrincipal,

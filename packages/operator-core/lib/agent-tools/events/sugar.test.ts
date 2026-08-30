@@ -806,7 +806,8 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
     );
   });
 
-  it("binds the global commit wait to the caller's concrete harness and workspace", async () => {
+  it("binds the global commit wait to the caller's concrete harness, workspace, and registration boundary", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     const res = await gitSyncTool.handler(
       {} as never,
       { harnessSlug: "harness-a", workspaceId: "workspace-a" } as never,
@@ -817,7 +818,9 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
     expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual({
       installSlug: "harness-a",
       workspaceId: "workspace-a",
+      committedAtMs: { gt: 1_700_000_000_000 },
     });
+    now.mockRestore();
   });
 
   it("rejects an operator-scope next-commit wait when no concrete harness is available", async () => {
@@ -834,6 +837,7 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
   });
 
   it("accepts an explicit harness for an operator-scope next-commit wait", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     const res = await gitSyncTool.handler(
       { harness: "harness-a" } as never,
       { harnessSlug: "*", workspaceId: "workspace-a" } as never,
@@ -844,7 +848,9 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
     expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual({
       installSlug: "harness-a",
       workspaceId: "workspace-a",
+      committedAtMs: { gt: 1_700_000_000_000 },
     });
+    now.mockRestore();
   });
 
   it("keeps an exact-SHA operator wait available without a concrete harness", async () => {

@@ -10,18 +10,17 @@ import {
   verifyWorkspaceHostBuildManifest,
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-  WORKSPACE_HOST_ARTIFACT_ORIGIN,
-  WORKSPACE_HOST_ARTIFACT_PATH_PREFIX,
-  deriveWorkspaceHostCanonicalArtifactUrls,
-  type WorkspaceHostBuildManifestInput,
-  type WorkspaceHostReleasePins,
-} from "./index";
-import {
   WORKSPACE_HOST_PUI_COMPANION_PATH,
   WORKSPACE_HOST_PUI_ENTRYPOINT,
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
   WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS,
-} from "./workspace-host-build-manifest";
+  WORKSPACE_HOST_ARTIFACT_ORIGIN,
+  WORKSPACE_HOST_ARTIFACT_PATH_PREFIX,
+  deriveWorkspaceHostCanonicalArtifactUrls,
+  type WorkspaceHostBuildManifestInput,
+  type WorkspaceHostRequiredReleaseMaterial,
+  type WorkspaceHostReleasePins,
+} from "./index";
 
 const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
@@ -74,6 +73,17 @@ function input(): WorkspaceHostBuildManifestInput {
 }
 
 describe("workspace-host build manifest", () => {
+  it("re-exports the complete required release-material contract through the package index", () => {
+    const required: readonly WorkspaceHostRequiredReleaseMaterial[] =
+      WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS;
+    expect(required.map(({ path }) => path)).toEqual([
+      WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+      WORKSPACE_HOST_PUI_ENTRYPOINT,
+      WORKSPACE_HOST_PUI_COMPANION_PATH,
+      WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+    ]);
+  });
+
   it("normalizes unordered inputs into one deterministic manifest identity", () => {
     const first = buildWorkspaceHostBuildManifest(input());
     const reordered = input();

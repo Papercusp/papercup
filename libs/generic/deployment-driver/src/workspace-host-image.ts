@@ -776,6 +776,7 @@ export function workspaceHostCleanRoomFixtureAttestation(
       nodeMajor,
       minimumNodeMajor: fixture.bootstrapInput.minimumNodeMajor,
       psu: true,
+      pui: true,
       claude: true,
       codex: true,
       omp: true,

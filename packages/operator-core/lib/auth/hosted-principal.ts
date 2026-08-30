@@ -1,4 +1,4 @@
-import type { Principal } from '@papercusp/agent-mcp';
+import type { Principal } from '@papercusp/tooldef';
 
 /**
  * The complete permission vocabulary carried by a hosted browser session.

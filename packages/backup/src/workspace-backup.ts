@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import {
   backupHost,
   backupStepRunner,
+  type BackupMigrationLock,
   type BackupIntervalHandle,
 } from './config';
 import { deriveRepoPassword } from './password';
@@ -382,58 +383,98 @@ export class WorkspaceBackup {
     // ONE non-idempotent side effect and is itself a step so a resume returns
     // the cached id instead of inserting a duplicate row).
     const steps = backupStepRunner();
-    await this.ensureRepo();
-    const password = await deriveRepoPassword(this.workspaceId);
-    const env = this.envWithPassword(password);
-
     const sources = [this.workspaceRoot];
-    // Coordinate the snapshot with native boot/db:migrate BEFORE creating the
-    // durable tracking row. A migration can otherwise start in the small gap
-    // before pg_dump has opened its own relation-locking transaction, defeating
-    // the promise that this row is a pre-migration restore point. The host
-    // returns a per-acquisition handle so snapshots for different workspaces
-    // cannot accidentally release one another's session lock.
-    const migrationLock = await backupHost().acquireMigrationLock?.();
-    try {
-    // Step 1 — create the tracking row. Must be a step: re-running it on a
-    // resume would insert a SECOND snapshot row. The cached return (id +
-    // start time) is what every later step keys off, keeping bookkeeping +
-    // durationMs stable across a resume.
-    const { id: snapshotRowId, startedAtMs } = await steps.runStep('backup-insert-row', async () => {
-      const insertRows = await sql<{ id: number }[]>`
-        INSERT INTO harness_shared.backup_snapshots
-          (workspace_id, trigger_reason, trigger_context, sources_json)
-        VALUES
-          (${this.workspaceId}, ${reason}, ${context ? JSON.stringify(context) : null}::jsonb, ${JSON.stringify(sources)}::jsonb)
-        RETURNING id
-      `;
-      return { id: insertRows[0]!.id, startedAtMs: Date.now() };
-    });
-    opts?.onStarted?.(snapshotRowId);
-
-    // The durable row intentionally exists before pg_dump + kopia, which can
-    // run for well over the orphan threshold on a large workspace. Keep the
-    // existing backup_events surface fresh for that full post-row lifecycle so
-    // orphan cleanup can distinguish a slow live producer from a dead one.
-    // Event writes are best-effort and the timer is unref'd so telemetry can
-    // neither fail a snapshot nor keep a worker process alive.
-    const heartbeatTick = () =>
-      this.event(snapshotRowId, 'progress', { phase: 'heartbeat' }).catch(() => {});
-    const heartbeat = backupHost().scheduleInterval?.(
-      `backup-snapshot-heartbeat:${this.workspaceId}`,
-      SNAPSHOT_HEARTBEAT_INTERVAL_MS,
-      heartbeatTick,
-    ) ?? fallbackInterval(heartbeatTick, SNAPSHOT_HEARTBEAT_INTERVAL_MS);
-
+    let snapshotRowId: number | undefined;
+    let startedAtMs = Date.now();
     let dbDumpOk: boolean | null = null;
+    let receiptFinalized = false;
+    let heartbeat: BackupIntervalHandle | undefined;
+    let migrationLock: BackupMigrationLock | undefined;
+
+    const finalizeFailure = async (message: string): Promise<void> => {
+      if (snapshotRowId === undefined || receiptFinalized) return;
+      receiptFinalized = true;
+      try {
+        await sql`
+          UPDATE harness_shared.backup_snapshots
+          SET finished_at = now(),
+              status      = 'failed',
+              error_text  = ${message},
+              db_dump_ok  = ${dbDumpOk}
+          WHERE id = ${snapshotRowId}
+            AND status = 'running'
+        `;
+      } catch (finalizeError) {
+        // The row is still visible to the orphan sweep if this final write
+        // loses its own connection. Preserve the original failure, but make
+        // the failed finalization attempt diagnosable.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[backup] failed to finalize snapshot ${snapshotRowId} for ${this.workspaceId}:`,
+          finalizeError,
+        );
+      }
+      await this.event(snapshotRowId, 'progress', { phase: 'failed', error: message });
+    };
+
     try {
-      await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
+      // The pre_destructive intent must be durable before any advisory-lock
+      // wait. Otherwise a lock timeout leaves no row for migration admission
+      // to observe, which is how DDL previously proceeded after a failed
+      // backup:snapshot_create call.
+      try {
+        await backupHost().ensureSchema();
+      } catch {
+        // Preserve the package's existing best-effort schema-bootstrap
+        // behavior; the INSERT below remains the durable authority.
+      }
+      const inserted = await steps.runStep('backup-insert-row', async () => {
+        const insertRows = await sql<{ id: number }[]>`
+          INSERT INTO harness_shared.backup_snapshots
+            (workspace_id, trigger_reason, trigger_context, sources_json)
+          VALUES
+            (${this.workspaceId}, ${reason}, ${context ? JSON.stringify(context) : null}::jsonb, ${JSON.stringify(sources)}::jsonb)
+          RETURNING id
+        `;
+        const id = insertRows[0]?.id;
+        if (typeof id !== 'number') {
+          throw new Error(`backup snapshot INSERT returned no row for ${this.workspaceId}`);
+        }
+        return { id, startedAtMs: Date.now() };
+      });
+      snapshotRowId = inserted.id;
+      startedAtMs = inserted.startedAtMs;
+      opts?.onStarted?.(snapshotRowId);
+
+      // The durable row intentionally exists before pg_dump + kopia, which can
+      // run for well over the orphan threshold on a large workspace. Keep the
+      // existing backup_events surface fresh for that full post-row lifecycle so
+      // orphan cleanup can distinguish a slow live producer from a dead one.
+      // Event writes are best-effort and the timer is unref'd so telemetry can
+      // neither fail a snapshot nor keep a worker process alive.
+      const heartbeatTick = () =>
+        this.event(snapshotRowId!, 'progress', { phase: 'heartbeat' }).catch(() => {});
+      heartbeat = backupHost().scheduleInterval?.(
+        `backup-snapshot-heartbeat:${this.workspaceId}`,
+        SNAPSHOT_HEARTBEAT_INTERVAL_MS,
+        heartbeatTick,
+      ) ?? fallbackInterval(heartbeatTick, SNAPSHOT_HEARTBEAT_INTERVAL_MS);
+
+      await this.event(snapshotRowId!, 'progress', { phase: 'started', sources });
+
+      // Coordinate the snapshot with native boot/db:migrate AFTER the intent
+      // exists. A migration can therefore see this latest `running` receipt
+      // and fail closed even while the snapshot waits for the rendezvous.
+      migrationLock = await backupHost().acquireMigrationLock?.();
+      await this.ensureRepo();
+      const password = await deriveRepoPassword(this.workspaceId);
+      const env = this.envWithPassword(password);
 
       // Step 2 — pre-snapshot DB dump hook. Failures are logged inside the hook
       // and do not abort the snapshot — the file tree is still useful even if
       // the dump didn't land. The hook overwrites its dump files atomically, so
       // re-running it on a resume is idempotent.
-      await this.event(snapshotRowId, 'progress', { phase: 'pre_snapshot_hook' });
+      await this.event(snapshotRowId!, 'progress', { phase: 'pre_snapshot_hook' });
       // The step RETURNS the hook's outcome rather than the event-write's, so a
       // crash-resume replays the degradation instead of silently recovering to a
       // clean 'ok': the cached step result is the only record a resumed workflow
@@ -445,13 +486,13 @@ export class WorkspaceBackup {
             workspaceId: this.workspaceId,
             workspaceRoot: this.workspaceRoot,
           }).then(async (result) => {
-            await this.event(snapshotRowId, 'hook_pg_dump', { ...result });
+            await this.event(snapshotRowId!, 'hook_pg_dump', { ...result });
             return { ok: result.ok, error: result.error ?? null };
           })
             .catch(async (err) => {
               // eslint-disable-next-line no-console
               console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
-              await this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
+              await this.event(snapshotRowId!, 'hook_pg_dump', { ok: false, error: String(err) });
               return { ok: false, error: String(err) };
             }),
       );
@@ -461,7 +502,7 @@ export class WorkspaceBackup {
       dbDumpOk = typeof dumpOutcome?.ok === 'boolean' ? dumpOutcome.ok : null;
 
       try {
-        await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
+        await this.event(snapshotRowId!, 'progress', { phase: 'kopia_snapshot' });
         // Step 3 — the kopia snapshot create (the expensive, non-PG side effect).
         // Content-addressed, so a re-run on resume only re-dedups; caching the
         // parsed result lets a resume skip the work entirely. The self-exclusion
@@ -484,7 +525,7 @@ export class WorkspaceBackup {
             '--json',
           ], { env });
           const p = parseKopiaSnapshotJson(out);
-          await this.event(snapshotRowId, 'artifact_created', {
+          await this.event(snapshotRowId!, 'artifact_created', {
             kopiaSnapshotId: p.snapshotId,
             bytesAdded: p.bytesAdded,
             bytesTotal: p.bytesTotal,
@@ -532,17 +573,18 @@ export class WorkspaceBackup {
                 bytes_added       = ${parsed.bytesAdded},
                 bytes_total       = ${parsed.bytesTotal},
                 db_dump_ok        = ${dbDumpOk}
-            WHERE id = ${snapshotRowId}
+            WHERE id = ${snapshotRowId!}
           `;
         });
-        await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs: parsed.durationMs });
+        receiptFinalized = true;
+        await this.event(snapshotRowId!, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs: parsed.durationMs });
 
         // After-snapshot offsite replication (non-fatal). Local stays the
         // source of truth; if sync fails the snapshot is still safe.
-        void this.syncToOffsite(env, snapshotRowId).catch(() => { /* logged inside */ });
+        void this.syncToOffsite(env, snapshotRowId!).catch(() => { /* logged inside */ });
 
         return {
-          snapshotId: snapshotRowId,
+          snapshotId: snapshotRowId!,
           kopiaSnapshotId: parsed.snapshotId,
           bytesAdded: parsed.bytesAdded,
           durationMs: parsed.durationMs,
@@ -550,21 +592,15 @@ export class WorkspaceBackup {
         };
       } catch (err) {
         const msg = String(err instanceof Error ? err.message : err);
-        await sql`
-          UPDATE harness_shared.backup_snapshots
-          SET finished_at = now(),
-              status      = 'failed',
-              error_text  = ${msg},
-              db_dump_ok  = ${dbDumpOk}
-          WHERE id = ${snapshotRowId}
-        `;
-        await this.event(snapshotRowId, 'progress', { phase: 'failed', error: msg });
+        await finalizeFailure(msg);
         throw err;
       }
+    } catch (err) {
+      const msg = String(err instanceof Error ? err.message : err);
+      await finalizeFailure(msg);
+      throw err;
     } finally {
-      heartbeat.stop();
-    }
-    } finally {
+      heartbeat?.stop();
       try {
         await migrationLock?.release();
       } catch (err) {
