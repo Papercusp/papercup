@@ -828,15 +828,16 @@ function evaluateCodeDrift(
   loadedIdentity?: LoadedCodeIdentity | null,
   currentSourceSha?: string | null,
 ): ProbeResult {
-  const loadedSha = loadedIdentity?.treeSha?.trim() || null;
+  const identity = loadedIdentity ?? null;
+  const loadedSha = identity?.treeSha?.trim() || null;
   const expectedSha = currentSourceSha?.trim() || null;
-  if (loadedSha && expectedSha) {
+  if (identity && loadedSha && expectedSha) {
     const provenance = {
       source: 'runtime-vintage' as const,
       loadedSha,
       expectedSha,
-      loadedPid: loadedIdentity?.pid ?? null,
-      loadedReportedAt: loadedIdentity?.reportedAt ?? null,
+      loadedPid: identity.pid ?? null,
+      loadedReportedAt: identity.reportedAt ?? null,
     };
     if (!sameSourceSha(loadedSha, expectedSha)) {
       return {
@@ -844,7 +845,7 @@ function evaluateCodeDrift(
         up: true,
         status: null,
         latencyMs: 0,
-        note: copy.identityDrift(loadedSha, expectedSha, loadedIdentity),
+        note: copy.identityDrift(loadedSha, expectedSha, identity),
         provenance,
       };
     }
@@ -968,7 +969,13 @@ async function probeCodeDrift(
     name: string;
     unit: string;
     hotPaths: readonly string[];
-    evaluate: (bootMs: number | null, hotChangeMs: number | null, newestFile?: string | null) => ProbeResult;
+    evaluate: (
+      bootMs: number | null,
+      hotChangeMs: number | null,
+      newestFile?: string | null,
+      loadedIdentity?: LoadedCodeIdentity | null,
+      currentSourceSha?: string | null,
+    ) => ProbeResult;
     platformNote: string;
     failedNote: string;
   },

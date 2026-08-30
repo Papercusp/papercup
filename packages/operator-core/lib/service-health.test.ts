@@ -779,6 +779,82 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
     expect(res.note).not.toMatch(/DRIFT/);
   });
 
+  it('loaded runtime identity catches a stale bundle even when source mtime looks current', () => {
+    const res = evaluateBgHostCodeDrift(
+      NOW - 60 * 60_000,
+      NOW - 90 * 60_000,
+      'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',
+      {
+        source: 'runtime-vintage',
+        treeSha: 'old-build',
+        pid: 2477163,
+        host: 'tower',
+        reportedAt: new Date(NOW - 59 * 60_000).toISOString(),
+      },
+      'new-build',
+    );
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/CODE DRIFT/);
+    expect(res.note).toMatch(/loaded build old-build/);
+    expect(res.note).toMatch(/current source new-build/);
+    expect(res.provenance).toEqual({
+      source: 'runtime-vintage',
+      loadedSha: 'old-build',
+      expectedSha: 'new-build',
+      loadedPid: 2477163,
+      loadedReportedAt: new Date(NOW - 59 * 60_000).toISOString(),
+    });
+  });
+
+  it('matching loaded identity is reported as runtime-vintage current, not mtime fallback', () => {
+    const res = evaluateBgHostCodeDrift(
+      NOW - 10 * 60_000,
+      NOW - 60 * 60_000,
+      'x.ts',
+      {
+        source: 'runtime-vintage',
+        treeSha: 'abc1234',
+        pid: 123,
+        host: 'tower',
+        reportedAt: new Date(NOW - 9 * 60_000).toISOString(),
+      },
+      'ABC123456789',
+    );
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/code current/);
+    expect(res.note).toMatch(/runtime-vintage/);
+    expect(res.provenance).toMatchObject({
+      source: 'runtime-vintage',
+      loadedSha: 'abc1234',
+      expectedSha: 'ABC123456789',
+    });
+  });
+
+  it('matching commit identity still uses mtime fallback for a newer uncommitted edit', () => {
+    const res = evaluateBgHostCodeDrift(
+      NOW - 60 * 60_000,
+      NOW - 10 * 60_000,
+      'dirty.ts',
+      {
+        source: 'runtime-vintage',
+        treeSha: 'abc1234',
+        pid: 123,
+        host: 'tower',
+        reportedAt: new Date(NOW - 59 * 60_000).toISOString(),
+      },
+      'abc123456789',
+    );
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/CODE DRIFT/);
+    expect(res.note).toMatch(/mtime fallback/);
+    expect(res.provenance).toMatchObject({
+      source: 'mtime-fallback',
+      loadedSha: 'abc1234',
+      expectedSha: 'abc123456789',
+      reason: 'mtime detected a newer working-tree change',
+    });
+  });
+
   it('unknown boot time or change time → present:false (fail-soft, never a fabricated drift)', () => {
     expect(evaluateBgHostCodeDrift(null, NOW).present).toBe(false);
     expect(evaluateBgHostCodeDrift(NOW, null).present).toBe(false);
