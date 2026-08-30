@@ -671,6 +671,32 @@ export default defineTool({
     // SessionEnd is usually NOT this one. It must be durably written before the
     // respawn's SessionEnd can race it; markRespawnExpected never throws.
     if (ok) await markRespawnExpected(identity.ownerId);
+    // EI-21878494442396728: the marker above deliberately stops the SessionEnd path
+    // from releasing this owner's state — right for work-item leases, WRONG for the
+    // automatic `PreToolUse:*` edit locks. Those denote an edit that dies with this
+    // process, nothing else frees them (the delayed session-end hook returns
+    // `owner-resumed` the instant the successor registers), and git-sync correctly
+    // skips live-locked dirty paths — so the agent's own just-written files are
+    // silently passed over for the full 20-minute TTL and `work_items:complete` then
+    // stamps `completionAuthority:'proposed'` on otherwise-green work.
+    //
+    // HERE and nowhere later: a lock row carries no session id, so this release can
+    // only tell the dead session's locks from a successor's while exactly one session
+    // exists. The cut is idle-gated (it fires after THIS turn ends), so the successor
+    // is not up yet and every hook lock held now belongs to an edit that already
+    // returned. Deliberate `locks:acquire` holds and named-resource locks are left
+    // alone — the successor is meant to resume holding those.
+    //
+    // Fail-soft exactly like markRespawnExpected above and bumpSessionEpoch below: a
+    // missed release degrades to today's behaviour (the lease expires) rather than
+    // failing the compaction the caller asked for.
+    if (ok) {
+      try {
+        await releaseOwnerHookFileLocks({ ownerId: identity.ownerId });
+      } catch {
+        /* never block the cut on lock hygiene — the 20-minute lease is the backstop */
+      }
+    }
     // WI-36074 (context-injection P-023): THE MEMORY EPOCH BOUNDARY.
     //
     // The per-session surfaced ledger (memory_session_surfaced) suppresses
