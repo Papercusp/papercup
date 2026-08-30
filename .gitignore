@@ -155,6 +155,33 @@ apps/operator/docs/plans/**/*.md
 **/.papercusp/bench-reports/
 **/.papercusp/pi-sessions/
 
+# EI-19319605650500051 (2026-08-30): a LEADING DOT is what agents already reach for to
+# mean "scratch, deleted after this run" — and that intent counts for nothing here,
+# because git-sync auto-commits the whole tree on a schedule. The file is committed
+# before the agent gets back to deleting it. Measured, not hypothetical:
+# `agent-tools/coordination/.wi1347-live-verify.test.ts` opened with the words
+# "THROWAWAY (not committed, deleted after run)", was committed anyway, survived ~a
+# week, and became a genuine shared-gate red (harness_shared.test_runs source='ci',
+# 5 failures, latest 2026-08-02T05:37:44Z) — while INSERTing and DELETEing rows in the
+# LIVE fleet coordination tables (coord_presence, event_awaits) from what the runner
+# treats as a unit test. These patterns make the leading dot actually hold.
+#
+# ⚠ Do NOT "fix" the related glob inconsistency by making the runner match dotfiles.
+# vitest's include glob runs tinyglobby with dot:false, so a dot-prefixed test is not
+# collected by a normal run (measured 2026-08-30: pattern
+# `**/*.{test,spec}.?(c|m)[jt]s?(x)` returns nothing for `.scratch.test.ts`, and
+# returns it under dot:true). Two consequences, and they point the same way: a
+# dot-prefixed file is ALREADY broken as a real test — it silently never runs — and it
+# is still reachable by an explicitly-named invocation, which is how the gate came to
+# run the file above. Setting dot:true would make the gate START collecting scratch,
+# which is backwards. The fix is to stop it being committed, which is this pattern.
+**/.*.test.ts
+**/.*.test.tsx
+**/.*.test.mts
+**/.*.test.cts
+**/.*.spec.ts
+**/.*.spec.tsx
+
 # Dependency-generation publishers stage an in-progress tree under a
 # `.build-pending-*` directory. It is a disposable runtime sentinel, not a
 # generation artifact; git-sync's whole-tree add must never publish it while a
