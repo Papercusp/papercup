@@ -35,6 +35,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { harnessRoot } from '@papercusp/harness/paths';
+import { resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import {
   listAllProjectedTools,
   projectedToolCorrectiveCalls,
@@ -71,6 +73,22 @@ import { renderPeerWakeNote } from './peer-wake-policy';
 import { renderCouplingNote } from './coupling-policy';
 import { renderStatePlaneNote } from './state-plane-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
+import { renderModesPolicy } from './operating-modes-policy';
+import { renderResultDoorSection } from './result-door-prompt';
+import { renderWorkspaceMapSection } from './desktop-install/workspace-map';
+import { renderPromotionModelSection } from './desktop-install/promotion-model';
+import {
+  AUTO_MODE_MARKER,
+  CLIENT_TOOLING_OVERLAY_MARKER,
+  COMPACTION_MARKER,
+  COORD_LEGEND_MARKER,
+  PROJECT_GUIDE_MARKER,
+  PROMOTION_MODEL_MARKER,
+  RESULT_DOOR_MARKER,
+  WIRE_SCHEMAS_MARKER,
+  WORKSPACE_MAP_MARKER,
+  spliceGeneratedSection,
+} from './desktop-install/splice-tooling-overlay';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -193,6 +211,7 @@ export interface AssembledSection {
     | 'peer-wake-note'
     | 'coupling-note'
     | 'state-plane-note'
+    | 'project-guide'
     | 'runtime';
   chars: number;
 }
@@ -202,7 +221,18 @@ export interface AssembledPrompt {
   text: string;
   /** For audit/debug — which sections contributed and their sizes. */
   sections: AssembledSection[];
+  /** Profile metadata (present for the owned-loop target profile). */
+  profile?: PromptProfile;
+  baseSource?: string;
+  projectGuideSource?: string;
+  projectGuideTruncated?: boolean;
+  omittedClientRemediation?: string[];
 }
+
+export type PromptProfile = 'default' | 'pui-loop';
+
+/** Profile-local ceiling for the injected project guide. */
+export const PUI_LOOP_PROJECT_GUIDE_MAX_CHARS = 96_000;
 
 export interface AssembleOptions {
   role: Role;
@@ -217,6 +247,25 @@ export interface AssembleOptions {
   toolNames: string[];
   /** Optional caller-supplied blocks rendered after the tools playbook. */
   runtime?: Array<{ heading: string; body: string }>;
+  /**
+   * Alternate target profile. `pui-loop` uses the canonical su source and
+   * generated sections while omitting client-only remediation before assembly.
+   */
+  profile?: PromptProfile;
+  /** Repository root used to resolve the pui-loop project guide. */
+  projectDir?: string;
+  /** Explicit canonical su source for the pui-loop profile (tests/packaging). */
+  baseSource?: string;
+  /** Explicit guide source for the pui-loop profile. */
+  projectGuideSource?: string;
+  /** Already budgeted project-guide body for the pui-loop profile. */
+  projectGuideText?: string;
+  /** Maximum characters retained from the pui-loop project guide. */
+  projectGuideMaxChars?: number;
+  /** Optional pui-loop guide budget metadata (kept for callers' diagnostics). */
+  projectGuideTruncated?: boolean;
+  /** Hermetic override for the pui-loop tools catalog. */
+  toolCatalogText?: string;
 }
 
 /* ─── Filesystem reads (cached unless PAPERCUSP_RELOAD_PROMPTS=1) ─────── */
@@ -512,9 +561,233 @@ function mergeRoleGuidance(
   return merged;
 }
 
+/* ─── pui-loop target profile ───────────────────────────────────────── */
+
+function canonicalPuiLoopSuSource(): string {
+  const source = resolvePromptFiles(
+    { harnessDir: harnessRoot(), phase: '', dept: '' },
+    'su',
+  ).at(-1);
+  if (!source) {
+    throw new Error(
+      `prompt-assembly: pui-loop canonical su prompt was not found under ${harnessRoot()}`,
+    );
+  }
+  return source;
+}
+
+function removeMarkdownHeadingSection(
+  text: string,
+  heading: string,
+): { text: string; removed: boolean } {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(
+    `(?:^|\\n)## ${escaped}\\n[\\s\\S]*?(?=\\n## |\\n# |$)`,
+  );
+  if (!re.test(text)) return { text, removed: false };
+  return { text: text.replace(re, '\n'), removed: true };
+}
+
+function renderPuiLoopProjectGuide(guideText: string): string {
+  const body = guideText.replace(/\n+$/, '').trim();
+  if (!body) return '';
+  return (
+    '## Project guide — repo conventions\n\n' +
+    "> The following is the working repo's project guide (`CLAUDE.md` at the\n" +
+    '> repo root — the single editable source; `AGENTS.md` is a symlink to it).\n' +
+    '> It is projected into this owned-loop profile from the canonical source;\n' +
+    '> client-only remediation is deliberately excluded before assembly.\n\n' +
+    body +
+    '\n'
+  );
+}
+
+export function projectGuideAtBudget(
+  text: string,
+  source: string,
+  maxChars = PUI_LOOP_PROJECT_GUIDE_MAX_CHARS,
+): { text: string; truncated: boolean } {
+  if (text.length <= maxChars) return { text, truncated: false };
+  const hardCut = Math.max(0, maxChars - 320);
+  const newline = text.lastIndexOf('\n', hardCut);
+  const cut = newline > hardCut * 0.8 ? newline : hardCut;
+  return {
+    text:
+      `${text.slice(0, cut).replace(/\n+$/, '')}\n\n` +
+      `> ⚠ Project guide truncated by the pui-loop prompt budget at ${maxChars} of ` +
+      `${text.length} characters. Read the canonical source with \`capability:read\` ` +
+      `when the omitted tail matters: ${source || '<project guide>'}\n`,
+    truncated: true,
+  };
+}
+
+/**
+ * Project the canonical su SOURCE into the owned-loop profile before prompt
+ * assembly. This is deliberately source-level: client-only layers are never
+ * assembled and therefore cannot silently return when surrounding prose moves.
+ */
+function projectPuiLoopSuSource(base: string, toolNames: string[]): string {
+  let out = base;
+
+  // No client overlay exists inside the owned loop. The exact executable
+  // surface is rendered from the projected registry below.
+  out = out.split(CLIENT_TOOLING_OVERLAY_MARKER).join('');
+
+  // The loop owns compaction and tool discovery in code, so those client
+  // protocols are absent from this target by profile construction.
+  out = out.split(COMPACTION_MARKER).join('');
+
+  // Keep route A, but omit the client-native denial/explanation. Fleets remain
+  // the explicit parallelism routes; there is simply no hidden client surface
+  // for this in-process loop to remediate.
+  out = out.replace(
+    /  - \*\*A\. Yourself\*\* — you implement it directly, now, in this session\.[\s\S]*?(?=\n  - \*\*B\. Send)/,
+    '  - **A. Yourself** — you implement it directly, now, in this session.',
+  );
+
+  // This bullet exists only to defend deferred CLI tool surfaces. The owned
+  // loop receives the exact catalog it can execute, so the whole remediation
+  // layer is omitted rather than rewritten after assembly.
+  out = out.replace(
+    /\n- \*\*NEVER OFFER A ROUTE YOU HAVE NOT CONFIRMED YOU CAN EXECUTE\.\*\*[\s\S]*?(?=\n- \*\*Ask the route EVEN)/,
+    '\n',
+  );
+
+  // One historical observation still names the CLI discovery mechanism. It is
+  // evidence, not an instruction, but retaining the marker would make the
+  // profile's construction invariant impossible to assert mechanically.
+  out = out.replaceAll('ToolSearch', 'deferred-tool discovery');
+
+  out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderModesPolicy());
+  out = spliceGeneratedSection(out, RESULT_DOOR_MARKER, renderResultDoorSection());
+  out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
+  out = spliceGeneratedSection(
+    out,
+    WIRE_SCHEMAS_MARKER,
+    renderWireSchemasSection((name) => toolNames.includes(name)),
+  );
+  out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  out = spliceGeneratedSection(out, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
+  out = out.split(PROJECT_GUIDE_MARKER).join('');
+
+  // A future canonical su source may add optional generated markers. They are
+  // internal projection syntax, never model-visible prompt content.
+  out = out.replace(/<!--\s*PAPERCUSP-SU:[^>]+-->\n*/g, '');
+
+  const leaked = [
+    'ToolSearch',
+    'NO_SUBAGENT_TOOLS_DENY',
+    'Managing your own compaction',
+    'While bypass permissions mode is active:',
+  ].filter((needle) => out.includes(needle));
+  if (leaked.length > 0) {
+    throw new Error(
+      `prompt-assembly: pui-loop source leaked client-remediation marker(s): ${leaked.join(', ')}`,
+    );
+  }
+
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function assemblePuiLoopPrompt(opts: AssembleOptions): AssembledPrompt {
+  const sections: AssembledSection[] = [];
+  const parts: string[] = [];
+
+  const baseSource = opts.baseSource ?? canonicalPuiLoopSuSource();
+  const base = readFileSync(baseSource, 'utf8');
+  const spine = projectPuiLoopSuSource(base, opts.toolNames);
+  parts.push(spine);
+  sections.push({ name: 'persona', chars: spine.length });
+
+  // renderSuPlaybook injects these canonical shared notes for the same su
+  // source. Keep that source parity here without routing through the client
+  // playbook renderer.
+  const sharedNotes: Array<[AssembledSection['name'], string]> = [
+    ['deploy-pipeline-note', renderDeployPipelineNote()],
+    ['wait-loop-note', renderWaitLoopNote()],
+    ['peer-wake-note', renderPeerWakeNote()],
+    ['coupling-note', renderCouplingNote()],
+    ['state-plane-note', renderStatePlaneNote()],
+  ];
+  for (const [name, text] of sharedNotes) {
+    if (!text) continue;
+    parts.push(text);
+    sections.push({ name, chars: text.length });
+  }
+
+  const projectGuideSource =
+    opts.projectGuideSource ??
+    (opts.projectDir
+      ? [join(opts.projectDir, 'CLAUDE.md'), join(opts.projectDir, 'AGENTS.md')].find((candidate) =>
+          existsSync(candidate),
+        )
+      : undefined) ??
+    '';
+  const rawGuide =
+    opts.projectGuideText ??
+    (projectGuideSource ? readFileSync(projectGuideSource, 'utf8') : '');
+  const guide = projectGuideAtBudget(
+    rawGuide,
+    projectGuideSource,
+    opts.projectGuideMaxChars,
+  );
+  const projectedGuide = removeMarkdownHeadingSection(
+    guide.text,
+    'Reaching for bash? These reads already have a tool',
+  ).text.replaceAll('ToolSearch', 'deferred-tool discovery');
+  const projectGuide = renderPuiLoopProjectGuide(projectedGuide);
+  if (projectGuide) {
+    parts.push(projectGuide);
+    sections.push({ name: 'project-guide', chars: projectGuide.length });
+  }
+
+  const catalog = opts.toolCatalogText ?? renderToolsCatalog(opts.role, opts.toolNames);
+  if (catalog) {
+    parts.push(catalog);
+    sections.push({ name: 'tools-catalog', chars: catalog.length });
+  }
+
+  if (opts.runtime && opts.runtime.length > 0) {
+    const runtimeText = opts.runtime
+      .map((r) => `## ${r.heading}\n\n${r.body}`)
+      .join('\n\n---\n\n');
+    parts.push(runtimeText);
+    sections.push({ name: 'runtime', chars: runtimeText.length });
+  }
+
+  const text = parts.join('\n\n---\n\n');
+  const leaked = [
+    'ToolSearch',
+    'NO_SUBAGENT_TOOLS_DENY',
+    'Managing your own compaction',
+    'While bypass permissions mode is active:',
+  ].filter((needle) => text.includes(needle));
+  if (leaked.length > 0) {
+    throw new Error(
+      `prompt-assembly: pui-loop prompt leaked client-remediation marker(s): ${leaked.join(', ')}`,
+    );
+  }
+  return {
+    text,
+    sections,
+    profile: 'pui-loop',
+    baseSource,
+    projectGuideSource,
+    projectGuideTruncated: guide.truncated,
+    omittedClientRemediation: [
+      'client-compaction-strategy',
+      'client-subagent-denial',
+      'client-tool-discovery-workaround',
+      'client-bash-preamble-override',
+    ],
+  };
+}
+
 /* ─── Top-level assembly ──────────────────────────────────────────────── */
 
 export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
+  if (opts.profile === 'pui-loop') return assemblePuiLoopPrompt(opts);
+
   const sections: AssembledSection[] = [];
   const parts: string[] = [];
 
