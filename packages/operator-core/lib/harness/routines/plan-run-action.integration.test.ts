@@ -304,6 +304,8 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         templateSlug: TEMPLATE,
       });
 
+      expect(result.started).toBe(true);
+      if (result.started !== true) throw new Error(`expected plan run to start, got ${result.reason}`);
       expect(result).toMatchObject({
         execution,
         replayed: false,
@@ -436,7 +438,9 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       templateSlug: TEMPLATE,
     });
 
-    expect(result?.dispatch).toMatchObject({
+    expect(result.started).toBe(true);
+    if (result.started !== true) throw new Error(`expected plan run to start, got ${result.reason}`);
+    expect(result.dispatch).toMatchObject({
       ok: false,
       failure: {
         code: 'target_absent',
@@ -532,9 +536,14 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     // first run's plan_runs row is still 'running'.
     await stampClaim(new Date('2026-06-17T09:00:00.000Z'));
     const second = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
-    expect(second!.skippedForConcurrency).toBe(true);
-    expect(second!.minted).toBe(0);
-    expect(second!.replayed).toBe(false); // a distinct outcome from replay, not conflated with it
+    expect(second.started).toBe(false);
+    if (second.started !== false) throw new Error(`expected concurrency refusal, got started=${second.started}`);
+    expect(second.skippedForConcurrency).toBe(true);
+    expect(second.reason).toBe('concurrency-skip');
+    expect(second.retryable).toBe(false);
+    expect(second.priorRunId).toBe(first!.runId);
+    expect(second.minted).toBe(0);
+    expect(second.replayed).toBe(false); // a distinct outcome from replay, not conflated with it
 
     // Only ONE plan_runs row exists — the skip genuinely prevented a second mint, not just
     // a display-layer suppression.
@@ -656,7 +665,20 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       workspaceId: WS,
       templateSlug: 'does-not-exist',
     });
-    expect(res).toBeNull();
+    expect(res.started).toBe(false);
+    if (res.started !== false) throw new Error(`expected template refusal, got started=${res.started}`);
+    expect(res).toMatchObject({
+      reason: 'template-missing',
+      detail: "template 'does-not-exist' not found in plan-run-it-fixture",
+      retryable: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'does-not-exist' not found"));
     warn.mockRestore();
   });

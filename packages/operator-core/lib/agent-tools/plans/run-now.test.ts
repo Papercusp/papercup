@@ -3,8 +3,9 @@
  * runScheduledPlanFire are mocked; getOrgPg returns a throwaway sql the handler only
  * passes through). Pins: not_found when the plan is unknown, the trigger:'manual'
  * delegation with the plan's install/workspace, the success projection, and the
- * run_failed mapping (a falsy fire result becomes an isError {error:'run_failed'}). A
- * regression that drops a guard or mislabels the trigger is what this catches.
+ * typed-refusal mapping (a non-started fire result preserves its reason/detail and
+ * becomes an isError). A regression that drops a guard or mislabels the trigger is
+ * what this catches.
  *
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/run-now.test.ts
@@ -49,7 +50,7 @@ describe('plans:run-now handler', () => {
 
   it('fires a manual run with the plan install/workspace and returns the run', async () => {
     getRow.mockResolvedValue({ harnessSlug: 'web', workspaceId: 'default' } as never);
-    fire.mockResolvedValue({ runId: 5, instanceSlug: 'p1-run-5' } as never);
+    fire.mockResolvedValue({ started: true, runId: 5, instanceSlug: 'p1-run-5' } as never);
     const out = await call();
     expect(out.isError).toBeUndefined();
     expect(body(out)).toMatchObject({ ok: true, runId: 5, instanceSlug: 'p1-run-5' });
@@ -58,11 +59,42 @@ describe('plans:run-now handler', () => {
     });
   });
 
-  it('maps a falsy fire result to run_failed (isError)', async () => {
+  it('maps a typed fire refusal to an isError result without losing its diagnosis', async () => {
     getRow.mockResolvedValue({ harnessSlug: 'web', workspaceId: 'default' } as never);
-    fire.mockResolvedValue(null as never);
+    fire.mockResolvedValue({
+      started: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+      reason: 'not-startable',
+      detail: 'The supplied inputs do not satisfy this plan schema',
+      retryable: false,
+      readiness: {
+        ready: false,
+        code: 'invalid_data',
+        source: 'input-schema',
+        missing: [],
+        issues: ['/trigger/payload/end must be object'],
+        hint: 'Fix the trigger payload before starting this plan.',
+      },
+    } as never);
     const out = await call();
     expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ error: 'run_failed', slug: 'p1' });
+    expect(body(out)).toMatchObject({
+      ok: false,
+      slug: 'p1',
+      started: false,
+      reason: 'not-startable',
+      detail: 'The supplied inputs do not satisfy this plan schema',
+      retryable: false,
+      readiness: {
+        code: 'invalid_data',
+        issues: ['/trigger/payload/end must be object'],
+      },
+    });
   });
 });
