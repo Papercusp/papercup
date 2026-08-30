@@ -84,49 +84,65 @@ describe('PROJECTED_DEPS.onDispatchStart — in-flight liveness wiring', () => {
   });
 });
 
-describe('authorizationFailureHint — judge MCP route guidance (EI-21543450341912836)', () => {
+describe('authorizationFailureHint — judge MCP route guidance (EI-21543450341912836, generalized EI-21907885860611918)', () => {
+  const judgeCtx = ctx({
+    transport: 'mcp',
+    role: 'judge',
+    principal: {
+      kind: 'system',
+      slug: 'system:judge',
+      workspaceId: 'default',
+      capabilities: new Set(),
+      authMethod: 'spawn-url',
+      trust: 'trusted',
+    },
+  });
+
   it('names the authorized papercusp-su route without widening judge capabilities', () => {
     const hint = authorizationFailureHint({
       toolName: 'plans:audit',
       missingCapability: 'plans:write',
-      ctx: ctx({
-        transport: 'mcp',
-        role: 'judge',
-        principal: {
-          kind: 'system',
-          slug: 'system:judge',
-          workspaceId: 'default',
-          capabilities: new Set(),
-          authMethod: 'spawn-url',
-          trust: 'trusted',
-        },
-      }),
+      ctx: judgeCtx,
     });
     expect(hint).toContain('papercusp-su');
     expect(hint).toContain('tools:invoke');
   });
 
-  it('does not hint unrelated denials or the already-authorized su route', () => {
-    const base = {
+  // EI-21907885860611918: the hint used to fire for plans:audit alone, so the
+  // identical judge-principal misrouting was independently re-filed against
+  // each of these tools in turn. The hint must fire for the judge-mismatch
+  // SHAPE regardless of which tool/capability triggered it — one allowlisted
+  // tool at a time is exactly how this bug kept recurring.
+  it.each([
+    ['memory:search', 'memory:read'],
+    ['locks:acquire', 'locks:write'],
+    ['capability:edit', 'capability:fs-write'],
+    ['db:next-migration', 'locks:write'],
+  ])('names the papercusp-su route for %s denied %s', (toolName, missingCapability) => {
+    const hint = authorizationFailureHint({ toolName, missingCapability, ctx: judgeCtx });
+    expect(hint).toContain(toolName);
+    expect(hint).toContain('papercusp-su');
+    expect(hint).toContain('tools:invoke');
+  });
+
+  it('does not hint an already-authorized superuser context', () => {
+    expect(authorizationFailureHint({
       toolName: 'plans:audit',
       missingCapability: 'plans:write',
-      ctx: ctx({
-        transport: 'mcp',
-        role: 'judge',
-        principal: {
-          kind: 'system',
-          slug: 'system:judge',
-          workspaceId: 'default',
-          capabilities: new Set(),
-          authMethod: 'spawn-url',
-          trust: 'trusted',
-        },
-      }),
-    };
-    expect(authorizationFailureHint({ ...base, toolName: 'plans:get' })).toBeUndefined();
+      ctx: ctx({ ...judgeCtx, isSuperuser: true }),
+    })).toBeUndefined();
+  });
+
+  it('does not hint a non-judge role, a non-mcp transport, or an unrelated principal', () => {
+    const base = { toolName: 'plans:audit', missingCapability: 'plans:write' };
+    expect(authorizationFailureHint({ ...base, ctx: ctx({ ...judgeCtx, role: 'su' }) })).toBeUndefined();
+    expect(authorizationFailureHint({ ...base, ctx: ctx({ ...judgeCtx, transport: 'http' }) })).toBeUndefined();
     expect(authorizationFailureHint({
       ...base,
-      ctx: ctx({ ...base.ctx, isSuperuser: true }),
+      ctx: ctx({
+        ...judgeCtx,
+        principal: { ...judgeCtx.principal!, slug: 'system:other' },
+      }),
     })).toBeUndefined();
   });
 });
