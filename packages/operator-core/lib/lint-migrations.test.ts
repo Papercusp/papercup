@@ -30,6 +30,8 @@ import {
   FROZEN_INDEX_SWAP_EXEMPTIONS,
   ENFORCED_FROM,
   INDEX_SWAP_ENFORCED_FROM,
+  findUnguardedViewDrop,
+  VIEW_DROP_ENFORCED_FROM,
   // eslint-disable-next-line import/no-relative-packages
 } from '../../../scripts/lint-migrations.mjs';
 
@@ -807,5 +809,127 @@ describe('findLiteralTenantDefault', () => {
     // text survives verbatim, so the commented-out ALTER reads as live DDL. False POSITIVE.
     const sql = `DO $$ BEGIN\n  -- ALTER TABLE t ALTER COLUMN workspace_id SET DEFAULT 'ws_1';\n  PERFORM 1;\nEND $$;`;
     expect(findLiteralTenantDefault(sql)).toEqual([]);
+  });
+});
+
+describe('findUnguardedViewDrop (the migration-678 / 374 dependency class)', () => {
+  /*
+   * WI-6219 / EI-18748424931934157. Two incidents, failing in OPPOSITE directions:
+   * 678 bare-dropped a depended-on view and ERRORED at a real operator's boot
+   * ("cannot drop view … because other objects depend on it"); 374 dropped
+   * work_items CASCADE and SILENTLY took harness_shared.fleet_assignment with it,
+   * permanently — migrations run once, so 358's CREATE never re-ran and 375 had to
+   * restore it by hand. Both spellings are therefore flagged.
+   *
+   * The check is pure text and cannot know whether a view HAS dependents. It asks
+   * the weaker question it can answer honestly — "was the dependent question
+   * answered at all?" — and the pragma is where the answer goes.
+   */
+
+  it('flags a bare DROP VIEW', () => {
+    const hits = findUnguardedViewDrop('DROP VIEW harness_shared.work_items;\n');
+    expect(hits).toEqual([{ view: 'work_items', dynamic: false, cascade: false }]);
+  });
+
+  it('flags DROP VIEW IF EXISTS (the idempotent spelling is not a safety property)', () => {
+    // IF EXISTS guards against the view being ABSENT; it says nothing about
+    // dependents, which is the hazard. It must not read as an exemption.
+    const hits = findUnguardedViewDrop('DROP VIEW IF EXISTS harness_shared.work_items_claimable;\n');
+    expect(hits).toEqual([{ view: 'work_items_claimable', dynamic: false, cascade: false }]);
+  });
+
+  it('flags CASCADE and marks it, including inside a DO body (the real 374 shape)', () => {
+    // Bodies stay LIVE: 374's drop is inside `DO $cut$ … $cut$` and really executes,
+    // so a mask that seals bodies is a false NEGATIVE on the worse of the two incidents.
+    const sql = 'DO $cut$\nBEGIN\n  DROP VIEW harness_shared.work_items CASCADE;\nEND $cut$;\n';
+    expect(findUnguardedViewDrop(sql)).toEqual([
+      { view: 'work_items', dynamic: false, cascade: true },
+    ]);
+  });
+
+  it('flags the dynamic EXECUTE format() spelling, whose text lives inside a string literal', () => {
+    // Masking strings would blank this entirely (false negative); not masking them
+    // would let prose fire (false positive). The oracle anchors on the opening
+    // QUOTE, which is live program text even though its contents are blanked.
+    const sql =
+      "DO $$\nBEGIN\n  EXECUTE format('DROP VIEW IF EXISTS %I.agent_chats CASCADE', s);\nEND $$;\n";
+    // The dynamic part here is the SCHEMA (`%I`), which bareName strips as a
+    // qualifier — leaving the view name, which is the useful half to report.
+    expect(findUnguardedViewDrop(sql)).toEqual([
+      { view: 'agent_chats', dynamic: true, cascade: true },
+    ]);
+  });
+
+  /*
+   * CALIBRATION — the anti-decay pin. A string-keyed guard must be checked against
+   * the PROSE that explains its own rule, because the explanatory comment almost
+   * always contains the same string the code does. Migration 375 is the live proof:
+   * it exists solely to repair 374, and quotes `DROP VIEW … CASCADE` in its header
+   * AND inside a COMMENT ON description. Measured over all 883 files in the live
+   * dir, 22 contain the phrase textually and exactly 21 fire — 375 is the one that
+   * does not. Without these two cases the detector could silently decay into a
+   * prose-matcher and nothing would fail.
+   */
+  it('does NOT flag a comment quoting the statement (375 documents the incident)', () => {
+    const sql =
+      '-- ROOT CAUSE: migration 374 ran\n--   `DROP VIEW harness_shared.work_items CASCADE;`\n-- which took fleet_assignment with it.\nSELECT 1;\n';
+    expect(findUnguardedViewDrop(sql)).toEqual([]);
+  });
+
+  it('does NOT flag the phrase inside a COMMENT ON string (375 line 218)', () => {
+    const sql =
+      "COMMENT ON VIEW harness_shared.fleet_assignment IS 'Restored by mig 375 after mig 374 DROP VIEW work_items CASCADE removed it.';\n";
+    expect(findUnguardedViewDrop(sql)).toEqual([]);
+  });
+
+  it('does NOT flag CREATE OR REPLACE VIEW — the safe alternative it steers toward', () => {
+    expect(findUnguardedViewDrop('CREATE OR REPLACE VIEW harness_shared.v AS SELECT 1;\n')).toEqual([]);
+  });
+
+  it('scans past a phantom to a real drop later in the file', () => {
+    // The leftmost occurrence is prose. Testing only the leftmost match would
+    // reject the file and lose the real hit — a false negative created by a fix
+    // aimed at false positives.
+    const sql = '-- do not DROP VIEW x here\nDROP VIEW harness_shared.real_one;\n';
+    expect(findUnguardedViewDrop(sql)).toEqual([
+      { view: 'real_one', dynamic: false, cascade: false },
+    ]);
+  });
+
+  it('is suppressed by the ack pragma, which requires a stated reason', () => {
+    const drop = 'DROP VIEW harness_shared.work_items CASCADE;\n';
+    expect(
+      findUnguardedViewDrop(
+        `-- lint-migrations: allow-view-drop no dependents, verified via pg_depend\n${drop}`,
+      ),
+    ).toEqual([]);
+    // A bare pragma with no reason does NOT suppress: an ack satisfiable by a
+    // placeholder is an off-switch, not an account (EI-19462877357083817).
+    expect(findUnguardedViewDrop(`-- lint-migrations: allow-view-drop\n${drop}`)).toHaveLength(1);
+  });
+
+  it('a mention of pg_get_viewdef does NOT auto-exempt the file', () => {
+    // Capture/replay is the sanctioned safe form, but auto-exempting on the token
+    // would let one incidental mention silence every drop in the file — including
+    // one the author never considered. It is a REASON to write in the pragma.
+    const sql = 'SELECT pg_get_viewdef(oid) FROM pg_class;\nDROP VIEW harness_shared.other;\n';
+    expect(findUnguardedViewDrop(sql)).toHaveLength(1);
+  });
+});
+
+describe('view-drop enforcement boundary (the real sql dir)', () => {
+  const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
+
+  it('grandfathers every applied file, so the boundary stops only the NEXT one', () => {
+    // Applied+ledgered files cannot be edited (the immutability guard refuses it),
+    // so a boundary at or below an existing offender would red-pin the gate on a
+    // file nobody can fix — the WI-41119 failure mode.
+    const offenders = readdirSync(SQL_DIR)
+      .filter((f) => f.endsWith('.sql'))
+      .filter((f) => findUnguardedViewDrop(readFileSync(join(SQL_DIR, f), 'utf8')).length)
+      .map((f) => Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10));
+
+    expect(offenders.length).toBeGreaterThan(0); // control: the detector still fires at all
+    expect(Math.max(...offenders)).toBeLessThan(VIEW_DROP_ENFORCED_FROM);
   });
 });
