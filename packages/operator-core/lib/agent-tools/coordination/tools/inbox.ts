@@ -664,6 +664,15 @@ export default defineTool({
         args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
         note: 'coord:inbox has NO time filter by ratified decision (D-002: agents never hand-carry read cursors — the WI-1600 seed-to-now footgun); it is a VIEW bounded by `limit`. A time-bounded read of your own traffic is coord:feed { since, owner } (owner = a literal ownerId; feed does not resolve "self")',
       },
+      // EI-21901625037175266: coord:inbox has no free-text search by the same
+      // ratified decision as `since` above (it is a bounded VIEW, not a query
+      // surface) — but the bare unrecognized-key rejection never named where a
+      // text-bounded read lives, same failure shape `since` used to have.
+      q: {
+        tool: 'coord:feed',
+        args: { q: '<substring>' },
+        note: 'coord:inbox has no free-text search — it is a VIEW bounded by `limit`, not a query surface. coord:feed { q } searches summary/body/from/to/plan_slug across the whole coordination stream (add owner/since to scope it to your own recent traffic).',
+      },
     },
   },
   capability: "coord:read",
