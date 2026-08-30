@@ -22,6 +22,12 @@ export default defineTool({
   capability: 'fleet:wind-down',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
+  // EI-21834728970912985: the typed registry flip is idempotent and must not
+  // wait behind the ambient workspace transaction while optional post-flip
+  // saga legs run. This lets the dispatcher surface a committed state flip
+  // instead of turning a slow receipt into an unknown mutation outcome.
+  idempotent: true,
+  skipWorkspaceTx: true,
   args: z.object({
     fleet: z.string().min(1).max(120).describe('Fleet slug (or name — slugified like every registry surface).'),
     reason: z

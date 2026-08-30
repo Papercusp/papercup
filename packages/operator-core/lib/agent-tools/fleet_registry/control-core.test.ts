@@ -12,6 +12,7 @@ import { COORD_ACK_ACCEPTED_KEYS, coordAckArgNamesIn } from '../coordination/too
 const callerRef = { ownerId: 'su-4c85f9d7-aaaa-bbbb-cccc-ddddeeee0001' };
 
 vi.mock('./_shared', () => ({
+  ROUTING_LADDER: 'test routing ladder',
   resolveFleetCaller: vi.fn((ctx: { uiClientId?: string; workspaceId?: string } = {}) => {
     const ownerId = ctx.uiClientId ?? callerRef.ownerId;
     return {
@@ -52,6 +53,7 @@ import {
   fleetControlCueText,
   windDownGoalFleet,
 } from './control-core';
+import windDownTool from './wind-down';
 import { getFleet, setFleetControlState, type AgentFleetRecord } from '../../agent-fleets-store';
 import { sendMessage } from '../coordination/messages';
 import { getPresence } from '../coordination/presence';
@@ -154,6 +156,13 @@ describe('classifyFleetControlInvoker (pure guard)', () => {
     expect(classifyFleetControlInvoker({ callerOwnerId: 'a', leaderOwnerId: 'b', paneKind: 'cup' })).toBeNull();
     expect(classifyFleetControlInvoker({ callerOwnerId: 'a', leaderOwnerId: null, paneKind: 'papercup' })).toBeNull();
     expect(classifyFleetControlInvoker({ callerOwnerId: 'a', leaderOwnerId: null, paneKind: 'planner' })).toBeNull();
+  });
+});
+
+describe('fleet:wind-down dispatch metadata (EI-21834728970912985)', () => {
+  it('opts out of the ambient workspace transaction and declares idempotent completion', () => {
+    expect((windDownTool as { idempotent?: boolean }).idempotent).toBe(true);
+    expect((windDownTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 });
 
