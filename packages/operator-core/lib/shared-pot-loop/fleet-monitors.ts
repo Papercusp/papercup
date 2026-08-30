@@ -1068,7 +1068,18 @@ export async function runSharedHiveMonitorPass(opts: {
     orphanGraceMs?: number;
     /** EI-20579195481991931: inbound silence from ONE remote log before we call
      *  it a stall. Generous by design — an idle peer is indistinguishable from a
-     *  stalled one from here, so a tight SLO buys false alarms, not sensitivity. */
+     *  stalled one from here, so a tight SLO buys false alarms, not sensitivity.
+     *  EI-21364751809098626: 6h was NOT generous enough in practice for the
+     *  deployment this default actually serves — a personal multi-device pot
+     *  (one GitHub member here holds 9 registered device attestations). Traced
+     *  a live "HOST ADMITS NO REMOTE LOGS" major-bug alert (187 repeats over 6
+     *  days, never actionable) to the owner's OWN second device — verified
+     *  admitted today, then simply not running for the rest of the day, which
+     *  is ordinary personal usage, not a stalled fold or broken announce path.
+     *  No caller overrides this default (grepped), so it IS the production
+     *  value for this deployment shape. Raised to 72h: still catches a fold
+     *  that stays broken for DAYS, while absorbing an overnight/weekend gap
+     *  between a personal device's sessions. */
     peerSilentAfterMs?: number;
   };
   nowMs?: number;
@@ -1108,7 +1119,7 @@ export async function runSharedHiveMonitorPass(opts: {
   const peers = await scanPeerFederationSilence(opts.sql, {
     workspaceId: opts.workspaceId,
     harness: opts.harness,
-    silentAfterMs: opts.slo?.peerSilentAfterMs ?? 6 * 60 * 60_000,
+    silentAfterMs: opts.slo?.peerSilentAfterMs ?? 72 * 60 * 60_000,
     nowMs,
   });
   for (const b of peers.breaches) {
