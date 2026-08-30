@@ -1900,8 +1900,8 @@ let synthQuietSince = 0; // wall-clock ms when TTS playout last ENDED; 0 = never
  *
  * This asks "is playout happening NOW?" at DISPATCH time, but it is guarding
  * audio captured much earlier, and the gap dwarfs the window: end-of-speech
- * detection alone costs 683ms on the shipped energy-VAD path, and whisper's
- * measured floor on the local server is a further ~827ms (≈2-3.8s for a normal
+ * detection alone costs 683ms on the shipped energy-VAD path, and whisper on the
+ * local server adds 588ms even in the fastest run measured (≈2-3.8s for a normal
  * reply). The 700ms cooldown had therefore always expired by the time an echo
  * transcript arrived — the only branch below that ever fired on a real echo was
  * `isSynthSpeaking`, which catches mid-reply segments but never the final one.

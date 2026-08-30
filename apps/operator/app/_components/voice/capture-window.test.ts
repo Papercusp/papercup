@@ -5,9 +5,9 @@
  * express: the verdict is a function of WHEN THE AUDIO WAS RECORDED, so an
  * arbitrarily late transcript is judged exactly the same as a prompt one. Every
  * "arrives late" case below is a real escape under the previous design, where
- * the 700ms window had always expired before the transcript existed (measured
- * floor for the shipped path: 683ms of end-of-speech detection + ~827ms of
- * whisper = ~1.5s minimum).
+ * the 700ms window had always expired before the transcript existed: 683ms of
+ * end-of-speech detection plus 588ms of whisper in the FASTEST run measured
+ * (typically 1-3s) = 1271ms minimum before the guard was even consulted.
  */
 
 import { describe, it, expect } from 'vitest';

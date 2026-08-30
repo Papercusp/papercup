@@ -93,8 +93,8 @@ export async function startWhisperCapture(
     preSpeechPadMs: PRE_SPEECH_PAD_MS,
     onSpeechEnd: async (audio: Float32Array) => {
       // WALL-CLOCK SPAN OF THIS AUDIO (WI-954890), taken BEFORE the await —
-      // whisper's own latency (measured floor ~827ms on the shipped local
-      // server) must not leak into the window, which is precisely the mistake
+      // whisper's own latency (measured 588ms-3s on the shipped local server,
+      // and it varies with machine load) must not leak into the window, which is precisely the mistake
       // the old dispatch-time cooldown made. `onSpeechEnd` fires only after the
       // redemption silence, so step back over it; the sample count gives the
       // duration, and it includes the pre-speech padding, so the window starts

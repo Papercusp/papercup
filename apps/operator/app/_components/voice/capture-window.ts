@@ -12,20 +12,23 @@
  *     energy-VAD `hangoverFrames: 8` × 4096 samples = 683ms @48kHz (743ms
  *     @44.1kHz); the Silero path's `redemptionFrames: 8` × 512 samples = 256ms;
  *   • then whisper. MEASURED 2026-08-30 against the shipped local server
- *     (127.0.0.1:2022, 16 kHz mono WAV, three runs each): 0.96s of audio →
- *     827/976/1037ms · 3.08s → 1097/1282/1378ms · 10.14s → 2111/2490/3056ms.
- *     The floor is ~827ms and is dominated by fixed overhead rather than audio
- *     length, so there is no short-utterance case that comes in under budget.
+ *     (127.0.0.1:2022, 16 kHz mono WAV): 0.96s of audio → 827/976/1037ms ·
+ *     3.08s → 588ms (fastest seen, warm) to 1378ms · 10.14s → 2111-3056ms.
+ *     Latency tracks machine state far more than audio length, so there is no
+ *     short-utterance case that comes in under budget.
  *
- * So the cheapest possible path from "audio stopped" to "guard evaluated" costs
- * ~1.5s, against a 700ms window. The cooldown was expired by 2.2× at absolute
- * best and >5× on a normal reply — it could never be in effect when an echo
- * arrived. What actually protected the product was only the `isSynthSpeaking`
- * branch, which catches mid-reply segments of a long reply; the FINAL segment,
- * whose speech-end is CAUSED by the playout stopping, always escaped. That
- * segment carries the reply's closing words, which is exactly the
- * "Okay, Papercup has completed the release check." shape that failed C4 of
- * the voice-public-release acceptance grade.
+ * So even the FASTEST path observed from "audio stopped" to "guard evaluated"
+ * costs 683 + 588 = 1271ms, against a 700ms window — and a normal reply is
+ * 2-3.8s. The cooldown was expired by ~1.8× at absolute best and several times
+ * over typically; it could never be in effect when an echo arrived. What
+ * actually protected the product was only the `isSynthSpeaking` branch, which
+ * catches mid-reply segments of a long reply; the FINAL segment, whose
+ * speech-end is CAUSED by the playout stopping, always escaped. That segment
+ * carries the reply's closing words, which is exactly the "Okay, Papercup has
+ * completed the release check." shape that failed C4 of the voice-public-release
+ * acceptance grade — verified end-to-end with real Kokoro audio through the real
+ * local whisper: playout-end→dispatch 1271ms, old guard passes it, this one
+ * rejects it, and real user speech after the room goes quiet still gets through.
  *
  * WHAT THIS DOES INSTEAD. Record WHEN our own playout was audible, carry the
  * capture window's real start/end with the audio, and reject an utterance whose
