@@ -85,11 +85,7 @@ import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import type { TopicTagMirrorOutcome, TopicTagMirrorResult } from './work-item-topic-tags';
 import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionAttestation, PersistedCompletionEvidence } from './coord-lifecycle/records';
-import {
-  isSufficientEvidence,
-  isWorkItemCompletionAuthority,
-  type WorkItemCompletionAuthority,
-} from './work-item-completion-authority';
+import { isWorkItemCompletionAuthority, type WorkItemCompletionAuthority } from './work-item-completion-authority';
 // EI-19362441037986499: the DECISION lives in a leaf module so it is exercisable without PG
 // or a wholesale module mock; this file keeps only the write that acts on it. Deliberately
 // NOT re-exported — the leaf is the import site for anyone who needs the decision itself.
@@ -3023,6 +3019,7 @@ export async function attachCompletionEvidenceToSettledItem(
     terminalOwner: wi.terminalOwner,
     terminalCompletionRef: wi.terminalCompletionRef,
     completionAuthority: wi.completionAuthority,
+    incomingCompletionAuthority: opts.completionAuthority,
     storedEvidence: wi.terminalCompletionEvidence,
     incomingEvidence: opts.completionEvidence,
   });
@@ -3092,6 +3089,11 @@ export async function attachCompletionEvidenceToSettledItem(
     // sees the attestation that was just filed rather than the pre-call snapshot.
     return { outcome: 'attested', workItem: (await getWorkItem(id, opts.harness)) ?? wi };
   }
+  const upgradeDescription =
+    decision.upgradeBasis === 'authority'
+      ? `equally sufficient evidence with authority:${opts.completionAuthority}, which outranks the stored ` +
+        `authority:${wi.completionAuthority}`
+      : `strictly richer evidence (verifiedHow plus test results, which theirs lacked)`;
   opts.onTerminalConflict?.({
     outcome: 'upgraded',
     existingOwner: wi.terminalOwner,
@@ -3099,8 +3101,8 @@ export async function attachCompletionEvidenceToSettledItem(
     existingEvidenceSufficient: existingSufficient,
     incomingEvidenceSufficient: incomingSufficient,
     note:
-      `work_item '${id}' was already completed by ${wi.terminalOwner}, but your record carries strictly richer ` +
-      `evidence (verifiedHow plus test results, which theirs lacked) — it is now the AUTHORITATIVE completion ` +
+      `work_item '${id}' was already completed by ${wi.terminalOwner}, but your record carries ${upgradeDescription} — ` +
+      `it is now the AUTHORITATIVE completion ` +
       `record. Their record was ARCHIVED to payload.${COMPLETION_ATTESTATIONS_KEY} rather than discarded, and ` +
       `the item's terminal state is unchanged.`,
   });
@@ -3362,16 +3364,21 @@ export async function setWorkItemState(
     isSettledWorkItemState(wi.state) &&
     isSettledWorkItemState(state);
   if (isSecondTerminalClose) {
-    const existingSufficient = isSufficientEvidence(wi.terminalCompletionEvidence);
-    const incomingSufficient = isSufficientEvidence(opts.completionEvidence);
-    // "Strictly richer" is the EXISTING `committed` bar — whatever `isSufficientEvidence`
-    // currently requires — not a new notion of quality. Deliberately NOT restated inline:
-    // the bar has moved once already (EI-18685043434033870 added the addedTests-implies-a-path
-    // condition), and a copy here would have silently become a false description of the
-    // check running one line below. A TIE does not upgrade: two equally
-    // sufficient records leave the FIRST standing, because the property being defended is
-    // "a second write must not destroy the first", not "the newest wins".
-    const upgrade = incomingSufficient && !existingSufficient;
+    // Reuse the record-only writer's PURE comparison. `storedRecordPresent:true` preserves
+    // this path's older owner-only legacy protection while keeping the record-only path's
+    // narrower ref-or-authority definition unchanged.
+    const decision = classifySettledCompletionEvidence({
+      by: opts.by!,
+      terminalOwner: wi.terminalOwner,
+      terminalCompletionRef: wi.terminalCompletionRef,
+      completionAuthority: wi.completionAuthority,
+      incomingCompletionAuthority: opts.completionAuthority,
+      storedRecordPresent: true,
+      storedEvidence: wi.terminalCompletionEvidence,
+      incomingEvidence: opts.completionEvidence,
+    });
+    const { existingSufficient, incomingSufficient } = decision;
+    const upgrade = decision.outcome === 'upgraded';
     const attestation: CompletionAttestation = {
       at: new Date().toISOString(),
       by: upgrade ? wi.terminalOwner : (opts.by ?? null),
@@ -3412,6 +3419,11 @@ export async function setWorkItemState(
       // state did not change, and a duplicate close should not re-fire `work-item:done`.
       return (await getWorkItem(id, opts.harness)) ?? wi;
     }
+    const upgradeDescription =
+      decision.upgradeBasis === 'authority'
+        ? `equally sufficient evidence with authority:${opts.completionAuthority}, which outranks the stored ` +
+          `authority:${wi.completionAuthority}`
+        : `strictly richer evidence (verifiedHow plus test results, which theirs lacked)`;
     opts.onTerminalConflict?.({
       outcome: 'upgraded',
       existingOwner: wi.terminalOwner,
@@ -3419,8 +3431,8 @@ export async function setWorkItemState(
       existingEvidenceSufficient: existingSufficient,
       incomingEvidenceSufficient: incomingSufficient,
       note:
-        `work_item '${id}' was already completed by ${wi.terminalOwner}, but your close carries strictly richer ` +
-        `evidence (verifiedHow plus test results, which theirs lacked) — it is now the AUTHORITATIVE record. ` +
+        `work_item '${id}' was already completed by ${wi.terminalOwner}, but your close carries ${upgradeDescription} — ` +
+        `it is now the AUTHORITATIVE record. ` +
         `Their record was ARCHIVED to payload.${COMPLETION_ATTESTATIONS_KEY} rather than discarded.`,
     });
     // Fall through: the normal terminal write below installs this richer record.

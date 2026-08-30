@@ -27,6 +27,13 @@ export interface SettledCompletionEvidenceInput {
   terminalOwner: string | null;
   terminalCompletionRef: string | null;
   completionAuthority: WorkItemCompletionAuthority | null;
+  /** The authority already computed for this call's completion record. */
+  incomingCompletionAuthority: WorkItemCompletionAuthority | null | undefined;
+  /**
+   * The second-terminal-close writer also protects legacy owner-only records. The record-only
+   * writer leaves this undefined so its existing ref-or-authority definition remains intact.
+   */
+  storedRecordPresent?: boolean;
   /** The completion evidence already stored on the row. */
   storedEvidence: CompletionVerificationEvidence | null | undefined;
   /** The completion evidence this call carries. */
@@ -45,6 +52,8 @@ export interface SettledCompletionEvidenceDecision {
   install: boolean;
   existingSufficient: boolean;
   incomingSufficient: boolean;
+  /** Why a foreign record was superseded; null for recorded/attested outcomes. */
+  upgradeBasis: 'evidence' | 'authority' | null;
 }
 
 /**
@@ -56,10 +65,12 @@ export interface SettledCompletionEvidenceDecision {
  *    and it is deliberately neither restated nor re-tuned here. That bar has moved once
  *    already; a local copy of its rules would have quietly become a false description of the
  *    check it claimed to describe.
- *  · A TIE ATTESTS. Two equally-sufficient records leave the FIRST standing, because the
- *    property being defended is "a second write must not destroy the first", not "the newest
- *    wins". Whether a human-verified test record OUGHT to outrank a watchdog's "N consecutive
- *    green runs" is a real question and a separate judgement — it is not settled in here.
+ *  · A TIE ATTESTS. Two equally-sufficient records with equal authority leave the FIRST
+ *    standing, because the property being defended is "a second write must not destroy the
+ *    first", not "the newest wins". The one deliberate authority tie-break is a coherent
+ *    committed/validated record over proposed/invalid: the content-identity gate already made
+ *    that judgement, and ignoring it would strand a clean committed record behind a dirty
+ *    proposed one merely because both supplied otherwise-sufficient test fields.
  *  · A row carrying NO completion record at all (neither a completion ref nor an authority —
  *    the shape every `watchdog-auto-close` row has) gets the incoming record INSTALLED, which
  *    is exactly what the state-write path already does in that case. Nothing is being
@@ -76,18 +87,27 @@ export function classifySettledCompletionEvidence(
   // covered 12 and MISSED the 15 worst — the ones that ended up mis-attributed, crediting the
   // second closer while still carrying the first closer's verification, which reads as a
   // clean well-evidenced close and passes every check we have.
-  const hasStoredRecord = Boolean(input.terminalCompletionRef || input.completionAuthority);
+  const hasStoredRecord = input.storedRecordPresent ?? Boolean(input.terminalCompletionRef || input.completionAuthority);
   const foreignRecord = hasStoredRecord && Boolean(input.terminalOwner) && input.by !== input.terminalOwner;
   const existingSufficient = isSufficientEvidence(input.storedEvidence);
   const incomingSufficient = isSufficientEvidence(input.incomingEvidence);
   if (!foreignRecord) {
-    return { outcome: 'recorded', install: true, existingSufficient, incomingSufficient };
+    return { outcome: 'recorded', install: true, existingSufficient, incomingSufficient, upgradeBasis: null };
   }
-  const upgrade = incomingSufficient && !existingSufficient;
+  const evidenceUpgrade = incomingSufficient && !existingSufficient;
+  const incomingAuthorityIsAuthoritative =
+    input.incomingCompletionAuthority === 'committed' || input.incomingCompletionAuthority === 'validated';
+  const storedAuthorityIsReplaceable = input.completionAuthority === 'proposed' || input.completionAuthority === 'invalid';
+  // Authority may break only a SUFFICIENT-evidence tie. An incoherent `committed` label must
+  // never make an insufficient record authoritative; the evidence bar remains the first gate.
+  const authorityUpgrade =
+    existingSufficient && incomingSufficient && incomingAuthorityIsAuthoritative && storedAuthorityIsReplaceable;
+  const upgradeBasis = evidenceUpgrade ? 'evidence' : authorityUpgrade ? 'authority' : null;
   return {
-    outcome: upgrade ? 'upgraded' : 'attested',
-    install: upgrade,
+    outcome: upgradeBasis ? 'upgraded' : 'attested',
+    install: upgradeBasis !== null,
     existingSufficient,
     incomingSufficient,
+    upgradeBasis,
   };
 }

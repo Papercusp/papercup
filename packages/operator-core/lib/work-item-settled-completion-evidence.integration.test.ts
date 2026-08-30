@@ -97,6 +97,7 @@ async function watchdogResolved(evidence: CompletionVerificationEvidence) {
     by: WATCHDOG,
     completionRef: 'auto-resolved: 4 consecutive green runs',
     completionEvidence: evidence,
+    completionAuthority: 'committed',
   });
   // 'resolved' is a LEGACY spelling: the issue family normalizes it onto the unified
   // terminal enum, so the stored status is 'done' (work-item-status-full-unify P-003).
@@ -136,6 +137,36 @@ describe('attachCompletionEvidenceToSettledItem — real PG', () => {
     expect(archived[0].by).toBe(WATCHDOG);
     expect(archived[0].outcome).toBe('superseded');
     expect(archived[0].evidence.summary).toBe('auto-resolved on green');
+  });
+
+  it('UPGRADES a sufficient proposed record when clean committed content arrives and archives the dirty close', async () => {
+    const item = await wi.createWorkItem({ kind: 'bug', title: 'dirty proposed close', harness: 'papercup' });
+    await wi.setWorkItemState(item.id, 'resolved', {
+      by: 'su-dirty-tree',
+      completionRef: 'tests passed against dirty working-tree blobs',
+      completionEvidence: RICH,
+      completionAuthority: 'proposed',
+    });
+
+    const res = await wi.attachCompletionEvidenceToSettledItem(item.id, {
+      by: AGENT,
+      completionRef: 'same tests, now matching committed HEAD blobs',
+      completionEvidence: { ...RICH, testResult: '144 passed / 0 failed on committed HEAD' },
+      completionAuthority: 'committed',
+    });
+    expect(res.outcome).toBe('upgraded');
+
+    const row = await rawRow(item.id);
+    expect(row.terminal_owner).toBe(AGENT);
+    expect(row.authority).toBe('committed');
+    expect(row.payload._completionEvidence.testResult).toContain('committed HEAD');
+    const archived = attestations(row.payload);
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toMatchObject({
+      by: 'su-dirty-tree',
+      completionAuthority: 'proposed',
+      outcome: 'superseded',
+    });
   });
 
   it('ATTESTS on a TIE: the stored record SURVIVES UNTOUCHED and the incoming one is filed beside it', async () => {

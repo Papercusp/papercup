@@ -37,6 +37,7 @@ const watchdogResolved = (evidence: CompletionVerificationEvidence | null) => ({
   terminalOwner: WATCHDOG,
   terminalCompletionRef: 'auto-resolved: 4 consecutive green runs',
   completionAuthority: null,
+  incomingCompletionAuthority: 'committed' as const,
   storedEvidence: evidence,
   incomingEvidence: RICH,
 });
@@ -61,6 +62,7 @@ describe('classifySettledCompletionEvidence — nothing to protect ⇒ the recor
       terminalOwner: 'watchdog-auto-close',
       terminalCompletionRef: null,
       completionAuthority: null,
+      incomingCompletionAuthority: 'committed',
       storedEvidence: null,
       incomingEvidence: RICH,
     });
@@ -74,6 +76,7 @@ describe('classifySettledCompletionEvidence — nothing to protect ⇒ the recor
       terminalOwner: AGENT,
       terminalCompletionRef: 'my earlier close',
       completionAuthority: 'committed',
+      incomingCompletionAuthority: 'committed',
       storedEvidence: RICH,
       incomingEvidence: RICH,
     });
@@ -87,6 +90,7 @@ describe('classifySettledCompletionEvidence — nothing to protect ⇒ the recor
       terminalOwner: null,
       terminalCompletionRef: null,
       completionAuthority: null,
+      incomingCompletionAuthority: 'proposed',
       storedEvidence: null,
       incomingEvidence: THIN,
     });
@@ -101,6 +105,7 @@ describe('classifySettledCompletionEvidence — a peer record present ⇒ upgrad
     const d = classifySettledCompletionEvidence(watchdogResolved(THIN));
     expect(d.outcome).toBe('upgraded');
     expect(d.install).toBe(true);
+    expect(d.upgradeBasis).toBe('evidence');
     expect(d.existingSufficient).toBe(false);
     expect(d.incomingSufficient).toBe(true);
   });
@@ -116,6 +121,46 @@ describe('classifySettledCompletionEvidence — a peer record present ⇒ upgrad
     expect(d.install).toBe(false);
     expect(d.existingSufficient).toBe(true);
     expect(d.incomingSufficient).toBe(true);
+    expect(d.upgradeBasis).toBeNull();
+  });
+
+  it.each([
+    ['proposed', 'committed'],
+    ['invalid', 'validated'],
+  ] as const)(
+    'UPGRADES an evidence tie when stored %s authority is outranked by incoming %s authority',
+    (storedAuthority, incomingAuthority) => {
+      const d = classifySettledCompletionEvidence({
+        ...watchdogResolved(RICH),
+        completionAuthority: storedAuthority,
+        incomingCompletionAuthority: incomingAuthority,
+      });
+      expect(d.outcome).toBe('upgraded');
+      expect(d.install).toBe(true);
+      expect(d.upgradeBasis).toBe('authority');
+    },
+  );
+
+  it('ATTESTS when both sufficient records are committed — equal authority preserves first-wins', () => {
+    const d = classifySettledCompletionEvidence({
+      ...watchdogResolved(RICH),
+      completionAuthority: 'committed',
+      incomingCompletionAuthority: 'committed',
+    });
+    expect(d.outcome).toBe('attested');
+    expect(d.install).toBe(false);
+    expect(d.upgradeBasis).toBeNull();
+  });
+
+  it('does not trust an authoritative label when the incoming evidence is insufficient', () => {
+    const d = classifySettledCompletionEvidence({
+      ...watchdogResolved(THIN),
+      completionAuthority: 'proposed',
+      incomingCompletionAuthority: 'committed',
+      incomingEvidence: THIN,
+    });
+    expect(d.outcome).toBe('attested');
+    expect(d.upgradeBasis).toBeNull();
   });
 
   it('ATTESTS when the incoming record is weaker than the stored one', () => {
@@ -138,6 +183,7 @@ describe('classifySettledCompletionEvidence — a peer record present ⇒ upgrad
       terminalOwner: 'su-peer',
       terminalCompletionRef: null,
       completionAuthority: 'committed',
+      incomingCompletionAuthority: 'committed',
       storedEvidence: RICH,
       incomingEvidence: RICH,
     });
@@ -165,6 +211,7 @@ describe('classifySettledCompletionEvidence — controls that must NOT pass', ()
       terminalOwner: 'watchdog-auto-close',
       terminalCompletionRef: null,
       completionAuthority: null,
+      incomingCompletionAuthority: 'committed',
       storedEvidence: null,
       incomingEvidence: RICH,
     });

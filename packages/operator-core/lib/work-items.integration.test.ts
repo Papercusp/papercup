@@ -841,16 +841,46 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
     expect(att![0].evidence).toEqual(THIN);
   });
 
+  it('a committed clean-content close supersedes an equally sufficient proposed dirty-content close', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'sufficient tests, but working-tree blobs differed from HEAD',
+      completionEvidence: RICH,
+      completionAuthority: 'proposed',
+    });
+
+    const conflicts: string[] = [];
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agB',
+      completionRef: 'same evidence now bound to matching committed blobs',
+      completionEvidence: { ...RICH, testResult: '7/7 green on committed HEAD' },
+      completionAuthority: 'committed',
+      onTerminalConflict: (info) => conflicts.push(info.outcome),
+    });
+
+    expect(after?.terminalOwner).toBe('agB');
+    expect(after?.completionAuthority).toBe('committed');
+    expect(conflicts).toEqual(['upgraded']);
+    const att = await attestations('engineer_issues', 'issue_id', bug.id);
+    expect(att).toHaveLength(1);
+    expect(att![0]).toMatchObject({ by: 'agA', completionAuthority: 'proposed', outcome: 'superseded' });
+  });
+
   it('two closes with EQUALLY sufficient evidence: the FIRST still stands (a tie is not a licence to overwrite)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
-    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA', completionRef: 'A', completionEvidence: RICH, completionAuthority: 'committed',
+    });
     const after = await wi.setWorkItemState(bug.id, 'resolved', {
       by: 'agB',
       completionRef: 'B',
       completionEvidence: { verifiedHow: 'unit' as const, testResult: '3/3 green' },
+      completionAuthority: 'committed',
     });
     expect(after?.terminalOwner).toBe('agA');
     expect(after?.terminalCompletionRef).toBe('A');
+    expect(after?.completionAuthority).toBe('committed');
   });
 
   it('the SAME owner re-closing is untouched — an idempotent retry / self-correction overwrites its own record and files no attestation', async () => {
