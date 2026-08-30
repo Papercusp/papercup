@@ -26,6 +26,21 @@ The old `autoloop-release-readiness` rubric contributes eight useful product que
 
 The `goal-mode-e2e` rubric remains authoritative for the general GOAL contract. This rubric's `goal-mode-foundation` criterion consumes a fresh COMPLETE base scorecard instead of copying 26 clauses. Specialized criteria deliberately revisit only the clauses whose application is materially different here: standing lifecycle, ordered worklist, unowned-frontier scope, drain-fleet execution, Blender ownership, and never implementing.
 
+## Plan-fleet materialization criterion
+
+The rubric now grades plan-fleet materialization as its own criterion, separate from the broader delegated-execution-and-drain-health criterion. Use rubric criterion key `plan-fleet-materialization` and instrument `woe.plan-fleet-materialization`. This split is required because a standing goal can have an active drain fleet and still fail to execute an already-started plan: drain activity and TEST children are not evidence that a plan-scoped fleet owns the plan's items.
+
+The authoritative source is the existing `GoalPortfolioBrief.worklist[].placement` projection assembled by `readGoalPortfolioBrief` and compiled by `compileGoalPlanPlacement` in `packages/operator-core/lib/goal-launch-settings.ts`; do not create a second placement ledger. For each ordered worklist plan:
+
+* **Terminal:** the plan is done/shipped/superseded or all items are terminal; no plan-fleet launch is required, and terminal grooming is the only valid no-fleet disposition.
+* **Blocked:** there is no dependency-free actionable item and the blocker is explicit and current; record the deterministic blocker rather than treating an empty queue as success.
+* **Eligible:** the plan has a non-terminal dependency-free actionable item. It must have a delegated plan-item lease, a live independently led fleet, a positive claim-spec selector (`{field:'plan',op:'=',value:<plan slug>}` or `{field:'plan_item',op:'=',value:<item id>}`), and a member actually holding the item. A launch transaction or fleet row without member claims is not materialization.
+* **Admitting/working:** the placement projection may report an in-progress repair or active lane, but the underlying lease, fleet, positive selector, and member claim must agree with that state.
+
+The GOAL holder must not claim the plan item itself. A plan that is not yet started is a planning gap; an already-started plan with no fleet on its items is a launch/spec gap. Do not write a second plan over already-started work, hand-dispatch ordinary queue work, use a negative `plan` predicate, or credit the standing drain/TEST fleet as plan execution.
+
+Replication requires `goals:get {detail:'full'}` for the typed worklist and provenance, `plans:get-item`/`plans:items` for status and blockers, and `fleet:assignments` for the live fleet claim-spec and member-held item. Rate every plan separately, preserve the distinction between terminal, deterministic-blocked, and eligible branches, and attach a concrete follow-up to any partial/fail/severe rating.
+
 ## Subject and window binding
 
 Every scorecard must bind all of:
@@ -94,6 +109,6 @@ When the goal is paused, new placement/throughput and traversal may be `unknown`
 
 ## Scorecard contract
 
-Use rubric ref `work-on-everything-stewardship-health`. File all 14 criterion keys in one structured observation. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
+Use rubric ref `work-on-everything-stewardship-health`. File all 15 criterion keys in one structured observation. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
 
 The rubric is operational, not a release gate. Trends across windows matter more than one isolated card, but a severe boundary violation stands on one occurrence.
