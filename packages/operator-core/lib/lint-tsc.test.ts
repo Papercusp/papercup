@@ -84,6 +84,8 @@ import {
   tscChildEnv,
   collectAutoTypecheckRoutes,
   runAutoTypecheckRoutes,
+  formatLintTscRunStamp,
+  gitHeadShaForLintTsc,
 } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
@@ -475,6 +477,126 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     );
     expect(gateSource).toMatch(/process\.on\(\s*['"]exit['"]/);
     expect(gateSource).toContain('formatLintTscResultMarker');
+  });
+});
+
+// EI-19323399466378077 — a backgrounded run's log body is byte-identical whether it is 30 seconds
+// or three hours old (WI-6951: a stale TSC_EXIT=1 log nearly reopened two already-fixed fixtures).
+// filesystem mtime cannot disambiguate on this tree either, because git-sync commits on a
+// schedule (the commit time is when the SWEEP ran, not when the edit landed). These pin the two
+// places the run-start stamp now lives: the terminal LINT_TSC_RESULT line (what a `| tail -N`
+// reads) and the pre-run LINT_TSC_RUN_STAMP banner (what survives a killed/hung run).
+describe('run-start stamp on LINT_TSC_RESULT (EI-19323399466378077)', () => {
+  it('is OMITTED when the caller does not supply it — every pre-existing call site stays byte-identical', () => {
+    expect(formatLintTscResultMarker({ label: 'operator-core', scope: 'all', code: 0 })).toBe(
+      'LINT_TSC_RESULT label=operator-core scope=all exit=0 status=clean',
+    );
+  });
+
+  it('is APPENDED LAST, after filesUnchecked, when the caller supplies it', () => {
+    const marker = formatLintTscResultMarker({
+      label: 'operator-core',
+      scope: 'all',
+      code: 0,
+      runStartIso: '2026-08-30T12:00:00.000Z',
+      headSha: 'abc1234567',
+    });
+    expect(marker).toBe(
+      'LINT_TSC_RESULT label=operator-core scope=all exit=0 status=clean at=2026-08-30T12:00:00.000Z head=abc1234567',
+    );
+  });
+
+  it('appends after filesUnchecked, not before it, so status= stays a stable substring-grep target', () => {
+    const marker = formatLintTscResultMarker({
+      label: 'operator-core',
+      scope: 'files',
+      code: 0,
+      filesUnchecked: 2,
+      runStartIso: '2026-08-30T12:00:00.000Z',
+      headSha: 'abc1234567',
+    });
+    expect(marker).toBe(
+      'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=2 ' +
+        'at=2026-08-30T12:00:00.000Z head=abc1234567',
+    );
+  });
+
+  it('reports head=unknown rather than fabricating a sha when git could not be read', () => {
+    const marker = formatLintTscResultMarker({
+      label: 'x',
+      scope: 'all',
+      code: 1,
+      runStartIso: '2026-08-30T12:00:00.000Z',
+      headSha: null,
+    });
+    expect(marker).toContain('head=unknown');
+  });
+
+  it('is wired into the exit hook alongside a run-start capture at function entry', () => {
+    // Mirrors the sibling assertion above (line 469): pin the WIRING, not just the pure
+    // formatter, so a future refactor cannot quietly stop passing the stamp through.
+    const gateSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/lib/tsc-baseline-gate.mjs'),
+      'utf8',
+    );
+    expect(gateSource).toContain('runStartIso');
+    expect(gateSource).toContain('gitHeadShaForLintTsc');
+  });
+});
+
+describe('LINT_TSC_RUN_STAMP pre-run banner (EI-19323399466378077)', () => {
+  it('names the run start, the HEAD it judged, and reports "all" when no --files scope was given', () => {
+    const stamp = formatLintTscRunStamp({
+      label: 'operator-core',
+      runStartIso: '2026-08-30T12:00:00.000Z',
+      headSha: 'abc1234567',
+      scope: 'all',
+      files: null,
+    });
+    expect(stamp).toBe(
+      'LINT_TSC_RUN_STAMP label=operator-core at=2026-08-30T12:00:00.000Z head=abc1234567 scope=all files=all',
+    );
+  });
+
+  it('lists each resolved --files path — the header a reader can compare against the caller\'s intent', () => {
+    const stamp = formatLintTscRunStamp({
+      label: 'operator-core',
+      runStartIso: '2026-08-30T12:00:00.000Z',
+      headSha: 'abc1234567',
+      scope: 'files',
+      files: ['packages/operator-core/lib/a.ts', 'packages/operator-core/lib/b.ts'],
+    });
+    expect(stamp).toContain('files=2');
+    expect(stamp).toContain('packages/operator-core/lib/a.ts');
+    expect(stamp).toContain('packages/operator-core/lib/b.ts');
+  });
+
+  it('reports head=unknown rather than fabricating a sha when git could not be read', () => {
+    expect(
+      formatLintTscRunStamp({
+        label: 'x',
+        runStartIso: '2026-08-30T12:00:00.000Z',
+        headSha: null,
+        scope: 'all',
+        files: null,
+      }),
+    ).toContain('head=unknown');
+  });
+});
+
+describe('gitHeadShaForLintTsc — never fabricates a sha it could not read', () => {
+  it('reads a real short HEAD sha from this repo', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    expect(gitHeadShaForLintTsc(root)).toMatch(/^[0-9a-f]{7,10}$/);
+  });
+
+  it('returns null, never a fabricated value, when the directory is not a git repo', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'not-a-repo-'));
+    try {
+      expect(gitHeadShaForLintTsc(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
