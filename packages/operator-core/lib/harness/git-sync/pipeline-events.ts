@@ -240,10 +240,15 @@ export function foldPipelineWindow(
       else out.greenCheckpoint.other += n;
     } else if (r.kind === 'deploy') {
       out.deploy.total += n;
+      // EI-18835078701597295: like the greenCheckpoint chain above, this one is TOTAL —
+      // the trailing `other` is what keeps it that way as new deploy statuses appear.
       if (r.status === 'ok') out.deploy.ok += n;
       else if (r.status === 'rolled-back') out.deploy.rolledBack += n;
       else if (r.status === 'failed') out.deploy.failed += n;
       else if (r.status === 'refused') out.deploy.refused += n;
+      else if (r.status === 'coalesced') out.deploy.coalesced += n;
+      else if (r.status === 'stale-lock-reclaimed') out.deploy.staleLockReclaimed += n;
+      else out.deploy.other += n;
     }
   }
   return out;
@@ -281,15 +286,31 @@ export async function summarizePipelineWindow(
   }
 }
 
-/** Most-recent events for `slug` (newest first) — the Git tab's timeline. */
-export async function recentPipelineEvents(slug: string, limit = 25, sql?: Sql): Promise<PipelineEventRow[]> {
+/**
+ * Most-recent events for `slug` (newest first) — the Git tab's timeline.
+ *
+ * EI-18835078701597295: `opts.kinds` pushes the kind filter into SQL. Without it, a
+ * consumer that cares about ONE kind has to over-fetch and filter in memory, and the
+ * `LIMIT` then applies to the WRONG population — on a busy pipeline a burst of
+ * `git_sync` rows evicts the older `deploy` rows from the window, so a caller looking
+ * for a run of consecutive deploys sees a short, truncated one and silently
+ * under-reports. Filtering server-side makes the limit mean what the caller meant.
+ */
+export async function recentPipelineEvents(
+  slug: string,
+  limit = 25,
+  sql?: Sql,
+  opts?: { kinds?: PipelineEventKind[] },
+): Promise<PipelineEventRow[]> {
   try {
+    const kinds = opts?.kinds && opts.kinds.length > 0 ? opts.kinds : null;
     // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776) — read-only, safe to re-issue.
     const rows = await withPgRetry(
       () => db(sql)<{ id: string; kind: string; status: string; detail: unknown; created_at: Date }[]>`
         SELECT id::text, kind, status, detail, created_at
           FROM harness_shared.pipeline_events
          WHERE install_slug = ${slug}
+           AND (${kinds}::text[] IS NULL OR kind = ANY(${kinds}::text[]))
          ORDER BY created_at DESC
          LIMIT ${Math.min(Math.max(limit, 1), 200)}
       `,
