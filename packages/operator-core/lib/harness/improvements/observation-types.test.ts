@@ -451,6 +451,21 @@ describe('canonical scorecard ratings (EI-12458)', () => {
     expect(canonicalScorecardRating('unknown', ['PASS', 'FAIL'])).toBe('unknown');
   });
 
+  it('resolves an unambiguous short label before an em dash or colon', () => {
+    const detailedScale = [
+      'pass — debug reachable at root and per-triple',
+      'partial: some checks pass',
+      'fail — checks fail',
+    ];
+    expect(canonicalScorecardRating(' PASS ', detailedScale)).toBe(detailedScale[0]);
+    expect(canonicalScorecardRating('partial', detailedScale)).toBe(detailedScale[1]);
+  });
+
+  it('leaves an ambiguous short label unchanged so validation can reject it', () => {
+    const ambiguousScale = ['pass — root checks pass', 'pass: per-triple checks pass', 'fail — checks fail'];
+    expect(canonicalScorecardRating('pass', ambiguousScale)).toBe('pass');
+  });
+
   it('normalizes every entry without losing evidence or suggestions', () => {
     expect(
       normalizeScorecardRatings(
@@ -463,6 +478,28 @@ describe('canonical scorecard ratings (EI-12458)', () => {
     ).toEqual({
       a: { rating: 'PASS', evidence: 'metric=1', suggestion: 'retain' },
       b: { rating: 'healthy', evidence: 'metric=2' },
+    });
+  });
+
+  it('uses criterion scales before the rubric default when canonicalizing short labels', () => {
+    const detailedRubric = {
+      ratingScale: ['pass — default rubric pass', 'fail — default rubric fail'],
+      criteria: [
+        { key: 'defaulted' },
+        { key: 'overridden', ratingScale: ['pass: criterion pass', 'fail: criterion fail'] },
+      ],
+    };
+    expect(
+      normalizeScorecardRatings(
+        {
+          defaulted: { rating: 'pass', evidence: 'default' },
+          overridden: { rating: 'pass', evidence: 'override' },
+        },
+        detailedRubric,
+      ),
+    ).toEqual({
+      defaulted: { rating: 'pass — default rubric pass', evidence: 'default' },
+      overridden: { rating: 'pass: criterion pass', evidence: 'override' },
     });
   });
 });

@@ -579,14 +579,22 @@ export interface ScorecardRatingRubric {
 /**
  * Resolve a case-insensitive caller rating to the rubric's EXACT canonical spelling.
  * `unknown` is universal; when the rubric omits it we still canonicalize it to the
- * shared lower-case spelling. Unknown/off-scale values are returned unchanged so the
+ * shared lower-case spelling. A short label is also accepted when it is the
+ * unambiguous leading label of exactly one scale entry (the text before an em dash
+ * or colon). Unknown/off-scale/ambiguous values are returned unchanged so the
  * existing validation gate can reject them with its teaching error.
  */
 export function canonicalScorecardRating(rating: string, scale: readonly string[] | null | undefined): string {
   const trimmed = String(rating).trim();
-  const match = (scale ?? []).find((candidate) => candidate.trim().toLowerCase() === trimmed.toLowerCase());
+  const candidates = (scale ?? []).filter((candidate) => typeof candidate === 'string' && candidate.trim());
+  const normalized = trimmed.toLowerCase();
+  const match = candidates.find((candidate) => candidate.trim().toLowerCase() === normalized);
   if (match) return match;
-  return trimmed.toLowerCase() === 'unknown' ? 'unknown' : trimmed;
+  if (normalized === 'unknown') return 'unknown';
+
+  const leadingLabel = (value: string): string => value.split(/[—:]/, 1)[0].trim().toLowerCase();
+  const shortMatches = candidates.filter((candidate) => leadingLabel(candidate) === normalized);
+  return shortMatches.length === 1 ? shortMatches[0] : trimmed;
 }
 
 /**
