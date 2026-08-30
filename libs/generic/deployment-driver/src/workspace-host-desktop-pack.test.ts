@@ -15,6 +15,7 @@ import {
   WORKSPACE_HOST_DESKTOP_PACK_CHECKS,
   WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
   WORKSPACE_HOST_DESKTOP_PACK_PHASES,
+  WORKSPACE_HOST_DESKTOP_ROOT,
   buildWorkspaceHostDesktopPackScript,
   parseWorkspaceHostDesktopPackAttestation,
   type WorkspaceHostDesktopPackInput,
@@ -22,6 +23,7 @@ import {
 import {
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_STATE_ROOT,
 } from './workspace-host-bootstrap';
 
 const input = (over: Partial<WorkspaceHostDesktopPackInput> = {}): WorkspaceHostDesktopPackInput => ({
@@ -117,6 +119,33 @@ describe('P-012 — no credential bleed into sandboxes', () => {
     // ...and, decisively, actual reachability, which is the claim that matters however
     // the groups happen to be arranged.
     expect(script).toMatch(/runuser -u "\$DESKTOP_USER" -- test -r "\$WORKSPACE_HOME"/);
+  });
+
+  it('asserts the POSITIVE mirror: the desktop user can actually WRITE its own root', () => {
+    // REGRESSION GUARD. Measured on a live workspace VM: the pack installed cleanly,
+    // every phase passed, and it attested `status: healthy` with all checks ok — while
+    // the desktop root was completely unusable by the desktop user. The root was
+    // `${STATE_ROOT}/desktop`, and `/var/lib/papercusp` is 0750 papercusp:papercusp, so
+    // the desktop user (deliberately not in that group) had no traversal: `namei`
+    // reported `desktop - Permission denied`. `kasmvncpasswd` could not write the
+    // per-session credential file, so the ticketed viewer could not be provisioned.
+    //
+    // Every existing assertion still passed, because `install -d -o <user>` succeeds as
+    // root regardless of whether the owner can reach the result. OWNERSHIP IS NOT
+    // USABILITY, so the only honest check asks the desktop user itself.
+    const script = render();
+    expect(script).toMatch(/runuser -u "\$DESKTOP_USER" -- test -w "\$DESKTOP_ROOT" \|\| fail desktop-root-writable/);
+    expect(WORKSPACE_HOST_DESKTOP_PACK_CHECKS).toContain('desktop-root-writable');
+  });
+
+  it('keeps the desktop root OUT of the service user private state root', () => {
+    // The structural half of the bug above, asserted independently of the runtime probe
+    // because it is the thing that made the probe fail. These two requirements cannot
+    // both hold while the root is nested: the desktop user needs traversal, and granting
+    // it means joining the service group — which is precisely the credential bleed
+    // `workspace-credential-isolation` exists to prevent. So the path must stay outside.
+    expect(WORKSPACE_HOST_DESKTOP_ROOT.startsWith(`${WORKSPACE_HOST_STATE_ROOT}/`)).toBe(false);
+    expect(render()).toContain(`DESKTOP_ROOT='${WORKSPACE_HOST_DESKTOP_ROOT}'`);
   });
 
   it('defaults to an identity distinct from both bootstrap accounts', () => {

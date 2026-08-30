@@ -52,8 +52,26 @@ export const WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX =
  */
 export const DEFAULT_WORKSPACE_HOST_DESKTOP_USER = 'papercusp-desktop';
 export const DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP = 'papercusp-desktop';
-/** Home + per-session credential root for the desktop pool. Mode 0700, desktop-user owned. */
-export const WORKSPACE_HOST_DESKTOP_ROOT = `${WORKSPACE_HOST_STATE_ROOT}/desktop`;
+/**
+ * Home + per-session credential root for the desktop pool. Mode 0700, desktop-user owned.
+ *
+ * ⚠ A TOP-LEVEL PATH, DELIBERATELY *NOT* NESTED UNDER `WORKSPACE_HOST_STATE_ROOT`.
+ *
+ * It was `${WORKSPACE_HOST_STATE_ROOT}/desktop` until this was measured on a real
+ * workspace VM: `/var/lib/papercusp` is `drwxr-x--- papercusp:papercusp`, and the
+ * desktop user is deliberately NOT in group `papercusp` (that non-membership is what
+ * `workspace-credential-isolation` asserts). With no `x` on the parent, the desktop
+ * user could not TRAVERSE into the root created for it —
+ * `namei` reported `desktop - Permission denied` — so `kasmvncpasswd` could not write
+ * the per-session view/control credential file that `buildXServerCommand` requires,
+ * and the ticketed viewer could not be provisioned at all.
+ *
+ * The two requirements are irreconcilable while nested: granting traversal means
+ * putting the desktop user in the service group, which is exactly the credential bleed
+ * the pack exists to prevent. So the root moves OUT rather than the isolation being
+ * weakened. Anything that needs both must cross a deliberate seam, not a directory mode.
+ */
+export const WORKSPACE_HOST_DESKTOP_ROOT = '/var/lib/papercusp-desktop';
 
 /**
  * The pinned KasmVNC artifact.
@@ -138,6 +156,12 @@ export const WORKSPACE_HOST_DESKTOP_PACK_CHECKS = [
   'kasmvnc-binary',
   'loopback-only-listener',
   'desktop-identity',
+  // The mirror of `workspace-credential-isolation`. That one proves the desktop user
+  // CANNOT reach what isn't its own; this proves it CAN reach what is. Attesting only
+  // the negative let the pack report `status: healthy` on a host whose desktop root was
+  // unusable, which is the precise failure this pack's install-time checks exist to
+  // turn into "one legible failure" rather than "desktops silently do not work".
+  'desktop-root-writable',
   'workspace-credential-isolation',
   'x-stack',
   'a11y-stack',
@@ -332,6 +356,12 @@ getent passwd "$DESKTOP_USER" >/dev/null || useradd --system \\
   --gid "$DESKTOP_GROUP" --home-dir "$DESKTOP_ROOT" --no-create-home \\
   --shell /usr/sbin/nologin "$DESKTOP_USER"
 install -d -o "$DESKTOP_USER" -g "$DESKTOP_GROUP" -m 0700 "$DESKTOP_ROOT"
+
+# Ownership is NOT evidence of usability: \`install -d\` runs as root and succeeds even
+# when every ancestor denies the owner traversal, which is exactly how a desktop root
+# nested under the service user's 0750 state root passed every other check while being
+# unwritable by the only account that ever needs it. Ask the desktop user directly.
+runuser -u "$DESKTOP_USER" -- test -w "$DESKTOP_ROOT" || fail desktop-root-writable
 
 # THE ISOLATION ASSERTIONS. Each is the negative form on purpose: "is not a member",
 # "cannot read". A positive check ("the desktop user exists") passes just as happily
