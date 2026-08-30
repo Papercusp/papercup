@@ -2439,15 +2439,17 @@ export function evaluateChangeInCandidate(args: {
         );
       }
       return which === 'judged'
-        ? `The gate's judged candidate (${at}) DOES carry your change — the marker occurs ${times} in its version of this file. ` +
-            `That verdict IS a real verdict on your code, so a RED there is about your change, not about a missing one. ` +
-            `Do NOT re-fire to "get a run that includes it" — you already have one.` +
+        ? `The gate's judged candidate (${at}) DOES carry your change TO ${relPath} — the marker occurs ${times} in its version of this file. ` +
+            `That verdict IS a real verdict on ${relPath}: a RED there is about your change to THIS file, not about a missing one. ` +
+            `Do NOT re-fire FOR ${relPath} — you already have a run that includes it. ` +
+            `This verdict is PER-PATH, not per-run: if your session changed other files too, they may land in a different commit and this candidate may NOT carry them — ` +
+            `re-check each other changed path separately (its own dev:pipeline_position / marker call) before concluding no re-fire is needed for the whole change-set.` +
             (judgedCount !== null && judgedCount > 1
               ? ` (Caveat: the marker occurs ${times}, so it is not unique to your change — if it is a common identifier ` +
                 `rather than a string your edit introduced, confirm by ancestry: ` +
                 `git merge-base --is-ancestor $(git log --format=%H -1 -S'<a string your change ADDED>' -- <path>) ${at}.)`
               : '')
-        : `A checkpoint fired now would judge ${at}, which DOES carry your change (marker occurs ${times}).`;
+        : `A checkpoint fired now would judge ${at}, which DOES carry your change TO ${relPath} (marker occurs ${times}). This is per-path — other changed files may not be in this same candidate.`;
     }
     if (m.present === false) {
       const why = m.pathPresent === false ? ' (that commit has no such file at all)' : '';
