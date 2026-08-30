@@ -1147,11 +1147,31 @@ mod live_tests {
     //!   HOME=<tmp-home> cargo test -p pui --lib http_live -- --ignored
     use super::*;
     use serde_json::Value;
+    use std::io::ErrorKind;
+
+    fn discovery_file_is_unavailable(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == ErrorKind::NotFound)
+        })
+    }
 
     #[tokio::test]
     #[ignore = "requires a live headless `papercusp serve` (reads ~/.papercusp/operator.json)"]
     async fn http_live_read_surface_against_headless_serve() {
-        let client = HttpClient::from_discovery().expect("operator.json discovery");
+        let client = match HttpClient::from_discovery() {
+            Ok(client) => client,
+            Err(err) if discovery_file_is_unavailable(&err) => {
+                eprintln!(
+                    "SKIP http_live_read_surface_against_headless_serve: \
+                     ~/.papercusp/operator.json is unavailable ({err:#}); \
+                     start an isolated `papercusp serve` with its HOME to exercise this smoke"
+                );
+                return;
+            }
+            Err(err) => panic!("operator.json discovery: {err:#}"),
+        };
         let health = client
             .sys_http("GET", "/api/health", None)
             .await
