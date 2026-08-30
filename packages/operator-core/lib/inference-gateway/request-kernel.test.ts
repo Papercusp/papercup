@@ -105,6 +105,7 @@ interface FixtureOverrides {
     context: GatewayKernelAttemptContext<RouteValue>,
   ) => Promise<KernelResponse>;
   downstreamWrite?: (chunk: Uint8Array) => void | Promise<void>;
+  span?: KernelOptions['span'];
 }
 
 function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) {
@@ -152,6 +153,7 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
     },
     policy: { ...DEFAULT_POLICY, ...overrides.policy },
     telemetry,
+    span: overrides.span,
     admission: {
       async run({ route }, task) {
         events.push(`admit:${route.value.name}`);
@@ -766,5 +768,68 @@ describe('gateway request kernel request-body-derived TTFB deadline', () => {
     // Back-compat guard: a bad scalar must fail before any work happens, as it
     // did when the field could only ever be a number.
     expect(f.events).not.toContain('body');
+  });
+});
+
+/**
+ * P-003. The legacy proxy entries run the kernel INSIDE a request that already
+ * opened its own span (`beginRequestTelemetry`, finished from `res`
+ * finish/close). Without adoption the kernel begins a second span for one HTTP
+ * request and the stage telemetry double-counts it.
+ */
+describe('gateway request kernel caller-supplied span adoption', () => {
+  const lane = laneRegistry.openaiResponses;
+
+  it('adopts the caller span and does not begin a second one for the same request', async () => {
+    const caller = new GatewayRequestTelemetry();
+    const span = caller.begin({ ownerId: 'su-outer', provider: 'codex', protocol: lane.protocol });
+    const f = fixture(lane, { span });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    // One request, one id: the kernel reports under the CALLER's span.
+    expect(result.requestId).toBe(span.requestId);
+    expect(caller.snapshot().requests).toMatchObject({ started: 1, finalized: 1, active: 0 });
+    // ...and the kernel's own telemetry never opened one.
+    expect(f.telemetry.snapshot().requests).toMatchObject({ started: 0, finalized: 0 });
+  });
+
+  it("propagates the adopted span's ownerId into the adapter's attempt context", async () => {
+    const caller = new GatewayRequestTelemetry();
+    const span = caller.begin({ ownerId: 'su-outer', provider: 'codex', protocol: lane.protocol });
+    const seen: Array<string | null> = [];
+    const f = fixture(lane, {
+      span,
+      async executeAttempt(_prepared, context) {
+        seen.push(context.ownerId);
+        return { status: 200, streaming: false, transport: context.route.transport, metadata: {}, body: null };
+      },
+    });
+
+    await executeGatewayRequestKernel(f.options);
+
+    // fixture() sets request.ownerId to 'su-contract'. The kernel derives its
+    // context ownerId from the SPAN, so an adopted span re-identifies the whole
+    // request — the property that makes one request report under one identity.
+    expect(seen).toEqual(['su-outer']);
+  });
+
+  it('a second finish is a no-op, so the caller\'s res-close handler stays safe', async () => {
+    const caller = new GatewayRequestTelemetry();
+    const span = caller.begin({ ownerId: 'su-outer', provider: 'codex', protocol: lane.protocol });
+    const f = fixture(lane, { span });
+
+    await executeGatewayRequestKernel(f.options);
+    // What `beginRequestTelemetry`'s res finish/close handler does afterwards.
+    expect(span.finish('ok', 200)).toBeNull();
+    expect(caller.snapshot().requests).toMatchObject({ started: 1, finalized: 1, active: 0 });
+  });
+
+  it('CONTROL: without adoption the kernel begins its own span, as it always has', async () => {
+    const f = fixture(lane, {});
+
+    await executeGatewayRequestKernel(f.options);
+
+    expect(f.telemetry.snapshot().requests).toMatchObject({ started: 1, finalized: 1, active: 0 });
   });
 });

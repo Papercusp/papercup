@@ -574,7 +574,12 @@ async function deleteFromPg(
   const parsed = parseEngineerIssueKey(key);
   const storageHarnessSlug = parsed?.storageHarnessSlug ?? opts.harnessSlug;
   const issueId = parsed?.issueId ?? key;
-  const authorPubkey = provenance?.authorPubkey || null;
+  // Author-scoped tombstones must never widen into an unscoped delete when a
+  // legacy/direct caller omits the provenance context. The canonical apply
+  // path always supplies it; refusing here protects direct callers and keeps
+  // the authorization boundary fail-closed.
+  if (!provenance) return;
+  const authorPubkey = provenance.authorPubkey;
   await sql`
     DELETE FROM harness_shared.work_items
     WHERE workspace_id = ${opts.workspaceId}
@@ -584,7 +589,7 @@ async function deleteFromPg(
       -- Remote tombstones may delete only the row materialised from that same
       -- source log.  This makes every pre-829 bare-key replay fail closed instead
       -- of erasing a same-id local/sibling row (the migration-826 incident).
-      AND (${authorPubkey}::text IS NULL OR author_pubkey = ${authorPubkey})
+      AND author_pubkey = ${authorPubkey}
       -- ts-guard the delete (a stale del must not erase a newer row).
       AND (
         (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)

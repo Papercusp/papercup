@@ -47,6 +47,7 @@ import {
   failureEntryKey,
   classifyStaleFailureEntries,
   formatStaleFailureSummary,
+  formatTreeDriftAdvisory,
 } from "./lib/vitest-summary.mjs";
 import {
   selectRelatedTests,
@@ -5504,6 +5505,41 @@ if (failed) {
     runStartHead: RUN_START_HEAD,
     reportHead,
     stale: staleFailureClassification.stale,
+  })) {
+    errSync(line);
+  }
+  // WI-972025: the stale-failure block above only fires when a FAILING TEST FILE's own blob
+  // moved. A failure caused by a mid-run rewrite of a module that file IMPORTS leaves both of
+  // its blobs identical, so it classifies as `current` and the advisory stays silent — which is
+  // exactly how a 53-minute run reported two phantom collection failures as confident reds
+  // (see formatTreeDriftAdvisory's header for the measured case). HEAD moving is the signal
+  // that check cannot produce, and this run already holds both refs. Advisory only: the exit
+  // code and every existing verdict contract are untouched.
+  const treeDrifted =
+    RUN_START_HEAD && reportHead && RUN_START_HEAD !== reportHead;
+  for (const line of formatTreeDriftAdvisory({
+    runStartHead: RUN_START_HEAD,
+    reportHead,
+    changedPaths: treeDrifted
+      ? (
+          gitOutput([
+            "diff",
+            "--name-only",
+            `${RUN_START_HEAD}..${reportHead}`,
+          ]) ?? ""
+        )
+          .split("\n")
+          .filter(Boolean)
+      : [],
+    commitCount: treeDrifted
+      ? Number(
+          gitOutput([
+            "rev-list",
+            "--count",
+            `${RUN_START_HEAD}..${reportHead}`,
+          ]) ?? "",
+        ) || null
+      : null,
   })) {
     errSync(line);
   }

@@ -126,4 +126,44 @@ describe('transient service payload escaping', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }
   });
+
+  it('preserves a UTF-8 code point split across runner stdout chunks in both sinks (WI-972553)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'systemd-runner-utf8-'));
+    const logPath = join(dir, 'durable.log');
+    const transport = createSecretEnvironmentTransport({
+      PATH: process.env.PATH,
+      [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: logPath,
+      [SYSTEMD_RUNNER_REDACTIONS_ENV]: Buffer.from(JSON.stringify([]), 'utf8').toString('base64'),
+    });
+    // The four bytes of U+1F600 deliberately straddle two `data` events. Decoding
+    // each chunk in isolation yields one U+FFFD per orphaned byte instead.
+    const script =
+      `process.stdout.write(Buffer.from([0xf0]));` +
+      `setTimeout(() => process.stdout.write(Buffer.from([0x9f, 0x98, 0x80])), 150);`;
+    const child = spawn(
+      process.execPath,
+      [SYSTEMD_ENV_RUNNER_PATH, '--env-fd-path', transport.sourcePath, '--', process.execPath, '-e', script],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const mirrored: Buffer[] = [];
+    child.stdout?.on('data', (chunk: Buffer) => mirrored.push(Buffer.from(chunk)));
+
+    try {
+      const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
+      expect({ code, signal }).toEqual({ code: 0, signal: null });
+
+      // Corruption committed in the runner reaches BOTH sinks, and the operator's
+      // own decoder downstream cannot recover it — so assert both here.
+      const durable = readFileSync(logPath, 'utf8');
+      expect(durable).toContain('😀');
+      expect(durable).not.toContain('�');
+
+      const mirror = Buffer.concat(mirrored).toString('utf8');
+      expect(mirror).toContain('😀');
+      expect(mirror).not.toContain('�');
+    } finally {
+      transport.release();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  });
 });

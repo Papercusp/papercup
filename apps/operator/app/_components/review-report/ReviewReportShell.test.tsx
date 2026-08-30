@@ -322,6 +322,15 @@ describe("rendering", () => {
     );
   });
 
+  it("stacks header actions only below their side-by-side fit threshold", () => {
+    expect(REPORT_CSS).toMatch(
+      /@container \(max-width: 315px\)[\s\S]*?\.review-report__actions\s*\{[^}]*flex-direction: column;[^}]*align-items: stretch;/,
+    );
+    expect(REPORT_CSS).toMatch(
+      /@container \(max-width: 315px\)[\s\S]*?\.review-report__apply\.pc-btn,\s*\.review-report__dismiss\.pc-btn\s*\{[^}]*width: 100%;[^}]*min-width: 0;/,
+    );
+  });
+
   it("shows complete evidence plus consumer detail for only the clicked row", () => {
     renderShell();
     expect(screen.queryByText("plan item linked by coverage")).toBeNull();

@@ -370,6 +370,56 @@ export function formatStaleFailureSummary({ runStartHead, reportHead, stale, }?:
     }>;
 }): string[];
 /**
+ * Render the advisory for a run whose TREE moved while it was executing.
+ *
+ * This is the companion to {@link formatStaleFailureSummary}, and the distinction between them
+ * is the entire point. That helper asks "did the failing FILE itself change?", which it answers
+ * by comparing that one file's blob at run start against report time. This helper asks the
+ * question that comparison structurally CANNOT: "did anything the failing file DEPENDS ON
+ * change?" A test file is only the entry point to its import graph, and the graph is where a
+ * long run is most exposed.
+ *
+ * MEASURED CASE (WI-972025, 2026-08-30). A canonical run spanning 00:19:31Z->01:12:29Z absorbed
+ * 35 commits touching 122 files, 92 of them in packages/operator-core. Two apps/operator suites
+ * died at COLLECTION with `registerAuthorityOp: kind required`, because the
+ * PLAN_ITEM_CLAIM_OP_KINDS.forceRelease KEY entered claims.ts at 00:37:27Z while its
+ * REGISTRATION entered plan-item-claim-authority-ops.ts at 00:42:29Z — five minutes apart, both
+ * inside the run. A worker that read the first file before 00:37Z and collected a suite after
+ * 00:42Z ran new registration code against old constants.
+ *
+ * NEITHER TEST FILE CHANGED. So both of their blobs matched, both were classified `current`, no
+ * stale-failure advisory fired, and the phantom red was reported with full confidence — against
+ * code that was never broken (both files pass individually at HEAD, 9 consecutive ledger rows).
+ * That silence is the bug this closes: the run had `RUN_START_HEAD` and `reportHead` in hand and
+ * never said the tree had moved underneath it.
+ *
+ * Deliberately ADVISORY, and deliberately does NOT touch the exit code — the same judgment
+ * `formatProvenanceDrift` records in scripts/test-files.mjs. This signal is consumed by gates,
+ * and flipping a verdict on a DIAGNOSTIC would make this a new false-RED generator, which is the
+ * failure mode it exists to reduce. It rides BESIDE the verdict so the verdict cannot be pasted
+ * without its caveat.
+ *
+ * Returns [] when HEAD did not move, or when either head is unknown — an unreadable ref is an
+ * attribution gap, not evidence of drift (the same rule `classifyStaleFailureEntries` applies
+ * when it routes a missing blob to `unknown` rather than to `stale`).
+ *
+ * @param {{
+ *   runStartHead?: string|null,
+ *   reportHead?: string|null,
+ *   changedPaths?: string[],
+ *   commitCount?: number|null,
+ *   sampleLimit?: number,
+ * }} args
+ * @returns {string[]}
+ */
+export function formatTreeDriftAdvisory({ runStartHead, reportHead, changedPaths, commitCount, sampleLimit, }?: {
+    runStartHead?: string | null;
+    reportHead?: string | null;
+    changedPaths?: string[];
+    commitCount?: number | null;
+    sampleLimit?: number;
+}): string[];
+/**
  * Parse the canonical, machine-readable break-set line emitted by
  * {@link formatFailingFilesLine}.
  *
@@ -550,3 +600,5 @@ export const AFFECTED_TESTS_FAILING_FILES_TOKEN: "AFFECTED_TESTS_FAILING_FILES";
 export const FAILING_FILES_LINE_MAX_ENTRIES: 400;
 /** A stable token for the separate stale-failure advisory block. */
 export const AFFECTED_TESTS_STALE_FAILURES_TOKEN: "AFFECTED_TESTS_STALE_FAILURES";
+/** A stable token for the separate mid-run tree-drift advisory block. */
+export const AFFECTED_TESTS_TREE_DRIFT_TOKEN: "AFFECTED_TESTS_TREE_DRIFT";

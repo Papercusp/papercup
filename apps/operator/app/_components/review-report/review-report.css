@@ -677,3 +677,19 @@
     grid-column: 1 / -1;
   }
 }
+
+/* The app chrome can leave less inline space than the viewport width implies.
+ * Once the two 40px-tall actions no longer fit side by side, stack them rather
+ * than making the takeover horizontally scroll just to reveal Close. */
+@container (max-width: 315px) {
+  .review-report__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .review-report__apply.pc-btn,
+  .review-report__dismiss.pc-btn {
+    width: 100%;
+    min-width: 0;
+  }
+}

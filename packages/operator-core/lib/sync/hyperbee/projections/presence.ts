@@ -189,15 +189,18 @@ async function deleteFromPg(
   // declared device) — comparing device_pubkey there scoped out every legit
   // log-path leave-tombstone. Each transport writes AND deletes with the same
   // author identity, so a self-tombstone matches and a forged one never does.
-  // Absent provenance ⇒ no author filter (today's behavior).
-  const authorDevice = provenance?.authorPubkey ?? null;
+  // Author-scoped tombstones must fail closed when a legacy/direct caller
+  // omits provenance. The canonical apply path always supplies it; refusing
+  // here prevents an absent author from widening the delete to every row.
+  if (!provenance) return;
+  const authorDevice = provenance.authorPubkey;
   await sql`
     DELETE FROM harness_shared.shared_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND machine_label = ${machineLabel}
-      AND (${authorDevice}::text IS NULL OR author_pubkey = ${authorDevice}::text)
+      AND author_pubkey = ${authorDevice}::text
       -- EI-79 step 2 + D-001: guard the delete by the SAME fed_order_key() order (EI-1698)
       AND (
         (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)

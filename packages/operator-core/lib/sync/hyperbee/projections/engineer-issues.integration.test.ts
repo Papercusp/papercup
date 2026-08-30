@@ -431,10 +431,23 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
   it('deleteFromPg removes by issue_id (ts-guarded)', async () => {
     const p = proj();
     await p.writeToPg(issueRow({ issue_id: 'EI-11' }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
-    await p.deleteFromPg('EI-11', 50); // stale del — guarded out
+    await p.deleteFromPg('EI-11', 50, undefined, { ts: 50, origin: 'remote', authorPubkey: 'peer' }); // stale del — guarded out
     expect(await getIssue('EI-11')).not.toBeNull();
-    await p.deleteFromPg('EI-11', 200); // newer del — applies
+    await p.deleteFromPg('EI-11', 200, undefined, { ts: 200, origin: 'remote', authorPubkey: 'peer' }); // newer del — applies
     expect(await getIssue('EI-11')).toBeNull();
+  });
+
+  it('refuses a bare tombstone when provenance is absent', async () => {
+    const p = proj();
+    await p.writeToPg(issueRow({ issue_id: 'EI-11-no-provenance' }), {
+      ts: 100,
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+
+    await p.deleteFromPg('EI-11-no-provenance', 200);
+
+    expect(await getIssue('EI-11-no-provenance')).not.toBeNull();
   });
 
   it('a harness-qualified tombstone deletes only the exact authored twin', async () => {

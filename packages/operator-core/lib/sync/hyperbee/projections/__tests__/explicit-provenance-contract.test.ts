@@ -70,15 +70,7 @@ describe('explicit projection provenance contract', () => {
    * converting an absent context into origin='local' — and we can PIN the population of
    * deleters that fall back to an unscoped delete so a new one cannot appear unnoticed.
    */
-  const UNSCOPED_DELETE_ON_ABSENT_PROVENANCE = new Set([
-    // Both feed `provenance?.<field> ?? null` into a nullable SQL author filter, so an
-    // absent context widens the delete to every row with that key. Not reachable from the
-    // canonical apply path (projection.ts:395 and register-all.ts:365 always thread
-    // provenance) — latent only. Deciding the absent-provenance semantic (refuse vs
-    // require an explicit local marker) is WI-471233; shrink this set to empty there.
-    'engineer-issues.ts',
-    'presence.ts',
-  ]);
+  const UNSCOPED_DELETE_ON_ABSENT_PROVENANCE = new Set<string>();
 
   it('forbids local-origin fallbacks in delete paths and pins the unscoped-delete population', () => {
     const violations: string[] = [];

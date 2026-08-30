@@ -723,27 +723,22 @@ describe("routeFreshKickoff (EI-20339142329504181 OMP startup barrier)", () => {
   });
 });
 
-describe("OMP ox-alpha title mitigation (EI-21258695702342582)", () => {
-  it("matches only ox-alpha, including provider and effort decoration", () => {
+describe("OMP managed-session title isolation (WI-287139)", () => {
+  it("disables provider-backed auto-title for every model, including the default", () => {
     for (const model of [
+      null,
       "stealth/ox-alpha",
       "stealth/ox-alpha:max",
       "openrouter/stealth/ox-alpha:high",
+      "openrouter/other/model:max",
+      "claude-sonnet-4-6:high",
     ]) {
       expect(ompTitleMitigationArgs(model)).toEqual(["--no-title"]);
     }
-    for (const model of [
-      null,
-      "openrouter/other/model:max",
-      "stealth/ox-alpha-preview:max",
-      "claude-sonnet-4-6:high",
-    ]) {
-      expect(ompTitleMitigationArgs(model)).toEqual([]);
-    }
   });
 
-  it("applies to fresh role, fresh SU wrapper, and resume argv", () => {
-    const model = "openrouter/stealth/ox-alpha:max";
+  it("applies to fresh role, fresh SU wrapper, and resume argv with or without an explicit model", () => {
+    const model = "papercusp-gateway/claude-sonnet-4-6";
     expect(
       roleLaunchArgs("omp", { promptFile: "/p.md", model }).args,
     ).toContain("--no-title");
@@ -753,19 +748,15 @@ describe("OMP ox-alpha title mitigation (EI-21258695702342582)", () => {
         model,
       } as unknown as Parameters<typeof resumeArgsFor>[1]).args,
     ).toContain("--no-title");
-  });
-
-  it("leaves unrelated OMP models byte-compatible", () => {
-    const model = "openrouter/anthropic/claude-sonnet-4-6:high";
     expect(
-      roleLaunchArgs("omp", { promptFile: "/p.md", model }).args,
-    ).not.toContain("--no-title");
-    expect(suWrapperExtraArgs("omp", { model })).not.toContain("--no-title");
+      roleLaunchArgs("omp", { promptFile: "/p.md" }).args,
+    ).toContain("--no-title");
+    expect(suWrapperExtraArgs("omp")).toContain("--no-title");
     expect(
       resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }, {
-        model,
+        model: null,
       } as unknown as Parameters<typeof resumeArgsFor>[1]).args,
-    ).not.toContain("--no-title");
+    ).toContain("--no-title");
   });
 });
 
@@ -4918,6 +4909,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--no-lsp",
       "--append-system-prompt",
       "/lc/session-9.md",
+      "--no-title",
       "-e",
       "/home/u/.papercusp/papercusp-coord.ts",
     ]);
@@ -4931,6 +4923,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--no-lsp",
       "--append-system-prompt",
       "/lc/s.md",
+      "--no-title",
     ]);
     expect(args).not.toContain("-e");
   });
@@ -5896,7 +5889,7 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
   it("omp/claude: --model + -r; codex: -m + resume", () => {
     expect(
       suWrapperExtraArgs("omp", { model: "opus", resumeSession: "s-1" }),
-    ).toEqual(["--model", "opus", "-r", "s-1"]);
+    ).toEqual(["--model", "opus", "--no-title", "-r", "s-1"]);
     expect(
       suWrapperExtraArgs("claude", { model: "sonnet", resumeSession: "s-2" }),
     ).toEqual(["--model", "sonnet", "-r", "s-2"]);
@@ -5928,6 +5921,7 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     expect(suWrapperExtraArgs("omp", { model: "opus:high" })).toEqual([
       "--model",
       "opus:high",
+      "--no-title",
     ]);
   });
 
@@ -5958,9 +5952,9 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     ]);
   });
 
-  it("emits nothing when neither model nor resume is set", () => {
-    expect(suWrapperExtraArgs("omp", {})).toEqual([]);
-    expect(suWrapperExtraArgs("omp")).toEqual([]);
+  it("still disables OMP title generation when neither model nor resume is set", () => {
+    expect(suWrapperExtraArgs("omp", {})).toEqual(["--no-title"]);
+    expect(suWrapperExtraArgs("omp")).toEqual(["--no-title"]);
   });
 });
 

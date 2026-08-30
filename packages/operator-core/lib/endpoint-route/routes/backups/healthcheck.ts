@@ -14,6 +14,49 @@ import { defineTool } from '@papercusp/agent-mcp';
 const statfsP = promisify(statfs);
 const STALE_THRESHOLD_SEC = 30 * 60;
 
+export type BackupHealthState = 'ok' | 'stale' | 'failing' | 'disabled' | 'never_run';
+
+/**
+ * PURE: classify the UI-facing backup health state from the durable rollup.
+ *
+ * `lastSnapshotAt` is the newest snapshot whose Kopia artifact and database
+ * dump are both explicitly known-good. A failed/degraded row must remain
+ * visible even when no complete snapshot is known, rather than being
+ * misreported as `never_run`.
+ */
+export function classifyBackupHealth(
+  enabled: boolean,
+  stats: {
+    lastSnapshotAt: string | null;
+    lastFailureAt: string | null;
+  },
+  nowMs: number,
+): { state: BackupHealthState; ageSeconds: number | null } {
+  if (!enabled) return { state: 'disabled', ageSeconds: null };
+
+  const lastSnapshotMs = stats.lastSnapshotAt ? new Date(stats.lastSnapshotAt).getTime() : null;
+  const lastFailureMs = stats.lastFailureAt ? new Date(stats.lastFailureAt).getTime() : null;
+  const ageSeconds =
+    lastSnapshotMs !== null && Number.isFinite(lastSnapshotMs)
+      ? Math.round((nowMs - lastSnapshotMs) / 1000)
+      : null;
+  if (
+    lastFailureMs !== null &&
+    Number.isFinite(lastFailureMs) &&
+    (lastSnapshotMs === null || !Number.isFinite(lastSnapshotMs) || lastFailureMs > lastSnapshotMs)
+  ) {
+    return { state: 'failing', ageSeconds };
+  }
+  if (lastSnapshotMs === null || !Number.isFinite(lastSnapshotMs)) {
+    return { state: 'never_run', ageSeconds: null };
+  }
+
+  return {
+    state: ageSeconds > STALE_THRESHOLD_SEC ? 'stale' : 'ok',
+    ageSeconds,
+  };
+}
+
 export default defineTool({
   method: 'GET',
   path: '/backups/healthcheck',
@@ -24,18 +67,9 @@ export default defineTool({
       const wb = workspaceBackupFor(ws);
       const [settings, stats] = await Promise.all([wb.getSettings(), wb.stats()]);
 
-      let state: 'ok' | 'stale' | 'failing' | 'disabled' | 'never_run' = 'ok';
-      let ageSeconds: number | null = null;
-      if (!settings.enabled) state = 'disabled';
-      else if (
-        stats.lastFailureAt &&
-        (!stats.lastSnapshotAt || new Date(stats.lastFailureAt) > new Date(stats.lastSnapshotAt))
-      ) state = 'failing';
-      else if (!stats.lastSnapshotAt) state = 'never_run';
-      else {
-        ageSeconds = Math.round((Date.now() - new Date(stats.lastSnapshotAt).getTime()) / 1000);
-        if (ageSeconds > STALE_THRESHOLD_SEC) state = 'stale';
-      }
+      const classified = classifyBackupHealth(settings.enabled, stats, Date.now());
+      let state = classified.state;
+      const { ageSeconds } = classified;
 
       let freeDiskBytes: number | null = null;
       try {

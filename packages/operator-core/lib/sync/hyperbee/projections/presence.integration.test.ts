@@ -103,10 +103,22 @@ describe('presence writeToPg (PG)', () => {
 
   it('deleteFromPg by <user>/<machine>, ts-guarded', async () => {
     await proj().writeToPg(row({ github_user_id: 5, machine_label: 'm1' }), { ts: 100, authorPubkey: 'pk-a', origin: 'local' });
-    await proj().deleteFromPg('5/m1', 50); // stale → blocked
+    await proj().deleteFromPg('5/m1', 50, undefined, { ts: 50, authorPubkey: 'pk-a', origin: 'local' }); // stale → blocked
     expect(await rootSql`SELECT 1 FROM harness_shared.shared_presence WHERE github_user_id=5`).toHaveLength(1);
-    await proj().deleteFromPg('5/m1', 200); // newer → applies
+    await proj().deleteFromPg('5/m1', 200, undefined, { ts: 200, authorPubkey: 'pk-a', origin: 'local' }); // newer → applies
     expect(await rootSql`SELECT 1 FROM harness_shared.shared_presence WHERE github_user_id=5`).toHaveLength(0);
+  });
+
+  it('refuses a bare tombstone when provenance is absent', async () => {
+    await proj().writeToPg(row({ github_user_id: 6, machine_label: 'm1' }), {
+      ts: 100,
+      authorPubkey: 'pk-a',
+      origin: 'local',
+    });
+
+    await proj().deleteFromPg('6/m1', 200);
+
+    expect(await rootSql`SELECT 1 FROM harness_shared.shared_presence WHERE github_user_id=6`).toHaveLength(1);
   });
 });
 

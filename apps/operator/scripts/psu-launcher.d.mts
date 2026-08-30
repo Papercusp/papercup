@@ -196,15 +196,24 @@ export function normalizeOmpModelSpec(model: any): any;
 /** Compatibility notices are reserved for non-semantic adjustments; WI-37890 now fails loud. */
 export function ompModelCompatibilityNotice(model: any): null;
 /**
- * TEMPORARY mitigation for EI-21258695702342582.
+ * Disable OMP's provider-backed automatic title request for every managed psu
+ * session.
  *
- * OMP 18.0.3's title helper sends `reasoning.enabled=false` even though the
- * resolved ox-alpha metadata correctly declares reasoning support. OpenRouter
- * rejects that helper request because reasoning is mandatory. Disable title
- * generation for this exact model until OMP fixes the helper; unrelated OMP
- * launches remain byte-identical. Pure + exported for argv regression tests.
+ * The title is non-essential metadata, but OMP starts it from the first owner
+ * message before the main model request. A real tracked session (adv 21150,
+ * 2026-08-29) entered the gateway through that title request while the provider
+ * pool was throttled; the request remained in flight, the real owner turn never
+ * reached the model, and no native session JSONL materialized even though the
+ * managed-pty socket had acknowledged the keystrokes. `--no-title` is OMP's
+ * supported process-local switch (`PI_NO_TITLE=1` internally), so this removes
+ * the optional competing provider request without mutating the user's global
+ * OMP config or changing direct, non-psu OMP launches.
+ *
+ * Keep the model parameter for call-site compatibility: every fresh role,
+ * fresh SU, and resume path already funnels through this helper. Pure +
+ * exported for argv regression tests.
  */
-export function ompTitleMitigationArgs(model: any): string[];
+export function ompTitleMitigationArgs(_model: any): string[];
 /**
  * TEMPORARY compatibility guard for EI-21439300345381616.
  *
