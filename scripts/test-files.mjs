@@ -1600,7 +1600,7 @@ export function provenanceResultFields(snapshot, diff) {
   );
 }
 
-function parseCli(argv) {
+export function parseCli(argv) {
   const separator = argv.indexOf('--');
   // Keep the explicit separator form, but also accept the way npm users naturally forward
   // options (`test:file -- file -t pattern`). Once the first option appears, the remainder is
@@ -2019,7 +2019,7 @@ export async function main(
     },
   });
   try {
-  const { dry, files, vitestArgs } = parseCli(argv);
+  const { dry, requireRan, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
     return 2;
@@ -2336,6 +2336,10 @@ export async function main(
         }
       }
     }
+    // EI-19380376466745152: read the per-assertion outcomes ONCE per group, before the push below
+    // consumes them for three different fields. `null` here means no readable report, not an empty
+    // run — the difference is what keeps "names unavailable" from rendering as "nothing skipped".
+    const groupOutcomes = assertionOutcomesFromReport(outputFilePathFrom(groupVitestArgs), group.cwd);
     groupResults.push({
       requested: verdict.requested,
       matched: verdict.matched,
@@ -2354,6 +2358,16 @@ export async function main(
         ? testsExecutedFromReport(outputFilePathFrom(groupVitestArgs), group.cwd) ??
           testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
         : undefined,
+      // EI-19380376466745152: skipped is measured on EVERY run, not only under a name filter —
+      // the incident's run had no filter. Same report-first, stdout-fallback order and the same
+      // `??` (a measured 0 must not be retried as if unreadable). `outcomes` is null whenever no
+      // report was readable, which degrades to "names unavailable", never to "nothing skipped".
+      testsSkipped:
+        groupOutcomes !== null
+          ? groupOutcomes.skipped.length
+          : testsSkippedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`),
+      skippedNames: groupOutcomes?.skipped ?? [],
+      executedNames: groupOutcomes?.executed ?? [],
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
@@ -2448,18 +2462,78 @@ export async function main(
     }
   }
 
-  const status = summary.anyFailed ? 'failed' : 'passed';
   // The provenance fields describe the state this result MEASURED (the pre-run snapshot), not
   // whatever is on disk now; `provenance=drifted` is what says those two differ. Appended AFTER
   // `status=` so every existing consumer keeps parsing unchanged — the doc-claims anchor registry
   // pins `TEST_FILE_RESULT requested=` as the first field, and every reader tokenises `status=`.
+  //
+  // EI-19380376466745152 — NAME the tests that did not run, before the verdict line.
+  //
+  // Printed here, immediately above `TEST_FILE_RESULT`, for the reason this file already learned
+  // twice about the provenance fields: the tail is what a caller reads and what gets pasted into a
+  // work-item as evidence. A warning at the top of a 200-line run scrolls out of exactly that
+  // excerpt. `requested=…` stays TEST_FILE_RESULT's first field (pinned by the doc-claims anchor
+  // registry) and `skippedTests=` is appended last, so every existing tokenising reader — including
+  // testing:run's `status=(passed|failed)\b[^\r\n]*$` marker regex — parses unchanged.
+  const skippedNames = summary.skippedNames ?? [];
+  if (skippedNames.length > 0) {
+    for (const entry of skippedNames) {
+      console.log(
+        `TEST_FILE_SKIPPED name=${JSON.stringify(entry.name)} file=${JSON.stringify(entry.file)} ` +
+          '— COLLECTED, NOT RUN: this assertion produced no evidence in this run',
+      );
+    }
+  } else if (typeof summary.testsSkipped === 'number' && summary.testsSkipped > 0) {
+    // Counted but unnamed: the caller chose their own reporting, so no report was injected to
+    // read titles from. Say that rather than printing only a number, which is the exact signal
+    // the incident proved is too quiet to notice.
+    console.log(
+      `TEST_FILE_SKIPPED count=${summary.testsSkipped} names=unavailable — ${summary.testsSkipped} ` +
+        'test(s) were COLLECTED, NOT RUN, and their titles could not be read (the caller supplied ' +
+        'its own --reporter/--outputFile, so no private json report was injected). If one of them ' +
+        'is the assertion you are verifying, this run is not evidence for it.',
+    );
+  }
+  if (requireRan) {
+    const verdict = requireRanVerdict(requireRan, {
+      executed: summary.executedNames ?? [],
+      skipped: skippedNames,
+    });
+    if (verdict.status !== 'ran') {
+      const detail =
+        verdict.status === 'skipped'
+          ? `it was COLLECTED AND SKIPPED (${verdict.matches.map((n) => JSON.stringify(n)).join(', ')})`
+          : verdict.status === 'absent'
+            ? 'no test with a matching full name was collected at all — check for a rename, a typo, or the wrong file'
+            : 'no readable test report, so whether it ran is UNVERIFIED — not a pass';
+      // Deliberately withholds TEST_FILE_RESULT, exactly as the name-filter-matched-no-tests
+      // refusal above does and for the same reason: its PRESENCE is the verdict callers grep for
+      // (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`), and printing `status=passed`
+      // beside a refusal would put a false green in the one line agents paste as evidence.
+      console.error(
+        `TEST_FILE_REQUIRE_RAN pattern=${JSON.stringify(requireRan)} status=${verdict.status} — ${detail}. ` +
+          'Refusing to report this run as evidence for that assertion; the TEST_FILE_RESULT verdict ' +
+          'line is withheld on purpose, so this run reads as UNMEASURED rather than green.',
+      );
+      return 1;
+    }
+    console.log(
+      `TEST_FILE_REQUIRE_RAN pattern=${JSON.stringify(requireRan)} status=ran matches=${verdict.matches.length}`,
+    );
+  }
+  const status = summary.anyFailed ? 'failed' : 'passed';
+  const skippedField =
+    typeof summary.testsSkipped === 'number' && summary.skippedUnmeasuredGroups === 0
+      ? String(summary.testsSkipped)
+      : 'unknown';
   console.log(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
-      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)}`,
+      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)} skippedTests=${skippedField}`,
   );
   return summary.anyFailed ? 1 : 0;
   } finally {
     cleanupPreemptMarkers();
+    cleanupInjectedReports();
   }
 }
 
