@@ -3625,6 +3625,13 @@ export async function writeFrozenCandidateRepairQueue(
       [target.workspaceId, target.installSlug],
     );
   }
+  // P-004: project the edit-time marker from this same call, for the reason the convergence
+  // projection above gives — this is the one production write path for `repair_queue`, so a
+  // marker written here can never describe a previous round. Best-effort and non-throwing by
+  // construction: a filesystem fault must never fail a release write, and an absent marker
+  // simply leaves the hook silent (today's behaviour).
+  const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
+  projectFrozenRepairMarker(queue);
 }
 
 /**
@@ -3671,7 +3678,14 @@ export async function retireFrozenCandidateRepairQueue(
       expectedQueue.updatedAtMs,
     ],
   )) as Array<{ retired: boolean }>;
-  if (rows[0]?.retired === true) return { retired: true, current: null };
+  if (rows[0]?.retired === true) {
+    // P-004: the queue is gone, so the edit-time marker must go with it. A stale marker would
+    // warn agents off editing paths for a candidate that no longer exists — a false positive
+    // that teaches them to ignore the signal, which is worse than no signal.
+    const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
+    projectFrozenRepairMarker(null);
+    return { retired: true, current: null };
+  }
   return { retired: false, current: await readFrozenCandidateRepairQueue(target) };
 }
 
