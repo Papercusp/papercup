@@ -115,6 +115,11 @@ import migrateTool, {
   migrationBackupLockGuardSql,
   PSQL_PROGRESS_INTERVAL_MS,
 } from './migrate';
+import {
+  preDestructiveSnapshotAdmissionGuardSql,
+  requiresPreDestructiveSnapshotAdmission,
+} from '@papercusp/backup/snapshot-admission';
+import { migrationReservationGuardSql } from '../../migration-reservation';
 
 const CTX = { role: 'operator' } as never;
 const parse = (res: { content: Array<{ text: string }> }) => JSON.parse(res.content[0].text);
@@ -308,6 +313,58 @@ describe('db:migrate — skipWorkspaceTx (EI-18733783500981433)', () => {
       'though the migration completed. Same fix as capability:bash (EI-18666279107998059).',
     () => {
       expect((migrateTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+    },
+  );
+});
+
+describe('db:migrate — WI-1373379: the withheld fallback carries the SAME safety rails as the real apply path', () => {
+  // At/after PRE_DESTRUCTIVE_SNAPSHOT_ADMISSION_FROM (1007), so the admission
+  // guard is in scope. The pre-existing FILE fixture is 999-*, BELOW the floor —
+  // which is exactly why the omission this locks in went unnoticed: every
+  // existing assertion about the fallback ran on a file the guard never gates.
+  const GATED_FILE = '/repo/libs/papercusp/libs/db/sql/1033-fake.sql';
+
+  const fallbackFor = async (file: string): Promise<string> => {
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file, confirm: true }, CTX));
+    expect(out.applied).toBe(false);
+    return out.fallback.command as string;
+  };
+
+  it(
+    'embeds the pre-destructive snapshot admission guard. This branch is the ONLY path taken on a ' +
+      'box without PAPERCUSP_ALLOW_DB_MIGRATE, so a guard-less fallback is not a local shortcut — ' +
+      'it is a fleet-wide bypass of a fail-closed rail. Measured 2026-08-30: migrations 1036/1037 ' +
+      "applied while the newest pre_destructive receipt was status='degraded', db_dump_ok=NULL.",
+    async () => {
+      expect(requiresPreDestructiveSnapshotAdmission(path.basename(GATED_FILE))).toBe(true);
+      const command = await fallbackFor(GATED_FILE);
+      // activeWorkspaceId is mocked to 'default' above.
+      expect(command).toContain(preDestructiveSnapshotAdmissionGuardSql('default'));
+    },
+  );
+
+  it('embeds the rest of the preamble too — backup advisory lock, backup relation-lock guard, reservation guard', async () => {
+    const command = await fallbackFor(GATED_FILE);
+    expect(command).toContain(migrationBackupAdvisoryLockSql());
+    expect(command).toContain(migrationBackupLockGuardSql());
+    expect(command).toContain(migrationReservationGuardSql(path.basename(GATED_FILE)));
+  });
+
+  it('orders every guard BEFORE the \\i that executes the migration body', async () => {
+    const command = await fallbackFor(GATED_FILE);
+    const guardAt = command.indexOf(preDestructiveSnapshotAdmissionGuardSql('default'));
+    const applyAt = command.indexOf('\\i ');
+    expect(guardAt).toBeGreaterThanOrEqual(0);
+    expect(applyAt).toBeGreaterThan(guardAt);
+  });
+
+  it(
+    'CONTROL: a migration BELOW the admission floor gets no snapshot guard — proves the assertions ' +
+      'above track requiresPreDestructiveSnapshotAdmission() and are not passing on a constant',
+    async () => {
+      expect(requiresPreDestructiveSnapshotAdmission(path.basename(FILE))).toBe(false);
+      const command = await fallbackFor(FILE);
+      expect(command).not.toContain('papercusp_pre_destructive_snapshot_guard');
     },
   );
 });

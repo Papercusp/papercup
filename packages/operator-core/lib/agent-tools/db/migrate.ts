@@ -576,6 +576,31 @@ export default defineTool({
     const snapshotAdmissionGuard = requiresPreDestructiveSnapshotAdmission(path.basename(resolvedFile))
       ? preDestructiveSnapshotAdmissionGuardSql(activeWorkspaceId())
       : '';
+    // WI-1373379: ONE guard preamble, shared by the real apply path below AND
+    // the withheld-branch fallback command handed back to the caller. These
+    // are the migration safety rails; the fallback previously omitted ALL of
+    // them, so a hand-run `psql` applied DDL with no verified pre-destructive
+    // restore point. Measured 2026-08-30: migrations 1036 (12:49:00Z) and 1037
+    // (13:19:07Z) applied while the newest pre_destructive receipt for the
+    // workspace was id 75708, status='degraded', db_dump_ok=NULL — a receipt
+    // that fails the admission predicate on two independent counts. Because
+    // the withheld branch is the ONLY path taken on a box without
+    // PAPERCUSP_ALLOW_DB_MIGRATE (see below), stripping the rails there made
+    // the bypass the ordinary case rather than an edge case. Built from a
+    // single source so the two paths cannot silently drift apart again.
+    //   EI-21443484375613585: serialize against the backup session before the
+    //     relation-lock fallback guard and before `\i`.
+    //   EI-21374588273323330: refuse to enter DDL while the workspace pg_dump
+    //     transaction is visibly holding relation AccessShareLock; raises the
+    //     normal retryable lock-timeout shape before `\i`.
+    //   EI-217072: the advisory rendezvous proves only that a snapshot and a
+    //     migration are not concurrent — require the newest pre_destructive
+    //     receipt to be a completed database-backed restore point before DDL.
+    const migrationGuardPreamble =
+      migrationBackupAdvisoryLockSql() +
+      migrationBackupLockGuardSql() +
+      snapshotAdmissionGuard +
+      migrationReservationGuardSql(path.basename(resolvedFile));
 
     // EI-18769559897594065: capture ctx.progress safely (older shapes / shim
     // callers may not have it — same defensive pattern as locks:acquire's own
@@ -626,8 +651,17 @@ export default defineTool({
             // same-txn INSERT leaves schema_migrations un-recorded, so every future
             // deploy re-runs the file (a lock-contending re-run can trip a
             // deploy's lock_timeout) — always include the INSERT in the same BEGIN/COMMIT.
+            // WI-1373379: the emitted command below carries the SAME guard
+            // preamble as the real apply path (backup advisory lock, backup
+            // relation-lock guard, pre-destructive snapshot admission,
+            // migration reservation). Run it AS EMITTED — do not hand-simplify
+            // it down to `BEGIN; \i file; INSERT; COMMIT;`. Those guards are
+            // what make a migration refuse to run without a verified restore
+            // point, and this branch is the only path on a box without the
+            // opt-in, so a stripped-down copy is a silent, fleet-wide bypass
+            // of a fail-closed safety rail rather than a local shortcut.
             const url = getHarnessAdminUrl();
-            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${resolvedFile}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(resolvedFile)}', '<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>');\nCOMMIT;\nSQL`;
+            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n${migrationGuardPreamble}\\i ${resolvedFile}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(resolvedFile)}', '<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>');\nCOMMIT;\nSQL`;
             // EI-13299: escalate:true is the sanctioned fast path when the caller
             // (typically a cup with no shell/PG access at all) has no other way to
             // get an urgent, already-committed migration applied while the deploy
@@ -730,9 +764,6 @@ export default defineTool({
           // the perf:allow A4 rationale below intact.
           const sha256 = createHash('sha256').update(sqlText).digest('hex');
           const filenameLiteral = path.basename(resolvedFile).replace(/'/g, "''");
-          const reservationGuard = migrationReservationGuardSql(path.basename(resolvedFile));
-          const backupMigrationLock = migrationBackupAdvisoryLockSql();
-          const backupLockGuard = migrationBackupLockGuardSql();
           // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
           // description above) — falls back to the EI-9417 default when omitted,
           // producing the exact same script text as before this change.
@@ -748,20 +779,12 @@ export default defineTool({
             // WI-6381: caller-widened when riding out a known long-lived
             // non-operator holder instead (see migrationMaxAttempts above).
             `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
-            // EI-21443484375613585: serialize against the backup session
-            // before the relation-lock fallback guard and before `\\i`.
-            backupMigrationLock +
-            // EI-21374588273323330: refuse to enter DDL while the workspace
-            // pg_dump transaction is visibly holding relation AccessShareLock.
-            // The guard raises the normal retryable lock-timeout shape before
-            // `\\i`, so no migration statement is issued behind the backup.
-            backupLockGuard +
-            // EI-217072: the advisory rendezvous proves only that a snapshot
-            // and migration are not concurrent. Require the newest
-            // pre_destructive receipt to be a completed database-backed
-            // restore point before issuing any DDL.
-            snapshotAdmissionGuard +
-            reservationGuard +
+            // WI-1373379: the shared guard preamble (constructed above, with
+            // the per-guard rationale) — byte-identical to the preamble
+            // embedded in the withheld-branch fallback command, so a migration
+            // applied by hand carries exactly the rails one applied by this
+            // tool does.
+            migrationGuardPreamble +
             `\\i ${resolvedFile}\n` +
             `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
             `COMMIT;\n`;
