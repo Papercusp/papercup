@@ -167,6 +167,8 @@ import {
   resolveIssueWorkspace,
   deriveLeaderDispatchAdmission,
   isLeaderDispatchAdmission,
+  deriveSelfFiledFalloutAdmission,
+  isSelfFiledFalloutAdmission,
   mergeIssuePayload,
   planItemSourceFromPayloadPatch,
   markIssueProgress,
@@ -4715,11 +4717,20 @@ export async function claimWorkItem(
     const leaderDispatchAdmission = prior.assignedBy
       ? await deriveLeaderDispatchAdmission(prior, assignee, issueWs)
       : null;
+    // EI-218293: the fleet admission seam already allows a member to absorb a
+    // server-attributed bug it filed itself, but claimIssue also has to carry that
+    // decision across its born-pending SQL floor. Keep this separate from leader
+    // dispatch: a self-filed bug is not leader-authorized work.
+    const selfFiledFalloutAdmission =
+      prior.kind === 'bug' && prior.createdBy
+        ? await deriveSelfFiledFalloutAdmission(prior, assignee, issueWs)
+        : null;
     const updated = await claimIssue(id, assignee, {
       workspaceId: issueWs,
       fromHolder: opts.fromHolder,
       expectedAssignee: opts.expectedAssignee,
       ...(isLeaderDispatchAdmission(leaderDispatchAdmission) ? { leaderDispatchAdmission } : {}),
+      ...(isSelfFiledFalloutAdmission(selfFiledFalloutAdmission) ? { selfFiledFalloutAdmission } : {}),
     });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
