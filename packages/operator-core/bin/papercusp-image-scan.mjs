@@ -367,12 +367,24 @@ if [ "\$vuln_crit_high_by_scope" = "null" ]; then detail="vuln-crit-high-scope-p
 # FINDING count would red the gate at precisely the moment the remediation finally worked, and
 # would train the next reader to disable it. Cataloged packages cannot legitimately fall to zero
 # while the bundle exists: the SBOM carries ~291 npm packages under this path (D-200 measurement).
+# Both checks below are UNCONDITIONAL, and that is the whole point. The tempting shape is
+#   if bundle_present > 0 AND bundle_cataloged == 0 then fail
+# which looks careful and is nearly useless: the find and the SBOM matcher read the SAME constant,
+# so a WRONG constant fails both together — bundle_present lands at 0, the guard never fires, and
+# every finding is attributed to the inherited base. That is the exact silent zero-attribution
+# this proof exists to prevent, reintroduced by the guard meant to catch it. A detector that
+# shares its subject's single point of failure cannot detect that failure.
+#
+# So the absence of the bundle is itself a hard error. This is a papercusp workspace-host image
+# by construction: if ${PAPERCUSP_BUNDLE_PATH} is not on it, either the image is mis-built or this
+# constant is wrong, and BOTH are answers the release must be told rather than allowed to average
+# away. Same judgement the mount step already makes one screen up — "a candidate with no mountable
+# filesystem is a hard failure, not an empty scan".
 bundle_present=\$(find /mnt/candidate -maxdepth 4 -path "*${PAPERCUSP_BUNDLE_PATH}" -type d 2>/dev/null | head -1 | wc -l)
+if [ "\$bundle_present" -eq 0 ]; then detail="bundle-path-not-found"; exit 1; fi
 bundle_cataloged=\$(jq '[.artifacts[]? | select([.locations[]?.path // empty] | any(contains("${PAPERCUSP_BUNDLE_PATH}/")))] | length' /tmp/sbom.json 2>/dev/null || echo "null")
 if [ "\$bundle_cataloged" = "null" ]; then detail="sbom-scope-parse-failed"; exit 1; fi
-if [ "\$bundle_present" -gt 0 ] && [ "\$bundle_cataloged" -eq 0 ]; then
-  detail="scope-attribution-zero"; exit 1
-fi
+if [ "\$bundle_cataloged" -eq 0 ]; then detail="scope-attribution-zero"; exit 1; fi
 
 # Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
 # emitted: this document is read back over SSH and lands in release logs and work-item
