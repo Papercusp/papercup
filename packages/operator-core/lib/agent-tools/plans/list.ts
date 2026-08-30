@@ -405,7 +405,7 @@ export default defineTool({
   guidance: {
     when: 'A directory of plans — "what plans exist / are active", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For COUNTS ("how many plans by status / per harness / created per day"), pass groupBy (+ aggregateOnly for counts only) rather than hand-writing SQL over harness_plans — this read always applies the workspace+harness scope a raw predicate silently omits. For a fast scan that skips item-count resolution, add compact:true.',
     notWhen:
-      'You already know the plan slug and want full contents — call plans:get directly. For a plan-shaped aggregate use groupBy here; drop to dev:pg_query only for a genuinely ad-hoc read this tool exposes no arg for (a join across other tables, an item-level roll-up).',
+      'You already know the plan slug and want full contents — call plans:get directly. For a plan-shaped aggregate use groupBy here; drop to dev:pg_query only for a genuinely ad-hoc read this tool exposes no arg for (a join across other tables, an item-level roll-up). No free-text `q`/`query` filter here — use plans:search { query } for keyword search.',
     chaining:
       'plans:list → plans:get { slug } (full plan) or plans:items { actionable: true } (pickable items across plans).',
   },
