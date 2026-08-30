@@ -491,13 +491,23 @@ const messagesRoute = defineTool({
         // the same selector rather than a second hard-coded list.
         const rolePrompt =
           chat.role === 'operator'
-            ? {
-                text: assembleOperatorRolePrompt({
-                  role: 'operator',
-                  toolNames: capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
-                }).text,
-                runId: `${Math.floor(Date.now() / 1000)}-operator${chat.feature_id ? `-${chat.feature_id}` : ''}`,
-              }
+            ? useLoopEngine
+              ? {
+                  text: assembleOperatorRolePrompt({
+                    role: 'operator',
+                    profile: 'pui-loop',
+                    projectDir,
+                    toolNames: capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
+                  }).text,
+                  runId: `${Math.floor(Date.now() / 1000)}-pui-loop${chat.feature_id ? `-${chat.feature_id}` : ''}`,
+                }
+              : {
+                  text: assembleOperatorRolePrompt({
+                    role: 'operator',
+                    toolNames: capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
+                  }).text,
+                  runId: `${Math.floor(Date.now() / 1000)}-operator${chat.feature_id ? `-${chat.feature_id}` : ''}`,
+                }
             : (() => {
                 const r = assembleHarnessRolePrompt({
                   slug,
