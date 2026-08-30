@@ -802,7 +802,13 @@ describe('gateway request kernel caller-supplied span adoption', () => {
       span,
       async executeAttempt(_prepared, context) {
         seen.push(context.ownerId);
-        return { status: 200, streaming: false, transport: context.route.transport, metadata: {}, body: null };
+        return {
+          status: 200,
+          streaming: false,
+          transport: context.route.transport,
+          metadata: { contentType: 'application/json' },
+          body: null,
+        };
       },
     });
 
