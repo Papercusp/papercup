@@ -8263,13 +8263,22 @@ function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
   );
 }
 
+/** WI-1079034: this hook has TWO consumers, and the second one is silent when
+ *  it breaks. Besides folding mid-turn coord mail, its `'*'`-matcher
+ *  `activity:report` POST is what writes a `tool_invocations` row for a NATIVE
+ *  tool call — which is the only reason `FleetPresenceRow.lastToolCallAt`
+ *  (an MCP-only max()) stays fresh across a native-tool turn. Name both in the
+ *  degraded note, or an operator reads a coord-mail warning while the fleet's
+ *  liveness signal quietly degrades. Stated precisely: an agent still calling
+ *  MCP tools goes on looking fresh from its own real calls; what is lost is a
+ *  stretch that uses NO MCP tools directly. */
 function ensureCcCoordHookEnrollment(env) {
   ensureCcHookEnrollment(env, {
     event: "PostToolUse",
     hookName: "posttooluse-activity-report.sh",
-    label: "COORD-INBOX HOOK",
+    label: "COORD-INBOX + NATIVE-ACTIVITY HOOK",
     degradedNote:
-      "THIS SESSION WILL BE DEAF TO MID-TURN COORD MAIL — peer messages will only land at session start / orient / an explicit wake, and the fleet sees it flagged coordHook:missing in coord:presence",
+      "THIS SESSION WILL BE DEAF TO MID-TURN COORD MAIL — peer messages will only land at session start / orient / an explicit wake, and the fleet sees it flagged coordHook:missing in coord:presence. IT WILL ALSO STOP RECORDING NATIVE TOOL CALLS: a stretch using no MCP tools directly leaves no tool_invocations row, so presence/fleet lastToolCallAt reads stale and a leader can misjudge this agent as stalled",
   });
 }
 
