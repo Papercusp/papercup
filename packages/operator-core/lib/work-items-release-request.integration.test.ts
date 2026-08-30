@@ -135,7 +135,7 @@ beforeAll(async () => {
   await db.sql.unsafe(POTS_DDL);
 }, 180_000);
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 beforeEach(async () => {
   await db.sql`
