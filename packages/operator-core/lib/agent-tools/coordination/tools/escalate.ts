@@ -12,6 +12,8 @@
  * subscription rides the same tool event (lib/hive/wake-defaults).
  */
 
+import { stat as statFile } from 'node:fs/promises';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
@@ -21,8 +23,214 @@ import { COORD_ROLES } from '../roles';
 import { softText, clampText, LIMITS } from '../../limits';
 import { isAgentSessionSender } from '../machine-authored';
 import { fetchHolderGoalRecord } from '../agent-goal-sources';
+import {
+  comparePredicate,
+  dispatchReadOnlyTool,
+  PREDICATE_OPS,
+  valueAtPath,
+  type PredicateOp,
+} from '../../../events/await/predicate-watch';
 
 const SEVERITY = ['blocker', 'question', 'advisory'] as const;
+
+/**
+ * A durable, read-only condition attached to an escalation.
+ *
+ * `conditionKey` remains the stable recurrence identity. This is the optional
+ * machine-checkable meaning of that key: the same predicate can be re-run before
+ * the SLA reroute decides whether the human ask still needs a live driver.
+ *
+ * The shape intentionally reuses predicate-watch's tool/path/operator contract
+ * rather than inventing a second condition language. The tool is dispatched
+ * under the original sender's role, so a later access or resolver failure is
+ * UNKNOWN, never a false contradiction or a false all-clear.
+ */
+export interface EscalationPredicate {
+  tool: string;
+  args?: Record<string, unknown>;
+  path: string;
+  op: PredicateOp;
+  value?: unknown;
+}
+
+export type EscalationPredicateValidationStatus = 'satisfied' | 'contradicted' | 'unknown';
+
+export interface EscalationPredicateValidation {
+  status: EscalationPredicateValidationStatus;
+  checkedAt: string;
+  reason?: string;
+}
+
+export type EscalationArtifactValidationStatus = 'present' | 'absent' | 'unknown' | 'not-path';
+
+export interface EscalationArtifactValidation {
+  status: EscalationArtifactValidationStatus;
+  ref: string;
+  path?: string;
+  checkedAt: string;
+  reason?: string;
+}
+
+const escalationPredicateSchema = z.object({
+  tool: z.string().min(1).max(200),
+  args: z.record(z.string(), z.unknown()).optional(),
+  path: z.string().min(1).max(300),
+  op: z.enum(PREDICATE_OPS),
+  value: z.unknown().optional(),
+});
+
+/** Normalize the persisted predicate so every recheck has an explicit args bag. */
+export function normalizeEscalationPredicate(input: EscalationPredicate): EscalationPredicate {
+  return { ...input, args: input.args ?? {} };
+}
+
+/** Defensive parser for the flat JSON metadata on an escalation envelope. */
+export function parseEscalationPredicate(raw: unknown): EscalationPredicate | null {
+  const parsed = escalationPredicateSchema.safeParse(raw);
+  return parsed.success ? normalizeEscalationPredicate(parsed.data as EscalationPredicate) : null;
+}
+
+/**
+ * Extract a local path from an evidence ref when the ref actually names one.
+ *
+ * Evidence refs are deliberately broader than paths (`tool-output`, msg ids,
+ * work-item refs, and prose are all valid). Only path-shaped refs are checked.
+ * A URL or URI is not silently interpreted as a local file; it is reported as
+ * `not-path` instead.
+ */
+export function artifactPathFromEvidenceRef(ref: string): string | null {
+  const trimmed = ref.trim();
+  if (!trimmed || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) return null;
+
+  let candidate = trimmed.replace(/#L?\d+(?:-L?\d+)?$/, '');
+  const line = candidate.match(/^(.*):\d+(?:-\d+)?$/);
+  if (line) candidate = line[1];
+  candidate = candidate.trim();
+  if (!candidate) return null;
+
+  const looksLikePath =
+    isAbsolute(candidate) ||
+    candidate.startsWith('./') ||
+    candidate.startsWith('../') ||
+    candidate.includes('/') ||
+    /\.[A-Za-z0-9_-]+$/.test(candidate);
+  return looksLikePath ? candidate : null;
+}
+
+/**
+ * Verify a cited evidence ref at the point an escalation is raised and again
+ * before an SLA reroute. Missing paths are a known absence; permission and
+ * other resolver failures are UNKNOWN. Neither result blocks the human ask at
+ * raise time, but callers must not render an absent/unknown path as evidence.
+ */
+export async function validateEscalationArtifactRef(
+  ref: string,
+  opts: {
+    statFn?: (path: string) => Promise<unknown>;
+    cwd?: string;
+    nowMs?: () => number;
+  } = {},
+): Promise<EscalationArtifactValidation> {
+  const checkedAt = new Date((opts.nowMs ?? Date.now)()).toISOString();
+  const path = artifactPathFromEvidenceRef(ref);
+  if (!path) return { status: 'not-path', ref, checkedAt };
+
+  const absolutePath = isAbsolute(path) ? path : resolvePath(opts.cwd ?? process.cwd(), path);
+  try {
+    await (opts.statFn ?? statFile)(absolutePath);
+    return { status: 'present', ref, path: absolutePath, checkedAt };
+  } catch (error) {
+    const code =
+      typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : null;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { status: 'absent', ref, path: absolutePath, checkedAt };
+    }
+    return {
+      status: 'unknown',
+      ref,
+      path: absolutePath,
+      checkedAt,
+      reason: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+    };
+  }
+}
+
+export interface EscalationPredicateValidationContext {
+  workspaceId?: string | null;
+  harnessSlug?: string | null;
+  role?: string | null;
+  onBehalfOf: string;
+  spawnId?: string;
+}
+
+/**
+ * Re-run one escalation predicate under the original sender's read authority.
+ *
+ * A missing workspace/role, an unreadable tool, an absent path, or the
+ * baseline-relative `changed` operator all resolve to UNKNOWN. Only a present
+ * observation that evaluates false is a contradiction; the caller can therefore
+ * safely suppress an automatic reroute without ever self-closing the escalation.
+ */
+export async function revalidateEscalationPredicate(
+  predicateInput: EscalationPredicate,
+  context: EscalationPredicateValidationContext,
+  opts: {
+    dispatchFn?: typeof dispatchReadOnlyTool;
+    nowMs?: () => number;
+  } = {},
+): Promise<EscalationPredicateValidation> {
+  const checkedAt = new Date((opts.nowMs ?? Date.now)()).toISOString();
+  const predicate = normalizeEscalationPredicate(predicateInput);
+  const workspaceId = context.workspaceId?.trim();
+  const role = context.role?.trim();
+  if (!workspaceId) {
+    return { status: 'unknown', checkedAt, reason: 'workspace scope unavailable for predicate revalidation' };
+  }
+  if (!role) {
+    return { status: 'unknown', checkedAt, reason: 'sender role unavailable for predicate revalidation' };
+  }
+  if (predicate.op === 'changed') {
+    return { status: 'unknown', checkedAt, reason: 'changed predicates require a prior polling baseline' };
+  }
+
+  try {
+    const payload = await (opts.dispatchFn ?? dispatchReadOnlyTool)(predicate.tool, predicate.args, {
+      workspaceId,
+      harnessSlug: context.harnessSlug ?? null,
+      role,
+      onBehalfOf: context.onBehalfOf,
+      spawnId: context.spawnId ?? 'coord-escalate-validation',
+    });
+    const observed = valueAtPath(payload, predicate.path);
+    // `exists` deliberately answers the absence question, so a missing path is
+    // a known contradiction there. For every other operator, an absent path is
+    // unknown; `eq:null` is the explicit exception for asking about UNKNOWN.
+    if (
+      predicate.op !== 'exists' &&
+      (observed === undefined || (observed === null && !(predicate.op === 'eq' && predicate.value === null)))
+    ) {
+      return {
+        status: 'unknown',
+        checkedAt,
+        reason: `predicate path "${predicate.path}" produced no readable value`,
+      };
+    }
+    return {
+      status: comparePredicate(observed, predicate.op, predicate.value)
+        ? 'satisfied'
+        : 'contradicted',
+      checkedAt,
+    };
+  } catch (error) {
+    return {
+      status: 'unknown',
+      checkedAt,
+      reason: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+    };
+  }
+}
 
 export default defineTool({
   name: 'coord:escalate',
@@ -74,6 +282,11 @@ export default defineTool({
       .optional()
       .describe(
         'Stable identifier for a RECURRING condition (e.g. "mug-placement-stall", "work-feed-dead"). Re-escalating the same conditionKey COALESCES onto the existing open row (bumps its repeatCount) instead of opening a new one; the response reports coalesced:true and bodyDiscarded:true when the new text is not persisted. Pass it for any watchdog/monitor condition you re-check on a cadence — especially when the summary embeds a live count or duration ("stalled ~7h", "302 items"), because without it the dedup falls back to the prose summary, which never repeats, and every wake leaks a new permanently-open escalation.',
+      ),
+    predicate: escalationPredicateSchema
+      .optional()
+      .describe(
+        'Optional machine-checkable condition for this escalation. Shape: { tool, args?, path, op, value? }, using the same read-only predicate contract as watch:create. It is checked now and re-checked before any SLA reroute; unreadable or missing state is stamped unknown and never treated as a contradiction.',
       ),
     options: z
       .array(z.object({ id: z.string().min(1), label: z.string().min(1) }))
@@ -129,10 +342,43 @@ export default defineTool({
         goalRef = candidate;
       }
     }
+    const predicate = args.predicate
+      ? normalizeEscalationPredicate(args.predicate as EscalationPredicate)
+      : undefined;
+    const validationHarness =
+      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : null;
+    const validationWorkspace =
+      identity.workspaceId ??
+      (typeof (ctx as { workspaceId?: unknown }).workspaceId === 'string'
+        ? (ctx as { workspaceId: string }).workspaceId
+        : null);
+    const validationRole =
+      typeof (ctx as { role?: unknown }).role === 'string' ? (ctx as { role: string }).role : null;
+    const [predicateValidation, evidenceValidation] = await Promise.all([
+      predicate
+        ? revalidateEscalationPredicate(predicate, {
+            workspaceId: validationWorkspace,
+            harnessSlug: validationHarness,
+            role: validationRole,
+            onBehalfOf: identity.ownerId,
+          })
+        : Promise.resolve(undefined),
+      args.evidence?.ref
+        ? validateEscalationArtifactRef(args.evidence.ref)
+        : Promise.resolve(undefined),
+    ]);
     const meta = {
       ...(harnessSlug ? { harnessSlug } : {}),
       ...(args.conditionKey ? { subjectSignature: args.conditionKey.trim() } : {}),
       ...(goalRef ? { goalRef } : {}),
+      ...(predicate
+        ? {
+            escalationPredicate: predicate,
+            ...(validationRole ? { escalationPredicateRole: validationRole } : {}),
+          }
+        : {}),
+      ...(predicateValidation ? { predicateValidation } : {}),
+      ...(evidenceValidation ? { evidenceValidation } : {}),
     };
     const rec = await openEscalation(identity, {
       severity: args.severity,
@@ -174,6 +420,8 @@ export default defineTool({
             msg_id: rec.msg_id,
             ts: rec.ts,
             interest_watch: interestWatch,
+            ...(predicateValidation ? { predicate_validation: predicateValidation } : {}),
+            ...(evidenceValidation ? { evidence_validation: evidenceValidation } : {}),
           }),
         },
       ],

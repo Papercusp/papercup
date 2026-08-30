@@ -34,6 +34,15 @@ import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { coordLog, coordSql, coordWorkspaceId } from '../agent-tools/coordination/log';
 import { AGENT_SESSION_SENDER_PATTERN } from '../agent-tools/coordination/machine-authored';
+import { readEvidence } from '../agent-tools/coordination/relay-provenance';
+import {
+  parseEscalationPredicate,
+  revalidateEscalationPredicate,
+  validateEscalationArtifactRef,
+  type EscalationArtifactValidation,
+  type EscalationPredicate,
+  type EscalationPredicateValidation,
+} from '../agent-tools/coordination/tools/escalate';
 import { getFleet } from '../agent-fleets-store';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 
@@ -66,6 +75,11 @@ export interface StaleEscalationInput {
   options?: readonly unknown[];
   /** ISO timestamp the escalation was opened. */
   ts: string;
+  /** Flat metadata stamped by coord:escalate for later validation. */
+  escalationPredicate?: unknown;
+  predicateValidation?: unknown;
+  evidence?: unknown;
+  evidenceValidation?: unknown;
   /**
    * WI-36154: the infra-liveness alarm's stable signal key, stamped into `meta`
    * by liveness-alarm.ts and FLATTENED onto the record (escalations.ts:190
@@ -440,6 +454,8 @@ const LOOPBACK_ESCALATION_AUTHOR_RE = /^su-loopback(?:$|[-:_])/i;
 export const ESCALATION_REROUTE_OWNER = 'system:escalation-sla-reroute';
 const ESCALATION_REROUTE_MSG_PREFIX = 'escalation-sla-reroute:';
 const ESCALATION_REROUTE_MARKER_FIELD = 'escalationRerouteOf';
+const ESCALATION_REVALIDATION_MSG_PREFIX = 'escalation-revalidation:';
+const ESCALATION_REVALIDATION_MARKER_FIELD = 'escalationRevalidationOf';
 
 const ESCALATION_REROUTE_IDENTITY: AgentIdentity = {
   ownerId: ESCALATION_REROUTE_OWNER,
@@ -456,6 +472,8 @@ export interface EscalationRerouteInput extends StaleEscalationInput {
   harness_slug?: string;
   /** Legacy/meta-flattened harness context. */
   harnessSlug?: string;
+  /** Original sender role captured by coord:escalate for revalidation. */
+  escalationPredicateRole?: unknown;
 }
 
 export interface EscalationRerouteDriver {
@@ -617,6 +635,12 @@ export interface EscalationRerouteResult {
   rerouted: number;
   failed: number;
   truncated: boolean;
+  /** Rows withheld because their stored predicate was false or unreadable. */
+  predicateSkipped: number;
+  /** Rows withheld because the current artifact read could not be established. */
+  artifactUnknownSkipped: number;
+  /** Rows rerouted with an explicit warning that their cited path is absent. */
+  artifactMissingWarnings: number;
 }
 
 export interface EscalationRerouteDeps {
@@ -626,8 +650,94 @@ export interface EscalationRerouteDeps {
   fetchPresenceFleetFn?: typeof fetchPresenceFleet;
   getFleetFn?: typeof getFleet;
   readResponseMarkersFn?: (msgIds: readonly string[]) => Promise<Set<string>>;
+  revalidatePredicateFn?: typeof revalidateEscalationPredicate;
+  validateArtifactRefFn?: typeof validateEscalationArtifactRef;
   sendMessageFn?: typeof sendMessage;
   wakeRecipientsFn?: typeof wakeRecipients;
+}
+
+function hasOwnField(value: object, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, field);
+}
+
+function evidenceRefOf(e: EscalationRerouteInput): string | null {
+  const raw = readEvidence(e as unknown as Record<string, unknown>);
+  return raw?.ref ?? null;
+}
+
+function unknownPredicateValidation(reason: string): EscalationPredicateValidation {
+  return {
+    status: 'unknown',
+    checkedAt: new Date().toISOString(),
+    reason,
+  };
+}
+
+function validationStatusKey(
+  predicateValidation: EscalationPredicateValidation | undefined,
+  artifactValidation: EscalationArtifactValidation | undefined,
+): string {
+  return [
+    predicateValidation?.status ?? 'no-predicate',
+    artifactValidation?.status ?? 'no-artifact',
+  ].join('+');
+}
+
+async function annotateEscalationRevalidation(
+  escalation: EscalationRerouteInput,
+  validation: {
+    predicate?: EscalationPredicateValidation;
+    artifact?: EscalationArtifactValidation;
+  },
+  sendFn: typeof sendMessage,
+): Promise<void> {
+  const statusKey = validationStatusKey(validation.predicate, validation.artifact);
+  const details: string[] = [];
+  if (validation.predicate) {
+    details.push(
+      `Predicate revalidation is ${validation.predicate.status} at ${validation.predicate.checkedAt}` +
+        (validation.predicate.reason ? ` (${validation.predicate.reason})` : '') +
+        '.',
+    );
+  }
+  if (validation.artifact) {
+    details.push(
+      `Cited evidence ref "${validation.artifact.ref}" is ${validation.artifact.status} at ${validation.artifact.checkedAt}` +
+        (validation.artifact.path ? ` (${validation.artifact.path})` : '') +
+        (validation.artifact.reason ? ` (${validation.artifact.reason})` : '') +
+        '.',
+    );
+  }
+  const msgId = `${ESCALATION_REVALIDATION_MSG_PREFIX}${escalation.msg_id}:${statusKey}`;
+  try {
+    await sendFn(ESCALATION_REROUTE_IDENTITY, {
+      to: ['human'],
+      msgId,
+      summary: `Escalation ${escalation.msg_id} machine revalidation: ${statusKey}`,
+      body:
+        `The original escalation ${escalation.msg_id} remains OPEN and was not auto-resolved. ` +
+        'Its machine-checkable evidence changed or could not be re-read before SLA reroute:\n' +
+        details.join('\n'),
+      plan_slug: concrete(escalation.plan_slug) ?? undefined,
+      harnessSlug: concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
+      extra: {
+        auto: true,
+        lifecycle: 'escalation-revalidation',
+        expects: 'none',
+        [ESCALATION_REVALIDATION_MARKER_FIELD]: escalation.msg_id,
+        ...(validation.predicate ? { predicateValidation: validation.predicate } : {}),
+        ...(validation.artifact ? { evidenceValidation: validation.artifact } : {}),
+      },
+    });
+  } catch (error) {
+    // The original escalation is still open and the reroute pass remains
+    // fail-closed. A notice failure is visible in logs but must not turn a
+    // safe suppression into an automatic reroute.
+    console.warn(
+      `[escalation-sla-reroute] revalidation annotation for ${escalation.msg_id} failed: ` +
+        `${error instanceof Error ? error.message : error}`,
+    );
+  }
 }
 
 /** One injectable, fail-closed pass. The original escalation is NEVER resolved:
@@ -646,6 +756,8 @@ export async function rerouteUnackedEscalationsOnce(
   const fetchFleetFn = opts.fetchPresenceFleetFn ?? fetchPresenceFleet;
   const getFleetFn = opts.getFleetFn ?? getFleet;
   const readMarkersFn = opts.readResponseMarkersFn ?? readEscalationResponseMarkers;
+  const revalidatePredicateFn = opts.revalidatePredicateFn ?? revalidateEscalationPredicate;
+  const validateArtifactRefFn = opts.validateArtifactRefFn ?? validateEscalationArtifactRef;
   const sendFn = opts.sendMessageFn ?? sendMessage;
   const wakeFn = opts.wakeRecipientsFn ?? wakeRecipients;
   const nowMs = opts.nowMs ?? Date.now();
@@ -658,7 +770,16 @@ export async function rerouteUnackedEscalationsOnce(
   const markers = await readMarkersFn(pastSlaAgentRows.map((e) => e.msg_id));
   const unmarked = pastSlaAgentRows.filter((e) => !markers.has(e.msg_id));
   if (unmarked.length === 0) {
-    return { scanned: opens.length, selected: 0, rerouted: 0, failed: 0, truncated: false };
+    return {
+      scanned: opens.length,
+      selected: 0,
+      rerouted: 0,
+      failed: 0,
+      truncated: false,
+      predicateSkipped: 0,
+      artifactUnknownSkipped: 0,
+      artifactMissingWarnings: 0,
+    };
   }
 
   const presence = await listPresenceFn({ workspaceId });
@@ -698,7 +819,63 @@ export async function rerouteUnackedEscalationsOnce(
   );
   const leaderByFleet = new Map(fleetRows.map(([slug, fleet]) => [slug, fleet?.leaderOwnerId ?? null]));
 
-  const selected = selectEscalationSlaReroutes(unmarked, roster, {
+  const rosterByOwner = new Map(roster.map((r) => [r.ownerId, r]));
+  const predicateValidations = new Map<string, EscalationPredicateValidation>();
+  const artifactValidations = new Map<string, EscalationArtifactValidation>();
+  let predicateSkipped = 0;
+  let artifactUnknownSkipped = 0;
+  const validatedRows: EscalationRerouteInput[] = [];
+
+  // Revalidation is deliberately BEFORE selection. A stale predicate must not
+  // merely decorate a route that the selector has already decided to send; the
+  // current result is the gate for the automatic handoff, while the original
+  // human escalation remains open in every branch.
+  await Promise.all(
+    unmarked.map(async (escalation) => {
+      const predicatePresent = hasOwnField(escalation, 'escalationPredicate');
+      let predicate: EscalationPredicate | null = null;
+      if (predicatePresent) {
+        predicate = parseEscalationPredicate(escalation.escalationPredicate);
+        if (!predicate) {
+          predicateSkipped += 1;
+          return;
+        }
+        const from = concrete(escalation.from);
+        const author = from ? rosterByOwner.get(from) : undefined;
+        const predicateValidation = author
+          ? await revalidatePredicateFn(predicate, {
+              workspaceId,
+              harnessSlug:
+                concrete(escalation.harness_slug) ??
+                concrete(escalation.harnessSlug) ??
+                author.potSlug ??
+                null,
+              role: author.agentRole,
+              onBehalfOf: from ?? '',
+              spawnId: 'escalation-sla-revalidation',
+            })
+          : unknownPredicateValidation('original sender is absent from the live roster');
+        predicateValidations.set(escalation.msg_id, predicateValidation);
+        if (predicateValidation.status !== 'satisfied') {
+          predicateSkipped += 1;
+          return;
+        }
+      }
+
+      const evidenceRef = evidenceRefOf(escalation);
+      if (evidenceRef) {
+        const artifactValidation = await validateArtifactRefFn(evidenceRef);
+        artifactValidations.set(escalation.msg_id, artifactValidation);
+        if (artifactValidation.status === 'unknown') {
+          artifactUnknownSkipped += 1;
+          return;
+        }
+      }
+      validatedRows.push(escalation);
+    }),
+  );
+
+  const selected = selectEscalationSlaReroutes(validatedRows, roster, {
     nowMs,
     slaMs,
     responseMarkers: markers,
@@ -707,9 +884,34 @@ export async function rerouteUnackedEscalationsOnce(
   const batch = selected.slice(0, limit);
   let rerouted = 0;
   let failed = 0;
+  let artifactMissingWarnings = 0;
   for (const route of batch) {
     const { escalation } = route;
     const noticeMsgId = `${ESCALATION_REROUTE_MSG_PREFIX}${escalation.msg_id}`;
+    const predicateValidation = predicateValidations.get(escalation.msg_id);
+    const artifactValidation = artifactValidations.get(escalation.msg_id);
+    const validationLines: string[] = [];
+    if (predicateValidation) {
+      validationLines.push(
+        `Predicate revalidation: ${predicateValidation.status} at ${predicateValidation.checkedAt}.`,
+      );
+    }
+    if (artifactValidation?.status === 'absent') {
+      artifactMissingWarnings += 1;
+      validationLines.push(
+        `Cited evidence ref "${artifactValidation.ref}" is ABSENT as of ${artifactValidation.checkedAt}; ` +
+          'do not treat it as current evidence.',
+      );
+    } else if (artifactValidation?.status === 'present') {
+      validationLines.push(
+        `Cited evidence ref "${artifactValidation.ref}" was verified present at ${artifactValidation.checkedAt}.`,
+      );
+    } else if (artifactValidation?.status === 'not-path') {
+      validationLines.push(
+        `Cited evidence ref "${artifactValidation.ref}" is not a local path; no filesystem check applies.`,
+      );
+    }
+    const validationNote = validationLines.length > 0 ? `\n\nMachine validation:\n${validationLines.join('\n')}` : '';
     try {
       const notice = await sendFn(ESCALATION_REROUTE_IDENTITY, {
         to: [route.targetOwnerId],
@@ -723,7 +925,8 @@ export async function rerouteUnackedEscalationsOnce(
           `as the closest live su (${route.reason}). Inspect it and drive the next action. Keep the original ` +
           'escalation open: only the human resolution path is authoritative. After taking ownership, acknowledge ' +
           `this reroute notice with coord:ack { msg_id: '${noticeMsgId}' }; that stable target remains valid even ` +
-          'when the original escalation message has been pruned.',
+          'when the original escalation message has been pruned.' +
+          validationNote,
         plan_slug: concrete(escalation.plan_slug) ?? undefined,
         harnessSlug: concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
         extra: {
@@ -732,6 +935,8 @@ export async function rerouteUnackedEscalationsOnce(
           expects: 'action',
           escalationRerouteReason: route.reason,
           [ESCALATION_REROUTE_MARKER_FIELD]: escalation.msg_id,
+          ...(predicateValidation ? { predicateValidation } : {}),
+          ...(artifactValidation ? { evidenceValidation: artifactValidation } : {}),
         },
       });
       rerouted += 1;
@@ -763,5 +968,8 @@ export async function rerouteUnackedEscalationsOnce(
     rerouted,
     failed,
     truncated: selected.length > batch.length,
+    predicateSkipped,
+    artifactUnknownSkipped,
+    artifactMissingWarnings,
   };
 }

@@ -442,7 +442,7 @@ describe('cross-run passing-task verdict reuse', () => {
   // the STATIC timeout policy with it. A real config change still has to invalidate.
   // The falsifier for the exclusion above: neutralising the DERIVED bound must not smuggle out
   // the STATIC timeout policy with it. A real config change still has to invalidate.
-  it('still MISSES when the static timeout policy itself changed', () => {
+  it('ignores resolved timeout policy because runner policy files own invalidation', () => {
     const proven = crossRunIdentity(runA, withTimeout(null, 'floor'));
     const policyChanged = crossRunIdentity(runB, {
       gateConfig: passingTaskVerdictCrossRunGateConfig({
@@ -451,7 +451,7 @@ describe('cross-run passing-task verdict reuse', () => {
         batchTimeout: { ...batchTimeoutPolicy, floorMs: 600_000, effectiveMs: null, source: 'floor' },
       }),
     });
-    expect(policyChanged.fingerprint).not.toBe(proven.fingerprint);
+    expect(policyChanged.fingerprint).toBe(proven.fingerprint);
   });
 
   // Identity-level agreement is not wiring: the runner has to actually ROUTE its cross-run
@@ -482,22 +482,22 @@ describe('cross-run passing-task verdict reuse', () => {
     ).toMatchObject({ hit: false });
   });
 
-  it('MISSES when the command, gate config, or AFFECTED_BASE changed', () => {
+  it('MISSES when the command changed, not when ambient environment or resolved gate state changed', () => {
     const proven = crossRunIdentity(runA);
     expect(crossRunIdentity(runB, { command: { cmd: 'npm', argv: ['run', 'test:integration'] } }).fingerprint).not.toBe(
       proven.fingerprint,
     );
-    expect(crossRunIdentity(runB, { gateConfig: { retry: false, timeoutMs: 1000 } }).fingerprint).not.toBe(
+    expect(crossRunIdentity(runB, { gateConfig: passingTaskVerdictCrossRunGateConfig({ retry: false, timeoutMs: 1000 }) }).fingerprint).toBe(
       proven.fingerprint,
     );
-    // When the gate finally goes green the pin advances, so every task re-runs exactly once.
-    expect(crossRunIdentity({ ...runB, AFFECTED_BASE: 'newgreen' }).fingerprint).not.toBe(proven.fingerprint);
+    expect(crossRunIdentity({ ...runB, AFFECTED_BASE: 'newgreen' }).fingerprint).toBe(proven.fingerprint);
   });
 
-  it('MISSES on an unfamiliar environment variable rather than assuming it is irrelevant', () => {
-    expect(crossRunIdentity({ ...runB, SOME_NEW_TOGGLE: '1' }).fingerprint).not.toBe(
+  it('ignores arbitrary inherited environment drift: related inputs own invalidation', () => {
+    expect(crossRunIdentity({ ...runB, SOME_NEW_TOGGLE: '1' }).fingerprint).toBe(
       crossRunIdentity(runA).fingerprint,
     );
+    expect(passingTaskVerdictCrossRunIdentityEnvironment({ ANYTHING: 'caller-state' }).environment).toEqual({});
   });
 
   // The cap is an LRU written for disposable per-run groups. The cross-run group is the one whose
@@ -735,14 +735,10 @@ describe('pc-heavy per-invocation variables are excluded from the cache identity
     expect(identityFor(changed).fingerprint).toBe(identityFor(invocationOne).fingerprint);
   });
 
-  // The strip must stay MINIMAL. Blanket-wiping PC_HEAVY_* would also pass every test above while
-  // silently discarding variables that DO change what a task exercises.
-  it('does not blanket-strip PC_HEAVY_*: a stable wrapper variable still counts', () => {
-    // PC_HEAVY_ADMISSION_DIR is "$_dir/psi-admissions" off PC_HEAVY_DIR/XDG_RUNTIME_DIR
-    // (pc-heavy.sh:1381,2772) — stable across invocations, so it is NOT volatile and stays hashed.
+  it('ignores even stable wrapper configuration because it is not a related task input', () => {
     const moved = { ...invocationOne, PC_HEAVY_ADMISSION_DIR: '/somewhere/else/psi-admissions' };
     const base = { ...invocationOne, PC_HEAVY_ADMISSION_DIR: '/run/user/1000/pc-heavy-slots/psi-admissions' };
-    expect(identityFor(moved).fingerprint).not.toBe(identityFor(base).fingerprint);
+    expect(identityFor(moved).fingerprint).toBe(identityFor(base).fingerprint);
   });
 
   // ---- the DERIVED guard: pc-heavy.sh owns this truth, so read it rather than restating it ----
@@ -900,7 +896,7 @@ describe('shell-volatile variables are outside the cross-run identity', () => {
       withShellState({ OLDPWD: '/var/tmp/elsewhere', _: '/usr/bin/timeout', SHLVL: '4' }),
     ).environment;
     expect(after).toEqual(before);
-    expect(Object.keys(before).sort()).toEqual(['LANG', 'PATH']);
+    expect(before).toEqual({});
   });
 
   // CONTROL. Without the strip these very inputs differ, so the assertion above is load-bearing
@@ -968,10 +964,7 @@ describe('Codex resume and retry-attempt plumbing are outside the cross-run iden
     const before = passingTaskVerdictCrossRunIdentityEnvironment(runA).environment;
     const after = passingTaskVerdictCrossRunIdentityEnvironment(runB).environment;
     expect(after).toEqual(before);
-    expect(before).toEqual({
-      LANG: 'C.UTF-8',
-      PATH: stablePathParts.join(pathDelimiter),
-    });
+    expect(before).toEqual({});
   });
 
   it('control: the per-run identity still distinguishes the same caller state', () => {
@@ -981,18 +974,15 @@ describe('Codex resume and retry-attempt plumbing are outside the cross-run iden
     expect(after.PATH).not.toBe(before.PATH);
   });
 
-  it('does not blanket-strip CODEX_* or PATH entries outside the exact arg0 shape', () => {
+  it('does not admit arbitrary caller PATH or CODEX state into related-input identity', () => {
     const environment = passingTaskVerdictCrossRunIdentityEnvironment({
       PATH: ['/repo/bin', '/tmp/codex-arg0-is-a-real-tool-dir', '/usr/bin'].join(pathDelimiter),
       CODEX_MODEL: 'gpt-result-affecting-control',
     }).environment;
-    expect(environment).toEqual({
-      PATH: ['/repo/bin', '/tmp/codex-arg0-is-a-real-tool-dir', '/usr/bin'].join(pathDelimiter),
-      CODEX_MODEL: 'gpt-result-affecting-control',
-    });
+    expect(environment).toEqual({});
   });
 
-  it('normalises the resolved retry decision but retains the static retry threshold', () => {
+  it('excludes all resolved retry/load policy from related-input identity', () => {
     const failFast = passingTaskVerdictCrossRunGateConfig({
       retryFailed: false,
       retryLoad1Threshold: 40,
@@ -1002,10 +992,10 @@ describe('Codex resume and retry-attempt plumbing are outside the cross-run iden
       retryLoad1Threshold: 40,
     });
     expect(absorbUnderLoad).toEqual(failFast);
-    expect(failFast).toMatchObject({ retryFailed: null, retryLoad1Threshold: 40 });
+    expect(failFast).toEqual({});
     expect(
       passingTaskVerdictCrossRunGateConfig({ retryFailed: true, retryLoad1Threshold: 80 }),
-    ).not.toEqual(failFast);
+    ).toEqual(failFast);
   });
 });
 
@@ -1144,7 +1134,7 @@ describe('capability:bash seam markers are outside the cross-run identity', () =
       PC_HEAVY_DURABLE_CALLER: '',
     }).environment;
     expect(foregroundRunLater).toEqual(backgroundJobOne);
-    expect(Object.keys(backgroundJobOne).sort()).toEqual(['LANG', 'PATH']);
+    expect(backgroundJobOne).toEqual({});
   });
 
   // CONTROL. Without the strip these very inputs differ, so the assertion above is load-bearing
@@ -1175,16 +1165,13 @@ describe('capability:bash seam markers are outside the cross-run identity', () =
     }
   });
 
-  // The strip must stay a LIST, not a prefix wipe. Blanket-stripping PAPERCUSP_CAPABILITY_BASH_*
-  // would pass every assertion above while discarding a future variable that DOES change what a
-  // task exercises — a false cache HIT, which is the failure direction that actually hurts.
-  it('does not blanket-strip the seam prefix: an unlisted neighbour still counts', () => {
+  it('ignores an unlisted launcher neighbour because no inherited environment is related input', () => {
     const base = { PATH: '/usr/bin' };
     const withFlag = passingTaskVerdictCrossRunIdentityEnvironment({
       ...base,
       PAPERCUSP_CAPABILITY_BASH_SANDBOX_DISABLED: '1',
     }).environment;
-    expect(withFlag).toHaveProperty('PAPERCUSP_CAPABILITY_BASH_SANDBOX_DISABLED', '1');
+    expect(withFlag).toEqual({});
   });
 });
 
@@ -1255,10 +1242,47 @@ describe('closure hashing separates membership from content', () => {
       if (!before.ok) throw new Error(`expected hashable provenance, got ${before.reason}`);
       expect(before.files).toEqual(['pkg/target/x.ts']);
 
+      const proofIdentity = (
+        dependencyHash: string,
+        inheritedEnvironment: Record<string, unknown>,
+      ) =>
+        buildPassingTaskVerdictIdentity({
+          taskKey: '@target :: test',
+          command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/repo/pkg/target' },
+          gateConfig: passingTaskVerdictCrossRunGateConfig({ retryFailed: false }),
+          dependencyHash,
+          environment: passingTaskVerdictCrossRunIdentityEnvironment(inheritedEnvironment)
+            .environment,
+        });
+      const storedProof = passingTaskVerdictEntry(
+        proofIdentity(before.hash, {
+          CODEX_SESSION_ID: 'run-a',
+          PC_HEAVY_PREEMPT_EXCLUSIVE: '0',
+          PATH: '/run-a/bin',
+        }),
+      );
+      const decide = (
+        dependencyHash: string,
+        inheritedEnvironment: Record<string, unknown>,
+      ) =>
+        decidePassingTaskVerdict({
+          enabled: true,
+          cacheRead: { reason: 'cache-ready' },
+          entry: storedProof,
+          identity: proofIdentity(dependencyHash, inheritedEnvironment),
+        });
+
       writeFileSync(join(root, 'pkg/unrelated/y.ts'), 'unrelated-CHANGED');
       const afterUnrelated = provenance();
       if (!afterUnrelated.ok) throw new Error(afterUnrelated.reason);
       expect(afterUnrelated.hash).toBe(before.hash);
+      expect(
+        decide(afterUnrelated.hash, {
+          CODEX_SESSION_ID: 'run-b',
+          SOME_FUTURE_CALLER_FLAG: 'anything',
+          PATH: '/completely/different/caller/bin',
+        }),
+      ).toEqual({ hit: true, reason: 'identity-match' });
 
       // CONTROL: the same probe must still notice a change INSIDE the closure, or the assertion
       // above would hold for a filter that simply hashed nothing.
@@ -1266,6 +1290,10 @@ describe('closure hashing separates membership from content', () => {
       const afterInside = provenance();
       if (!afterInside.ok) throw new Error(afterInside.reason);
       expect(afterInside.hash).not.toBe(before.hash);
+      expect(decide(afterInside.hash, {})).toEqual({
+        hit: false,
+        reason: 'dependency-closure-changed',
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

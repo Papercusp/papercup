@@ -56,6 +56,11 @@ vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string)
 vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
 vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
 vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
+vi.mock('../../coord/condition-upsert', () => ({
+  adoptConditionIncumbent: vi.fn(async () => null),
+  settleConditionClaim: vi.fn(async () => ({ won: true })),
+  CONDITION_UPSERT_MARKER: '_conditionUpsert',
+}));
 vi.mock('../../issue-occurrence-ledger', async () => {
   const actual = await vi.importActual<typeof import('../../issue-occurrence-ledger')>(
     '../../issue-occurrence-ledger',
@@ -108,6 +113,43 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     expect(r.message).toContain('goal-mode');
     expect(r.message).toContain('force:true');
     expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('urgent condition-key filing + semantic leg down → creates with degraded coverage (the EI-21827949941920236 escape)', async () => {
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'urgent condition filing',
+        urgent: true,
+        conditionKey: 'detector:urgent-condition',
+        goalDedupGate: true,
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        urgent: true,
+        payload: expect.objectContaining({
+          dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+        }),
+      }),
+    );
+  });
+
+  it('condition key without urgency remains fail-closed when the goal semantic leg is down', async () => {
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'non-urgent condition filing', conditionKey: 'detector:non-urgent', goalDedupGate: true },
+      ctx,
+    );
+    expect(r).toMatchObject({
+      ok: false,
+      error: 'dedup_unavailable',
+      dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+    });
     expect(createM).not.toHaveBeenCalled();
   });
 

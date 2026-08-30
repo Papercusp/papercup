@@ -250,7 +250,7 @@ dependency_generation_tree_fingerprint() {
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp \) -prune \) -o \
+        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' \
@@ -260,7 +260,7 @@ dependency_generation_tree_fingerprint() {
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp \) -prune \) -o \
+        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' -print0 \) \
@@ -1209,10 +1209,19 @@ dependency_generation_prune_ephemeral() {
   # node_modules/.cache root while a dependency generation is being copied.
   # None belong in an immutable generation: retaining or fingerprinting them can
   # false-fail rc75 on unrelated churn.
+  #
+  # `.verdict-data` is the same class found the expensive way (WI-871887, 2026-08-30):
+  # verdict-cli persists PER-AGENT SESSION STATE inside its own installed package directory
+  # (node_modules/verdict-cli/.verdict-data/sessions/<agent-id>). One peer running a browser
+  # check during the ~22min copy changed the source fingerprint and cost the whole gate run —
+  # green:null, no verdict. With ~100 agents using that skill the window was close to
+  # unwinnable, which is why the gate went days without rendering a verdict while merely
+  # LOOKING red. The general defect is mutable runtime state living inside node_modules; this
+  # prune list is the gate's defence against whichever package does it next.
   rm -f -- "$root/.package-lock.json"
   rm -rf -- "$root/.cache"
   find "$root" -type d \
-    \( -name .astro -o -name .vite -o -name .vite-temp \) \
+    \( -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
     -exec rm -rf -- {} +
 }
 

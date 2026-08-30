@@ -50,6 +50,8 @@ const GIT_SYNC_COMMITTED_EVENT = 'git-sync:committed';
  * (the function's existing catch-all outcome) instead of hanging the whole tool call.
  */
 const HEAD_SHA_TIMEOUT_MS = 5_000;
+const GIT_STATUS_MAX_BUFFER = 4 * 1024 * 1024;
+const GIT_STATUS_MAX_PATHS = 200;
 
 async function headSha(repoDir: string): Promise<string | null> {
   try {
@@ -60,16 +62,60 @@ async function headSha(repoDir: string): Promise<string | null> {
   }
 }
 
+interface GitSyncPreview {
+  repo_path: string | null;
+  head_sha: string | null;
+  dirty: boolean | null;
+  dirty_paths: string[] | null;
+  dirty_paths_truncated: boolean;
+  error: string | null;
+}
+
+/**
+ * Inspect the selected checkout without entering the git-sync action. This is
+ * intentionally a best-effort read: a preview must never turn an unreadable
+ * repository into a false clean-tree claim.
+ */
+async function previewGitSync(repoDir: string): Promise<GitSyncPreview> {
+  const head = await headSha(repoDir);
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['status', '--porcelain=v1', '-z', '-uall'],
+      { cwd: repoDir, timeout: HEAD_SHA_TIMEOUT_MS, maxBuffer: GIT_STATUS_MAX_BUFFER },
+    );
+    const entries = stdout.split('\0').filter(Boolean);
+    const dirtyPaths = entries.map((entry) => (entry.length >= 3 ? entry.slice(3) : entry));
+    return {
+      repo_path: repoDir,
+      head_sha: head,
+      dirty: dirtyPaths.length > 0,
+      dirty_paths: dirtyPaths.slice(0, GIT_STATUS_MAX_PATHS),
+      dirty_paths_truncated: dirtyPaths.length > GIT_STATUS_MAX_PATHS,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      repo_path: repoDir,
+      head_sha: head,
+      dirty: null,
+      dirty_paths: null,
+      dirty_paths_truncated: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export default defineTool({
   name: 'git-sync:run',
   profile: 'engineer',
   description:
-    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Pass dryRun:true for a read-only preview of the selected checkout; it never commits or pushes. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
   capability: 'operator:write',
   guidance: {
-    when: 'You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.)',
+    when: 'You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.',
     notWhen: 'To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).',
-    chaining: 'git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging).',
+    chaining: 'git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging).',
   },
   requirePrincipal: false,
   // The COMMIT lever of the three-part release pipeline (COMMIT → git-sync:run,
@@ -98,6 +144,10 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('Alias for installSlug when using the standard per-call harness scope argument.'),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe('Preview the selected checkout without firing git-sync, committing, or pushing.'),
     reason: softText(LIMITS.SHORT_TITLE)
       .optional()
       .describe(
@@ -121,6 +171,36 @@ export default defineTool({
     // ambient workspace state select a sibling checkout after these probes had
     // measured a different tree.
     const repoDir = await projectDirForSlug(slug, workspaceId);
+
+    if (args.dryRun) {
+      const preview: GitSyncPreview = repoDir
+        ? await previewGitSync(repoDir)
+        : {
+            repo_path: null,
+            head_sha: null,
+            dirty: null,
+            dirty_paths: null,
+            dirty_paths_truncated: false,
+            error: `No repository path is registered for install "${slug}".`,
+          };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              fired: false,
+              dry_run: true,
+              slug,
+              status: 'preview',
+              preview,
+              note: 'Read-only preview; git-sync was not fired and no commit or push was attempted.',
+            }),
+          },
+        ],
+      };
+    }
+
     const before = repoDir ? await headSha(repoDir) : null;
 
     const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(() => fireGitSyncNow(slug, workspaceId, repoDir), {

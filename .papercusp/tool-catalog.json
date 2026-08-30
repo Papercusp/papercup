@@ -12441,7 +12441,7 @@
           "POST"
         ]
       },
-      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Pass dryRun:true for a read-only preview of the selected checkout; it never commits or pushes. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
       "capabilities": [
         "operator:write"
       ],
@@ -12462,9 +12462,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.)",
+        "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.",
         "notWhen": "To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
-        "chaining": "git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
+        "chaining": "git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
       }
     },
     {

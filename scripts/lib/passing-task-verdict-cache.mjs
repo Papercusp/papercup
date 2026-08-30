@@ -7,12 +7,12 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { staticImportClosure } from "./related-tests.mjs";
 
 export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
-  "affected-passing-task-verdict-v5";
+  "affected-passing-task-verdict-v6";
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS = 32;
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -201,60 +201,27 @@ export const CAPABILITY_BASH_SEAM_IDENTITY_ENV = Object.freeze([
 ]);
 
 /**
- * Caller/session state observed changing across two otherwise identical real `test:affected`
- * invocations. These values describe the Codex conversation or the retry wrapper, not the task.
+ * Cross-run proof identity is RELATED-INPUT identity, not PROCESS identity.
  *
- * `AFFECTED_RETRY_FAILED` deserves an explicit safety argument: a verdict is stored only for a
- * clean FIRST pass (`shouldStorePassingTaskVerdict` requires initialStatus=0). Changing whether a
- * later failure would be retried therefore cannot make an already-stored pass less valid. The
- * resolved `retryFailed` gate field is normalised for the same reason below.
+ * The product invariant is direct: once a task passes, do not execute it again unless its
+ * command or related-file closure changed. The inherited environment describes the caller,
+ * terminal, gate scheduling, load, credentials, and wrapper mechanics. Hashing that ambient
+ * process state made unchanged tasks rerun on every invocation; subtracting individual volatile
+ * names merely moved the miss to the next undiscovered variable.
  *
- * Keep this an exact allow-list. A blanket CODEX_* / DISABLE_* wipe could hide a future variable
- * that genuinely changes the child process, turning a safe miss into an unsafe hit.
+ * Task semantics remain fail-closed in the other identity components:
+ *   - `command` binds argv, cwd, and the package script text;
+ *   - `gateConfig` binds static execution policy;
+ *   - `implementationVersion` binds this proof mechanism; and
+ *   - `dependencyHash` binds every related workspace, dependency, runner, and test-config file.
+ *
+ * A future task that intentionally depends on an environment value must declare it into one of
+ * those task-owned inputs. Ambient inheritance is never an implicit reason to rerun every green
+ * task. The real child environment is untouched; this empty object exists only in cache identity.
  */
-const CALLER_VOLATILE_IDENTITY_ENV = Object.freeze([
-  "AFFECTED_RETRY_FAILED",
-  "CODEX_SESSION_ID",
-  "CODEX_THREAD_ID",
-  "DISABLE_AUTO_COMPACT",
-  "DISABLE_COMPACT",
-]);
-
-// Codex prepends one fresh arg0 directory after a compaction/resume. Measured live, that directory
-// contains only the client's `.lock`; the stable Codex executable path beside it remains hashed.
-// Remove only this exact Papercusp-managed shape instead of weakening PATH as a whole: binary
-// resolution is a real task input, while the rotating empty launcher directory is not.
-const CODEX_ARG0_PATH_SEGMENT =
-  /[\\/]\.papercusp[\\/]su-codex-homes[\\/]session-[^\\/]+[\\/]tmp[\\/]arg0[\\/]codex-arg0[^\\/]*$/;
-
-function normalizeCrossRunPath(value) {
-  if (typeof value !== "string") return value;
-  return value
-    .split(delimiter)
-    .filter((segment) => !CODEX_ARG0_PATH_SEGMENT.test(segment))
-    .join(delimiter);
-}
-
-export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
-  const { environment: identityEnvironment } =
-    passingTaskVerdictIdentityEnvironment(environment);
-  for (const perRunName of [
-    "PAPERCUSP_TEST_RUN_GROUP",
-    "AFFECTED_TASK_VERDICT_PROOF_GROUP",
-    "VITEST_MAX_WORKERS",
-    "VITEST_MAX_FORKS",
-    "VITEST_MAX_THREADS",
-    ...SHELL_VOLATILE_IDENTITY_ENV,
-    ...CAPABILITY_BASH_SEAM_IDENTITY_ENV,
-    ...CALLER_VOLATILE_IDENTITY_ENV,
-  ]) {
-    delete identityEnvironment[perRunName];
-  }
-  if (Object.hasOwn(identityEnvironment, "PATH")) {
-    identityEnvironment.PATH = normalizeCrossRunPath(identityEnvironment.PATH);
-  }
+export function passingTaskVerdictCrossRunIdentityEnvironment(_environment) {
   return {
-    environment: identityEnvironment,
+    environment: {},
     cacheGroup: PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
   };
 }
@@ -286,16 +253,12 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
  * so a real config change still invalidates. `scheduler` is already neutralised upstream in the
  * shared identity spec.
  */
-export function passingTaskVerdictCrossRunGateConfig(gateConfig) {
-  const crossRun = { ...gateConfig, affectedBase: null, retryFailed: null };
-  if (crossRun.batchTimeout && typeof crossRun.batchTimeout === "object") {
-    crossRun.batchTimeout = {
-      ...crossRun.batchTimeout,
-      effectiveMs: null,
-      source: null,
-    };
-  }
-  return crossRun;
+export function passingTaskVerdictCrossRunGateConfig(_gateConfig) {
+  // Resolved timeouts, worker budgets, retry/load policy, capture mode, and selection radius
+  // describe HOW this invocation runs. The runner/config FILES that define those policies are
+  // already bound by dependencyHash. Ambient resolved values must not rerun a previously green
+  // task when its command and related files are unchanged.
+  return {};
 }
 
 /** One bounded, machine-readable composite cache verdict for gate logs. */
