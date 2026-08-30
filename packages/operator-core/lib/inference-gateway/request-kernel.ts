@@ -623,6 +623,13 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
   signal: AbortSignal;
   bodyIdleTimeoutMs: number;
   downstreamIdleTimeoutMs: number;
+  /**
+   * Tear down the upstream transport for the attempt being relayed. Called FIRST on
+   * any relay failure, before the cooperative cleanup that would otherwise wait on a
+   * stalled stream. Optional so a caller relaying an already-terminal response need
+   * not supply one.
+   */
+  abortUpstream?: (reason: unknown) => void;
 }): Promise<void> {
   let iterator: AsyncIterator<TChunk> | undefined;
   let bodyCompleted = false;
@@ -689,6 +696,13 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
       run: () => Promise.resolve(opts.downstream.end()),
     });
   } catch (error) {
+    // TEAR THE UPSTREAM DOWN FIRST. Everything below is COOPERATIVE cleanup —
+    // `iterator.return()` cancels the stream, `discard()` cancels the body — and a
+    // stalled upstream is precisely the case where cooperation cannot complete: both
+    // wait on the stream that has stopped producing. Aborting first turns those into
+    // prompt rejections instead of an unbounded wait, which is what keeps a
+    // mid-stream stall from wedging the request and holding its admission slot.
+    opts.abortUpstream?.(error);
     const cleanupErrors: unknown[] = [];
     if (!bodyCompleted) {
       try {
@@ -931,6 +945,29 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               : ttfbTimeoutMs;
           let response!: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
           let attemptFailure: GatewayRequestKernelError | null = null;
+          /**
+           * The abort handle for THIS attempt's upstream call, and it must outlive the
+           * TTFB window.
+           *
+           * `withDeadline` owns a controller scoped to the wait it is bounding: when the
+           * wait settles, its `finally` clears the timer AND unsubscribes from the
+           * parent. Handing that short-lived signal to `executeAttempt` therefore left
+           * the upstream request UN-ABORTABLE the instant headers arrived — the body
+           * phase had no live path from `requestController` to the socket, so a
+           * mid-stream body-idle deadline could stop AWAITING the body but never tear it
+           * down. The cooperative cleanup then waits on the very stream that has stopped
+           * producing, and the request wedges holding its admission slot. The
+           * pre-kernel ladder never had this gap: its stall timer aborted the same
+           * signal the upstream fetch was created with.
+           *
+           * So the attempt gets its own controller, linked to the request for the whole
+           * attempt, aborted by the TTFB deadline, and abortable again during relay.
+           */
+          const attemptController = new AbortController();
+          const forwardRequestAbort = () => attemptController.abort(abortReason(requestController.signal));
+          if (requestController.signal.aborted) forwardRequestAbort();
+          else requestController.signal.addEventListener('abort', forwardRequestAbort, { once: true });
+          const abortUpstream = (reason: unknown) => attemptController.abort(reason);
           try {
             response = await withDeadline({
               parent: requestController.signal,
@@ -942,7 +979,19 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
                   status: 504,
                   retryable: true,
                 }),
-              run: (signal) => opts.adapter.executeAttempt(prepared, { ...attemptContext, signal }),
+              run: (signal) => {
+                // Propagate the TTFB deadline onto the attempt so a timed-out attempt
+                // still destroys its socket rather than merely being un-awaited.
+                if (signal.aborted) attemptController.abort(abortReason(signal));
+                else
+                  signal.addEventListener('abort', () => attemptController.abort(abortReason(signal)), {
+                    once: true,
+                  });
+                return opts.adapter.executeAttempt(prepared, {
+                  ...attemptContext,
+                  signal: attemptController.signal,
+                });
+              },
             });
           } catch (error) {
             attemptFailure = normalizeError(error, requestController.signal);
@@ -1022,6 +1071,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               signal: requestController.signal,
               bodyIdleTimeoutMs: opts.policy.bodyIdleTimeoutMs,
               downstreamIdleTimeoutMs: opts.policy.downstreamIdleTimeoutMs,
+              abortUpstream,
             });
           } finally {
             if (streaming) span.endStage('stream');
