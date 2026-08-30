@@ -165,6 +165,11 @@ import {
   shouldStorePassingTaskVerdict,
   writePassingTaskVerdictCacheAtomic,
 } from "./lib/passing-task-verdict-cache.mjs";
+// WI-1048027 layer 2. Safe to import despite running on the crash path: ESM imports are
+// hoisted and fully initialized before this module's body executes, so unlike a closure
+// over a `let` declared further down (the TDZ hazard the abort block below is built
+// around), this binding cannot be unresolved when emitAbortMarker fires.
+import { formatTerminalCounterFields } from "./lib/terminal-counter-fields.mjs";
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -398,12 +403,30 @@ function publishPreemptFinalizationMarker() {
 // prevent. Upgraded in place once the real counters exist; until then zeros are the
 // honest answer, because no task has run yet.
 let plannedTaskCount = 0;
+// WI-1048027 layer 2 — OBSERVATION counters, deliberately separate from the tally
+// counters below. Run 4 died between OBSERVING a task exit 1 (a governed-admission
+// error under a pgbouncer CONNECTION_CLOSED) and TALLYING it: the crash arrived from
+// an async postgres.js `Immediate` callback, so `failed++` in the run loop never ran.
+// The abort marker reports the tally, so the verdict read
+// `tasks=121 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0` —
+// every counter zero, which reads as "121 tasks ran, nothing failed" when in fact
+// ~85 had started and one had already exited nonzero.
+//
+// These two are incremented at the moment an outcome is OBSERVED (inside emitProgress
+// and the admission-error path), never at tally time, so they survive exactly the
+// window that loses the tally. They are module-scope and initialized to 0, so both the
+// pre-upgrade closure here and the upgraded one further down can read them with no TDZ
+// risk — which is what lets an abort BEFORE the run loop stay honest too.
+let observedNonzeroExits = 0;
+let observedAdmissionErrors = 0;
 let readTerminalCounters = () => ({
   tasks: plannedTaskCount,
   failed: 0,
   quarantinedFailed: 0,
   timedOutTasks: 0,
   undeterminedTasks: 0,
+  observedNonzeroExits,
+  observedAdmissionErrors,
 });
 /** Emit the terminal marker for a run that did NOT reach a clean verdict path. */
 function emitAbortMarker(extra) {
@@ -412,10 +435,19 @@ function emitAbortMarker(extra) {
   const c = readTerminalCounters();
   // The same marker fields appear on every terminal path, so one grep classifies
   // any log — a reader must not need a second parser for the abnormal case.
+  // WI-1048027 layer 2: the observation counters are appended TRAILING so the existing
+  // prefix (through `undeterminedTasks=`) is byte-identical for anything already parsing
+  // this line — the same additive discipline AFFECTED_TASK_PROGRESS uses.
+  //
+  // `tasks=` is the PLANNED count, not the started one. On an abort that reads as
+  // "N tasks ran", which is how run 4's `tasks=121 failed=0` was nearly taken for a
+  // clean sweep. The discrepancy note below states the contradiction in words rather
+  // than leaving a reader to notice that two numbers disagree.
   errSync(
     `AFFECTED_TESTS_RESULT status=aborted tasks=${c.tasks} failed=${c.failed} ` +
       `quarantinedFailed=${c.quarantinedFailed} timedOutTasks=${c.timedOutTasks} ` +
-      `undeterminedTasks=${c.undeterminedTasks} ${extra}`,
+      `undeterminedTasks=${c.undeterminedTasks} ${extra}` +
+      formatTerminalCounterFields(c).text,
   );
 }
 // Written to the run log only — never stdout/stderr. Its job is to make the LOG
@@ -4231,6 +4263,11 @@ readTerminalCounters = () => ({
   quarantinedFailed,
   timedOutTasks,
   undeterminedTasks,
+  // Carried through unchanged (WI-1048027 layer 2): these are observation counters, so
+  // they must read the same before and after this upgrade. The tally fields above go
+  // stale the instant the process dies mid-loop; these do not.
+  observedNonzeroExits,
+  observedAdmissionErrors,
 });
 // EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
 // so finding WHICH task failed meant scrolling back through the whole run's
@@ -4667,6 +4704,11 @@ function runCapturedTask(
     // FAILED"). `settled` distinguishes the two: only true from the `child.once("close", ...)`
     // call below, where a `null` field is a DEFINITE "not applicable" (`"none"`), never
     // "pending".
+    // WI-1048027 layer 2: at most ONE increment per task. A task can emit a settled beat
+    // more than once (a watchdog kill racing the child's own exit), and an observation
+    // counter that double-counts is worse than no counter — it would manufacture a
+    // phantom TALLY-UNDERCOUNT on a run that was actually tallied correctly.
+    let countedNonzeroExit = false;
     const emitProgress = (
       state,
       status = null,
@@ -4677,6 +4719,17 @@ function runCapturedTask(
       // the live pulse consumed by green-checkpoint while the child output remains captured.
       // It contains no child bytes, so concurrent tasks cannot misattribute test output.
       const outcome = formatTaskOutcomeFields({ status, signal, settled });
+      // Deliberately narrow: only an UNAMBIGUOUS non-clean settlement counts — a nonzero
+      // numeric status, or death by signal. A settled beat carrying neither (status null,
+      // no signal) is the "undetermined" case, which has its own counter; folding it in
+      // here would inflate this one and cost it the credibility that makes the
+      // TALLY-UNDERCOUNT note worth trusting.
+      const exitedNonzero =
+        (typeof status === "number" && status !== 0) || Boolean(signal);
+      if (settled && exitedNonzero && !countedNonzeroExit) {
+        countedNonzeroExit = true;
+        observedNonzeroExits++;
+      }
       rawErrSync(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
@@ -4840,6 +4893,13 @@ function runCapturedTask(
         : {}),
     };
     result.__outputJournaled = journalCapturedTaskOutput(spawnTask, result, allocation, journalLabel);
+    // WI-1048027 layer 2: THE run-4 case, counted at observation. This path never reaches
+    // emitProgress, so it cannot double-count with the guard there. The task exits 1 without
+    // ever running, and the run loop's `failed++` for it is exactly what run 4's crash
+    // pre-empted — leaving a verdict of failed=0 while this admission error sat in the log
+    // three lines above it.
+    observedNonzeroExits++;
+    observedAdmissionErrors++;
     rawErrSync(
       `AFFECTED_TASK_PROGRESS state=governed-admission-error task=${JSON.stringify(taskKey(spawnTask))} ` +
         `elapsedSec=0 capturedBytes=0 stalledForSec=0 timeoutMs=${taskTimeoutMs} ` +
