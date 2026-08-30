@@ -45,6 +45,8 @@ import {
 } from '../agent-tools/coordination/tools/escalate';
 import { getFleet } from '../agent-fleets-store';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { classifyItemActivity, isActivelyWorked } from '../item-activity';
+import { getWorkItem, TERMINAL_WORK_ITEM_STATES } from '../work-items';
 
 /** Resolver identity stamped on auto-reconciled escalations (audit trail). */
 export const RECONCILE_OWNER = 'system:attention-reconcile';
@@ -641,6 +643,13 @@ export interface EscalationRerouteResult {
   artifactUnknownSkipped: number;
   /** Rows rerouted with an explicit warning that their cited path is absent. */
   artifactMissingWarnings: number;
+  /**
+   * Rows withheld because the escalation's SUBJECT work-item (the WI-/EI-/F- id
+   * named in its summary or evidence ref, if any) already has a live,
+   * actively-progressing assignee — waking a second member would be pure noise
+   * (EI-21834041480805949). See {@link subjectAlreadyActivelyWorked}.
+   */
+  subjectActivelyWorkedSkipped: number;
 }
 
 export interface EscalationRerouteDeps {
