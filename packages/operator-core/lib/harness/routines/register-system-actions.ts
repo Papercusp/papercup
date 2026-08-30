@@ -505,6 +505,13 @@ import './supervision-reconcile-action';
 // timeout. A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence (one sweep
 // serves every workspace's rows). Seeded ACTIVE by seed-consult-expiry-routine.ts.
 import './consult-expiry-action';
+// frozen-candidate-compliance-enforcement-2026-08-30 P-008: `system:frozen-candidate-drift-sweep`
+// — the ATTESTATION leg. Reports commits that touched the FROZEN candidate's failing paths
+// while landing above it, which is the exact signature of a fix the gate cannot see. Every
+// other item in that plan prevents the failure; this is the only one that says whether
+// prevention worked, so the plan succeeded when this stops filing. Silent when nothing is
+// frozen and when git cannot be read — it never reports a zero it did not measure.
+import './frozen-candidate-drift-sweep-action';
 // acceptance-grading-stall-sweep-2026-08-26 P-002/P-004: `system:acceptance-grading-sweep`
 // — puts a clock on the one leg of plan completion that had none. A plan ships only after an
 // INDEPENDENT grader emits a scorecard, and that grader is recruited lazily by the ship
