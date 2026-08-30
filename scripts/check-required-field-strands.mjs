@@ -362,10 +362,20 @@ const isInaccessible = (member) =>
 
 export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
-  const sigs = new Map(); // name -> { params: [{ name, optional, rest, type }], ret }
+  const sigs = new Map(); // key -> { typeParams, params: [{ name, optional, rest, type }], ret }
 
   const record = (key, node) => {
     sigs.set(key, {
+      // Carried so a generic's ARITY, CONSTRAINTS and DEFAULTS are visible to the diff: adding
+      // a type parameter strands every explicit `foo<A>()` site, and tightening a constraint
+      // strands the inference sites — neither of which touches a value parameter or the return
+      // type, so both were invisible here. The `name` is for the report path ONLY and must
+      // never be diffed: type parameters are positional, so `<T>` → `<U>` is a pure rename.
+      typeParams: (node.typeParameters ?? []).map((tp) => ({
+        name: ts.isIdentifier(tp.name) ? tp.name.text : '?',
+        constraint: typeText(tp.constraint, sf),
+        hasDefault: Boolean(tp.default),
+      })),
       params: node.parameters.map((p) => ({
         name: ts.isIdentifier(p.name) ? p.name.text : '?',
         optional: Boolean(p.questionToken || p.initializer),
@@ -376,9 +386,39 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
     });
   };
 
+  // An OVERLOAD SET publishes its body-less declarations and HIDES the implementation:
+  // TypeScript does not let a caller call the implementation signature at all. Keying every
+  // declaration by bare name left the implementation as the last writer, so this collector
+  // recorded a signature no caller can see — and that fails BOTH ways. Deleting or narrowing
+  // an overload reported nothing (the implementation was unchanged), while widening the
+  // implementation reported a break that stranded nobody. The second direction is the
+  // dangerous one: a false report is what gets a guard switched off.
+  //
+  // Keyed by name+ARITY (`f/1`, `f/2`), never positionally (`f#0`) — reordering overloads is a
+  // no-op refactor that a positional key would report as two changed signatures.
+  //
+  // A name counts as overloaded only with MORE THAN ONE declaration, so a lone ambient
+  // `export declare function f()` keeps its bare-name key and its existing behaviour; only a
+  // genuine overload set changes shape here.
+  //
+  // KNOWN LIMIT: same-arity overloads still collide on one key and the last declaration wins.
+  // That is strictly narrower than the collision it replaces — which lost the entire set to the
+  // implementation — and it is stated rather than hidden because it bounds what a clean run
+  // proves.
+  const declCounts = new Map();
+  const bodyless = new Set();
+  for (const stmt of sf.statements) {
+    if (!ts.isFunctionDeclaration(stmt) || !isExported(stmt) || !stmt.name) continue;
+    declCounts.set(stmt.name.text, (declCounts.get(stmt.name.text) ?? 0) + 1);
+    if (!stmt.body) bodyless.add(stmt.name.text);
+  }
+  const overloaded = new Set([...bodyless].filter((n) => (declCounts.get(n) ?? 0) > 1));
+
   for (const stmt of sf.statements) {
     if (ts.isFunctionDeclaration(stmt) && isExported(stmt) && stmt.name) {
-      record(stmt.name.text, stmt);
+      const fnName = stmt.name.text;
+      if (!overloaded.has(fnName)) record(fnName, stmt);
+      else if (!stmt.body) record(`${fnName}/${stmt.parameters.length}`, stmt);
     } else if (ts.isVariableStatement(stmt) && isExported(stmt)) {
       // `export const foo = (a: string) => …` is as much a public callable as a function
       // declaration, and a large share of this repo's exported API takes that form.
@@ -470,6 +510,33 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
     const was = before.get(name);
     if (!was) continue; // new callable — no pre-existing call sites to strand
 
+    // Type parameters, compared POSITIONALLY and never by name — TS resolves type arguments by
+    // position, so `<T>` → `<U>` is a rename that strands nobody and must stay silent.
+    const wasTp = was.typeParams ?? [];
+    const nowTp = now.typeParams ?? [];
+    for (let i = wasTp.length; i < nowTp.length; i++) {
+      // A new type parameter carrying a DEFAULT is additive: `foo<A>()` still resolves.
+      if (nowTp[i].hasDefault) continue;
+      breaks.push({ path: `${name}<${nowTp[i].name}>`, reason: 'type-param-added-required' });
+    }
+    if (nowTp.length < wasTp.length) {
+      // TS rejects extra type arguments exactly as it rejects extra arguments.
+      breaks.push({ path: `${name}<>`, reason: 'type-param-removed' });
+    }
+    const commonTp = Math.min(wasTp.length, nowTp.length);
+    for (let i = 0; i < commonTp; i++) {
+      // Reported without deciding whether the constraint narrowed or widened, for the same
+      // reason param-type-changed is: telling `<T>` → `<T extends Serializable>` (strands
+      // inference sites) from its inverse (safe) needs the checker, and this guard's whole
+      // design is a cheap trigger that hands the verdict to --typecheck.
+      if (wasTp[i].constraint !== nowTp[i].constraint) {
+        breaks.push({ path: `${name}<${nowTp[i].name}>`, reason: 'type-param-constraint-changed' });
+      } else if (wasTp[i].hasDefault && !nowTp[i].hasDefault) {
+        // Losing a default strands every site that omitted the type argument and relied on it.
+        breaks.push({ path: `${name}<${nowTp[i].name}>`, reason: 'type-param-default-removed' });
+      }
+    }
+
     for (let i = was.params.length; i < now.params.length; i++) {
       const p = now.params[i];
       // A rest or optional parameter is additive: every existing call still typechecks.
@@ -508,6 +575,21 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
   const stillExported = collectExportedValueNames(afterText, fileName);
   for (const name of before.keys()) {
     if (after.has(name)) continue;
+
+    // An arity-keyed OVERLOAD needs the opposite suppression to a plain name. The base name
+    // surviving does NOT make its disappearance safe: callers calling that arity no longer have
+    // a matching overload, which is precisely the break the arity key was introduced to expose.
+    // Suppressing it against the export surface would reinstate the original bug. So the export
+    // surface decides only the REASON — whether the whole callable left, or one of its overloads.
+    const overload = /^(.+)\/(\d+)$/.exec(name);
+    if (overload) {
+      breaks.push({
+        path: `${name}()`,
+        reason: stillExported.has(overload[1]) ? 'overload-removed' : 'callable-removed',
+      });
+      continue;
+    }
+
     if (!name.includes('.') && stillExported.has(name)) continue;
     breaks.push({ path: `${name}()`, reason: 'callable-removed' });
   }
@@ -876,7 +958,17 @@ function main() {
     'param-type-changed': 'parameter type changed',
     'return-type-changed': 'return type changed',
     'callable-removed': 'exported callable removed',
+    'overload-removed': 'overload removed from an exported set',
+    'type-param-added-required': 'type parameter added without a default',
+    'type-param-removed': 'type parameter removed',
+    'type-param-constraint-changed': 'type-parameter constraint changed',
+    'type-param-default-removed': 'type-parameter default removed',
   };
+  // Every signature reason MUST be listed here, not merely labelled above: `hasField` is
+  // computed as the COMPLEMENT of this set, so a reason missing from it is silently classified
+  // as a required-FIELD finding and the run is announced as a "REQUIRED-FIELD ADDITION" — the
+  // wrong-headline failure this set was introduced to fix, which sends a reader hunting for a
+  // field that does not exist.
   const SIGNATURE_REASONS = new Set([
     'param-added-required',
     'param-optional-to-required',
@@ -884,6 +976,11 @@ function main() {
     'param-type-changed',
     'return-type-changed',
     'callable-removed',
+    'overload-removed',
+    'type-param-added-required',
+    'type-param-removed',
+    'type-param-constraint-changed',
+    'type-param-default-removed',
   ]);
 
   if (!json) {
