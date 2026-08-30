@@ -545,6 +545,37 @@ describe('aggregateGroupResults — no group may be silently abandoned (EI-13535
     const summary = aggregateGroupResults([okGroup(2, 2, 2)]);
     expect(summary).toMatchObject({ ok: true, requested: 2, matched: 2, executed: 2, anyFailed: false });
   });
+
+  // EI-21902345477441137: a watchdog reap kills the child via signal, leaving `result.status`
+  // typically `null` — the caller in `main()` must never classify that as a genuine test failure
+  // (`null !== 0` would say "failed" for a run that produced no verdict at all). The fix pushes a
+  // reaped group with `failed: false, timedOut: true` instead of letting it fall through
+  // `vitestRunFailed`; this locks the aggregation contract that print sites and the final
+  // `TEST_FILE_RESULT`/exit-code decision both key off.
+  it('a timed-out (reaped) group must NOT contribute to anyFailed — a harness limit is not a red', () => {
+    const timedOutGroup = { ...okGroup(1, 1, 1), failed: false, timedOut: true };
+    const summary = aggregateGroupResults([timedOutGroup, okGroup(2, 2, 2)]);
+    expect(summary.anyFailed).toBe(false);
+    expect(summary.anyTimedOut).toBe(true);
+    // Files were still attempted/counted normally — only the verdict classification differs.
+    expect(summary.executed).toBe(3);
+    expect(summary.requested).toBe(3);
+  });
+
+  it('a genuine failure elsewhere still reports anyFailed=true even alongside an unrelated timeout', () => {
+    const timedOutGroup = { ...okGroup(1, 1, 1), failed: false, timedOut: true };
+    const failedGroup = { ...okGroup(2, 2, 2), failed: true };
+    const summary = aggregateGroupResults([timedOutGroup, failedGroup]);
+    // Both signals surface independently — a reap in one group must never mask a real red in
+    // another, and a real red must never be laundered into "just a timeout".
+    expect(summary.anyFailed).toBe(true);
+    expect(summary.anyTimedOut).toBe(true);
+  });
+
+  it('a clean run with no timed-out group reports anyTimedOut=false (no false positive)', () => {
+    const summary = aggregateGroupResults([okGroup(1, 1, 1), okGroup(2, 2, 2)]);
+    expect(summary.anyTimedOut).toBe(false);
+  });
 });
 
 // EI-18099113673609528: Vitest 4's default/verbose reporter drops ALL per-suite error detail
