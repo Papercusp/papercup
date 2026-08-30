@@ -229,11 +229,6 @@ function sizeOfDir(dir: string): number {
 
 /* ─── GC scheduler ───────────────────────────────────────────────────── */
 
-const __SYM = Symbol.for('papercusp.scratchGcScheduler');
-type SchedulerGlobals = typeof globalThis & {
-  [__SYM]?: { timer: ReturnType<typeof setInterval> | null };
-};
-
 /**
  * Start the periodic GC sweep. Idempotent — calling twice is a no-op.
  * Hosts call this from instrumentation-node so it survives Next dev

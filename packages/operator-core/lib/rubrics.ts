@@ -1845,7 +1845,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     },
     async (current, meta) => {
       const stored = rubricFromLockedPlan(input.rubricId, current, meta?.templateData ?? null, scope);
-      if (!stored) return { newBody: null, value: null };
+      if (!current || !stored) return { newBody: null, value: null };
 
       // Build and validate the replacement from the locked snapshot. This keeps
       // the loss guards and template schema on the same side of the advisory lock

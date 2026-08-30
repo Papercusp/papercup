@@ -71,6 +71,7 @@ function baseDeps(
       guide: GUIDE.guide,
       guideTruncated: GUIDE.guideTruncated,
       guideBranch: GUIDE.branch,
+      sourceCheckout: { root: '/fake/checkout', sha: 'deadbeef', branch: 'main' },
       acquireSourceDir: async () => {
         const dir = join(scratch, 'src');
         mkdirSync(dir, { recursive: true });
@@ -134,6 +135,7 @@ describe('composeNewApp', () => {
     );
     expect(payload.template).toMatchObject({ ref: REF, id: LISTING.id });
     expect(payload.guideBranch).toBe('main');
+    expect(payload.sourceCheckout).toEqual({ root: '/fake/checkout', sha: 'deadbeef', branch: 'main' });
     expect(payload.builder).toMatchObject({ spawned: true, chatId: 'chat-abc', role: 'architect' });
 
     // template files really landed on the created dir.
@@ -336,6 +338,7 @@ describe('composeNewApp — compensating rollback after a durable create (WI-377
         guide: GUIDE.guide,
         guideTruncated: false,
         guideBranch: GUIDE.branch,
+        sourceCheckout: null,
         acquireSourceDir: async () => ({
           srcDir: join(scratch, 'does-not-exist'),
           cleanup: async () => {},

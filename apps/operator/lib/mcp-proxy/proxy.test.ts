@@ -2145,6 +2145,103 @@ describe("WI-35737: a departed client stops the retry loop", () => {
 });
 
 /**
+ * EI-21908521835344903 — a bare client-side timeout ("The operation timed out.") gives an
+ * agent zero information about whether the write it triggered actually committed. That exact
+ * text appears nowhere in this proxy (confirmed by grep — it is the calling MCP client's own
+ * generic timeout, independent of what this proxy eventually does upstream), so this proxy
+ * cannot rewrite what the client displays. What it CAN do — and previously did not — is record
+ * what actually happened once the client is gone: for a 'keyed'/'opaque' class the forward is
+ * never aborted on disconnect (only 'idempotent' gets an AbortController), so the write may
+ * land anyway, and `outcome` already holds that answer at the exact point the old `client_gone`
+ * record discarded it.
+ */
+describe("EI-21908521835344903: client_gone records the write's actual outcome", () => {
+  it("a keyed write that lands AFTER the client disconnects is recorded, not discarded", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const logFile = path.join(
+      os.tmpdir(),
+      `mcp-proxy-client-gone-outcome-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+    );
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          // The write lands only AFTER the client has already disconnected — the exact
+          // reported race (step 2: the write committed while the calling agent's own
+          // MCP client had already given up on a bare "operation timed out").
+          setTimeout(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end('{"ok":true}');
+          }, 150);
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          retryBackoffMs: 10,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      // A real tools/call for a non-read-only tool -> klass 'keyed' -> NOT aborted on
+      // disconnect (only 'idempotent' gets an AbortController; see `attemptAbort`).
+      const body =
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"loop:checkpoint","arguments":{}}}';
+      const r = http.request({
+        host: "127.0.0.1",
+        port: port(proxy),
+        method: "POST",
+        path: "/api/mcp",
+      });
+      r.on("error", () => {}); // the destroy() below surfaces here; not a failure
+      r.end(body);
+      await new Promise((resolve) => setTimeout(resolve, 30)); // let the forward start
+      r.destroy(); // the agent's own MCP client gives up — exactly the reported race
+
+      // Give the upstream time to answer (150ms) plus the proxy time to record it.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const records = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              kind?: string;
+              klass?: string;
+              upstreamStatus?: number;
+              connected?: boolean;
+              timedOut?: boolean;
+              upstreamErr?: string;
+            },
+        );
+      const gone = records.filter((rec) => rec.kind === "client_gone");
+      expect(gone.length).toBeGreaterThanOrEqual(1);
+      expect(gone[0].klass).toBe("keyed");
+      // The write LANDED (upstream answered 200) even though the client was already
+      // gone — this is the exact fact the old record discarded.
+      expect(gone[0].upstreamStatus).toBe(200);
+      expect(gone[0].connected).toBe(true);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previous === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  }, 10_000);
+});
+
+/**
  * EI-19305299022434394 — mcp-proxy had no in-flight concurrency bound (`maxSockets:Infinity`)
  * and went completely SILENT under a stalling upstream: 3,450 requests held simultaneously,
  * 106 minutes with zero log lines during the measured outage. Three coupled fixes:

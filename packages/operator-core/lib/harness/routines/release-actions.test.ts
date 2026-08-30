@@ -146,6 +146,7 @@ vi.mock('./hive-release-env', async (orig) => {
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
+import './frozen-candidate-drift-sweep-action';
 import {
   buildIsolatedScopeArgv,
   shouldAutoServe,
@@ -988,6 +989,26 @@ describe('register-system-actions — registry population', () => {
     expect(names).toContain('release-trigger');
     expect(getSystemAction('green-checkpoint')).toBeTypeOf('function');
     expect(getSystemAction('release-trigger')).toBeTypeOf('function');
+  });
+
+  // P-008 of frozen-candidate-compliance-enforcement-2026-08-30. The sweep is only a
+  // STANDING mechanism (D-001: not an opt-in diagnostic) if register-system-actions
+  // actually pulls it in. Importing the action module here proves it registers; it does
+  // NOT prove production runs it, so the source of register-system-actions is asserted
+  // too — deleting that one side-effect import is otherwise invisible to every test.
+  it('registers frozen-candidate-drift-sweep, and register-system-actions imports it', () => {
+    expect(listSystemActions()).toContain('frozen-candidate-drift-sweep');
+    expect(getSystemAction('frozen-candidate-drift-sweep')).toBeTypeOf('function');
+
+    // Subject path is overridable so falsifiability can be proven against a COPY
+    // outside the tree (mutation-probe tier 2) instead of mutating this shared checkout.
+    const registrarPath: string | URL =
+      process.env.PROBE_REGISTRAR_PATH ?? new URL('./register-system-actions.ts', import.meta.url);
+    const registrar = readFileSync(registrarPath, 'utf8');
+    // positive control: the registrar must still be the real file that pulls in a
+    // known-registered sibling, so a gutted/renamed registrar cannot pass vacuously.
+    expect(registrar).toContain("import './release-actions'");
+    expect(registrar).toContain("import './frozen-candidate-drift-sweep-action'");
   });
 });
 

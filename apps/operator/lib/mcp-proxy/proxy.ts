@@ -3379,6 +3379,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // decides, so a race between the abort landing and the response arriving cannot
             // write to a dead socket.
             if (clientGone) {
+              // EI-21908521835344903: the client is gone, so nothing can be written back to
+              // it — but for a 'keyed'/'opaque' class this attempt was never aborted (only
+              // 'idempotent' gets an AbortController; see the comment above `attemptAbort`),
+              // so the write may have LANDED anyway. `outcome` already holds that answer right
+              // here; record it instead of discarding it, so the forensic ledger can later
+              // distinguish "committed after the client gave up" from "genuinely failed" —
+              // exactly what a caller whose own MCP client surfaced a bare, undiscriminated
+              // "operation timed out" (a client-side message this proxy never emits and
+              // cannot rewrite) currently has no way to determine except by hand-verifying
+              // application state. `upstreamStatus` present + 2xx means the write applied.
+              if (outcome.ures) outcome.ures.resume(); // drain so the (keepAlive:false) socket is released
               record({
                 kind: "client_gone",
                 method: req.method,
@@ -3386,6 +3397,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 klass: fwd.klass,
                 attempts,
                 elapsedMs: Date.now() - started,
+                upstreamStatus: outcome.ures?.statusCode,
+                connected: outcome.connected,
+                timedOut: outcome.timedOut ?? false,
+                upstreamErr: outcome.err
+                  ? String(outcome.err.message ?? outcome.err)
+                  : undefined,
               });
               break;
             }

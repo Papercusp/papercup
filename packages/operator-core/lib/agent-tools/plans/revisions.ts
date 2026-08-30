@@ -6,8 +6,9 @@
  * One row per semantic plan write. `recordPlanRevision()` is called by
  * the `plans:*` write verbs *after* a successful file write, from the
  * `withPlanLock` `afterWrite` hook — so it runs while the plan-file
- * lock is still held and `seq` allocation (max+1) is race-free for a
- * given `plan_slug`.
+ * hook. The hook runs after the plan transaction commits, so this helper
+ * takes its own transaction-scoped per-plan advisory lock before allocating
+ * `seq`.
  *
  * Recording is BEST-EFFORT (D-014): the `.md` file is the canonical
  * artifact (the FS is canonical for plan *content*), and a transient
@@ -89,6 +90,11 @@ export interface RecordedRevision {
   contentHash: string;
 }
 
+// `withPlanLock` runs revision hooks after its transaction commits. Keep the
+// revision sequence allocation serialized independently of that plan lock so
+// concurrent post-commit hooks cannot both observe the same MAX(seq)+1.
+const PLAN_REVISION_ADVISORY_LOCK_NAMESPACE = 'plan_revisions';
+
 /**
  * Classify the writer. `principal` identities are the in-process
  * callers — the `/admin/plans` editor route proxy and operator chat
@@ -103,9 +109,11 @@ export function classifyAuthor(identity: AgentIdentity): PlanRevisionAuthorKind 
 
 /**
  * Append one `plan_revisions` row. Allocates `seq` as `max+1` for the
- * plan in a single `INSERT … SELECT` — race-free because the caller
- * holds the plan-file lock, with `UNIQUE (plan_slug, seq)` as the
- * backstop. Best-effort: never throws; returns `null` on any failure.
+ * plan in a single `INSERT … SELECT` under a transaction-scoped advisory
+ * lock keyed by (workspace, harness, plan). The unique constraint remains a
+ * backstop, but normal concurrent hooks now serialize instead of dropping a
+ * revision and emitting a warning. Best-effort: never throws; returns `null`
+ * on any failure.
  */
 export async function recordPlanRevision(
   args: RecordPlanRevisionArgs,
@@ -132,6 +140,17 @@ export async function recordPlanRevision(
       ...(explicitWs ? { workspaceId: explicitWs } : {}),
     });
     const seq = await withWorkspace(workspaceId, async (tx) => {
+      // afterWrite is deliberately post-commit (EI-118), so the plan-file
+      // advisory lock has already been released here. A distinct namespace
+      // keeps this tiny audit allocation serialized without coupling it to
+      // ordinary plan writers or risking a lock cycle.
+      const revisionLockKey = `${workspaceId}:${harnessSlug}:${args.planSlug}`;
+      await tx`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${PLAN_REVISION_ADVISORY_LOCK_NAMESPACE}),
+          hashtext(${revisionLockKey})
+        )
+      `;
       // INSERT … SELECT against the same table: the aggregate
       // sub-select always yields exactly one row (COALESCE(MAX,0)+1 is
       // 1 when the plan has no prior revisions), so exactly one row is

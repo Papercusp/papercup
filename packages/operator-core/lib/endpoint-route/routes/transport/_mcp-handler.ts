@@ -2559,7 +2559,10 @@ const handler = createMcpHandler(
               // generically would silently discard. Non-string values yield nothing,
               // so a numeric `harnessLimit` or a boolean widener is skipped without
               // needing an allowlist entry.
-              for (const { arg, slug } of collectHarnessSlugArgs(args)) {
+              // `toolName` matters: a bare `slug` is a feature slug on features:*
+              // but "the pot's home-harness slug" on pot:* — and pot:obliterate
+              // is the sharp end of getting that wrong.
+              for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
                 const escapesHive =
                   slug === 'all' ||
                   slug === '*' ||

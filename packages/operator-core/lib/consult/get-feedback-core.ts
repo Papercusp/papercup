@@ -79,12 +79,19 @@ export const MAX_CONSULT_DEPTH = 2;
  * floor (labeled per D-002). The honest no-route verdict survives only where a
  * minimum is physically unfillable: no live candidate at all, or the embedder
  * is down (no ranking exists to pick "best-available" from — D-003 keeps the
- * cannot-measure degrade honest rather than inventing a recency fallback). */
-export const DEFAULT_MIN_RESPONDERS = 1;
-/** Default cap on the selected cascade menu — the router's historical
- * qualified cap (maxQualified default). Rubric vetting pins 3 explicitly
- * (D-001 §4); other call sites may widen up to the tool-layer bound. */
-export const DEFAULT_MAX_RESPONDERS = 3;
+ * cannot-measure degrade honest rather than inventing a recency fallback).
+ *
+ * Both constants now DERIVE from `selection-policies.ts`, which is the single
+ * place bounds are written (unified-responder-selection-critique-and-grading
+ * -2026-08-30 D-001). Re-exported here so existing importers are unchanged.
+ * Rubric vetting no longer "pins 3 explicitly" — it passes
+ * `policy: RUBRIC_VETTING_POLICY` and reads its bound from the registry.
+ *
+ * Imported AND re-exported: a bare `export … from` would satisfy downstream
+ * importers while leaving no local binding for the selection site below. */
+import { selectionPolicy } from '@papercusp/ranked-selection';
+import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from './selection-policies';
+export { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS };
 
 /** The latched park/reply key for a consult conversation — the ONE format every
  * emitter (P-004 reply verbs, P-005 expiry sweep) and awaiter shares. */
@@ -129,6 +136,20 @@ export interface GetFeedbackRequest {
   /** D-001 §1: hard cap on the selected cascade menu. Default
    * DEFAULT_MAX_RESPONDERS (3). Delivery remains single-wake cascade. */
   maxResponders?: number;
+  /**
+   * Named selection policy (see `selection-policies.ts`) — resolves min/max
+   * from the shared registry instead of the caller supplying numbers.
+   *
+   * This is the preferred form for any call site whose bounds are GOVERNED
+   * rather than ad-hoc (rubric vetting, acceptance grading): it keeps the
+   * number in code that one place owns, instead of in prose telling an agent
+   * what to type. Explicit minResponders/maxResponders still override, so an
+   * ad-hoc consult can widen or narrow for itself.
+   *
+   * An unregistered key THROWS rather than falling back to the defaults —
+   * quietly selecting under the wrong bounds is the failure this replaces.
+   */
+  policy?: string;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -862,8 +883,12 @@ export async function getFeedbackCore(
   //    cascade menu; delivery stays single-wake. The selection provenance is
   //    stamped into the routing snapshot BEFORE it is persisted, so the D-003
   //    honesty feed can always tell floor-qualified from minimum-fill.
-  const minResponders = Math.max(0, req.minResponders ?? DEFAULT_MIN_RESPONDERS);
-  const maxResponders = Math.max(1, req.maxResponders ?? DEFAULT_MAX_RESPONDERS);
+  // Precedence: an explicit caller number wins, then the named policy's bound,
+  // then the global default. A governed call site passes only `policy` and so
+  // cannot drift from the registered value.
+  const policyBounds = req.policy ? selectionPolicy(req.policy) : null;
+  const minResponders = Math.max(0, req.minResponders ?? policyBounds?.min ?? DEFAULT_MIN_RESPONDERS);
+  const maxResponders = Math.max(1, req.maxResponders ?? policyBounds?.max ?? DEFAULT_MAX_RESPONDERS);
   const selected = selectResponders({
     qualified: route.qualified,
     allCandidates: route.snapshot.candidates,

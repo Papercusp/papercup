@@ -86,6 +86,12 @@ export default defineTool({
       .max(8)
       .optional()
       .describe("Select at least this many responders even below the relevance floor (best-available LIVE fill, labeled via:'minimum'; default 1). Pass 0 to restore pure-floor selection."),
+    policy: z
+      .string()
+      .optional()
+      .describe(
+        "Named selection policy to take min/max from ('rubric-vetting' for the meta-rubric vetting consult). Prefer this over typing max_agents at a governed call site — the bound then lives in code, not in your instructions. Unknown key refuses.",
+      ),
     archive_floor: z
       .number()
       .min(0)
@@ -142,6 +148,7 @@ export default defineTool({
         excludeOwners: args.exclude,
         ...(args.min_agents !== undefined ? { minResponders: args.min_agents } : {}),
         ...(args.max_agents !== undefined ? { maxResponders: args.max_agents } : {}),
+        ...(args.policy !== undefined ? { policy: args.policy } : {}),
         ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
         topics: args.topics,
         harnessSlug: args.harness,

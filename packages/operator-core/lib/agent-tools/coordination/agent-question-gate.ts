@@ -24,6 +24,8 @@
  * `{action:'cancel'}` rather than holding the agent's run forever.
  */
 
+import { pinModuleState } from '@papercusp/module-singleton';
+
 import type { AgentIdentity } from './identity';
 import { openEscalation, type EscalationRecord } from './escalations';
 
@@ -87,26 +89,43 @@ export type AgentQuestionGate = (
 
 const DEFAULT_GATE: AgentQuestionGate = () => ({ rung: 'owner-queue' });
 
-const __SYM = Symbol.for('papercusp.agentQuestionGate');
-type GateGlobals = typeof globalThis & { [__SYM]?: AgentQuestionGate };
+/**
+ * The injected gate is realm-pinned through `pinModuleState` rather than a
+ * hand-rolled `globalThis` symbol. The correctness requirement is the same — one
+ * gate per host process — but the failure mode of a hand-rolled pin is silent
+ * here in a way that matters: if this module's record splits (a tsx CJS preflight
+ * beside the ESM loader, a bare-specifier vs relative-path import), the
+ * autonomy-policy boot installs its classifier into one slot while `currentGate()`
+ * reads the other, so every agent question falls back to DEFAULT_GATE (the owner
+ * Queue) while the classifier looks correctly installed. Nothing throws; the gate
+ * just quietly stops classifying.
+ *
+ * The key string is deliberately unchanged. `pinModuleState` also counts module
+ * evaluations, so that split becomes reportable via `listModuleDuplications()`
+ * instead of being discovered from a contradictory reading days later.
+ */
+const gateState = pinModuleState<{ gate: AgentQuestionGate | null }>(
+  'papercusp.agentQuestionGate',
+  () => ({ gate: null }),
+);
 
 /**
  * Install the autonomy-policy classifier. Composition seam, NOT a fork: the
  * autonomy-policy boot calls this once with its gating function. Idempotent-ish
- * (last writer wins). Stored on a global symbol so a single host process shares
+ * (last writer wins). Held in realm-pinned state so a single host process shares
  * one gate across every tool dispatch.
  */
 export function configureAgentQuestionGate(gate: AgentQuestionGate): void {
-  (globalThis as GateGlobals)[__SYM] = gate;
+  gateState.gate = gate;
 }
 
 /** Test-only: drop any injected gate back to the owner-Queue default. */
 export function resetAgentQuestionGate(): void {
-  delete (globalThis as GateGlobals)[__SYM];
+  gateState.gate = null;
 }
 
 function currentGate(): AgentQuestionGate {
-  return (globalThis as GateGlobals)[__SYM] ?? DEFAULT_GATE;
+  return gateState.gate ?? DEFAULT_GATE;
 }
 
 /**

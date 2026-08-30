@@ -20,30 +20,92 @@ const HOUR = 60 * 60 * 1000;
 const WINDOW = 6 * HOUR;
 
 describe('decideStructuralAutoResolve (pure)', () => {
-  it('resolves only when zero recurrences AND the item is older than the window', () => {
-    expect(decideStructuralAutoResolve({ recentRecurrences: 0, itemAgeMs: 7 * HOUR, windowMs: WINDOW })).toBe(true);
+  it('resolves only when zero recurrences AND the item is older than the window AND the tool was actually invoked', () => {
+    expect(
+      decideStructuralAutoResolve({
+        recentRecurrences: 0,
+        itemAgeMs: 7 * HOUR,
+        windowMs: WINDOW,
+        recentTotalInvocations: 3,
+      }),
+    ).toBe(true);
   });
 
   it('keeps open when the error has recurred within the window (even if old)', () => {
-    expect(decideStructuralAutoResolve({ recentRecurrences: 1, itemAgeMs: 99 * HOUR, windowMs: WINDOW })).toBe(false);
-    expect(decideStructuralAutoResolve({ recentRecurrences: 12, itemAgeMs: 7 * HOUR, windowMs: WINDOW })).toBe(false);
+    expect(
+      decideStructuralAutoResolve({
+        recentRecurrences: 1,
+        itemAgeMs: 99 * HOUR,
+        windowMs: WINDOW,
+        recentTotalInvocations: 5,
+      }),
+    ).toBe(false);
+    expect(
+      decideStructuralAutoResolve({
+        recentRecurrences: 12,
+        itemAgeMs: 7 * HOUR,
+        windowMs: WINDOW,
+        recentTotalInvocations: 40,
+      }),
+    ).toBe(false);
   });
 
   it('keeps open a YOUNG item even with zero recurrences (not enough quiet time yet)', () => {
-    expect(decideStructuralAutoResolve({ recentRecurrences: 0, itemAgeMs: 1 * HOUR, windowMs: WINDOW })).toBe(false);
+    expect(
+      decideStructuralAutoResolve({
+        recentRecurrences: 0,
+        itemAgeMs: 1 * HOUR,
+        windowMs: WINDOW,
+        recentTotalInvocations: 3,
+      }),
+    ).toBe(false);
     // exactly at the boundary: age == window counts as old-enough.
-    expect(decideStructuralAutoResolve({ recentRecurrences: 0, itemAgeMs: WINDOW, windowMs: WINDOW })).toBe(true);
+    expect(
+      decideStructuralAutoResolve({
+        recentRecurrences: 0,
+        itemAgeMs: WINDOW,
+        windowMs: WINDOW,
+        recentTotalInvocations: 3,
+      }),
+    ).toBe(true);
+  });
+
+  /**
+   * EI-21905244571119790 — the positive-control regression. Before this fix, a tool
+   * whose failures manifest as a well-formed `{ok:false}` return value (never a thrown
+   * exception, never isError:true — e.g. testing:run-status's `unknown_run`) recorded
+   * ZERO error/timeout/refused rows in `tool_invocations` NO MATTER HOW OFTEN it was
+   * actually failing, so `recentRecurrences` always read 0 and the item auto-resolved
+   * on schedule regardless of whether the bug was fixed. Requiring evidence the tool
+   * was invoked AT ALL during the window does not fully solve that (the tool WAS being
+   * called), but it DOES close the adjacent false-close this same code path enabled: an
+   * item for a tool nobody called at all in the window is indistinguishable, under the
+   * old logic, from one whose bug is genuinely fixed. Both must stay open.
+   */
+  it('CONTROL: does NOT resolve when the tool was never invoked in the window, even with zero recurrences and an old item', () => {
+    expect(
+      decideStructuralAutoResolve({
+        recentRecurrences: 0,
+        itemAgeMs: 99 * HOUR,
+        windowMs: WINDOW,
+        recentTotalInvocations: 0,
+      }),
+    ).toBe(false);
   });
 });
 
-/** A scripted fake of the I/O seam: `errorsByTool` drives the recurrence count; resolves
- *  are recorded so a test can assert exactly which items were closed. */
+/** A scripted fake of the I/O seam: `errorsByTool` drives the recurrence count,
+ *  `invocationsByTool` drives the positive-control count (defaults to a healthy nonzero
+ *  value so existing tests that never mention it keep exercising the SAME behavior they
+ *  did before the positive-control fix); resolves are recorded so a test can assert
+ *  exactly which items were closed. */
 function makeFakeDeps(
   items: OpenStructuralItem[],
   errorsByTool: Record<string, number>,
-  opts: { throwCountFor?: string } = {},
+  opts: { throwCountFor?: string; invocationsByTool?: Record<string, number>; defaultInvocations?: number } = {},
 ): StructuralVerifierDeps & { resolved: string[] } {
   const resolved: string[] = [];
+  const defaultInvocations = opts.defaultInvocations ?? 1;
   return {
     resolved,
     async selectOpenStructuralItems() {
@@ -52,6 +114,9 @@ function makeFakeDeps(
     async countRecentToolErrors(tool) {
       if (opts.throwCountFor && tool === opts.throwCountFor) throw new Error('telemetry read failed');
       return errorsByTool[tool] ?? 0;
+    },
+    async countRecentToolInvocations(tool) {
+      return opts.invocationsByTool?.[tool] ?? defaultInvocations;
     },
     async resolveItem(_ws, issueId) {
       resolved.push(issueId);
@@ -108,6 +173,25 @@ describe('runStructuralErrorVerifierOnce (orchestration)', () => {
     const deps = makeFakeDeps([], {});
     const r = await runStructuralErrorVerifierOnce(deps, { windowMs: WINDOW });
     expect(r).toEqual({ checked: 0, resolved: 0, kept: 0, errored: 0 });
+  });
+
+  /**
+   * EI-21905244571119790 — orchestration-level regression for the positive-control fix.
+   * `dormant:tool` is old and has zero recurrences (exactly the shape that used to
+   * auto-resolve), but was NEVER INVOKED at all in the window — so the silence proves
+   * nothing and the item MUST stay open. `busy:tool` is the control: same age, same zero
+   * recurrences, but WAS invoked — it resolves exactly as before this fix.
+   */
+  it('keeps a QUIET+OLD item open when the tool was never invoked in the window (positive-control gate)', async () => {
+    const items = [
+      item('EI-dormant', 'dormant:tool', 9 * HOUR), // old, quiet, but NEVER CALLED → keep
+      item('EI-busy', 'busy:tool', 9 * HOUR), // old, quiet, actually exercised → resolve
+    ];
+    const deps = makeFakeDeps(items, {}, { invocationsByTool: { 'dormant:tool': 0, 'busy:tool': 12 } });
+    const r = await runStructuralErrorVerifierOnce(deps, { windowMs: WINDOW });
+
+    expect(r).toEqual({ checked: 2, resolved: 1, kept: 1, errored: 0 });
+    expect(deps.resolved).toEqual(['EI-busy']);
   });
 });
 

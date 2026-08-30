@@ -87,7 +87,6 @@ const ALLOW = new Set([
   'apps/operator/lib/chat-cards/ask-user-local.ts',
   'libs/generic/sse/src/server/channel.ts',
   'libs/generic/tooldef/src/tool-projection.ts',
-  'packages/operator-core/lib/agent-tools/coordination/agent-question-gate.ts',
   'packages/operator-core/lib/claude-credential-sync.ts',
   'packages/operator-core/lib/commands/leader-bridge.ts',
   'packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-trigger-state.ts',
@@ -95,7 +94,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/endpoint-route/routes/harness/phases.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/projects.ts',
   'packages/operator-core/lib/pot/wake.ts',
-  'packages/operator-core/lib/scratch-gc.ts',
   'packages/operator-core/lib/search/embed-backfill.ts',
   'packages/operator-core/lib/sync-sse.ts',
 ]);

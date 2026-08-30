@@ -76,8 +76,15 @@ export interface OpenStructuralItem {
 /** Injected I/O seam — concrete PG impl in `makePgStructuralVerifierDeps`; fakes in tests. */
 export interface StructuralVerifierDeps {
   selectOpenStructuralItems(): Promise<OpenStructuralItem[]>;
-  /** count error/timeout-status `tool_invocations` for `tool` in `workspaceId` over the trailing windowMs. */
+  /** count error/timeout/refused-status `tool_invocations` for `tool` in `workspaceId` over the trailing windowMs. */
   countRecentToolErrors(tool: string, workspaceId: string, windowMs: number): Promise<number>;
+  /**
+   * EI-21905244571119790 positive control: count `tool_invocations` for `tool` in
+   * `workspaceId` over the trailing windowMs, ANY status. Zero means the tool was never
+   * even called in the window — "no errors" then proves nothing, and MUST NOT be read as
+   * "the fix shipped".
+   */
+  countRecentToolInvocations(tool: string, workspaceId: string, windowMs: number): Promise<number>;
   resolveItem(workspaceId: string, issueId: string, note: string): Promise<void>;
 }
 
@@ -109,13 +116,18 @@ export async function runStructuralErrorVerifierOnce(
   let errored = 0;
   for (const item of items) {
     try {
-      const recentRecurrences = await deps.countRecentToolErrors(item.tool, item.workspaceId, windowMs);
-      if (decideStructuralAutoResolve({ recentRecurrences, itemAgeMs: item.ageMs, windowMs })) {
+      const [recentRecurrences, recentTotalInvocations] = await Promise.all([
+        deps.countRecentToolErrors(item.tool, item.workspaceId, windowMs),
+        deps.countRecentToolInvocations(item.tool, item.workspaceId, windowMs),
+      ]);
+      if (
+        decideStructuralAutoResolve({ recentRecurrences, itemAgeMs: item.ageMs, windowMs, recentTotalInvocations })
+      ) {
         const hrs = Math.round(windowMs / 3_600_000);
         await deps.resolveItem(
           item.workspaceId,
           item.issueId,
-          `auto-resolved (EI-1747 structural-error verifier): \`${item.tool}\` has emitted no error in the deployed operator's telemetry for ≥${hrs}h, so the structural error is fixed on the deployed sha. Reopens automatically if the watchdog re-files on recurrence.`,
+          `auto-resolved (EI-1747 structural-error verifier): \`${item.tool}\` had ${recentTotalInvocations} invocation(s) but emitted no error/timeout/refused status in the deployed operator's telemetry for ≥${hrs}h, so the structural error is fixed on the deployed sha. Reopens automatically if the watchdog re-files on recurrence. (EI-21905244571119790: this close required a positive-control invocation count — see that item if the underlying defect returns a well-formed ok:false result rather than an error/timeout/refused status, which this window cannot see regardless of recurrence.)`,
         );
         resolved++;
       } else {
@@ -192,12 +204,31 @@ export function makePgStructuralVerifierDeps(
     async countRecentToolErrors(tool: string, workspaceId: string, windowMs: number): Promise<number> {
       const { sql } = getPg();
       const sinceIso = new Date(now() - windowMs).toISOString();
+      // 'refused' included per EI-21905244571119790: it is the documented status for a
+      // handler that dispatched cleanly and self-reported failure via isError:true (a
+      // business-level refusal) rather than throwing — see RecordInvocationInput's status
+      // union in projected-tool-deps.ts. The original filter (`error`, `timeout` only)
+      // missed this whole class, drifting from the tool-error-classifier's own convention
+      // that a refused call is a real, non-quota-neutral failure.
       const rows = await sql<{ n: string }[]>`
         SELECT COUNT(*)::text AS n
         FROM harness_shared.tool_invocations
         WHERE tool_name = ${tool}
           AND workspace_id = ${workspaceId}
-          AND status IN ('error', 'timeout')
+          AND status IN ('error', 'timeout', 'refused')
+          AND invoked_at > ${sinceIso}
+      `;
+      return Number(rows[0]?.n ?? 0);
+    },
+
+    async countRecentToolInvocations(tool: string, workspaceId: string, windowMs: number): Promise<number> {
+      const { sql } = getPg();
+      const sinceIso = new Date(now() - windowMs).toISOString();
+      const rows = await sql<{ n: string }[]>`
+        SELECT COUNT(*)::text AS n
+        FROM harness_shared.tool_invocations
+        WHERE tool_name = ${tool}
+          AND workspace_id = ${workspaceId}
           AND invoked_at > ${sinceIso}
       `;
       return Number(rows[0]?.n ?? 0);

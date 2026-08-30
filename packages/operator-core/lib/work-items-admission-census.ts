@@ -562,7 +562,7 @@ export const ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS = 900_000;
  * that is the bulk-dedup stage, whose other statements are short and which is
  * itself the long-running work this bound exists to permit.
  */
-async function withCensusStatementTimeout<T>(
+export async function withCensusStatementTimeout<T>(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
   body: (tx: OrgSql) => Promise<T>,

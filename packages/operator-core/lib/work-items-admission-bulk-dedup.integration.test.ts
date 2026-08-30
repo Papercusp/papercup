@@ -201,6 +201,78 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(ledger).toEqual([{ state: 'complete', before: 1, after: 0 }]);
   }, 60_000);
 
+  /**
+   * ATTRIBUTABILITY — what census convergence does NOT prove.
+   *
+   * The test above merges a seeded duplicate and the census goes 1 -> 0, which
+   * invites the reading "the census fell BECAUSE we merged". It did not.
+   * `readUnadjudicatedCensus` counts hard `dedup_edges` with NO
+   * `dedup_adjudications` row (work-items-admission-census.ts), and the
+   * adjudication INSERT writes a row for EVERY judgement — only
+   * `r-finding-merge` also merges (work-items-admission-promoter.ts: verdicts
+   * are distinct | r-finding-merge | r-remedy-keep | r-related | hold). So
+   * ADJUDICATING a pair retires it from the census just as completely as
+   * merging it.
+   *
+   * This case is the paired control: the SAME seeded duplicate pair, judged
+   * `r-related` instead. Census 1 -> 0 and converged:true, identical to the
+   * merge case — with merged:0 and every item still standing. Run the two
+   * together and the conclusion is forced: census convergence is a measure of
+   * ADJUDICATION PROGRESS, and the only attributable merge-efficacy signals are
+   * `merged` and the surviving items' `admissionMerge.canonicalId` pointers.
+   *
+   * This is why the d035-4 stage converged while merging ZERO of 1500 pairs
+   * (verdicts={'r-related':1500}). That run was not a failure to converge; it
+   * was convergence carrying no merge signal — and nothing in the census, the
+   * ratchet, or the stage's `complete` status distinguishes the two.
+   */
+  it('converges identically on a judged-but-UNMERGED pair, so census fall attributes nothing to merging', async () => {
+    await seed();
+    const result = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-adjudicated-only',
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '',
+        json: {
+          judgements: [{ pairKey: 'a::b', verdict: 'r-related', reason: 'same subsystem, different finding' }],
+        },
+        inputTokens: 100,
+        outputTokens: 20,
+      }),
+    });
+
+    // Byte-for-byte the convergence signature of the merge case above…
+    expect(result.converged).toBe(true);
+    expect(result.initialCensus).toBe(1);
+    expect(result.finalCensus).toBe(0);
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ pairs: 1, censusBefore: 1, censusAfter: 0 });
+    // …reached with NOTHING merged.
+    expect(result.stages[0]?.merged).toBe(0);
+
+    const items = await db.sql<Array<{ feature_id: string; status: string; canonical: string | null }>>`
+      SELECT feature_id, status, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items ORDER BY feature_id`;
+    expect(items).toEqual([
+      { feature_id: 'a', status: 'open', canonical: null },
+      { feature_id: 'b', status: 'open', canonical: null },
+      { feature_id: 'c', status: 'open', canonical: null },
+    ]);
+
+    // The pair left the census by ADJUDICATION, which is the whole point.
+    const adjudications = await db.sql<Array<{ a: string; b: string; verdict: string }>>`
+      SELECT a, b, verdict FROM harness_shared.dedup_adjudications ORDER BY a, b`;
+    expect(adjudications).toEqual([{ a: 'a', b: 'b', verdict: 'r-related' }]);
+
+    const ledger = await db.sql<Array<{ state: string; before: number; after: number }>>`
+      SELECT detail->>'status' AS state, census_before AS before, census_after AS after
+        FROM harness_shared.admission_runs WHERE id = 'bulk-adjudicated-only-stage-1'`;
+    expect(ledger).toEqual([{ state: 'complete', before: 1, after: 0 }]);
+  }, 60_000);
+
   // The ledger's model_id used to be a hardcoded LEARNING_MODEL_SPEC literal
   // written regardless of which model the run actually called. That is a
   // second copy of a truth the run already owns, so it could only ever drift —

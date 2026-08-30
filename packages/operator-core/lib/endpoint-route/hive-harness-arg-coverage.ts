@@ -63,6 +63,22 @@ export const HIVE_CLAMP_LITERAL_ARGS: readonly string[] = ['harness', 'harness_s
 export const HIVE_CLAMP_ARG_EXEMPTIONS: Readonly<Record<string, string>> = {
   harnessOutputText:
     "gym:signals — the harness's PRODUCED OUTPUT (verdicts, filed issues) being graded, not a selector; it names no harness to route to",
+  // The `*Slug` suspicion net necessarily catches every OTHER slug family. Each
+  // of these names a non-harness entity, so none can move a call between hives.
+  // ⚠ `slug`/`slugs` are exempt only as a NAME: on pot:* / harness:* / hive:*
+  // tools they mean the pot's home-harness slug, and `designatesHarnessArg`
+  // enforces them there via HARNESS_SCOPED_TOOL_PREFIXES, which is checked
+  // BEFORE this map.
+  slug: 'entity slug of the tool\'s own subject (feature, doc, artifact, plan…); harness-scoped tools are enforced by HARNESS_SCOPED_TOOL_PREFIXES first',
+  slugs: 'plural of the above; same reasoning, same tool-prefix enforcement ahead of it',
+  plan_slug: 'names a PLAN, which already lives inside one harness — it selects no harness',
+  planSlug: 'camelCase spelling of plan_slug; names a plan, not a harness',
+  planSlugs: 'list of plan slugs; names plans, not harnesses',
+  current_plan_slug: 'coord:declare-intent — the plan the caller is working in; names no harness',
+  sourcePlanSlug: 'work_items:list — filters by originating PLAN; names no harness',
+  fleetSlug: 'names a FLEET (a group of agents inside a harness), not a harness',
+  templateSlug: 'names a plan TEMPLATE; not a harness',
+  fromSlug: 'instance:clone — the source INSTANCE to clone; not a harness',
 };
 
 /**
@@ -219,8 +235,16 @@ export function collectHarnessSlugArgs(
   const exempt = new Set(Object.keys(HIVE_CLAMP_ARG_EXEMPTIONS));
   const out: Array<{ arg: string; slug: string }> = [];
   for (const [arg, value] of Object.entries(args as Record<string, unknown>)) {
-    if (skip.has(arg) || exempt.has(arg)) continue;
+    if (skip.has(arg)) continue;
     if (!designatesHarnessArg(arg, options?.toolName)) continue;
+    // ORDER MATTERS. A name-level exemption must NOT beat tool-scoped
+    // enforcement: `slug` is exempt as a bare name (it is a feature/doc/plan
+    // slug on ~110 tools) but on pot:* it is the pot's home-harness slug, and
+    // letting the exemption win there would re-open
+    // `pot:obliterate { slug: '<other hive>' }`. Only exempt an arg that the
+    // tool-prefix rule did not itself enforce.
+    const toolScopedOnly = !designatesHarness(arg);
+    if (exempt.has(arg) && !toolScopedOnly) continue;
     if (typeof value === 'string') {
       const slug = value.trim();
       if (slug) out.push({ arg, slug });
@@ -260,7 +284,7 @@ export function findUnguardedHarnessArgs(
   const findings: UnguardedHarnessArg[] = [];
   for (const tool of tools) {
     for (const [arg, propSchema] of topLevelArgEntries(tool.inputSchema)) {
-      if (isClampEnforcedArg(arg) || exempt.has(arg)) continue;
+      if (isClampEnforcedArg(arg, tool.name) || exempt.has(arg)) continue;
       if (!suspectsHarness(arg, propSchema)) continue;
       if (!schemaMayCarrySlug(propSchema)) continue;
       findings.push({ tool: tool.name, arg });

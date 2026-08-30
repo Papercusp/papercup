@@ -23,10 +23,23 @@ vi.mock('../../events/await/store', () => ({
 // exercise the real scope predicate; only its INPUTS (presence) are controlled.
 const presenceMock = vi.fn();
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'su-test-reader' }),
+  resolveAgentIdentity: () => ({ ownerId: 'su-test-reader', workspaceId: 'ws-test' }),
 }));
 vi.mock('../coordination/presence', () => ({
   getPresence: (...args: unknown[]) => presenceMock(...args),
+}));
+
+// EI-21840718595021627: resolveAnnouncementOwnership (imported by catalog.ts from
+// status.ts) resolves role/fleet-leadership successors + liveness through these two
+// primitives — mock them the same way status.test.ts does for the identical function.
+vi.mock('../coordination/audience-host', () => ({
+  hostAudienceResolvers: { listFleetLeader: vi.fn(async () => []) },
+}));
+vi.mock('../coordination/role-slot-live-resolve', () => ({
+  resolveLiveRoleHolders: vi.fn(async () => []),
+}));
+vi.mock('../coordination/liveness-oracle', () => ({
+  resolveSessionStates: vi.fn(async () => new Map()),
 }));
 
 const ann = (over: Record<string, unknown> = {}) => ({
@@ -45,6 +58,18 @@ const ann = (over: Record<string, unknown> = {}) => ({
 import catalog from './catalog';
 import { familyKeyPrefix, EVENT_CATALOG } from '../../events/await/catalog';
 import { HARD_CAP, promptWeight } from '../tool-guidance-budget';
+import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
+import { resolveSessionStates, type LivenessVerdict } from '../coordination/liveness-oracle';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
+
+const verdict = (ownerId: string, sessionState: LivenessVerdict['sessionState']): LivenessVerdict => ({
+  ownerId,
+  sessionState,
+  wakeable: sessionState !== 'ended',
+  liveTurn: false,
+  confirmLiveness: false,
+  heartbeatFresh: sessionState !== 'ended',
+});
 
 const call = async (args: Record<string, unknown> = {}) => {
   const res = (await catalog.handler(args as never, {} as never)) as { content: Array<{ text: string }> };
@@ -230,5 +255,85 @@ describe('events:catalog — live_awaiters', () => {
     expect(countMock).toHaveBeenCalledTimes(1);
     const requestedPrefixes = countMock.mock.calls[0][0] as string[];
     expect(requestedPrefixes.length).toBe(EVENT_CATALOG.length);
+  });
+});
+
+// EI-21840718595021627: a role/fleet-leadership-bound announced gate whose declarer
+// ended, with nobody live holding the binding, will never fire — surface that UP FRONT
+// in the catalog (the "what can I wait on" tool) instead of only reactively via
+// events:status after an agent has already armed an await and parked on it.
+describe('events:catalog — announced gates: stale role/fleet-leadership owners are surfaced', () => {
+  it('marks a role-bound gate stale_owner:true when its ended declarer has no live successor', async () => {
+    listAnnouncementsMock.mockResolvedValue([
+      ann({
+        id: 501,
+        subscriberId: 'su-ended',
+        scopeKind: 'global',
+        scopeRef: null,
+        boundTo: { kind: 'role', ref: 'desktop-sidecar' },
+      }),
+    ]);
+    vi.mocked(resolveLiveRoleHolders).mockResolvedValueOnce([]);
+    mockResolvedOnceTyped(
+      vi.mocked(resolveSessionStates),
+      new Map([['su-ended', verdict('su-ended', 'ended')]]),
+    );
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced[0]).toMatchObject({
+      announced_by: 'su-ended',
+      stale_owner: true,
+    });
+    // A gate that is not stranded must not carry the field at all — the absence itself
+    // is the "this is fine" signal, so a caller can `if (stale_owner)` without a
+    // separate existence check.
+    expect(out.announced[0]).not.toHaveProperty('live_successor_ids');
+  });
+
+  it('names the live successor instead of marking stale when one holds the binding', async () => {
+    listAnnouncementsMock.mockResolvedValue([
+      ann({
+        id: 502,
+        subscriberId: 'su-ended',
+        scopeKind: 'global',
+        scopeRef: null,
+        boundTo: { kind: 'role', ref: 'desktop-sidecar' },
+      }),
+    ]);
+    vi.mocked(resolveLiveRoleHolders).mockResolvedValueOnce(['su-successor']);
+    mockResolvedOnceTyped(
+      vi.mocked(resolveSessionStates),
+      new Map([
+        ['su-ended', verdict('su-ended', 'ended')],
+        ['su-successor', verdict('su-successor', 'parked')],
+      ]),
+    );
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced[0]).toMatchObject({ live_successor_ids: ['su-successor'] });
+    expect(out.announced[0]).not.toHaveProperty('stale_owner');
+  });
+
+  it('an ownership-resolution failure is swallowed — the announced row still renders, just without the fields', async () => {
+    listAnnouncementsMock.mockResolvedValue([
+      ann({
+        id: 503,
+        subscriberId: 'su-ended',
+        scopeKind: 'global',
+        scopeRef: null,
+        boundTo: { kind: 'role', ref: 'desktop-sidecar' },
+      }),
+    ]);
+    vi.mocked(resolveLiveRoleHolders).mockRejectedValueOnce(new Error('role-slot lookup down'));
+    vi.mocked(resolveSessionStates).mockRejectedValueOnce(new Error('liveness oracle down'));
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.ok).toBe(true);
+    expect(out.announced).toHaveLength(1);
+    expect(out.announced[0]).not.toHaveProperty('stale_owner');
+    expect(out.announced[0]).not.toHaveProperty('live_successor_ids');
   });
 });

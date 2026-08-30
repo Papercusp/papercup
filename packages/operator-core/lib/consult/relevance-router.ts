@@ -40,6 +40,7 @@
  * reaches memory/configure, which opens PG at import time).
  */
 import type { Sql } from 'postgres';
+import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranked-selection';
 import { withIterativeScan } from '../agent-tools/search/hnsw-iterative-scan';
 
 /** Same shape as `@papercusp/search`'s Embedder, declared locally to keep this
@@ -123,13 +124,14 @@ export interface RoutingSnapshot {
 /** How a responder entered the selected set (D-002): 'floor' = cleared both
  * routing floors (the pre-min/max notion of qualified); 'minimum' = did NOT
  * clear the floors but was selected as best-available to honor the caller's
- * minResponders (D-001 §1 / D-003 — labeled, never silent). */
-export type SelectionVia = 'floor' | 'minimum';
+ * minResponders (D-001 §1 / D-003 — labeled, never silent).
+ *
+ * Re-exported from @papercusp/ranked-selection rather than re-declared: two
+ * structurally-identical unions would typecheck against each other today and
+ * diverge silently the first time one gains a third member. */
+export type { SelectionVia };
 
-export interface SelectedResponder {
-  candidate: RoutingCandidate;
-  via: SelectionVia;
-}
+export type SelectedResponder = Selected<RoutingCandidate>;
 
 export interface SnapshotSelection {
   min: number;
@@ -186,26 +188,19 @@ export interface ResponderSelectionParams {
  * result is an ordered menu, never a parallel-wake set.
  */
 export function selectResponders(params: ResponderSelectionParams): SelectedResponder[] {
-  const selectable = params.isSelectable ?? ((): boolean => true);
-  const max = Math.max(0, Math.floor(params.max));
-  const min = Math.min(Math.max(0, Math.floor(params.min)), max);
-  const picked: SelectedResponder[] = [];
-  const seen = new Set<string>();
-  for (const c of params.qualified) {
-    if (picked.length >= max) break;
-    if (seen.has(c.ownerId) || !selectable(c)) continue;
-    picked.push({ candidate: c, via: 'floor' });
-    seen.add(c.ownerId);
-  }
-  if (picked.length < min) {
-    for (const c of params.allCandidates) {
-      if (picked.length >= min) break;
-      if (seen.has(c.ownerId) || !selectable(c)) continue;
-      picked.push({ candidate: c, via: 'minimum' });
-      seen.add(c.ownerId);
-    }
-  }
-  return picked;
+  // Delegates to @papercusp/ranked-selection so this algorithm has ONE
+  // implementation (unified-responder-selection-critique-and-grading-2026-08-30
+  // D-001). The signature is preserved deliberately: every existing caller
+  // (get_feedback, plan-start) is unchanged by the move, and acceptance grading
+  // — the one selecting flow that never used this and hard-coded a single pick
+  // — joins them by consuming the same library.
+  return selectRanked<RoutingCandidate>({
+    qualified: params.qualified,
+    allCandidates: params.allCandidates,
+    bounds: { min: params.min, max: params.max },
+    identity: (c) => c.ownerId,
+    ...(params.isSelectable ? { isSelectable: params.isSelectable } : {}),
+  });
 }
 
 /** The SnapshotSelection record for a selected set — the persisted provenance

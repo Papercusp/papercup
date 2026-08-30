@@ -25,6 +25,7 @@ import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../even
 import { announcementVisibleTo } from '../../events/await/announce-key';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
+import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
 
 const MAX_CATALOG_LIMIT = 200;
 const CATALOG_SCOPE_NOTE =
@@ -187,6 +188,8 @@ export default defineTool({
           fired_at: string | null;
           expires_ts: string | null;
           live_awaiters?: number;
+          live_successor_ids?: string[];
+          stale_owner?: boolean;
         }>
       | undefined;
     // EI-21907772459508454: an announced gate that exists but is NOT VISIBLE to this
@@ -225,8 +228,10 @@ export default defineTool({
         if (anns.length > 0) {
           let reader: { fleetSlug?: string | null; planSlug?: string | null; harnessSlug?: string | null } = {};
           let readerResolved = false;
+          let workspaceId: string | null = null;
           try {
             const identity = resolveAgentIdentity(ctx);
+            workspaceId = identity.workspaceId ?? null;
             const p = (await getPresence(identity.ownerId)) as
               | { fleetSlug?: string | null; currentPlanSlug?: string | null }
               | null;
@@ -282,17 +287,35 @@ export default defineTool({
           try {
             counts = await countActiveAwaitsByPrefixes(visible.map((a) => a.eventKey));
           } catch { /* omit live_awaiters */ }
-          announced = visible.map((a) => ({
-            event: a.eventKey,
-            logical_gate: a.logicalGateKey ?? null,
-            note: a.note,
-            scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
-            announced_by: a.subscriberId,
-            fired: !!a.firedAt && a.firedReason === 'event',
-            fired_at: a.firedReason === 'event' ? a.firedAt : null,
-            expires_ts: a.expiresTs,
-            ...(counts ? { live_awaiters: counts.get(a.eventKey) ?? 0 } : {}),
-          }));
+          // EI-21840718595021627: a role/fleet-leadership-bound gate whose declarer
+          // ended, with no live successor holding that binding, will NEVER fire —
+          // events:status/events:await already compute this (staleOwner +
+          // liveSuccessorIds), but only reactively, per-key, after an agent has
+          // already armed an await and parked on it. Surface the SAME computation
+          // here too, so "what can I wait on" — the tool whose whole job is
+          // discoverability before parking — tells a caller UP FRONT that a
+          // declared-but-undead gate is stranded, instead of one more of 52+
+          // historical waiters discovering it only via a timeout wake.
+          let ownership: Map<number, AnnouncementOwnership> | null = null;
+          try {
+            ownership = await resolveAnnouncementOwnership(visible, workspaceId);
+          } catch { /* best-effort — omit stale_owner/live_successor_ids rather than fail catalog */ }
+          announced = visible.map((a) => {
+            const owned = ownership?.get(a.id);
+            return {
+              event: a.eventKey,
+              logical_gate: a.logicalGateKey ?? null,
+              note: a.note,
+              scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+              announced_by: a.subscriberId,
+              fired: !!a.firedAt && a.firedReason === 'event',
+              fired_at: a.firedReason === 'event' ? a.firedAt : null,
+              expires_ts: a.expiresTs,
+              ...(counts ? { live_awaiters: counts.get(a.eventKey) ?? 0 } : {}),
+              ...(owned?.liveSuccessorIds.length ? { live_successor_ids: owned.liveSuccessorIds } : {}),
+              ...(owned?.staleOwner ? { stale_owner: true } : {}),
+            };
+          });
         } else {
           announcedVisibility = {
             total_active: 0,
@@ -339,7 +362,7 @@ export default defineTool({
             // pack author debugs a family that "just doesn't appear" with no signal.
             ...(collisions.length > 0 ? { collisions } : {}),
             note:
-              `A gate MISSING from \`announced\` is not proof it was never declared — read \`announced_visibility\`: gates scoped to a fleet/plan you are not recorded on are withheld here, while events:await on the exact key still resolves them. Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. ${CATALOG_SCOPE_NOTE}`,
+              `A gate MISSING from \`announced\` is not proof it was never declared — read \`announced_visibility\`: gates scoped to a fleet/plan you are not recorded on are withheld here, while events:await on the exact key still resolves them. Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. An announced gate carrying \`stale_owner:true\` is STRANDED: its declarer's session ended and no live role/fleet-leadership successor holds the binding, so it will never fire — do NOT events:await it; \`live_successor_ids\` (when present) names who COULD declare a fresh gate instead. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. ${CATALOG_SCOPE_NOTE}`,
             families: rowsOut,
           }),
         },

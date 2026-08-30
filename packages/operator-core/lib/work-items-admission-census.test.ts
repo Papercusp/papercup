@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS,
   buildAdmissionShardPlan,
   partitionTextContextIds,
+  withCensusStatementTimeout,
   TEXT_CONTEXT_BATCH_SIZE,
   type AdmissionCensusEdge,
   type AdmissionCensusItem,
+  type AdmissionCensusRunOptions,
 } from './work-items-admission-census';
 
 function item(
@@ -109,5 +112,82 @@ describe('text-context scan bounds', () => {
     expect(Math.max(...batches.map((batch) => batch.length))).toBeLessThanOrEqual(TEXT_CONTEXT_BATCH_SIZE);
     expect(batches.flat()).toEqual(ids);
     expect(partitionTextContextIds([...ids].reverse()).flat()).toEqual([...ids].reverse());
+  });
+});
+
+/**
+ * REGRESSION GUARD — the census's declared statement_timeout must not open a
+ * NESTED transaction on a handle the caller already has in one.
+ *
+ * WI-1194246 correctly wrapped the two long scans in `sql.begin` to carry
+ * `SET LOCAL statement_timeout`. A postgres.js TRANSACTION handle has no
+ * `.begin` (it exposes `savepoint`), so on the `withinTransaction: true` path
+ * that wrapper threw `TypeError: sql.begin is not a function` and took the
+ * whole scheduled bulk-dedup stage down with it — the census runs on the
+ * stage's own `tx`.
+ *
+ * The escape was that NOTHING CHEAP looked: typecheck passed, and the census's
+ * own integration test passed because it only exercises the bare-pool path.
+ * The test that did catch it lives in a sibling *.integration.test.ts that a
+ * plain `test:affected` on this file never selects. So the guard belongs HERE,
+ * in the unit suite, where editing this file actually runs it.
+ */
+describe('withCensusStatementTimeout', () => {
+  const opts = (withinTransaction: boolean): AdmissionCensusRunOptions =>
+    ({ workspaceId: 'ws', harnessSlug: 'h', withinTransaction }) as AdmissionCensusRunOptions;
+
+  it('declares the bound on the CALLER handle when already inside a transaction', async () => {
+    const statements: string[] = [];
+    // Shaped like a real postgres.js transaction handle: `unsafe` but NO
+    // `begin`. Reaching for `.begin` here is the exact production crash.
+    const tx = {
+      unsafe: async (sql: string) => {
+        statements.push(sql);
+      },
+    } as never;
+
+    const result = await withCensusStatementTimeout(tx, opts(true), async (handle) => {
+      expect(handle).toBe(tx);
+      return 'ran-on-caller-handle';
+    });
+
+    expect(result).toBe('ran-on-caller-handle');
+    expect(statements).toEqual([`SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`]);
+  });
+
+  it('still opens its own transaction on a bare pool checkout', async () => {
+    const statements: string[] = [];
+    let begins = 0;
+    const inner = {
+      unsafe: async (sql: string) => {
+        statements.push(sql);
+      },
+    };
+    const pool = {
+      begin: async (body: (tx: unknown) => Promise<unknown>) => {
+        begins += 1;
+        return body(inner);
+      },
+    } as never;
+
+    const result = await withCensusStatementTimeout(pool, opts(false), async (handle) => {
+      expect(handle).toBe(inner as never);
+      return 'ran-in-own-tx';
+    });
+
+    expect(begins).toBe(1);
+    expect(result).toBe('ran-in-own-tx');
+    expect(statements).toEqual([`SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`]);
+  });
+
+  it('control: an unconditional-begin implementation FAILS on the transaction handle', async () => {
+    // Non-vacuity. The pre-fix shape, which always reached for `sql.begin` and
+    // never consulted withinTransaction. Against the same no-begin handle the
+    // transaction case supplies, it reproduces the production TypeError.
+    const nestedBegin = async (sql: Record<string, unknown>): Promise<void> => {
+      await (sql.begin as (body: (tx: unknown) => Promise<unknown>) => Promise<unknown>)(async () => undefined);
+    };
+    const transactionHandle: Record<string, unknown> = { unsafe: async () => undefined };
+    await expect(nestedBegin(transactionHandle)).rejects.toThrow(/is not a function/);
   });
 });

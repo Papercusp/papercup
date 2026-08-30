@@ -129,6 +129,7 @@
     "@papercusp/plugin-sdk": "*",
     "@papercusp/projection-index": "*",
     "@papercusp/publish-auth": "*",
+    "@papercusp/ranked-selection": "*",
     "@papercusp/rate-limit": "*",
     "@papercusp/rerank": "*",
     "@papercusp/resource-profile": "*",

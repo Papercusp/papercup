@@ -18,7 +18,9 @@ import {
   HIVE_CLAMP_LITERAL_ARGS,
   collectHarnessSlugArgs,
   designatesHarness,
+  designatesHarnessArg,
   findUnguardedHarnessArgs,
+  isClampEnforcedArg,
   schemaMayCarrySlug,
   type HarnessArgCoverageTool,
 } from './hive-harness-arg-coverage';
@@ -165,6 +167,43 @@ describe('findUnguardedHarnessArgs — CALIBRATION (must NOT flag)', () => {
   });
 });
 
+describe('tool-scoped `slug` — the same name means different things', () => {
+  // `slug` appears on 110 tools. On pot:* its own schema says "The pot's
+  // home-harness slug", which IS a hive identity; on features:* it is a feature.
+  // A name-only rule cannot tell them apart, so this leg takes the tool.
+  it.each(['pot:get', 'pot:dissolve', 'pot:obliterate', 'harness:status', 'hive:whatever'])(
+    'treats slug as a harness on %s',
+    (toolName) => {
+      expect(designatesHarnessArg('slug', toolName)).toBe(true);
+    },
+  );
+
+  it.each(['features:get', 'docs:get', 'artifacts:load', 'plans:get'])(
+    'does NOT treat slug as a harness on %s',
+    (toolName) => {
+      expect(designatesHarnessArg('slug', toolName)).toBe(false);
+    },
+  );
+
+  it('the clamp sweep picks up pot:obliterate { slug } — the destructive case', () => {
+    expect(collectHarnessSlugArgs({ slug: 'other-hive' }, { toolName: 'pot:obliterate' })).toEqual([
+      { arg: 'slug', slug: 'other-hive' },
+    ]);
+  });
+
+  it('the clamp sweep leaves a feature slug alone', () => {
+    expect(collectHarnessSlugArgs({ slug: 'some-feature' }, { toolName: 'features:get' })).toEqual([]);
+  });
+
+  it('a name-scoped exemption cannot smuggle slug past a pot: tool', () => {
+    // `slug` IS in HIVE_CLAMP_ARG_EXEMPTIONS. Enforcement must win on pot:*,
+    // or the exemption would re-open the destructive case above.
+    expect(HIVE_CLAMP_ARG_EXEMPTIONS.slug).toBeTruthy();
+    expect(isClampEnforcedArg('slug', 'pot:obliterate')).toBe(true);
+    expect(findUnguardedHarnessArgs([tool('pot:obliterate', { slug: str })])).toEqual([]);
+  });
+});
+
 describe('the clamp SWEEP is wired (not just the module)', () => {
   // isClampEnforcedArg claims the generic sweep covers every designatesHarness
   // arg. That claim is only true while _mcp-handler.ts actually calls the sweep;
@@ -175,13 +214,16 @@ describe('the clamp SWEEP is wired (not just the module)', () => {
     'utf8',
   );
 
-  it('_mcp-handler.ts calls collectHarnessSlugArgs', () => {
-    expect(source).toContain('collectHarnessSlugArgs(args)');
+  it('_mcp-handler.ts calls collectHarnessSlugArgs WITH the tool name', () => {
+    // Without `toolName` the tool-scoped `slug` leg silently does nothing, and
+    // pot:obliterate { slug: '<other hive>' } goes back to being unguarded.
+    expect(source).toContain('collectHarnessSlugArgs(args, { toolName })');
   });
 
   it('the sweep rejects rather than merely logging', () => {
-    const sweepBlock = source.slice(source.indexOf('for (const { arg, slug } of collectHarnessSlugArgs(args))'));
-    expect(sweepBlock.slice(0, 1200)).toContain('harness_forbidden');
+    const sweepStart = source.indexOf('for (const { arg, slug } of collectHarnessSlugArgs(');
+    expect(sweepStart, 'the sweep loop is missing from _mcp-handler.ts').toBeGreaterThan(-1);
+    expect(source.slice(sweepStart, sweepStart + 1200)).toContain('harness_forbidden');
   });
 });
 
