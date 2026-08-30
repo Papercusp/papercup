@@ -348,6 +348,44 @@ export async function lintParsed(
     }
   }
 
+  // EI-21843057910518424: the plan-level lifecycle label (shipped/superseded)
+  // is an author-declared field that is never reconciled against the child
+  // ITEM graph. A daily-digest census (a dozen-plus independently-worded
+  // filings across many cycles, all naming the same mechanism) found live
+  // plans carrying a terminal status while most — in several cases ALL — of
+  // their items are still stored todo/wip/blocked/needs-human. The `shipped`
+  // path is *partly* guarded going forward (evaluatePlanAcceptanceGate checks
+  // unfinished items on a NEW ship attempt), but `superseded` has no such
+  // check at all, and neither direction is ever RE-checked after the fact: an
+  // item reopened post-terminal, or added to an already-terminal plan, leaves
+  // no trace. The drift corrupts every "is this plan done" query and hides
+  // real work from burn-down.
+  //
+  // WARNING, never error (lints advise — CLAUDE.md). Fires on the terminal
+  // frontmatter status alone — cheap and exact, since item storedStatus is
+  // structured data with no prose heuristics needed. Deliberately does not
+  // auto-drop anything: which open items are genuinely abandoned vs. still
+  // owed is a judgment call for whoever reads the warning, not a lint.
+  if (status === 'shipped' || status === 'superseded') {
+    const openItems = parsed.items.filter(
+      (i) => i.storedStatus !== 'done' && i.storedStatus !== 'dropped',
+    );
+    if (openItems.length > 0) {
+      const shown = openItems.slice(0, 12).map((i) => i.id);
+      const more = openItems.length > shown.length ? `, +${openItems.length - shown.length} more` : '';
+      report.warnings.push({
+        level: 'warning',
+        code: 'terminal_status_open_items',
+        message:
+          `This plan is '${status}' but ${openItems.length} of its ${parsed.items.length} item(s) are still ` +
+          `non-terminal (todo/wip/blocked/needs-human): ${shown.join(', ')}${more}. A terminal plan label with open ` +
+          `items corrupts is-this-done queries and hides real work from burn-down (EI-21843057910518424). Finish ` +
+          `or deliberately drop each one (\`plans:set-status { slug, item, status:'dropped', note:'<why>' }\`), or ` +
+          `flip the plan back to draft/ready with plans:set-plan-status if the work is genuinely still live.`,
+      });
+    }
+  }
+
   // EI-44: owner-gated asks written as `## Now` PROSE ("Owner: decide D-002",
   // "human greenlights a phase", "Owner: provide FCM/APNS creds") are invisible
   // to every inbox surface — only a `needs-human` ITEM is queryable by

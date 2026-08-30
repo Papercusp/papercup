@@ -11,4 +11,15 @@
  * while first measuring this class.
  */
 export function findJsSyntaxError(absPath: any): Promise<any>;
+/**
+ * Resolves to `null` when the module has no undeclared-write, else
+ * `{ line, name }` naming the binding that will throw on load.
+ *
+ * Returns `null` for a file that does not PARSE: that is the `--check` leg's
+ * class, and double-reporting one break as two would misstate the offender count.
+ */
+export function findJsLoadError(absPath: any, source: any): Promise<{
+    line: any;
+    name: any;
+} | null>;
 export function isJsSyntaxScanned(f: any): any;

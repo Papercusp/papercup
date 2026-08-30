@@ -20,6 +20,8 @@ import {
   type GateBoundary,
 } from './enforcement-gate';
 import type { CarryBrief } from './carry-brief';
+import { getWorkItem } from './work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
 import {
   REFUSAL_MARKER_TTL_MS,
@@ -161,6 +163,9 @@ export async function runFlushGate(input: {
   journalNote?: string | null;
   brief?: CarryBrief | null;
   nowMs?: number;
+  /** Test seam: override the live `getWorkItem` re-check `dropTerminalHeldTripwires`
+   *  uses to see past a stale-brief race. Production callers omit it. */
+  getWorkItemStateFn?: GetWorkItemStateFn;
 }): Promise<FlushGateOutcome> {
   const clear: FlushGateOutcome = { verdict: 'clear', tripwires: [] };
   if (!flushGateEnabled()) return clear;
@@ -172,6 +177,62 @@ export async function runFlushGate(input: {
   return value;
 }
 
+/**
+ * EI-21861120616734083: `missing-checkpoint`/`stale-checkpoint` tripwires are
+ * built from a SNAPSHOT brief — the subject can go terminal (another turn
+ * completes it) between that read and the refusal reaching the agent. The
+ * refusal then literally instructs `work_items:checkpoint { id, checkpoint }`
+ * for an item `work_items:checkpoint` itself now correctly refuses with
+ * `terminal_item` — an impossible instruction the agent has no way to satisfy,
+ * repeatedly mistaken for a stuck compaction and re-filed (EI-21841856375687010,
+ * EI-21845268673816123, EI-21828297910822386, EI-21867218655207954, this one).
+ * The mechanical-fallback retry path already self-heals this (it re-reads held
+ * items fresh, which naturally excludes anything now terminal) — this closes
+ * the same race on the FIRST refusal too, so the confusing dead-end instruction
+ * is never issued in the first place. Bounded, per-subject, fail-soft: a lookup
+ * error keeps the tripwire (a spurious refusal is recoverable; silently
+ * dropping a real unflushed item is not).
+ */
+/** Test/host seam for {@link dropTerminalHeldTripwires} — mirrors the injectable
+ *  shape `readHeldWorkItems` already uses (`getWorkItemCheckpointFn`), so a unit
+ *  test never has to hit a real DB for this bounded, best-effort re-check. */
+export type GetWorkItemStateFn = (
+  id: string,
+  harness?: string,
+) => Promise<{ state: string } | null>;
+
+const defaultGetWorkItemState: GetWorkItemStateFn = (id, harness) => getWorkItem(id, harness);
+
+async function dropTerminalHeldTripwires(
+  tripwires: readonly FlushTripwire[],
+  heldItemHarness: ReadonlyMap<string, string | null>,
+  getWorkItemStateFn: GetWorkItemStateFn,
+): Promise<FlushTripwire[]> {
+  const subjects = [
+    ...new Set(
+      tripwires
+        .filter((t) => t.kind === 'missing-checkpoint' || t.kind === 'stale-checkpoint')
+        .map((t) => t.subject),
+    ),
+  ];
+  if (subjects.length === 0) return [...tripwires];
+  const terminal = new Set<string>();
+  await Promise.all(
+    subjects.map(async (id) => {
+      try {
+        const item = await getWorkItemStateFn(id, heldItemHarness.get(id) ?? undefined);
+        if (item && ANY_FAMILY_TERMINAL_STATES.includes(item.state)) terminal.add(id);
+      } catch {
+        /* fail-soft: keep the tripwire — see doc comment above */
+      }
+    }),
+  );
+  if (terminal.size === 0) return [...tripwires];
+  return tripwires.filter(
+    (t) => !(t.kind === 'missing-checkpoint' || t.kind === 'stale-checkpoint') || !terminal.has(t.subject),
+  );
+}
+
 async function runFlushGateInner(input: {
   boundary: GateBoundary;
   ownerId: string;
@@ -181,6 +242,7 @@ async function runFlushGateInner(input: {
   journalNote?: string | null;
   brief?: CarryBrief | null;
   nowMs?: number;
+  getWorkItemStateFn?: GetWorkItemStateFn;
 }): Promise<FlushGateOutcome> {
   const nowMs = input.nowMs ?? Date.now();
   // Only FETCH when the caller didn't provide a brief at all (undefined). An
@@ -197,7 +259,18 @@ async function runFlushGateInner(input: {
   } else {
     brief = input.brief;
   }
-  const tripwires = detectFlushTripwires(brief, nowMs);
+  const rawTripwires = detectFlushTripwires(brief, nowMs);
+  const heldItemHarness = new Map<string, string | null>(
+    (brief?.heldItems ?? []).map((h) => [h.id, h.harness ?? null]),
+  );
+  const tripwires =
+    rawTripwires.length === 0
+      ? rawTripwires
+      : await dropTerminalHeldTripwires(
+          rawTripwires,
+          heldItemHarness,
+          input.getWorkItemStateFn ?? defaultGetWorkItemState,
+        );
   const alreadyRefused = await wasRecentlyRefused(input.boundary, input.ownerId, nowMs);
   const verdict = decideFlushGate({ tripwires, alreadyRefused });
 

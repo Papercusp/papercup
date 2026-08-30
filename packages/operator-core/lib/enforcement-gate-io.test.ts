@@ -117,6 +117,10 @@ describe('runFlushGate ladder', () => {
       sinceIso: new Date(NOW).toISOString(),
       brief: unflushedBrief(),
       nowMs: NOW,
+      // Hermetic (WI-7 is genuinely still open — never terminal — for this test):
+      // avoid the default real-DB re-check dropTerminalHeldTripwires would otherwise
+      // make against a held item's CURRENT state.
+      getWorkItemStateFn: async () => ({ state: 'wip' }),
     };
     const first = await runFlushGate(args);
     expect(first.verdict).toBe('refuse');
@@ -164,5 +168,85 @@ describe('runFlushGate ladder', () => {
     });
     expect(out.verdict).toBe('clear');
     expect(out.tripwires).toEqual([]);
+  });
+});
+
+// EI-21861120616734083: the flush gate's tripwires are built from a snapshot brief;
+// a held item can go terminal between that read and the refusal reaching the agent,
+// who then hits work_items:checkpoint's own (correct) terminal_item refusal trying
+// to satisfy an instruction that is no longer possible. The gate now re-verifies
+// missing/stale-checkpoint subjects right before refusing and drops any that are
+// already terminal, so a dead-end refusal is never issued for them.
+describe('runFlushGate — terminal-held-item race guard', () => {
+  it('clears (no refusal) when the ONLY tripwire subject already went terminal', async () => {
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-g',
+      workspaceId: '*',
+      sessionId: 'su-g',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: unflushedBrief(), // WI-7, missing-checkpoint per the snapshot
+      nowMs: NOW,
+      getWorkItemStateFn: async () => ({ state: 'done' }), // ...but it's terminal NOW
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+  });
+
+  it('drops only the terminal subject, keeping a refusal for a genuinely-unflushed one', async () => {
+    const twoHeld = brief({
+      heldItems: [
+        { id: 'WI-7', title: 't', body: null, harness: 'papercusp', checkpoint: null, checkpointUpdatedAtMs: null },
+        { id: 'WI-8', title: 't2', body: null, harness: 'papercusp', checkpoint: null, checkpointUpdatedAtMs: null },
+      ],
+    });
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-h',
+      workspaceId: '*',
+      sessionId: 'su-h',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: twoHeld,
+      nowMs: NOW,
+      getWorkItemStateFn: async (id) => ({ state: id === 'WI-7' ? 'done' : 'wip' }),
+    });
+    expect(out.verdict).toBe('refuse');
+    expect(out.tripwires).toHaveLength(1);
+    expect(out.tripwires[0].subject).toBe('WI-8');
+    expect(out.refusalText).toContain('WI-8');
+    expect(out.refusalText).not.toContain('WI-7');
+  });
+
+  it('fails soft (keeps the tripwire) when the re-check itself errors', async () => {
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-i',
+      workspaceId: '*',
+      sessionId: 'su-i',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: unflushedBrief(),
+      nowMs: NOW,
+      getWorkItemStateFn: async () => {
+        throw new Error('state lookup unavailable');
+      },
+    });
+    expect(out.verdict).toBe('refuse');
+    expect(out.tripwires).toHaveLength(1);
+    expect(out.tripwires[0].subject).toBe('WI-7');
+  });
+
+  it('fails soft (keeps the tripwire) when the re-check reports the item gone (null)', async () => {
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-j',
+      workspaceId: '*',
+      sessionId: 'su-j',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: unflushedBrief(),
+      nowMs: NOW,
+      getWorkItemStateFn: async () => null,
+    });
+    expect(out.verdict).toBe('refuse');
+    expect(out.tripwires).toHaveLength(1);
   });
 });

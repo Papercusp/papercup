@@ -6442,19 +6442,41 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, terminalKind, terminalExtra);
         appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);
       } else {
-        appendHostEvent(
-          ownerId,
-          carryResult.delivered ? 'respawn-carry-delivered' : 'respawn-carry-dropped',
-          {
-            mode: respawnMode,
-            nativeId: nativeId ?? null,
-            reason: carryResult.delivered ? undefined : carryResult.reason,
-            attempts: carryResult.attempts,
-            outputSeen: childStartupOutput.length > 0,
-            turnStartVerified: turnStartProof ? Boolean(turnStartProof.persisted) : undefined,
-            nativeRef: turnStartProof?.nativeRef ?? undefined,
-          },
-        );
+        // EI-21859839880291755: this is the ONLY place a production
+        // (non-drill) carry-respawn's terminal outcome is known — both the
+        // genuine-success case (delivered:true) and a drop discovered only
+        // here (e.g. reason:'turn-start-unverified', which can fire AFTER
+        // the retry loop's own pre-recycle staleness/supersede check already
+        // passed). Every OTHER production drop path (the pre-recycle
+        // staleness/supersede check, and the retry loop's own carry-stale
+        // check) mirrors its appendHostEvent call with
+        // appendSharedDrillLedgerEvent so the box-wide shared ledger stays
+        // aggregatable — this terminal one previously did not, so the shared
+        // ledger (~/.papercusp/psu-pty/carry-drills.events.jsonl) was
+        // STRUCTURALLY BLIND to every production delivery success and to
+        // this drop reason: it could show hundreds of 'carry-stale'/
+        // 'superseded' drops and ZERO 'respawn-carry-delivered' rows even on
+        // a box where most respawns actually succeeded, because success was
+        // logged only to each owner's PRIVATE per-owner log
+        // (eventLogPathForOwner), never to the shared one. Measured
+        // 2026-08-30: 36,162 respawn-carry-delivered rows exist across
+        // per-owner logs while the shared ledger showed 0 in its 48h window
+        // — an investigation reading only the shared ledger concluded
+        // "fleet-wide carry-respawn starvation" from what was actually just
+        // this asymmetric-logging gap. Mirroring the call here (matching the
+        // drill branch just above, which has always logged both) closes it.
+        const terminalExtra = {
+          mode: respawnMode,
+          nativeId: nativeId ?? null,
+          reason: carryResult.delivered ? undefined : carryResult.reason,
+          attempts: carryResult.attempts,
+          outputSeen: childStartupOutput.length > 0,
+          turnStartVerified: turnStartProof ? Boolean(turnStartProof.persisted) : undefined,
+          nativeRef: turnStartProof?.nativeRef ?? undefined,
+        };
+        const terminalKind = carryResult.delivered ? 'respawn-carry-delivered' : 'respawn-carry-dropped';
+        appendHostEvent(ownerId, terminalKind, terminalExtra);
+        appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);
       }
     };
 

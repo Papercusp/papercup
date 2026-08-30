@@ -5,6 +5,8 @@
  * like a healthy workflow completion in DBOS forensics.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const state = vi.hoisted(() => ({
   stepOutputs: [] as Array<{ name: string; output: unknown }>,
@@ -94,6 +96,16 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 beforeEach(() => {
   state.stepOutputs.length = 0;
   vi.clearAllMocks();
+});
+
+describe('routinesTickImpl — loop rebase survives critical pool shed (EI-21859486764076047)', () => {
+  it('runs loop-rebase before the critical-shed early return', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const shedSection = source.split('// EI-11171 critical-routine floor (cont.):')[1] ?? '';
+    const branch = shedSection.match(/if \(poolCritical\) \{[\s\S]*?return;\n  \}/)?.[0] ?? '';
+    expect(branch).toContain('await runLoopRebaseSweep(sql);');
+    expect(source).toContain('async function runLoopRebaseSweep');
+  });
 });
 
 describe('routineFireWorkflow — durable loop:wake output', () => {
