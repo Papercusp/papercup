@@ -572,8 +572,8 @@ export function vitestRunFailed({ status, output }) {
  * every group that could run, a mismatch in one group never hides another group's files, and the
  * final status is decided from the true combined outcome.
  *
- * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean }[]} groupResults
- * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean }}
+ * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean, timedOut?: boolean }[]} groupResults
+ * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean, anyTimedOut: boolean }}
  */
 /**
  * EI-18099113673609528: Vitest 4's default (and verbose) reporter silently drops ALL per-suite
@@ -1192,6 +1192,10 @@ export function aggregateGroupResults(groupResults) {
   const launchError = groupResults.some((g) => g.launchError);
   const anyUnmatched = groupResults.some((g) => g.unmatchedCount > 0);
   const anyFailed = groupResults.some((g) => g.failed);
+  // EI-21902345477441137: a group the watchdog reaped produced NO verdict — `failed` is
+  // deliberately `false` for it (see the push site), so it never contaminates `anyFailed`. Track
+  // it separately so the caller can report NOT-MEASURED instead of a false green or false red.
+  const anyTimedOut = groupResults.some((g) => g.timedOut);
   // Tests-executed is measured ONLY under a name filter, so three states are distinct and must
   // stay so: `undefined` = not applicable (no filter), `null` = filter present but the count was
   // unreadable, a number = measured. Collapsing unreadable into zero would fabricate reds.
@@ -1225,6 +1229,7 @@ export function aggregateGroupResults(groupResults) {
     anyUnmatched,
     anyFailed,
     launchError,
+    anyTimedOut,
   };
 }
 
@@ -2322,8 +2327,12 @@ export async function main(
       continue;
     }
     const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const groupFailed = vitestRunFailed({ status: result.status, output: runOutput });
-    if (result.status === 0 && groupFailed) {
+    // EI-21902345477441137: a watchdog reap kills the child via signal, so `result.status` is
+    // typically `null` — `null !== 0` would make vitestRunFailed() report a false FAILED verdict
+    // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
+    // skip the classifier entirely rather than run it against a killed process's exit state.
+    const groupFailed = result.timedOut ? false : vitestRunFailed({ status: result.status, output: runOutput });
+    if (!result.timedOut && result.status === 0 && groupFailed) {
       const summary = parseSummaryFailedCounts(runOutput);
       console.error(
         `⚠ Vitest exited 0 but its summary reports ${summary?.testFiles ?? 0} failed test file(s) / ` +
@@ -2331,7 +2340,12 @@ export async function main(
           '(EI-21124682504777505: an exit-code/summary mismatch must not read as green)',
       );
     }
-    if (groupFailed) {
+    if (result.timedOut) {
+      // EI-21902345477441137: this is the SUMMARY line a `grep status=` / `| tail` reader lands
+      // on — it must carry the same NOT-MEASURED verdict the TEST_FILE_WATCHDOG detail line above
+      // already gave, never `status=failed`, which blames the code under test for a harness reap.
+      console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=not-measured`);
+    } else if (groupFailed) {
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
       if (looksLikeMidInstallCorruption(runOutput)) {
         console.error(MID_INSTALL_HINT);
@@ -2405,6 +2419,10 @@ export async function main(
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
+      // EI-21902345477441137: distinct from `failed` — a reaped run produced no verdict at all,
+      // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
+      // silently read as a clean pass (that would hide a genuine resource-limit problem).
+      timedOut: Boolean(result.timedOut),
     });
   }
 
@@ -2554,6 +2572,23 @@ export async function main(
     console.log(
       `TEST_FILE_REQUIRE_RAN pattern=${JSON.stringify(requireRan)} status=ran matches=${verdict.matches.length}`,
     );
+  }
+  // EI-21902345477441137: a watchdog reap is NOT a test failure — a run the harness killed before
+  // it produced a verdict must never be reported as `status=failed` (that blames the code under
+  // test for a resource limit) nor silently fold into `status=passed`. When nothing else in this
+  // request genuinely failed, withhold TEST_FILE_RESULT and refuse instead, exactly like the
+  // other NOT-MEASURED refusals above (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`).
+  // A genuine failure elsewhere in the same multi-group request still reports `status=failed`
+  // below, unaffected — this refusal fires only when timing out is the ONLY thing that happened.
+  if (summary.anyTimedOut && !summary.anyFailed) {
+    console.error(
+      `TEST_FILE_NOT_MEASURED requested=${summary.requested} executed=${summary.executed} ` +
+        `matched=${summary.matched} status=not-measured — a watchdog reaped at least one run before ` +
+        'it finished; no test-failure verdict was produced. Widen with ' +
+        'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same command. Refusing to report ' +
+        'a TEST_FILE_RESULT verdict for a run that was not measured.',
+    );
+    return 2;
   }
   const status = summary.anyFailed ? 'failed' : 'passed';
   const skippedField =
