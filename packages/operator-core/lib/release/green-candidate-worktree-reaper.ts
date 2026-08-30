@@ -260,8 +260,83 @@ export async function executeCandidateWorktreeReap(
 }
 
 /**
+ * Compact `reason=count` histogram of a sweep's refusals, ordered by descending count then
+ * reason name so the line is stable enough to diff across consecutive runs.
+ */
+export function summarizeCandidateWorktreePreservations(
+  preserved: readonly { reason: CandidateWorktreePreserveReason }[],
+): string {
+  const counts = new Map<CandidateWorktreePreserveReason, number>();
+  for (const p of preserved) counts.set(p.reason, (counts.get(p.reason) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([reason, n]) => `${reason}=${n}`)
+    .join(' ');
+}
+
+/**
+ * The lines a sweep should emit. Pure, so the OBSERVABILITY is testable without touching a
+ * filesystem — which is the whole point of it existing separately from the entry point.
+ *
+ * WI-954677 / EI-21844531592346894: a sweep MUST account for itself on every pass, including
+ * — especially — the pass where it removes nothing.
+ *
+ * Until now the only log fired when `removed.length > 0`, and the nothing-to-reap path
+ * returned early in silence. `preserved` carries a reason per tree and its type is documented
+ * "Reported, never silent", but the report was computed and then dropped on the floor. The
+ * consequences were not hypothetical:
+ *
+ *  - Candidate worktrees filled the host to 94% with no surface showing the sweep refusing
+ *    them, so the accumulation was first misdiagnosed as an active per-minute "drain" and the
+ *    proposed remedy was killing other agents' in-flight suites.
+ *  - A correct reading of this module concluded it had no production caller at all, because
+ *    nothing anywhere evidenced it had ever run.
+ *  - A reap that FAILED was indistinguishable from one that had nothing to do: `failed` was
+ *    populated and discarded, so a persistently failing reclaim could never surface.
+ *
+ * A silent success and a silent no-op are the same observation, which is why this is not
+ * merely nice-to-have logging.
+ */
+export function candidateWorktreeSweepLogLines(
+  plan: CandidateWorktreeReapPlan,
+  result: CandidateWorktreeReapResult | null,
+): string[] {
+  // Prefer the executed result: its `preserved` includes at-delete re-check refusals
+  // (`became-active-since-scan`) that the plan alone cannot know about.
+  const preserved = result?.preserved ?? plan.preserved;
+  const removed = result?.removed ?? [];
+  const failed = result?.failed ?? [];
+
+  // `failed` MUST participate in this emptiness test. Omitting it reported "no candidate
+  // worktrees present" while a reclaim was actively failing — the same silence this function
+  // exists to end, reproduced inside the fix for it. Caught by its own guard below.
+  if (preserved.length === 0 && removed.length === 0 && failed.length === 0) {
+    return ['candidate-worktree sweep: no candidate worktrees present'];
+  }
+
+  let head = `candidate-worktree sweep: reaped ${removed.length}, preserved ${preserved.length}`;
+  if (failed.length > 0) head += `, failed ${failed.length}`;
+  if (preserved.length > 0) {
+    head += ` (${summarizeCandidateWorktreePreservations(preserved)})`;
+  }
+  if (removed.length > 0) {
+    head += `: ${removed.map((p) => path.basename(p)).join(', ')}`;
+  }
+
+  const lines = [head];
+  for (const failure of failed) {
+    lines.push(
+      `warn: candidate-worktree sweep could not reclaim ${path.basename(failure.path)}: ${failure.detail}`,
+    );
+  }
+  return lines;
+}
+
+/**
  * Sweep abandoned candidate worktrees under `integrationRoot`. Convenience wrapper that
  * enumerates, plans and executes; returns null when there was nothing to reap.
+ *
+ * Always logs exactly what it did and why, via `candidateWorktreeSweepLogLines`.
  */
 export async function reapAbandonedCandidateWorktrees(opts: {
   integrationRoot: string;
@@ -278,14 +353,8 @@ export async function reapAbandonedCandidateWorktrees(opts: {
     nowMs: opts.nowMs ?? Date.now(),
     minAgeMs: opts.minAgeMs,
   });
-  if (plan.reap.length === 0) return null;
-  const result = await executeCandidateWorktreeReap(plan, opts.deps);
-  if (result.removed.length > 0) {
-    opts.deps.log(
-      `reclaimed ${result.removed.length} abandoned green-candidate worktree(s): ${result.removed
-        .map((p) => path.basename(p))
-        .join(', ')}`,
-    );
-  }
+  const result =
+    plan.reap.length === 0 ? null : await executeCandidateWorktreeReap(plan, opts.deps);
+  for (const line of candidateWorktreeSweepLogLines(plan, result)) opts.deps.log(line);
   return result;
 }

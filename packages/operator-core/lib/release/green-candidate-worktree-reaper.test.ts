@@ -12,11 +12,14 @@ import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import {
   DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS,
+  candidateWorktreeSweepLogLines,
   executeCandidateWorktreeReap,
   isCandidateWorktreeName,
   planCandidateWorktreeReap,
+  summarizeCandidateWorktreePreservations,
   type CandidateWorktreeEntry,
   type CandidateWorktreeReapDeps,
+  type CandidateWorktreeReapResult,
 } from './green-candidate-worktree-reaper';
 
 const ROOT = '/repo/.papercusp/worktrees';
@@ -278,5 +281,128 @@ describe('executeCandidateWorktreeReap', () => {
     expect(d.gitWorktreePrune).not.toHaveBeenCalled();
     expect(result.removed).toEqual([]);
     expect(result.preserved).toEqual([{ path: live.path, reason: 'active-candidate' }]);
+  });
+});
+
+/**
+ * WI-954677 / EI-21844531592346894 — the sweep must ACCOUNT FOR ITSELF on every pass.
+ *
+ * The regression these guard against is not a crash, it is SILENCE: the sweep used to log
+ * only when it removed something, so a pass that refused every tree was indistinguishable
+ * from a pass that never ran. That indistinguishability let candidate worktrees fill the
+ * host to 94% unnoticed, and led a correct reading of the module to conclude it had no
+ * production caller at all.
+ *
+ * Note what the pre-existing tests could not catch: they assert the PLAN and the REMOVALS,
+ * both of which were always correct. The defect lived entirely in what was reported.
+ */
+function preservedAs(
+  reason: CandidateWorktreeReapResult['preserved'][number]['reason'],
+  name = 'green-candidate-papercusp-aaaaaaaaaaaa',
+) {
+  return { path: path.join(ROOT, name), reason };
+}
+
+describe('summarizeCandidateWorktreePreservations', () => {
+  it('counts each reason', () => {
+    expect(
+      summarizeCandidateWorktreePreservations([
+        preservedAs('too-young'),
+        preservedAs('too-young'),
+        preservedAs('active-candidate'),
+      ]),
+    ).toBe('too-young=2 active-candidate=1');
+  });
+
+  it('orders by descending count, then reason name, so consecutive runs diff cleanly', () => {
+    expect(
+      summarizeCandidateWorktreePreservations([
+        preservedAs('unrecognized-name'),
+        preservedAs('active-candidate'),
+      ]),
+    ).toBe('active-candidate=1 unrecognized-name=1');
+  });
+
+  it('is empty for no preservations', () => {
+    expect(summarizeCandidateWorktreePreservations([])).toBe('');
+  });
+});
+
+describe('candidateWorktreeSweepLogLines', () => {
+  it('REGRESSION: reports a sweep that reaped NOTHING but refused trees', () => {
+    // The exact shape that was silent before: trees present, all under the age floor.
+    const young = entry('green-candidate-papercusp-f369131625d4', NOW - 60_000);
+    const lines = candidateWorktreeSweepLogLines(plan([young]), null);
+
+    expect(lines).toEqual([
+      'candidate-worktree sweep: reaped 0, preserved 1 (too-young=1)',
+    ]);
+  });
+
+  it('CONTROL: never returns zero lines, whatever the sweep did', () => {
+    // A silent pass is the defect itself, so "emitted nothing" must be unreachable.
+    const young = entry('green-candidate-papercusp-f369131625d4', NOW - 60_000);
+    const cases: Array<[ReturnType<typeof plan>, CandidateWorktreeReapResult | null]> = [
+      [plan([]), null],
+      [plan([young]), null],
+      [
+        plan([entry('green-candidate-papercusp-aaaaaaaaaaaa')]),
+        { removed: [path.join(ROOT, 'green-candidate-papercusp-aaaaaaaaaaaa')], failed: [], preserved: [], prunedAdmin: true },
+      ],
+    ];
+    for (const [p, r] of cases) {
+      expect(candidateWorktreeSweepLogLines(p, r).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('says so plainly when there are no candidate worktrees at all', () => {
+    expect(candidateWorktreeSweepLogLines(plan([]), null)).toEqual([
+      'candidate-worktree sweep: no candidate worktrees present',
+    ]);
+  });
+
+  it('names what it reclaimed', () => {
+    const doomed = entry('green-candidate-papercusp-aaaaaaaaaaaa');
+    const lines = candidateWorktreeSweepLogLines(plan([doomed]), {
+      removed: [doomed.path],
+      failed: [],
+      preserved: [],
+      prunedAdmin: true,
+    });
+    expect(lines).toEqual([
+      'candidate-worktree sweep: reaped 1, preserved 0: green-candidate-papercusp-aaaaaaaaaaaa',
+    ]);
+  });
+
+  it('surfaces a reclaim FAILURE that was previously computed and discarded', () => {
+    // Pinned as a FULL array, not a `toContain`: a failing reclaim leaves `removed` and
+    // `preserved` both empty, and an emptiness test that ignores `failed` therefore reports
+    // "no candidate worktrees present" while the reclaim is broken. That regression was
+    // written, and this assertion is what caught it — `toContain` alone would not have.
+    const doomed = entry('green-candidate-papercusp-aaaaaaaaaaaa');
+    const lines = candidateWorktreeSweepLogLines(plan([doomed]), {
+      removed: [],
+      failed: [{ path: doomed.path, detail: 'device or resource busy' }],
+      preserved: [],
+      prunedAdmin: false,
+    });
+    expect(lines).toEqual([
+      'candidate-worktree sweep: reaped 0, preserved 0, failed 1',
+      'warn: candidate-worktree sweep could not reclaim green-candidate-papercusp-aaaaaaaaaaaa: device or resource busy',
+    ]);
+  });
+
+  it('prefers the executed result, so an at-delete re-check refusal is not lost', () => {
+    // `became-active-since-scan` exists ONLY on the result — a plan cannot know it.
+    const doomed = entry('green-candidate-papercusp-aaaaaaaaaaaa');
+    const lines = candidateWorktreeSweepLogLines(plan([doomed]), {
+      removed: [],
+      failed: [],
+      preserved: [{ path: doomed.path, reason: 'became-active-since-scan' }],
+      prunedAdmin: false,
+    });
+    expect(lines[0]).toBe(
+      'candidate-worktree sweep: reaped 0, preserved 1 (became-active-since-scan=1)',
+    );
   });
 });
