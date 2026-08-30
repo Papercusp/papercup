@@ -172,11 +172,34 @@ describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
      * file's question — not that the fold was inconvenient there. Pinning the
      * set means a new entry is a deliberate, reviewable act rather than a quiet
      * append.
+     *
+     * `holder-authority.ts` is the one entry that arrived by a module SPLIT
+     * rather than by a new call site: it is the authority half of the canonical
+     * holder subsystem, carved out of holder.ts because compact control-context
+     * construction sits on the agent-MCP bootstrap path and importing the full
+     * liveness graph there cycles. It is therefore the same category as the
+     * holder.ts entry beside it — the module others route THROUGH, not a
+     * consumer routing around it — which is exactly the case holder.ts's own
+     * comment anticipates when it says renaming the exports must not turn the
+     * module into its own first offender.
+     *
+     * Unlike holder.ts and modes/store.ts it is LOAD-BEARING: the predicate
+     * genuinely fires on it. It fires because the `elected` CTE self-joins on
+     * `subject` to run the lease-epoch election, even though the read is
+     * OWNER-keyed on `owner_id` — the trivially-live direction the
+     * false-positive block above declines to flag. And its risk points the
+     * other way from the bug this guard exists for: it decides whether the CALLING
+     * session may act, so a dead elected holder yields 'superseded' and REFUSES
+     * authority. Folding liveness in would widen authority, never narrow it; it
+     * can never produce the "1 holder, therefore staffed" claim over a dark
+     * session. Succession here is governed by goal_lease_epoch and handoff
+     * expiry, which is why liveness is irrelevant to its question.
      */
-    it('ALLOWLIST holds only the five files with a written reason', () => {
+    it('ALLOWLIST holds only the six files with a written reason', () => {
       expect([...ALLOWLIST].sort()).toEqual(
         [
           'packages/agent-mcp/src/tools/goals/create.ts',
+          'packages/operator-core/lib/goals/holder-authority.ts',
           'packages/operator-core/lib/goals/holder.ts',
           'packages/operator-core/lib/goals/spend-rollup.ts',
           'packages/operator-core/lib/modes/store.ts',

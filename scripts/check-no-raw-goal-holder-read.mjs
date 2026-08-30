@@ -185,7 +185,7 @@ const SANCTIONED =
  * check-no-raw-block-edge documents: the realistic bypass splits the predicate
  * across an interpolated fragment or a helper, so a statement-scoped matcher
  * would look more precise while catching less. The measured cost of the coarse
- * form on the live tree is the five ALLOWLIST entries above, each with a
+ * form on the live tree is the six ALLOWLIST entries above, each with a
  * written reason.
  */
 export function readsRawGoalHolder(text) {
