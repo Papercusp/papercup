@@ -123,6 +123,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { inboxBodyCharCap, senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
+import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -155,6 +156,28 @@ export const COORD_SEND_IDLE_REPORT_TIMEOUT_MS = 1_500;
 /** Keep the post-send work-item routing advisory from coupling send latency to
  * a slow work-item store. The message is already durable when this runs. */
 export const COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS = 1_500;
+
+/**
+ * EI-21860312102671987: `sendMessage()` (the actual coord_event_log persist)
+ * previously had NO deadline of its own — a bare `await`. Under client-side DB
+ * pool acquire-queue saturation (the measured, documented failure mode in
+ * EI-19485014132257783: "Postgres demonstrably healthy... CLIENT-side
+ * acquire-queue saturation"), that await can hang far longer than ptool's own
+ * 60s client timeout for this tool (PTOOL_FOREGROUND_TOOL_TIMEOUT_MS —
+ * apps/operator/scripts/ptool.mjs:1185), and the CALLER gives up first: the
+ * agent sees an ambiguous transport timeout while the server-side call is
+ * still queued for a connection with no result ever produced — the message
+ * never reaches coord_event_log and nothing tells the caller why.
+ *
+ * Wrapping the whole `sendMessage()` promise in `withDbCallDeadline` bounds it
+ * comfortably inside that 60s client budget (45s default, ~15s margin for the
+ * clean failure to propagate before ptool's own abandon fires) so a saturated
+ * pool produces a FAST, LOUD, diagnosable `DbCallDeadlineError` — which
+ * `describeAcquirePressure` enriches with the actual acquire-queue counters —
+ * instead of an indefinite silent hang. `sendMessage` itself is a single
+ * message-persist; it is not expected to legitimately run long, so racing the
+ * entire promise (rather than only its acquire phase) is safe here. */
+export const COORD_SEND_DB_DEADLINE_MS = DEFAULT_DB_CALL_DEADLINE_MS;
 
 /**
  * Derive the coord message id for one idempotent coord:send item. MCP
@@ -1266,30 +1289,43 @@ async function sendOne(
   if (cueAuthority) extra[CUE_AUTHORITY_FIELD] = cueAuthority;
   const bodyText = sections.length ? sectionsToText(sections) : undefined;
   const bodyDelivery = senderBodyDeliveryDiagnostics(bodyText);
-  const env = await sendMessage(identity, {
-    to: toSend,
-    ...(idempotencyKey !== undefined && itemIndex !== undefined
-      ? { msgId: idempotentCoordMsgId(identity, harnessSlug, idempotencyKey, itemIndex) }
-      : {}),
-    summary: msg.summary,
-    // The TEXT projection of the sections. `env.body` stays a plain string so
-    // coord:inbox / coord:read / the [coord+N] injection / coord:thread / the
-    // pui pane are unchanged; the structure rides `extra.sections` beside it.
-    body: bodyText,
-    files: msg.files,
-    plan_slug: msg.plan_slug,
-    related_msg_id: relatedMsgIdForSend,
-    ...(expectsReply ? { expectsReply: true } : {}),
-    // WI-3653: pass the resolved scope THROUGH, including the explicit-local
-    // null — omitting it would re-trigger sendMessage's AUTO default and defeat
-    // scope:'local'.
-    harnessSlug,
-    // H5a (P-002): tell the seam invariant the stamp is ALREADY resolved (null =
-    // "resolved, none") so sendMessage doesn't re-pay the presence/fleet reads
-    // this tool just did for its own down-scope/stamp pass.
-    cueAuthorityResolved: cueAuthority ?? null,
-    ...(Object.keys(extra).length ? { extra } : {}),
-  });
+  // EI-21860312102671987: bound the persist so a saturated/wedged DB call
+  // THROWS a decisive DbCallDeadlineError instead of hanging past the
+  // caller's own ~60s client timeout with no result ever produced. The throw
+  // is handled by the EXISTING, tested exception path one level up (`runBulk`
+  // in _bulk.ts, exercised by the "a delivery exception is surfaced at the
+  // envelope level" test below) — it already turns a thrown send exception
+  // into { ok:false, to, error: message } plus a loud `deliveryFailureWarning`
+  // on the envelope. Deliberately NOT re-caught/reshaped here: that would
+  // diverge from the one established, tested shape every other sendMessage
+  // failure (e.g. a PG lock-timeout) already reports through.
+  const env = await withDbCallDeadline(
+    sendMessage(identity, {
+      to: toSend,
+      ...(idempotencyKey !== undefined && itemIndex !== undefined
+        ? { msgId: idempotentCoordMsgId(identity, harnessSlug, idempotencyKey, itemIndex) }
+        : {}),
+      summary: msg.summary,
+      // The TEXT projection of the sections. `env.body` stays a plain string so
+      // coord:inbox / coord:read / the [coord+N] injection / coord:thread / the
+      // pui pane are unchanged; the structure rides `extra.sections` beside it.
+      body: bodyText,
+      files: msg.files,
+      plan_slug: msg.plan_slug,
+      related_msg_id: relatedMsgIdForSend,
+      ...(expectsReply ? { expectsReply: true } : {}),
+      // WI-3653: pass the resolved scope THROUGH, including the explicit-local
+      // null — omitting it would re-trigger sendMessage's AUTO default and defeat
+      // scope:'local'.
+      harnessSlug,
+      // H5a (P-002): tell the seam invariant the stamp is ALREADY resolved (null =
+      // "resolved, none") so sendMessage doesn't re-pay the presence/fleet reads
+      // this tool just did for its own down-scope/stamp pass.
+      cueAuthorityResolved: cueAuthority ?? null,
+      ...(Object.keys(extra).length ? { extra } : {}),
+    }),
+    { ms: COORD_SEND_DB_DEADLINE_MS, label: 'coord:send.sendMessage' },
+  );
 
   // EI-6874 (zero-recipient audience send is a refusal-class event, not a silent
   // ok): a LIVE-audience selector (@fleet:/@fleet-leader:/@topic:/@plan:/@object:/
