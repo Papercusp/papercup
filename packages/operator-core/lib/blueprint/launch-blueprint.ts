@@ -52,6 +52,8 @@ import type { Db } from '../fleet/pg-stores';
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
 const operatorBase = operatorApiBase;
+/** Bounded stderr captured from the invoke response into `spawned_agents.output_tail`. */
+const INVOKE_OUTPUT_TAIL_LIMIT = 2_000;
 
 /**
  * The built-in SINGLE-ROLE launch blueprints (vs the program-mode vote/deliberate,
@@ -617,6 +619,30 @@ const defaultFire: LaunchFireFn = async ({
       let status: 'done' | 'failed' = 'done';
       let errorMessage: string | undefined;
       const responseText = r && typeof r.text === 'function' ? await r.text().catch(() => '') : '';
+      // The /invoke route returns the complete SpawnInvokeOnceResult in its JSON
+      // body. Keep the structured child outcome at the same harvest seam as the
+      // error classification: the fallback launch row is otherwise left with
+      // only prose in error_message (WI-637706). Preserve an explicitly captured
+      // empty stderr (`''`) as distinct from a response that did not expose a
+      // stderr field (`null`), so readers can tell "captured no stderr" from
+      // "this writer never received a result payload".
+      let invokeResult: { exitCode?: unknown; stderr?: unknown } | null = null;
+      try {
+        const parsed: unknown = JSON.parse(responseText);
+        if (parsed && typeof parsed === 'object') {
+          invokeResult = parsed as { exitCode?: unknown; stderr?: unknown };
+        }
+      } catch {
+        // Keep the legacy fail-soft behavior for non-JSON invoke responses.
+      }
+      const harvestedExitCode =
+        typeof invokeResult?.exitCode === 'number' && Number.isInteger(invokeResult.exitCode)
+          ? invokeResult.exitCode
+          : null;
+      const harvestedOutputTail =
+        typeof invokeResult?.stderr === 'string'
+          ? invokeResult.stderr.slice(-INVOKE_OUTPUT_TAIL_LIMIT)
+          : null;
       if (r && r.ok === false) {
         status = 'failed';
         const tail = responseText ? ` — ${responseText.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
@@ -670,6 +696,8 @@ const defaultFire: LaunchFireFn = async ({
         spawnId,
         workspaceId,
         status,
+        exitCode: harvestedExitCode,
+        outputTail: harvestedOutputTail,
         ...(errorMessage ? { errorMessage } : {}),
       }).catch(() => {});
     })

@@ -206,6 +206,74 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     warn.mockRestore();
   });
 
+  it('persists the harvested invoke exit code and stderr tail on the fallback spawn row', async () => {
+    const stderr = `${'diagnostic '.repeat(250)}release-fixer child failed before its first turn`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
+      ok: false,
+      exitCode: 127,
+      timedOut: false,
+      agentOutput: '',
+      stderr,
+      rawStdoutTail: 'raw stdout context',
+    }), { status: 200 }));
+
+    await fireLaunchBlueprint('release-fix', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({
+      status: 'failed',
+      exitCode: 127,
+      outputTail: stderr.slice(-2000),
+    });
+    warn.mockRestore();
+  });
+
+  it('persists structured exit and stderr fields for a successful invoke too', async () => {
+    const stderr = 'release-fixer completed with a non-fatal warning';
+    vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      exitCode: 0,
+      agentOutput: 'decision: no changes needed',
+      stderr,
+    }), { status: 200 }));
+
+    await fireLaunchBlueprint('release-fix', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({
+      status: 'done',
+      exitCode: 0,
+      outputTail: stderr,
+    });
+  });
+
+  it('keeps an explicitly captured empty stderr distinct from an absent stderr field', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loopbackFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      exitCode: 1,
+      agentOutput: '',
+      stderr: '',
+    }), { status: 200 }));
+    await fireLaunchBlueprint('release-fix', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ outputTail: '' });
+
+    vi.clearAllMocks();
+    vi.mocked(recordSpawn).mockResolvedValue(undefined);
+    vi.mocked(finishSpawn).mockResolvedValue(undefined);
+    vi.mocked(loopbackFetch).mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      exitCode: 1,
+      agentOutput: '',
+    }), { status: 200 }));
+    await fireLaunchBlueprint('release-fix', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ outputTail: null });
+    warn.mockRestore();
+  });
+
   it('still fires loopbackFetch even when recordSpawn throws (best-effort tracking)', async () => {
     vi.mocked(recordSpawn).mockRejectedValue(new Error('pg down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
