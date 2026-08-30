@@ -223,6 +223,21 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the `pgrep -q` does-not-exist-on-this-box warning post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-30',
+      plan: 'none — part authored directly into harness_doc_parts, projected in commit b9973c67a8',
+      // Same shape as the three entries above. Established by walking the generated corpus
+      // banner across commits rather than assuming: 3309ee8842 reads 295/256, 57c75351c0 reads
+      // 296/257, and b9973c67a8 (2026-08-30T07:46:32Z) is the FIRST to read 297/258. Diffing the
+      // corpus across 57c75351c0..b9973c67a8 shows +23/-2 lines, all of them one new section.
+      // The added block is `commit-discipline-freeze-and-converge-standard` (confirmed against
+      // harness_shared.harness_doc_parts: doc_id claude-md, kind invariant, ordinal 63, authored
+      // 2026-08-30T07:25:32Z — 21 minutes before the projection commit). It is the
+      // "A RED CANDIDATE IS FROZEN ON PURPOSE" gate guidance: a standalone new part, not a block
+      // that went missing elsewhere.
+      why: 'added the freeze-and-converge red-candidate standard post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {
