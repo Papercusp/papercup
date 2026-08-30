@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
+const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
@@ -26,6 +27,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
+    readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
   };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
@@ -155,6 +157,7 @@ beforeEach(() => {
     id === 'ar-checked-plan' ? CHECKED_RUBRIC : null,
   );
   getRubricPlanRevision.mockReset().mockResolvedValue(3);
+  readRubricPlanRevision.mockReset().mockResolvedValue({ ok: true, revision: 3 });
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   resolveHarnessPaths.mockReset();
