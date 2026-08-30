@@ -650,6 +650,30 @@ describe('controlWritesForAgent', () => {
       { data: '\r', delayMs: 150 },
     ]);
   });
+  it('submits OMP with terminal Enter bytes and one bounded resubmit', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(controlWritesForAgent(d, 'omp', {})).toEqual([
+      { data: 'wake-turn', delayMs: 0 },
+      { data: '\r', delayMs: 150 },
+      { data: '\r', delayMs: 300 },
+    ]);
+    // A real OMP 16.x acceptance run acknowledged an LF submit while writing
+    // no transcript record. Enter on a pty is CR; never regress to LF here.
+    expect(controlWritesForAgent(d, 'omp', {}).some((step) => step.data === '\n')).toBe(false);
+  });
+  it('lets the OMP resubmit delay be tuned without changing its initial settle', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(
+      controlWritesForAgent(d, 'omp', {
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '225',
+        PAPERCUSP_PSU_PTY_OMP_RESUBMIT_CR_MS: '475',
+      }),
+    ).toEqual([
+      { data: 'wake-turn', delayMs: 0 },
+      { data: '\r', delayMs: 225 },
+      { data: '\r', delayMs: 475 },
+    ]);
+  });
   it('adds a Codex-only redundant delayed submit CR for text left in the compose box', () => {
     const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
     expect(controlWritesForAgent(d, 'codex', {})).toEqual([
