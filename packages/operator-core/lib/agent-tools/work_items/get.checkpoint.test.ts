@@ -74,6 +74,12 @@ it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workIte
   expect(returns).toContain('\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker');
   expect(returns).toContain('do not infer checkpoint authorship from \`workItem.updatedAt\`');
 });
+it('documents and enforces the threadLimit 0–10 cap', () => {
+  expect(get.description).toContain('`threadLimit`');
+  expect(get.description).toContain('(0–10)');
+  expect(() => parse({ id: 'WI-thread-limit', threadLimit: 11 })).toThrow(/<=10/);
+  expect(() => parse({ id: 'WI-thread-limit', threadLimit: 10 })).not.toThrow();
+});
 const env = async (x: unknown) => {
   const res = (await get.handler(parse(x) as never, ctx)) as Out;
   return res.data;
