@@ -894,7 +894,13 @@ describe("distributeRemotePlacement (WI-5211 — cross-machine max-spread round-
       offer(2, 'seat-bbbb', 'zeta', 1),
     ]);
     expect(a).toEqual(b);
-    if (a.ok) expect(a.allocations[0]!.host).toBe('alpha');
+    // Assert the discriminant before narrowing: `toEqual` holds when BOTH results are
+    // `{ ok: false }` (two identical refusals are trivially "deterministic"), so the
+    // sort assertion below silently skipped and this test verified nothing about
+    // ordering — the one thing its name claims. EI-19374102245723119.
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    expect(a.allocations[0]!.host).toBe('alpha');
   });
 
   it('refuses (never clamps) when count exceeds the total remote capacity', () => {

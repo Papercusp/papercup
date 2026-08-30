@@ -118,12 +118,18 @@ describe('ArtifactRegistry.get / list', () => {
     const { registry } = harness();
     const a = await registry.publish({ kind: 'plugin', ref: 'a' });
     await registry.publish({ kind: 'snapshot', ref: 'b' });
-    if (a.ok) await registry.unlist(a.id, { user_id: 'pub' });
+    // Assert the discriminant before narrowing on it: a failed publish left every
+    // `if (a.ok)` below skipped while the three length assertions still passed
+    // (1 snapshot, 0 plugins is what a MISSING plugin looks like too), so this test
+    // reported green precisely when publish broke. EI-19374102245723119.
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    await registry.unlist(a.id, { user_id: 'pub' });
 
     expect((await registry.list())).toHaveLength(1); // the unlisted plugin is hidden
     expect((await registry.list({ kind: 'snapshot' }))).toHaveLength(1);
     expect((await registry.list({ kind: 'plugin' }))).toHaveLength(0);
-    if (a.ok) expect((await registry.get(a.id))?.unlisted_at).not.toBe(null);
+    expect((await registry.get(a.id))?.unlisted_at).not.toBe(null);
   });
 });
 
