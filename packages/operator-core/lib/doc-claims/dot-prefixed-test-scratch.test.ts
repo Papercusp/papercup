@@ -42,6 +42,12 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const GITIGNORE = join(REPO_ROOT, '.gitignore');
 
+// Bounds every sync `git` call below (WI-1218849). A sync spawn blocks the worker's event loop,
+// so vitest's timeouts — JS timers — cannot fire; the pure lane shares one fork across ~2,740
+// files, so an unbounded call here wedges all of them until the batch watchdog kills the task 45
+// minutes later. SIGKILL is what makes the bound hold if the child ignores SIGTERM.
+const GIT_TIMEOUT_MS = 15_000;
+
 /**
  * Ask git whether a path WOULD be ignored, independent of whether it is tracked.
  * `--no-index` is essential: plain `git check-ignore` skips tracked paths, so without
@@ -53,10 +59,18 @@ function isIgnored(relPath: string): boolean {
     execFileSync('git', ['check-ignore', '--no-index', '--quiet', '--', relPath], {
       cwd: REPO_ROOT,
       stdio: 'ignore',
+      timeout: GIT_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // `git check-ignore --quiet` exits 1 for "not ignored" — that is the ANSWER, and the only
+    // failure this may swallow. Everything else (a timeout, a missing binary, a broken repo)
+    // also throws, and reporting an instrument failure as "not ignored" would hand back a clean
+    // bill of health for precisely the files this probe exists to catch. Rethrow instead: a
+    // broken probe must be loud, not quietly reassuring.
+    if ((err as { status?: number }).status === 1) return false;
+    throw err;
   }
 }
 
@@ -124,6 +138,8 @@ describe('dot-prefixed test scratch is gitignored (EI-19319605650500051)', () =>
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      timeout: GIT_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     })
       .split('\n')
       .filter((p) => /(^|\/)\.[^/]*\.(test|spec)\.(ts|tsx|mts|cts)$/.test(p));

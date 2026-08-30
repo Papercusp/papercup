@@ -18,20 +18,34 @@ import { describe, expect, it } from 'vitest';
  * what it must let THROUGH.
  */
 
+// Every sync spawn below is explicitly bounded (WI-1218849). A sync call blocks the worker's
+// event loop, so vitest's timeouts — which are JS timers — cannot fire, and the pure lane shares
+// one fork across ~2,740 files: an unbounded call here wedges all of them until the batch
+// watchdog kills the task 45 minutes later. `timeout` is the only thing that bounds it, and
+// SIGKILL is what makes the bound hold against a child ignoring SIGTERM.
+const GIT_TIMEOUT_MS = 15_000;
+const GUARD_TIMEOUT_MS = 30_000;
+
 const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   cwd: __dirname,
   encoding: 'utf8',
+  timeout: GIT_TIMEOUT_MS,
+  killSignal: 'SIGKILL',
 }).trim();
 const guard = join(repoRoot, 'scripts', 'guard-shared-tree-install.mjs');
 const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
   cwd: repoRoot,
   encoding: 'utf8',
+  timeout: GIT_TIMEOUT_MS,
+  killSignal: 'SIGKILL',
 }).trim();
 
 const run = (env: Record<string, string>, cwd = repoRoot) =>
   spawnSync(process.execPath, [guard], {
     cwd,
     encoding: 'utf8',
+    timeout: GUARD_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
     // A bare env: inheriting the parent's would leak PAPERCUSP_INSTALL_SAFE_ACTIVE from a test run
     // that itself started under install-safe, silently turning every refusal case into a pass.
     env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env },
