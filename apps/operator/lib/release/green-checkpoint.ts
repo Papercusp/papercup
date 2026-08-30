@@ -6499,6 +6499,19 @@ export function buildGreenCheckpointEnv(
   // ~9 such files (all passing in isolation); 180s gives headroom. Dev/CI keep 60s
   // (libs/test-config reads this env; unset ⇒ 60s).
   env.VITEST_UNIT_TIMEOUT_MS = env.VITEST_UNIT_TIMEOUT_MS ?? "180000";
+  // EI-21863578695350444: analogous headroom for the INTEGRATION layer's
+  // hookTimeout. ~230 *.integration.test.ts files share a fully-migrated-schema
+  // Postgres TEMPLATE db (createOrgTestDb/getOrBuildTemplate, keyed by the
+  // migration-set hash); a clone-path beforeAll is fast (measured 23.4s for
+  // device-store's 9-test suite), but the template is invalidated by every new
+  // migration (877 files and growing), and exactly one fleet-wide process must
+  // then pay the full cold rebuild against the ONE Postgres container every
+  // concurrent vitest fork `.withReuse()`s (WI-4133). That rebuild's wall time is
+  // load-dependent and can exceed the 90s dev default under gate-time fleet
+  // contention (device-store's own beforeAll already hardcodes 120s locally and
+  // still flaked once). 180s mirrors VITEST_UNIT_TIMEOUT_MS's precedent above; dev
+  // keeps the tighter 90s default (libs/test-config reads this env; unset ⇒ 90s).
+  env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS = env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS ?? "180000";
   return env;
 }
 
