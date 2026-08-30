@@ -242,7 +242,10 @@ export default defineTool({
   // sequential compound. It resolves its own stores and never reads ctx.tx;
   // do not hold an ambient org-app transaction across cache/enrichment awaits.
   skipWorkspaceTx: true,
-  agentRoles: [...COORD_ROLES],
+  // Acceptance judges inspect completion evidence as part of their rubric method.
+  // Keep this explicit instead of adding judge to COORD_ROLES, which would expose
+  // unrelated coordination/write tools.
+  agentRoles: [...COORD_ROLES, 'judge'],
   args: z.object({
     harness: z.string().max(80).optional(),
     q: z

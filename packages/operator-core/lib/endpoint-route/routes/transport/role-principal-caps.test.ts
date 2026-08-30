@@ -134,10 +134,12 @@ describe('loadRoleCapabilities', () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
       expect(caps.has('coord:read')).toBe(true);
       expect(caps.has('coord:write')).toBe(true);
+      expect(caps.has('work_items:read')).toBe(true);
       expect(caps.has('operator:read')).toBe(true);
       expect(caps.has('plans:read')).toBe(true);
       expect(caps.has('testing:run')).toBe(true);
       expect(caps.has('operator:write')).toBe(false);
+      expect(caps.has('work_items:write')).toBe(false);
       expect(caps.has('capability:fs-read')).toBe(true);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);
@@ -152,6 +154,8 @@ describe('loadRoleCapabilities', () => {
         { default: listTestRuns },
         { default: getPlan },
         { default: evaluateSpecTestAdequacy },
+        { default: getWorkItems },
+        { default: listWorkItems },
       ] = await Promise.all([
         import('../../../agent-tools/scorecards/emit.js'),
         import('../../../agent-tools/testing/run.js'),
@@ -162,6 +166,8 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/testing/runs.js'),
         import('../../../agent-tools/plans/get.js'),
         import('../../../agent-tools/plans/evaluate-spec-test-adequacy.js'),
+        import('../../../agent-tools/work_items/get.js'),
+        import('../../../agent-tools/work_items/list.js'),
       ]);
       for (const tool of [
         emit,
@@ -173,6 +179,8 @@ describe('loadRoleCapabilities', () => {
         listTestRuns,
         getPlan,
         evaluateSpecTestAdequacy,
+        getWorkItems,
+        listWorkItems,
       ]) {
         expect(tool.agentRoles).toContain('judge');
       }
