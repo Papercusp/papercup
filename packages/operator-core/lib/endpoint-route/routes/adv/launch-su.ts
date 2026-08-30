@@ -42,6 +42,7 @@ import {
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 import { composeLaunchModelSpec, isLaunchAccountValue } from '../../../agent-config-constants';
+import { defaultLaunchAccount } from '../../../agent-launch-core';
 import { isLaunchableMode, LAUNCHABLE_MODE_IDS } from '../../../modes/registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { HARNESS_SLUG_RE } from '../../../harness-slug';
@@ -105,9 +106,12 @@ const launchSu = defineTool({
       // ledger/ref/cap validation stays there; this route only preserves the
       // existing psu --seat transport for GUI/PUI launches.
       seat?: string | null;
-      // psu-account-chooser: 'default' | 'auto' | a pool account id. ALWAYS sent
-      // by a GUI launch — psu with no --account opens an INTERACTIVE picker,
-      // which would hang a spawned session waiting for a human at a terminal.
+      // psu-account-chooser: 'default' | 'auto' | a pool account id. OPTIONAL on
+      // the wire, but never absent from the argv: an omitted value resolves to
+      // `defaultLaunchAccount()` below, because psu with no --account opens an
+      // INTERACTIVE picker, which would hang a spawned session waiting for a human
+      // at a terminal. This field used to be documented as "ALWAYS sent by a GUI
+      // launch" and the route trusted that; D-014 disproved it from a real trace.
       account?: string | null;
       // PUI SU-session contract: same psu carry input as fleet launch. Persisted
       // in launch_argv; orthogonal to headed/headless.
@@ -211,8 +215,15 @@ const launchSu = defineTool({
         400,
       );
     }
-    const account = body.account?.trim() || null;
-    if (account && !isLaunchAccountValue(account)) {
+    // D-014 (pui-su-session-runtime-correction-2026-08-27): an omitted `account`
+    // MUST still persist the explicit default. Defaulting to `null` here dropped
+    // `--account=` from launch_argv entirely, and bootstrap-su then interpreted the
+    // unspecified Claude routing as gateway-routed — where the owner turn was shed
+    // after DEFAULT_MAX_QUEUE_WAIT_MS on admission timeout. `defaultLaunchAccount()`
+    // is the same resolver the scripted path (agent-launch-core) already applies, so
+    // the GUI/PUI create and the scripted launch now compose an identical argv.
+    const account = body.account?.trim() || defaultLaunchAccount();
+    if (!isLaunchAccountValue(account)) {
       return json({ status: 'error', error: 'invalid account' }, 400);
     }
     const seat = body.seat?.trim() || null;
@@ -428,7 +439,11 @@ const launchSu = defineTool({
     psuArgs.push(`--context-size=${contextSize}`);
     // WI-6321 — same flags, same order psu's own psuLaunchArgvRecord emits them,
     // so a GUI launch and a terminal launch produce an identical launch_argv.
-    if (account) psuArgs.push(`--account=${account}`);
+    // Unconditional by D-014: `account` is now always resolved above, and the argv
+    // parity guard in su-session-real-backend-matrix.integration.test.ts asserts
+    // every deferred row carries `--account=`. A conditional push here is what let
+    // the flag go missing.
+    psuArgs.push(`--account=${account}`);
     if (fleetSlug) psuArgs.push(`--fleet=${fleetSlug}`);
     if (seat) psuArgs.push(`--seat=${seat}`);
     if (carry) psuArgs.push(`--carry=${carry}`);
