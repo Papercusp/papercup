@@ -28,6 +28,7 @@ import { getModeSubject } from '../modes/store';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { areAcceptanceLineageRelated } from '../acceptance-author-identity';
+import { rubricVettingConsultHint } from '../consult/selection-policies';
 
 export const GOAL_DISPOSITIONS = ['achieved', 'killed', 'handoff'] as const;
 export type GoalDisposition = (typeof GOAL_DISPOSITIONS)[number];
@@ -403,7 +404,7 @@ export async function evaluateGoalAcceptanceGate(
               `retry disposition:'achieved'.`
             : `REFUSED — goal ${opts.goalId}'s acceptance rubric '${rubric.rubricId}' has not been VETTED against ` +
               `the meta-rubric. The rubric AUTHOR vets it before anyone grades the goal: (1) get_feedback critique ` +
-              `of the rubric (min 1 / max 3 responders — selection is automatic), (2) improve it from the critique ` +
+              `of the rubric — ${rubricVettingConsultHint()}, (2) improve it from the critique ` +
               `(rubrics:propose), (3) attest: scorecards:emit { rubricRef:'${deps.metaRubricId}', subject:{ ` +
               `kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<the consult conversation_id>', ` +
               `ratings:{ <every meta criterion, with evidence> } }. Pass is your judgment per criterion — no ` +

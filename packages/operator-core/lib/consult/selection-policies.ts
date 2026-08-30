@@ -16,7 +16,7 @@
  * policy key instead, so the documented number cannot drift from the enforced
  * one.
  */
-import { configureSelectionPolicies, type SelectionBounds } from '@papercusp/ranked-selection';
+import { configureSelectionPolicies, selectionPolicy, type SelectionBounds } from '@papercusp/ranked-selection';
 
 /**
  * The rubric-vetting critique consult (the meta-rubric vetting step).
@@ -76,3 +76,28 @@ export function ensureSelectionPolicies(): void {
 export const DEFAULT_MIN_RESPONDERS = SELECTION_POLICIES[CONSULT_DEFAULT_POLICY]!.min;
 /** The global consult cap — unchanged at 3 per D-004; see CONSULT_DEFAULT_POLICY. */
 export const DEFAULT_MAX_RESPONDERS = SELECTION_POLICIES[CONSULT_DEFAULT_POLICY]!.max;
+
+/**
+ * The ONE rendering of the rubric-vetting consult's call shape for agent-facing
+ * prose — the ship-gate refusal, the goal-disposition refusal, and (pinned by
+ * `doc-claims/selection-policy-prose`) CLAUDE.md and the vetting runbook.
+ *
+ * P-006: this bound was typed by hand at four sites, and had already drifted —
+ * every one of them still read "max 3" after D-004 lowered the vetting cap to 2,
+ * so the system was instructing agents to request a menu wider than it enforces.
+ * A number that describes code, maintained by hand in prose, is the exact
+ * derived-truth-ladder failure; rung 1 is to stop keeping the second copy.
+ *
+ * Two properties are deliberate. It reads through `selectionPolicy()` rather
+ * than off `SELECTION_POLICIES` directly, so it reports what is ENFORCED at the
+ * selection site (a test override included) instead of what this file declares.
+ * And it leads with the policy KEY: a caller who passes `policy` types no number
+ * at all, so the next bound change needs no prose edit anywhere.
+ */
+export function rubricVettingConsultHint(): string {
+  const { min, max } = selectionPolicy(RUBRIC_VETTING_POLICY);
+  return (
+    `pass policy:'${RUBRIC_VETTING_POLICY}' and no hand-typed count ` +
+    `(selection is automatic; that key currently carries min ${min} / max ${max} responders)`
+  );
+}

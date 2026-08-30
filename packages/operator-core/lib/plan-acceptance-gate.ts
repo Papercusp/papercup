@@ -35,6 +35,7 @@ import {
 } from './rubrics';
 import { listScorecards } from './scorecards';
 import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import { rubricVettingConsultHint } from './consult/selection-policies';
 import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
 import {
   evaluatePlanSpecCoverageGate,
@@ -546,8 +547,9 @@ export async function evaluatePlanAcceptanceGate(
 
   // ── the VETTING check (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
   // Ordered BEFORE the grading checks because it is the earlier step of the flow: the
-  // rubric AUTHOR vets the RUBRIC (informed by a get_feedback consult, min 1 / max 3
-  // responders) before a non-implementer grades the WORK against it. The pass is the
+  // rubric AUTHOR vets the RUBRIC (informed by a get_feedback consult whose responder
+  // bound is the `rubric-vetting` selection policy — never a count written here)
+  // before a non-implementer grades the WORK against it. The pass is the
   // vetting agent's ATTESTATION — a complete meta-scorecard on the CURRENT rubric
   // revision with a linked consult; deliberately NO mechanical score floor (D-001 §3),
   // so the ratings' values are never inspected here. Independently flagged and, like
@@ -648,7 +650,7 @@ export async function evaluatePlanAcceptanceGate(
             : `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has not ` +
               `been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric ` +
               `AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external ` +
-              `critique of the rubric (selection is automatic, min 1 / max 3 responders), (2) improve the rubric ` +
+              `critique of the rubric — ${rubricVettingConsultHint()}, (2) improve the rubric ` +
               `from the critique (rubrics:propose), (3) attest: scorecards:emit ` +
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
