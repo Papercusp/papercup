@@ -15,6 +15,7 @@
  *   · `skipped`           — the gate did not APPLY; nothing was checked.
  *   · `forcedPast`        — a recorded human waiver of the code-truth family.
  *   · `vettedUnderWaiver` — a rubric vetted over a consult nobody critiqued.
+ *   · `gradedVia:'minimum'` — a grader taken from BELOW the relevance floor.
  *
  * Each has a test named for the rule, so collapsing one into "passed" has to be deliberate.
  */
@@ -72,6 +73,7 @@ function row(over: Record<string, unknown> = {}) {
     message: null,
     rubricId: 'RUB-1',
     gradedBy: 'su-someone-else',
+    gradedVia: null,
     forcedPast: null,
     vettedUnderWaiver: null,
     unavailableReason: null,
@@ -186,6 +188,30 @@ describe('PlanAcceptanceGateSection caveated passes — a pass is not automatica
     expect(el.textContent).toContain('CON-7');
     expect(el.textContent).toContain('NO external critique');
     expect(screen.getByTestId('plan-acceptance-gate-toggle').textContent).toContain('caveats');
+  });
+
+  it('DISCLOSES a below-floor minimum-fill grader — the grading is real, the expertise match is not', () => {
+    // unified-responder-selection-critique-and-grading-2026-08-30 D-002 accepts this
+    // knowingly where no above-floor grader exists, and asks that it not be
+    // rediscovered as a surprise. Same rendering contract as the vetting waiver.
+    gateRow.current = row({ satisfied: true, gradedBy: 'su-below-floor', gradedVia: 'minimum' });
+    renderSection(OPEN);
+
+    const el = screen.getByTestId('plan-acceptance-gate-grader-minimum');
+    expect(el.textContent).toContain('BELOW the relevance floor');
+    expect(screen.getByTestId('plan-acceptance-gate-grader').textContent).toContain('su-below-floor');
+    expect(screen.getByTestId('plan-acceptance-gate-toggle').textContent).toContain('caveats');
+  });
+
+  it('a FLOOR-selected grader is not a caveat — only a known below-floor fill is', () => {
+    // The control for the case above: `gradedVia` being present must not by itself
+    // dim a pass, or the disclosure degrades into noise on every graded plan.
+    gateRow.current = row({ satisfied: true, gradedVia: 'floor' });
+    renderSection(OPEN);
+
+    expect(screen.queryByTestId('plan-acceptance-gate-grader-minimum')).toBeNull();
+    expect(screen.getByTestId('plan-acceptance-gate-toggle').textContent).toContain('— passed');
+    expect(screen.getByTestId('plan-acceptance-gate-toggle').textContent).not.toContain('caveats');
   });
 
   it('renders a genuinely clean pass as a plain pass', () => {
