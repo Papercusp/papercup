@@ -435,6 +435,15 @@ export async function verifyNativeTurnStartWithRetry({
   };
 }
 
+/** A carry-respawn can bind transcript proof to a native session id only when
+ * the backend actually mints one. Claude does; Codex deliberately starts a
+ * fresh thread without exposing its id, so its unique turn-origin marker plus
+ * the post-respawn mtime floor is the strongest available native proof. Unknown
+ * backends stay fail-closed. */
+export function carryTurnProofRequiresNativeId(agent) {
+  return String(agent ?? '').trim().toLowerCase() !== 'codex';
+}
+
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
  *  as a SEPARATE keystroke this long later. A single `text + CR` burst is
  *  swallowed by the Claude Code TUI's paste detector — the CR lands as a literal
@@ -6379,7 +6388,7 @@ export function hostThroughPty(o) {
           env,
           text: carryText,
           nativeId,
-          requireNativeId: true,
+          requireNativeId: carryTurnProofRequiresNativeId(env.PAPERCUSP_AGENT),
           sinceMs: lastRespawnAtMs,
           timeoutMs: proofWindowMs,
           writeCr: () => child.write('\r'),
