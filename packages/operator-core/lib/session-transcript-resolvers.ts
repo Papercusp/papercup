@@ -33,9 +33,25 @@ export function ompSessionsRootForSessionKey(
   sessionKey?: string | number,
   home: string = homedir(),
 ): string {
+  return join(ompAgentHomeForSessionKey(sessionKey, home), 'sessions');
+}
+
+/**
+ * The OMP agent home that owns one session's transcript/config state.
+ *
+ * Keep this path paired with {@link ompSessionsRootForSessionKey}: native
+ * session handles need the AGENT HOME while transcript readers need its
+ * `sessions` child. Before this helper existed the handle reconstructed the
+ * shared `~/.omp/agent` path while the resolver correctly searched the tracked
+ * per-session home, so one runtime carried two contradictory roots.
+ */
+export function ompAgentHomeForSessionKey(
+  sessionKey?: string | number,
+  home: string = homedir(),
+): string {
   return sessionKey == null
-    ? join(home, '.omp', 'agent', 'sessions')
-    : join(home, '.papercusp', 'su-omp-homes', `session-${sessionKey}`, 'agent', 'sessions');
+    ? join(home, '.omp', 'agent')
+    : join(home, '.papercusp', 'su-omp-homes', `session-${sessionKey}`, 'agent');
 }
 
 /**
@@ -201,6 +217,42 @@ export async function findCodexRolloutPath(
   }
   if (best) codexPathCache.set(cacheKey, { path: best.path, at: now });
   return best?.path ?? null;
+}
+
+const CODEX_THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve the native Codex thread id BEFORE its first rollout JSONL exists.
+ *
+ * Codex 0.151 creates `<CODEX_HOME>/thread-writer-locks/<thread-id>.lock`
+ * during interactive startup, but does not create the rollout file until the
+ * first owner turn is persisted. Requiring a rollout before PUI can attach
+ * creates a deadlock: PUI needs an adapter to send that first turn, while the
+ * adapter used to require the file that only that turn creates.
+ *
+ * This is deliberately a live-runtime bootstrap seam, not an exact-resume
+ * claim. Callers still treat `rolloutPath === null` as "not durably
+ * resumable yet"; the lock supplies only the stable native identity needed to
+ * address the already-running process.
+ */
+export async function findCodexLiveThreadId(codexHome: string): Promise<string | null> {
+  const root = join(codexHome, 'thread-writer-locks');
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  let newest: { id: string; mtime: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.lock')) continue;
+    const id = entry.name.slice(0, -'.lock'.length);
+    if (!CODEX_THREAD_ID_RE.test(id)) continue;
+    const mtime = await statMtime(join(root, entry.name));
+    if (mtime !== null && (!newest || mtime > newest.mtime)) newest = { id, mtime };
+  }
+  return newest?.id ?? null;
 }
 
 /**

@@ -142,19 +142,44 @@ describe('nativeSessionHandleForAdvSession', () => {
   });
 
   it('normalizes an unlinked OMP adv_session with an explicit missing reason', () => {
+    const seenKeys: Array<string | number> = [];
     expect(
       nativeSessionHandleForAdvSession(
         adv({ agent: 'omp', ompThreadId: null }),
-        { ompAgentHome: () => '/omp/agent' },
+        {
+          ompAgentHome: (key) => {
+            seenKeys.push(key);
+            return `/omp/session-${key}/agent`;
+          },
+        },
       ),
     ).toEqual({
       backend: 'omp',
       source: 'adv_sessions',
       ownerId: 'su-1',
       ompThreadId: null,
-      agentHome: '/omp/agent',
+      agentHome: '/omp/session-42/agent',
       exactResumeSupported: false,
       missingReason: 'omp thread id is not linked yet',
+    });
+    expect(seenKeys).toEqual([42]);
+  });
+
+  it('routes a tracked OMP adv_session to its per-row agent home by default', () => {
+    expect(
+      nativeSessionHandleForAdvSession(
+        adv({
+          id: 21143,
+          agent: 'omp',
+          ompThreadId: '01a04feb-217e-77cd-849f-9ea9e4f2d230',
+        }),
+      ),
+    ).toMatchObject({
+      backend: 'omp',
+      ompThreadId: '01a04feb-217e-77cd-849f-9ea9e4f2d230',
+      agentHome: expect.stringMatching(
+        /\/\.papercusp\/su-omp-homes\/session-21143\/agent$/,
+      ),
     });
   });
 });

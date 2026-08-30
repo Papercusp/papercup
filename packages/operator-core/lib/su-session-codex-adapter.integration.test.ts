@@ -12,8 +12,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PuiSuSessionBinding } from './launch-agent';
 import {
+  codexRolloutIdFromPath,
   createCodexSuSessionAdapter,
   openCodexSuSession,
+  resolveCodexSuRuntime,
   type CodexSuRuntimeBinding,
   type CodexSuSessionControls,
 } from './su-session-codex-adapter';
@@ -83,6 +85,70 @@ function events(adapter: ReturnType<typeof createCodexSuSessionAdapter>): SuSess
 }
 
 describe('Codex SU-session backend — real PUI entry and native rollout translation', () => {
+  it('attaches by the live thread id before the first rollout exists, then upgrades exact-resume state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-pre-turn-'));
+    tempDirs.push(dir);
+    const liveThread = '01a04fe7-9310-7f81-8bcf-0887a91a811b';
+    const row = {
+      id: 71,
+      workspaceId: 'papercusp-workspace',
+      planSlug: null,
+      agent: 'codex',
+      role: null,
+      feature: null,
+      mode: 'console',
+      terminalBin: null,
+      pid: 4242,
+      windowId: null,
+      ompThreadId: null,
+      label: null,
+      cwd: '/repo',
+      coordOwnerId: 'su-codex-pui',
+      sessionId: null,
+      display: null,
+      launchArgv: null,
+      launchedAt: null,
+      startedAt: '2026-08-29T23:42:48.000Z',
+      endedAt: null,
+      exitCode: null,
+      endedBy: null,
+      endedSignal: null,
+    } as const;
+    const noRollout = await resolveCodexSuRuntime(binding(), {
+      getSession: async () => row,
+      findRolloutPath: async () => null,
+      findLiveThreadId: async () => liveThread,
+      findHost: () => ({}) as never,
+    });
+    expect(noRollout).toMatchObject({
+      nativeSession: {
+        rolloutId: liveThread,
+        exactResumeSupported: false,
+        missingReason: expect.stringContaining('not persisted yet'),
+      },
+      rolloutPath: null,
+    });
+
+    const rolloutPath = join(dir, `rollout-2026-08-29T23-42-48-${liveThread}.jsonl`);
+    const persisted = await resolveCodexSuRuntime(binding(), {
+      getSession: async () => row,
+      findRolloutPath: async () => rolloutPath,
+      findLiveThreadId: async () => {
+        throw new Error('rollout identity must win once the file exists');
+      },
+      findHost: () => null,
+    });
+    expect(codexRolloutIdFromPath(rolloutPath)).toBe(liveThread);
+    expect(persisted).toMatchObject({
+      nativeSession: {
+        rolloutId: liveThread,
+        exactResumeSupported: true,
+        missingReason: null,
+      },
+      rolloutPath,
+    });
+  });
+
   it('creates through openPuiSuSession, delivers an owner turn, translates tools/text, and visibly refuses fork/cards', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'codex-su-session-'));
     tempDirs.push(dir);

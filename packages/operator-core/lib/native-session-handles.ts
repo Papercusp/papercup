@@ -1,9 +1,8 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 import type { AdvSessionRow } from './adv-sessions';
 import { interactiveBackendFromSpawnBackend, type InteractiveBackend, type SpawnBackendLike } from './backend-feature-capabilities';
+import { ompAgentHomeForSessionKey } from './session-transcript-resolvers';
 import {
   resolveSessionConfigDir,
   type ResolveSessionConfigDirOptions,
@@ -69,7 +68,7 @@ export type NativeSessionHandle =
 export interface NativeSessionDeps {
   codexHomeForSessionKey?: (sessionKey: string | number) => string;
   findCodexRolloutId?: (codexHome: string) => string | null;
-  ompAgentHome?: () => string | null;
+  ompAgentHome?: (sessionKey: string | number) => string | null;
   /** WI-38369: injectable config-dir resolution (tests / a caller with a cached answer). */
   resolveConfigDir?: (opts: ResolveSessionConfigDirOptions) => SessionConfigDirResolution;
   /**
@@ -78,10 +77,6 @@ export interface NativeSessionDeps {
    * process). Omitted is fine — the transcript scan resolves an ended session too.
    */
   pidHint?: number | null;
-}
-
-function defaultOmpAgentHome(): string | null {
-  return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp', 'agent');
 }
 
 /**
@@ -157,7 +152,11 @@ export function nativeSessionHandleForAdvSession(
       source: 'adv_sessions',
       ownerId,
       ompThreadId: row.ompThreadId,
-      agentHome: (deps.ompAgentHome ?? defaultOmpAgentHome)(),
+      // Tracked OMP launches isolate their store by ADV ROW, not by the
+      // ambient process's PI_CODING_AGENT_DIR. Using the shared default here
+      // made the adapter search ~/.omp while the live session wrote under
+      // ~/.papercusp/su-omp-homes/session-<row>/agent.
+      agentHome: (deps.ompAgentHome ?? ompAgentHomeForSessionKey)(row.id),
       exactResumeSupported: Boolean(row.ompThreadId),
       missingReason: row.ompThreadId ? null : 'omp thread id is not linked yet',
     };

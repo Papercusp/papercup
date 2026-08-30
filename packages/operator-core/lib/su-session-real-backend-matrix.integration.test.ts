@@ -107,6 +107,9 @@ const SELECTED: readonly MatrixBackend[] = (() => {
 })();
 
 const HARNESS = 'papercusp';
+const OMP_MODEL =
+  process.env.PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL?.trim() ||
+  'papercusp-gateway/claude-sonnet-4-6';
 
 /** A real agent boot is not fast: psu resolves an account, the CLI starts, and
  *  bootstrap has to adopt the row before a native session exists. */
@@ -400,6 +403,12 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         backend: backend as SuSessionBackend,
         carry: 'warm',
         slug: HARNESS,
+        // The machine's historical OMP default may point at a retired remote
+        // model. An acceptance matrix must exercise the session transport, not
+        // accidentally certify whichever mutable model id happens to be saved
+        // in ~/.omp today. Use the per-session gateway model the launcher
+        // already materializes; callers can override it explicitly.
+        ...(backend === 'omp' ? { model: OMP_MODEL } : {}),
       });
 
       // A failure here is an infrastructure verdict, not a flake — say which.

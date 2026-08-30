@@ -9,7 +9,6 @@
  * this module owns one attached runtime generation and its wire translation.
  */
 import { createReadStream } from 'node:fs';
-import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import {
@@ -37,7 +36,10 @@ import {
 } from './launch-agent';
 import { nativeSessionHandleForAdvSession, type CodexNativeSessionHandle } from './native-session-handles';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
-import { findCodexRolloutPath } from './session-transcript-resolvers';
+import {
+  findCodexLiveThreadId,
+  findCodexRolloutPath,
+} from './session-transcript-resolvers';
 import { createCodexTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
 import {
   SuSessionHost,
@@ -54,8 +56,6 @@ export type CodexPuiSuSessionInput =
 export interface CodexSuRuntimeBinding {
   nativeSession: CodexNativeSessionHandle & {
     rolloutId: string;
-    exactResumeSupported: true;
-    missingReason: null;
   };
   /** Current native rollout. Null is allowed when a caller supplies another
    * append-only native record stream (for example the existing thinking SSE). */
@@ -106,56 +106,83 @@ export type OpenCodexSuSessionResult =
     }
   | { ok: false; code: string; error: string; binding?: PuiSuSessionBinding };
 
-function rolloutIdFromPath(path: string | null): string | null {
+export function codexRolloutIdFromPath(path: string | null): string | null {
   if (!path) return null;
-  const match = basename(path).match(/-([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/i);
+  const match = path.match(/-([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/i);
   return match?.[1] ?? null;
 }
 
 function materializedCodexHandle(
   handle: CodexNativeSessionHandle | null | undefined,
 ): CodexSuRuntimeBinding['nativeSession'] | null {
-  if (!handle?.codexHome || !handle.rolloutId || !handle.exactResumeSupported) return null;
-  return {
-    ...handle,
-    rolloutId: handle.rolloutId,
-    exactResumeSupported: true,
-    missingReason: null,
-  };
+  if (!handle?.codexHome || !handle.rolloutId) return null;
+  return { ...handle, rolloutId: handle.rolloutId };
 }
 
-/** Resolve the existing adv-session/CODEX_HOME identity once. Misses are
- * intentionally returned as null: a deferred PUI create has not run its pane
- * yet, so P-008 must call this again after the canonical launcher materialises
- * the runtime rather than inventing or polling a second launcher here. */
-export async function resolveCodexSuRuntime(binding: PuiSuSessionBinding): Promise<CodexSuRuntimeBinding | null> {
+export interface ResolveCodexSuRuntimeDeps {
+  getSession?: typeof getAdvSession;
+  findRolloutPath?: typeof findCodexRolloutPath;
+  findLiveThreadId?: typeof findCodexLiveThreadId;
+  findHost?: typeof findLiveHost;
+}
+
+/**
+ * Resolve the existing adv-session/CODEX_HOME identity once.
+ *
+ * A live Codex TUI creates its native thread id before its first rollout file.
+ * PUI must be able to attach during that window so it can SEND the owner turn
+ * that causes the rollout to be written. The thread-writer lock is therefore a
+ * legitimate live-runtime identity, while `exactResumeSupported` remains false
+ * until the rollout file itself exists.
+ */
+export async function resolveCodexSuRuntime(
+  binding: PuiSuSessionBinding,
+  deps: ResolveCodexSuRuntimeDeps = {},
+): Promise<CodexSuRuntimeBinding | null> {
   if (binding.backend !== 'codex') return null;
+  const findPath = deps.findRolloutPath ?? findCodexRolloutPath;
+  const host = binding.ownerId ? (deps.findHost ?? findLiveHost)(binding.ownerId) : null;
   const returnedHandle =
     binding.nativeSession?.backend === 'codex' ? materializedCodexHandle(binding.nativeSession) : null;
   if (returnedHandle) {
+    const rolloutPath = await findPath(binding.advSessionId, {
+      homeOverride: returnedHandle.codexHome,
+    });
+    if (!rolloutPath && !host) return null;
     return {
-      nativeSession: returnedHandle,
-      rolloutPath: await findCodexRolloutPath(binding.advSessionId, {
-        homeOverride: returnedHandle.codexHome,
-      }),
+      nativeSession: {
+        ...returnedHandle,
+        exactResumeSupported: Boolean(rolloutPath),
+        missingReason: rolloutPath
+          ? null
+          : 'codex rollout is not persisted yet; the live runtime is attachable but not exactly resumable',
+      },
+      rolloutPath,
     };
   }
 
-  const row = await getAdvSession(binding.advSessionId);
+  const row = await (deps.getSession ?? getAdvSession)(binding.advSessionId);
   if (!row || row.agent !== 'codex') return null;
   const provisional = nativeSessionHandleForAdvSession(row);
   if (!provisional || provisional.backend !== 'codex' || !provisional.codexHome) return null;
-  const rolloutPath = await findCodexRolloutPath(row.id, {
+  const rolloutPath = await findPath(row.id, {
     homeOverride: provisional.codexHome,
   });
-  const rolloutId = rolloutIdFromPath(rolloutPath);
+  const rolloutId =
+    codexRolloutIdFromPath(rolloutPath) ??
+    (host ? await (deps.findLiveThreadId ?? findCodexLiveThreadId)(provisional.codexHome) : null);
   if (!rolloutId) return null;
-  const native = nativeSessionHandleForAdvSession(row, {
-    findCodexRolloutId: () => rolloutId,
-  });
-  if (!native || native.backend !== 'codex') return null;
-  const materialized = materializedCodexHandle(native);
-  return materialized ? { nativeSession: materialized, rolloutPath } : null;
+  return {
+    nativeSession: {
+      ...provisional,
+      rolloutId,
+      exactResumeSupported: Boolean(rolloutPath),
+      missingReason: rolloutPath
+        ? null
+        : 'codex rollout is not persisted yet; the live runtime is attachable but not exactly resumable',
+    },
+    rolloutPath,
+  };
 }
 
 function refused(code: string, message: string, retryable = true): Exclude<CodexNativeCommandVerdict, { ok: true }> {

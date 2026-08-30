@@ -9,9 +9,11 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  findCodexLiveThreadId,
   findCodexRolloutPath,
   findCodexRolloutPathByUuid,
   findOmpSessionPath,
+  ompAgentHomeForSessionKey,
   ompSessionsRootForSessionKey,
   __resetTranscriptResolverCaches,
 } from './session-transcript-resolvers';
@@ -52,8 +54,49 @@ describe('findCodexRolloutPath', () => {
   });
 });
 
+describe('findCodexLiveThreadId', () => {
+  it('resolves the newest real thread-writer lock before any rollout exists', async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-live-thread-'));
+    const locks = join(home, 'thread-writer-locks');
+    await fs.mkdir(locks, { recursive: true });
+    const older = '01a04fe7-9310-7f81-8bcf-0887a91a811b';
+    const newer = '01a05001-07fb-72c3-a65d-4b7ad0c5f55a';
+    await fs.writeFile(join(locks, `${older}.lock`), '');
+    await fs.writeFile(join(locks, '.coordination.lock'), '');
+    await fs.writeFile(join(locks, 'not-a-thread.lock'), '');
+    await fs.writeFile(join(locks, `${newer}.lock`), '');
+    const stale = new Date(Date.now() - 60_000);
+    await fs.utimes(join(locks, `${older}.lock`), stale, stale);
+    try {
+      expect(await findCodexLiveThreadId(home)).toBe(newer);
+      expect(await findCodexRolloutPath('pre-turn', { homeOverride: home })).toBeNull();
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null rather than treating coordination or malformed locks as native ids', async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-no-thread-'));
+    const locks = join(home, 'thread-writer-locks');
+    await fs.mkdir(locks, { recursive: true });
+    await fs.writeFile(join(locks, '.coordination.lock'), '');
+    await fs.writeFile(join(locks, 'pending.lock'), '');
+    try {
+      expect(await findCodexLiveThreadId(home)).toBeNull();
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('findOmpSessionPath', () => {
   it('routes tracked sessions to their isolated OMP home and untracked sessions to the shared home', () => {
+    expect(ompAgentHomeForSessionKey(42, '/home/test')).toBe(
+      '/home/test/.papercusp/su-omp-homes/session-42/agent',
+    );
+    expect(ompAgentHomeForSessionKey(undefined, '/home/test')).toBe(
+      '/home/test/.omp/agent',
+    );
     expect(ompSessionsRootForSessionKey(42, '/home/test')).toBe(
       '/home/test/.papercusp/su-omp-homes/session-42/agent/sessions',
     );
