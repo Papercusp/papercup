@@ -419,8 +419,25 @@ export async function sendMessage(
   // no slots at all (preserve the legacy "audience resolved to nobody still
   // persists the row" behaviour, ./audience D-004). A purely-slot send is
   // delivered by the park alone.
+  let persistedEnv = env;
+  let persistedSequence: number | null = null;
   if (liveAddrs.length > 0 || slots.length === 0) {
-    const appendedId = await coordLog.appendLine('messages', identity.ownerId, env);
+    // A caller-supplied msg_id is a producer's deterministic replay key (for
+    // example, coord:send's MCP idempotency key). Claim that line atomically
+    // and return the durable winner on replay: the transport may report an
+    // outcome-unknown failure after the first write, so a retry must not add a
+    // second message or return a freshly-built envelope that was never stored.
+    //
+    // Calls without an explicit msg_id intentionally retain append-only
+    // semantics. In particular, appendAck uses this path so repeated acks stay
+    // visible, and mailbox re-delivery below remains append-only.
+    if (opts.msgId !== undefined) {
+      const result = await coordLog.appendLineIfAbsent('messages', identity.ownerId, env);
+      persistedEnv = result.envelope;
+      persistedSequence = result.sequence;
+    } else {
+      persistedSequence = await coordLog.appendLine('messages', identity.ownerId, env);
+    }
     // P-009 / D-011 / D-014: an INTENT declaration is the append-only record
     // `tool_invocations.intent_event_id` points at, and this is the only place
     // its row id is known. The `coord:declare-intent` handler cannot cache it —
@@ -435,9 +452,9 @@ export async function sendMessage(
     //
     // `lifecycle` rides in `extra` (merged verbatim above), so it is read
     // structurally rather than off a declared envelope field.
-    const lifecycle = (env as { lifecycle?: unknown }).lifecycle;
-    if (appendedId != null && typeof lifecycle === 'string' && lifecycle === 'intent') {
-      noteIntentDeclared(identity.ownerId, appendedId);
+    const lifecycle = (persistedEnv as { lifecycle?: unknown }).lifecycle;
+    if (persistedSequence != null && typeof lifecycle === 'string' && lifecycle === 'intent') {
+      noteIntentDeclared(identity.ownerId, persistedSequence);
     }
   }
   // Fleet DIGEST sidecar (fleet-delivery-override-mute-digest D-001): a `@fleet:`
@@ -445,10 +462,10 @@ export async function sendMessage(
   // deliver each a terse `digest:true` notify (the inbox hook coalesces it). Best-effort,
   // side-effect only, guarded on a `@fleet:` selector — a normal send pays nothing.
   if (opts.to.some((t) => t.startsWith('@fleet:'))) {
-    await deliverFleetDigests(opts.to, env, to).catch(() => {});
+    await deliverFleetDigests(opts.to, persistedEnv, persistedEnv.to).catch(() => {});
   }
-  unresolvedAudienceByEnvelope.set(env, unresolvedAudienceSelectors);
-  return env;
+  unresolvedAudienceByEnvelope.set(persistedEnv, unresolvedAudienceSelectors);
+  return persistedEnv;
 }
 
 /**
