@@ -68,6 +68,13 @@ export interface DeployCliDeps {
    *  otherwise the refused-path test (and the gate's own `test:affected` run) would spew
    *  fake `refused` rows with the fixture sha into production pipeline_events. */
   recordRefused?: (targetSha: string) => Promise<void>;
+  /** EI-18835078701597295: record the `coalesced` pipeline event when this attempt
+   *  yields to a holder. The CLI is ONE PROCESS PER ATTEMPT, so "how many attempts in
+   *  a row have coalesced" cannot live in memory here — it has to be durable, or the
+   *  consecutive-coalesce alarm has nothing to count. Same injectable shape (and same
+   *  reason) as `recordRefused`: tests inject a no-op so a coalesce-path test never
+   *  writes fixture rows into production pipeline_events. */
+  recordCoalesced?: (ev: { holder: string | null; holderAlive: boolean | null }) => Promise<void>;
   /** EI-13729: single-flight the ENTIRE gather+execute flow (default
    *  `realRunUnderDeployLock` — the `release-deploy` resource, try-only). A
    *  concurrent `--execute` while another holds it COALESCES (skips, exit 0)
@@ -102,6 +109,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const makeDeps = injected.makeDeps ?? realDeps;
   const executeDeploy = injected.executeDeploy ?? realExecuteDeploy;
   const recordRefused = injected.recordRefused ?? recordRefusedDeploy;
+  const recordCoalesced = injected.recordCoalesced ?? recordCoalescedDeploy;
   const runUnderDeployLock = injected.runUnderDeployLock ?? realRunUnderDeployLock;
 
   const arg = (flag: string): string | undefined => {
@@ -228,6 +236,18 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
         holderAlive: lockOutcome.holderAlive ?? null,
       })}`,
     );
+    // EI-18835078701597295: the stderr line above is read by whoever happens to be
+    // looking; nothing counts it. A wedged (live-but-stuck) holder, or one whose owner
+    // string carries no parseable pid, is never reclaimed — so every later attempt
+    // coalesces politely and delivery halts with NOTHING paging. The 3h
+    // release-deploy-staleness watchdog only sees the downstream symptom. Persisting the
+    // coalesce is what lets `deploy-coalesce-stall-detect` alarm on the CAUSE, which is
+    // visible on the SECOND failed acquire. Best-effort by construction: a telemetry
+    // failure must never change a deploy's exit code.
+    await recordCoalesced({
+      holder: lockOutcome.holder,
+      holderAlive: lockOutcome.holderAlive ?? null,
+    }).catch(() => {});
     return 0;
   }
   return lockOutcome.result;
@@ -252,6 +272,34 @@ async function recordRefusedDeploy(targetSha: string): Promise<void> {
     status: 'refused',
     detail: { targetSha: targetSha.slice(0, 12), reason: 'not-green and not --force' },
   });
+}
+
+/** EI-18835078701597295: persist a coalesced attempt to the pipeline history so the
+ *  consecutive-coalesce alarm has something to count. Mirrors `recordStaleLockReclaim`
+ *  in deploy-deps.ts (lazy import, swallow everything) — the deploy path must never
+ *  fail because telemetry did. `holderAlive:false` is recorded verbatim rather than
+ *  normalized away: it is the field that distinguishes a healthy queue behind a live
+ *  deploy from a leaked lease the reclaim should already have taken. */
+async function recordCoalescedDeploy(ev: { holder: string | null; holderAlive: boolean | null }): Promise<void> {
+  try {
+    const { appendPipelineEvent } = await import('@papercusp/operator-core/lib/harness/git-sync/pipeline-events');
+    let workspaceId = '*';
+    try {
+      const { activeWorkspaceId } = await import('@papercusp/operator-core/lib/workspace-registry');
+      workspaceId = activeWorkspaceId();
+    } catch {
+      /* no active workspace (standalone) — '*' is the pipeline_events default */
+    }
+    await appendPipelineEvent({
+      workspaceId,
+      installSlug: process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug(),
+      kind: 'deploy',
+      status: 'coalesced',
+      detail: { holder: ev.holder, holderAlive: ev.holderAlive },
+    });
+  } catch {
+    /* best-effort */
+  }
 }
 
 // Run as the CLI only — the ESM equivalent of `require.main === module`,
