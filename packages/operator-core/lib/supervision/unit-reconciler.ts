@@ -67,6 +67,7 @@ import {
   type PauseDecision,
   type PauseState,
   type PauseStoreDeps,
+  type UnitPauseRecord,
 } from './pause-clock';
 
 export {
@@ -1363,11 +1364,16 @@ async function reconcilePauses(
   const observedSet = new Set(observedUnits);
 
   const decisions = new Map<string, PauseDecision>();
+  // EI-20302762698704679: the `next` record (post-mutation) carries reason/by/reviewBy, which
+  // `PauseDecision` deliberately does not — capture it alongside `decisions` so the notify/file
+  // call sites below can read the annotation without a second store round-trip.
+  const records = new Map<string, UnitPauseRecord>();
   let resumed: string[] = [];
 
   await updatePauseState((current) => {
     const next: PauseState = {};
     decisions.clear();
+    records.clear();
 
     // Carry forward every unit we could NOT read this tick — an unreadable probe is not evidence
     // the pause ended, and dropping the record here would silently restart the clock (and so
@@ -1380,6 +1386,7 @@ async function reconcilePauses(
       const { next: record, decision } = decidePause(current?.[unit], now);
       next[unit] = record;
       decisions.set(unit, decision);
+      records.set(unit, record);
     }
 
     // Observed AND no longer paused ⇒ the episode is over: drop the clock (by omission from
@@ -1390,14 +1397,28 @@ async function reconcilePauses(
   }, deps.pauseStore);
 
   for (const [unit, decision] of decisions) {
+    const record = records.get(unit);
+
     if (decision.notify) {
       const age = formatPauseDuration(decision.durationMs);
+      // EI-20302762698704679: past the 'observed' tier, the pause is worth naming WHY (or naming
+      // that nobody said why) — a pause with a recorded reason/owner is not a defect, and a pause
+      // WITHOUT one is exactly the anomaly this bug asks to surface, not just the pause itself.
+      const reasonSuffix =
+        decision.tier.id === 'observed'
+          ? ''
+          : record?.reason
+            ? ` Reason on record: ${record.reason}${record.by ? ` (annotated by ${record.by})` : ''}${
+                record.reviewBy ? `, review by ${record.reviewBy}` : ''
+              }.`
+            : ` ⚠ NO REASON RECORDED for this pause — annotate one via \`supervision:annotate-pause\` so the next reader isn't left guessing.`;
       await deps
         .notify({
           summary:
-            decision.tier.id === 'observed'
+            (decision.tier.id === 'observed'
               ? `⏸ supervision: \`${unit}\` is down but administratively disabled/masked — respecting the pause, NOT auto-restarting (\`systemctl --user enable --now ${unit}\` to resume)`
-              : `⏸ supervision: \`${unit}\` has now been administratively disabled/masked for ${decision.tier.label} (${age}) — a supervised unit is dark. If this pause is intended, say so on its EI and close it; if nobody can account for it, re-enable it (\`systemctl --user enable --now ${unit}\`).`,
+              : `⏸ supervision: \`${unit}\` has now been administratively disabled/masked for ${decision.tier.label} (${age}) — a supervised unit is dark. If this pause is intended, say so on its EI and close it; if nobody can account for it, re-enable it (\`systemctl --user enable --now ${unit}\`).`) +
+            reasonSuffix,
           // Fix 2: past the 4h tier this stops being an ambient supervision FYI and routes to the
           // escalation channel. A tier fires at most once per episode (durably gated), so ramping
           // adds urgency without adding volume — the 16-identical-broadcasts failure was the
@@ -1410,7 +1431,14 @@ async function reconcilePauses(
 
     if (decision.shouldEscalate) {
       await deps
-        .filePausedEi?.({ unit, pausedForMs: decision.durationMs, pausedSince: decision.pausedSince })
+        .filePausedEi?.({
+          unit,
+          pausedForMs: decision.durationMs,
+          pausedSince: decision.pausedSince,
+          reason: record?.reason ?? null,
+          by: record?.by ?? null,
+          reviewBy: record?.reviewBy ?? null,
+        })
         .catch(() => {});
     }
   }

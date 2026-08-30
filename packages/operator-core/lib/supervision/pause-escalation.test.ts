@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   decidePause,
+  annotatePause,
   pauseTierFor,
   formatPauseDuration,
   PAUSE_ESCALATION_MS,
@@ -171,6 +172,69 @@ describe('pause clock — pure ramp/threshold logic', () => {
   });
 });
 
+describe('pause annotation (EI-20302762698704679) — reason/by/reviewBy', () => {
+  it('decidePause never sets reason/by/reviewBy — a tick-driven decision only PRESERVES them', () => {
+    const t0 = 1_000_000;
+    const first = decidePause(undefined, t0);
+    expect(first.next.reason).toBeNull();
+    expect(first.next.by).toBeNull();
+    expect(first.next.reviewBy).toBeNull();
+
+    // Seed an annotation the way `annotatePause` would, then tick forward — decidePause must
+    // carry it verbatim rather than resetting it, or the annotation would vanish on the very
+    // next reconciler tick.
+    const annotated = { ...first.next, reason: 'planned maintenance window', by: 'su-abc', reviewBy: '2026-09-01T00:00:00Z' };
+    const later = decidePause(annotated, t0 + 3 * HOUR);
+    expect(later.next.reason).toBe('planned maintenance window');
+    expect(later.next.by).toBe('su-abc');
+    expect(later.next.reviewBy).toBe('2026-09-01T00:00:00Z');
+  });
+
+  it('annotatePause seeds a fresh record (proactive annotation, ahead of the reconciler)', async () => {
+    const store = durableStore();
+    const now = 1_000_000;
+    const rec = await annotatePause('some.timer', { reason: 'testing', by: 'su-x' }, now, store);
+    expect(rec.pausedSince).toBe(now);
+    expect(rec.reason).toBe('testing');
+    expect(rec.by).toBe('su-x');
+    expect(rec.reviewBy).toBeNull();
+    expect(store.state['some.timer']).toEqual(rec);
+  });
+
+  it('annotatePause merges into an EXISTING record without resetting pausedSince/escalatedAt/lastNotifiedTier', async () => {
+    const store = durableStore();
+    let now = 1_000_000;
+    // First tick observes+seeds the clock.
+    await reconcileTick(makeDeps({ pauseStore: store, now: () => now }));
+    const seeded = store.state['papercup-live-federation-gate.timer'];
+    expect(seeded).toBeDefined();
+
+    now += HOUR;
+    const rec = await annotatePause(
+      'papercup-live-federation-gate.timer',
+      { reason: 'known, tracked on WI-123', by: 'su-op' },
+      now,
+      store,
+    );
+    // The clock fields are untouched by the annotation.
+    expect(rec.pausedSince).toBe(seeded.pausedSince);
+    expect(rec.escalatedAt).toBe(seeded.escalatedAt);
+    expect(rec.lastNotifiedTier).toBe(seeded.lastNotifiedTier);
+    expect(rec.reason).toBe('known, tracked on WI-123');
+    expect(rec.by).toBe('su-op');
+  });
+
+  it('a partial re-annotation (only reviewBy) leaves an existing reason untouched', async () => {
+    const store = durableStore();
+    const t0 = 1_000_000;
+    await annotatePause('x.timer', { reason: 'first reason', by: 'su-a' }, t0, store);
+    const rec = await annotatePause('x.timer', { reviewBy: '2026-10-01T00:00:00Z' }, t0 + 1000, store);
+    expect(rec.reason).toBe('first reason');
+    expect(rec.by).toBe('su-a');
+    expect(rec.reviewBy).toBe('2026-10-01T00:00:00Z');
+  });
+});
+
 describe('EI-20003974512096022 fix 1 — a persistent pause becomes a claimable EI', () => {
   it('files NOTHING while the pause is young', async () => {
     const store = durableStore();
@@ -197,6 +261,42 @@ describe('EI-20003974512096022 fix 1 — a persistent pause becomes a claimable 
     const episode = deps.filePausedEi.mock.calls[0][0];
     expect(episode.unit).toBe('papercup-live-federation-gate.timer');
     expect(episode.pausedForMs).toBeGreaterThanOrEqual(PAUSE_ESCALATION_MS);
+  });
+
+  it('EI-20302762698704679: the filed episode carries reason:null when never annotated — the anomaly buildPausedBody reports', async () => {
+    const store = durableStore();
+    let now = 1_000_000;
+    const deps = makeDeps({ pauseStore: store, now: () => now });
+    for (let i = 0; i <= 4 * 60 + 1; i++) {
+      await reconcileTick(deps);
+      now += 60_000;
+    }
+    expect(deps.filePausedEi).toHaveBeenCalledTimes(1);
+    const episode = deps.filePausedEi.mock.calls[0][0];
+    expect(episode.reason).toBeNull();
+    expect(episode.by).toBeNull();
+    expect(episode.reviewBy).toBeNull();
+  });
+
+  it('EI-20302762698704679: the filed episode carries a reason recorded via annotatePause BEFORE the escalation threshold', async () => {
+    const store = durableStore();
+    let now = 1_000_000;
+    const deps = makeDeps({ pauseStore: store, now: () => now });
+
+    // Seed the clock, then annotate it before the 4h escalation fires.
+    await reconcileTick(deps);
+    now += HOUR;
+    await annotatePause('papercup-live-federation-gate.timer', { reason: 'planned outage, tracked on WI-999', by: 'su-owner' }, now, store);
+
+    for (let i = 0; i <= 4 * 60; i++) {
+      await reconcileTick(deps);
+      now += 60_000;
+    }
+
+    expect(deps.filePausedEi).toHaveBeenCalledTimes(1);
+    const episode = deps.filePausedEi.mock.calls[0][0];
+    expect(episode.reason).toBe('planned outage, tracked on WI-999');
+    expect(episode.by).toBe('su-owner');
   });
 
   it('SURVIVES A PROCESS RESTART — the durable clock is what makes the threshold reachable', async () => {
@@ -305,6 +405,57 @@ describe('EI-20003974512096022 fix 2 — salience ramps with duration', () => {
     expect(escalations).toHaveLength(1);
     expect(escalations[0][0].summary).toContain('over 4 hours');
     expect(escalations[0][0].summary).toContain('dark');
+  });
+
+  it('EI-20302762698704679: an unannotated pause is flagged NO REASON RECORDED once past the observed tier', async () => {
+    const store = durableStore();
+    let now = 1_000_000;
+    await reconcileTick(makeDeps({ pauseStore: store, now: () => now }));
+
+    now += 5 * HOUR;
+    const aged = makeDeps({ pauseStore: store, now: () => now });
+    await reconcileTick(aged);
+
+    const escalations = aged.notify.mock.calls.filter((c) => c[0].kind === 'escalation');
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0][0].summary).toContain('NO REASON RECORDED');
+    expect(escalations[0][0].summary).toContain('supervision:annotate-pause');
+  });
+
+  it('EI-20302762698704679: an ANNOTATED pause states the reason instead of flagging its absence', async () => {
+    const store = durableStore();
+    let now = 1_000_000;
+    await reconcileTick(makeDeps({ pauseStore: store, now: () => now }));
+
+    now += HOUR;
+    await annotatePause(
+      'papercup-live-federation-gate.timer',
+      { reason: 'planned maintenance, see WI-777', by: 'su-owner' },
+      now,
+      store,
+    );
+
+    now += 4 * HOUR;
+    const aged = makeDeps({ pauseStore: store, now: () => now });
+    await reconcileTick(aged);
+
+    const escalations = aged.notify.mock.calls.filter((c) => c[0].kind === 'escalation');
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0][0].summary).toContain('planned maintenance, see WI-777');
+    expect(escalations[0][0].summary).toContain('su-owner');
+    expect(escalations[0][0].summary).not.toContain('NO REASON RECORDED');
+  });
+
+  it('EI-20302762698704679: the FIRST (observed-tier) notification never mentions the reason state either way', async () => {
+    // The observed tier fires the instant a pause is detected — before anyone has had a chance
+    // to annotate it — so it must not yet accuse the pause of having no reason.
+    const store = durableStore();
+    const deps = makeDeps({ pauseStore: store });
+    await reconcileTick(deps);
+    const observed = deps.notify.mock.calls.filter((c) => (c[0].summary as string).includes('respecting the pause'));
+    expect(observed).toHaveLength(1);
+    expect(observed[0][0].summary).not.toContain('NO REASON RECORDED');
+    expect(observed[0][0].summary).not.toContain('Reason on record');
   });
 
   it('a standing pause does NOT re-broadcast on every tick within one tier', async () => {

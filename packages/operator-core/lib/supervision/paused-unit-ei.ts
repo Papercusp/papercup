@@ -48,6 +48,15 @@ export interface SupervisionPausedEpisode {
   /** Epoch ms the pause clock first observed it — stated in the body so a
    *  triager can correlate against the journal without re-deriving it. */
   pausedSince: number;
+  /**
+   * EI-20302762698704679: WHY (and by whom) the pause was annotated via
+   * `supervision:annotate-pause`, if it ever was. Null/undefined means genuinely never
+   * annotated — `buildPausedBody` treats that absence itself as the anomaly to report,
+   * since a pause with no recorded reason/owner is what escalates into the void.
+   */
+  reason?: string | null;
+  by?: string | null;
+  reviewBy?: string | null;
 }
 
 /** The (unit) identity `resolveSupervisionPausedEi` needs to find the EI a
@@ -71,7 +80,18 @@ export type SupervisionPausedEiDeps = EpisodicEiDeps<'major'>;
 
 function buildPausedBody(episode: SupervisionPausedEpisode): string {
   const dur = formatPauseDuration(episode.pausedForMs);
+  // EI-20302762698704679: this IS the anomaly the bug report asks to surface — lead with it. A
+  // pause with a recorded reason/owner is not itself a defect; a pause with NEITHER is the actual
+  // failure mode (supervision escalating into the void with nobody to ask).
+  const reasonLine = episode.reason
+    ? `**Reason on record:** ${episode.reason}${episode.by ? ` (annotated by ${episode.by})` : ''}${
+        episode.reviewBy ? `, review by ${episode.reviewBy}` : ''
+      }.\n\n`
+    : `**⚠ NO REASON WAS RECORDED for this pause.** Nobody has said, via \`supervision:annotate-pause\`, ` +
+      `why \`${episode.unit}\` was disabled or who did it — which is the primary anomaly this EI ` +
+      `exists to report, not just the pause itself. If you know why it's paused, annotate it now.\n\n`;
   return (
+    reasonLine +
     `\`${episode.unit}\` is a SUPERVISED unit (it is in \`SUPERVISED_PROCESSES\`, i.e. something ` +
     `judged critical enough to auto-restart) and it has been administratively ` +
     `disabled or masked for ${dur}, since ${new Date(episode.pausedSince).toISOString()}.\n\n` +
