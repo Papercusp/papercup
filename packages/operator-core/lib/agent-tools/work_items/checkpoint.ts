@@ -137,6 +137,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
@@ -1440,6 +1441,24 @@ export default defineTool({
             'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
             'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
         });
+        // EI-21864672058763701 / EI-21864782390076614: setWorkItemCheckpointWithPrior
+        // now runs its write under boundedOrgTxn (acquireTimeoutMs 8_000), so a stall
+        // under admin-pool/row-lock contention throws a typed OrgTxnTimeoutError FAST
+        // instead of hanging until the client-side MCP transport times out with an
+        // ambiguous "commit status unknown". Surface it as a clean, retryable result —
+        // the same shape scorecards:list already uses for the identical error class —
+        // rather than letting it escape as a raw thrown error from inside runBulk.
+        const timeoutResponse = (error: OrgTxnTimeoutError) => ({
+          ok: false as const,
+          id: it.id,
+          error: 'timeout',
+          errorCode: 'timeout',
+          retryable: true,
+          pgCode: error.pgCode,
+          message:
+            `work_items:checkpoint write hit transient database contention: ${error.message}. ` +
+            'Your checkpoint text was NOT saved — nothing committed, no ambiguity. Retry shortly.',
+        });
         let res;
         try {
           res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
@@ -1455,6 +1474,7 @@ export default defineTool({
           });
         } catch (error) {
           if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
+          if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
           throw error;
         }
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
@@ -1492,6 +1512,7 @@ export default defineTool({
             );
           } catch (error) {
             if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
+            if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
             throw error;
           }
         }
