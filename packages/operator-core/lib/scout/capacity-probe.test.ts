@@ -54,7 +54,7 @@ describe('readScoutPoolSnapshot — tristate gateway pool probe', () => {
           providers: [
             { id: 'claude', label: 'Claude / Anthropic', configured: true, cliAccountCount: 0 },
             { id: 'codex', label: 'Codex / OpenAI-compatible', configured: true, cliAccountCount: 1 },
-            { id: 'omp', label: 'OMP (via Claude / Anthropic)', configured: true, cliAccountCount: 0 },
+            { id: 'omp', label: 'OMP (multi-provider — routes to Claude or Codex per session model spec)', configured: true, cliAccountCount: 0 },
           ],
         },
       ),

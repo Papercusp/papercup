@@ -491,8 +491,8 @@ describe('admin + observability endpoints', () => {
     expect(c.providers).toEqual([
       expect.objectContaining({ id: 'claude', configured: true, protocol: 'anthropic' }),
       expect.objectContaining({ id: 'codex', configured: false, protocol: 'openai-compatible' }),
-      // OMP reuses the Claude/anthropic adapter (Tier-1 pins to Claude accounts) — see omp-account-pinning-gateway D-003.
-      expect.objectContaining({ id: 'omp', configured: true, protocol: 'anthropic' }),
+      // OMP is multi-provider (delegates per-session to Claude or Codex) — see omp-account-pinning-gateway D-003.
+      expect.objectContaining({ id: 'omp', configured: true, protocol: 'multi' }),
     ]);
   });
 

@@ -302,6 +302,20 @@ describe('gateway provider adapters', () => {
     ]);
   });
 
+  it('EI-21891944321682303: labels OMP as multi-provider, not Claude/Anthropic-only', () => {
+    const adapters = makeGatewayProviderAdapters({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+
+    expect(adapters.omp.protocol).toBe('multi');
+    expect(adapters.omp.label).not.toMatch(/via claude/i);
+    const omp = gatewayProviderStatuses(adapters).find((s) => s.id === 'omp')!;
+    expect(omp.protocol).toBe('multi');
+  });
+
   it('reports codex configured:true (with its openai upstreamBase) once a Codex pool is present', () => {
     // The existing diagnostics test only covers codex WITHOUT a pool (configured:false); pin the
     // true-branch so a working codex provider is reported routeable.
