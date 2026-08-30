@@ -282,6 +282,12 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
   async scanImage(input: Parameters<GcpImageFamilyReleaseAdapter['scanImage']>[0]): Promise<GcpImageScanEvidence> {
     this.calls.push('scan-candidate');
     this.scanInputs.push(input);
+    const total = Object.values(this.scanBySeverity).reduce((a, b) => a + b, 0);
+    // The at/above-'high' count, derived from the SAME breakdown the policy reconciles against,
+    // so the two instruments the scoped proof cross-checks cannot drift apart in this fixture.
+    const criticalHigh = Object.entries(this.scanBySeverity)
+      .filter(([severity]) => severity === 'Critical' || severity === 'High')
+      .reduce((sum, [, count]) => sum + count, 0);
     return {
       imageId: input.imageId,
       buildManifestIdentity: input.buildManifestIdentity,
@@ -300,6 +306,29 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
       // mirror the live r5 measurement recorded in D-196.
       mountedFilesystems: 3,
       candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
+      // SCOPE ATTRIBUTION, for exactly the reason the mount proof above exists: under
+      // GCP_IMAGE_SCAN_POLICY a scoped verdict is earned by PROOF, not by the fields being
+      // present, so a fixture that omits attribution is denied outright and these paths stop
+      // exercising the release logic they were written for.
+      //
+      // Everything is attributed to the BUNDLED scope on purpose. That keeps the scoped verdict
+      // identical to the unscoped one every assertion here was written against — most importantly
+      // the `{ Low: 2, High: 1 }` case, which expects a DENIAL: park that High in the inherited
+      // bucket instead and the scoped policy would correctly stop denying it, silently turning a
+      // real regression test into one that proves nothing.
+      //
+      // Derived from scanBySeverity rather than written as literals, because tests mutate that
+      // field; a literal here would reconcile only against its default value.
+      vulnerabilityByScope: { 'papercusp-bundled': total, 'inherited-base-image': 0 },
+      vulnerabilityCriticalHighByScope: {
+        'papercusp-bundled': criticalHigh,
+        'inherited-base-image': 0,
+      },
+      secretsByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 0 },
+      // The >= 1 denominator that makes an empty bundled bucket falsifiable (D-204's
+      // packages-not-findings proof): zero cataloged packages would mean the scan never found
+      // the release, so a clean bundled bucket would prove nothing about it.
+      bundleCatalogedArtifacts: 289,
       evidenceRef: `gcp://scan/${input.imageId}`,
     };
   }
