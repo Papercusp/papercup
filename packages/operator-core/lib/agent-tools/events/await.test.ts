@@ -140,6 +140,10 @@ vi.mock('../../scheduler/get-next', () => ({
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
+// Namespace view of the SAME mocked module — the coverage guard at the bottom of this
+// file checks its key set against production's import list.
+import * as storeMock from '../../events/await/store';
+import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -1644,5 +1648,20 @@ describe('EI-19928976726540168 — auto-scope a GLOB multi-pipeline gate key to 
     const out = await call({ event: 'work-item:*' });
     expect(out.auto_scoped_payload_filter).toBeUndefined();
     expect(out.unscoped_gate_key_await).toBeUndefined();
+  });
+});
+
+// This suite DRIVES the real await.ts handler through a PARTIAL mock of
+// events/await/store, so its factory stands in for that module's whole used surface
+// and must track production's import list. See testing/mock-import-coverage.ts for
+// why that promise silently rots and what it costs downstream.
+describe('events/await/store mock coverage', () => {
+  it('mocks every store export the handler under test imports', () => {
+    assertMockCoversImports(storeMock, {
+      importerUrl: import.meta.url,
+      sources: ['./await.ts'],
+      moduleSpecifier: 'events/await/store',
+      expectNames: ['probePatternMatchScope'],
+    });
   });
 });
