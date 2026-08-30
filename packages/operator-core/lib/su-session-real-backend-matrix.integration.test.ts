@@ -146,6 +146,67 @@ const POLL_INTERVAL_MS = 2_000;
 const TURN_TIMEOUT_MS = 300_000;
 const TURN_POLL_INTERVAL_MS = 5_000;
 
+/**
+ * The largest gap between two consecutive poll iterations that ordinary
+ * slowness can still explain. Anything beyond it means this process was not
+ * merely slow, it was STOPPED.
+ *
+ * WHY A WALL-CLOCK BUDGET IS NOT SAFE HERE (EI-21903376339103215)
+ * --------------------------------------------------------------
+ * pc-heavy SIGSTOPs an admitted cgroup under memory PSI. The agent pty is
+ * spawned IN-PROCESS by this file (managedSpawn below), so it INHERITS that
+ * cgroup and is frozen together with the test — while `Date.now()` keeps
+ * advancing. The agent therefore writes nothing, the test wakes to an empty
+ * transcript, and a budget that was never actually spent reads as expired.
+ *
+ * Measured 2026-08-30, three times independently: a 191.4s freeze inside a
+ * 300s turn budget. Its signature is unmistakable — the 10s progress ticker
+ * jumped 180891ms -> 372340ms with ~19 ticks missing. Across every run that
+ * day the correlation was exact: the only OWNER TURN successes were in the
+ * only runs with ZERO freezes, and turn durations were strictly bimodal
+ * (~15s when a transcript appeared, ~300s when none did, nothing between) —
+ * which is the shape of a binary was-I-stopped condition, not of load or
+ * latency, both of which would smear the distribution.
+ *
+ * This is the header's own invariant, mechanised: "a red here always means a
+ * red backend". A frozen instrument produces NO measurement, so it must
+ * report NOT MEASURED — never a red that reads as a broken backend. That
+ * misreading is not hypothetical: it cost two agents ~20 minutes and sent
+ * them into two different wrong subsystems before the freeze was found.
+ *
+ * 60s is deliberately far above any legitimate iteration (one pump reads a
+ * whole transcript, which under IO pressure can take tens of seconds) and far
+ * below the freezes actually observed, so it cannot fire on mere slowness.
+ */
+const STALL_NOT_MEASURED_MS = 60_000;
+
+/**
+ * Watches for the process being STOPPED rather than merely being slow.
+ *
+ * Deliberately measures the WHOLE iteration (work + sleep) rather than just
+ * the sleep: a freeze can land anywhere, including mid-pump, and a watch that
+ * only timed its own sleep would miss exactly that case.
+ */
+function createStallWatch() {
+  let last = Date.now();
+  let maxGapMs = 0;
+  return {
+    tick() {
+      const now = Date.now();
+      const gap = now - last;
+      if (gap > maxGapMs) maxGapMs = gap;
+      last = now;
+    },
+    /** The gap only counts as a stall once it exceeds anything slowness explains. */
+    stalled(): boolean {
+      return maxGapMs >= STALL_NOT_MEASURED_MS;
+    },
+    maxGapMs(): number {
+      return maxGapMs;
+    },
+  };
+}
+
 const RESOLVE_RUNTIME: Record<MatrixBackend, (b: PuiSuSessionBinding) => Promise<unknown | null>> = {
   claude: resolveClaudeSuRuntime,
   codex: resolveCodexSuRuntime,
@@ -255,12 +316,38 @@ interface AttachedLeg {
    *  be asserted against the protocol rather than inferred from behaviour. */
   descriptor(): SuSessionDescriptor<SuSessionBackend>;
   /** Re-resolve the native runtime and swap it in under the SAME identity.
-   *  Returns false when the backend has not yet written a native record, so a
-   *  caller can tell "replacement did not happen" from "replacement happened
-   *  and changed nothing" — the two have opposite meanings for the generation
-   *  assertion below. */
-  replaceRuntime(reason: string): Promise<boolean>;
+   *  Reports WHICH of the three outcomes happened, so a caller can tell
+   *  "replacement did not happen" from "replacement happened and changed
+   *  nothing" — the two have opposite meanings for the generation assertion
+   *  below — and, when it did not happen, WHY. */
+  replaceRuntime(reason: string): Promise<ReplaceRuntimeOutcome>;
 }
+
+/** Why a runtime replacement did or did not happen.
+ *
+ *  This was a single `boolean` until 2026-08-30, and the collapse cost real
+ *  time: `if (!fresh?.transcriptPath) return false` folded TWO conditions into
+ *  one `false`, and the assertion then named only one of them ("no native
+ *  runtime resolved"). The condition that actually fired was the OTHER one — a
+ *  missing transcript file, which `resolveClaudeSuRuntime` documents as
+ *  "normal before the first native turn" — so the red pointed two agents at
+ *  runtime resolution, a subsystem that was working. The tell looked like a
+ *  paradox: PUI RESTART/REATTACH passed in the SAME leg seconds later,
+ *  adopting the very runtime this guard called unresolvable.
+ *
+ *  A guard that collapses two conditions and then names one of them is a false
+ *  alarm, and a false alarm is a bug in the alarm. */
+type ReplaceRuntimeOutcome =
+  /** The native runtime resolved and was swapped in under the same identity. */
+  | 'replaced'
+  /** No native runtime could be resolved AT ALL — wrong backend, no
+   *  adv-session row, or no materialisable native handle. A real defect in
+   *  runtime resolution. */
+  | 'no-runtime'
+  /** The runtime resolved fine, but its native record file (Claude/OMP
+   *  transcript, Codex rollout) is absent on disk. Expected before the
+   *  backend's first native turn; NOT a resolution failure. */
+  | 'no-record';
 
 type AttachOutcome = { ok: true; leg: AttachedLeg } | { ok: false; code: string; error: string };
 
@@ -304,9 +391,10 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
         descriptor: () => adapter.host.descriptor(),
         replaceRuntime: async (reason) => {
           const fresh = await resolveClaudeSuRuntime(binding);
-          if (!fresh?.transcriptPath) return false;
+          if (!fresh) return 'no-runtime';
+          if (!fresh.transcriptPath) return 'no-record';
           adapter.replaceRuntime(fresh, reason);
-          return true;
+          return 'replaced';
         },
       },
     };
@@ -335,9 +423,10 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
         descriptor: () => adapter.host.descriptor(),
         replaceRuntime: async (reason) => {
           const fresh = await resolveCodexSuRuntime(binding);
-          if (!fresh?.rolloutPath) return false;
+          if (!fresh) return 'no-runtime';
+          if (!fresh.rolloutPath) return 'no-record';
           adapter.replaceRuntime(fresh, reason);
-          return true;
+          return 'replaced';
         },
       },
     };
@@ -366,9 +455,10 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
         descriptor: () => adapter.host.descriptor(),
         replaceRuntime: async (reason) => {
           const fresh = await resolveOmpSuRuntime(binding);
-          if (!fresh?.transcriptPath) return false;
+          if (!fresh) return 'no-runtime';
+          if (!fresh.transcriptPath) return 'no-record';
           adapter.replaceRuntime(fresh, reason);
-          return true;
+          return 'replaced';
         },
       },
     };
@@ -763,7 +853,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       expect(attached.lifecycle(), 'an attached adapter should present a ready session').toBe('ready');
     }, 120_000);
 
-    it('OWNER TURN: a real turn reaches the agent, streams a response back, and produces a real tool invocation and result', async () => {
+    it('OWNER TURN: a real turn reaches the agent, streams a response back, and produces a real tool invocation and result', async (ctx) => {
       expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
       if (!attached) return;
       const session = attached;
@@ -803,6 +893,8 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       let toolsSeen: { name: string; output: string; isError: boolean }[] = [];
 
       const deadline = Date.now() + TURN_TIMEOUT_MS;
+      const stall = createStallWatch();
+      let turnComplete = false;
       while (Date.now() < deadline) {
         await session.pump();
         const events = session.events();
@@ -812,8 +904,37 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         const completed = completedTools(events);
         if (completed.length > toolsSeen.length) toolsSeen = completed;
         if (!sawNonceInToolResult) sawNonceInToolResult = completed.some((tool) => tool.output.includes(nonce));
-        if (sawOwnerEcho && assistantText && sawNonceInToolResult) break;
+        if (sawOwnerEcho && assistantText && sawNonceInToolResult) {
+          turnComplete = true;
+          break;
+        }
         await delay(TURN_POLL_INTERVAL_MS);
+        stall.tick();
+      }
+
+      // ── WAS THE INSTRUMENT STOPPED? ────────────────────────────────────────
+      // Order matters: this runs BEFORE the assertions, because a frozen run
+      // produces exactly the evidence those assertions read as a broken
+      // backend — an empty transcript and an expired budget. Asserting first
+      // and explaining afterwards is how a stopped instrument gets reported as
+      // a product defect.
+      //
+      // The guard is deliberately narrow. It fires ONLY when the turn did not
+      // complete AND a gap appeared that slowness cannot explain, so a freeze
+      // during a turn that still succeeded stays a pass, and an ordinary
+      // failure on a healthy host stays a red.
+      if (!turnComplete && stall.stalled()) {
+        const stalledFor = Math.round(stall.maxGapMs() / 1000);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[matrix] NOT MEASURED — ${backend} OWNER TURN: this process lost ${stalledFor}s to a ` +
+            `single stall inside its ${TURN_TIMEOUT_MS}ms budget. The agent pty shares this ` +
+            'cgroup, so it was stopped too and could not write a transcript. That is an ' +
+            'instrument outage, not a backend failure — re-run when the host is not under ' +
+            'memory pressure (EI-21903376339103215).',
+        );
+        ctx.skip();
+        return;
       }
 
       const diagnostic =
@@ -992,11 +1113,22 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       const session = attached;
 
       const before = session.descriptor();
-      const replaced = await session.replaceRuntime('P-012 acceptance replacement');
+      const outcome = await session.replaceRuntime('P-012 acceptance replacement');
       expect(
-        replaced,
-        `no native runtime resolved for ${backend}, so replacement could not be exercised`,
-      ).toBe(true);
+        outcome,
+        outcome === 'no-runtime'
+          ? `${backend} resolved NO native runtime at all (wrong backend, missing adv-session row, or ` +
+            'an unmaterialisable native handle), so replacement could not be exercised. This IS a ' +
+            'runtime-resolution defect — start there.'
+          : outcome === 'no-record'
+            ? `${backend} resolved its native runtime fine, but the native record file ` +
+              '(Claude/OMP transcript, Codex rollout) is ABSENT on disk, so replacement could not be ' +
+              'exercised. This is a filesystem/first-turn condition, NOT a runtime-resolution defect — ' +
+              'do not go looking in runtime resolution. Check whether the backend ever wrote a turn ' +
+              '(a SIGSTOPped or token-walled agent writes nothing), and whether the OWNER TURN case ' +
+              'in this same leg also failed.'
+            : `${backend} replacement did not report success`,
+      ).toBe('replaced');
       const after = session.descriptor();
 
       expect(
