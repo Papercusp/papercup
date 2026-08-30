@@ -162,6 +162,45 @@ describe("plans:items bounded limit", () => {
     expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
   });
 
+  it("EI-21913867956922477: accepts the plural `ids` selector as a compatibility alias for itemIds", () => {
+    // work_items:get uses the id/ids singular/plural naming convention; a
+    // caller reached for the same shape here (`ids:['P-024']`) and hit
+    // invalid_args before this alias existed.
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", ids: ["P-007"] }).success).toBe(true);
+    expect(tool.args.safeParse({ harness: "papercup", ids: ["P-007"] }).success).toBe(false); // still requires slug
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", ids: ["P-07"] }).success).toBe(false); // still P-NNN
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", ids: [] }).success).toBe(false);
+  });
+
+  it("EI-21913867956922477: the plural `ids` alias filters the same as itemIds", async () => {
+    M.getPlanRow.mockResolvedValue(
+      plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
+    );
+
+    const result = (await run({ harness: "papercup", slug: "plan-a", ids: ["P-002"] })) as {
+      data: { items: Array<{ plan: string; item: { id: string } }> };
+    };
+
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
+  });
+
+  it("EI-21913867956922477: itemIds wins when both itemIds and ids are supplied", async () => {
+    M.getPlanRow.mockResolvedValue(
+      plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
+    );
+
+    const result = (await run({
+      harness: "papercup",
+      slug: "plan-a",
+      itemIds: ["P-001"],
+      ids: ["P-002"],
+    })) as {
+      data: { items: Array<{ plan: string; item: { id: string } }> };
+    };
+
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-001" }) }]);
+  });
+
   it("keeps different itemIds selections in separate cache entries", async () => {
     M.getPlanRow.mockResolvedValue(
       plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
