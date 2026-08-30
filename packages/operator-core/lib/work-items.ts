@@ -4723,7 +4723,19 @@ export async function claimWorkItem(
     // dispatch: a self-filed bug is not leader-authorized work.
     const selfFiledFalloutAdmission =
       prior.kind === 'bug' && prior.createdBy
-        ? await deriveSelfFiledFalloutAdmission(prior, assignee, issueWs)
+        ? await deriveSelfFiledFalloutAdmission(
+            // `prior` is a WorkItem, whose `kind` spans the whole work-item union;
+            // the helper takes the narrower EngineerIssue shape. The guard above has
+            // already narrowed BOTH discriminants (`kind` to 'bug', `createdBy` to
+            // non-null), but that narrowing applies to the properties, not to the
+            // object type, so `prior` itself is still the wider shape. Hand over
+            // exactly the three fields the helper reads rather than widening its
+            // parameter — widening would let a feature-family row reach a path whose
+            // first act is to assert `kind === 'bug'`.
+            { id: prior.id, kind: prior.kind, createdBy: prior.createdBy },
+            assignee,
+            issueWs,
+          )
         : null;
     const updated = await claimIssue(id, assignee, {
       workspaceId: issueWs,
