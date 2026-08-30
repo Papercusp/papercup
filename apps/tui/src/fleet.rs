@@ -794,7 +794,7 @@ fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, a
         .claimable_now
         .get("value")
         .and_then(serde_json::Value::as_i64);
-    let lower = vec![
+    let mut lower = vec![
         Line::from(format!(
             "invariants: {} · admission blocks: {}",
             invariant_count
@@ -802,8 +802,55 @@ fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, a
                 .unwrap_or_else(|| "unavailable".into()),
             brief.admission_blocked.len(),
         )),
-        Line::from(format!(
-            "queue: claimable {} · spec matched {} / pool {} · revision {}",
+    ];
+    lower.extend(fleet_metric_lines(brief, claimable).into_iter().map(Line::from));
+    f.render_widget(
+        Paragraph::new(lower).block(Theme::block(
+            " declared invariants + admission ".into(),
+            false,
+        )),
+        rows[2],
+    );
+}
+
+/// Render the canonical stock scope before any count. The old top-level
+/// specMatched/harnessWidePool aliases remain a compatibility fallback for an
+/// older operator, but are labelled as legacy because they carry no population,
+/// window, unit, or exactness contract and therefore cannot be compared to a
+/// canonical fleetMetrics snapshot (fleet-spec-scoped-metrics D-001/D-005).
+fn fleet_metric_lines(
+    brief: &crate::models::FleetLeaderBrief,
+    claimable: Option<i64>,
+) -> Vec<String> {
+    match brief.fleet_metrics.as_ref() {
+        Some(metrics) if metrics.ok => {
+            let Some(snapshot) = metrics.snapshot.as_ref() else {
+                return vec!["fleet metrics unavailable · malformed successful payload".into()];
+            };
+            vec![
+                format!(
+                    "stock: {} · spec {}@{} · window {}",
+                    snapshot.remaining.total,
+                    snapshot.scope.stock.spec_id,
+                    snapshot.scope.stock.revision,
+                    snapshot.scope.window.kind,
+                ),
+                format!(
+                    "population: {} · unit: {} · quality {}/{}",
+                    snapshot.scope.population.stock,
+                    snapshot.remaining.unit,
+                    snapshot.quality.exactness.status,
+                    snapshot.quality.freshness.status,
+                ),
+            ]
+        }
+        Some(metrics) => vec![format!(
+            "fleet metrics unavailable · {} · recover {}",
+            metrics.reason.as_deref().unwrap_or("unknown reason"),
+            metrics.recover_via.as_deref().unwrap_or("fleet:leader-brief"),
+        )],
+        None => vec![format!(
+            "legacy queue aliases (scope unavailable): claimable {} · matched {} / pool {} · revision {}",
             claimable
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "?".into()),
@@ -819,15 +866,8 @@ fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, a
                 .spec_revision
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "?".into()),
-        )),
-    ];
-    f.render_widget(
-        Paragraph::new(lower).block(Theme::block(
-            " declared invariants + admission ".into(),
-            false,
-        )),
-        rows[2],
-    );
+        )],
+    }
 }
 
 /// The dossier region (#2): when an agent is selected in the roster, that bee's
@@ -2564,6 +2604,82 @@ mod tests {
         app.bee.set_selection(Some("su-leader".into()), None);
         let leader_view = render_fleet(&app, 120, 24);
         assert!(leader_view.contains("leader members"));
+    }
+
+    #[test]
+    fn fleet_metric_lines_show_scope_and_quality_before_counts() {
+        let mut brief = crate::models::FleetLeaderBrief::default();
+        brief.fleet_metrics = Some(crate::models::FleetMetricsResult {
+            ok: true,
+            schema_version: "fleet-metrics-v1".into(),
+            snapshot: Some(crate::models::FleetMetricsSnapshot {
+                scope: crate::models::FleetMetricsScope {
+                    window: crate::models::FleetMetricsWindow {
+                        kind: "fleet-lifetime".into(),
+                    },
+                    stock: crate::models::FleetMetricsStockScope {
+                        spec_id: "spec-42".into(),
+                        revision: 7,
+                    },
+                    population: crate::models::FleetMetricsPopulation {
+                        stock: "current-spec-work-items".into(),
+                    },
+                },
+                quality: crate::models::FleetMetricsQuality {
+                    exactness: crate::models::FleetMetricsQualityStatus {
+                        status: "exact".into(),
+                    },
+                    freshness: crate::models::FleetMetricsQualityStatus {
+                        status: "fresh".into(),
+                    },
+                },
+                remaining: crate::models::FleetMetricsRemaining {
+                    total: 12,
+                    unit: "distinct canonical issue-family work-item ids".into(),
+                },
+            }),
+            ..Default::default()
+        });
+
+        let lines = fleet_metric_lines(&brief, Some(99));
+        assert_eq!(lines[0], "stock: 12 · spec spec-42@7 · window fleet-lifetime");
+        assert!(lines[1].contains("population: current-spec-work-items"));
+        assert!(lines[1].contains("quality exact/fresh"));
+        assert!(!lines.iter().any(|line| line.contains("99")));
+    }
+
+    #[test]
+    fn fleet_metric_lines_explain_unavailable_snapshot_and_recovery() {
+        let mut brief = crate::models::FleetLeaderBrief::default();
+        brief.fleet_metrics = Some(crate::models::FleetMetricsResult {
+            ok: false,
+            schema_version: "fleet-metrics-v1".into(),
+            reason: Some("historical revision missing".into()),
+            recover_via: Some("work_items:burn_down { window: fleet-lifetime }".into()),
+            ..Default::default()
+        });
+
+        let lines = fleet_metric_lines(&brief, None);
+        assert_eq!(
+            lines,
+            vec![
+                "fleet metrics unavailable · historical revision missing · recover work_items:burn_down { window: fleet-lifetime }"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn fleet_metric_lines_label_legacy_aliases_when_metrics_are_absent() {
+        let mut brief = crate::models::FleetLeaderBrief::default();
+        brief.spec_matched = Some(5);
+        brief.harness_wide_pool = Some(20);
+        brief.spec_revision = Some(3);
+
+        let lines = fleet_metric_lines(&brief, Some(2));
+        assert!(lines[0].starts_with("legacy queue aliases (scope unavailable):"));
+        assert!(lines[0].contains("claimable 2"));
+        assert!(lines[0].contains("matched 5 / pool 20 / revision 3"));
     }
 
     #[test]

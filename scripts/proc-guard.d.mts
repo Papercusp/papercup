@@ -93,11 +93,12 @@ export function parsePpid(statLine: string): number | null;
  * Enumerate every live process as { pid, ppid, argv, cmdline }, from a /proc root (real or a test fixture).
  *
  * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
- * @param {{ readIdentity?: boolean }} [opts] - Read known-workload identity markers when requested.
+ * @param {{ readIdentity?: boolean; readGateIdentity?: boolean }} [opts] - Read PAPERCUSP_SID and, when requested, known-workload identity markers.
  * @returns {ProcRow[]}
  */
 export function listProcesses(procRoot?: string, opts?: {
     readIdentity?: boolean;
+    readGateIdentity?: boolean;
 }): ProcRow[];
 /**
  * pid + every ancestor up to (and including) pid 1, by walking `ppid` via
@@ -133,16 +134,19 @@ export function walkProcessTree(rootPid: number, opts?: {
     reason: string | null;
 };
 /**
- * Processes matching `pattern` (a RegExp source) against operational argv,
- * EXCLUDING the caller's own pid and its whole ancestor chain. Operational argv
- * keeps the executable and real process arguments but excludes agent prompt
- * payloads and peers' structured (JSON) payloads. A genuinely unrelated
- * external process with the same pattern in a real argument still matches.
+ * Processes matching `pattern` (a RegExp source) against operational argv or
+ * PAPERCUSP_SID identity, EXCLUDING the caller's own pid and its whole ancestor
+ * chain. Operational argv keeps the executable and real process arguments but
+ * excludes agent prompt payloads and peers' structured (JSON) payloads. A
+ * genuinely unrelated external process with the same pattern in a real argument
+ * still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
- * For the known `green-checkpoint` workload, gate-owned environment/cgroup
- * identity is also accepted so argv-blind descendants are not missed.
+ * Agent identity is read from PAPERCUSP_SID so a live agent whose owner id is
+ * absent from argv is not reported absent. For the known `green-checkpoint`
+ * workload, gate-owned environment/cgroup identity is also accepted so
+ * argv-blind descendants are not missed.
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern: string, opts?: {
@@ -161,6 +165,10 @@ export function matchExternalProcesses(pattern: string, opts?: {
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * `identityMatches` includes PAPERCUSP_SID owner matches and known gate-marker/
+ * cgroup matches. The owner id itself is retained only in the in-memory identity
+ * evidence and is never printed as environment data.
+ *
  * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
 export function matchExternalProcessesDetailed(pattern: string, opts?: {
@@ -277,9 +285,10 @@ export type ProcRow = {
      */
     cmdline: string;
     /**
-     * Non-secret identity evidence read only when checking the known green-checkpoint workload.
+     * Non-secret identity evidence read from PAPERCUSP_SID and known gate markers.
      */
     identity?: {
+        ownerId: string | null;
         greenCheckpointMarker: boolean;
         releaseGateMarker: boolean;
         cgroupPath: string | null;

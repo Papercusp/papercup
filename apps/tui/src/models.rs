@@ -594,6 +594,94 @@ pub struct FleetLeaderBrief {
     pub spec_matched: Option<i64>,
     #[serde(default)]
     pub harness_wide_pool: Option<i64>,
+    /// Canonical, spec-scoped work metrics from `fleet:leader-brief`. This is
+    /// deliberately separate from the live member summary above: the two use
+    /// different populations and must never be compared without the scope
+    /// labels carried by this result.
+    #[serde(default)]
+    pub fleet_metrics: Option<FleetMetricsResult>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetMetricsResult {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub schema_version: String,
+    #[serde(default)]
+    pub snapshot: Option<FleetMetricsSnapshot>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub recover_via: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetMetricsSnapshot {
+    #[serde(default)]
+    pub scope: FleetMetricsScope,
+    #[serde(default)]
+    pub quality: FleetMetricsQuality,
+    #[serde(default)]
+    pub remaining: FleetMetricsRemaining,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetMetricsScope {
+    #[serde(default)]
+    pub window: FleetMetricsWindow,
+    #[serde(default)]
+    pub stock: FleetMetricsStockScope,
+    #[serde(default)]
+    pub population: FleetMetricsPopulation,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetMetricsWindow {
+    #[serde(default)]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetMetricsStockScope {
+    #[serde(default)]
+    pub spec_id: String,
+    #[serde(default)]
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetMetricsPopulation {
+    #[serde(default)]
+    pub stock: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FleetMetricsQuality {
+    #[serde(default)]
+    pub exactness: FleetMetricsQualityStatus,
+    #[serde(default)]
+    pub freshness: FleetMetricsQualityStatus,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FleetMetricsQualityStatus {
+    #[serde(default)]
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FleetMetricsRemaining {
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub unit: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
