@@ -418,9 +418,9 @@ export async function readCurrentSessionStartedAtMs(
   opts: Pick<ReadDeferredWorkItemsOpts, 'sql'> = {},
 ): Promise<number | null> {
   if (!ownerId) return null;
-  const sql = opts.sql ?? getOrgPg().sql;
-  const ws = resolveConcreteWorkspaceId(workspaceId);
   try {
+    const sql = opts.sql ?? getOrgPg().sql;
+    const ws = resolveConcreteWorkspaceId(workspaceId);
     const rows = await sql<Array<{ started_at_ms: number | string | null }>>`
       SELECT (extract(epoch FROM started_at) * 1000)::bigint AS started_at_ms
         FROM harness_shared.adv_sessions
@@ -456,19 +456,32 @@ export async function readDeferredWorkItems(
   opts: ReadDeferredWorkItemsOpts = {},
 ): Promise<CarryBriefDeferredItem[]> {
   if (!ownerId) return [];
-  const sql = opts.sql ?? getOrgPg().sql;
-  const ws = resolveConcreteWorkspaceId(workspaceId);
-  const sessionStartedAtMs =
-    opts.sessionStartedAtMs !== undefined
-      ? opts.sessionStartedAtMs
-      : await (opts.getCurrentSessionStartedAtMsFn ?? readCurrentSessionStartedAtMs)(
-          ownerId,
-          ws,
-          { sql },
-        );
+  let sql: Sql;
+  let ws: string;
+  try {
+    sql = opts.sql ?? getOrgPg().sql;
+    ws = resolveConcreteWorkspaceId(workspaceId);
+  } catch {
+    return [];
+  }
+  let sessionStartedAtMs: number | null;
+  try {
+    sessionStartedAtMs =
+      opts.sessionStartedAtMs !== undefined
+        ? opts.sessionStartedAtMs
+        : opts.getCurrentSessionStartedAtMsFn
+          ? await opts.getCurrentSessionStartedAtMsFn(ownerId, ws)
+          : await readCurrentSessionStartedAtMs(ownerId, ws, { sql });
+  } catch {
+    return [];
+  }
   if (sessionStartedAtMs == null || !Number.isFinite(sessionStartedAtMs)) return [];
 
-  const limit = Math.max(1, Math.floor(opts.limit ?? CARRY_BRIEF_MAX_DEFERRED_ITEMS));
+  const requestedLimit =
+    typeof opts.limit === 'number' && Number.isFinite(opts.limit)
+      ? Math.floor(opts.limit)
+      : CARRY_BRIEF_MAX_DEFERRED_ITEMS;
+  const limit = Math.min(CARRY_BRIEF_MAX_DEFERRED_ITEMS, Math.max(1, requestedLimit));
   const terminalStates = [...ANY_FAMILY_TERMINAL_STATES];
   try {
     const rows = await sql<
@@ -609,8 +622,7 @@ export function renderDeferredWorkItems(
   if (deferredItems.length === 0) return '';
   const lines = deferredItems.map((item) => {
     const title = item.title?.trim() ? ` — ${cap(item.title, COLD_TITLE_CAP)}` : '';
-    const harness = item.harness ? `, harness: '${item.harness}'` : '';
-    return `  • ${item.id}${title} — ${deferredSourceText(item.source)} (${workItemFetchHint(item.id, item.harness)}${harness ? '' : ''})`;
+    return `  • ${item.id}${title} — ${deferredSourceText(item.source)} (${workItemFetchHint(item.id, item.harness)})`;
   });
   return (
     `⚠ DEFERRED, UNCLAIMED WORK — this session positively touched ${deferredItems.length} ` +
@@ -1274,6 +1286,7 @@ export function renderCarryBriefColdExtras(
   opts: RenderCarryBriefColdExtrasOpts = {},
 ): string {
   const sessionActivityMs = opts.sessionActivityMs ?? null;
+  const deferredItems = brief.deferredItems ?? [];
   const sections: string[] = [];
   // A held checkpoint can preserve a native exec/write_stdin session id. That
   // handle belongs to the predecessor process and is not addressable after a
@@ -1322,8 +1335,10 @@ export function renderCarryBriefColdExtras(
         .join('\n')}`,
     );
   }
-  if ((brief.deferredItems ?? []).length > 0) {
-    sections.push(renderDeferredWorkItems(brief.deferredItems ?? []));
+  const idleNoteGuard = detectIdleNoteGuard(brief.loop?.carryNote, deferredItems);
+  if (idleNoteGuard) sections.push(idleNoteGuard.message);
+  if (deferredItems.length > 0) {
+    sections.push(renderDeferredWorkItems(deferredItems));
   }
   if (brief.heldItems.length > 0) {
     // The excerpt must SAY it is an excerpt. This is the cold successor's entire
@@ -1521,8 +1536,6 @@ export function renderCarryBriefText(
       sections.push(`${head} No carry-note written.`);
     }
   }
-  const idleNoteGuard = detectIdleNoteGuard(brief.loop?.carryNote, brief.deferredItems ?? []);
-  if (idleNoteGuard) sections.push(idleNoteGuard.message);
   // Directives already rendered at the top — strip them so the extras call
   // (shared with the cold path, where they DO belong inside) can't double-render.
   const extras = renderCarryBriefColdExtras(directivesBlock ? { ...brief, directives: [] } : brief, {

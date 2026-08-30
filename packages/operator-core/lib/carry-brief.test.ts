@@ -12,9 +12,13 @@ import { describe, it, expect } from 'vitest';
 import {
   buildCarryBrief,
   readHeldWorkItems,
+  readCurrentSessionStartedAtMs,
+  readDeferredWorkItems,
   renderCarryBriefFocus,
   renderCarryBriefColdExtras,
   renderCarryBriefText,
+  renderDeferredWorkItems,
+  detectIdleNoteGuard,
   deriveCarryQueryHandles,
   renderCarryQueryHandlesBlock,
   parseCitedRefStateTag,
@@ -26,9 +30,11 @@ import {
   CARRY_BRIEF_FOCUS_MAX,
   CARRY_BRIEF_MAX_FACTS,
   CARRY_BRIEF_MAX_AWAITS,
+  CARRY_BRIEF_MAX_DEFERRED_ITEMS,
   CARRY_QUERY_HANDLES_MAX,
   CARRY_QUERY_HANDLES_HEADING,
   type CarryBrief,
+  type CarryBriefDeferredItem,
   type BuildCarryBriefOpts,
 } from './carry-brief';
 
@@ -67,6 +73,9 @@ function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBrief
     // unit tests never reach the real coordination/inbox readers.
     hydrateNoteRefsFn: async () => [],
     readPostNoteInboxFn: async () => ({ count: 0, lines: [] }),
+    // Deferred-work carry is also a live PG leg; keep the existing pure builder
+    // fixtures hermetic and inject it only in tests that exercise that feature.
+    readDeferredWorkItemsFn: async () => [],
     ...overrides,
   };
 }
@@ -198,6 +207,46 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
   it('no loop routine ⇒ loop null', async () => {
     const brief = await buildCarryBrief('su-abc', fullOpts({ getLoopStatusFn: async () => null }));
     expect(brief.loop).toBeNull();
+  });
+
+  it('carries this-session deferred work from the injected reader', async () => {
+    const deferred: CarryBriefDeferredItem[] = [
+      {
+        id: 'EI-21769',
+        title: 'finish the next experiment',
+        body: 'Run the focused regression.',
+        harness: null,
+        kind: 'bug',
+        source: 'created',
+      },
+    ];
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        readDeferredWorkItemsFn: async (ownerId, workspaceId) => {
+          expect(ownerId).toBe('su-abc');
+          expect(workspaceId).toBe('ws-test');
+          return deferred;
+        },
+      }),
+    );
+    expect(brief.deferredItems).toEqual(deferred);
+    expect(renderCarryBriefFocus(brief)).toContain('EI-21769');
+    expect(renderCarryBriefText(brief)).toContain('DEFERRED, UNCLAIMED WORK');
+  });
+
+  it('a throwing deferred-work reader fails soft without disturbing the brief', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        readDeferredWorkItemsFn: async () => {
+          throw new Error('work-item store unavailable');
+        },
+      }),
+    );
+    expect(brief.deferredItems).toBeUndefined();
+    expect(brief.loop?.carryNote).toContain('ship P-004');
+    expect(brief.heldItems).toHaveLength(1);
   });
 });
 
@@ -1115,6 +1164,244 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
       if (prior === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
       else process.env.PAPERCUSP_WORKSPACE_ID = prior;
     }
+  });
+});
+
+describe('readDeferredWorkItems — session-authored/commented unheld work', () => {
+  type Row = {
+    id: string;
+    title: string | null;
+    body: string | null;
+    harness_slug: string | null;
+    kind: string | null;
+    created_this_session: boolean;
+    commented_this_session: boolean;
+  };
+
+  function capturingSql(rows: Row[] | Error) {
+    const calls: Array<{ text: string; params: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      calls.push({ text: strings.join('¶'), params: vals });
+      return rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows);
+    }) as unknown as never;
+    return { sql, calls };
+  }
+
+  it('reads and normalizes the latest unended session boundary', async () => {
+    const calls: Array<{ text: string; params: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      calls.push({ text: strings.join('¶'), params: vals });
+      return Promise.resolve([{ started_at_ms: '1700000000123' }]);
+    }) as unknown as never;
+
+    await expect(
+      readCurrentSessionStartedAtMs('su-abc', 'ws-test', { sql }),
+    ).resolves.toBe(1_700_000_000_123);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain('FROM harness_shared.adv_sessions');
+    expect(calls[0]!.text).toContain('coord_owner_id');
+    expect(calls[0]!.text).toContain('ended_at IS NULL');
+    expect(calls[0]!.text).toContain('ORDER BY started_at DESC');
+    expect(calls[0]!.params).toEqual(['ws-test', 'su-abc']);
+  });
+
+  it('fails closed when the current session boundary is unknown', async () => {
+    const { sql, calls } = capturingSql([]);
+    const out = await readDeferredWorkItems('su-abc', 'ws-test', {
+      sql,
+      sessionStartedAtMs: null,
+    });
+    expect(out).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('resolves the current session, maps authorship sources, and keeps SQL scope/bounds explicit', async () => {
+    const rows: Row[] = [
+      {
+        id: 'EI-1',
+        title: 'authored issue',
+        body: 'issue body',
+        harness_slug: 'operator:ws-test',
+        kind: 'bug',
+        created_this_session: true,
+        commented_this_session: false,
+      },
+      {
+        id: 'F-2',
+        title: 'commented feature',
+        body: 'feature body',
+        harness_slug: 'h1',
+        kind: 'feature',
+        created_this_session: false,
+        commented_this_session: true,
+      },
+      {
+        id: 'WI-3',
+        title: 'both signals',
+        body: null,
+        harness_slug: ' h2 ',
+        kind: null,
+        created_this_session: true,
+        commented_this_session: true,
+      },
+    ];
+    const { sql, calls } = capturingSql(rows);
+    const sessionLookups: Array<[string, string]> = [];
+    const out = await readDeferredWorkItems('su-abc', 'ws-test', {
+      sql,
+      limit: 100,
+      getCurrentSessionStartedAtMsFn: async (ownerId, workspaceId) => {
+        sessionLookups.push([ownerId, workspaceId]);
+        return 1_700_000_000_123;
+      },
+    });
+
+    expect(sessionLookups).toEqual([['su-abc', 'ws-test']]);
+    expect(out).toEqual([
+      {
+        id: 'EI-1',
+        title: 'authored issue',
+        body: 'issue body',
+        harness: null,
+        kind: 'bug',
+        source: 'created',
+      },
+      {
+        id: 'F-2',
+        title: 'commented feature',
+        body: 'feature body',
+        harness: 'h1',
+        kind: 'feature',
+        source: 'commented',
+      },
+      {
+        id: 'WI-3',
+        title: 'both signals',
+        body: null,
+        harness: 'h2',
+        kind: 'work-item',
+        source: 'created-and-commented',
+      },
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain('harness_shared.work_items');
+    expect(calls[0]!.text).toContain('harness_shared.coord_thread_posts');
+    expect(calls[0]!.text).toContain('harness_shared.coord_threads');
+    expect(calls[0]!.text).toContain("item_kind IN ('bug', 'change', 'task')");
+    expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
+    expect(calls[0]!.text).toContain('wi.taken_by IS NULL');
+    expect(calls[0]!.text).toContain('wi.status IS NULL OR wi.status <> ALL');
+    expect(calls[0]!.text).toContain('created_at >=');
+    expect(calls[0]!.params).toContain('ws-test');
+    expect(calls[0]!.params).toContain('su-abc');
+    expect(calls[0]!.params).toContain(1_700_000_000_123);
+    expect(calls[0]!.params).toContain(CARRY_BRIEF_MAX_DEFERRED_ITEMS);
+  });
+
+  it('fails soft when session resolution or the bounded query fails', async () => {
+    const query = capturingSql(new Error('query unavailable'));
+    await expect(
+      readDeferredWorkItems('su-abc', 'ws-test', {
+        sql: query.sql,
+        getCurrentSessionStartedAtMsFn: async () => {
+          throw new Error('session lookup unavailable');
+        },
+      }),
+    ).resolves.toEqual([]);
+    expect(query.calls).toHaveLength(0);
+
+    const queryFailure = capturingSql(new Error('query unavailable'));
+    await expect(
+      readDeferredWorkItems('su-abc', 'ws-test', {
+        sql: queryFailure.sql,
+        sessionStartedAtMs: 1_700_000_000_000,
+      }),
+    ).resolves.toEqual([]);
+    expect(queryFailure.calls).toHaveLength(1);
+  });
+});
+
+describe('deferred-work rendering and idle-note guard', () => {
+  const deferred: CarryBriefDeferredItem[] = [
+    {
+      id: 'EI-1',
+      title: 'authored issue',
+      body: null,
+      harness: null,
+      kind: 'bug',
+      source: 'created',
+    },
+    {
+      id: 'F-2',
+      title: 'commented feature',
+      body: null,
+      harness: 'h1',
+      kind: 'feature',
+      source: 'commented',
+    },
+    {
+      id: 'WI-3',
+      title: null,
+      body: null,
+      harness: 'h2',
+      kind: 'task',
+      source: 'created-and-commented',
+    },
+  ];
+
+  it('renders bounded re-fetch pointers and each positive source classification', () => {
+    const out = renderDeferredWorkItems(deferred);
+    expect(out).toContain('DEFERRED, UNCLAIMED WORK');
+    expect(out).toContain('this session positively touched 3');
+    expect(out).toContain("EI-1 — authored issue — filed this session (work_items:get { id: 'EI-1' })");
+    expect(out).toContain(
+      "F-2 — commented feature — commented on this session (work_items:get { id: 'F-2', harness: 'h1' })",
+    );
+    expect(out).toContain("WI-3 — filed and commented on this session (work_items:get { id: 'WI-3', harness: 'h2' })");
+  });
+
+  it('flags an idle-sounding note only when deferred work falsifies it', () => {
+    expect(detectIdleNoteGuard('I am still working on the deferred item.', deferred)).toBeNull();
+    expect(detectIdleNoteGuard('Nothing is left; the lane is idle.', deferred)).toMatchObject({
+      flagged: true,
+      trigger: 'Nothing is left',
+      deferredIds: ['EI-1', 'F-2', 'WI-3'],
+    });
+    expect(detectIdleNoteGuard('The queue is empty; pick fresh work.', deferred)?.message).toContain(
+      're-check each item',
+    );
+    expect(detectIdleNoteGuard('Nothing is left.', [])).toBeNull();
+  });
+
+  it('delivers the idle guard on both the cold extras path and the full brief exactly once', () => {
+    const brief: CarryBrief = {
+      ownerId: 'su-abc',
+      loop: {
+        harness: 'papercusp',
+        active: true,
+        intervalSec: 60,
+        goal: null,
+        carryNote: '## Next action\nNothing is left; stop here.',
+        carryNoteUpdatedAtMs: 1,
+      },
+      heldItems: [],
+      deferredItems: deferred,
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const cold = renderCarryBriefColdExtras(brief);
+    expect(cold).toContain('idle_note_guard');
+    expect(cold).toContain('DEFERRED, UNCLAIMED WORK');
+
+    const full = renderCarryBriefText(brief);
+    expect(full.match(/idle_note_guard/g)).toHaveLength(1);
+    expect(full).toContain('Nothing is left; stop here.');
+    expect(full).toContain('DEFERRED, UNCLAIMED WORK');
   });
 });
 
