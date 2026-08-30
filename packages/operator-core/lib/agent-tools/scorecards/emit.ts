@@ -37,7 +37,8 @@ import {
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
-import { acceptanceGraderLabelPrefix } from '../../acceptance-grader';
+import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
+import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
 import { GRADING_INTEGRITY_RUBRIC_REF, gradingAuditGateEnabled, needsGradingAudit } from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
@@ -1188,6 +1189,22 @@ export async function emitScorecard(
         },
         input.workspaceId ? { workspaceId: input.workspaceId } : {},
       );
+    }
+    // unified-responder-selection-critique-and-grading-2026-08-30 D-003 [owner]:
+    // grading is a CASCADE of up to two graders, and grader 2 is woken holding
+    // grader 1's card. Filing the card is the act that discharges a grading, so
+    // it is what advances the chain — see advanceGradingCascadeOnCard for why a
+    // consult reply alone is not enough, and for the two independent reasons a
+    // duplicate or out-of-turn card cannot double-advance it. Same `created`
+    // gate as the emit above, and the same fail-soft contract: it swallows its
+    // own faults rather than failing a card that is already written.
+    if (result.created && rubric.kind === 'acceptance' && input.workspaceId && input.createdBy && !args.acceptance) {
+      await advanceGradingCascadeOnCard({
+        workspaceId: input.workspaceId,
+        rubricRef: args.rubricRef,
+        graderOwnerId: input.createdBy,
+        cardSummary: gradingCardDigestExcerpt(ratings),
+      });
     }
     return {
       ok: true as const,
