@@ -174,7 +174,19 @@ export default defineTool({
       workspaceId && (await windDownDispositionGateEnabled())
         ? await activeGoalForOwner({ workspaceId, ownerId }).catch(() => null)
         : null;
-    if (activeGoal && !args.disposition && !activeGoal.recordedDisposition) {
+    // A recorded disposition belongs to the lifecycle that wrote it.  It may
+    // suppress a repeated cleanup call only when there is no active arm left
+    // to stop.  Treating it as permanent authorization lets a later holder (or
+    // a later re-arm by the same holder) end a standing GOAL loop without a
+    // current disposition.  EI-21842973962256368 reproduced exactly that
+    // shape: an August 28 handoff stamp allowed an active August 30 loop:end.
+    //
+    // statusBefore=null is the fail-open/read-miss case already promised by
+    // this stop path, so preserve the historical bypass there.  A positively
+    // observed active arm is the case that must never inherit old authority.
+    const recordedDispositionCoversNonActiveEnd =
+      Boolean(activeGoal?.recordedDisposition) && statusBefore?.active !== true;
+    if (activeGoal && !args.disposition && !recordedDispositionCoversNonActiveEnd) {
       const refusal = buildDispositionRefusal({
         action: 'loop:end',
         goalId: activeGoal.goalId,

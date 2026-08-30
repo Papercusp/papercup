@@ -159,7 +159,11 @@ export default defineTool({
     // looping session only strands the next fire (the wake-executor then has to
     // --resume a session that did not need to die). Fail-OPEN on a read error: a
     // flaky loop read must not block a legitimate wind-down.
-    const loop = await getLoopStatus(identity.ownerId).catch(() => null);
+    let loopReadFailed = false;
+    const loop = await getLoopStatus(identity.ownerId).catch(() => {
+      loopReadFailed = true;
+      return null;
+    });
     // P-002 (goal-mode-design-intent-hardening-2026-08-16): a LOOPLESS goal-mode
     // owner whose goal is still active winds down WITH a disposition or not at
     // all (a LOOPED one is already forced through loop:end by the loop-armed
@@ -173,7 +177,14 @@ export default defineTool({
       const activeGoal = workspaceId
         ? await activeGoalForOwner({ workspaceId, ownerId: identity.ownerId }).catch(() => null)
         : null;
-      if (activeGoal && !args.disposition && !activeGoal.recordedDisposition) {
+      // A historical goal disposition is not a standing permit for a later
+      // loopless holder to close its session.  It covers only a re-entrant
+      // cleanup after this owner's loop is already known inactive.  Preserve
+      // the stop path's fail-open contract when the loop read itself failed;
+      // a successful null means "no loop", not "already disposed".
+      const recordedDispositionCoversInactiveLoop =
+        Boolean(activeGoal?.recordedDisposition) && (loop?.active === false || loopReadFailed);
+      if (activeGoal && !args.disposition && !recordedDispositionCoversInactiveLoop) {
         const refusal = buildDispositionRefusal({
           action: 'session:end',
           goalId: activeGoal.goalId,
