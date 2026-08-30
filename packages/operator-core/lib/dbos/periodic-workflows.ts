@@ -44,6 +44,7 @@ import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { reapEndedPresenceRows } from '../agent-tools/coordination/presence-reaper';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
+import { gcGovernorReceipts } from '../resource-governor/receipt-gc';
 import {
   reconcileStaleEscalationsOnce,
   reconcileUnanswerableEscalationsOnce,
@@ -1559,4 +1560,34 @@ const guiE2eSurfaceScheduledRunWorkflow = idempotentRegisterWorkflow('guiE2eSurf
 DBOS.registerScheduled(guiE2eSurfaceScheduledRunWorkflow, {
   name: 'guiE2eSurfaceScheduledRun',
   crontab: '0 15 3 * * *',
+});
+
+// HOURLY at :20 — retention for resource-governor admission receipts (WI-924391).
+//
+// HOURLY, not daily, is the whole point. These rows arrive at ~24k/hour, so a daily
+// sweep would let ~576k of them accumulate between runs — which IS the collapse this
+// exists to prevent, just arriving on a slower clock. The cadence has to beat the
+// write rate, not merely bound it eventually.
+//
+// Each tick is bounded (GOVERNOR_RECEIPT_GC_BATCH_LIMIT) and takes the oldest first,
+// so a neglected table converges over successive runs instead of emitting one
+// unbounded delete burst. At the measured rate the steady state is far under one
+// batch per tick; the limit only bites on a first drain.
+async function governorReceiptGcTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_GOVERNOR_RECEIPTS))) return;
+  await DBOS.runStep(async () => {
+    const deleted = await gcGovernorReceipts();
+    if (deleted > 0) {
+      console.log(`[governor-receipt-gc] deleted ${deleted} terminal admission receipt(s)`);
+    }
+  }, { name: 'governor-receipt-gc' });
+}
+const governorReceiptGcWorkflow = idempotentRegisterWorkflow('governorReceiptGc', () =>
+  DBOS.registerWorkflow(governorReceiptGcTick, {
+    name: 'governorReceiptGc', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(governorReceiptGcWorkflow, {
+  name: 'governorReceiptGc',
+  crontab: '0 20 * * * *',
 });

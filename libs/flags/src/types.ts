@@ -987,6 +987,13 @@ export const FLAGS = {
   STORAGE_RETAIN_TELEMETRY: "papercusp-storage-retain-telemetry",
   STORAGE_RETAIN_SCRATCH: "papercusp-storage-retain-scratch",
   STORAGE_RETAIN_TEST_RUNS: "papercusp-storage-retain-test-runs",
+  // WI-924391 — retention for resource-governor admission receipts (ephemeral
+  // queue-state rows written into work_items, which is otherwise "not age-prunable
+  // by design"). ON by default like its siblings = the prune runs; OFF = the hourly
+  // DBOS tick skips it. Turning this OFF re-arms the exact failure it was added for:
+  // ~24k rows/hour accumulating unbounded into work_items until the scheduler
+  // claim-spec census collapses fleet-wide. See resource-governor/receipt-gc.ts.
+  STORAGE_RETAIN_GOVERNOR_RECEIPTS: "papercusp-storage-retain-governor-receipts",
   // agent-capability-confinement-2026-06-13 B-18 (P-020/P-021): the FLEET CUTOVER —
   // when ON, autonomous-fleet (bee/pipeline) claude-code spawns drop the native
   // WRITE/exec tools (Bash/Edit/Write/WebFetch) from `--allowed-tools` and route
