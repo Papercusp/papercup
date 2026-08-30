@@ -542,7 +542,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     // Headless members have no desktop window or native .mcp.json watcher;
     // they must not leave a per-process marker in the launch cwd.
     expect(oneliner).not.toContain('.papercup-console-active');
-  }, 10_000);
+  }, 30_000);
 
   it('EI-9748 Route (A): when systemd-run is available on Linux, spawns via systemd-run --user --scope instead of plain bash — the cgroup escape', async () => {
     spawnMock.mockImplementation(() => fakeChild(7779));

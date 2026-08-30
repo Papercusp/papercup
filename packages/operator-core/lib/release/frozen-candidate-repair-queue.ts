@@ -21,7 +21,7 @@ export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch
  * the default: raising it changes which commit the gate judges and promotes, for every
  * co-hosted install, with no deploy hop. It is therefore wired only as part of the
  * owner-gated Phase-2 activation batch, exactly like P-005..P-009. */
-/* `maxAgeMs` was 4h until 2026-08-27 [owner:aviynw8 2026-08-27, approved in-session].
+/* `maxAgeMs` was 4h until 2026-08-27 [owner 2026-08-27, approved in-session].
  * WHY IT MOVED (WI-85288): the 4h budget was calibrated against fixers that never ran.
  * From 2026-08-24 16:57Z to 2026-08-27, EVERY dispatched release-fixer was SIGTERM'd at
  * exactly 300000ms by the release-fixer first-turn guard — measured lifetimes 301/301/300/301s

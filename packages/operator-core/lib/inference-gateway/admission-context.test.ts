@@ -1,4 +1,4 @@
-import { afterEach, test } from 'vitest';
+import { afterEach, beforeEach, test } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {
@@ -17,9 +17,18 @@ import {
   gatewayAdmissionKindForBypassKey,
   toGatewayAdmissionRequest,
 } from './admission-context';
+import { _resetDbHealth } from './db-health';
 
 let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 let upstream: http.Server | undefined;
+
+beforeEach(() => {
+  // Gateway DB health is a process-wide telemetry singleton. Other test files
+  // deliberately exercise sustained DB failures; without a reset, this file's
+  // otherwise-hermetic /healthz assertion inherits their 503 latch when Vitest
+  // co-locates the files in one worker.
+  _resetDbHealth();
+});
 
 afterEach(async () => {
   await gateway?.close();
@@ -29,6 +38,7 @@ afterEach(async () => {
     upstream.close(() => resolve());
   });
   upstream = undefined;
+  _resetDbHealth();
 });
 
 test('gateway request facts map to one canonical admission request without a capacity formula', () => {

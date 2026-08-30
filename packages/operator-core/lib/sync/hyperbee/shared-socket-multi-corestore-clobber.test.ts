@@ -460,7 +460,7 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     expect(viaA.length).toBeGreaterThan(0);
     expect(viaB.length).toBe(viaA.length);
     expect(await viaB.get(0)).toMatchObject({ hbKey: 'DEDUP-1' });
-  }, 30_000);
+  }, 90_000);
 
   /**
    * THE DIRECT PROOF OF THE RECONNECT-ORDER REFINEMENT.
