@@ -762,6 +762,13 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     flagEnabled: async () => true,
     launch: async (g) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }),
     attach: async () => {},
+    readAuthority: async () => ({
+      status: 'none',
+      goalId: null,
+      electedOwnerId: null,
+      electedEpoch: null,
+      handoffExpiresAt: null,
+    }),
     neutralize: async () => {},
     notifyHandoff: async () => {},
     refreshControlAnchor: vi.fn().mockResolvedValue(null),
@@ -845,6 +852,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       respawned: 1,
       launchFailed: 0,
       attachFailed: 0,
+      attachUnresolved: 0,
       neutralizeFailed: 0,
       gaveUp: 0,
       skipped: false,
@@ -979,6 +987,93 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       expect(states.get(goalHolderRespawnKey(a))?.lastRestartAt).toBeNull();
       expect(states.get(goalHolderRespawnKey(b))?.restarts).toHaveLength(1);
       expect(states.get(goalHolderRespawnKey(b))?.lastRestartAt).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('preserves a replacement when attach throws after the election committed', async () => {
+    const target = respawnGoal({ goalId: 'commit-then-throw' });
+    const neutralize = vi.fn(async () => {});
+    const refreshControlAnchor = vi.fn().mockResolvedValue(null);
+    const states: GoalHolderRespawnDeps['states'] = new Map();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          readGoals: async () => ({
+            goals: [target],
+            holders: [holder({ goalId: target.goalId, ownerId: 'dead-old', goalLeaseEpoch: 4 })],
+          }),
+          resolveLiveness: async () => vmap(verdict('dead-old', 'ended')),
+          states,
+          launch: async () => ({ ownerId: 'su-replacement', warnings: [] }),
+          attach: async () => {
+            throw new Error('connection dropped after COMMIT');
+          },
+          readAuthority: async () => ({
+            status: 'elected',
+            goalId: target.goalId,
+            electedOwnerId: 'su-replacement',
+            electedEpoch: 5,
+            handoffExpiresAt: '2026-08-30T10:00:00.000Z',
+          }),
+          neutralize,
+          refreshControlAnchor,
+        }),
+      );
+
+      expect(result).toMatchObject({ respawned: 1, attachFailed: 0, neutralizeFailed: 0 });
+      expect(neutralize).not.toHaveBeenCalled();
+      expect(refreshControlAnchor).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'su-replacement', workspaceId: target.workspaceId }),
+      );
+      expect(states.get(goalHolderRespawnKey(target))?.restarts).toHaveLength(1);
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('durable readback confirms'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves an unreadable attach outcome unresolved without neutralizing or counting success', async () => {
+    const target = respawnGoal({ goalId: 'unreadable-attach-readback' });
+    const neutralize = vi.fn(async () => {});
+    const refreshControlAnchor = vi.fn().mockResolvedValue(null);
+    const states: GoalHolderRespawnDeps['states'] = new Map();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          readGoals: async () => ({
+            goals: [target],
+            holders: [holder({ goalId: target.goalId, ownerId: 'dead-old', goalLeaseEpoch: 4 })],
+          }),
+          resolveLiveness: async () => vmap(verdict('dead-old', 'ended')),
+          states,
+          launch: async () => ({ ownerId: 'su-replacement', warnings: [] }),
+          attach: async () => {
+            throw new Error('connection dropped after unknown commit state');
+          },
+          readAuthority: async () => {
+            throw new Error('authority store unavailable');
+          },
+          neutralize,
+          refreshControlAnchor,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        respawned: 0,
+        attachFailed: 1,
+        attachUnresolved: 1,
+        neutralizeFailed: 0,
+      });
+      expect(neutralize).not.toHaveBeenCalled();
+      expect(refreshControlAnchor).not.toHaveBeenCalled();
+      expect(states.get(goalHolderRespawnKey(target))?.restarts).toEqual([]);
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('UNRESOLVED'))).toBe(true);
     } finally {
       warn.mockRestore();
     }

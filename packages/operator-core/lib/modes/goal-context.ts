@@ -31,7 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   readGoalHolderAuthority,
   type GoalHolderAuthority,
-} from '../goals/holder';
+} from '../goals/holder-authority';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -39,20 +39,53 @@ function pg(sql?: Sql): Sql {
 
 /** A typed refusal so launch/write boundaries can fail closed rather than degrade. */
 export class GoalHolderAuthorityError extends Error {
-  readonly code = 'goal_holder_superseded';
+  readonly code: 'goal_holder_superseded' | 'goal_holder_authority_unreadable';
 
-  constructor(readonly authority: GoalHolderAuthority, readonly ownerId: string) {
+  constructor(
+    readonly authority: GoalHolderAuthority | null,
+    readonly ownerId: string,
+    cause?: unknown,
+  ) {
     super(
-      `GOAL holder ${ownerId} is superseded for '${authority.goalId ?? 'unknown'}'; ` +
-        `elected holder is ${authority.electedOwnerId ?? 'unknown'} at epoch ` +
-        `${authority.electedEpoch ?? 'legacy'}`,
+      authority
+        ? `GOAL holder ${ownerId} is superseded for '${authority.goalId ?? 'unknown'}'; ` +
+          `elected holder is ${authority.electedOwnerId ?? 'unknown'} at epoch ` +
+          `${authority.electedEpoch ?? 'legacy'}`
+        : `GOAL holder authority is unreadable for ${ownerId}; refusing goal-scoped context and mutation`,
     );
+    this.code = authority ? 'goal_holder_superseded' : 'goal_holder_authority_unreadable';
+    if (cause !== undefined) (this as Error & { cause?: unknown }).cause = cause;
     this.name = 'GoalHolderAuthorityError';
   }
 }
 
 export function isGoalHolderAuthorityError(error: unknown): error is GoalHolderAuthorityError {
   return error instanceof GoalHolderAuthorityError;
+}
+
+/**
+ * The shared pre-write fence for every goal-scoped mutation/provenance door.
+ *
+ * `none`, `elected`, and a still-live named `handoff` are all valid callers.
+ * An expired predecessor is refused with the elected-holder diagnosis. A read
+ * failure is ALSO a refusal: falling through to inherited context when the
+ * authority store is unreadable would turn absence of evidence into authority.
+ */
+export async function assertGoalHolderMutationAuthority(
+  workspaceId: string,
+  ownerId: string,
+  sql?: Sql,
+): Promise<GoalHolderAuthority> {
+  let authority: GoalHolderAuthority;
+  try {
+    authority = await readGoalHolderAuthority(pg(sql), workspaceId, ownerId);
+  } catch (error) {
+    throw new GoalHolderAuthorityError(null, ownerId, error);
+  }
+  if (authority.status === 'superseded') {
+    throw new GoalHolderAuthorityError(authority, ownerId);
+  }
+  return authority;
 }
 
 /**
@@ -143,18 +176,9 @@ export async function resolveGoalContext(
   sql?: Sql,
 ): Promise<string | null> {
   if (!workspaceId || workspaceId === '*' || !ownerId) return null;
-  try {
-    const authority = await readGoalHolderAuthority(pg(sql), workspaceId, ownerId);
-    if (authority.status === 'elected' || authority.status === 'handoff') {
-      return authority.goalId;
-    }
-    if (authority.status === 'superseded') {
-      throw new GoalHolderAuthorityError(authority, ownerId);
-    }
-  } catch (error) {
-    if (isGoalHolderAuthorityError(error)) throw error;
-    /* A storage/read failure still preserves inherited child provenance. It
-       does not authorize a GOAL holder because that leg produced no verdict. */
+  const authority = await assertGoalHolderMutationAuthority(workspaceId, ownerId, sql);
+  if (authority.status === 'elected' || authority.status === 'handoff') {
+    return authority.goalId;
   }
   return getInheritedGoalContext(workspaceId, ownerId, sql);
 }
@@ -203,7 +227,8 @@ export async function stampPlanGoalProvenance(args: {
          AND goal_id IS NULL
     `;
     return goalId;
-  } catch {
+  } catch (error) {
+    if (isGoalHolderAuthorityError(error)) throw error;
     return null;
   }
 }

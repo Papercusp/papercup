@@ -108,8 +108,10 @@ import {
 } from '../supervision/flap-damping';
 import {
   readGoalHolderRows,
+  readGoalHolderAuthority,
   resolveGoalHoldersFromRows,
   resolveHolderLiveness,
+  type GoalHolderAuthority,
   type GoalHolderRow,
 } from '../goals/holder';
 
@@ -1076,6 +1078,8 @@ export interface GoalHolderRespawnSummary {
   respawned: number;
   launchFailed: number;
   attachFailed: number;
+  /** Attach threw and durable authority could not be read; no cleanup was attempted. */
+  attachUnresolved: number;
   neutralizeFailed: number;
   gaveUp: number;
   skipped: boolean;
@@ -1091,6 +1095,8 @@ export interface GoalHolderRespawnDeps {
     ownerId: string,
     expectedLease: GoalModeElectionExpectation | null,
   ) => Promise<GoalModeElectionReceipt | null | void>;
+  /** Reconcile a thrown attach against the durable election before neutralizing. */
+  readAuthority: (workspaceId: string, ownerId: string) => Promise<GoalHolderAuthority>;
   neutralize: (goal: GoalRowLike, ownerId: string, reason: string) => Promise<void>;
   notifyHandoff: (workspaceId: string, election: GoalModeElectionReceipt) => Promise<unknown>;
   /** Refreshes control context after the direct respawn GOAL-mode write. */
@@ -1197,6 +1203,8 @@ function holderRespawnDeps(
       }
       return result.goalElection ?? null;
     },
+    readAuthority: async (workspaceId, ownerId) =>
+      await readGoalHolderAuthority(sql, workspaceId, ownerId),
     neutralize: async (goal, ownerId, reason) => {
       await neutralizeGoalHolderSession({
         workspaceId: goal.workspaceId,
@@ -1230,6 +1238,7 @@ export async function runGoalHolderRespawnOnce(
     respawned: 0,
     launchFailed: 0,
     attachFailed: 0,
+    attachUnresolved: 0,
     neutralizeFailed: 0,
     gaveUp: 0,
     skipped: false,
@@ -1316,6 +1325,8 @@ export async function runGoalHolderRespawnOnce(
 
     summary.attempted += 1;
     let launched: { ownerId: string; warnings: string[] };
+    let election: GoalModeElectionReceipt | null | void;
+    let attachError: unknown = null;
     try {
       launched = await deps.launch(goal);
     } catch (error) {
@@ -1338,7 +1349,69 @@ export async function runGoalHolderRespawnOnce(
             epoch: fold.elected.goalLeaseEpoch ?? null,
           }
         : null;
-      const election = await deps.attach(goal, launched.ownerId, expectedLease);
+      election = await deps.attach(goal, launched.ownerId, expectedLease);
+    } catch (error) {
+      attachError = error;
+      let readback: GoalHolderAuthority;
+      try {
+        readback = await deps.readAuthority(goal.workspaceId, launched.ownerId);
+      } catch (readbackError) {
+        summary.attachFailed += 1;
+        summary.attachUnresolved += 1;
+        console.warn(
+          `[goal-holder-respawner] attach outcome UNRESOLVED for ${goal.goalId} owner ${launched.ownerId}: ` +
+            `attach returned ${error instanceof Error ? error.message : String(error)} and durable authority ` +
+            `readback failed (${readbackError instanceof Error ? readbackError.message : String(readbackError)}). ` +
+            `Preserving the session without counting success or neutralizing; the next tick must reconcile authority first.`,
+        );
+        continue;
+      }
+
+      if (
+        readback.status === 'elected' &&
+        readback.goalId === goal.goalId &&
+        readback.electedOwnerId === launched.ownerId
+      ) {
+        // The election committed and only the return path threw. Preserve the
+        // elected replacement; neutralizing it would recreate the lost-holder
+        // condition and could let a later recovery race a healthy sovereign.
+        election = readback.electedEpoch == null
+          ? null
+          : {
+              ownerId: launched.ownerId,
+              goalId: goal.goalId,
+              epoch: readback.electedEpoch,
+              predecessorOwnerId: fold.elected?.ownerId ?? null,
+              handoffExpiresAt: readback.handoffExpiresAt,
+            };
+        console.warn(
+          `[goal-holder-respawner] attach returned an error for ${goal.goalId}, but durable ` +
+            `readback confirms ${launched.ownerId} is elected; preserving the committed holder: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      } else {
+        summary.attachFailed += 1;
+        const reason =
+          `GOAL attachment refused for ${goal.goalId} after launch: ` +
+          `${error instanceof Error ? error.message : String(error)}; durable authority ` +
+          `resolved ${readback.status} and did not confirm ${launched.ownerId}`;
+        try {
+          await deps.neutralize(goal, launched.ownerId, reason);
+        } catch (neutralizeError) {
+          summary.neutralizeFailed += 1;
+          console.warn(
+            `[goal-holder-respawner] neutralize failed for ${goal.goalId} owner ${launched.ownerId}: ` +
+              `${neutralizeError instanceof Error ? neutralizeError.message : String(neutralizeError)}`,
+          );
+        }
+        console.warn(
+          `[goal-holder-respawner] attach failed for ${goal.goalId} owner ${launched.ownerId} (non-fatal, damped): ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+    }
+
+    try {
       summary.respawned += 1;
       if (election?.predecessorOwnerId) {
         try {
@@ -1374,21 +1447,12 @@ export async function runGoalHolderRespawnOnce(
         // for injected implementations as well.
       }
     } catch (error) {
-      summary.attachFailed += 1;
-      const reason =
-        `GOAL attachment refused for ${goal.goalId} after launch: ` +
-        `${error instanceof Error ? error.message : String(error)}`;
-      try {
-        await deps.neutralize(goal, launched.ownerId, reason);
-      } catch (neutralizeError) {
-        summary.neutralizeFailed += 1;
-        console.warn(
-          `[goal-holder-respawner] neutralize failed for ${goal.goalId} owner ${launched.ownerId}: ` +
-            `${neutralizeError instanceof Error ? neutralizeError.message : String(neutralizeError)}`,
-        );
-      }
+      // Election is already confirmed at this point. Notification/control
+      // projection failures must never neutralize a sovereign holder.
       console.warn(
-        `[goal-holder-respawner] attach failed for ${goal.goalId} owner ${launched.ownerId} (non-fatal, damped): ${error instanceof Error ? error.message : String(error)}`,
+        `[goal-holder-respawner] confirmed holder post-attach work failed for ${goal.goalId} owner ${launched.ownerId}: ` +
+          `${error instanceof Error ? error.message : String(error)}` +
+          `${attachError ? ` (attach had returned: ${attachError instanceof Error ? attachError.message : String(attachError)})` : ''}`,
       );
     }
   }

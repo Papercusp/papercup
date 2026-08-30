@@ -73,6 +73,7 @@ vi.mock('./source', () => ({
   listPlanIndexRows: vi.fn(async () => []),
 }));
 vi.mock('../../modes/goal-context', () => ({
+  resolveGoalContext: vi.fn(async () => 'goal-42'),
   stampPlanGoalProvenance: vi.fn(async () => 'goal-42'),
 }));
 // new.ts-only collaborators (schema-immunity tests import its tool object).
@@ -92,14 +93,19 @@ vi.mock('./with-plan-lock', () => ({
 }));
 
 const { resolvePlanScope } = await import('./source');
-const { stampPlanGoalProvenance } = await import('../../modes/goal-context');
+const { resolveGoalContext, stampPlanGoalProvenance } = await import('../../modes/goal-context');
+const { insertPlanRun } = await import('./runs');
+const { withPlanLock } = await import('./with-plan-lock');
 const { resolveAgentIdentity } = await import('../coordination/identity');
 const launchTool = (await import('./launch')).default;
 const newTool = (await import('./new')).default;
 
 const resolveScopeM = vi.mocked(resolvePlanScope);
+const resolveGoalM = vi.mocked(resolveGoalContext);
 const stampM = vi.mocked(stampPlanGoalProvenance);
 const identityM = vi.mocked(resolveAgentIdentity);
+const insertRunM = vi.mocked(insertPlanRun);
+const withPlanLockM = vi.mocked(withPlanLock);
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const launch = (extra: Record<string, unknown> = {}) =>
@@ -111,6 +117,7 @@ const launch = (extra: Record<string, unknown> = {}) =>
 beforeEach(() => {
   vi.clearAllMocks();
   resolveScopeM.mockResolvedValue({ workspaceId: 'ws-1', harnessSlug: 'hive-home' });
+  resolveGoalM.mockResolvedValue('goal-42');
   stampM.mockResolvedValue('goal-42');
   identityM.mockReturnValue(launcherIdentity());
 });
@@ -130,6 +137,7 @@ describe('plans:launch stamps plan goal provenance from the RESOLVED scope + lau
       planSlug: 'the-plan',
       ownerId: 'launcher-1',
     });
+    expect(resolveGoalM).toHaveBeenCalledWith('ws-1', 'launcher-1');
   });
 
   it('an unattributable launcher stamps with no ownerId — the helper then no-ops', async () => {
@@ -142,14 +150,17 @@ describe('plans:launch stamps plan goal provenance from the RESOLVED scope + lau
     expect(stampM.mock.calls[0]![0]).toMatchObject({ ownerId: undefined });
   });
 
-  it('a scope-resolution failure skips the stamp without failing the launch', async () => {
+  it('a scope-resolution failure refuses before the run row exists', async () => {
     resolveScopeM.mockRejectedValue(new Error('unregistered harness'));
-    const out = await launch();
-    expect(out.isError).toBeUndefined();
-    const body = JSON.parse(out.content[0]!.text) as { runId: number; status: string };
-    expect(body.runId).toBe(41);
-    // Give the void IIFE a tick — the stamp must never have fired.
-    await new Promise((r) => setImmediate(r));
+    await expect(launch()).rejects.toThrow('unregistered harness');
+    expect(insertRunM).not.toHaveBeenCalled();
+    expect(stampM).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable/superseded authority refuses before the plan run is created', async () => {
+    resolveGoalM.mockRejectedValue(new Error('goal holder superseded'));
+    await expect(launch()).rejects.toThrow('goal holder superseded');
+    expect(insertRunM).not.toHaveBeenCalled();
     expect(stampM).not.toHaveBeenCalled();
   });
 
@@ -158,6 +169,19 @@ describe('plans:launch stamps plan goal provenance from the RESOLVED scope + lau
     const out = await launch();
     expect(out.isError).toBeUndefined();
     await vi.waitFor(() => expect(stampM).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('plans:new fences the attributable creator before writing the plan', () => {
+  it('does not enter withPlanLock when goal-holder authority refuses', async () => {
+    resolveGoalM.mockRejectedValue(new Error('goal holder superseded'));
+    await expect(
+      (newTool as { handler: (a: never, c: never) => Promise<Out> }).handler(
+        { harness: 'member-harness', slug: 'demo-plan', title: 'Demo', force: true } as never,
+        { emit: vi.fn(), metadata: vi.fn() } as never,
+      ),
+    ).rejects.toThrow('goal holder superseded');
+    expect(withPlanLockM).not.toHaveBeenCalled();
   });
 });
 

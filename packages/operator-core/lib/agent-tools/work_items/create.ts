@@ -366,17 +366,21 @@ export default defineTool({
     // rail SERVER-SIDE from the creator's RESOLVED goal context — never a tool
     // argument (the zod schema above is untouched on purpose; same operative rule
     // as the goal-provenance stamps, whose whole point is replacing self-report).
-    // Resolved ONCE per call, not per item. The resolver erroring fails OPEN
-    // (non-goal is the overwhelming case and this must never block ordinary
-    // filing); a resolved goal with the flag ON arms the fail-CLOSED dedup
-    // contract in the core (see _create-core.ts goalDedupGate).
+    // Resolved ONCE per call, not per item. A resolved goal with the flag ON
+    // arms the fail-CLOSED dedup contract in the core (see _create-core.ts
+    // goalDedupGate). Authority errors themselves are fail-CLOSED regardless
+    // of the optional flag; the resolver is also the mutation fence below.
+    // WI-1139512: resolve authority BEFORE any item is created, even while the
+    // optional dedup flag is off. The resolver is also the expired-holder fence;
+    // hiding it behind the flag (and catch-to-null) let a superseded GOAL holder
+    // keep filing mutations whenever the feature flag was disabled or PG failed.
+    const resolvedGoalContext =
+      ident.workspaceId && ident.workspaceId !== '*' && ident.ownerId
+        ? await resolveGoalContext(ident.workspaceId, ident.ownerId)
+        : null;
     const goalDedupGate =
       (await getFlag(FLAGS.GOAL_CREATE_DEDUP_GATE, 'system')) &&
-      Boolean(
-        ident.workspaceId && ident.workspaceId !== '*' && ident.ownerId
-          ? await resolveGoalContext(ident.workspaceId, ident.ownerId).catch(() => null)
-          : null,
-      );
+      Boolean(resolvedGoalContext);
     const env = await runBulk(
       list,
       async (spec) => {
@@ -436,6 +440,11 @@ export default defineTool({
             const requestedAssignee = spec.assign_to;
             spec.payload = {
               ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
+              // EI-21830980285885156: the downgraded filing is deliberately
+              // unassigned, so keep it out of every generic self-select pool
+              // until a fleet owner explicitly adopts it. _create-core stamps
+              // the creator/reason/timestamp attribution for this durable hold.
+              _claimHold: true,
               fleetScopeDowngrade: {
                 requestedAssignee,
                 reportedBy: ident.ownerId,

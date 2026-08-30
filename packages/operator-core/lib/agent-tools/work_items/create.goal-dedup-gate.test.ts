@@ -118,10 +118,10 @@ describe('work_items:create × goal dedup gate derivation (P-004)', () => {
     );
   });
 
-  it('flag OFF → rail stays false and the resolver is never consulted', async () => {
+  it('flag OFF → rail stays false but the authority fence still resolves before creation', async () => {
     goalMocks.getFlag.mockResolvedValue(false);
     await body({ kind: 'bug', title: 'b' });
-    expect(goalMocks.resolveGoalContext).not.toHaveBeenCalled();
+    expect(goalMocks.resolveGoalContext).toHaveBeenCalledOnce();
     expect(createM).toHaveBeenCalledWith(
       expect.objectContaining({ goalDedupGate: false }),
       expect.anything(),
@@ -137,14 +137,10 @@ describe('work_items:create × goal dedup gate derivation (P-004)', () => {
     );
   });
 
-  it('resolver THROWING fails OPEN (rail false) and the create still lands', async () => {
+  it('resolver THROWING fails CLOSED before any work-item mutation', async () => {
     goalMocks.resolveGoalContext.mockRejectedValue(new Error('pg down'));
-    const out = await body({ kind: 'bug', title: 'b' });
-    expect(out.counts).toMatchObject({ ok: 1 });
-    expect(createM).toHaveBeenCalledWith(
-      expect.objectContaining({ goalDedupGate: false }),
-      expect.anything(),
-    );
+    await expect(body({ kind: 'bug', title: 'b' })).rejects.toThrow('pg down');
+    expect(createM).not.toHaveBeenCalled();
   });
 
   it('the rail can NEVER arrive as a tool argument — strict schema rejects it loudly (single AND items form)', () => {

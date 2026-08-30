@@ -40,6 +40,8 @@ import {
 } from './stop-seam';
 import { clearGoalPause, stampGoalPause } from './pause-record';
 import { addGoalFieldChange, appendGoalHistory, type GoalFieldChange } from './history';
+import { isGoalHolderAuthorityError } from '@papercusp/operator-core/lib/modes/goal-context';
+import { assertGoalWriteAuthorityForCaller } from '@papercusp/operator-core/lib/goals/write-authority';
 
 function jsonField(value: unknown): unknown {
   if (typeof value !== 'string') return value ?? null;
@@ -259,6 +261,26 @@ const goalUpdateTool = defineTool({
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
     const prev = existing[0]!;
+    // The row read above gives the canonical workspace; fence the attributable
+    // caller before any subordinate edge/settings write or the goal UPDATE.
+    // Missing legacy identity stays the pre-existing unattributable system path,
+    // but any real agent identity must prove it is not an expired GOAL holder.
+    try {
+      await assertGoalWriteAuthorityForCaller(ctx, prev.workspace_id, ctx.tx as unknown as Sql);
+    } catch (error) {
+      if (isGoalHolderAuthorityError(error)) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: [error.message],
+          goalHolderAuthority: {
+            code: error.code,
+            ...(error.authority ?? {}),
+          },
+        };
+      }
+      throw error;
+    }
     let previousBlockedBy: string[] | null = null;
     if (args.blockedBy !== undefined) {
       const edges = await readGoalBlockedByEdges(ctx.tx, prev.workspace_id);

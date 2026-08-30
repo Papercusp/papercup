@@ -83,6 +83,9 @@ export const ALLOWLIST = new Set([
   // Kept so that renaming the exports cannot silently turn the module into its
   // own first offender.
   'packages/operator-core/lib/goals/holder.ts',
+  // Dependency-light authority half of the same canonical holder subsystem.
+  // control-anchor imports this without pulling the liveness/agent-MCP graph.
+  'packages/operator-core/lib/goals/holder-authority.ts',
 
   // The generic mode store: CRUD over agent_modes across every mode axis, of
   // which 'goal' is one. It is the layer the holder module is built ON, so

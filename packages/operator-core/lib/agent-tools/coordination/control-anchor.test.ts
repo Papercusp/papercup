@@ -8,6 +8,7 @@ import {
   decideControlTransitionDelivery,
   estimateControlAnchorTokens,
   normalizeControlAnchorState,
+  projectGoalHolderAuthority,
   persistControlAnchor,
   renderControlAnchor,
   type ControlAnchorState,
@@ -92,6 +93,32 @@ describe('CTRL anchor wakeSource (WI-7302 part 2)', () => {
 });
 
 describe('compact durable CTRL anchor', () => {
+  it('carries a deterministic superseded stand-down and omits ordinary authority', () => {
+    const superseded = projectGoalHolderAuthority({
+      status: 'superseded',
+      goalId: 'goal-42',
+      electedOwnerId: 'holder-new',
+      electedEpoch: 7,
+      handoffExpiresAt: '2026-08-30T10:00:00.000Z',
+    });
+    expect(normalizeControlAnchorState(state({ goalAuthority: superseded }))).toMatchObject({
+      goalAuthority: {
+        status: 'superseded',
+        goalId: 'goal-42',
+        electedOwnerId: 'holder-new',
+        electedEpoch: 7,
+        standDown: true,
+      },
+    });
+    expect(projectGoalHolderAuthority({
+      status: 'elected',
+      goalId: 'goal-42',
+      electedOwnerId: 'holder-new',
+      electedEpoch: 7,
+      handoffExpiresAt: null,
+    })).toBeUndefined();
+  });
+
   it('canonicalizes duplicated modes/items so equivalent reads are byte-stable', () => {
     expect(normalizeControlAnchorState(state())).toMatchObject({
       modes: ['auto', 'ideate'],

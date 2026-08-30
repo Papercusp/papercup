@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  assertGoalHolderMutationAuthority,
   resolveGoalContext,
   getInheritedGoalContext,
   setInheritedGoalContext,
@@ -211,6 +212,41 @@ describe('resolveGoalContext', () => {
     await expect(resolveGoalContext(WS, 'member-1', sql)).resolves.toBe('goal-42');
   });
 
+  it('fails closed when holder authority is unreadable instead of falling through to inherited context', async () => {
+    const { sql } = mockSql({
+      briefs: [{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-42' }],
+      failOn: /WITH mine AS MATERIALIZED/,
+    });
+
+    await expect(resolveGoalContext(WS, 'member-1', sql)).rejects.toMatchObject({
+      name: 'GoalHolderAuthorityError',
+      code: 'goal_holder_authority_unreadable',
+      authority: null,
+      ownerId: 'member-1',
+    });
+  });
+
+  it('the explicit mutation fence permits non-GOAL actors and refuses an expired predecessor', async () => {
+    const predecessor = goalMode('holder-old', 'goal-42', { goal_lease_epoch: 1 });
+    const successor = goalMode('holder-new', 'goal-42', {
+      goal_lease_epoch: 2,
+      goal_handoff_from_owner_id: 'holder-old',
+      goal_handoff_expires_at: '2020-01-01T00:00:00.000Z',
+    });
+    const { sql } = mockSql({ modes: [predecessor, successor] });
+
+    await expect(assertGoalHolderMutationAuthority(WS, 'ordinary-agent', sql)).resolves.toMatchObject({
+      status: 'none',
+    });
+    await expect(assertGoalHolderMutationAuthority(WS, 'holder-new', sql)).resolves.toMatchObject({
+      status: 'elected',
+    });
+    await expect(assertGoalHolderMutationAuthority(WS, 'holder-old', sql)).rejects.toMatchObject({
+      code: 'goal_holder_superseded',
+      authority: { electedOwnerId: 'holder-new' },
+    });
+  });
+
   it('treats a goal-mode row with no subject as no goal, falling through to inherited', async () => {
     // The measured-real state: an agent entered GOAL mode but has not filed its
     // goal yet (goal-session.ts). It must not resolve to a bogus stamp.
@@ -353,6 +389,21 @@ describe('stampPlanGoalProvenance (migration 791 / goal-mode-design-intent-harde
       failOn: /UPDATE harness_shared.harness_plans/,
     });
     await expect(stampPlanGoalProvenance({ ...stampArgs('agent-a'), sql })).resolves.toBeNull();
+    expect(plans[0]!.goal_id).toBeNull();
+  });
+
+  it('never downgrades a superseded-holder refusal into a missing provenance stamp', async () => {
+    const predecessor = goalMode('holder-old', 'goal-42', { goal_lease_epoch: 1 });
+    const successor = goalMode('holder-new', 'goal-42', {
+      goal_lease_epoch: 2,
+      goal_handoff_from_owner_id: 'holder-old',
+      goal_handoff_expires_at: '2020-01-01T00:00:00.000Z',
+    });
+    const { sql, plans } = mockSql({ modes: [predecessor, successor], plans: [planRow()] });
+
+    await expect(stampPlanGoalProvenance({ ...stampArgs('holder-old'), sql })).rejects.toMatchObject({
+      code: 'goal_holder_superseded',
+    });
     expect(plans[0]!.goal_id).toBeNull();
   });
 

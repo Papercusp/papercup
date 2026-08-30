@@ -17,6 +17,10 @@ import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
+import {
+  readGoalHolderAuthority,
+  type GoalHolderAuthority,
+} from '../../goals/holder-authority';
 
 export const CONTROL_ANCHOR_SCHEMA = 'ctrl-v1' as const;
 export const CONTROL_TRANSITION_SCHEMA = 'ctrl-transition-v1' as const;
@@ -45,6 +49,19 @@ export interface ControlAnchorState {
    */
   wakeSource?: SelfWakeSource;
   carry: 'warm' | 'cold';
+  /**
+   * Durable, re-derived stand-down instruction for an expired GOAL predecessor.
+   * Omitted for every non-superseded session to keep the compact anchor small.
+   * This is a projection of agent_modes election state, never a second lease.
+   */
+  goalAuthority?: {
+    status: 'superseded';
+    goalId: string;
+    electedOwnerId: string | null;
+    electedEpoch: number | null;
+    handoffExpiresAt: string | null;
+    standDown: true;
+  };
   /** EI-203843: a durable fleet release marker carried by the compact anchor. */
   lifecycle?: SessionBriefLifecycle;
   route:
@@ -203,6 +220,18 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
       }
     : input.route;
   const released = input.lifecycle?.released;
+  const goalAuthority = input.goalAuthority?.status === 'superseded' && input.goalAuthority.goalId
+    ? {
+        status: 'superseded' as const,
+        goalId: input.goalAuthority.goalId.slice(0, MAX_ID_CHARS),
+        electedOwnerId: cap(input.goalAuthority.electedOwnerId),
+        electedEpoch: input.goalAuthority.electedEpoch == null
+          ? null
+          : Math.max(0, Math.floor(input.goalAuthority.electedEpoch)),
+        handoffExpiresAt: cap(input.goalAuthority.handoffExpiresAt),
+        standDown: true as const,
+      }
+    : undefined;
   return {
     modes: [...new Set(input.modes.map(String))].sort().map((v) => v.slice(0, 40)),
     loop: {
@@ -213,6 +242,7 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
     // normalized into a `'none'` that would read as a positive finding.
     ...(input.wakeSource ? { wakeSource: input.wakeSource } : {}),
     carry: input.carry === 'cold' ? 'cold' : 'warm',
+    ...(goalAuthority ? { goalAuthority } : {}),
     ...(released?.fleet && released.at && released.by
       ? {
           lifecycle: {
@@ -232,6 +262,21 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
       items,
       ...(allItems.length > items.length ? { itemsMore: allItems.length - items.length } : {}),
     },
+  };
+}
+
+/** Pure projection used by the live reconciler and focused acceptance tests. */
+export function projectGoalHolderAuthority(
+  authority: GoalHolderAuthority,
+): ControlAnchorState['goalAuthority'] {
+  if (authority.status !== 'superseded' || !authority.goalId) return undefined;
+  return {
+    status: 'superseded',
+    goalId: authority.goalId,
+    electedOwnerId: authority.electedOwnerId,
+    electedEpoch: authority.electedEpoch,
+    handoffExpiresAt: authority.handoffExpiresAt,
+    standDown: true,
   };
 }
 
@@ -552,6 +597,10 @@ export async function buildControlAnchorState(
   );
   const membershipP = guard(latestFleetMembership(workspaceId, ownerId, sql));
   const briefP = guard(getSessionBrief({ ownerId }));
+  // Fail closed: an unreadable authority leg must not emit a fresh anchor that
+  // silently omits a predecessor's stand-down order. The enclosing orient or
+  // mutation refresh can retry; it may never manufacture authority from absence.
+  const goalAuthorityP = guard(readGoalHolderAuthority(sql, workspaceId, ownerId));
     // ⚠ NO `expires_ts > clock_timestamp()` FILTER HERE — deliberately.
     //
     // `plan_item_claims` is a TTL'd coordination LEASE (default ttl_sec 1200 =
@@ -592,11 +641,12 @@ export async function buildControlAnchorState(
       () => new Map<string, SelfWakeSignals>(),
     ),
   );
-  const [modes, loop, membership, brief, claims, selfWake] = await Promise.all([
+  const [modes, loop, membership, brief, goalAuthority, claims, selfWake] = await Promise.all([
     modesP,
     loopP,
     membershipP,
     briefP,
+    goalAuthorityP,
     claimsP,
     selfWakeP,
   ]);
@@ -613,6 +663,7 @@ export async function buildControlAnchorState(
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',
+    goalAuthority: projectGoalHolderAuthority(goalAuthority),
     lifecycle: brief?.lifecycle ?? undefined,
     route,
     scope: {

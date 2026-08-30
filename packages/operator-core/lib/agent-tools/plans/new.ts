@@ -28,7 +28,8 @@ import { summarizeItemParse } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
-import { stampPlanGoalProvenance } from '../../modes/goal-context';
+import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 /**
  * A boolean flag that ALSO accepts the exact wire strings `'true'`/`'false'`.
@@ -340,6 +341,15 @@ export default defineTool({
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+    let creatorOwnerId: string | undefined;
+    try {
+      creatorOwnerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      // Some legacy in-process plan callers carry the already-resolved ownerId
+      // directly rather than the transport identity fields. Preserve that
+      // attributable identity so it gets the same authority fence.
+      creatorOwnerId = (ctx as { ownerId?: string }).ownerId;
+    }
 
     // ── P-023: typed property DECLARATIONS — validated BEFORE the plan is
     // created (datatype refs must resolve in datatype_registry; defaults must
@@ -440,6 +450,17 @@ export default defineTool({
       } catch {
         /* dedup is advisory — never block creation on an index hiccup */
       }
+    }
+
+    // Authority is checked before withPlanLock can write the plan. This is
+    // intentionally separate from the later best-effort provenance UPDATE:
+    // discovering an expired holder after creation is already too late.
+    if (creatorOwnerId) {
+      const authorityScope = await resolvePlanScope({
+        ...(harnessSlug ? { harnessSlug } : {}),
+        ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      });
+      await resolveGoalContext(authorityScope.workspaceId, creatorOwnerId);
     }
 
     const rev = planRevisionCapture(
@@ -555,7 +576,7 @@ export default defineTool({
       workspaceId: result.scope.workspaceId,
       harnessSlug: result.scope.harnessSlug,
       planSlug: value.slug,
-      ownerId: (ctx as { ownerId?: string })?.ownerId,
+      ownerId: creatorOwnerId,
     });
 
     // Parse the just-written body so the caller gets item-parse feedback in the

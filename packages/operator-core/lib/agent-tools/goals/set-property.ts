@@ -22,6 +22,8 @@ import { applyGoalPropertyWrite } from '../../typed-properties-db';
 import { PROPERTY_NAME, renderPropertyDelta } from '../../typed-properties';
 import { ADMIN_COORD_UI_OWNER, resolveAgentIdentity } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
+import { isGoalHolderAuthorityError } from '../../modes/goal-context';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -77,9 +79,23 @@ export default defineTool({
       actorId = ident.ownerId;
       ownerAuthority = ident.ownerId === ADMIN_COORD_UI_OWNER;
     } catch {
-      /* unresolvable identity → agent-edit under 'system' */
+      actorId = (ctx as { ownerId?: string }).ownerId ?? 'system';
     }
     const provenance = ownerAuthority ? ('owner-edit' as const) : ('agent-edit' as const);
+
+    try {
+      await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as unknown as postgres.Sql);
+    } catch (error) {
+      if (isGoalHolderAuthorityError(error)) {
+        return text({
+          error: error.code,
+          message: error.message,
+          goalId: args.goalId,
+          authority: error.authority,
+        }, true);
+      }
+      throw error;
+    }
 
     const result = await applyGoalPropertyWrite(ctx.tx as unknown as postgres.Sql, {
       workspaceId,

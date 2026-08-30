@@ -23,6 +23,7 @@ let finalRow: Record<string, unknown> | null = null;
 let spendRows: Array<Record<string, string | null>> = [];
 let blockedByRows: Array<{ blocked_ref: string; blocker_kind: string; blocker_ref: string }> = [];
 let blockerGoalRows: Array<{ id: string; status: string }> = [];
+let goalAuthorityRows: Array<Record<string, unknown>> = [];
 
 function makeTx() {
   return (strings: TemplateStringsArray, ...params: unknown[]) => {
@@ -39,6 +40,9 @@ function makeTx() {
     }
     if (/SELECT id, status FROM harness_shared\.goals/.test(sql)) {
       return Promise.resolve(blockerGoalRows);
+    }
+    if (/WITH mine AS MATERIALIZED/.test(sql) && /elected_owner_id/.test(sql)) {
+      return Promise.resolve(goalAuthorityRows);
     }
     if (/SELECT id, workspace_id, title, body, status/.test(sql)) {
       return Promise.resolve(finalRow ? [finalRow] : existingRow ? [existingRow] : []);
@@ -107,6 +111,7 @@ beforeEach(() => {
   finalRow = null;
   blockedByRows = [];
   blockerGoalRows = [];
+  goalAuthorityRows = [];
   // The authoritative fixture is $12.34, so every accepted snapshot must be
   // exactly 1234 cents. Tests that use an unpriced/empty rollup override this.
   spendRows = [
@@ -118,6 +123,41 @@ beforeEach(() => {
       unpriced_samples: '0',
     },
   ];
+});
+
+describe('goals:update — effective-holder mutation fence (WI-1139512)', () => {
+  it('refuses an expired predecessor before any goal mutation', async () => {
+    goalAuthorityRows = [{
+      subject: 'goal-42',
+      elected_owner_id: 'holder-new',
+      elected_epoch: 9,
+      predecessor_owner_id: 'holder-old',
+      handoff_expires_at: '2020-01-01T00:00:00.000Z',
+    }];
+
+    const result = (await tool.handler(
+      tool.args.parse({ id: 'g1', title: 'must not land' }) as never,
+      {
+        ...CTX(),
+        isSuperuser: true,
+        uiClientId: 'holder-old',
+      } as never,
+    )) as {
+      data: unknown;
+      degraded?: boolean;
+      degradedReasons?: string[];
+      goalHolderAuthority?: { code?: string; electedOwnerId?: string };
+    };
+
+    expect(result.data).toBeNull();
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReasons?.join(' ')).toContain('holder-new');
+    expect(result.goalHolderAuthority).toMatchObject({
+      code: 'goal_holder_superseded',
+      electedOwnerId: 'holder-new',
+    });
+    expect(calls.some((call) => /UPDATE harness_shared\.goals/.test(call.sql))).toBe(false);
+  });
 });
 
 /* ── the repair door for an unlaunchable install_slug (EI-21563406996333542)

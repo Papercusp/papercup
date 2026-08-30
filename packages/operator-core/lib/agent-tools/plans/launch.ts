@@ -31,7 +31,7 @@ import { buildPlanContextBundle } from './context-bundle';
 import { checkPlanStartable } from './plan-start-gate';
 import { getRepoRoot, resolvePlanScope } from './source';
 import { insertPlanRun } from './runs';
-import { stampPlanGoalProvenance } from '../../modes/goal-context';
+import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { executePlanAgentTurn } from './turn';
 import {
   resolveAgentIdentity,
@@ -183,6 +183,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   //    == plan_runs.session_id) and resolve who launched it.
   const sessionId = globalThis.crypto.randomUUID();
   let launchedBy = 'unknown';
+  let launchScope: Awaited<ReturnType<typeof resolvePlanScope>> | null = null;
   // gateway-priority-tiers (WI-4542/WI-5676) — see derivePlanAgentPriority above.
   let launchPriority = derivePlanAgentPriority(undefined);
   try {
@@ -192,6 +193,14 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   } catch {
     // Unattributable caller — record the launch as 'unknown' rather
     // than fail it (launched_by is NOT NULL). Keep the 'su' priority default.
+  }
+
+  // Resolve + fence before the run row exists. The old launch-time provenance
+  // stamp happened after insertion and swallowed every failure, so an expired
+  // predecessor could launch work and merely lose its decorative goal_id.
+  if (launchedBy !== 'unknown') {
+    launchScope = await resolvePlanScope(scopeOpts);
+    await resolveGoalContext(launchScope.workspaceId, launchedBy);
   }
 
   const launchHarnessSlug = resolveCtxHarnessSlug(sctx);
@@ -238,7 +247,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   // same trap new.ts documents. Best-effort + un-awaited: provenance must not
   // fail or slow a launch that already succeeded.
   void (async () => {
-    const scope = await resolvePlanScope(scopeOpts);
+    const scope = launchScope ?? await resolvePlanScope(scopeOpts);
     await stampPlanGoalProvenance({
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
