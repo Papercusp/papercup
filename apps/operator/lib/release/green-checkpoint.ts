@@ -14051,10 +14051,37 @@ export function realCheckpointDeps(
     // WI-488635: the retention sweep the per-queue cleanup above cannot provide — it only
     // ever runs on a path a LIVING run reaches, so a run that dies leaks its tree forever.
     async reapAbandonedCandidateWorktrees(activePaths: string[]) {
+      // WI-954677: the 6h age floor is right in the ordinary case and wrong in the only
+      // case that matters. Candidate trees appear about hourly, so ~6 coexist by design
+      // and each is un-reapable precisely BECAUSE it is recent — meaning this sweep, whose
+      // stated job is to free space before the Cargo admission check below, could never
+      // reclaim anything when space was actually short.
+      //
+      // Reuse the disk-space alarm's OWN low-space predicate rather than minting a second
+      // threshold here: "under pressure" must have exactly one definition in this gate.
+      // Non-fatal by construction — a sampling failure leaves the conservative floor in
+      // force, which is the same behaviour as before this existed.
+      let diskPressure = false;
+      try {
+        const [snapshots, policy] = await Promise.all([
+          sampleCheckpointDisk(),
+          checkpointDiskPolicy(),
+        ]);
+        diskPressure = snapshots.some((snapshot) =>
+          isDiskSnapshotLow(snapshot, policy),
+        );
+      } catch (error) {
+        log(
+          `warn: candidate-worktree sweep could not sample disk pressure, keeping the default floor: ${
+            error instanceof Error ? error.message : error
+          }`,
+        );
+      }
       await reapAbandonedCandidateWorktrees({
         integrationRoot: cfg.integrationRoot,
         pipeline: pipelineName(cfg.integrationRoot),
         activeWorktreePaths: activePaths,
+        diskPressure,
         deps: {
           async gitWorktreeRemove(worktreePath: string) {
             const removed = await exec(
