@@ -221,6 +221,15 @@ export interface ClaudeAdapterOptions {
   failoverBackoffMs: number;
   /** 529 server-overload backoff (live `OVERLOAD_529_BACKOFF_MS`). */
   overloadBackoffMs: number;
+  /**
+   * Pace before a transient-429 ROTATE (live `TRANSIENT_429_BACKOFF_MS`).
+   *
+   * Load-bearing, not cosmetic: the destination account may be inside the SAME
+   * sub-minute burst window the current one just tripped, so rotating instantly
+   * converts one upstream 429 into two. Dropping it is what regressed the WI-673
+   * rig from 8 upstream 429s to 9 (D-018).
+   */
+  transientBackoffMs: number;
   pickEgress(account: ActiveAccount, now: number): ClaudeEgressPick;
   siblingEgressAvailable(account: ActiveAccount, now: number, currentKey: string): boolean;
   dispatcherFor(account: ActiveAccount, entry: unknown): unknown | Promise<unknown>;
@@ -379,7 +388,11 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
   const overloadRetried = new Set<string>();
   let seq = 0;
 
-  const routeFor = (account: ActiveAccount, reason: ClaudeRouteReason): GatewayKernelRoute<ClaudeRouteValue> => {
+  const routeFor = (
+    account: ActiveAccount,
+    reason: ClaudeRouteReason,
+    delayMs = 0,
+  ): GatewayKernelRoute<ClaudeRouteValue> => {
     const egress = opts.pickEgress(account, now());
     seq += 1;
     return {
@@ -389,8 +402,29 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       key: `claude:${account.accountId}:${reason}:${seq}`,
       accountId: account.accountId,
       transport: CLAUDE_TRANSPORT,
+      // D-018: the live ladder's inter-attempt pace, restored as route DATA. It is
+      // keyed on the FAILURE that provoked the retry, not on the destination —
+      // `internalRetry.backoffMs` was set per 429 branch (gateway.ts:4521/4526/
+      // 4592/4635 pre-migration) and then slept once before `continue`.
+      delayMs,
       value: { account, egress, reason },
     };
+  };
+
+  /**
+   * The pace owed before a ROTATE, read off the failure that provoked it.
+   *
+   * Pre-migration this was one expression: `backoffMs: bareIpRotate ? 0 :
+   * TRANSIENT_429_BACKOFF_MS`, reached only from the general-429 branch. A
+   * usage-cap rotate (`backoffMs: 0`) and an org-disallowed 403 rotate
+   * (`backoffMs: 0`) deliberately paced NOTHING — the account is walled for
+   * hours, so pausing before leaving it buys nothing and costs the bee latency.
+   * Only the transient 429 pauses, because that is the one case where the
+   * destination may still be inside the same sub-minute burst window.
+   */
+  const rotateDelayFor = (kind: ClaudeFailureKind | null, status: number | null): number => {
+    if (kind === 'usage-cap' || kind === 'org-disallowed') return 0;
+    return status === 429 ? opts.transientBackoffMs : 0;
   };
 
   const resolveResetAt = (
@@ -438,7 +472,10 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       if (kind === 'overload' || (kind === null && status === 529)) {
         if (overloadRetried.has(account.accountId)) return null;
         overloadRetried.add(account.accountId);
-        return routeFor(account, 'overload-backoff');
+        // D-018: `{ rotate: false, backoffMs: OVERLOAD_529_BACKOFF_MS }`. The whole
+        // point of this branch is to give the upstream a second before re-asking it
+        // the same question — an instant re-attempt is not a backoff.
+        return routeFor(account, 'overload-backoff', opts.overloadBackoffMs);
       }
 
       // Sibling egress IP on the SAME account, before parking it — the live
@@ -454,6 +491,10 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         transportFailure || (kind === null ? status === 429 || (status !== null && status >= 500) : kind === 'bare-429');
       if (!siblingEligible) return null;
       if (!opts.siblingEgressAvailable(account, now(), egress.key)) return null;
+      // D-018: NO pace. Both live paths that take this branch retried immediately —
+      // `backoffMs: bareIpRotate ? 0 : …` for the bare-burst IP rotate, and a bare
+      // `continue` for the transport-failure one. The cooled IP is the fix; a wait
+      // would only delay a request that is already moving to a different egress.
       return routeFor(account, 'sibling-egress');
     },
 
@@ -489,7 +530,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       if (!next || next.accountId === current) return null;
       if (triedAccounts.has(next.accountId)) return null;
       triedAccounts.add(next.accountId);
-      return routeFor(next, 'rotate');
+      return routeFor(next, 'rotate', rotateDelayFor(kind, context.lastResponse?.status ?? null));
     },
 
     async prepareAttempt(context: GatewayKernelAttemptContext<ClaudeRouteValue>): Promise<ClaudePreparedAttempt> {
