@@ -695,7 +695,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
   if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
   const ws = eventsWs();
   const rows = await boundedOrgTxn(
-    (tx) => {
+    async (tx) => {
       const noteFilter =
         options.includeNotePrefix != null
           ? tx`AND note LIKE ${options.includeNotePrefix + '%'}`
@@ -703,7 +703,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
             ? tx`AND (note IS NULL OR note NOT LIKE ${options.excludeNotePrefix + '%'})`
             : tx``;
       const onceFilter = options.onceOnly ? tx`AND once = true` : tx``;
-      return tx`
+      const cancelled = await tx`
         UPDATE harness_shared.event_awaits
            SET cancelled_at = now()
          WHERE workspace_id = ${ws}
@@ -715,12 +715,22 @@ export async function cancelAwaitsForSubscribersOnKeys(
            ${noteFilter}
         RETURNING id
       `;
+      // Settle INSIDE the bounded txn, threading `tx` as the client — matching
+      // cancelAwait below, the only other call site that runs this settle from
+      // inside a boundedOrgTxn. Omitting the client here defaulted the settle to
+      // `getOrgPg().sql`, so this pre-registration path escaped its own
+      // AWAIT_PRE_REGISTRATION_TXN_OPTIONS bounds (acquire/statement/lock) into an
+      // UNBOUNDED UPDATE against event_wake_deliveries. Keeping it in-txn also makes
+      // cancel+settle atomic, closing the window where awaits are already cancelled
+      // but their queued deliveries are still live.
+      await settleQueuedDeliveriesForCancelledAwaits(
+        cancelled.map((row: any) => Number(row.id)),
+        'await cancelled by lifecycle/supersession cleanup',
+        { client: tx },
+      );
+      return cancelled;
     },
     AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
-  );
-  await settleQueuedDeliveriesForCancelledAwaits(
-    rows.map((row: any) => Number(row.id)),
-    'await cancelled by lifecycle/supersession cleanup',
   );
   return rows.length;
 }
