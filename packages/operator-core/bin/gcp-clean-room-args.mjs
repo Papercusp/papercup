@@ -27,6 +27,17 @@ export const CLEAN_ROOM_NETWORK_TAG = 'papercusp-clean-room';
 /** The fixed range Google's IAP TCP-forwarding fleet connects FROM. Not configurable. */
 export const IAP_TCP_FORWARDING_SOURCE_RANGE = '35.235.240.0/20';
 
+function resourceName(value) {
+  const normalized = String(value ?? '').trim().replace(/\/+$/, '');
+  return normalized.slice(normalized.lastIndexOf('/') + 1);
+}
+
+function sameResourceName(left, right) {
+  const leftName = resourceName(left);
+  const rightName = resourceName(right);
+  return leftName !== '' && rightName !== '' && leftName === rightName;
+}
+
 function allowsSshTcp22(allowed) {
   return (Array.isArray(allowed) ? allowed : []).some((entry) => {
     if (String(entry?.IPProtocol ?? '').toLowerCase() !== 'tcp') return false;
@@ -88,6 +99,81 @@ export function assertIapSshReachable(rules, { networkName, projectId, tag = CLE
       `    --project=${projectId ?? '<project>'} --network=${network} --direction=INGRESS \\\n` +
       `    --action=allow --rules=tcp:22 --source-ranges=${IAP_TCP_FORWARDING_SOURCE_RANGE} \\\n` +
       `    --target-tags=${tag}`,
+  );
+}
+
+/**
+ * Does this Cloud NAT configuration provide egress for `subnetwork`?
+ *
+ * Cloud NAT is regional: a NAT on a router in another region cannot serve the guest,
+ * even when its policy names the same subnet. The two supported coverage modes are
+ * deliberately explicit:
+ *   - ALL_SUBNETWORKS_ALL_IP_RANGES covers every subnet in the router's region.
+ *   - LIST_OF_SUBNETWORKS covers only a listed subnet, and that entry must include
+ *     ALL_IP_RANGES (the bootstrap downloads arbitrary public HTTPS content).
+ *
+ * The predicate is pure so a malformed/mismatched response can be tested without a cloud
+ * call. Callers should pass the router's observed region, not the requested region alone;
+ * missing region evidence fails closed.
+ */
+export function cloudNatCoversSubnetwork(
+  nat,
+  { subnetwork, region, routerRegion } = {},
+) {
+  if (!nat || nat.disabled === true || nat.enabled === false) return false;
+  if (String(nat.status ?? '').toUpperCase() === 'DISABLED') return false;
+
+  if (region !== undefined) {
+    const observedRegions = [routerRegion, nat.routerRegion, nat.region].filter(
+      (value) => value !== undefined && value !== null && String(value).trim() !== '',
+    );
+    if (observedRegions.length === 0 || observedRegions.some((value) => !sameResourceName(value, region))) {
+      return false;
+    }
+  }
+
+  const mode = String(nat.sourceSubnetworkIpRangesToNat ?? '').trim().toUpperCase();
+  if (mode === 'ALL_SUBNETWORKS_ALL_IP_RANGES') return true;
+  if (mode !== 'LIST_OF_SUBNETWORKS') return false;
+
+  const requestedSubnetwork = resourceName(subnetwork);
+  if (!requestedSubnetwork) return false;
+
+  return (Array.isArray(nat.subnetworks) ? nat.subnetworks : []).some((entry) => {
+    if (!sameResourceName(entry?.name, requestedSubnetwork)) return false;
+    const ranges = Array.isArray(entry?.sourceIpRangesToNat)
+      ? entry.sourceIpRangesToNat.map((range) => String(range).trim().toUpperCase())
+      : [];
+    return ranges.includes('ALL_IP_RANGES');
+  });
+}
+
+/**
+ * Assert that at least one observed Cloud NAT covers the clean-room subnet.
+ *
+ * This is intentionally a refusal rather than a best-effort warning: with `--no-address`,
+ * the bootstrap cannot install packages or download the public release bundle without NAT.
+ * Booting first would spend the full VM budget and misreport the failure as an artifact or
+ * guest problem.
+ */
+export function assertCloudNatEgressReachable(
+  nats,
+  { projectId, networkName, subnetwork, region } = {},
+) {
+  if (
+    (Array.isArray(nats) ? nats : []).some((nat) =>
+      cloudNatCoversSubnetwork(nat, { subnetwork, region, routerRegion: nat?.routerRegion }),
+    )
+  ) {
+    return;
+  }
+
+  throw new Error(
+    `no Cloud NAT in region '${region ?? '<region>'}' covers subnetwork '${subnetwork ?? '<subnetwork>'}' ` +
+      `on network '${networkName ?? '<network>'}': the private clean-room guest has no public IP ` +
+      `and cannot bootstrap without regional NAT. Configure Cloud NAT with ` +
+      `ALL_SUBNETWORKS_ALL_IP_RANGES or LIST_OF_SUBNETWORKS/ALL_IP_RANGES before retrying ` +
+      `(project=${projectId ?? '<project>'}).`,
   );
 }
 

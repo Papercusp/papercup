@@ -15,8 +15,10 @@ import { describe, expect, it } from "vitest";
 import {
   CLEAN_ROOM_NETWORK_TAG,
   IAP_TCP_FORWARDING_SOURCE_RANGE,
+  assertCloudNatEgressReachable,
   assertIapSshReachable,
   buildCleanRoomInstanceCreateArgs,
+  cloudNatCoversSubnetwork,
   iapSshRuleAdmits,
   // @ts-expect-error -- side-effect-free .mjs argv builder, deliberately untyped
 } from "../../bin/gcp-clean-room-args.mjs";
@@ -136,5 +138,110 @@ describe("assertIapSshReachable", () => {
     expect(() =>
       assertIapSshReachable(productionRules, { networkName: "pc-p046-canary-02-a810e759-net" }),
     ).toThrow(/admits IAP SSH/);
+  });
+});
+
+describe("cloudNatCoversSubnetwork", () => {
+  const BASE_NAT = {
+    region: "https://www.googleapis.com/compute/v1/projects/p/regions/us-central1",
+    sourceSubnetworkIpRangesToNat: "LIST_OF_SUBNETWORKS",
+    subnetworks: [
+      {
+        name: "https://www.googleapis.com/compute/v1/projects/p/regions/us-central1/subnetworks/pc-test-subnet",
+        sourceIpRangesToNat: ["ALL_IP_RANGES"],
+      },
+    ],
+  };
+
+  it("accepts LIST_OF_SUBNETWORKS with ALL_IP_RANGES for the requested subnet and region", () => {
+    expect(
+      cloudNatCoversSubnetwork(BASE_NAT, {
+        subnetwork: "pc-test-subnet",
+        region: "us-central1",
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts ALL_SUBNETWORKS_ALL_IP_RANGES in the matching router region", () => {
+    expect(
+      cloudNatCoversSubnetwork(
+        {
+          region: "us-central1",
+          sourceSubnetworkIpRangesToNat: "ALL_SUBNETWORKS_ALL_IP_RANGES",
+        },
+        { subnetwork: "pc-test-subnet", region: "us-central1" },
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a disabled NAT", () => {
+    expect(
+      cloudNatCoversSubnetwork({ ...BASE_NAT, disabled: true }, {
+        subnetwork: "pc-test-subnet",
+        region: "us-central1",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a NAT in a different region", () => {
+    expect(
+      cloudNatCoversSubnetwork(
+        { ...BASE_NAT, region: "us-east1" },
+        { subnetwork: "pc-test-subnet", region: "us-central1" },
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a LIST_OF_SUBNETWORKS policy with a different subnet", () => {
+    expect(
+      cloudNatCoversSubnetwork(BASE_NAT, {
+        subnetwork: "other-subnet",
+        region: "us-central1",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a LIST_OF_SUBNETWORKS entry that does not allow all IP ranges", () => {
+    expect(
+      cloudNatCoversSubnetwork(
+        {
+          ...BASE_NAT,
+          subnetworks: [{ ...BASE_NAT.subnetworks[0], sourceIpRangesToNat: ["LIST_OF_RANGES"] }],
+        },
+        { subnetwork: "pc-test-subnet", region: "us-central1" },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("assertCloudNatEgressReachable", () => {
+  it("refuses an empty or mismatched NAT inventory with an actionable message", () => {
+    expect(() =>
+      assertCloudNatEgressReachable([], {
+        projectId: "my-project",
+        networkName: "my-network",
+        subnetwork: "my-subnet",
+        region: "us-central1",
+      }),
+    ).toThrow(/no Cloud NAT.*covers subnetwork.*my-subnet/i);
+  });
+
+  it("accepts a NAT candidate carrying the router's observed region", () => {
+    expect(() =>
+      assertCloudNatEgressReachable(
+        [
+          {
+            sourceSubnetworkIpRangesToNat: "ALL_SUBNETWORKS_ALL_IP_RANGES",
+            routerRegion: "us-central1",
+          },
+        ],
+        {
+          projectId: "my-project",
+          networkName: "my-network",
+          subnetwork: "my-subnet",
+          region: "us-central1",
+        },
+      ),
+    ).not.toThrow();
   });
 });

@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { ResourceLedger, ephemeralSuffix, fail, gcloudJson, run, runOrThrow } from './gcp-ephemeral.mjs';
 import {
   CLEAN_ROOM_NETWORK_TAG,
+  assertCloudNatEgressReachable,
   assertIapSshReachable,
   buildCleanRoomInstanceCreateArgs,
 } from './gcp-clean-room-args.mjs';
@@ -169,9 +170,14 @@ async function awaitOsLogin(projectId, instance, zone, budgetMs) {
  * Read-only and fail-CLOSED: an unreachable clean room is a real blocker, and booting anyway
  * to "see what happens" is what this replaces.
  */
-export async function assertCleanRoomIapReachable(projectId, subnetwork, zone) {
+export async function assertCleanRoomIapReachable(
+  projectId,
+  subnetwork,
+  zone,
+  { gcloudJsonFn = gcloudJson } = {},
+) {
   const region = String(zone).replace(/-[a-z]$/, '');
-  const subnet = await gcloudJson([
+  const subnet = await gcloudJsonFn([
     'compute',
     'networks',
     'subnets',
@@ -184,7 +190,7 @@ export async function assertCleanRoomIapReachable(projectId, subnetwork, zone) {
   const networkName = String(subnet?.network ?? '').split('/').pop();
   if (!networkName) fail(`could not resolve the network backing subnet '${subnetwork}' in ${region}`);
 
-  const rules = await gcloudJson([
+  const rules = await gcloudJsonFn([
     'compute',
     'firewall-rules',
     'list',
@@ -201,6 +207,53 @@ export async function assertCleanRoomIapReachable(projectId, subnetwork, zone) {
   } catch (error) {
     fail(error.message);
   }
+
+  // Cloud NAT is the guest's only egress route because the instance is deliberately created
+  // with --no-address. Query routers first, then each router's NATs, before the ledger tracks
+  // anything billable. The router response is annotated with its observed region so the pure
+  // predicate cannot accidentally accept a same-named subnet served by another region.
+  const routers = await gcloudJsonFn([
+    'compute',
+    'routers',
+    'list',
+    `--project=${projectId}`,
+    `--regions=${region}`,
+    `--filter=network:${networkName}`,
+  ]);
+  const matchingRouters = (Array.isArray(routers) ? routers : []).filter((router) => {
+    const routerNetworkName = String(router?.network ?? '').split('/').pop();
+    const routerRegion = String(router?.region ?? '').split('/').pop();
+    return routerNetworkName === networkName && routerRegion === region && typeof router?.name === 'string';
+  });
+  const natCandidates = [];
+  for (const router of matchingRouters) {
+    const routerName = router.name.split('/').pop();
+    const routerRegion = String(router.region).split('/').pop();
+    const nats = await gcloudJsonFn([
+      'compute',
+      'routers',
+      'nats',
+      'list',
+      `--router=${routerName}`,
+      `--region=${routerRegion}`,
+      `--project=${projectId}`,
+    ]);
+    for (const nat of Array.isArray(nats) ? nats : []) {
+      natCandidates.push({ ...nat, routerRegion });
+    }
+  }
+
+  try {
+    assertCloudNatEgressReachable(natCandidates, {
+      projectId,
+      networkName,
+      subnetwork,
+      region,
+    });
+  } catch (error) {
+    fail(error.message);
+  }
+
   return { networkName };
 }
 
@@ -226,7 +279,6 @@ export async function runScriptOnPrivateVm({
   bootBudgetMs = DEFAULT_BOOT_BUDGET_MS,
   scriptBudgetMs = DEFAULT_SCRIPT_BUDGET_MS,
 }) {
-  const ledger = new ResourceLedger(projectId);
   const instanceName = `${instancePrefix}-${ephemeralSuffix()}`;
   const observedAt = new Date().toISOString();
 
@@ -239,6 +291,7 @@ export async function runScriptOnPrivateVm({
 
   // Before the ledger tracks anything billable: prove the guest will be reachable at all.
   await assertCleanRoomIapReachable(projectId, subnetwork, zone);
+  const ledger = new ResourceLedger(projectId);
 
   try {
     scriptDir = await mkdtemp(join(tmpdir(), 'pc-private-vm-'));
