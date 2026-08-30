@@ -9,6 +9,8 @@ import {
   DAILY_DIGEST_MAX_PROMPT_CHARS,
   DAILY_DIGEST_MAX_TITLE_CHARS,
   DAILY_DIGEST_MAX_OUTPUT_TOKENS,
+  DAILY_DIGEST_ANSWER_TOKENS,
+  DAILY_DIGEST_ANSWER_TOKEN_SHARE,
   DAILY_DIGEST_TOKENS_PER_UMBRELLA,
   DAILY_DIGEST_TOKEN_OVERHEAD,
   DAILY_DIGEST_UMBRELLA_TITLE_CHARS,
@@ -396,15 +398,34 @@ describe('daily digest output budget (D-031)', () => {
   // that has to carry it. Per D-031 an over-budget answer is not truncated-but-
   // usable on this path: the text is lost entirely, so "it will just get cut off"
   // is not an available fallback.
-  it('a MAXIMAL answer fits the output budget', () => {
+  it('a MAXIMAL answer fits the ANSWER budget, not merely the raw ceiling', () => {
     const worst = DAILY_DIGEST_TOKEN_OVERHEAD + MAX_DAILY_DIGEST_UMBRELLAS * worstCaseUmbrellaTokens();
-    expect(worst).toBeLessThanOrEqual(DAILY_DIGEST_MAX_OUTPUT_TOKENS);
+    // Against DAILY_DIGEST_ANSWER_TOKENS, NOT DAILY_DIGEST_MAX_OUTPUT_TOKENS: only
+    // ~20% of the ceiling arrives as answer text (D-032), so fitting the raw ceiling
+    // still over-commits by 5x. That was the first fix's mistake.
+    expect(worst).toBeLessThanOrEqual(DAILY_DIGEST_ANSWER_TOKENS);
+    expect(DAILY_DIGEST_ANSWER_TOKENS).toBeLessThan(DAILY_DIGEST_MAX_OUTPUT_TOKENS);
+  });
+
+  // CONTROL for the correction itself: budgeting against the RAW ceiling would admit
+  // ~5x more umbrellas than the answer budget can carry. If this stops holding, the
+  // answer-share derivation has quietly become a no-op.
+  it('control: deriving from the raw ceiling would over-commit by roughly 5x', () => {
+    const fromRawCeiling = Math.floor(
+      (DAILY_DIGEST_MAX_OUTPUT_TOKENS - DAILY_DIGEST_TOKEN_OVERHEAD) / DAILY_DIGEST_TOKENS_PER_UMBRELLA,
+    );
+    expect(fromRawCeiling).toBeGreaterThan(MAX_DAILY_DIGEST_UMBRELLAS * 4);
+    expect(DAILY_DIGEST_TOKEN_OVERHEAD + fromRawCeiling * worstCaseUmbrellaTokens()).toBeGreaterThan(
+      DAILY_DIGEST_ANSWER_TOKENS,
+    );
   });
 
   it('derives the umbrella cap from the budget, and never drops below one', () => {
     expect(MAX_DAILY_DIGEST_UMBRELLAS).toBe(maxUmbrellasForOutputBudget());
     expect(DEFAULT_DAILY_DIGEST_MAX_TOKENS).toBe(DAILY_DIGEST_MAX_OUTPUT_TOKENS);
-    expect(maxUmbrellasForOutputBudget(DAILY_DIGEST_TOKEN_OVERHEAD + 5 * DAILY_DIGEST_TOKENS_PER_UMBRELLA)).toBe(5);
+    const budgetForFive =
+      (DAILY_DIGEST_TOKEN_OVERHEAD + 5 * DAILY_DIGEST_TOKENS_PER_UMBRELLA) / DAILY_DIGEST_ANSWER_TOKEN_SHARE;
+    expect(maxUmbrellasForOutputBudget(budgetForFive)).toBe(5);
     expect(maxUmbrellasForOutputBudget(1)).toBe(1); // never zero or negative
   });
 

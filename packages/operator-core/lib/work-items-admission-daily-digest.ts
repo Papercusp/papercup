@@ -32,13 +32,17 @@ export const MIN_DAILY_DIGEST_MEMBERS = 3;
  * Nothing bounded the answer in the PROMPT either, so the model was never told a
  * limit it could respect.
  *
- * Why that is fatal rather than merely wasteful (plan decision D-031, measured
- * 2026-08-30 on claude-opus-5:xhigh): a generation that hits `maxTokens` on this
- * path LOSES its text — 0 chars recovered at a 300-token cap, 349 chars at 1,500 —
- * and reports `outputTokens` exactly equal to the cap rather than real usage. So
- * an over-budget answer does not arrive truncated-but-salvageable; it arrives
- * EMPTY, and the token counter cannot tell you why. The digest must therefore fit
- * its budget BY CONSTRUCTION.
+ * Why that is fatal rather than merely wasteful: a generation that hits `maxTokens`
+ * on this path arrives TRUNCATED — unterminated mid-JSON, so the whole answer is
+ * unusable even though most of it was written — and reports `outputTokens` exactly
+ * equal to the cap rather than real usage, so the token counter cannot tell you why.
+ * The digest must therefore fit its budget BY CONSTRUCTION.
+ *
+ * ⚠ D-031 originally said the text is LOST entirely. Run wi882767-digest-d031-1
+ * falsified that (38,114 chars harvested) and D-032 corrects it: the text survives,
+ * but only ~20% of the ceiling becomes answer text — see
+ * {@link DAILY_DIGEST_ANSWER_TOKEN_SHARE}, which is what the cap is really derived
+ * from. The 0-chars-at-300 reading was a small-cap artifact.
  *
  * This mirrors {@link maxPairsForOutputBudget} in the bulk judge, which derives
  * batch size from its budget for exactly this reason. P-012 simply never applied
@@ -48,8 +52,32 @@ export const MIN_DAILY_DIGEST_MEMBERS = 3;
  * a 54,000-token request was accepted by the bridge in the same probe.
  */
 export const DAILY_DIGEST_MAX_OUTPUT_TOKENS = 48_000;
-export const DAILY_DIGEST_TOKENS_PER_UMBRELLA = 1_000;
-export const DAILY_DIGEST_TOKEN_OVERHEAD = 2_000;
+
+/**
+ * Share of the output budget that actually arrives as ANSWER TEXT (D-032).
+ *
+ * MEASURED, not assumed: run wi882767-digest-d031-1 reported outputTokens=48,000
+ * while harvesting 38,114 chars (~9,500 tokens) of digest JSON — a 0.20 share. The
+ * remainder is consumed before the text is emitted, consistent with reasoning
+ * tokens counting against the same ceiling.
+ *
+ * This is the correction to the first attempt at this fix, which derived the
+ * umbrella cap from the RAW ceiling and so still over-committed by 5x. Budgeting
+ * an answer against a ceiling it only receives a fifth of is the same
+ * payload-vs-budget error in a subtler form: to emit N tokens you must buy ~5N.
+ *
+ * If a future run's chars/(outputTokens*4) departs materially from this, RE-DERIVE
+ * it from that measurement — do not nudge the umbrella cap to compensate.
+ */
+export const DAILY_DIGEST_ANSWER_TOKEN_SHARE = 0.2;
+
+/** Tokens genuinely available for the answer itself. */
+export const DAILY_DIGEST_ANSWER_TOKENS = Math.floor(
+  DAILY_DIGEST_MAX_OUTPUT_TOKENS * DAILY_DIGEST_ANSWER_TOKEN_SHARE,
+);
+
+export const DAILY_DIGEST_TOKENS_PER_UMBRELLA = 500;
+export const DAILY_DIGEST_TOKEN_OVERHEAD = 500;
 
 /** Per-umbrella OUTPUT field ceilings. Sized so ONE umbrella at its maxima fits
  * {@link DAILY_DIGEST_TOKENS_PER_UMBRELLA}; widening one without re-deriving the
@@ -58,10 +86,10 @@ export const DAILY_DIGEST_TOKEN_OVERHEAD = 2_000;
  * Named for the UMBRELLA (the model's answer) to keep them distinct from
  * {@link DAILY_DIGEST_MAX_TITLE_CHARS}, which bounds an INPUT corpus item's title
  * inside the prompt — a different budget on the opposite side of the call. */
-export const DAILY_DIGEST_UMBRELLA_TITLE_CHARS = 240;
-export const DAILY_DIGEST_UMBRELLA_BODY_CHARS = 1_500;
-export const DAILY_DIGEST_UMBRELLA_REASON_CHARS = 500;
-export const DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA = 60;
+export const DAILY_DIGEST_UMBRELLA_TITLE_CHARS = 200;
+export const DAILY_DIGEST_UMBRELLA_BODY_CHARS = 700;
+export const DAILY_DIGEST_UMBRELLA_REASON_CHARS = 300;
+export const DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA = 25;
 
 /**
  * The most umbrellas whose JSON fits `maxOutputTokens`. The single place the
@@ -71,9 +99,10 @@ export const DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA = 60;
 export function maxUmbrellasForOutputBudget(
   maxOutputTokens: number = DAILY_DIGEST_MAX_OUTPUT_TOKENS,
 ): number {
+  const answerTokens = Math.floor(maxOutputTokens * DAILY_DIGEST_ANSWER_TOKEN_SHARE);
   return Math.max(
     1,
-    Math.floor((maxOutputTokens - DAILY_DIGEST_TOKEN_OVERHEAD) / DAILY_DIGEST_TOKENS_PER_UMBRELLA),
+    Math.floor((answerTokens - DAILY_DIGEST_TOKEN_OVERHEAD) / DAILY_DIGEST_TOKENS_PER_UMBRELLA),
   );
 }
 
