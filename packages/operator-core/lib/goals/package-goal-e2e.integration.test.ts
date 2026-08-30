@@ -45,7 +45,7 @@ import {
   DEFAULT_DEPS,
   type StartGoalFromPackageDeps,
 } from './start-from-package';
-import { startGoalById } from './start-goal-by-id';
+import { DEFAULT_START_GOAL_BY_ID_DEPS, startGoalById } from './start-goal-by-id';
 import { resolveGoalHoldersFromRows } from './holder';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { resolveLocalGoalPackage } from '../cupboard/goal-package-store';
@@ -86,6 +86,7 @@ function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }):
     ...DEFAULT_DEPS,
     startById: async (sql, input) =>
       await startGoalById(sql, input, {
+        ...DEFAULT_START_GOAL_BY_ID_DEPS,
         launch: async (launchInput) => {
           capture.launched.push(launchInput.goalId);
           capture.kickoffPrompt = launchInput.kickoffPrompt ?? null;
