@@ -109,9 +109,17 @@ impl StalePane {
     }
 }
 
-fn default_manifest_path() -> Result<PathBuf> {
+fn default_manifest_path(current_exe: &Path) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("PUI_INSTALL_MANIFEST") {
         return Ok(PathBuf::from(path));
+    }
+    if let Some(release_manifest) = current_exe
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("pui-install.json"))
+        .filter(|path| path.is_file())
+    {
+        return Ok(release_manifest);
     }
     Ok(dirs::home_dir()
         .context("resolve home directory for pui install manifest")?
@@ -151,9 +159,26 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 pub fn inspect_local_install() -> Result<LocalInstallCheck> {
-    let manifest_path = default_manifest_path()?;
     let current_exe = std::env::current_exe().context("resolve running pui executable")?;
+    let manifest_path = default_manifest_path(&current_exe)?;
     inspect_paths(&manifest_path, &current_exe, &BuildStamp::embedded())
+}
+
+fn resolve_manifest_artifact(manifest_path: &Path, raw: &str, label: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("{label} must not escape the pui install manifest directory");
+    }
+    Ok(manifest_path
+        .parent()
+        .context("pui install manifest has no parent directory")?
+        .join(path))
 }
 
 pub fn inspect_paths(
@@ -172,8 +197,10 @@ pub fn inspect_paths(
         );
     }
 
-    let binary_path = PathBuf::from(&manifest.binary_path);
-    let companion_path = PathBuf::from(&manifest.companion_path);
+    let binary_path =
+        resolve_manifest_artifact(manifest_path, &manifest.binary_path, "binaryPath")?;
+    let companion_path =
+        resolve_manifest_artifact(manifest_path, &manifest.companion_path, "companionPath")?;
     let binary_sha256 = sha256_file(current_exe)?;
     let companion_sha256 = sha256_file(&companion_path)?;
     let mut warnings = Vec::new();
@@ -427,6 +454,52 @@ mod tests {
             .problems
             .iter()
             .any(|problem| problem.contains("companion WASM hash")));
+    }
+
+    #[test]
+    fn release_relative_manifest_paths_resolve_from_the_manifest_directory() {
+        let dir = tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let binary = bin.join("pui");
+        let companion = dir.path().join("pui-companion.wasm");
+        let manifest_path = dir.path().join("pui-install.json");
+        fs::write(&binary, b"release-binary").unwrap();
+        fs::write(&companion, b"release-wasm").unwrap();
+        let companion_sha = sha256_file(&companion).unwrap();
+        let manifest = InstallManifest {
+            schema_version: 1,
+            source_sha: "release-sha".into(),
+            source_dirty: false,
+            built_at_epoch: 456,
+            binary_path: "bin/pui".into(),
+            binary_sha256: sha256_file(&binary).unwrap(),
+            companion_path: "pui-companion.wasm".into(),
+            companion_sha256: companion_sha.clone(),
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let check = inspect_paths(
+            &manifest_path,
+            &binary,
+            &stamp("release-sha", 456, &companion_sha),
+        )
+        .unwrap();
+        assert!(check.is_ok(), "{:?}", check.problems);
+
+        let escaping = InstallManifest {
+            companion_path: "../outside.wasm".into(),
+            ..manifest
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&escaping).unwrap()).unwrap();
+        assert!(inspect_paths(
+            &manifest_path,
+            &binary,
+            &stamp("release-sha", 456, &companion_sha)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("must not escape"));
     }
 
     #[test]

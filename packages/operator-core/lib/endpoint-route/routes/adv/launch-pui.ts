@@ -22,7 +22,7 @@
  */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveSpawnHostOperatorBaseUrl } from '../../../mcp-base-url';
@@ -39,8 +39,27 @@ function json(body: unknown, status = 200): Response {
  * shared isOnPath() does NOT probe — so check the cargo + local bins
  * explicitly, then fall back to a bare `pui` on PATH (D-003).
  */
-function resolvePuiBin(): string | null {
+interface BundledPuiPaths {
+  bin: string;
+  companion: string;
+  manifest: string;
+}
+
+function bundledPuiPaths(env: NodeJS.ProcessEnv): BundledPuiPaths | null {
+  const sidecarBin = env.PAPERCUSP_SIDECAR_BIN?.trim();
+  if (!sidecarBin) return null;
+  const root = dirname(sidecarBin);
+  return {
+    bin: join(sidecarBin, 'pui'),
+    companion: join(root, 'pui-companion.wasm'),
+    manifest: join(root, 'pui-install.json'),
+  };
+}
+
+function resolvePuiBin(env: NodeJS.ProcessEnv = process.env): string | null {
+  const bundled = bundledPuiPaths(env);
   const candidates = [
+    ...(bundled ? [bundled.bin] : []),
     join(homedir(), '.cargo', 'bin', 'pui'),
     join(homedir(), '.local', 'bin', 'pui'),
   ];
@@ -62,6 +81,7 @@ function resolvePuiBin(): string | null {
  */
 export function puiLaunchEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const operatorBase = resolveSpawnHostOperatorBaseUrl(env);
+  const bundled = bundledPuiPaths(env);
   return {
     ...env,
     // Keep the conventional child callback identity correct for any helper
@@ -70,6 +90,15 @@ export function puiLaunchEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proce
     // apps/tui accepts a full http(s) URL here and uses it as an explicit
     // selection, bypassing ambiguous IPC discovery.
     PUI_OPERATOR: operatorBase,
+    // A vm-release operator already carries the matched PUI generation in its
+    // signed sidecar. Pin the child to that companion + manifest rather than a
+    // stale user-home install inherited from the service environment.
+    ...(bundled
+      ? {
+          PUI_COMPANION_WASM: bundled.companion,
+          PUI_INSTALL_MANIFEST: bundled.manifest,
+        }
+      : {}),
   };
 }
 
@@ -82,7 +111,7 @@ const launchPui = defineTool({
       return json({ status: 'error', error: 'server-side spawn only implemented for Linux' }, 501);
     }
 
-    const puiBin = resolvePuiBin();
+    const puiBin = resolvePuiBin(process.env);
     if (!puiBin) {
       return json(
         {

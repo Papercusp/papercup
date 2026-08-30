@@ -68,53 +68,19 @@ CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 BINARY_PATH="$CARGO_BIN_DIR/pui"
 WASM_PATH="${PUI_COMPANION_WASM:-$HOME/.papercusp/pui-companion.wasm}"
 MANIFEST_PATH="${PUI_INSTALL_MANIFEST:-$HOME/.papercusp/pui-install.json}"
+MANIFEST_WRITER="$ROOT/apps/tui/scripts/write-install-manifest.py"
 mkdir -p "$(dirname "$WASM_PATH")" "$(dirname "$MANIFEST_PATH")"
 WASM_TMP="$WASM_PATH.tmp.$$"
 install -m 0644 "$WASM_SOURCE" "$WASM_TMP"
 mv -f "$WASM_TMP" "$WASM_PATH"
 
-BINARY_SHA256="$(sha256sum "$BINARY_PATH" | awk '{print $1}')"
-WASM_SHA256="$(sha256sum "$WASM_PATH" | awk '{print $1}')"
-
-python3 - \
-  "$MANIFEST_PATH" \
-  "$SOURCE_SHA" \
-  "$SOURCE_DIRTY" \
-  "$BUILD_EPOCH" \
-  "$BINARY_PATH" \
-  "$BINARY_SHA256" \
-  "$WASM_PATH" \
-  "$WASM_SHA256" <<'PY'
-import json
-import os
-import sys
-
-(
-    manifest_path,
-    source_sha,
-    source_dirty,
-    built_at_epoch,
-    binary_path,
-    binary_sha256,
-    companion_path,
-    companion_sha256,
-) = sys.argv[1:]
-payload = {
-    "schemaVersion": 1,
-    "sourceSha": source_sha,
-    "sourceDirty": source_dirty == "1",
-    "builtAtEpoch": int(built_at_epoch),
-    "binaryPath": binary_path,
-    "binarySha256": binary_sha256,
-    "companionPath": companion_path,
-    "companionSha256": companion_sha256,
-}
-tmp = f"{manifest_path}.tmp.{os.getpid()}"
-with open(tmp, "w", encoding="utf-8") as handle:
-    json.dump(payload, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-os.replace(tmp, manifest_path)
-PY
+python3 "$MANIFEST_WRITER" write \
+  --manifest "$MANIFEST_PATH" \
+  --source-sha "$SOURCE_SHA" \
+  --source-dirty "$SOURCE_DIRTY" \
+  --built-at-epoch "$BUILD_EPOCH" \
+  --binary "$BINARY_PATH" \
+  --companion "$WASM_PATH"
 
 echo "→ installed pui generation ${SOURCE_SHA:0:12}"
 echo "  binary:    $BINARY_PATH"

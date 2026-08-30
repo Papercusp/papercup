@@ -120,6 +120,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   existsSyncMock.mockReturnValue(true);
   delete process.env.TERMINAL;
+  delete process.env.PAPERCUSP_SIDECAR_BIN;
+  delete process.env.PUI_COMPANION_WASM;
+  delete process.env.PUI_INSTALL_MANIFEST;
   // Default: the spawned child survives the early-exit probe.
   spawnDiesImmediately = false;
   killSpy.mockReturnValue(true);
@@ -152,6 +155,44 @@ describe('launch-pui', () => {
     const oneliner = lastOneliner();
     expect(oneliner).toContain('/home/x/.cargo/bin/pui');
     expect(oneliner).toContain('workbench');
+  });
+
+  it('vm-release prefers the matched bundled pui generation and pins its companion + manifest', async () => {
+    process.env.PAPERCUSP_SIDECAR_BIN = '/opt/papercusp/runtime/current/bin';
+    existsSyncMock.mockImplementation((path: string) =>
+      [
+        '/opt/papercusp/runtime/current/bin/pui',
+        '/opt/papercusp/runtime/current/pui-companion.wasm',
+        '/opt/papercusp/runtime/current/pui-install.json',
+        '/usr/bin/gnome-terminal',
+      ].includes(String(path)),
+    );
+
+    const mod = await import('../routes/adv/launch-pui');
+    const env = mod.puiLaunchEnv({
+      PAPERCUSP_SIDECAR_BIN: process.env.PAPERCUSP_SIDECAR_BIN,
+      PAPERCUSP_HONO_PORT: '3070',
+      PUI_COMPANION_WASM: '/home/x/.papercusp/stale.wasm',
+      PUI_INSTALL_MANIFEST: '/home/x/.papercusp/stale.json',
+    });
+    expect(env.PUI_COMPANION_WASM).toBe(
+      '/opt/papercusp/runtime/current/pui-companion.wasm',
+    );
+    expect(env.PUI_INSTALL_MANIFEST).toBe(
+      '/opt/papercusp/runtime/current/pui-install.json',
+    );
+
+    const res = await callPost();
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('ok');
+    expect(lastOneliner()).toContain('/opt/papercusp/runtime/current/bin/pui');
+    const spawnOptions = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(spawnOptions.env?.PUI_COMPANION_WASM).toBe(
+      '/opt/papercusp/runtime/current/pui-companion.wasm',
+    );
+    expect(spawnOptions.env?.PUI_INSTALL_MANIFEST).toBe(
+      '/opt/papercusp/runtime/current/pui-install.json',
+    );
   });
 
   it('pui not installed → 200 status:error code:pui_not_installed, no spawn', async () => {
