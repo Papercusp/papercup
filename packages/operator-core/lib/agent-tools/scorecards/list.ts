@@ -52,6 +52,14 @@ export default defineTool({
       .optional()
       .describe('restrict to one rubric, e.g. "pot-coordination-health"; omit for all rubric-graded scorecards'),
     sourceHive: z.string().optional().describe('restrict to scorecards from one source-hive'),
+    harness: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'Optional caller scope hint accepted for compatibility; scorecard history is workspace-scoped and this hint does not filter the read.',
+      ),
     subjectRef: z
       .string()
       .optional()

@@ -156,4 +156,31 @@ describe('scorecards:list correctness payload', () => {
     });
     expect(result.data.message).toContain('retry shortly');
   });
+
+  it('accepts a harness compatibility hint without filtering the workspace-wide read', async () => {
+    listScorecardPageM.mockResolvedValueOnce({ rows: [], hasMore: false });
+
+    const projected = lookupByMcpName('scorecards:list');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'scorecards:list',
+      { rubricRef: 'acceptance-test-rubric', harness: 'papercusp' },
+      makeDispatchContext(),
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(readJsonResult(dispatched.result!)).toMatchObject({
+      ok: true,
+      count: 0,
+      hasMore: false,
+      truncatedByLimit: false,
+      scorecards: [],
+    });
+    expect(listScorecardPageM).toHaveBeenCalledWith({
+      rubricRef: 'acceptance-test-rubric',
+      includeLinks: true,
+    });
+  });
 });
