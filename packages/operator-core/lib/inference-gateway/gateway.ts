@@ -6655,10 +6655,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   type LegacyGatewayEntryExecutor = (req: http.IncomingMessage, res: http.ServerResponse, url: string) => Promise<void>;
 
+  // P-011 / D-022: `proxyLocal` is deliberately ABSENT — its lane is entered directly via
+  // `withDurableGatewayAdmission`. This map loses one entry per re-homed lane and disappears
+  // with the bridge; it is keyed by `GatewayLegacyEntryExecutorId`, which shrinks in step, so
+  // a lane removed here without narrowing that union fails to compile rather than rotting.
   const legacyGatewayEntryExecutors: Record<GatewayLegacyEntryExecutorId, LegacyGatewayEntryExecutor> = {
     proxy,
     proxyOpenAi,
-    proxyLocal,
   };
   const legacyAdmissionSignal = new AbortController().signal;
   let legacyAdmissionRequestSeq = 0;
@@ -6772,6 +6775,45 @@ export function createInferenceGateway(deps: GatewayDeps) {
         void payloadSpool?.release(spooledPayloadRef).catch(() => undefined);
       }
     }
+  }
+
+  /**
+   * STRANGLER BRIDGE — the LANE-level admission seam, layered on top of the durable
+   * crossing above. This is the half P-008 deletes: as each lane re-homes its real
+   * admission INSIDE `executeGatewayRequestKernel` it drops its `legacyEntryExecutor` and
+   * its entry in `LANES_ADMITTED_VIA_LEGACY_BRIDGE`; when that allowlist is empty, this
+   * function and `executeGatewayLegacyLane` go with it and
+   * `withDurableGatewayAdmission` stays.
+   *
+   * There is intentionally no lease or release callback: the queue releases only after
+   * `task` (including in-flight unregister) settles.
+   *
+   * `async` so a throw from `legacyEntryRouteForGatewayLane` surfaces as a REJECTED
+   * promise — every call site is `void executeLegacyLaneTask({...}).catch(...)`, which a
+   * synchronous throw would escape.
+   */
+  async function executeLegacyLaneTask<TResult>(opts: {
+    req: http.IncomingMessage;
+    lane: GatewayLaneDescriptor;
+    admission: Pick<GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>, 'run'>;
+    task(executor: GatewayLegacyEntryExecutorId): Promise<TResult>;
+  }): Promise<TResult> {
+    const entry = legacyEntryRouteForGatewayLane(opts.lane);
+    return withDurableGatewayAdmission({
+      req: opts.req,
+      lane: opts.lane,
+      task: (context) =>
+        executeGatewayLegacyLane({
+          context,
+          route: {
+            key: `${opts.lane.id}:${entry.executor}`,
+            value: entry.executor,
+            transport: entry.transport,
+          },
+          admission: opts.admission,
+          execute: () => opts.task(entry.executor),
+        }),
+    });
   }
 
   /**
@@ -7495,16 +7537,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
       span.setCacheRouting('not-applicable');
       span.routeSelected();
       const localUrl = url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions';
-      void executeLegacyLaneTask({
+      // P-011 / D-022: RE-HOMED — the first lane off the strangler bridge. Entered directly
+      // rather than through `executeLegacyLaneTask`, so this lane declares no
+      // `legacyEntryExecutor` and is out of `LANES_ADMITTED_VIA_LEGACY_BRIDGE`.
+      //
+      // `withDurableGatewayAdmission` still crosses the canonical durable governor before this
+      // task runs, and that remains this lane's ONLY real admission — it has no queue of its
+      // own — so `proxyLocal`'s PASS-THROUGH kernel admission is still correct, not scaffolding.
+      //
+      // The outer `span.admitted()` is deliberately GONE rather than lost: `proxyLocal` adopts
+      // this very span (`requestSpan(req)`) and the kernel fires `span.admitted()` itself at its
+      // admission boundary, so calling it here as well was double-marking one request.
+      void withDurableGatewayAdmission({
         req,
         lane: gatewayLaneRegistry.localOpenAiChat,
-        admission: unqueuedLegacyAdmission,
-        // executeLegacyLaneTask crosses the canonical gateway governor before invoking this task.
-        // Mark the telemetry span admitted at that boundary, not when the socket first arrives.
-        task: (executor) => {
-          span.admitted();
-          return legacyGatewayEntryExecutors[executor](req, res, localUrl);
-        },
+        task: () => proxyLocal(req, res, localUrl),
       }).catch((e) => {
         markRequestGatewayError(req);
         log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
