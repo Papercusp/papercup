@@ -188,6 +188,36 @@ describe('llmCall subprocess error surfacing', () => {
 });
 
 describe('llmCall priority default (EI-315: llm-testing lane starvation)', () => {
+  it('preserves capped generation deltas and surfaces the provider stop reason', async () => {
+    events.length = 0;
+    events.push(
+      { type: 'delta', text: '{"partial":' },
+      { type: 'delta', text: 'true' },
+      {
+        type: 'result',
+        finalText: '',
+        tokensIn: 12,
+        tokensOut: 300,
+        costUsd: 0.01,
+        stopReason: 'max_tokens',
+      },
+    );
+    const { llmCall } = await import('../llm-client');
+
+    const result = await llmCall({
+      system: 's',
+      messages: [{ role: 'user', content: 'u' }],
+      model: 'claude-haiku-4-5-20251001',
+      maxTokens: 300,
+      responseFormat: 'json',
+    });
+
+    expect(result.text).toBe('{"partial":true');
+    expect(result.json).toBeNull();
+    expect(result.outputTokens).toBe(300);
+    expect(result.stopReason).toBe('max_tokens');
+  });
+
   it('defaults the anthropic-direct path to the "llm-testing" priority label when the caller sets none', async () => {
     events.length = 0;
     events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });

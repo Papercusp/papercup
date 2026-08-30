@@ -255,6 +255,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
+  let stopReason: string | null | undefined;
   let lastErrMsg: string | undefined;
   let lastErrTurn: TurnError | undefined;
   let sawResult = false;
@@ -324,16 +325,17 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     isolateConfig: true,
   })) {
     if (ev.type === 'delta') {
-      // The anthropic-direct backend yields a single delta with the full final
-      // text (non-streaming round-trip). Don't accumulate twice with
-      // the `result` event below — overwrite, don't append.
-      finalText = ev.text;
+      // Preserve every emitted text fragment. The terminal `result.finalText`
+      // below remains authoritative when a backend supplies the complete text,
+      // so accumulating deltas cannot double the final response.
+      finalText += ev.text;
     } else if (ev.type === 'result') {
       sawResult = true;
       if (ev.finalText) finalText = ev.finalText;
       inputTokens = ev.tokensIn;
       outputTokens = ev.tokensOut;
       costUsd = ev.costUsd;
+      stopReason = ev.stopReason;
     } else if (ev.type === 'error') {
       // Fold the subprocess stderr tail into the message: the un-governed CLI path attaches
       // no classified turn, so a bare `<backend> exited 1` is undiagnosable — and the
@@ -356,7 +358,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     json = tryParseJson(finalText);
   }
 
-  return { text: finalText, json, inputTokens, outputTokens, costUsd, raw: null };
+  return { text: finalText, json, inputTokens, outputTokens, costUsd, stopReason, raw: null };
 }
 
 /**
