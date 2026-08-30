@@ -157,13 +157,19 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
   });
 
   it('never runs the extra aggregate query for a non-self session (explicit id)', async () => {
-    const { parsed, txCalls } = await run(
+    const { parsed, sqls } = await run(
       { session: 'sess-explicit', mode: 'verbatim', query: 'anything' },
       [[]],
     );
 
     expect(resolveSelfSession).not.toHaveBeenCalled();
-    expect(txCalls).toBe(1);
+    // Asserted by NAME, not by call count — the same correction the sibling
+    // assertions above already carry. An EXPLICIT session id costs a resolution
+    // query that `session:'self'` gets from the resolveSelfSession mock instead,
+    // so a raw tx count is confounded by a query that is not this suite's
+    // subject. The subject is the OWNER-SCOPE AGGREGATE, which must never run
+    // for a non-self session.
+    expect(aggregateProbes(sqls)).toBe(0);
     expect(parsed.total_hits).toBe(0);
     expect(parsed.zeroHitCaveat).toBeUndefined();
   });
