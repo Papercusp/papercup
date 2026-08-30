@@ -212,10 +212,14 @@ loop moving until its exit criterion is met.
 1. REUSE FIRST: rubrics:search for an applicable rubric; propose a new one
    (rubrics:propose → ratification) ONLY on a real gap. Rubric proliferation is
    the failure mode — a near-fit existing rubric beats a bespoke new one.
-2. LOOP: arm/extend a loop; each wake gathers evidence, emits a scorecard
-   (improvements:capture with payloadExtra.observation { rubricRef, ratings,
-   kind: 'reinforce' } — every criterion rated, evidence per rating; the
-   completeness gate rejects partials), then reads rubrics:trend for direction.
+2. LOOP: arm/extend a loop; each wake gathers evidence, gets the exact typed
+   skeleton from scorecards:evaluate { rubricRef }, rates every criterion with
+   evidence, validates the filled map through scorecards:evaluate, and files the
+   immutable verdict through scorecards:emit; then read rubrics:trend for direction.
+   A complete per-run or terminal scorecard NEVER goes through improvements:capture.
+   Reserve improvements:capture { lane: 'observation', observation: { rubricRef,
+   ratings, kind: 'reinforce' } } for recurring MUTABLE health observations that
+   are intentionally coalesced; it is not GRADE's complete-verdict door.
 3. CHEAP EVIDENCE: prefer deterministic evidence (dev:pg_query, counters,
    freshness checks) over per-wake LLM judgment — the cheapest grading is
    compute, not inference. Rate honestly: unknown beats invented.

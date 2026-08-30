@@ -149,6 +149,17 @@ describe('GRADE mode corrective-loop contract (WI-243572)', () => {
     expect(c).toMatch(/independent-\s+acceptance rule/);
     expect(c).toMatch(/never self-accept/);
   });
+
+  it('routes complete verdicts through scorecards:evaluate → scorecards:emit, never mutable capture', () => {
+    const c = grade!.contract;
+    const loop = c.slice(c.indexOf('2. LOOP:'), c.indexOf('3. CHEAP EVIDENCE:'));
+
+    expect(loop).toContain('scorecards:evaluate { rubricRef }');
+    expect(loop).toContain('scorecards:emit');
+    expect(loop).toMatch(/complete per-run or terminal scorecard NEVER goes through improvements:capture/);
+    expect(loop).toMatch(/improvements:capture[\s\S]*recurring MUTABLE health observations/);
+    expect(loop).not.toMatch(/emits a scorecard\s+\(improvements:capture/);
+  });
 });
 
 describe('GOAL mode STANDING clause (work-on-everything-goal-2026-08-23 P-008)', () => {

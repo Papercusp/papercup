@@ -153,6 +153,15 @@ describe('mode:set registration', () => {
   it('opts out of the ambient workspace transaction for independent control-plane awaits', () => {
     expect((setTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
+
+  it('returns the immutable GRADE scorecard route on the live self-set projection', async () => {
+    const body = parse(await run({ mode: 'grade', reason: 'grade the named goal' }));
+
+    expect(body.contract).toContain('scorecards:evaluate { rubricRef }');
+    expect(body.contract).toContain('scorecards:emit');
+    expect(body.contract).toMatch(/complete per-run or terminal scorecard NEVER goes through improvements:capture/);
+    expect(body.contract).not.toMatch(/emits a scorecard\s+\(improvements:capture/);
+  });
 });
 
 beforeEach(() => {
