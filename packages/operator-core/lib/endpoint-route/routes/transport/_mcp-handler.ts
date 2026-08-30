@@ -2407,9 +2407,34 @@ const handler = createMcpHandler(
                     toolName === 'work_items:claim'
                       ? ' For cross-Pot work, use discovery:pots → pot:request_work with an outbound work-request grant; direct work_items:claim is per-Hive.'
                       : '';
+                  // EI-21920346945864571: the bare hint below ("retry with the
+                  // caller's harness") was reported as untrustworthy — an agent
+                  // reasoned that retrying under its OWN (different) harness could
+                  // not possibly resolve a row canonically owned by a DIFFERENT
+                  // harness, and skipped the retry entirely. That reasoning is
+                  // right for a feature-family id (WI-/F-), which genuinely IS
+                  // scoped by harness in the underlying query
+                  // (`getFeatureWorkItemOnly`) — but WRONG for an issue-family id
+                  // (EI-<snowflake>): `getWorkItem`'s issue-family branch
+                  // (`getIssue`) never applies the `harness` argument at all (see
+                  // the doc comment on `getWorkItem` in work-items.ts) and resolves
+                  // by workspace instead, so the exact retry this hint suggests
+                  // DOES find the row. Tell the caller which case they are in
+                  // instead of leaving them to guess.
+                  const requestedIds: unknown[] = [];
+                  if (args && typeof args === 'object') {
+                    const a = args as Record<string, unknown>;
+                    if (typeof a.id === 'string') requestedIds.push(a.id);
+                    if (Array.isArray(a.ids)) requestedIds.push(...a.ids);
+                  }
+                  const allRequestedIdsAreIssueFamily =
+                    requestedIds.length > 0 &&
+                    requestedIds.every((id) => typeof id === 'string' && id.startsWith('EI-'));
                   const crossHiveWorkItemReadHint =
                     toolName === 'work_items:get'
-                      ? ` For an ID-based work_items:get read, retry with the caller's harness "${spawnRes.ctx.harnessSlug}"; do not copy a returned row's canonical harness into this argument.`
+                      ? allRequestedIdsAreIssueFamily
+                        ? ` For an ID-based work_items:get read, retry with the caller's harness "${spawnRes.ctx.harnessSlug}" (or omit \`harness\` entirely); do not copy a returned row's canonical harness into this argument. An EI-prefixed id resolves WORKSPACE-wide — the \`harness\` argument is not applied to that lookup at all — so this retry WILL find the row.`
+                        : ` For an ID-based work_items:get read, retry with the caller's harness "${spawnRes.ctx.harnessSlug}"; do not copy a returned row's canonical harness into this argument. Note: a WI-/F- (feature-family) id genuinely IS scoped to its owning harness, so this retry will NOT resolve a row that belongs to a different one — there is currently no cross-hive escape for a feature-family id from a hive-confined session.`
                       : '';
                   return {
                     isError: true,

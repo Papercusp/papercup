@@ -1916,7 +1916,7 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('direct work_items:claim is per-Hive');
   });
 
-  it('flag ON: gives work_items:get the caller-harness retry after a canonical cross-hive slug is rejected', async () => {
+  it('flag ON: gives work_items:get the caller-harness retry after a canonical cross-hive slug is rejected — and, for an EI- (issue-family) id, says the retry WILL find the row (EI-21920346945864571)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool(
       'work_items:get',
@@ -1928,6 +1928,55 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
     expect(textOf(res)).toContain('retry with the caller\'s harness "hiveA-home"');
     expect(textOf(res)).toContain('do not copy a returned row\'s canonical harness');
+    // EI-21920346945864571: an agent reported this hint as untrustworthy for an
+    // EI-prefixed id and skipped the retry — `getWorkItem`'s issue-family branch
+    // ignores `harness` entirely, so the retry this hint suggests actually
+    // resolves the row. Say so explicitly.
+    expect(textOf(res)).toContain('EI-prefixed id resolves WORKSPACE-wide');
+    expect(textOf(res)).toContain('this retry WILL find the row');
+  });
+
+  it('flag ON: gives work_items:get a DIFFERENT caveat for a WI-/F- (feature-family) id — the retry will NOT find a row owned by another harness (EI-21920346945864571)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'work_items:get',
+      { id: 'WI-cross-hive-read', harness: 'hiveB-home' },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(textOf(res)).toContain('retry with the caller\'s harness "hiveA-home"');
+    expect(textOf(res)).toContain('do not copy a returned row\'s canonical harness');
+    expect(textOf(res)).toContain('WI-/F- (feature-family) id genuinely IS scoped to its owning harness');
+    expect(textOf(res)).toContain('this retry will NOT resolve a row that belongs to a different one');
+    // The EI- specific reassurance must NOT leak into the feature-family message.
+    expect(textOf(res)).not.toContain('this retry WILL find the row');
+  });
+
+  it('flag ON: work_items:get with `ids` (batch) also gets the issue-family reassurance when every id is EI-prefixed (EI-21920346945864571)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'work_items:get',
+      { ids: ['EI-cross-hive-read-1', 'EI-cross-hive-read-2'], harness: 'hiveB-home' },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('this retry WILL find the row');
+  });
+
+  it('flag ON: work_items:get with a MIXED batch (EI- and WI-/F-) falls back to the feature-family caveat (EI-21920346945864571)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'work_items:get',
+      { ids: ['EI-cross-hive-read-1', 'WI-cross-hive-read-2'], harness: 'hiveB-home' },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('this retry will NOT resolve a row that belongs to a different one');
+    expect(textOf(res)).not.toContain('this retry WILL find the row');
   });
 
   it('flag ON: rejects a harness:\'all\' escape', async () => {
