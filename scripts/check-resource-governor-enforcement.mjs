@@ -1095,6 +1095,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for scripts/lib/passing-task-verdict-cache.mjs: its TTL verdict cache is finite diagnostic/correlation state, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight workload and start no independent resident work.",
   },
   {
+    path: "scripts/lib/related-tests.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/lib/related-tests.mjs: its `pending` module-graph traversal worklist is finite build-time correlation state, not a resident resource queue — every entry is popped and consumed, deduplicated against the `visited` set, and confined by `insideRoot` to tracked files under the repo root, so the queue is bounded by the finite import graph and starts no independent resident work.",
+  },
+  {
     path: "scripts/lib/tsc-baseline-gate.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
