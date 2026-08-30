@@ -785,6 +785,19 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
     message:
       'checkpoint text is not stored on this work-item relation; it lives in `harness_shared.carry_notes.note` under the `workitem:<harness>:<work-item-id>` scope. Use `work_items:get { id, harness }`, which joins that store and returns the checkpoint, instead of querying a nonexistent work_items column',
   },
+  // EI-21827078641119577: dependency edges are a separate polymorphic relation.
+  // A reader that guesses these columns on work_items gets a 42703, and the
+  // generic knownColumns payload does not tell it where the edge actually lives.
+  // Keep this redirect single-relation (buildSchemaColumnRedirect refuses joins)
+  // so a missing name on another relation cannot be misrouted.
+  ...(['blocked_kind', 'blocked_ref', 'blocker_kind', 'blocker_ref'] as const).map((missing) => ({
+    relation: 'work_items',
+    missing,
+    message:
+      'dependency-edge metadata is not stored on this work-item relation; it lives in `harness_shared.work_item_deps` ' +
+      'under the requested column. Scope the edge read by `workspace_id`; use `work_items:get { id, harness }` ' +
+      'for one item’s dependency view',
+  })),
   {
     relation: 'routines',
     missing: 'harness_slug',
