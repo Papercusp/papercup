@@ -967,8 +967,17 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // failure on a healthy host stays a red.
       if (!turnComplete && stall.stalled()) {
         const stalledFor = Math.round(stall.maxGapMs() / 1000);
+        // console.LOG, not warn. This repo runs `vitest-fail-on-console`, which
+        // turns any unasserted console.warn into a hard test FAILURE — including
+        // one emitted on the way to ctx.skip(), because the flush runs in an
+        // afterEach that a runtime skip does not cancel. A warn here would
+        // therefore convert "the host was under memory pressure, so this was not
+        // measured" into "the backend is broken": a false RED blaming the
+        // product for an instrument outage, which is the exact defect class this
+        // guard exists to report. Keep the diagnostic loud in the log and let
+        // the skip be a skip.
         // eslint-disable-next-line no-console
-        console.warn(
+        console.log(
           `[matrix] NOT MEASURED — ${backend} OWNER TURN: this process lost ${stalledFor}s to a ` +
             `single stall inside its ${TURN_TIMEOUT_MS}ms budget. The agent pty shares this ` +
             'cgroup, so it was stopped too and could not write a transcript. That is an ' +
@@ -1566,7 +1575,11 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
             // already gone
           }
         }
-        console.warn(
+        // console.LOG, not warn — same reason as the OWNER TURN stall guard
+        // above: vitest-fail-on-console would turn this skip into a false red
+        // blaming the backend for host memory pressure.
+        // eslint-disable-next-line no-console
+        console.log(
           `[matrix] NOT MEASURED — ${backend} BARE-PSU: this process lost ` +
             `${Math.round(bootStall.maxGapMs() / 1000)}s to a single stall while waiting for the ` +
             'launch to come up, so the budget expired without the subject being given a chance to ' +
@@ -1657,5 +1670,130 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         }
       }
     }, 300_000);
+
+    // ⚠ END RUNS LAST, AFTER BARE-PSU, AND MUST STAY THERE. Ending the managed
+    // session starts an ASYNCHRONOUS teardown that races any later case reading
+    // that session's liveness; BARE-PSU's disturbance check is exactly such a
+    // reader, and running it after this case produced four false regression
+    // reports in one day. See the ordering note in BARE-PSU above before moving
+    // either one.
+    it('END: the end command is either honoured and the process exits, or refused EXPLICITLY per its declared contract', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      const support = session.descriptor().capabilities.commands.end;
+      const result = await session.send({
+        type: 'end',
+        commandId: `end-${randomUUID().slice(0, 8)}`,
+        reason: 'P-012 acceptance matrix teardown',
+      });
+      endOutcome = result.status;
+
+      // WHY THIS IS NOT SIMPLY `expect(status).toBe('completed')`.
+      //
+      // Every backend declares `end` as CONDITIONAL, not supported — claude's
+      // stated reason is "the managed host may refuse to close a human-attended
+      // runtime". A refusal is therefore a DECLARED outcome of this command, not
+      // a defect, and a matrix that fails on it is asserting past the contract
+      // it is supposed to be checking. (It did exactly that on its first run.)
+      //
+      // What `conditional` DOES promise is that the refusal is explicit and
+      // legible — a code and a message — rather than a silent drop or a
+      // success that did nothing. That is the assertion worth making.
+      if (result.status === 'refused') {
+        expect(
+          support.state,
+          `${backend} refused 'end' while declaring it '${support.state}'. Only a conditional or ` +
+            'unsupported command may refuse; a supported one may not.',
+        ).toMatch(/^(conditional|unsupported)$/);
+        expect(
+          result.refusal?.code,
+          `${backend} refused 'end' without a refusal code. An opaque refusal is indistinguishable ` +
+            'from a dropped command, which is what makes an abandoned agent invisible.',
+        ).toBeTruthy();
+        expect(
+          result.refusal?.message,
+          `${backend} refused 'end' without a message explaining why`,
+        ).toBeTruthy();
+        return;
+      }
+
+      expect(
+        result.status,
+        `${backend} neither honoured nor refused the end command (status=${result.status}); ` +
+          'a silently dropped end is how a real agent is left burning tokens.',
+      ).toMatch(/^(completed|accepted)$/);
+
+      // Acknowledgement is not exit. Wait for the process to actually go.
+      const pid = spawned?.child?.pid ?? null;
+      const deadline = Date.now() + 60_000;
+      while (pid && pidAlive(pid) && Date.now() < deadline) {
+        await delay(POLL_INTERVAL_MS);
+      }
+      if (pid) {
+        expect(
+          pidAlive(pid),
+          `the ${backend} agent process ${pid} was still alive 60s after the end command was ` +
+            'acknowledged. The command was accepted and the process ignored it.',
+        ).toBe(false);
+      }
+    }, 120_000);
+
+    it('ORPHAN-FREE RECONCILIATION: no live process is left UNTRACKED, whichever way the end hop resolved', async () => {
+      expect(advSessionId, 'CREATE must have produced a row').toBeGreaterThan(0);
+
+      // AN ORPHAN IS NOT "A LIVE PROCESS" — IT IS A LIVE PROCESS NOTHING OWNS.
+      //
+      // The first version of this test asserted the pid was simply dead, which
+      // made it fail whenever `end` was (legitimately) refused: a conditional
+      // end that declines to close a runtime leaves it alive ON PURPOSE, and
+      // that is not an orphan while the row still tracks it. Asserting death
+      // here turned one real observation into two false ones.
+      //
+      // The property that actually matters for reconciliation is that every
+      // live process remains REACHABLE — the row knows about it, so the
+      // reconciler and the teardown below can still find and reap it. An
+      // untracked live agent is the thing that burns tokens until a human
+      // notices.
+      const pid = spawned?.child?.pid ?? null;
+      const alive = pid ? pidAlive(pid) : false;
+
+      const row = await getAdvSession(advSessionId);
+      expect(
+        row,
+        `adv row ${advSessionId} vanished while pid ${pid} is ${alive ? 'STILL ALIVE' : 'gone'} — ` +
+          'a live process whose tracking row is gone is unreachable by definition.',
+      ).toBeTruthy();
+
+      if (alive) {
+        // Still running: that is only acceptable because end was refused, and
+        // it must still be tracked. Say which case we are in, so a reader is
+        // never left guessing whether this was intentional.
+        expect(
+          endOutcome,
+          `the ${backend} agent ${pid} is still alive but the end command reported ` +
+            `'${endOutcome}'. A live process after a HONOURED end is an ignored end, not a ` +
+            'conditional refusal.',
+        ).toBe('refused');
+        expect(
+          liveLegs.some((entry) => entry.advSessionId === advSessionId),
+          `pid ${pid} is alive and NOT registered in liveLegs, so teardown will not reap it — ` +
+            'this is the orphan condition.',
+        ).toBe(true);
+      }
+
+      // The discovery file is how the operator's wake-executor finds a live
+      // session. One pointing at a DEAD pid would make a dead session look
+      // injectable to every later reader — the inverse orphan.
+      const discovery = await discoverPsuPtyByAdvSessionId(advSessionId);
+      if (discovery && !alive) {
+        expect(
+          pidAlive(discovery.pid),
+          `psu-pty discovery for adv row ${advSessionId} still points at pid ${discovery.pid} ` +
+            'while the session is gone; the wake-executor would treat this dead session as injectable.',
+        ).toBe(false);
+      }
+    }, 120_000);
   });
 });
