@@ -5340,7 +5340,7 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * claims. An issue-family work-item can carry a `payload.plan_item` back-pointer binding it to a
  * plan-item LANE (P-NNN of some plan). When that lane is being ACTIVELY driven — the parent plan is
  * operationally `started`/`paused`, or an ordinary plan is in a non-executable lifecycle state
- * (`draft`/`paused`/`active`), or the plan-item is under a LIVE lease held by ANOTHER agent — the
+ * (`paused`/`active`), or the plan-item is under a LIVE lease held by ANOTHER agent — the
  * item belongs to that lane's own dispatch, NOT the general backlog-clearance drain. Without this
  * floor the drain SCOOPS such an item into the shared claim pool; members that know the lane is reserved (its plan's
  * `## Now`) correctly REFUSE + release it, and the scheduler immediately re-serves it — the
@@ -5349,7 +5349,7 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  *
  * SOUND + narrow: it fires ONLY when (a) the linked plan is under execution — operationally
  * `op_status IN ('started','paused')` — or is an ordinary plan in a non-executable lifecycle
- * state (`status IN ('draft','paused','active')`), or (b) a non-lapsed `plan_item_claims` lease is
+ * state (`status IN ('paused','active')`), or (b) a non-lapsed `plan_item_claims` lease is
  * held by a DIFFERENT owner. An ordinary `ready` plan with NULL/`done` op_status, or a per-run
  * instance whose lifecycle state is covered only by the template row, is NOT excluded — those
  * items drain normally (no starvation of genuinely-free backlog). A member can still claim a
@@ -5461,12 +5461,17 @@ export function reservedPlanLaneExclusionSql(
            -- other handing the same work out — owner-stopped work reaching an AUTO agent that
            -- has every reason to read a scheduler hand-off as in-scope.
            --
-           -- Ordinary plans in lifecycle draft/paused/active are also reserved: these are
+           -- Ordinary plans in lifecycle paused/active are also reserved: these are
            -- explicitly non-executable/owner-controlled states, and their plan_item rows must not
-           -- leak into a generic drain while the plan is waiting for approval or paused. A ready
-           -- plan with NULL op_status, and a plan whose operation is done, remain free controls.
-           -- The lifecycle leg is qualified by template_slug IS NULL below so scheduled per-run
-           -- instance plans do not deadlock their own minted work.
+           -- leak into a generic drain while the plan is paused or actively running outside
+           -- op_status tracking. A DRAFT plan is deliberately NOT reserved here (EI-21859942410973983):
+           -- a draft with no live lease has no actual occupant, and over-excluding it starved
+           -- genuinely-claimable issues (WI-RES-2/WI-RES-4) for as long as any plan sat in draft —
+           -- the separate plan_item_claims lease leg (below) still reserves a draft plan's lane the
+           -- moment someone actually holds it. A ready plan with NULL op_status, and a plan whose
+           -- operation is done, remain free controls. The lifecycle leg is qualified by
+           -- template_slug IS NULL below so scheduled per-run instance plans do not deadlock their
+           -- own minted work.
            -- op_status is nullable, but a NULL only makes the IN NULL and the row unmatched by
            -- EXISTS — the lifecycle leg supplies the ordinary-plan reservation where appropriate.
            --
@@ -5494,7 +5499,7 @@ export function reservedPlanLaneExclusionSql(
            -- on the @run- token.
            AND (
              p.op_status IN ('started', 'paused')
-             OR (p.status IN ('draft', 'paused', 'active') AND p.template_slug IS NULL)
+             OR (p.status IN ('paused', 'active') AND p.template_slug IS NULL)
            )
       ))
       OR (NOT (${authorized}) AND EXISTS (
@@ -5529,7 +5534,7 @@ export function reservedPlanLaneExclusionSql(
       -- opposite directions; the filing near-miss was a 10-agent dispatch.
       --
       -- The legs above do NOT already cover it: they fire only when the plan is under
-      -- execution (op_status started/paused, or ordinary lifecycle draft/paused/active) or under
+      -- execution (op_status started/paused, or ordinary lifecycle paused/active) or under
       -- a live lease.
       -- A plan that was never started reserves nothing, so its blocked lanes stayed fully
       -- claimable — floor #11 is a mitigation for this bug, not the fix.
