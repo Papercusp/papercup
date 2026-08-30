@@ -57,6 +57,27 @@ const RESULT_PATH = '/var/log/papercusp-image-scan.json';
 const DONE_PATH = '/var/log/papercusp-image-scan.done';
 
 /**
+ * Where the papercusp release bundle is installed on the workspace-host image.
+ *
+ * This is the SUBJECT BOUNDARY for scope attribution: everything under this path is content
+ * papercusp authored or vendored, and can therefore fix; everything else on the mounted image
+ * is the inherited Ubuntu base (kernel, distro userland, cloud guest agents), which papercusp
+ * neither ships nor can patch. D-201 proved the distinction is load-bearing: linux-kernel alone
+ * carries 1054 findings at or above high, so a gate measuring the whole mount can never be
+ * greened by any change to the release.
+ *
+ * Matched as a SUBSTRING with both delimiters, rather than as a prefix, deliberately: syft and
+ * gitleaks do not agree on how they render a path under a dir: source. gitleaks emits the
+ * absolute guest path (/mnt/candidate/sda1/opt/papercusp/...) — confirmed by the secretsByArea
+ * projection below, whose split("/") | .[4] yields top-level names like usr — while syft
+ * commonly reports a path relative to the scan root (/sda1/opt/papercusp/...). A prefix test
+ * would silently match one convention and not the other, and "silently matched nothing" is the
+ * exact failure the attribution-coverage proof below exists to catch. The bounding slashes stop
+ * it matching a sibling such as /opt/papercusp-old.
+ */
+const PAPERCUSP_BUNDLE_PATH = '/opt/papercusp';
+
+/**
  * gitleaks, pinned by version AND digest.
  *
  * Unlike syft and grype, gitleaks publishes NO install script — it distributes release
@@ -305,6 +326,54 @@ if [ "\$vuln_crit_high_by_artifact" = "null" ]; then detail="vuln-crit-high-arti
 vuln_crit_high_distinct_artifacts=\$(jq '[.matches[]? | select((.vulnerability.severity // "" | ascii_downcase) == "critical" or (.vulnerability.severity // "" | ascii_downcase) == "high") | (.artifact.name + " " + (.artifact.version // "?"))] | unique | length' /tmp/vuln.json 2>/dev/null || echo "null")
 if [ "\$vuln_crit_high_distinct_artifacts" = "null" ]; then detail="vuln-crit-high-artifact-census-parse-failed"; exit 1; fi
 
+# SCOPE — is this finding OURS, or INHERITED? The mechanism D-201 deliberately left open.
+#
+# Every breakdown above answers "what KIND of finding is this". None answers "can papercusp do
+# anything about it", and that is the question a release gate actually needs. The scan runs over
+# the whole mounted image because that is what proves it mounted an OS and cataloged what the OS
+# contains — but the RELEASE it reports on is only the content under ${PAPERCUSP_BUNDLE_PATH}.
+# D-201: linux-kernel alone is 1054 at/above high, so no change to the release can ever green a
+# gate that measures the whole mount. D-202: the 26 npm findings under the bundle are ours and
+# 100% carry an upstream fix. Two populations, opposite remediations, and until this field they
+# were indistinguishable in the result document.
+#
+# EVIDENCE ONLY — nothing here rejects anything, and the policy still consumes the unscoped
+# counts. That is deliberate on two grounds: D-202 section 4 sequences the npm remediation BEFORE
+# the gate changes what it accepts, and D-196 set the precedent that a carry half is inert while
+# an enforcement half is not, so they do not land in the same wake.
+vuln_by_scope=\$(jq -c '[.matches[]? | (if ([.artifact.locations[]?.path // empty] | any(contains("${PAPERCUSP_BUNDLE_PATH}/"))) then "papercusp-bundled" else "inherited-base-image" end)] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_by_scope" = "null" ]; then detail="vuln-scope-parse-failed"; exit 1; fi
+# Crossed with the DENIED band, because that is the number any remediation is judged by. The
+# marginal above cannot answer "how many of the findings we can act on are actually blocking",
+# for exactly the reason severity and fixability could not be combined after the fact (D-171).
+vuln_crit_high_by_scope=\$(jq -c '[.matches[]? | select((.vulnerability.severity // "" | ascii_downcase) == "critical" or (.vulnerability.severity // "" | ascii_downcase) == "high") | (if ([.artifact.locations[]?.path // empty] | any(contains("${PAPERCUSP_BUNDLE_PATH}/"))) then "papercusp-bundled" else "inherited-base-image" end)] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_crit_high_by_scope" = "null" ]; then detail="vuln-crit-high-scope-parse-failed"; exit 1; fi
+
+# ATTRIBUTION COVERAGE PROOF — fail CLOSED when the scope matcher matched nothing.
+#
+# Third instance of one hazard, so it gets the treatment the first two got. The mount proof asks
+# "did we read the userland?"; the cataloger proof asks "did syft read what the userland
+# contains?"; this asks "did the scope split actually locate the bundle?". All three fail
+# identically — a confident low number the release policy ACCEPTS — and this one fails the most
+# quietly of the three, because a matcher that matches nothing attributes EVERY finding to the
+# inherited base, which reads exactly like a spotless release rather than like a broken
+# instrument. Compare the dead gitleaks installer, the unmounted root (WI-1092039) and the
+# npm-blind cataloger (WI-1117135 / D-200): the scan succeeded, every parse check passed, and
+# the gate was handed a number nobody had measured.
+#
+# Asserted over CATALOGED PACKAGES, never over findings — this is the part that is easy to get
+# backwards. A bundle with zero vulnerabilities is the SUCCESS state this whole effort is driving
+# toward (D-202: the 26 npm findings are ours and every one is fixable), so a guard on a zero
+# FINDING count would red the gate at precisely the moment the remediation finally worked, and
+# would train the next reader to disable it. Cataloged packages cannot legitimately fall to zero
+# while the bundle exists: the SBOM carries ~291 npm packages under this path (D-200 measurement).
+bundle_present=\$(find /mnt/candidate -maxdepth 4 -path "*${PAPERCUSP_BUNDLE_PATH}" -type d 2>/dev/null | head -1 | wc -l)
+bundle_cataloged=\$(jq '[.artifacts[]? | select([.locations[]?.path // empty] | any(contains("${PAPERCUSP_BUNDLE_PATH}/")))] | length' /tmp/sbom.json 2>/dev/null || echo "null")
+if [ "\$bundle_cataloged" = "null" ]; then detail="sbom-scope-parse-failed"; exit 1; fi
+if [ "\$bundle_present" -gt 0 ] && [ "\$bundle_cataloged" -eq 0 ]; then
+  detail="scope-attribution-zero"; exit 1
+fi
+
 # Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
 # emitted: this document is read back over SSH and lands in release logs and work-item
 # evidence, so echoing the secret would convert a detection into a disclosure. Anyone
@@ -322,6 +391,13 @@ if [ "\$secrets_sample" = "null" ]; then detail="secret-sample-parse-failed"; ex
 # location only — no value, same rule as the sample above.
 secrets_by_area=\$(jq -c '[.[]? | (.RuleID + " @ /" + ((.File | split("/") | .[4]) // "?"))] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/secrets.json 2>/dev/null || echo "null")
 if [ "\$secrets_by_area" = "null" ]; then detail="secret-area-parse-failed"; exit 1; fi
+# The same split for the secrets leg, because D-201 established the two legs are ONE defect.
+# image-scan-policy already concedes this in code — gitleaks reads the entire mounted userland,
+# so its count "says nothing about papercusp-authored content" — but conceding it in a comment
+# left no way to tell which findings, if any, ARE ours. This is that field. Location only, no
+# value, under the same non-disclosure rule as the sample and area projections above.
+secrets_by_scope=\$(jq -c '[.[]? | (if ((.File // "") | contains("${PAPERCUSP_BUNDLE_PATH}/")) then "papercusp-bundled" else "inherited-base-image" end)] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/secrets.json 2>/dev/null || echo "null")
+if [ "\$secrets_by_scope" = "null" ]; then detail="secret-scope-parse-failed"; exit 1; fi
 
 sbom_sha=\$(sha256sum /tmp/sbom.json | cut -d' ' -f1)
 
@@ -341,10 +417,14 @@ jq -n \\
   --argjson vulnerabilityDistinctArtifacts "\$vuln_distinct_artifacts" \\
   --argjson vulnerabilityCriticalHighByArtifact "\$vuln_crit_high_by_artifact" \\
   --argjson vulnerabilityCriticalHighDistinctArtifacts "\$vuln_crit_high_distinct_artifacts" \\
+  --argjson vulnerabilityByScope "\$vuln_by_scope" \\
+  --argjson vulnerabilityCriticalHighByScope "\$vuln_crit_high_by_scope" \\
+  --argjson bundleCatalogedArtifacts "\$bundle_cataloged" \\
   --argjson secretsByArea "\$secrets_by_area" \\
   --argjson secretsByRule "\$secrets_by_rule" \\
+  --argjson secretsByScope "\$secrets_by_scope" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, vulnerabilityCriticalHighByArtifact:\$vulnerabilityCriticalHighByArtifact, vulnerabilityCriticalHighDistinctArtifacts:\$vulnerabilityCriticalHighDistinctArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
+  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, vulnerabilityCriticalHighByArtifact:\$vulnerabilityCriticalHighByArtifact, vulnerabilityCriticalHighDistinctArtifacts:\$vulnerabilityCriticalHighDistinctArtifacts, vulnerabilityByScope:\$vulnerabilityByScope, vulnerabilityCriticalHighByScope:\$vulnerabilityCriticalHighByScope, bundleCatalogedArtifacts:\$bundleCatalogedArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretsByScope:\$secretsByScope, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -592,8 +672,31 @@ async function scan(input) {
             measurement.vulnerabilityCriticalHighDistinctArtifacts,
         }
       : {}),
+    // SCOPE — papercusp-bundled versus inherited base image. The split D-201 left open, carried
+    // as evidence only: it changes nothing about what this document asserts, it makes the one
+    // distinction the gate's consumers cannot otherwise draw. bundleCatalogedArtifacts travels
+    // WITH the split on purpose — it is the denominator that says the matcher found the bundle
+    // at all, so a reader can tell "no findings are ours" (good) from "the matcher matched
+    // nothing" (an instrument fault). The guest already fails closed on the latter; carrying the
+    // number means a human reading the document can check the same thing without rerunning it.
+    ...(isPlainObject(measurement.vulnerabilityByScope)
+      ? { vulnerabilityByScope: measurement.vulnerabilityByScope }
+      : {}),
+    ...(isPlainObject(measurement.vulnerabilityCriticalHighByScope)
+      ? {
+          vulnerabilityCriticalHighByScope:
+            measurement.vulnerabilityCriticalHighByScope,
+        }
+      : {}),
+    ...(Number.isSafeInteger(measurement.bundleCatalogedArtifacts)
+      ? { bundleCatalogedArtifacts: measurement.bundleCatalogedArtifacts }
+      : {}),
     ...(isPlainObject(measurement.secretsByRule)
       ? { secretsByRule: measurement.secretsByRule }
+      : {}),
+    // The secrets leg of the same split. D-201: both legs are ONE defect, so both get the field.
+    ...(isPlainObject(measurement.secretsByScope)
+      ? { secretsByScope: measurement.secretsByScope }
       : {}),
     // A CENSUS of every secret finding by rule x top-level directory, because secretSample
     // below is capped at 50 and classifies only a fraction of a real image's findings.

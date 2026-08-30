@@ -669,11 +669,31 @@ function scanEvidence(
             result.vulnerabilityCriticalHighDistinctArtifacts,
         }
       : {}),
+    // SCOPE — papercusp-bundled versus inherited base image (D-201's open mechanism), carried as
+    // evidence only. This hop is where the coverage pair was silently dropped once already
+    // (WI-1092039: the guest measured mountedFilesystems and candidateRootProof, nothing carried
+    // them, and the gate could not have read them even had it wanted to), so the split and its
+    // denominator are wired through together rather than left for the enforcement half to add.
+    ...(isRecord(result.vulnerabilityByScope)
+      ? { vulnerabilityByScope: result.vulnerabilityByScope as Readonly<Record<string, number>> }
+      : {}),
+    ...(isRecord(result.vulnerabilityCriticalHighByScope)
+      ? {
+          vulnerabilityCriticalHighByScope:
+            result.vulnerabilityCriticalHighByScope as Readonly<Record<string, number>>,
+        }
+      : {}),
+    ...(typeof result.bundleCatalogedArtifacts === 'number'
+      ? { bundleCatalogedArtifacts: result.bundleCatalogedArtifacts }
+      : {}),
     ...(isRecord(result.secretsByRule)
       ? { secretsByRule: result.secretsByRule as Readonly<Record<string, number>> }
       : {}),
     ...(isRecord(result.secretsByArea)
       ? { secretsByArea: result.secretsByArea as Readonly<Record<string, number>> }
+      : {}),
+    ...(isRecord(result.secretsByScope)
+      ? { secretsByScope: result.secretsByScope as Readonly<Record<string, number>> }
       : {}),
     ...(Array.isArray(result.secretSample)
       ? { secretSample: result.secretSample as readonly unknown[] }
