@@ -1088,11 +1088,24 @@ test('LAST-RESORT opus→sonnet downgrade when opus is walled pool-wide on every
     { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
     { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
   ]);
-  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  // Capture the gateway's own log so a failure here reports WHICH retry rung ran
+  // (wait / absorb / downgrade) instead of only the final status — the default
+  // `log` is a no-op, so without this a failure is silent about its cause.
+  const logs: string[] = [];
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: upstream.base,
+    maxQueueWaitMs: 200,
+    log: (_level, msg) => logs.push(msg),
+  });
   port = await gw.listen(0);
 
   const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(r.status, 200, 'opus walled on every account → last-resort sonnet retry succeeds, never hard-fails the caller');
+  assert.equal(
+    r.status,
+    200,
+    `opus walled on every account → last-resort sonnet retry succeeds, never hard-fails the caller\nLOGS:\n${logs.join('\n')}`,
+  );
   assert.equal(r.headers.get(MODEL_DOWNGRADED_HEADER), 'opus->sonnet', 'the silent substitution is surfaced to the caller via the downgrade header');
   assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-4-6', 'the forwarded request was rewritten to the fleet-canonical sonnet id');
 
