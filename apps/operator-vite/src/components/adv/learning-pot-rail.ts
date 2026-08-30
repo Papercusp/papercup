@@ -93,15 +93,29 @@ function laneBelongsToPot(lane: AutomationLaneArm, potSlug: string): boolean {
  * learning" surface.
  */
 export function learningPotSlugs(arming: AutomationArming): string[] {
+  // Same cache-boundary reasoning as masterSwitch: every field here is declared
+  // required, but a stale cached catalog can be missing any of them, and an
+  // iteration over `undefined` throws exactly as hard as a bad dereference.
   const slugs = new Set<string>();
-  for (const g of arming.gymPots) if (g.harnessSlug) slugs.add(g.harnessSlug);
-  for (const l of arming.lanes) if (l.potSlug) slugs.add(l.potSlug);
+  for (const g of arming.gymPots ?? []) if (g?.harnessSlug) slugs.add(g.harnessSlug);
+  for (const l of arming.lanes ?? []) if (l?.potSlug) slugs.add(l.potSlug);
   return [...slugs];
 }
 
 function masterSwitch(arming: AutomationArming, potSlug: string): PotSegmentState {
   // Rule 2: a failed read is 'unknown', never 'on'.
-  if (arming.potScope === null) return 'unknown';
+  // NULLISH, not `=== null`. The type says `AutomationPotScope | null`, which
+  // makes a strict null check look exhaustive — but this value crosses a sync
+  // CACHE boundary, where the type describes the current server and not the
+  // bytes the client actually holds. `potScope` was added by P-005, so any
+  // catalog payload cached before it has no such key, and `=== null` waved
+  // `undefined` straight through to the dereference below. That crashed the
+  // whole Learning tab via the error boundary (WI-1397883, owner-reported).
+  // A scope object whose `disabledPots` did not survive the cache boundary is
+  // unreadable for the same reason, and defaulting it to `[]` would be the
+  // fail-open mistake in rule 1's clothing: it would report every pot 'on' off
+  // a payload we could not actually read.
+  if (arming.potScope == null || !Array.isArray(arming.potScope.disabledPots)) return 'unknown';
   // Rule 1: ask only about ABSENCE from disabledPots.
   return arming.potScope.disabledPots.includes(potSlug) ? 'off' : 'on';
 }
@@ -155,11 +169,17 @@ function scoutSegment(master: PotSegmentState): PotRailSegment {
  */
 export function buildLearningPotRail(arming: AutomationArming | null | undefined): LearningPotChip[] {
   if (!arming) return [];
-  const gymBySlug = new Map(arming.gymPots.map((g) => [g.harnessSlug, g] as const));
+  // Every collection here is declared required and is read nullish anyway: the
+  // arming crosses a sync CACHE boundary, so the type describes the current
+  // server rather than the bytes this client holds. See masterSwitch.
+  const gymBySlug = new Map<string, AutomationGymArm>();
+  for (const g of arming.gymPots ?? []) if (g?.harnessSlug) gymBySlug.set(g.harnessSlug, g);
   const chips = learningPotSlugs(arming).map<LearningPotChip>((potSlug) => {
     const learning = masterSwitch(arming, potSlug);
     const gym = gymSegment(gymBySlug.get(potSlug));
-    const lanes = laneSegment(arming.lanes.filter((l) => laneBelongsToPot(l, potSlug)));
+    const lanes = laneSegment(
+      (arming.lanes ?? []).filter((l) => l != null && laneBelongsToPot(l, potSlug)),
+    );
     return {
       potSlug,
       learning,
