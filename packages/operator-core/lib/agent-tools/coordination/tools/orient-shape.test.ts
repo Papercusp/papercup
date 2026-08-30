@@ -421,11 +421,11 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
     expect('degraded' in healthy.memory).toBe(false);
   });
 
-  it('fold #1: passes a compact fleetHealth through unchanged (not re-shaped away)', () => {
+  it('D-002: passes the versioned fleetHealth availability/ref through unchanged', () => {
     const fleetHealth = {
-      bees: { running: 3, working: 2 },
-      wake: { default: 'auto', stagedTotal: 1, stagedOwners: 1 },
-      governor: { anyPaused: false, paused: [] },
+      schemaVersion: 'orient-fleet-health-v1',
+      status: 'available',
+      ref: 'coord:glance',
     };
     for (const tier of ['trimmed', 'standard'] as const) {
       const out = shapeOrient({ ...fixture(), fleetHealth }, tier) as { fleetHealth: unknown };
