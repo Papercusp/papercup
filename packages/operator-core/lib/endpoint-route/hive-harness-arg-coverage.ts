@@ -89,6 +89,33 @@ export function designatesHarness(argName: string): boolean {
 }
 
 /**
+ * Tool-name prefixes whose bare `slug` argument IS a harness slug.
+ *
+ * The same argument name means different things on different tools: `slug` is a
+ * feature slug on `features:get` and a doc slug on `docs:get`, but on `pot:*`
+ * its own schema says "The pot's home-harness slug" — and a pot's home harness
+ * IS a hive identity. `pot:obliterate { slug }` is the sharp end of that.
+ *
+ * So harness-designation cannot be decided from the argument name alone for
+ * this family; it needs the tool it appears on.
+ */
+export const HARNESS_SCOPED_TOOL_PREFIXES: readonly string[] = ['pot:', 'harness:', 'hive:'];
+
+/**
+ * Does this argument designate a harness, given the tool it is declared on?
+ *
+ * Superset of `designatesHarness`: adds the tool-scoped `slug` family above.
+ * `toolName` is optional so name-only callers keep working.
+ */
+export function designatesHarnessArg(argName: string, toolName?: string): boolean {
+  if (designatesHarness(argName)) return true;
+  if (!toolName) return false;
+  const n = argName.toLowerCase().replace(/[_-]/g, '');
+  if (n !== 'slug' && n !== 'slugs') return false;
+  return HARNESS_SCOPED_TOOL_PREFIXES.some((p) => toolName.startsWith(p));
+}
+
+/**
  * Could this property's DECLARED schema carry a harness slug?
  *
  * Strings and string arrays can. Numbers and booleans cannot, so they are
@@ -185,7 +212,7 @@ export function topLevelArgEntries(
  */
 export function collectHarnessSlugArgs(
   args: unknown,
-  options?: { readonly skip?: readonly string[] },
+  options?: { readonly skip?: readonly string[]; readonly toolName?: string },
 ): Array<{ readonly arg: string; readonly slug: string }> {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
   const skip = new Set(options?.skip ?? HIVE_CLAMP_LITERAL_ARGS);
@@ -193,7 +220,7 @@ export function collectHarnessSlugArgs(
   const out: Array<{ arg: string; slug: string }> = [];
   for (const [arg, value] of Object.entries(args as Record<string, unknown>)) {
     if (skip.has(arg) || exempt.has(arg)) continue;
-    if (!designatesHarness(arg)) continue;
+    if (!designatesHarnessArg(arg, options?.toolName)) continue;
     if (typeof value === 'string') {
       const slug = value.trim();
       if (slug) out.push({ arg, slug });
@@ -212,9 +239,9 @@ export function collectHarnessSlugArgs(
  * Either it is one of the four literal branches, or the generic sweep picks it
  * up because `designatesHarness` recognises the spelling.
  */
-export function isClampEnforcedArg(argName: string): boolean {
+export function isClampEnforcedArg(argName: string, toolName?: string): boolean {
   // EXACT match for the literal branches, never normalized — see trap (1).
-  return HIVE_CLAMP_LITERAL_ARGS.includes(argName) || designatesHarness(argName);
+  return HIVE_CLAMP_LITERAL_ARGS.includes(argName) || designatesHarnessArg(argName, toolName);
 }
 
 /**
