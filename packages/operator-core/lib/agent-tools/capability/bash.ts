@@ -247,10 +247,10 @@ export default defineTool({
     // consumable export), which is why it lost to the rg/backtick and background-job
     // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
-      'Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; use a shell-safe single-quoted argument, since an unmatched backtick fails before either search tool runs. ' +
+      'Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the argument — an unmatched backtick fails before either tool runs. ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; do not shell-background child with \`&\`/nohup/setsid/disown without \`wait\`; 4h/12h defaults.`,
     notWhen:
-      'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
+      'Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.',
     chaining:
       'run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push.',
     // EI-21543657511391052: the stale 'capability:bash_kill' entry is DELETED, not

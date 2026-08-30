@@ -49,7 +49,11 @@ import {
   type RelayProvenanceStamp,
 } from '../relay-provenance';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
-import { BODY_REFS_OPT_OUT_FIELD, GATE_REFS_FIELD } from '../ref-hydrate';
+import {
+  BODY_REFS_OPT_OUT_FIELD,
+  detectEntryBodyRefs,
+  GATE_REFS_FIELD,
+} from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
 import {
   resolveCouplingDivergenceStamps,
@@ -118,7 +122,7 @@ import {
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
-import { senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
+import { inboxBodyCharCap, senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -148,6 +152,9 @@ const sectionOnlyArgRedirects = Object.fromEntries(
  * any delivery action.
  */
 export const COORD_SEND_IDLE_REPORT_TIMEOUT_MS = 1_500;
+/** Keep the post-send work-item routing advisory from coupling send latency to
+ * a slow work-item store. The message is already durable when this runs. */
+export const COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS = 1_500;
 
 /**
  * Derive the coord message id for one idempotent coord:send item. MCP
@@ -315,6 +322,124 @@ function isOwnerIdAlias(address: string, ownerId: string): boolean {
     !isSelectorOrWildcard(address) &&
     (address === ownerId || ownerId.startsWith(address) || ownerId.includes(address))
   );
+}
+
+/** The largest body a one-entry default `coord:inbox` read can show. */
+const DEFAULT_INBOX_BODY_CAP = inboxBodyCharCap('full', 1);
+
+/**
+ * Return the flattened body length used by the receiver's inbox projection.
+ *
+ * This measures strings too because internal GUI callers are upgraded to
+ * sections after the schema boundary. For malformed section arrays, return
+ * `null` so the body-shape validator reports the problem instead of
+ * manufacturing an over-cap error.
+ */
+function bodyTextLength(body: unknown): number | null {
+  if (typeof body === 'string') return body.length;
+  if (!Array.isArray(body)) return null;
+  const texts: string[] = [];
+  for (const section of body) {
+    if (!section || typeof section !== 'object') return null;
+    const text = (section as { text?: unknown }).text;
+    if (typeof text !== 'string') return null;
+    texts.push(text);
+  }
+  return texts.join('\n\n').length;
+}
+
+interface DispatchAdvisory {
+  /** The work-item ids that the action message mentions but does not assign. */
+  workItemIds: string[];
+  /** Concrete recipients that do not currently hold one of the mentioned items. */
+  recipientsNotHolding: string[];
+  /** The live assignment observed for each mentioned item. */
+  assignments: Array<{ workItemId: string; assignee: string | null }>;
+  /** The durable work-transfer primitive that can assign + wake the target. */
+  suggestedTool: 'coord:dispatch';
+  note: string;
+}
+
+/**
+ * Detect the "cheerful acceptance, zero claim" route at the send seam.
+ *
+ * `coord:send` is intentionally still a message primitive: this is an
+ * ADDITIVE advisory, never an implicit claim or a delivery refusal. A directed
+ * `expects:'action'` message that names an existing work-item is work-shaped,
+ * though, and a recipient who does not hold that item cannot become its worker
+ * merely by replying "yes". The sender needs to see that distinction while the
+ * original message is still in hand, so it can use `coord:dispatch`.
+ *
+ * The lookup is dynamic and bounded at the call site. The send has already
+ * persisted by the time this helper runs, and every read failure degrades to no
+ * advisory rather than changing message delivery.
+ */
+async function deriveDispatchAdvisory(
+  msg: SendMsg,
+  bodyText: string | undefined,
+  recipients: readonly string[],
+  harnessSlug: string | null,
+): Promise<DispatchAdvisory | undefined> {
+  if (msg.expects !== 'action' || msg.noBodyRefs || !isDirected(msg.to)) return undefined;
+
+  const refs = detectEntryBodyRefs({ summary: msg.summary, body: bodyText }).filter(
+    (ref): ref is { kind: 'work-item'; id: string } => ref.kind === 'work-item',
+  );
+  if (refs.length === 0) return undefined;
+
+  try {
+    const { getWorkItem } = await import('../../../work-items');
+    const rows = await Promise.all(
+      refs.map(async (ref) => {
+        try {
+          return await getWorkItem(ref.id, harnessSlug ?? undefined);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const assignments = rows.flatMap((item, index) => {
+      if (!item) return [];
+      return [{ workItemId: refs[index]!.id, assignee: item.assignee?.trim() || null }];
+    });
+    if (assignments.length === 0) return undefined;
+
+    const mismatches = assignments
+      .map((assignment) => ({
+        ...assignment,
+        recipientsNotHolding: recipients.filter((recipient) => {
+          if (!assignment.assignee) return true;
+          return (
+            recipient !== assignment.assignee &&
+            !isOwnerIdAlias(recipient, assignment.assignee) &&
+            !isOwnerIdAlias(assignment.assignee, recipient)
+          );
+        }),
+      }))
+      .filter((assignment) => assignment.recipientsNotHolding.length > 0);
+    if (mismatches.length === 0) return undefined;
+
+    const workItemIds = mismatches.map((entry) => entry.workItemId);
+    const recipientsNotHolding = [...new Set(mismatches.flatMap((entry) => entry.recipientsNotHolding))];
+    const assignmentText = mismatches
+      .map(({ workItemId, assignee }) => `${workItemId} → ${assignee ?? 'unassigned'}`)
+      .join('; ');
+
+    return {
+      workItemIds,
+      recipientsNotHolding,
+      assignments,
+      suggestedTool: 'coord:dispatch',
+      note:
+        `This directed expects:'action' message mentions ${workItemIds.join(', ')}, but the ` +
+        `recipient(s) ${recipientsNotHolding.join(', ')} do not hold that work. Live assignments: ` +
+        `${assignmentText}. coord:send only records/delivers the request; it does not assign the ` +
+        'work-item. Use coord:dispatch with workItemIds:[…] to assign the execution lane and wake ' +
+        'the target, or keep this send as a plain nudge and verify the claim separately.',
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 // WI-6522 — this union carried NO custom `error`, so zod 4 emitted a bare
@@ -646,6 +771,32 @@ async function sendOne(
   idempotencyKey?: string,
   itemIndex?: number,
 ): Promise<BulkItemResult> {
+  // EI-21826596284846555: a normal inbox read exposes at most the first
+  // 600 characters of one message body (and less on a crowded page). For a
+  // load-bearing message, persisting a longer body and warning only after the
+  // send is too late: the conclusion can be the part the recipient cannot see.
+  // Keep this runtime guard for internal callers that bypass the Zod boundary;
+  // the schema below enforces the same refusal before an agent request reaches
+  // this handler.
+  const authoredBodyChars = bodyTextLength(msg.body);
+  if (
+    msg.expects !== 'none' &&
+    authoredBodyChars !== null &&
+    authoredBodyChars > DEFAULT_INBOX_BODY_CAP
+  ) {
+    return {
+      ok: false,
+      to: msg.to,
+      error: 'body_exceeds_inbox_cap',
+      message:
+        `coord:send body is ${authoredBodyChars} characters, exceeding the ` +
+        `${DEFAULT_INBOX_BODY_CAP}-character default inbox cap for expects:'${msg.expects}'. ` +
+        'Nothing was sent. Shorten the body so the recipient can see the complete ask; ' +
+        '`coord:read` is a recovery path, not a substitute for a load-bearing send. ' +
+        "An explicit expects:'none' remains allowed for FYI/status messages.",
+    };
+  }
+
   // agent-report-cards-2026-07-17 P-001 / D-004: validate a structured report
   // card payload FIRST (pure, cheap) through the ONE canonical validator. A
   // payload that yields no valid block is a LOUD refusal — a silently-dropped
@@ -1768,6 +1919,14 @@ async function sendOne(
   const authorityClaim = claimText
     ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority)
     : null;
+  const { value: dispatchAdvisory } = await withBoundedTimeout(
+    () => deriveDispatchAdvisory(msg, bodyText, env.to, harnessSlug),
+    {
+      fallback: undefined,
+      timeoutMs: COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS,
+      label: 'coord:send:dispatch-advisory',
+    },
+  );
 
   return {
     ok: true,
@@ -1889,6 +2048,7 @@ async function sendOne(
           },
         }
       : {}),
+    ...(dispatchAdvisory ? { dispatchAdvisory } : {}),
     ...(staleBasisStamps.length ? { staleBasis: staleBasisStamps } : {}),
   };
 }
@@ -1976,13 +2136,14 @@ export default defineTool({
   description:
     'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
   guidance: {
-    when: 'Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES often got wrong: `premises` is an array of ref strings, not objects — `premises: ["WI-1234#completion"]`; `youMayNotKnow` takes `{ ref, provenance }` and `couldNotDetermine` takes `{ what, note? }` — `youMayNotKnow: [{ ref: "WI-1", provenance: "authored" }]`, `couldNotDetermine: [{ what: "the gap" }]`, not a string or array of strings. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
+    when: 'Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
-      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. When a body exceeds the default inbox cap, top-level `bodyDeliveryWarning` calls out that persistence succeeded but the recipient view is incomplete; read the per-message body diagnostics and `bodyReadRef`.',
-    notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff.',
+      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. A body above the 600-character default inbox cap is refused before a load-bearing expects:ack/answer/action send; an expects:none FYI may persist with top-level `bodyDeliveryWarning` because truncation is then explicit. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy.',
+    notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
+      'coord:dispatch (assign a named work-item and wake its execution owner)',
       'coord:inbox (read replies to what you sent)',
       'coord:roster { view:"live" } (confirm a recipient is awake before wake:required)',
       'EI-9940: self-resolved a failure you already reported? reply via related_msg_id, not a fresh send',
@@ -2051,6 +2212,28 @@ export default defineTool({
         pctx.addIssue({ code: 'custom', path: [...path, 'body'], message: BODY_MUST_BE_ARRAY_MESSAGE });
       }
     };
+    // EI-21826596284846555: keep load-bearing bodies within the largest normal
+    // inbox projection. This is deliberately a schema-time refusal, so the
+    // sender learns before any handler-side enrichment or persistence runs.
+    const flagOverlongBody = (
+      message: { body?: unknown; expects?: unknown },
+      path: (string | number)[],
+    ) => {
+      const expects = typeof message.expects === 'string' ? message.expects : undefined;
+      if (!expects || expects === 'none') return;
+      const bodyChars = bodyTextLength(message.body);
+      if (bodyChars === null || bodyChars <= DEFAULT_INBOX_BODY_CAP) return;
+      pctx.addIssue({
+        code: 'custom',
+        path: [...path, 'body'],
+        message:
+          `coord:send body is ${bodyChars} characters, exceeding the ` +
+          `${DEFAULT_INBOX_BODY_CAP}-character default inbox cap for expects:'${expects}'. ` +
+          'Nothing was sent. Shorten the body so the recipient can see the complete ask; ' +
+          '`coord:read` is a recovery path, not a substitute for a load-bearing send. ' +
+          "An explicit expects:'none' remains allowed for FYI/status messages.",
+      });
+    };
     // EI-20271510434650928: endTurn is an ESC-before-wake recovery operation. Without
     // an explicit wake mode it can end a recipient's current turn and then leave them
     // idle, which is strictly worse than a plain inject. Enforce the coupling before
@@ -2084,6 +2267,15 @@ export default defineTool({
       });
     } else {
       flagMalformedBody(a?.body, []);
+    }
+    if (hasItems) {
+      (a?.items ?? []).forEach((it, i) => {
+        if (it && typeof it === 'object') {
+          flagOverlongBody(it as { body?: unknown; expects?: unknown }, ['items', i]);
+        }
+      });
+    } else {
+      flagOverlongBody(a ?? {}, []);
     }
     if (!hasItems && !hasSingle) {
       // WI-6522 — this used to emit ONE generic bulk-vs-single menu for every
