@@ -1591,6 +1591,14 @@ export function suLaunchArgs(
       ...ompLspArgs(allowNativeLsp),
       replaceClaudeBase ? "--system-prompt" : "--append-system-prompt",
       promptFile,
+      // adv 21150 — the SAME title-request mitigation the fresh-role
+      // (roleLaunchArgs) and resume paths already apply. ompTitleMitigationArgs'
+      // own contract claims "every fresh role, fresh SU, and resume path already
+      // funnels through this helper"; the fresh-SU branch was the one path that
+      // did NOT, so an interactive `psu` su session kept racing the
+      // provider-backed title request that lost a real tracked session while the
+      // pool was throttled. Held by the suLaunchArgs > omp argv regression tests.
+      ...ompTitleMitigationArgs(),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
