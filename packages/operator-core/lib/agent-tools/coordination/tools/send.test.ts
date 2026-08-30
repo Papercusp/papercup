@@ -1988,21 +1988,21 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
     expect(primaryGuidance).toContain('couldNotDetermine');
     expect(primaryGuidance).toContain('`couldNotDetermine` is [{ what, note? }]');
-    expect(primaryGuidance).toMatch(/not a string or array of strings/i);
+    expect(primaryGuidance).toMatch(/objects, never bare strings/i);
   });
 
   it('publishes the structured youMayNotKnow citation shape in primary coord:send guidance', () => {
     const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
     expect(primaryGuidance).toContain('youMayNotKnow');
     expect(primaryGuidance).toContain('`youMayNotKnow` is [{ ref, provenance }]');
-    expect(primaryGuidance).toMatch(/not a string or array of strings/i);
+    expect(primaryGuidance).toMatch(/objects, never bare strings/i);
   });
 
   it('publishes the premise ref-string shape in primary coord:send guidance', () => {
     const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
     expect(primaryGuidance).toContain('premises');
     expect(primaryGuidance).toContain('`premises` is an array of ref STRINGS');
-    expect(primaryGuidance).toMatch(/premises.*array.*ref strings.*not objects/i);
+    expect(primaryGuidance).toMatch(/premises.*array.*ref strings/i);
   });
 
   it('publishes the exact authored entry shapes in the body guidance', () => {
