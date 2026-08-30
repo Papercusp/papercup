@@ -75,6 +75,11 @@ vi.mock('../../release-checkpoint-config', async (orig) => ({
 // rows[0]?.gh (→ {}), cleared.count (→ 0, no stall-clear warn), shouldBackOff(null) (→ false,
 // same as the fail-open path) — behaves as the no-prior-state happy path.
 const fakeSql = { unsafe: vi.fn(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 })) };
+// The postgres.js Result shape `fakeSql.unsafe` resolves to: the rows PLUS a numeric `.count`.
+// Build mock resolutions through this so a stubbed query keeps the real result's shape — a bare
+// array is not assignable to it, and casting the difference away (`as never`) is exactly the
+// mock-cast escape `scripts/check-mock-cast-escape.mjs` ratchets down.
+const sqlRows = (rows: unknown[]) => Object.assign(rows, { count: rows.length });
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: fakeSql }),
@@ -2510,7 +2515,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
   };
 
   it('round-trips the queue and scopes every read/write/clear to its workspace routine row', async () => {
-    fakeSql.unsafe.mockResolvedValueOnce([{ repair_queue: queue }] as never);
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: queue }]));
 
     await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual({
       ...queue,
@@ -2571,7 +2576,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
   });
 
   it('retires only the exact inspected queue and returns the replacement on a CAS miss', async () => {
-    fakeSql.unsafe.mockResolvedValueOnce([{ retired: true }] as never);
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ retired: true }]));
     await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toEqual({
       retired: true,
       current: null,
@@ -2586,8 +2591,8 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
 
     const replacement = { ...queue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
     fakeSql.unsafe
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([{ repair_queue: replacement }] as never);
+      .mockResolvedValueOnce(sqlRows([]))
+      .mockResolvedValueOnce(sqlRows([{ repair_queue: replacement }]));
     await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toMatchObject({
       retired: false,
       current: { updatedAtMs: 3, repairHead: 'd'.repeat(40) },
@@ -2600,7 +2605,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       convergenceRounds: [{ round: 1, head: queue.repairHead, failingCount: 1, atMs: 3 }],
       newerCheckpointField: { writtenBy: 'a-newer-build' },
     } as FrozenCandidateRepairQueue & { newerCheckpointField: unknown };
-    fakeSql.unsafe.mockResolvedValueOnce([{ retired: true }] as never);
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ retired: true }]));
 
     await expect(retireFrozenCandidateRepairQueue(target, newerQueue)).resolves.toEqual({
       retired: true,
@@ -2625,7 +2630,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     };
     fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
       const reservedQueue = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
-      return [{ repair_queue: reservedQueue }] as never;
+      return sqlRows([{ repair_queue: reservedQueue }]);
     });
 
     const reserved = await reserveFrozenCandidateRepairFixer(target, awaitingQueue, { nowMs: 100 });
@@ -2659,7 +2664,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     };
     fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
       const renewedQueue = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
-      return [{ repair_queue: renewedQueue }] as never;
+      return sqlRows([{ repair_queue: renewedQueue }]);
     });
 
     const renewed = await renewFrozenCandidateRepairFixerReservation(target, reservedQueue, 250_000);
