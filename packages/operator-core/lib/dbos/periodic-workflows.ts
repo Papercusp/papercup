@@ -35,6 +35,7 @@ import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
 import { runFleetLogsGc } from '../fleet-logs-gc';
+import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick } from '@papercusp/backup';
 import { gcScheduledPlanRuns } from '../harness/routines/gc-plan-runs';
@@ -488,6 +489,41 @@ const fleetLogsGcWorkflow = idempotentRegisterWorkflow('fleetLogsGc', () =>
   }),
 );
 DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5 * * * *' });
+
+// Hourly at :12 (off the :00 telemetry and :05 fleet-logs ticks): turn-provenance
+// ledger GC. turn-provenance-owner-vs-agent-2026-07-11 P-001 shipped gcLedgerDir
+// with unit tests but never wired a caller, so nothing ever reclaimed the dir:
+// appendLedgerRow only compacts the ONE file it is appending to, and only past
+// LEDGER_COMPACT_BYTES, so a file stops being touched the moment its session ends
+// and then lives forever. Measured 2026-08-30 before this fix: 34,560 .jsonl files
+// / 63MB under ~/.papercusp/turn-provenance/, oldest dated 2026-07-11 (the day
+// P-001 landed), growing ~690 files/day. Deleting a fully-expired file cannot
+// change a verdict: classify() returns `unverified-claim` for BOTH an expired row
+// (stale/replay) and a missing row (spoof), so GC only moves the reason string,
+// never the classification. Pure machine-local FS housekeeping (D-001: the ledger
+// is a machine-local short-TTL file, not PG), no LLM, no owner-authority surface —
+// same class as fleet-logs-gc.
+async function turnProvenanceGcTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      const { filesRemoved, rowsDropped } = gcLedgerDir();
+      console.log(
+        `[turn-provenance-gc] removed ${filesRemoved} dead ledger file(s), dropped ${rowsDropped} expired row(s)`,
+      );
+    },
+    { name: 'turn-provenance-gc' },
+  );
+}
+const turnProvenanceGcWorkflow = idempotentRegisterWorkflow('turnProvenanceGc', () =>
+  DBOS.registerWorkflow(turnProvenanceGcTick, {
+    name: 'turnProvenanceGc',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(turnProvenanceGcWorkflow, {
+  name: 'turnProvenanceGc',
+  crontab: '0 12 * * * *',
+});
 
 // Daily 04:55 (off the 04:00-04:50 GC stampede): physical retention GC for
 // harness_shared.operator_turns — the operator-chat transcript table (158MB,
