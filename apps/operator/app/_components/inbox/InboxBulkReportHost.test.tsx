@@ -138,7 +138,11 @@ describe("InboxBulkReportHost", () => {
       ref: { kind: "coord-message", msgId: `m-${position}` },
       ownerAgentId: `su-${position}`,
     }));
-    H.state.value = { run: { runId: "run-8", phase: "review" }, items };
+    H.state.value = {
+      run: { runId: "run-8", phase: "review" },
+      items,
+      loading: false,
+    };
     render(<InboxBulkReportHost />);
     expect(screen.getAllByTestId("inbox-bulk-report-takeover")).toHaveLength(1);
     expect(screen.getByTestId("inbox-report-mock")).toBeTruthy();
@@ -154,6 +158,7 @@ describe("InboxBulkReportHost", () => {
     H.state.value = {
       run: { runId: "run-8", phase: "review" },
       items: Array.from({ length: 200 }, (_, position) => ({ position })),
+      loading: false,
     };
     render(<InboxBulkReportHost />);
 
@@ -164,7 +169,11 @@ describe("InboxBulkReportHost", () => {
 
   it("stays absent when the kill switch is off even for a review run", () => {
     H.enabled.value = false;
-    H.state.value = { run: { runId: "run-8", phase: "review" }, items: [] };
+    H.state.value = {
+      run: { runId: "run-8", phase: "review" },
+      items: [],
+      loading: false,
+    };
     render(<InboxBulkReportHost />);
     expect(screen.queryByTestId("inbox-bulk-report-takeover")).toBeNull();
   });

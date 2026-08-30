@@ -189,9 +189,7 @@ describe("useReportTakeoverParam", () => {
     nuqs.opcbr = "run-8";
     nuqs[REPORT_TAKEOVER_OWNER_PARAM] = "opcln";
 
-    const { rerender } = render(
-      <AvailabilityProbe paramKey="opcln" loading />,
-    );
+    const { rerender } = render(<AvailabilityProbe paramKey="opcln" loading />);
     expect(setQueryStates).not.toHaveBeenCalled();
 
     rerender(<AvailabilityProbe paramKey="opcln" available />);
