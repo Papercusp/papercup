@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { canonicalize } from '@papercusp/publish-auth/jcs';
 import type { WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
 
-import { evaluateImageScanPolicy } from './image-scan-policy';
+import { AWS_IMAGE_SCAN_POLICY, evaluateImageScanPolicy } from './image-scan-policy';
 import {
   evaluateWorkspaceHostReleaseGate,
   type WorkspaceHostReleaseGateInput,
@@ -91,6 +91,12 @@ export interface AwsAmiScanEvidence {
    */
   vulnerabilityBySeverity: Readonly<Record<string, number>>;
   secretFindings: number;
+  /**
+   * Coverage measured by the provider scanner. The release policy requires both
+   * fields so an AMI whose root filesystem was never mounted cannot read as clean.
+   */
+  mountedFilesystems: number;
+  candidateRootProof: string;
   evidenceRef: string;
 }
 
@@ -362,7 +368,9 @@ function validateScan(
   if (!scan.trusted) {
     fail('AMI scan must be trusted');
   }
-  const scanPolicy = evaluateImageScanPolicy(scan);
+  // AWS uses its provider-scoped policy: the scanner must prove it mounted the
+  // candidate's OS root before any findings can be treated as release evidence.
+  const scanPolicy = evaluateImageScanPolicy(scan, AWS_IMAGE_SCAN_POLICY);
   if (!scanPolicy.accepted) {
     fail(
       `AMI scan violates the workspace-host release policy: ${scanPolicy.failures

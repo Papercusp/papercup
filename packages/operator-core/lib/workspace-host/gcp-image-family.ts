@@ -373,7 +373,7 @@ function validateScan(scan: GcpImageScanEvidence, artifact: WorkspaceHostImageAr
   }
   // GCP_IMAGE_SCAN_POLICY, not the shared default: the GCP scanner measures its own
   // filesystem coverage, so it is held to proving it (WI-1092039 / D-196). AWS and
-  // Azure keep the shared policy because their scanners measure no coverage at all.
+  // Azure use equivalent provider-scoped policies in their release modules.
   const policy = evaluateImageScanPolicy(scan, GCP_IMAGE_SCAN_POLICY);
   if (!policy.accepted) {
     fail(

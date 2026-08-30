@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { SEVERITY_RANK } from './artifact-trust';
 import {
+  AWS_IMAGE_SCAN_POLICY,
+  AZURE_IMAGE_SCAN_POLICY,
   GCP_IMAGE_SCAN_POLICY,
   WORKSPACE_HOST_IMAGE_SCAN_POLICY,
   evaluateImageScanPolicy,
@@ -30,26 +32,27 @@ describe('workspace-host image scan policy', () => {
     expect(WORKSPACE_HOST_IMAGE_SCAN_POLICY).toEqual({
       denyVulnerabilitiesAtOrAbove: 'high',
       maxSecretFindings: 0,
-      // FALSE on the SHARED constant, which still gates AWS and Azure. This is an
-      // exact-equality assertion on purpose: flipping this to true here would arm
-      // the coverage requirement for two providers whose scanners never measure it,
-      // and that mistake should fail HERE rather than as a release outage.
+      // FALSE on the SHARED compatibility baseline. This is an exact-equality
+      // assertion on purpose: provider release paths use their own scoped policies,
+      // while generic callers may not have coverage evidence available.
       requireCoverageProof: false,
     });
   });
 
-  it('scopes the coverage requirement to GCP, leaving the shared thresholds identical', () => {
-    expect(GCP_IMAGE_SCAN_POLICY).toEqual({
-      denyVulnerabilitiesAtOrAbove: 'high',
-      maxSecretFindings: 0,
-      requireCoverageProof: true,
-    });
-    // The thresholds must not drift apart: GCP is held to the SAME bar plus a proof
-    // obligation, not to a different bar.
-    expect(GCP_IMAGE_SCAN_POLICY.denyVulnerabilitiesAtOrAbove).toBe(
-      WORKSPACE_HOST_IMAGE_SCAN_POLICY.denyVulnerabilitiesAtOrAbove,
-    );
-    expect(GCP_IMAGE_SCAN_POLICY.maxSecretFindings).toBe(WORKSPACE_HOST_IMAGE_SCAN_POLICY.maxSecretFindings);
+  it('scopes the coverage requirement to every provider release policy', () => {
+    for (const policy of [GCP_IMAGE_SCAN_POLICY, AWS_IMAGE_SCAN_POLICY, AZURE_IMAGE_SCAN_POLICY]) {
+      expect(policy).toEqual({
+        denyVulnerabilitiesAtOrAbove: 'high',
+        maxSecretFindings: 0,
+        requireCoverageProof: true,
+      });
+      // The thresholds must not drift apart: each provider is held to the SAME bar
+      // plus a proof obligation, not to a different bar.
+      expect(policy.denyVulnerabilitiesAtOrAbove).toBe(
+        WORKSPACE_HOST_IMAGE_SCAN_POLICY.denyVulnerabilitiesAtOrAbove,
+      );
+      expect(policy.maxSecretFindings).toBe(WORKSPACE_HOST_IMAGE_SCAN_POLICY.maxSecretFindings);
+    }
   });
 
   it('ranks severities from artifact-trust, so the two gates cannot disagree', () => {
@@ -216,20 +219,21 @@ describe('workspace-host image scan policy', () => {
       }
     });
 
-    it('leaves AWS and Azure untouched: absent coverage is not a denial under the shared policy', () => {
-      // The reason this is two policies and not one flag. Both providers emit
-      // NEITHER field (measured 2026-08-30: zero occurrences in aws-ami-release.ts
-      // and azure-compute-gallery-release.ts). Arming the requirement globally would
-      // have turned a hardening into an outage for two blameless release paths.
-      const verdict = evaluateImageScanPolicy(scan({ low: 4 }), WORKSPACE_HOST_IMAGE_SCAN_POLICY);
+    it('keeps the shared baseline generic while every provider policy denies absent coverage', () => {
+      // The shared policy remains a compatibility baseline for callers without
+      // provider-specific evidence. Concrete release paths must not use it: all three
+      // provider-scoped policies require the scanner to prove its coverage.
+      const uncovered = scan({ low: 4 });
+      const verdict = evaluateImageScanPolicy(uncovered, WORKSPACE_HOST_IMAGE_SCAN_POLICY);
       expect(verdict.accepted).toBe(true);
-      expect(codes(scan({ low: 4 }))).toEqual([]);
+      for (const policy of [GCP_IMAGE_SCAN_POLICY, AWS_IMAGE_SCAN_POLICY, AZURE_IMAGE_SCAN_POLICY]) {
+        expect(codes(uncovered, policy)).toEqual(['coverage-proof-missing']);
+      }
     });
 
     it('still validates a proof that IS present, even when the policy does not require it', () => {
-      // Defence in depth for the providers above: the day an AWS/Azure scanner starts
-      // emitting a coverage value, a malformed one is caught immediately rather than
-      // on the later day someone remembers to flip requireCoverageProof on.
+      // Defence in depth for provider scanners: a malformed coverage value is caught
+      // immediately even if a caller accidentally uses the generic baseline policy.
       expect(codes({ ...scan({}), mountedFilesystems: 0 }, WORKSPACE_HOST_IMAGE_SCAN_POLICY)).toEqual([
         'coverage-proof-invalid',
       ]);

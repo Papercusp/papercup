@@ -53,9 +53,10 @@ export interface ImageScanPolicy {
    * read as acceptance. A required field forces every policy to STATE whether its
    * provider can prove coverage, so a new provider cannot inherit "no" by silence.
    *
-   * Set FALSE only for a provider whose scanner does not measure coverage at all
-   * (today: AWS and Azure — see `WORKSPACE_HOST_IMAGE_SCAN_POLICY`). Setting it TRUE
-   * against such a provider fail-closes a release path that did nothing wrong.
+   * Concrete provider release policies should set this TRUE once their scanner
+   * emits the pair. The shared policy intentionally stays FALSE as the generic
+   * compatibility baseline for callers that do not have provider-specific
+   * coverage evidence.
    */
   requireCoverageProof: boolean;
 }
@@ -72,31 +73,35 @@ export interface ImageScanPolicy {
 export const WORKSPACE_HOST_IMAGE_SCAN_POLICY: ImageScanPolicy = Object.freeze({
   denyVulnerabilitiesAtOrAbove: 'high',
   maxSecretFindings: 0,
-  // FALSE because this shared constant still gates the AWS and Azure release paths,
-  // whose scanners measure no coverage at all. Requiring the proof here would
-  // fail-close two providers against a field neither has ever produced — a
-  // hardening that lands as an outage. Measured 2026-08-30: `mountedFilesystems`
-  // and `candidateRootProof` appear ZERO times in aws-ami-release.ts and
-  // azure-compute-gallery-release.ts. Their real fix is scanner parity, tracked
-  // separately; until then, silence about coverage is not a claim of coverage,
-  // it is an absence this constant declines to interpret.
+  // FALSE because this is the generic threshold baseline, not a provider release
+  // policy. Every concrete provider release path uses its own scoped policy below,
+  // which requires the scanner's filesystem/root proof.
   requireCoverageProof: false,
 });
 
 /**
- * The GCP-scoped policy: identical thresholds, but the scanner MUST prove it
- * covered the image.
+ * Build a provider-scoped policy with identical thresholds whose scanner MUST prove
+ * it covered the image.
  *
- * Separate from the shared constant on purpose. The alternative — flipping
- * `requireCoverageProof` on the one shared object — would silently arm the
- * requirement for AWS and Azure too. The asymmetry is real (only the GCP scanner
- * measures coverage), so it is expressed as two policies rather than one policy
- * plus a comment asking the reader to remember which providers are safe.
+ * Separate objects are intentional: flipping `requireCoverageProof` on the shared
+ * baseline would change the contract for generic callers, while using the baseline
+ * in a provider release path would silently allow an unmeasured scan.
  */
-export const GCP_IMAGE_SCAN_POLICY: ImageScanPolicy = Object.freeze({
-  ...WORKSPACE_HOST_IMAGE_SCAN_POLICY,
-  requireCoverageProof: true,
-});
+function providerImageScanPolicy(): ImageScanPolicy {
+  return Object.freeze({
+    ...WORKSPACE_HOST_IMAGE_SCAN_POLICY,
+    requireCoverageProof: true,
+  });
+}
+
+/** GCP's guest scanner emits the coverage pair and must prove it at the release gate. */
+export const GCP_IMAGE_SCAN_POLICY: ImageScanPolicy = providerImageScanPolicy();
+
+/** AWS AMI scanners emit the coverage pair and must prove it at the release gate. */
+export const AWS_IMAGE_SCAN_POLICY: ImageScanPolicy = providerImageScanPolicy();
+
+/** Azure Compute Gallery scanners emit the coverage pair and must prove it at the release gate. */
+export const AZURE_IMAGE_SCAN_POLICY: ImageScanPolicy = providerImageScanPolicy();
 
 /**
  * Severity ordering, DERIVED from `artifact-trust.ts` rather than restated here, so

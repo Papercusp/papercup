@@ -253,6 +253,8 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
       vulnerabilityFindings: 3,
       vulnerabilityBySeverity: { Low: 2, Negligible: 1 },
       secretFindings: 0,
+      mountedFilesystems: 2,
+      candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
       evidenceRef: `aws://scan/${input.imageId}`,
     };
   }
@@ -386,6 +388,23 @@ describe('AWS workspace-host AMI release', () => {
       requiredGuestTools: [...payload.requiredGuestTools].reverse(),
     });
     expect(reordered).toEqual(first.manifest);
+  });
+
+  it('fails closed before AMI publication when the scanner does not prove filesystem coverage', async () => {
+    const adapter = new FakeAdapter();
+    const scan = adapter.scanImage.bind(adapter);
+    adapter.scanImage = async (input) => {
+      const evidence = await scan(input);
+      delete (evidence as Partial<AwsAmiScanEvidence>).mountedFilesystems;
+      delete (evidence as Partial<AwsAmiScanEvidence>).candidateRootProof;
+      return evidence;
+    };
+
+    await expect(executeAwsAmiRelease(request(), adapter)).rejects.toThrow(
+      'requires proof the scanner covered the image',
+    );
+    expect(adapter.calls).not.toContain('publish-manifest');
+    expect(adapter.calls).not.toContain('activate-pins');
   });
 
   it('fails closed before publication when a required guest tool or exact KMS policy is absent', async () => {
