@@ -12,6 +12,7 @@ import { makeMugTarget } from './mug';
 import { makeCupTarget } from './cup';
 import { makeOverwatchTarget } from './overwatch';
 import { onboardingTutorTarget } from './onboarding-tutor';
+import { PuiLoopTarget } from './pui-loop';
 
 export type TargetFactory = () => ChatTarget;
 
@@ -49,6 +50,10 @@ const TARGETS: Record<string, TargetFactory> = {
   // in-process loop (agent-first-onboarding-2026-07-03 P-008: section
   // protocol, progress checkpointing, question-detour return).
   'onboarding-tutor': () => onboardingTutorTarget(),
+  // pui-loop — the owned loop's canonical su-derived prompt profile (D-034):
+  // same su spine/project guide/modes/orientation/catalog as psu, minus the
+  // client-remediation sections whose invariants the loop/doors enforce.
+  'pui-loop': () => new PuiLoopTarget(),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {
@@ -65,4 +70,4 @@ export function listTargets(): string[] {
   return Object.keys(TARGETS);
 }
 
-export { OperatorTarget, OracleTarget, ArchitectTarget, SuTarget };
+export { OperatorTarget, OracleTarget, ArchitectTarget, SuTarget, PuiLoopTarget };
