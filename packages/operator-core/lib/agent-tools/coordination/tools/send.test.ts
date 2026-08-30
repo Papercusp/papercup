@@ -189,7 +189,7 @@ const lookupEndedSessionsM = vi.mocked(lookupEndedSessions);
 const flagM = vi.mocked(getFlag);
 const sendModule = await import('./send');
 const tool = sendModule.default;
-const { COORD_SEND_IDLE_REPORT_TIMEOUT_MS } = sendModule;
+const { COORD_SEND_IDLE_REPORT_TIMEOUT_MS, COORD_SEND_DB_DEADLINE_MS } = sendModule;
 
 /**
  * A COMPLETE `CoordEnvelope` fixture, derived from `getMessageById`'s OWN return type so a
@@ -503,6 +503,37 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.deliveryFailureWarning).toMatch(/failed delivery/i);
     expect(b.deliveryFailureWarning).toMatch(/do not assume every message was delivered/i);
     expect(b.deliveryFailureWarning).toContain('canceling statement due to lock timeout');
+  });
+
+  it('EI-21860312102671987: a hung sendMessage() persist is bounded by withDbCallDeadline instead of hanging indefinitely', async () => {
+    // Regression for a real incident: tools:invoke{name:'coord:send'} stayed live
+    // past ptool's own 60s client timeout with no result ever produced, because the
+    // underlying sendMessage() persist had no deadline of its own. Simulate the
+    // saturated/wedged DB call (a promise that never settles) and prove the wrapper
+    // now throws a decisive DbCallDeadlineError well inside that budget, which flows
+    // through the SAME tested exception path as any other send failure (see the
+    // EI-20268344447779966 test above) rather than hanging the caller.
+    vi.useFakeTimers();
+    sendM.mockImplementationOnce(() => new Promise(() => {}));
+
+    try {
+      const pending = body({ to: ['bee-1'], summary: 'time-critical peer review delivery' });
+      // Let the handler reach the deadline race before advancing past it.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(COORD_SEND_DB_DEADLINE_MS);
+      const b = await pending;
+
+      expect(b).toMatchObject({ ok: true, partial: true, counts: { ok: 0, failed: 1 } });
+      expect(b.results[0]).toMatchObject({ ok: false, to: ['bee-1'] });
+      expect(b.results[0].error).toMatch(
+        /\[db-call-deadline\] "coord:send\.sendMessage" did not resolve within/,
+      );
+      expect(b.deliveryFailureWarning).toMatch(/coord:send completed the batch/i);
+      expect(b.deliveryFailureWarning).toMatch(/failed delivery/i);
+      expect(b.deliveryFailureWarning).toContain('db-call-deadline');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("wake:'required' miss on a DEAD recipient → recipient_dead + truthful black-hole note (WI-574)", async () => {
