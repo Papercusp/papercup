@@ -104,7 +104,12 @@ describe('createPreemptMarkerExclusive — never steals a live barrier', () => {
 });
 
 describe('scripts/affected-tests.mjs routes through the shared rule', () => {
-  const source = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+  // Overridable so `scripts/mutation-probe.sh` can point these assertions at a
+  // COPY (or a historical snapshot) and prove they actually fail on the
+  // pre-fix source — without ever mutating this shared, continuously-swept tree.
+  const subjectPath =
+    process.env.PROBE_AFFECTED_TESTS?.trim() || join(REPO_ROOT, 'scripts/affected-tests.mjs');
+  const source = readFileSync(subjectPath, 'utf8');
 
   it('imports the rule from lib/, not from test-files.mjs', () => {
     expect(source).toContain('./lib/preempt-markers.mjs');

@@ -35,7 +35,7 @@ import { join } from 'node:path';
  * recorded. That gap is microseconds, so seconds of slack is generous while
  * still refusing to steal a marker from a peer that is publishing right now.
  */
-export const EMPTY_MARKER_DEBRIS_MS = 5_000;
+const EMPTY_MARKER_DEBRIS_MS = 5_000;
 
 /**
  * Filenames this sweep is willing to consider. pc-heavy allocates both marker
@@ -44,7 +44,7 @@ export const EMPTY_MARKER_DEBRIS_MS = 5_000;
  * shape is known exactly. Anything else in the directory belongs to something
  * we know nothing about and is never touched.
  */
-export const PREEMPT_MARKER_NAME_RE = /^(?:ready|finalization)\.[A-Za-z0-9]{6}$/;
+const PREEMPT_MARKER_NAME_RE = /^(?:ready|finalization)\.[A-Za-z0-9]{6}$/;
 
 /**
  * Generous empty-marker bound for the SWEEP (the publisher keeps the tight 5s).
@@ -52,7 +52,7 @@ export const PREEMPT_MARKER_NAME_RE = /^(?:ready|finalization)\.[A-Za-z0-9]{6}$/
  * leaving enormous headroom over the microsecond open()/write() gap that creates
  * these files.
  */
-export const SWEEP_EMPTY_DEBRIS_MS = 3_600_000;
+const SWEEP_EMPTY_DEBRIS_MS = 3_600_000;
 
 /**
  * A floor under the whole sweep: nothing younger than this is removed no matter
@@ -60,10 +60,10 @@ export const SWEEP_EMPTY_DEBRIS_MS = 3_600_000;
  * run that is starting right now — including pc-heavy's own allocation window,
  * where `mktemp` briefly leaves a zero-length file before deleting it.
  */
-export const SWEEP_MIN_AGE_MS = 120_000;
+const SWEEP_MIN_AGE_MS = 120_000;
 
 /** Bound the work: this runs on the hot path of the repo's busiest test entrypoints. */
-export const SWEEP_MAX_ENTRIES = 500;
+const SWEEP_MAX_ENTRIES = 500;
 
 /**
  * Is the marker at `marker` held by a LIVE owner?
@@ -83,7 +83,7 @@ export const SWEEP_MAX_ENTRIES = 500;
  * @param {number} [emptyDebrisMs] how long a zero-length marker may sit before it is debris
  * @returns {boolean}
  */
-export function preemptMarkerOwnerIsAlive(marker, emptyDebrisMs = EMPTY_MARKER_DEBRIS_MS) {
+function preemptMarkerOwnerIsAlive(marker, emptyDebrisMs = EMPTY_MARKER_DEBRIS_MS) {
   let raw;
   try {
     raw = readFileSync(marker, 'utf8');
