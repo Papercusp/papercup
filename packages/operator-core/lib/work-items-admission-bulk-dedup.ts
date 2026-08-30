@@ -867,7 +867,15 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                      omittedExpectedJudgements: judged.omittedExpectedJudgements,
                    },
                    verdicts,
-                   ratchet: { before: census.censusAfter, after: nextCensus.censusAfter, ok: true },
+                   // before/after only. There used to be an `ok: true` here, a
+                   // HARDCODED literal: this write is downstream of
+                   // assertAdmissionCensusRatchet, which throws on a rise, so the
+                   // field could never be anything but true and recorded nothing.
+                   // Worse, a flag named `ok` beside a merge count reads as an
+                   // EFFICACY verdict when the assert it echoes is only a SAFETY
+                   // one (the census did not grow). Any reader wanting the verdict
+                   // derives it from the two fields that are actually measured.
+                   ratchet: { before: census.censusAfter, after: nextCensus.censusAfter },
                  })}::text::jsonb
            WHERE id = ${stageRunId}`;
         committed = { census: nextCensus, scopedPairsAfter: nextInput.pairs.length, stage };
