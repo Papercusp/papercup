@@ -359,6 +359,11 @@ describe('GCP image-family production adapter', () => {
         vulnerabilityFindings: 3,
         vulnerabilityBySeverity: { Low: 2, Negligible: 1 },
         secretFindings: 0,
+        // Coverage proof, for the same reason as the findings above: without it this
+        // path would assert the adapter accepts a scan that never showed it mounted
+        // the candidate — which GCP_IMAGE_SCAN_POLICY now correctly denies.
+        mountedFilesystems: 3,
+        candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
         evidenceRef: 'gcp://scan/evidence-1',
       }),
     };
