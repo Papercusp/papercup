@@ -195,6 +195,45 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws', harnessSlug: 'h', fired: null });
   });
 
+  it('potGate refusal short-circuits BEFORE every other gate (learning-pot-scope-gate D-001)', async () => {
+    const recordGovernor = vi.fn();
+    const hiveRunnerGate = vi.fn(async () => ({ run: true }));
+    const workspaceCeilingGate = vi.fn(async () => ({ allow: true }) as never);
+    const res = await runScoutCycleTick(
+      baseInput,
+      mkDeps({
+        recordGovernor,
+        hiveRunnerGate,
+        workspaceCeilingGate,
+        potGate: async () => ({ enabled: false }),
+      }),
+    );
+    expect(res).toEqual({ fired: false, reason: 'pot-disabled' });
+    expect(sched.runScoutTick).not.toHaveBeenCalled();
+    // It is the OUTERMOST switch: no other gate is even consulted.
+    expect(hiveRunnerGate).not.toHaveBeenCalled();
+    expect(workspaceCeilingGate).not.toHaveBeenCalled();
+    // And unlike the ceiling refusal, it does NOT mirror a per-cycle cap — a
+    // switched-off pot has no live sub-budget, and writing one would make it
+    // look like an active learner in the governor ledger.
+    expect(recordGovernor).not.toHaveBeenCalled();
+    expect(recordTick).toHaveBeenCalledWith({
+      status: 'gated',
+      gate: 'pot-disabled',
+      detail: { reason: 'pot-disabled' },
+    });
+  });
+
+  it('potGate allowing changes nothing, and an unwired potGate is the pre-gate path (R-5)', async () => {
+    sched.runScoutTick.mockResolvedValue({ fired: true, costUsd: 1, cycleId: 'cyc-pot' });
+    const allowed = await runScoutCycleTick(baseInput, mkDeps({ potGate: async () => ({ enabled: true }) }));
+    expect(allowed).toMatchObject({ fired: true });
+
+    sched.runScoutTick.mockResolvedValue({ fired: true, costUsd: 1, cycleId: 'cyc-nopot' });
+    const unwired = await runScoutCycleTick(baseInput, mkDeps({}));
+    expect(unwired).toMatchObject({ fired: true });
+  });
+
   it('runs the tick when both gates allow and mirrors a FIRED cycle (costUsd + cycleId) to the governor', async () => {
     sched.runScoutTick.mockResolvedValue({ fired: true, costUsd: 2.25, cycleId: 'cyc-9' });
     const recordGovernor = vi.fn();

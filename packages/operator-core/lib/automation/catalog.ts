@@ -232,11 +232,36 @@ export interface AutomationScoutCeiling {
  * layers through gym:arm, and the dozens of disabled `gym:<dead-test-pot>` rows
  * would otherwise swamp the list.
  */
+/**
+ * The per-pot learning MASTER switch (learning-pot-scope-gate-2026-08-30 D-001),
+ * the layer ABOVE gymPots and lanes: a pot switched off here gates every lane
+ * under it while leaving each lane's own arming untouched, so switching it back
+ * on restores exactly what was armed.
+ */
+export interface AutomationPotScope {
+  /**
+   * The pots switched OFF. This is the load-bearing field: an ABSENT row means
+   * ENABLED, so the enabled set is answered by absence and only this one is
+   * worth materializing. It is served explicitly rather than left for each UI
+   * surface to derive, because a surface that re-derives the fail-open rule and
+   * gets it backwards renders every pot as switched off.
+   */
+  disabledPots: string[];
+  /** Every stored row — including explicit re-enables, which keep their audit stamp. */
+  rows: Array<{ potSlug: string; enabled: boolean; setBy: string | null; setAt: string }>;
+}
+
 export interface AutomationArming {
   gymPots: AutomationGymArm[];
   lanes: AutomationLaneArm[];
   /** P-012: the workspace-wide ceiling row rendered above the per-pot/per-lane arms; null when unreadable. */
   scoutCeiling: AutomationScoutCeiling | null;
+  /**
+   * learning-pot-scope-gate D-001: the per-pot master switch. `null` when
+   * unreadable — NOT an empty scope, because an empty scope means "every pot is
+   * learning", which is a claim this pane must not make when it failed to read.
+   */
+  potScope: AutomationPotScope | null;
 }
 
 export interface AutomationCatalog {
@@ -685,7 +710,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
 
   // Arming (spend-gate) state — same degrade-to-empty posture as the schedule
   // inventory above: a partial pane beats a pane that fails to load.
-  let arming: AutomationArming = { gymPots: [], lanes: [], scoutCeiling: null };
+  let arming: AutomationArming = { gymPots: [], lanes: [], scoutCeiling: null, potScope: null };
   try {
     const gymRows = await sql<
       Array<{ harness_slug: string; enabled: boolean; budget_usd: number | null; spent_usd: number | null; status: string | null }>
@@ -724,9 +749,27 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
         enforcement: r.enforcement ?? 'governor',
       })),
       scoutCeiling: null,
+      potScope: null,
     };
   } catch {
     /* degrade: arming section renders empty, schedule section still loads */
+  }
+  // learning-pot-scope-gate D-001 — read in its OWN try, like the ceiling below:
+  // a pot-scope read failure must not blank the gym/lane arms it sits above.
+  try {
+    const { listPotLearningScope } = await import('../learning/pot-gate/store');
+    const rows = await listPotLearningScope(sql, { workspaceId: ws });
+    arming.potScope = {
+      disabledPots: rows.filter((r) => !r.enabled).map((r) => r.potSlug),
+      rows: rows.map((r) => ({
+        potSlug: r.potSlug,
+        enabled: r.enabled,
+        setBy: r.setBy,
+        setAt: new Date(r.setAt).toISOString(),
+      })),
+    };
+  } catch {
+    /* degrade: potScope stays null — "unknown", never "every pot is learning" */
   }
   try {
     const [override, effectiveUsd] = await Promise.all([
