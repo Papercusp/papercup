@@ -145,6 +145,11 @@ export interface SnapshotSelection {
      * a carry-respawn was launched to make them reachable (labeled, never
      * silent — the D-002 rule applied to liveness provenance). */
     revived?: boolean;
+    /** EI-21809454835305750: a revival spawn is in flight. This provisional
+     * marker reserves the one-revival budget before the revived first turn can
+     * race the reviver's return. It is replaced by `revived:true` on success
+     * and removed on a failed spawn. */
+    revivalPending?: boolean;
     /** WI-39861 min-ANSWERS refill: this selectee entered the menu on the ONE
      * post-exhaustion refill round, not at original selection time. */
     refill?: boolean;
