@@ -414,6 +414,38 @@ export function decideFrozenRepairDispatchInfeasible(
   };
 }
 
+/**
+ * EI-21036544613774607: whether the queue's MOVABLE `repairHead` (never the immutable
+ * `candidate` — see the field doc above) should be fast-forwarded to the current staging
+ * tip before a repair worktree is built from it.
+ *
+ * A frozen candidate's `repairHead` starts equal to `candidate` and stays there until a
+ * fixer produces its own commit (see `markFrozenRepairFixerFinished`). While it is STILL
+ * an ancestor of staging — i.e. no fixer commit has yet diverged from staging's own
+ * history — converging it is free: every commit reachable from the new value is, by
+ * construction, already vetted and committed on staging (git-sync only ever commits
+ * there), so no new/unverified code is introduced. Once a fixer commit exists,
+ * `repairHead` carries unique, unpushed content and is no longer an ancestor of staging;
+ * this then correctly refuses to converge and leaves that in-flight repair alone.
+ *
+ * `repairHeadIsAncestorOfStaging: null` means the ancestor check itself was inconclusive
+ * or errored (a git failure, a temporarily-unreachable ref). Fails closed: no convergence
+ * is today's behaviour, and it is the safe default whenever the check cannot be trusted.
+ */
+export function shouldConvergeRepairHead(input: {
+  repairHead: string;
+  stagingTip: string;
+  repairHeadIsAncestorOfStaging: boolean | null;
+}): { converge: boolean; newRepairHead: string | null } {
+  if (
+    input.repairHeadIsAncestorOfStaging === true &&
+    input.stagingTip !== input.repairHead
+  ) {
+    return { converge: true, newRepairHead: input.stagingTip };
+  }
+  return { converge: false, newRepairHead: null };
+}
+
 function nonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
