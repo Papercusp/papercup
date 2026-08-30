@@ -136,6 +136,11 @@ const FIELD_CAPS = {
   trimmed: {
     title: 160,
     warning: 300,
+    completionScalar: 800,
+    completionVerifiedHow: 120,
+    completionArray: 12,
+    completionNestedArray: 8,
+    completionObjectKeys: 20,
     lifecycleEvents: 4,
     checkpointMin: 400,
     citedFacts: 3,
@@ -149,6 +154,11 @@ const FIELD_CAPS = {
   standard: {
     title: 300,
     warning: 600,
+    completionScalar: 1_600,
+    completionVerifiedHow: 240,
+    completionArray: 24,
+    completionNestedArray: 16,
+    completionObjectKeys: 32,
     lifecycleEvents: 10,
     checkpointMin: 800,
     citedFacts: 6,
@@ -238,6 +248,87 @@ function noteDroppedDetail(w: Row, dropped: Set<string>): Record<string, number>
   return Object.keys(omitted).length > 0 ? omitted : null;
 }
 
+function hasCompletionEvidence(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as Row).length > 0
+  );
+}
+
+/**
+ * Keep the persisted completion record useful at every result tier without
+ * replaying an unbounded jsonb payload. The scalar presence bit is intentionally
+ * separate: a reader must still know that evidence exists when a large nested
+ * field is clipped or a bulk row is reduced to a stub.
+ */
+function projectCompletionEvidence(
+  raw: unknown,
+  caps: FieldCaps,
+  dropped: Set<string>,
+  label: string,
+): unknown {
+  if (!hasCompletionEvidence(raw)) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    dropped.add(label);
+    return null;
+  }
+
+  const evidence = raw as Row;
+  const projectValue = (value: unknown, path: string, depth: number): unknown => {
+    if (typeof value === "string") {
+      const max = path.endsWith(".verifiedHow") ? caps.completionVerifiedHow : caps.completionScalar;
+      if (value.length > max) dropped.add(`${label}.${path.slice("evidence.".length)}`);
+      return clip(value, max);
+    }
+    if (Array.isArray(value)) {
+      const max =
+        path === "evidence.filesChanged" ||
+        path === "evidence.whatLanded" ||
+        path === "evidence.deferred" ||
+        path === "evidence.checkpointChecksCarried"
+          ? caps.completionArray
+          : caps.completionNestedArray;
+      if (value.length > max) dropped.add(`${label}.${path.slice("evidence.".length)}`);
+      return value
+        .slice(0, max)
+        .map((entry, index) => projectValue(entry, `${path}[${index}]`, depth + 1));
+    }
+    if (value && typeof value === "object") {
+      if (depth >= 4) {
+        const serialized = jsonLen(value);
+        if (serialized > caps.completionScalar) dropped.add(`${label}.${path.slice("evidence.".length)}`);
+        return serialized > caps.completionScalar ? null : value;
+      }
+      const entries = Object.entries(value as Row);
+      if (entries.length > caps.completionObjectKeys) dropped.add(`${label}.${path.slice("evidence.".length)}`);
+      return Object.fromEntries(
+        entries
+          .slice(0, caps.completionObjectKeys)
+          .map(([key, entry]) => [key, projectValue(entry, `${path}.${key}`, depth + 1)]),
+      );
+    }
+    return value;
+  };
+
+  const projected = Object.fromEntries(
+    Object.entries(evidence).map(([key, value]) => [key, projectValue(value, `evidence.${key}`, 0)]),
+  );
+  // A malformed/forward-added field can still make the record too large after
+  // the per-value bounds. Retain the verification scalars before dropping the
+  // non-authoritative tail, and disclose the loss through the same label.
+  if (jsonLen(projected) > caps.completionScalar * 6) {
+    dropped.add(label);
+    const compact: Row = {};
+    for (const key of ["summary", "verifiedHow", "testsRun", "testResult", "addedTests", "filesChanged"]) {
+      if (projected[key] !== undefined) compact[key] = projected[key];
+    }
+    return compact;
+  }
+  return projected;
+}
+
 /**
  * Identity + lifecycle facts about the item, plus as much of the summary as the
  * rung's shared budget affords (`summaryChars`; 0 ⇒ the field is omitted, which
@@ -254,8 +345,16 @@ function projectWorkItem(
   const detailOmitted = noteDroppedDetail(w, dropped);
   const state = typeof w.state === "string" ? w.state.toLowerCase() : "";
   const completionAuthority = w.completionAuthority;
+  const terminal = ANY_FAMILY_TERMINAL_STATES.includes(state);
+  const rawCompletionEvidence = w.terminalCompletionEvidence;
+  const completionEvidencePresent = hasCompletionEvidence(rawCompletionEvidence);
+  const completionEvidence = completionEvidencePresent
+    ? projectCompletionEvidence(rawCompletionEvidence, caps, dropped, "workItem.terminalCompletionEvidence")
+    : null;
   const shouldExposeCompletionAuthority =
-    ANY_FAMILY_TERMINAL_STATES.includes(state) || completionAuthority != null;
+    terminal || completionAuthority != null;
+  const shouldExposeCompletionRecord =
+    terminal || completionEvidencePresent || w.terminalOwner != null || w.terminalCompletionRef != null;
   return {
     id: w.id ?? null,
     kind: w.kind ?? null,
@@ -273,6 +372,13 @@ function projectWorkItem(
     // Open rows owe no judgement yet, so omit their null to preserve the bulk budget;
     // terminal rows always carry the field, including legacy null-authority closes.
     ...(shouldExposeCompletionAuthority ? { completionAuthority: completionAuthority ?? null } : {}),
+    ...(shouldExposeCompletionRecord
+      ? {
+          terminalOwner: w.terminalOwner ?? null,
+          terminalCompletionRef: w.terminalCompletionRef ?? null,
+          terminalCompletionEvidence: completionEvidence,
+        }
+      : {}),
     assignee: w.assignee ?? null,
     takenAt: w.takenAt ?? null,
     lastProgressAt: w.lastProgressAt ?? null,
@@ -297,11 +403,18 @@ function projectWorkItem(
  * now lives once in `_shapeNote.stubbed`; a row the caller must re-read needs only the id
  * that makes that recovery possible.
  */
-function stubRow(r: Row): Row {
+function stubRow(r: Row, dropped: Set<string>): Row {
   const w = (r.workItem ?? {}) as Row;
+  const rawCompletion = r.completion !== undefined ? r.completion : w.terminalCompletionEvidence;
+  const hasEvidence = hasCompletionEvidence(rawCompletion);
+  if (hasEvidence) {
+    dropped.add("completion");
+    dropped.add("workItem.terminalCompletionEvidence");
+  }
   return {
     id: r.id ?? w.id ?? null,
     _stub: true,
+    ...(hasEvidence ? { hasCompletionEvidence: true } : {}),
   };
 }
 
@@ -370,6 +483,14 @@ function compactSingleRow(
   const w = r.workItem as Row | undefined;
   const checkpoint = r.checkpoint;
   const checkpointCap = SINGLE_ROW_CHECKPOINT_CAPS[tier];
+  const rawCompletion = r.completion !== undefined ? r.completion : w?.terminalCompletionEvidence;
+  const completionPresent = hasCompletionEvidence(rawCompletion);
+  const completion = completionPresent
+    ? projectCompletionEvidence(rawCompletion, caps, dropped, "completion")
+    : null;
+  const state = typeof w?.state === "string" ? w.state.toLowerCase() : "";
+  const completionRelevant =
+    completionPresent || ANY_FAMILY_TERMINAL_STATES.includes(state);
   if (typeof checkpoint === "string" && checkpoint.length > checkpointCap) {
     dropped.add("checkpoint(clipped)");
   }
@@ -390,6 +511,7 @@ function compactSingleRow(
     ok: r.ok ?? true,
     id: r.id ?? w?.id ?? null,
     workItem: projectWorkItem(r.workItem, caps, 0, dropped),
+    ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     // `threadLimit` is an explicit bounded diagnostic request, not incidental
     // detail. Keep it even at the exact-read floor: dropping it here turns the
     // caller's measured recent window into silence precisely on large items.
@@ -620,6 +742,14 @@ function projectRow(
     else if (w.summary.length > summaryChars) dropped.add("workItem.summary(clipped)");
   }
   if (w?.payload !== undefined) dropped.add("workItem.payload");
+  const rawCompletion = r.completion !== undefined ? r.completion : w?.terminalCompletionEvidence;
+  const completionPresent = hasCompletionEvidence(rawCompletion);
+  const completion = completionPresent
+    ? projectCompletionEvidence(rawCompletion, caps, dropped, "completion")
+    : null;
+  const state = typeof w?.state === "string" ? w.state.toLowerCase() : "";
+  const completionRelevant =
+    completionPresent || ANY_FAMILY_TERMINAL_STATES.includes(state);
 
   const lifecycle = r.lifecycle as Row | undefined;
   let shapedLifecycle: unknown;
@@ -681,6 +811,10 @@ function projectRow(
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
+    // `completion` is the read-side alias for the persisted completion record.
+    // Keep `hasCompletionEvidence` even when the evidence body is clipped or
+    // compacted, so a tier artifact cannot be read as a real absence.
+    ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
@@ -802,7 +936,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
         ? projectRow(r, caps, checkpointChars, summaryChars, lifecycleChars, dropped)
         : singleItemFloor
           ? compactSingleRow(r, caps, tier, dropped)
-          : stubRow(r),
+          : stubRow(r, dropped),
     );
     const stubbedCount = singleItemFloor ? 0 : Math.max(0, rows.length - fullRows);
     if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);
@@ -844,6 +978,16 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
               next: `${
                 dropped.has("workItem.summary")
                   ? "⚠ The SUMMARY was dropped — you have this item's TITLE and no sentence of its body. A title is a LABEL: do not act on it. Re-read before deciding anything. "
+                  : ""
+              }${
+                [...dropped].some(
+                  (field) =>
+                    field === "completion" ||
+                    field.startsWith("completion.") ||
+                    field === "workItem.terminalCompletionEvidence" ||
+                    field.startsWith("workItem.terminalCompletionEvidence."),
+                )
+                  ? "⚠ COMPLETION EVIDENCE EXISTS but its body was clipped or reduced at this tier; `hasCompletionEvidence` remains authoritative. Re-read with payloadTier:'full' before treating the item as evidence-free. "
                   : ""
               }Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
             },
