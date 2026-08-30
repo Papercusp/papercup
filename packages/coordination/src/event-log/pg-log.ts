@@ -179,6 +179,30 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
         ADD COLUMN IF NOT EXISTS harness_slug text
     `;
   }
+  // EI-18815759786278298: the coord-message projection's writeToPg (P-008
+  // federation writer) INSERTs into every one of these columns unconditionally —
+  // migration 732 (supersession, agent-epistemics-2026-08-02 P-004) and the
+  // federation columns below are both required for that write to succeed on a
+  // table this function (not a real migration run) bootstrapped. Same
+  // lock-avoiding existence-guarded ALTER pattern as workspace_id/harness_slug
+  // above; all four are nullable so the guard is purely about avoiding an
+  // unconditional ACCESS EXCLUSIVE lock, never about a fill value.
+  if (!(await columnExists(sql, 'coord_event_log', 'superseded_by_msg_id'))) {
+    await sql`
+      ALTER TABLE harness_shared.coord_event_log
+        ADD COLUMN IF NOT EXISTS superseded_by_msg_id text,
+        ADD COLUMN IF NOT EXISTS superseded_at timestamptz
+    `;
+  }
+  if (!(await columnExists(sql, 'coord_event_log', 'origin'))) {
+    await sql`
+      ALTER TABLE harness_shared.coord_event_log
+        ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'local',
+        ADD COLUMN IF NOT EXISTS author_pubkey text,
+        ADD COLUMN IF NOT EXISTS fed_ts bigint,
+        ADD COLUMN IF NOT EXISTS fed_hlc text
+    `;
+  }
   // EVENT surfaces are keyed: exactly one immutable record per (workspace_id,
   // surface, msg_id). LINE surfaces (messages/plan-events) are pure append —
   // the partial predicate keeps them out of the uniqueness constraint so the
