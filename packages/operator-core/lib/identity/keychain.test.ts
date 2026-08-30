@@ -22,6 +22,7 @@ let origSeedRealHostname: string | undefined;
 let execFileCalls = 0;
 let securityStoreSucceeds = false;
 let securityLoadSecret: string | null = null;
+let securityLoadNotFound = false;
 const execFileArgv: Array<{ command: string; args: string[] }> = [];
 
 beforeEach(() => {
@@ -37,6 +38,7 @@ beforeEach(() => {
   execFileCalls = 0;
   securityStoreSucceeds = false;
   securityLoadSecret = null;
+  securityLoadNotFound = false;
   execFileArgv.length = 0;
   vi.doMock('node:child_process', () => ({
     execFile: (
@@ -54,6 +56,10 @@ beforeEach(() => {
         }
         if (args[0] === 'find-generic-password' && securityLoadSecret !== null) {
           cb(null, `${securityLoadSecret}\n`, '');
+          return;
+        }
+        if (args[0] === 'find-generic-password' && securityLoadNotFound) {
+          cb(Object.assign(new Error('security: The specified item could not be found in the keychain. (exit code 44)'), { code: 44 }));
           return;
         }
         cb(Object.assign(new Error('security: User interaction is not allowed (exit code 36)'), { code: 36 }));
@@ -128,6 +134,27 @@ describe('keychain (encrypted-file fallback)', () => {
       // stale fallback key and never a newly minted identity.
       securityLoadSecret = null;
       expect(await keychainLoad(id)).toEqual({ kind: 'ok', value: der });
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  });
+
+  it('falls through an available macOS Keychain miss to the encrypted LaunchDaemon mirror', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
+    securityStoreSucceeds = true;
+    try {
+      const id = '1567022:launchdaemon-mirror';
+      const der = Buffer.from('launchdaemon-device-private-key-der');
+      await (await loadKeychain()).keychainStore(id, der);
+      expect(existsSync(encPath(id))).toBe(true);
+
+      // A LaunchDaemon can see the `security` CLI yet receive exit 44 for an
+      // item visible to the login session. Re-import to model a fresh process:
+      // the OS-tier miss must continue to the converged encrypted mirror.
+      securityLoadNotFound = true;
+      vi.resetModules();
+      expect(await (await loadKeychain()).keychainLoad(id)).toEqual({ kind: 'ok', value: der });
     } finally {
       if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
     }

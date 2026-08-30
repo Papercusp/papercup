@@ -207,14 +207,18 @@ async function keychainLoadUncached(
 ): Promise<KeychainResult<Buffer>> {
   const secTool = await trySecretTool('load', keychainId, '', serviceName);
   if (secTool !== null) {
-    if (secTool === '') return { kind: 'error', error: { kind: 'not_found' } };
-    return { kind: 'ok', value: Buffer.from(secTool, 'base64') };
+    if (secTool !== '') return { kind: 'ok', value: Buffer.from(secTool, 'base64') };
+    // An available OS backend can legitimately miss this item while the
+    // encrypted mirror still has it (most visibly a headless macOS
+    // LaunchDaemon whose login Keychain lookup exits 44).  A tier miss means
+    // "try the next tier", not "the device key does not exist".
   }
 
   const security = await trySecurityCli('load', keychainId, '', serviceName);
   if (security !== null) {
-    if (security === '') return { kind: 'error', error: { kind: 'not_found' } };
-    return { kind: 'ok', value: Buffer.from(security, 'base64') };
+    if (security !== '') return { kind: 'ok', value: Buffer.from(security, 'base64') };
+    // Same rule as secret-tool: only the final encrypted-file tier can prove
+    // that every persisted copy is absent.
   }
 
   return fileLoad(keychainId);
