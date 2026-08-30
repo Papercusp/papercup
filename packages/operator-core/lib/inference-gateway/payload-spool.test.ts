@@ -250,6 +250,71 @@ describe('gateway payload spool — refcounted retention', () => {
   });
 });
 
+describe('PgGatewayPayloadStore — EI-21880026143110293 contention retry on the blob-persist write', () => {
+  // A pg lock_timeout/statement_timeout error, shaped the way the reported
+  // failure named it: `.code` is what `isWorkspaceContended` matches.
+  const contentionError = (code: '55P03' | '57014' = '57014') => Object.assign(new Error('canceling statement due to statement timeout'), { code });
+
+  function fakeSqlWithFailures(
+    failures: unknown[],
+    finalResponse: unknown[] = [],
+  ): NonNullable<PgGatewayPayloadStoreOptions['sql']> {
+    let call = 0;
+    return ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      sqlCalls.push({ text: strings.join(' '), values });
+      const idx = call++;
+      if (idx < failures.length) return Promise.reject(failures[idx]);
+      return Promise.resolve(finalResponse as never);
+    }) as unknown as NonNullable<PgGatewayPayloadStoreOptions['sql']>;
+  }
+
+  it('retries a transient contention timeout and lands the write without surfacing an error', async () => {
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSqlWithFailures([contentionError('57014'), contentionError('55P03')]),
+      workspaceId: 'ws-payload-test',
+      contentionBackoffsMs: [0, 0],
+      contentionSleep: async () => {},
+    });
+
+    await expect(store.put('a'.repeat(64), body('retried write'))).resolves.toBeUndefined();
+    // Two failed attempts + the one that lands.
+    expect(sqlCalls).toHaveLength(3);
+  });
+
+  it('surfaces a typed, contention-labelled error once retries are exhausted — never a bare opaque timeout', async () => {
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSqlWithFailures([contentionError(), contentionError(), contentionError()]),
+      workspaceId: 'ws-payload-test',
+      contentionBackoffsMs: [0, 0],
+      contentionSleep: async () => {},
+    });
+
+    const attempt = store.put('a'.repeat(64), body('never lands'));
+
+    await expect(attempt).rejects.toBeInstanceOf(PayloadSpoolPersistenceError);
+    await expect(attempt).rejects.toThrow(/contention retries were exhausted/);
+    // 1 initial attempt + 2 backoff retries = 3 calls; the 3rd failure is terminal.
+    expect(sqlCalls).toHaveLength(3);
+  });
+
+  it('does not retry, and does not relabel, a non-contention failure', async () => {
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSqlWithFailures([new Error('relation "gateway_payload_blobs" does not exist')]),
+      workspaceId: 'ws-payload-test',
+      contentionBackoffsMs: [0, 0],
+      contentionSleep: async () => {},
+    });
+
+    const attempt = store.put('a'.repeat(64), body('genuine failure'));
+
+    await expect(attempt).rejects.toBeInstanceOf(PayloadSpoolPersistenceError);
+    await expect(attempt).rejects.toThrow(/does not exist/);
+    await expect(attempt).rejects.not.toThrow(/contention retries were exhausted/);
+    // Non-contention errors propagate on the first attempt — no retry spent on a real bug.
+    expect(sqlCalls).toHaveLength(1);
+  });
+});
+
 describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
   it('writes a finite default expiry for newly stored payloads', async () => {
     const now = Date.parse('2026-08-30T00:00:00.000Z');

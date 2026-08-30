@@ -29,6 +29,7 @@ import {
   type ContentAddressing,
 } from '@papercusp/artifact-registry';
 import { activeWorkspaceId } from '../workspace-registry';
+import { acquireWithContentionRetry, isWorkspaceContended } from '../agent-tools/locks/contention-retry';
 
 type SqlClient = ReturnType<typeof getOrgPg>['sql'];
 
@@ -204,6 +205,9 @@ export interface PgGatewayPayloadStoreOptions {
   readonly ttlMs?: number;
   readonly legacyGraceMs?: number;
   readonly now?: () => number;
+  /** Injectable for tests; production defaults to the shared EI-1720 backoffs/sleep. */
+  readonly contentionBackoffsMs?: readonly number[];
+  readonly contentionSleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -216,6 +220,8 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
   readonly #ttlMs: number;
   readonly #legacyGraceMs: number;
   readonly #now: () => number;
+  readonly #contentionBackoffsMs: readonly number[] | undefined;
+  readonly #contentionSleep: ((ms: number) => Promise<void>) | undefined;
 
   constructor(options: PgGatewayPayloadStoreOptions = {}) {
     this.#sql = options.sql ?? getOrgPg().sql;
@@ -229,6 +235,8 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
         ? DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS
         : Math.max(0, options.legacyGraceMs);
     this.#now = options.now ?? (() => Date.now());
+    this.#contentionBackoffsMs = options.contentionBackoffsMs;
+    this.#contentionSleep = options.contentionSleep;
   }
 
   async head(key: string): Promise<{ size: number } | null> {
@@ -245,15 +253,38 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
   async put(key: string, body: ArrayBuffer | Uint8Array, opts?: { contentType?: string }): Promise<void> {
     const bytes = body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(new Uint8Array(body));
     const expiresAt = this.#ttlMs > 0 ? new Date(this.#now() + this.#ttlMs) : null;
-    // ON CONFLICT DO NOTHING, not DO UPDATE: the key is the content hash, so a
-    // conflicting row already holds byte-identical content. Overwriting it would
-    // reset another receipt's refcount for no gain.
-    await this.#sql`
-      INSERT INTO harness_shared.gateway_payload_blobs
-        (workspace_id, blob_key, bytes, byte_length, content_type, expires_at)
-      VALUES
-        (${this.#workspaceId}, ${key}, ${bytes}, ${bytes.byteLength}, ${opts?.contentType ?? null}, ${expiresAt})
-      ON CONFLICT (workspace_id, blob_key) DO NOTHING`;
+    // EI-21880026143110293: a bulk-load/VACUUM window on this table can push the
+    // write past pg's lock_timeout/statement_timeout (55P03/57014) with nothing
+    // committed. The insert is safe to retry as-is: the key is the content hash
+    // and ON CONFLICT DO NOTHING makes a retry after a prior silent commit a
+    // no-op, not a duplicate. Reuses the shared EI-1720 primitive rather than a
+    // second backoff loop — same bug class, one layer down (the git-sync file-lock
+    // read and the resource-governor admission write already hit this and were
+    // fixed the same way).
+    try {
+      await acquireWithContentionRetry(
+        () =>
+          this.#sql`
+          INSERT INTO harness_shared.gateway_payload_blobs
+            (workspace_id, blob_key, bytes, byte_length, content_type, expires_at)
+          VALUES
+            (${this.#workspaceId}, ${key}, ${bytes}, ${bytes.byteLength}, ${opts?.contentType ?? null}, ${expiresAt})
+          ON CONFLICT (workspace_id, blob_key) DO NOTHING`,
+        {
+          ...(this.#contentionBackoffsMs ? { backoffsMs: this.#contentionBackoffsMs } : {}),
+          ...(this.#contentionSleep ? { sleep: this.#contentionSleep } : {}),
+        },
+      );
+    } catch (error) {
+      // EI-21880026143110293: on exhausted contention retries, say so — the prior
+      // bare pg timeout gave a caller (e.g. work_items:complete) no signal that (a)
+      // this was transient contention rather than a malformed payload, or (b) the
+      // effective workaround is a smaller payload, not resending the same one.
+      const prefix = isWorkspaceContended(error)
+        ? `could not persist gateway payload blob (workspace=${this.#workspaceId}) after contention retries were exhausted`
+        : 'could not persist gateway payload blob';
+      throw new PayloadSpoolPersistenceError(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async get(key: string): Promise<{ body: Uint8Array; size: number } | null> {
@@ -353,6 +384,8 @@ export function createGatewayPayloadSpool(options: GatewayPayloadSpoolOptions & 
           ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
           ...(options.legacyGraceMs !== undefined ? { legacyGraceMs: options.legacyGraceMs } : {}),
           ...(options.now ? { now: options.now } : {}),
+          ...(options.contentionBackoffsMs ? { contentionBackoffsMs: options.contentionBackoffsMs } : {}),
+          ...(options.contentionSleep ? { contentionSleep: options.contentionSleep } : {}),
         })
       : null;
   const store = options.store ?? pg!;
