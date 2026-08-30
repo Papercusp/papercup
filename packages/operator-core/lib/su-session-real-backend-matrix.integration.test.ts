@@ -145,6 +145,18 @@ const OMP_MODEL =
 const READY_TIMEOUT_MS = 240_000;
 const POLL_INTERVAL_MS = 2_000;
 
+/** The IDLE CONTROL window in the bare-launch disturbance case.
+ *
+ *  "The managed session was alive before the bare launch and dead after it" is
+ *  not on its own evidence that the launch killed it — the session might have
+ *  been going to die in that window regardless. So the case first holds it for
+ *  this long with NOTHING running, which turns the later check into a
+ *  comparison. Sized a little above the observed ~8s bare-launch window so the
+ *  control is at least as long as the exposure it is the control FOR; the case
+ *  reports both durations when it fails, so an under-sized control is visible
+ *  rather than silently weakening the attribution. */
+const IDLE_BASELINE_MS = 15_000;
+
 /** A real turn is a real model call plus at least one real tool round-trip, on
  *  a session whose system prompt is the full SU playbook. Budget for that, not
  *  for a stubbed frame replay. */
@@ -1494,6 +1506,57 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           'was still open, so the disturbance check below would measure nothing.',
       ).toBe(true);
 
+      // ── THE IDLE CONTROL ──────────────────────────────────────────────────
+      // The precondition above says the session is open and alive RIGHT NOW.
+      // That is necessary but NOT sufficient to blame the bare launch for a
+      // later death: by the time this case runs the session has already been
+      // driven through a turn, an interrupt, a resume and a reattach, and the
+      // deaths cluster in the tens of seconds after that driving. So "alive
+      // before, dead after" is also what a death that was going to happen
+      // anyway looks like. Reading that coincidence as causation is exactly
+      // what produced four false regression reports on 2026-08-30.
+      //
+      // So hold the session for a window of the same order as the launch about
+      // to run, with NOTHING running in it. The disturbance check below then
+      // rests on a comparison instead of a bare observation.
+      //
+      // ⚠ THIS DOES NOT MAKE THE DISTURBANCE CHECK CONDITIONAL, and it must not
+      // be turned into one. Both outcomes FAIL — they just fail with the right
+      // attribution. Dying with no launch running is its own defect (a driven
+      // managed session that will not stay up while its adv row is open and it
+      // is meant to be running) and is reported as THAT. An earlier "settle
+      // window" repair made this half skip instead, which is the false-GREEN
+      // twin of the false-RED and the worse of the two; do not go back to it.
+      //
+      // The control is not speculative: adv 21328 (the no-end control) sat
+      // READY and open for 130.6s with nothing sent to it, so a healthy managed
+      // session comfortably survives a window this size.
+      const idleControlStartedAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, IDLE_BASELINE_MS));
+      const idleControlMs = Date.now() - idleControlStartedAt;
+      const rowAfterIdle = await getAdvSession(advSessionId);
+      expect(
+        rowAfterIdle != null && rowAfterIdle.endedAt == null && pidAlive(managedBefore!.pid),
+        `the managed ${backend} session (pid ${managedBefore?.pid}) died during a ` +
+          `${Math.round(idleControlMs / 1000)}s IDLE CONTROL window — no bare launch was running ` +
+          'and END had not run. This is NOT evidence about the bare launch. It says the driven ' +
+          'managed session does not stay up on its own while its adv row is open and it is ' +
+          'still meant to be running, which is a defect in its own right (EI-21908787009967815). ' +
+          'Fix that first: the disturbance question below cannot be answered until a session ' +
+          'survives an idle window of this length. ' +
+          (rowAfterIdle
+            ? `endedAt=${String(rowAfterIdle.endedAt ?? 'null')} ` +
+              `endedBy=${String(rowAfterIdle.endedBy ?? 'null')} ` +
+              `endedSignal=${String(rowAfterIdle.endedSignal ?? 'null')}`
+            : `adv row ${advSessionId} no longer resolves`) +
+          ". NOTE: endedBy='self' is the DEGRADED default, not proof of a voluntary exit.",
+      ).toBe(true);
+
+      // Everything from here is the EXPOSURE the control above is the control
+      // for. Timed so a failure can state whether the control was actually as
+      // long as the exposure it is being compared against.
+      const exposureStartedAt = Date.now();
+
       const bare = await launchAgent({
         agent: backend as 'claude' | 'codex' | 'omp',
         slug: HARNESS,
@@ -1652,6 +1715,15 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           `the managed ${backend} session (pid ${managedPid}) died during an unrelated bare ` +
             'launch, before END had even run and while its adv row was still OPEN — so it was ' +
             `still meant to be running. ${howItDied}. ` +
+            // The idle control is what makes this a disturbance claim rather than a
+            // coincidence: the same session was just held ALIVE across a comparable
+            // window with nothing running in it. State both durations so a reader can
+            // see whether the control was actually as long as the exposure — if the
+            // exposure is much the longer of the two, the attribution is weaker than
+            // it looks and IDLE_BASELINE_MS should be raised, not the check relaxed.
+            `It survived a ${Math.round(idleControlMs / 1000)}s idle control immediately ` +
+            `before this, and died within a ${Math.round((Date.now() - exposureStartedAt) / 1000)}s ` +
+            'window that contained the bare launch. ' +
             // ⚠ DO NOT re-add "endedBy='self' means it cannot have been killed". That claim
             // was here and it is FALSE: `self` is the value a row DEGRADES TO when the end
             // provenance is not captured, not positive evidence of a voluntary exit.
