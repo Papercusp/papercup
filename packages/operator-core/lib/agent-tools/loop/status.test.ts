@@ -52,12 +52,14 @@ import { getLoopStatus } from '../../harness/routines/loop';
 import { readLatestLoopTransition } from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
+import { probeWakeReachability } from '../../events/await/wake-reachability';
 import statusTool from './status';
 
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
 const readLatestLoopTransitionMock = readLatestLoopTransition as unknown as ReturnType<typeof vi.fn>;
 const getLoopCarryNoteWithMetaMock = getLoopCarryNoteWithMeta as unknown as ReturnType<typeof vi.fn>;
 const listWakeAwaitsMock = listWakeAwaitsForSubscriber as unknown as ReturnType<typeof vi.fn>;
+const probeWakeReachabilityMock = probeWakeReachability as unknown as ReturnType<typeof vi.fn>;
 
 const OURS = { systemIdentifier: '7635091775813704249', database: 'papercusp' };
 const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp' };
@@ -76,6 +78,84 @@ const run = (args: Record<string, unknown> = {}) =>
 describe('loop:status — ambient workspace transaction safety (EI-20229292848756531)', () => {
   it('opts out because the handler owns independent DB reads and never consumes ctx.tx', () => {
     expect((statusTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
+describe('loop:status concurrency (EI-21869094231635430)', () => {
+  it('runs the four independent probes concurrently, not as a sequential sum of round-trips', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      name: 'loop-su-caller-own-id',
+      active: true,
+      ownerId: 'su-caller-own-id',
+      harnessSlug: 'papercusp',
+      intervalSec: 60,
+    });
+
+    const started: string[] = [];
+    const deferred = <T>() => {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+
+    const transitionD = deferred<{ status: 'none' }>();
+    const carryNoteD = deferred<{ note: null; updatedAtMs: null }>();
+    const reachabilityD = deferred<{
+      reachable: boolean;
+      channel: string;
+      durableWhileAlive: boolean;
+      summary: string;
+    }>();
+    const awaitsD = deferred<{ totalCount: number; sample: never[] }>();
+
+    readLatestLoopTransitionMock.mockImplementation(() => {
+      started.push('transition');
+      return transitionD.promise;
+    });
+    getLoopCarryNoteWithMetaMock.mockImplementation(() => {
+      started.push('carryNote');
+      return carryNoteD.promise;
+    });
+    probeWakeReachabilityMock.mockImplementation(() => {
+      started.push('reachability');
+      return reachabilityD.promise;
+    });
+    listWakeAwaitsMock.mockImplementation(() => {
+      started.push('pendingAwaits');
+      return awaitsD.promise;
+    });
+
+    const resultPromise = run();
+
+    // Flush microtasks so the handler advances past `await getLoopStatus(...)` and
+    // evaluates the Promise.all argument array — which synchronously INVOKES all
+    // four dependent functions before any of them settles. A sequential-await
+    // version (the pre-fix shape) would only have invoked the FIRST of these at
+    // this checkpoint, since the second call site is gated behind `await`ing the
+    // first's promise.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(started.sort()).toEqual(['carryNote', 'pendingAwaits', 'reachability', 'transition']);
+
+    transitionD.resolve({ status: 'none' });
+    carryNoteD.resolve({ note: null, updatedAtMs: null });
+    reachabilityD.resolve({ reachable: true, channel: 'inject', durableWhileAlive: true, summary: 'ok' });
+    awaitsD.resolve({ totalCount: 0, sample: [] });
+
+    const out = await resultPromise;
+    expect(out.ok).toBe(true);
+    expect(out.lastTransition).toEqual({ status: 'none' });
+    expect(out.carryNote).toEqual({ note: null, contentHash: null, updatedAtMs: null });
+    expect(out.reachability).toEqual({
+      reachable: true,
+      channel: 'inject',
+      durableWhileAlive: true,
+      summary: 'ok',
+    });
+    expect(out.pendingAwaits).toEqual({ status: 'none', scope: 'non-inbox-wake' });
   });
 });
 

@@ -67,38 +67,70 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
-    const lastTransition = status
-      ? await readLatestLoopTransition({
-          workspaceId: identity.workspaceId,
-          installSlug: status.harnessSlug,
-          routineName: status.name,
-          targetOwnerId: ownerId,
-        })
-      : null;
 
-    // EI-21380031331878722: loop:checkpoint may commit and lose its transport
-    // response after connect. Surface the same routine-scoped carry-note read and
-    // content hash here so the caller can reconcile that outcome without guessing
-    // or blindly retrying a replacement note. The routine's install slug is the
-    // authoritative carry-note harness, just as it is for the cold wake reader.
-    const carryNote = status
-      ? await getLoopCarryNoteWithMeta({ harness: status.harnessSlug, ownerId })
-          .then((meta) => ({
-            note: meta.note,
-            contentHash: meta.note === null ? null : shortCarryHash(meta.note),
-            updatedAtMs: meta.updatedAtMs,
-          }))
-          .catch(() => ({ note: null, contentHash: null, updatedAtMs: null }))
-      : null;
+    // EI-21869094231635430: these four probes are each independent of the OTHERS
+    // (only lastTransition/carryNote depend on `status`, already resolved above) —
+    // they used to run as five SEQUENTIAL awaits, so their wall-clock cost SUMMED.
+    // Under DB pool contention (this box runs a large concurrent fleet), summing
+    // four-to-five round-trips on a lightweight per-owner status read is exactly
+    // how it accumulates past the 5s per-statement timeout or the 16s whole-call
+    // deadline — the recorded failure mode (harness_shared.tool_invocations shows
+    // 9 genuine `canceling statement due to statement timeout` errors on this tool
+    // between 09:17 and 13:07 on 2026-08-30, none attributable to a single slow
+    // query). Running them concurrently bounds the wall-clock cost to the SLOWEST
+    // probe instead of their sum, and shortens how long any one probe's DB
+    // connection is held open under contention. Each retains its exact original
+    // fail-soft behavior (see the per-branch comments below) — only the scheduling
+    // changed, never the semantics.
+    const [lastTransition, carryNote, reachability, pendingAwaitsResult] = await Promise.all([
+      status
+        ? readLatestLoopTransition({
+            workspaceId: identity.workspaceId,
+            installSlug: status.harnessSlug,
+            routineName: status.name,
+            targetOwnerId: ownerId,
+          })
+        : Promise.resolve(null),
+      // EI-21380031331878722: loop:checkpoint may commit and lose its transport
+      // response after connect. Surface the same routine-scoped carry-note read and
+      // content hash here so the caller can reconcile that outcome without guessing
+      // or blindly retrying a replacement note. The routine's install slug is the
+      // authoritative carry-note harness, just as it is for the cold wake reader.
+      status
+        ? getLoopCarryNoteWithMeta({ harness: status.harnessSlug, ownerId })
+            .then((meta) => ({
+              note: meta.note,
+              contentHash: meta.note === null ? null : shortCarryHash(meta.note),
+              updatedAtMs: meta.updatedAtMs,
+            }))
+            .catch(() => ({ note: null, contentHash: null, updatedAtMs: null }))
+        : Promise.resolve(null),
+      // WI-655 / EI-21452056705704146 — surface LIVE wake-reachability independently
+      // of whether a loop row exists. A paused/idle session can be deliberately
+      // loopless while the host-registered inbox-wake await remains its one correct
+      // resume channel. Gating this probe on status?.active made that healthy state
+      // read as reachability:null + pendingAwaits:none, which falsely looked globally
+      // unreachable and nudged agents to arm a forbidden loop during stand-down.
+      // Best-effort: probeWakeReachability already degrades its component reads.
+      probeWakeReachability(ownerId).catch((): WakeReachabilityVerdict | null => null),
+      // EI-19415169477907694: "am I actually parked?" — the caller's own live, non-inbox-wake
+      // events:await registrations. Answers the exact filed failure: a dropped MCP transport
+      // (or any await call whose response the caller cannot trust) can leave an agent believing
+      // it registered a park when nothing was ever written. Run unconditionally (not gated on
+      // loop.active) — an agent that never armed a loop and instead parked on a bare events:await
+      // deserves this answer too. Best-effort + fail-soft, same discipline as reachability above
+      // and as loop:arm's own use of this exact read (EI-19447204017443244): a lookup failure
+      // must read as 'unknown', never collapse into 'none' (that would fabricate a measurement).
+      listWakeAwaitsForSubscriber(ownerId)
+        .then(
+          ({ totalCount, sample }): LivePushChannels =>
+            totalCount > 0
+              ? { status: 'found', count: totalCount, sample: sample.slice(0, 5).map((a) => a.eventKey) }
+              : { status: 'none' },
+        )
+        .catch((): LivePushChannels => ({ status: 'unknown' })),
+    ]);
 
-    // WI-655 / EI-21452056705704146 — surface LIVE wake-reachability independently
-    // of whether a loop row exists. A paused/idle session can be deliberately
-    // loopless while the host-registered inbox-wake await remains its one correct
-    // resume channel. Gating this probe on status?.active made that healthy state
-    // read as reachability:null + pendingAwaits:none, which falsely looked globally
-    // unreachable and nudged agents to arm a forbidden loop during stand-down.
-    // Best-effort: probeWakeReachability already degrades its component reads.
-    const reachability: WakeReachabilityVerdict | null = await probeWakeReachability(ownerId).catch(() => null);
     const reachabilityOut = reachability
       ? {
           reachable: reachability.reachable,
@@ -109,28 +141,10 @@ export default defineTool({
         }
       : null;
 
-    // EI-19415169477907694: "am I actually parked?" — the caller's own live, non-inbox-wake
-    // events:await registrations. Answers the exact filed failure: a dropped MCP transport
-    // (or any await call whose response the caller cannot trust) can leave an agent believing
-    // it registered a park when nothing was ever written. Run unconditionally (not gated on
-    // loop.active) — an agent that never armed a loop and instead parked on a bare events:await
-    // deserves this answer too. Best-effort + fail-soft, same discipline as reachability above
-    // and as loop:arm's own use of this exact read (EI-19447204017443244): a lookup failure
-    // must read as 'unknown', never collapse into 'none' (that would fabricate a measurement).
-    let pendingAwaits: LivePushChannels = { status: 'unknown' };
-    try {
-      const { totalCount, sample } = await listWakeAwaitsForSubscriber(ownerId);
-      pendingAwaits =
-        totalCount > 0
-          ? { status: 'found', count: totalCount, sample: sample.slice(0, 5).map((a) => a.eventKey) }
-          : { status: 'none' };
-    } catch {
-      /* best-effort — a lookup failure must read as 'unknown', never 'none' */
-    }
     // The standing host inbox-wake is a reachability channel, not evidence that a
     // caller-authored events:await landed. Keep the useful exclusion, but stamp the
     // scope on the wire so status:none can no longer be misread as global absence.
-    const pendingAwaitsOut = { ...pendingAwaits, scope: 'non-inbox-wake' as const };
+    const pendingAwaitsOut = { ...pendingAwaitsResult, scope: 'non-inbox-wake' as const };
 
     // EI-19384072467112035: a `loop: null` here is the documented "no loop exists" signal,
     // and an agent reading it correctly re-arms. But `getLoopStatus` reads through
