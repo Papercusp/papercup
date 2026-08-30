@@ -158,7 +158,7 @@ async function bootAndRead(
   interface AdmissionSnapshot {
     maxConcurrent?: number;
     tier1Reserve?: number;
-    byTier?: { tier: number; cap: number }[];
+    byTier?: { tier: number; minShare: number }[];
   }
   const stats = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
     maxQueued: number;
@@ -172,7 +172,7 @@ async function bootAndRead(
 
   /** Render the tier ladder as a stable string so a deepEqual diff names the exact tier. */
   const tierCaps = (a: AdmissionSnapshot | undefined): string =>
-    (a?.byTier ?? []).map((t) => `t${t.tier}=${t.cap}`).join(',');
+    (a?.byTier ?? []).map((t) => `t${t.tier}=${t.minShare}`).join(',');
 
   const readback: CanonicalCapacityReadback = {
     maxQueued: stats.maxQueued,
