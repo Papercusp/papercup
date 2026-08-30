@@ -329,9 +329,8 @@ describe("rendering", () => {
 
     expect(headerRule).toBeTruthy();
     expect(headerRule).toMatch(/position: sticky;/);
-    expect(headerRule).toMatch(
-      /background: color-mix\(in oklab, var\(--bg\) 94%, var\(--bg-2\)\);/,
-    );
+    expect(headerRule).toMatch(/background: var\(--bg\);/);
+    expect(headerRule).not.toMatch(/background:[^;]*var\(--bg-2\)/);
     expect(headerRule).not.toMatch(/background:\s*transparent;/);
     expect(headerRule).toMatch(/border-bottom:/);
     expect(headerRule).toMatch(/box-shadow:/);

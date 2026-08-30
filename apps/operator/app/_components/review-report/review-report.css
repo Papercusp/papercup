@@ -64,8 +64,9 @@
     color-mix(in oklab, var(--review-accent), transparent 78%);
   /* This surface must stay opaque: the sticky header sits over live report
    * rows, and a translucent/blur-only scrim leaves their text competing with
-   * the report identity and destructive boundary actions. */
-  background: color-mix(in oklab, var(--bg) 94%, var(--bg-2));
+   * the report identity and destructive boundary actions. `--bg-2` is an
+   * alpha surface tier, so even mixing it with `--bg` breaks this contract. */
+  background: var(--bg);
   box-shadow: 0 10px 18px color-mix(in oklab, var(--bg) 56%, transparent);
 }
 
