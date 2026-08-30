@@ -21,8 +21,34 @@ vi.mock('../../rubrics', () => ({
 }));
 
 import { getRubric, ratifyRubric } from '../../rubrics';
+import type { Rubric } from '../../rubrics';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 const getM = vi.mocked(getRubric);
 const ratifyM = vi.mocked(ratifyRubric);
+
+/**
+ * A COMPLETE, typed `Rubric` — the typed-mock alternative to `{ … } as never`
+ * (check-mock-cast-escape.mjs ratchets that cast count). Referenced by BOTH the
+ * mocked resolve and the echo assertion, so the fixture cannot drift from what the
+ * handler is expected to hand back.
+ */
+const RUBRIC_R1: Rubric = {
+  rubricId: 'r-1',
+  workspaceId: 'default',
+  kind: 'standard',
+  characteristic: 'hive-coordination',
+  title: 'r-1',
+  description: '',
+  criteria: [],
+  ratingScale: [],
+  methodRef: null,
+  status: 'active',
+  createdBy: null,
+  proposedBy: null,
+  ratifiedBy: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
 
 const getTool = (await import('./get')).default;
 const ratifyTool = (await import('./ratify')).default;
@@ -108,7 +134,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
   });
 
   it('accepts an optional harness hint without filtering the workspace-wide read', async () => {
-    getM.mockResolvedValue({ id: 'r-1', criteria: [] } as never);
+    mockResolvedTyped(getM, RUBRIC_R1);
     const projected = lookupByMcpName('rubrics:get');
     expect(projected).toBeDefined();
     const dispatched = await dispatchProjectedTool(
