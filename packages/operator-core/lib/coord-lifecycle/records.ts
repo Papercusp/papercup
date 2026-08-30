@@ -244,9 +244,41 @@ export const CompletionSettlementManifestSchema = z.object({
 });
 export type CompletionSettlementManifest = z.infer<typeof CompletionSettlementManifestSchema>;
 
+/**
+ * EI-21905322780107586: `coerceFilesChanged` (completion-coerce.ts) splits a scalar
+ * `filesChanged` string on `,`/`;`/newline to rescue a genuine comma-separated path
+ * LIST (EI-21471221125941096). That rescue has no way to tell a real list from
+ * narrative prose describing several changes in ONE paragraph — a fragment such as
+ * `"foo.ts (funcA added, funcB changed"` survives the split with no delimiter of
+ * its own and is then recorded verbatim as a `filesChanged` PATH. Unresolved, it
+ * even earns a "did you mean" fuzzy suggestion from the missing-path warning,
+ * which reads as false confirmation that the token was a real near-miss path.
+ *
+ * A bare repo-relative path never combines internal whitespace with a parenthesis
+ * or comma — that combination is the signature of prose, not a filename. Reject it
+ * the same way `loop:checkpoint`'s `walls[]` rejects an unrecognized shape: loudly,
+ * at the call boundary, with the repair named — never silently recorded as
+ * fabricated evidence and never silently dropped.
+ */
+function isPathShapedFilesChangedEntry(entry: string): boolean {
+  const hasWhitespace = /\s/.test(entry);
+  const hasProsePunctuation = entry.includes('(') || entry.includes(')') || entry.includes(',');
+  return !(hasWhitespace && hasProsePunctuation);
+}
+
+const FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE =
+  'filesChanged entries must be bare repo-relative paths, not prose. An entry containing whitespace ' +
+  "together with '(', ')', or ',' reads like a description that survived splitting a comma-separated " +
+  'string, not a filename — put the description in `summary` / `whatLanded` instead, and pass ' +
+  'filesChanged as an array of bare paths, e.g. filesChanged: ["path/to/file.ts", "path/to/other.ts"].';
+
+const FilesChangedSchema = z
+  .array(z.string().min(1).refine(isPathShapedFilesChangedEntry, { message: FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE }))
+  .optional();
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
-  filesChanged: z.array(z.string().min(1)).optional(),
+  filesChanged: FilesChangedSchema,
   /** Exact command/probe run, or the concrete already-fixed verification. */
   testsRun: z.string().min(1).optional(),
   /** Result summary, e.g. "9/9 green" or "HTTP 200 smoke passed". */
@@ -582,7 +614,7 @@ export const CompletionRecordSchema = z.object({
   verification: CompletionVerificationEvidenceSchema.optional(),
   /** Top-level alias for the structured verification coverage record (WI-37960). */
   coverage: CompletionCoverageSchema.optional(),
-  filesChanged: z.array(z.string().min(1)).optional(),
+  filesChanged: FilesChangedSchema,
   testsRun: z.string().min(1).optional(),
   testResult: z.string().min(1).optional(),
   verifiedHow: CompletionVerifiedHowSchema.optional(),
