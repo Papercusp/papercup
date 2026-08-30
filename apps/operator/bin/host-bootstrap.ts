@@ -65,17 +65,40 @@ import { reconcileLegacyVoiceServices } from '@papercusp/operator-core/lib/voice
 // proxy import below, which defers a heavy module used only in a fallback branch): this one
 // is dependency-free and side-effect-free apart from reading env.
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
 import {
   beginGovernedExecution,
   governedExecutionRuntime,
 } from '@papercusp/operator-core/lib/resource-governor/execution';
 
-const GUARD_KEY = '__papercuspBootstrapRan__';
 const PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS = 5_000;
 
-let packagedMcpProxyProcess: ChildProcess | null = null;
-let packagedMcpProxyShutdownRequested = false;
+/**
+ * All of this module's mutable state, pinned together at module scope ONCE.
+ *
+ * The run-once guard was already pinned by hand, but the two packaged-proxy
+ * slots below were plain module-locals — a HALF-CLOSED pin. On a module split
+ * that combination is worse than no pin: the guard correctly stops the second
+ * record from bootstrapping, so whichever record spawned the proxy child owns
+ * the only handle to it, while `stopPackagedMcpProxy` — registered as the
+ * shutdown handler — can be reached on the OTHER record, see a null child, and
+ * return without killing anything. The result is an orphaned proxy on :9071
+ * surviving operator shutdown, with no error on any path.
+ *
+ * Pinned via the primitive rather than a hand-rolled Symbol.for so a future
+ * re-split is reported by listModuleDuplications() instead of being
+ * rediscovered the expensive way.
+ */
+const BOOTSTRAP_STATE = pinModuleState<{
+  ran: boolean;
+  packagedMcpProxyProcess: ChildProcess | null;
+  packagedMcpProxyShutdownRequested: boolean;
+}>('@papercusp/web.host-bootstrap', () => ({
+  ran: false,
+  packagedMcpProxyProcess: null,
+  packagedMcpProxyShutdownRequested: false,
+}));
 
 // Injected by the esbuild host/desktop-sidecar recipes. It is absent under tsx/dev/test;
 // read through typeof so source boot and unit tests never evaluate an undeclared global.
@@ -84,8 +107,6 @@ declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;
 function isBundledSidecar(): boolean {
   return typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__;
 }
-
-type GuardedGlobal = typeof globalThis & { [GUARD_KEY]?: boolean };
 
 async function packagedMcpProxyAlive(port = 9071): Promise<boolean> {
   try {
@@ -107,11 +128,11 @@ function startPackagedMcpProxy(): void {
 
   const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT || 9071);
   void (async () => {
-    if (packagedMcpProxyShutdownRequested) return;
+    if (BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) return;
     if (await packagedMcpProxyAlive(port)) return;
     // The health probe is asynchronous. A shutdown can begin while it is in
     // flight; never start a new child after the host has begun draining.
-    if (packagedMcpProxyShutdownRequested) return;
+    if (BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) return;
     const sidecarDir = dirname(process.argv[1] || '');
     const proxyEntry = join(sidecarDir, 'mcp-proxy.mjs');
     const hasPackagedEntry = existsSync(proxyEntry);
@@ -137,13 +158,13 @@ function startPackagedMcpProxy(): void {
       // operator.json target. It dies with this operator (unlike the detached
       // packaged child), but the next boot re-arms it and the sticky operator
       // port keeps direct pins valid across the gap.
-      if (packagedMcpProxyShutdownRequested) {
+      if (BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) {
         await execution.cancel('operator shutdown won before fallback import');
         return;
       }
       try {
         const { startMcpProxy, readOperatorJsonTarget } = await import('../lib/mcp-proxy/proxy');
-        if (packagedMcpProxyShutdownRequested) {
+        if (BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) {
           await execution.cancel('operator shutdown won before fallback listen');
           return;
         }
@@ -198,13 +219,17 @@ function startPackagedMcpProxy(): void {
       await execution.cancel(error instanceof Error ? error.message : String(error));
       throw error;
     }
-    packagedMcpProxyProcess = child;
+    BOOTSTRAP_STATE.packagedMcpProxyProcess = child;
     child.once('exit', () => {
-      if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+      if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
+        BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
+      }
       void execution.finish();
     });
     child.once('error', (e) => {
-      if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+      if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
+        BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
+      }
       void execution.cancel(e.message);
       console.warn('[mcp-proxy] packaged proxy child failed:', (e as Error)?.message ?? e);
     });
@@ -217,14 +242,16 @@ function startPackagedMcpProxy(): void {
 async function stopPackagedMcpProxy(): Promise<void> {
   // Set this before the first await so an in-flight health probe cannot spawn
   // a fresh child after SIGTERM/SIGINT has begun draining the operator.
-  packagedMcpProxyShutdownRequested = true;
-  const child = packagedMcpProxyProcess;
+  BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested = true;
+  const child = BOOTSTRAP_STATE.packagedMcpProxyProcess;
   if (!child) return;
   await gracefulStopChild(child, {
     timeoutMs: PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS,
     kill: (sig) => child.kill(sig),
   });
-  if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+  if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
+    BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
+  }
 }
 
 /**
@@ -271,9 +298,8 @@ const CPU_WORKER_BREAKER_IDENTITY = {
 };
 
 export function runBootstrap(): void {
-  const g = globalThis as GuardedGlobal;
-  if (g[GUARD_KEY]) return;
-  g[GUARD_KEY] = true;
+  if (BOOTSTRAP_STATE.ran) return;
+  BOOTSTRAP_STATE.ran = true;
 
   // [WI-37700] Give the cpu-task worker's crash-breaker a voice. The breaker latches
   // PERMANENTLY on repeated failure and the sync fallback is byte-identical, so a trip
