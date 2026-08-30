@@ -1413,36 +1413,56 @@ export default defineTool({
      * when a backing read never settles. The enrichment variables intentionally remain
      * fail-soft/nullable; a timed-out advisory tail only omits optional hints.
      */
-    let memory: string | null = null;
-    let checkpointHint: import('../../work-item-checkpoint').ClaimTimeCheckpointHint | null = null;
-    let checkpointReadFailed = false;
-    let priorWorkHint: { priorWork: unknown; priorWorkWarning: string } | null = null;
+    /*
+     * ⚠ Every enrichment variable below is written INSIDE `enrichSuccessfulClaim`, which is
+     * handed to `withBoundedTimeout` as a VALUE rather than called inline. TypeScript's control
+     * flow analysis does not follow writes through that boundary, so with the ordinary
+     * `let x: T | null = null` form CFA narrows each one to exactly `null` at every read below.
+     * The reads then use `x?.prop`, optional chaining short-circuits the whole `null` type away,
+     * and the remainder is `never` — which is why this file collected a run of
+     * "Property 'prop' does not exist on type 'never'" errors that describe nothing wrong at
+     * runtime (the enrichment is awaited before the payload is assembled).
+     *
+     * Writing the initializer as `null as T | null` makes the ASSIGNED expression carry the full
+     * union, so CFA narrows to `T | null` — the declared type — instead of to `null`. It is a
+     * widening of the initializer only: a genuinely wrong property access is still an error
+     * (proved with a `@ts-expect-error` control, so this cannot silently rot into `any`).
+     *
+     * Do NOT "fix" this by restructuring the writes into a return value. The write-into-closure
+     * shape is deliberate and load-bearing: `withBoundedTimeout` may abandon the tail, and the
+     * contract (see the comment above) is that whatever landed before the deadline is KEPT while
+     * the rest stay null. A return value would discard partial enrichment on timeout.
+     */
+    let memory = null as string | null;
+    let checkpointHint = null as import('../../work-item-checkpoint').ClaimTimeCheckpointHint | null;
+    let checkpointReadFailed = false as boolean;
+    let priorWorkHint = null as { priorWork: unknown; priorWorkWarning: string } | null;
     const bgJobWarning: { detected: boolean; reason?: string } = { detected: false };
-    let planDecisions: import('../../plan-decisions-claim-port').ClaimTimePlanDecisionsBrief | null = null;
-    let planDecisionsNote: string | null = null;
+    let planDecisions = null as import('../../plan-decisions-claim-port').ClaimTimePlanDecisionsBrief | null;
+    let planDecisionsNote = null as string | null;
     let priorAttemptBrief: unknown = null;
-    let premises: import('../../premises-claim-port').ClaimTimePremisesBrief | null = null;
-    let retractionWarning: string | null = null;
-    let authorshipRevalidationHint: {
+    let premises = null as import('../../premises-claim-port').ClaimTimePremisesBrief | null;
+    let retractionWarning = null as string | null;
+    let authorshipRevalidationHint = null as {
       authorshipRevalidation: unknown;
       authorshipRevalidationWarning: string;
-    } | null = null;
-    let planContradictionHint: {
+    } | null;
+    let planContradictionHint = null as {
       planItemContradiction: unknown;
       planItemContradictionWarning: string;
-    } | null = null;
-    let behaviorContractHint: {
+    } | null;
+    let behaviorContractHint = null as {
       behaviorContract: unknown;
       behaviorContractNote: string;
-    } | null = null;
-    let pathHintsHint: {
+    } | null;
+    let pathHintsHint = null as {
       pathHints: unknown;
       pathHintsNote: string | null;
-    } | null = null;
-    let planItemLandedHint: {
+    } | null;
+    let planItemLandedHint = null as {
       planItemLanded: unknown;
       planItemLandedWarning: string;
-    } | null = null;
+    } | null;
 
     const enrichSuccessfulClaim = async (): Promise<void> => {
       // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
