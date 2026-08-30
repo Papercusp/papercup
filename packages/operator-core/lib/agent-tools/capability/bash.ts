@@ -20,8 +20,8 @@
  * `bash-jobs.ts` for why inheriting the foreground pair was a trap.
  */
 
-import { statSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { readdirSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
@@ -46,6 +46,7 @@ import {
   foregroundTimeoutHint,
 } from './foreground-transport-cap';
 import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
+import { similarity } from '../../operator-fuzzy-dedup';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
@@ -105,6 +106,68 @@ export function resolveBashDefaultCwd(baseDir: string): string {
   return realpathSoft(integrationRoot);
 }
 
+/** A near-match is a real repair candidate only above this — below it, two unrelated
+ * short directory names can coincidentally score high, and a wrong guess is worse than
+ * none (EI-21859036061097062: `evidence` vs `essence` scores 0.7 by raw Levenshtein). */
+const CWD_SUGGESTION_SIMILARITY_FLOOR = 0.82;
+
+/**
+ * EI-21859036061097062: an explicit cwd whose failing SEGMENT is a near-miss rename of
+ * a real sibling directory (measured: `papercuspai-workspace` for the long-lived
+ * `papercupai-workspace` — an easy transposition once the harness itself is named
+ * `papercusp`) fails with nothing to correct FROM. Walk up to the nearest existing
+ * ancestor, and if EXACTLY ONE of its siblings is a close-enough rename of the missing
+ * segment, reconstruct the corrected full path and verify it actually resolves before
+ * suggesting it — this must never offer a guess that is itself still broken, and an
+ * ambiguous (0 or 2+) match says nothing rather than pick one.
+ */
+export function suggestExistingCwd(cwd: string): string | undefined {
+  // `probe` walks UP from `cwd` looking for the nearest existing ancestor; `cwd` itself
+  // stays untouched so the remainder below is computed against the FULL original path,
+  // not just the (possibly much shallower) non-existent prefix the walk stopped at.
+  let probe = cwd;
+  let ancestor = dirname(probe);
+  // Walk up until an existing directory is found, or we hit the filesystem root
+  // (dirname('/') === '/', which is the loop's only termination without a match).
+  while (ancestor !== probe) {
+    try {
+      if (statSync(ancestor).isDirectory()) break;
+    } catch {
+      // Not this one either — keep walking up.
+    }
+    probe = ancestor;
+    ancestor = dirname(probe);
+  }
+  if (ancestor === probe) return undefined; // no existing ancestor at all
+
+  const remainder = cwd.slice(ancestor.length).replace(/^[/\\]+/, '');
+  const missingSegment = remainder.split(/[/\\]/)[0];
+  if (!missingSegment) return undefined;
+  const rest = remainder.slice(missingSegment.length);
+
+  let siblings: string[];
+  try {
+    siblings = readdirSync(ancestor);
+  } catch {
+    return undefined;
+  }
+
+  const candidates = siblings
+    .filter((entry) => entry !== missingSegment)
+    .map((entry) => ({ entry, score: similarity(entry, missingSegment) }))
+    .filter(({ score }) => score >= CWD_SUGGESTION_SIMILARITY_FLOOR);
+  if (candidates.length !== 1) return undefined; // no match, or too ambiguous to guess
+
+  const rebuilt = join(ancestor, candidates[0]!.entry) + rest;
+  try {
+    if (statSync(rebuilt).isDirectory()) return rebuilt;
+  } catch {
+    // The reconstructed path doesn't check out either — say nothing rather than
+    // suggest a path that is itself still broken.
+  }
+  return undefined;
+}
+
 /**
  * Node reports a nonexistent child cwd as an ENOENT on the BINARY
  * (`spawn /usr/bin/bash ENOENT`), which reads as "bash is missing" and has
@@ -122,14 +185,21 @@ export function missingBashCwdError(cwd: string, explicitCwd: boolean): string |
   } catch {
     // Missing (or unreadable) — fall through to the explanatory error below.
   }
-  return explicitCwd
-    ? `capability:bash cwd '${cwd}' does not exist — the child process cannot start. ` +
-        `(Node would report this as a misleading "spawn /usr/bin/bash ENOENT".) ` +
-        `Pass an existing directory as cwd.`
-    : `capability:bash implicit cwd '${cwd}' (this context's project dir) does not exist, and no existing ` +
-        `PAPERCUSP_INTEGRATION_ROOT was available to recover to — the harness registry likely points at a ` +
-        `stale or phantom repo root. Pass cwd explicitly (an absolute path to an existing directory). ` +
-        `(Node would otherwise report this as a misleading "spawn /usr/bin/bash ENOENT".)`;
+  if (explicitCwd) {
+    const suggestion = suggestExistingCwd(cwd);
+    return (
+      `capability:bash cwd '${cwd}' does not exist — the child process cannot start. ` +
+      `(Node would report this as a misleading "spawn /usr/bin/bash ENOENT".) ` +
+      (suggestion ? `Did you mean '${suggestion}'? ` : '') +
+      `Pass an existing directory as cwd.`
+    );
+  }
+  return (
+    `capability:bash implicit cwd '${cwd}' (this context's project dir) does not exist, and no existing ` +
+    `PAPERCUSP_INTEGRATION_ROOT was available to recover to — the harness registry likely points at a ` +
+    `stale or phantom repo root. Pass cwd explicitly (an absolute path to an existing directory). ` +
+    `(Node would otherwise report this as a misleading "spawn /usr/bin/bash ENOENT".)`
+  );
 }
 
 export interface BashTaskProvenance {
