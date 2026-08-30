@@ -358,7 +358,7 @@ describe('coord_event_log federation (real PG)', () => {
       for (const r of await outbox()) await applyOnB(r);
       expect(await dbB.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE msg_id='conv-msg'`).toHaveLength(0);
     } finally {
-      await dbB.cleanup();
+      await dbB?.cleanup();
     }
   });
 
