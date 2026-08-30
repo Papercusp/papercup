@@ -37,14 +37,19 @@ export type GatewayLaneId = GatewayLaneDescriptor['id'];
  * admission controller. SHRINK-ONLY (D-021) — remove an entry when that lane's re-homing
  * lands; never add one.
  *
- * Measured 2026-08-30: all three registered lanes declare a `legacyEntryExecutor`
- * (provider-adapters.ts:159 `proxy`, :192 `proxyOpenAi`, :243 `proxyLocal`), and gateway.ts
- * holds exactly three `executeLegacyLaneTask(` call sites (:7493, :7525, :7622).
+ * Measured 2026-08-30, AFTER the first re-homing (P-011 / D-022): TWO of the three registered
+ * lanes still declare a `legacyEntryExecutor` (`anthropic-messages` -> `proxy`,
+ * `openai-responses` -> `proxyOpenAi`); `local-openai-chat` declares none and is off the
+ * bridge. gateway.ts holds two `executeLegacyLaneTask(` call sites and three
+ * `legacyGatewayEntryExecutors[` index sites, both re-seeded from a measuring run of the
+ * counters below — never by hand, and only ever downward.
  */
 export const LANES_ADMITTED_VIA_LEGACY_BRIDGE: readonly GatewayLaneId[] = [
   'anthropic-messages',
   'openai-responses',
-  'local-openai-chat',
+  // 'local-openai-chat' RETIRED 2026-08-30 (P-011 / D-022) — first lane re-homed. It is now
+  // entered directly through `withDurableGatewayAdmission` + `proxyLocal` and declares no
+  // `legacyEntryExecutor`, so rule 2 below would FAIL on this entry had it been left here.
 ];
 
 /**
@@ -59,9 +64,9 @@ export const LANES_ADMITTED_VIA_LEGACY_BRIDGE: readonly GatewayLaneId[] = [
  */
 export const LEGACY_STRANGLER_SURFACE_BASELINE = {
   /** `executeLegacyLaneTask(` invocations in gateway.ts, excluding its own declaration. */
-  executeLegacyLaneTaskCallSites: 3,
+  executeLegacyLaneTaskCallSites: 2,
   /** `legacyGatewayEntryExecutors[` indexing sites in gateway.ts. */
-  legacyEntryExecutorIndexSites: 4,
+  legacyEntryExecutorIndexSites: 3,
 } as const;
 
 export type LegacyStranglerSurfaceBaseline = typeof LEGACY_STRANGLER_SURFACE_BASELINE;

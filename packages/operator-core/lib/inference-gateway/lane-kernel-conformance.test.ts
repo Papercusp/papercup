@@ -50,17 +50,22 @@ describe('gateway lane kernel conformance (P-008 / D-021)', () => {
     expect(scanGatewayLaneKernelConformance(registry(), [gatewaySource()])).toEqual([]);
   });
 
-  it('records the CURRENT truth: every registered lane is still bridge-admitted', () => {
-    // D-021: this is deliberately not an empty allowlist. `executeLegacyLaneTask` is the
-    // gateway's only admission crossing, so no lane has been re-homed yet. When this list
-    // reaches zero the scaffolding is deletable — that is the burn-down, and it is the
-    // assertion that will change as re-homing lands.
+  it('records the CURRENT truth: the allowlist is exactly the lanes still declaring an entry executor', () => {
+    // D-021 froze this at "all three lanes". P-011 / D-022 re-homed the FIRST one, so the
+    // burn-down has started: `local-openai-chat` declares no entry executor and is off the
+    // bridge. Asserted as a DERIVED equality rather than a hardcoded list, so it shrinks on
+    // its own as each lane flips and fails loudly if an allowlist entry and the registry ever
+    // disagree. When both sides reach empty, the scaffolding is deletable (P-008).
     const lanes = registry();
     expect([...LANES_ADMITTED_VIA_LEGACY_BRIDGE].sort()).toEqual(
       Object.values(lanes)
+        .filter((lane) => lane.legacyEntryExecutor)
         .map((lane) => lane.id)
         .sort(),
     );
+    // Pinned explicitly: the ABSENCE is the load-bearing state, and a derived equality alone
+    // would still pass if this lane silently regained an entry executor and was re-added.
+    expect(lanes.localOpenAiChat.legacyEntryExecutor).toBeUndefined();
     expect(gatewayStranglerScaffoldingIsDeletable(lanes)).toBe(false);
   });
 
@@ -81,11 +86,20 @@ describe('gateway lane kernel conformance (P-008 / D-021)', () => {
 
   it('DETECTS a newly registered lane that takes the legacy bridge (the regrowth it exists to stop)', () => {
     const lanes = registry();
-    const findings = scanGatewayLaneKernelConformance(lanes, [], {
+    // The regrown lane must be SYNTHETIC. This control used to lean on the REAL
+    // `local-openai-chat` being missing from a shortened allowlist — but that lane re-homed at
+    // P-011, so it now declares no entry executor, rule 1 skips it, and the control would have
+    // gone quietly green while detecting nothing. A lane that declares an entry executor and
+    // is absent from the allowlist is the actual regrowth being guarded against.
+    const withRegrownLane = {
+      ...lanes,
+      aRegrownLane: { ...lanes.anthropicMessages, id: 'a-regrown-lane' as GatewayLaneId },
+    };
+    const findings = scanGatewayLaneKernelConformance(withRegrownLane, [], {
       // simulate a lane registered after the allowlist was frozen
       allowlist: ['anthropic-messages', 'openai-responses'],
     });
-    expect(findings).toContain('lane-admitted-outside-kernel:local-openai-chat:proxyLocal');
+    expect(findings).toContain('lane-admitted-outside-kernel:a-regrown-lane:proxy');
   });
 
   it('DETECTS a stale allowlist entry, so the ratchet cannot stop shrinking', () => {
@@ -106,7 +120,13 @@ describe('gateway lane kernel conformance (P-008 / D-021)', () => {
       ].join('\n'),
     };
     const findings = scanGatewayLaneKernelConformance(registry(), [synthetic]);
-    expect(findings).toContain('strangler-surface-grew:executeLegacyLaneTaskCallSites:4:3');
+    // OBSERVED (4) is this fixture's own content, so it is rightly literal. PERMITTED comes
+    // from the live baseline: it was hardcoded as `:4:3` and broke the moment P-011 ratcheted
+    // the baseline to 2 — a falsifiability control that needs hand-editing every time the
+    // ratchet shrinks is one that will eventually be "fixed" by deleting it.
+    expect(findings).toContain(
+      `strangler-surface-grew:executeLegacyLaneTaskCallSites:4:${LEGACY_STRANGLER_SURFACE_BASELINE.executeLegacyLaneTaskCallSites}`,
+    );
   });
 
   it('does not mistake the declaration or comment prose for a call site', () => {
