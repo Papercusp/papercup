@@ -1016,7 +1016,7 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
     },
     {
       id: "dual-target-is-opt-in",
-      rule: "target: both is chosen deliberately and never by default — it adds the second chassis's boot-e2e check to the union the app must pass on every build (MEASURED P-005: 5 declarations vs 4; the non-chassis three are shared), and that cost is stated in the ship disclosure",
+      rule: "target: both is chosen deliberately and never by default — it adds the second chassis's boot-e2e check to the union the app must pass on every build (MEASURED P-005: 6 declarations vs 5; the non-chassis four are shared), and that cost is stated in the ship disclosure",
       enforcedBy: "prose-only",
     },
     {
