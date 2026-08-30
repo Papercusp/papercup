@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import {
   rubricTemplateDataSchema,
+  rubricTemplateDataAuthoringSchema,
   rubricKindOf,
   RUBRIC_TEMPLATE_NAME,
   type RubricKind,
@@ -39,6 +40,7 @@ import {
 } from './agent-tools/plans/rubric-template';
 import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
 import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
+import { assertAcceptanceRubricCitationPathsResolve } from './rubrics-citation-checks';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -1192,8 +1194,13 @@ function normalizeAcceptanceCriteria(
 
 /** Build the validated `template_data` for a rubric-template plan from a propose input.
  *  Throws (fail-loud, D-004) if the rubric data is malformed — never persists a broken
- *  rubric. Returns the schema-coerced data. */
-function buildRubricTemplateData(input: ProposeRubricInput): unknown {
+ *  rubric. Returns the schema-coerced data. When a stored rubric is supplied, its
+ *  ratingScale is the fallback for whole-document re-proposes that omit the field;
+ *  brand-new rubrics still use DEFAULT_RATING_SCALE. */
+function buildRubricTemplateData(
+  input: ProposeRubricInput,
+  stored?: Pick<Rubric, 'ratingScale'> | null,
+): unknown {
   const instrumentContract = rubricInstrumentContract({
     releaseGating: input.releaseGating,
     criteria: input.criteria,
@@ -1224,7 +1231,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     ...(input.classRef ? { classRef: input.classRef } : {}),
     characteristic: input.characteristic,
     criteria,
-    ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
+    ratingScale: input.ratingScale ?? stored?.ratingScale ?? [...DEFAULT_RATING_SCALE],
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),
     ...(input.stalenessWatched !== undefined ? { stalenessWatched: input.stalenessWatched } : {}),
@@ -1242,7 +1249,14 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     // for a future auto-upgrade (see rubricsNeedingSeed).
     ...(input.seedContentHash ? { seedContentHash: input.seedContentHash } : {}),
   };
-  const parsed = rubricTemplateDataSchema.safeParse(data);
+  // Reads/re-projection stay permissive for legacy acceptance rows, but every
+  // direct propose/amend write uses the stricter acceptance authoring profile
+  // (EI-218268): no-verdict rating + concrete falsifier per bespoke criterion.
+  const schema =
+    rubricKindOf(data) === 'acceptance'
+      ? rubricTemplateDataAuthoringSchema
+      : rubricTemplateDataSchema;
+  const parsed = schema.safeParse(data);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
     throw new Error(`invalid_args: proposeRubric: invalid rubric data for '${input.rubricId}': ${issues}`);
@@ -1555,11 +1569,25 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   const kind = input.kind ?? 'standard';
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
-  const templateData = buildRubricTemplateData(input);
+  let templateData = buildRubricTemplateData(input);
+  // EI-21818117666341180: acceptance-rubric method/replication prose is itself a
+  // citation map. Refuse a path that exists but does not contain the explicit
+  // symbol-level subject or named test case the criterion tells the grader to
+  // inspect. This is pure and runs before any acceptance-link/store write.
+  if (kind === 'acceptance') {
+    assertAcceptanceRubricCitationPathsResolve(input.criteria, { root: input.checkPathRoot });
+  }
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
   if (kind === 'acceptance') await assertAcceptanceLinksResolve(input);
   const stored = await getRubric(input.rubricId);
+  // `getRubric` intentionally runs after the initial validation because reads can
+  // trigger first-party seeding. Rebuild only when the caller omitted the
+  // whole-document ratingScale, preserving the existing rubric's vocabulary instead
+  // of silently reverting it to DEFAULT_RATING_SCALE.
+  if (input.ratingScale === undefined && stored?.ratingScale) {
+    templateData = buildRubricTemplateData(input, stored);
+  }
   // EI-21296891484659125: acceptance rubrics activate on their FIRST propose (D-008),
   // but a whole-document revision must never resurrect one already retired with its
   // shipped subject plan. Mirror the EI-12932 seed-upgrade guard: stored lifecycle state
@@ -1793,6 +1821,9 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       // as the read-modify-write itself.
       const amended = applyRubricAmendment(stored, input);
       const templateData = buildRubricTemplateData(amended);
+      if (amended.kind === 'acceptance') {
+        assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot });
+      }
       if (amended.kind === 'acceptance') await assertAcceptanceLinksResolve(amended);
       assertNoSilentRubricLoss(stored, amended);
       assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot });
