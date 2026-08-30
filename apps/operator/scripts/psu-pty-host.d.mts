@@ -117,6 +117,12 @@ export function verifyNativeTurnStartWithRetry({ agent, env, text, sinceMs, home
     retried: boolean;
     reason: string | null;
 }>;
+/** A carry-respawn can bind transcript proof to a native session id only when
+ * the backend actually mints one. Claude does; Codex deliberately starts a
+ * fresh thread without exposing its id, so its unique turn-origin marker plus
+ * the post-respawn mtime floor is the strongest available native proof. Unknown
+ * backends stay fail-closed. */
+export function carryTurnProofRequiresNativeId(agent: any): boolean;
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId: any): string;

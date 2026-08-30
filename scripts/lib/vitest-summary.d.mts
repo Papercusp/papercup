@@ -327,10 +327,17 @@ export function failureEntryKey({ workspace, file }?: {
  *   runStartBlobs?: Record<string, string|null>,
  *   reportBlobs?: Record<string, string|null>,
  * }} args
+ * The three buckets carry the PRECISE entry shape rather than `object`, because the natural
+ * next call is `formatStaleFailureSummary({ stale })`, whose own `@param` names that shape.
+ * While this said `Array<object>` that chain was a type error BY CONSTRUCTION — `Array<object>`
+ * is not assignable to `Array<{ workspace, file, ... }>` — so every caller doing the obvious
+ * thing had to cast. The body pushes `{ ...entry, runStartBlob, reportBlob }`, so this is what
+ * it already returned; only the annotation was behind.
+ *
  * @returns {{
- *   current: Array<object>,
- *   stale: Array<object>,
- *   unknown: Array<object>,
+ *   current: Array<{ workspace: string, file: string, runStartBlob: string|null, reportBlob: string|null }>,
+ *   stale: Array<{ workspace: string, file: string, runStartBlob: string|null, reportBlob: string|null }>,
+ *   unknown: Array<{ workspace: string, file: string, runStartBlob: string|null, reportBlob: string|null }>,
  * }}
  */
 export function classifyStaleFailureEntries({ entries, runStartBlobs, reportBlobs, }?: {
@@ -341,9 +348,24 @@ export function classifyStaleFailureEntries({ entries, runStartBlobs, reportBlob
     runStartBlobs?: Record<string, string | null>;
     reportBlobs?: Record<string, string | null>;
 }): {
-    current: Array<object>;
-    stale: Array<object>;
-    unknown: Array<object>;
+    current: Array<{
+        workspace: string;
+        file: string;
+        runStartBlob: string | null;
+        reportBlob: string | null;
+    }>;
+    stale: Array<{
+        workspace: string;
+        file: string;
+        runStartBlob: string | null;
+        reportBlob: string | null;
+    }>;
+    unknown: Array<{
+        workspace: string;
+        file: string;
+        runStartBlob: string | null;
+        reportBlob: string | null;
+    }>;
 };
 /**
  * Render the advisory for failures whose judged blob moved before report time.
