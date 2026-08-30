@@ -235,23 +235,6 @@ export async function persistSuSessionDescriptor(
   }
 }
 
-/** Persist a runtime replacement without changing the durable chat/adv id. */
-export async function reconcileSuSessionRuntime(input: {
-  advSessionId: number;
-  descriptor: SuSessionDescriptor;
-  nativeSessionId: string;
-  workspaceId?: string;
-}): Promise<boolean> {
-  if (!input.nativeSessionId || !isPersistedSuSessionDescriptor(input.descriptor)) return false;
-  const descriptor = {
-    ...input.descriptor,
-    runtimeGeneration: input.descriptor.runtimeGeneration + 1,
-    identity: { ...input.descriptor.identity, nativeSessionId: input.nativeSessionId },
-    lifecycle: 'ready' as const,
-  } as SuSessionDescriptor;
-  return persistSuSessionDescriptor(input.advSessionId, descriptor, input.workspaceId ?? activeWorkspaceId());
-}
-
 /** Pure stale-pid / native-identity decision used by startup reconciliation. */
 export function classifySuSessionRuntime(
   record: Pick<DurableSuSessionRecord, 'pid' | 'nativeSessionId' | 'endedAt' | 'lifecycle'>,

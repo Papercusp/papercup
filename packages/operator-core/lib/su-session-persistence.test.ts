@@ -75,8 +75,7 @@ describe('P-004 durable SU-session persistence', () => {
   });
 
   /**
-   * A PURE exported decision helper must have a production CALL SITE, not just
-   * an export.
+   * An exported function must have a production CALL SITE, not just an export.
    *
    * `classifySuSessionRuntime` shipped with a full test suite, a documented
    * contract, and zero production callers: nothing computed its verdict, so the
@@ -87,21 +86,19 @@ describe('P-004 durable SU-session persistence', () => {
    * that left `Action::AttachSuSession` without an emitter for a whole plan
    * cycle in the PUI crate (pui-su-session-runtime-correction-2026-08-27 D-009).
    *
-   * Scoped to non-async exports ON PURPOSE: a pure classifier's ONLY effect is
-   * its return value, so an uncalled one is definitionally dead, whereas an
-   * async writer can legitimately be staged ahead of the lane that wires it.
-   * That is a stated boundary, not an allowlist — widening it is a deliberate
-   * decision, not a silent one.
+   * This includes async writers: a staged writer is not harmless once it has
+   * landed in the shared module. If it has no production caller, it is dead
+   * surface and should be deleted or wired before the export ships.
    */
-  describe('every pure exported decision helper is reachable from production code', () => {
+  describe('every exported function is reachable from production code', () => {
     const SOURCE_ROOTS = ['packages', 'apps'];
     const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.next', 'target', '.git']);
     const MODULE_BASENAME = 'su-session-persistence';
     const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
     const source = readFileSync(new URL('./su-session-persistence.ts', import.meta.url), 'utf8');
 
-    /** Non-async exported functions, derived from the module rather than listed. */
-    const pureExports = [...source.matchAll(/^export function (\w+)/gm)].map((m) => m[1]);
+    /** Exported function declarations, derived from the module rather than listed. */
+    const exportedFunctions = [...source.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]);
 
     /** Production (non-test) sources that mention this module, plus the module itself. */
     function productionSources(): string[] {
@@ -136,9 +133,9 @@ describe('P-004 durable SU-session persistence', () => {
       return bodies.reduce((total, body) => total + (body.match(call)?.length ?? 0), 0);
     }
 
-    it('reports no orphaned pure export, and the scan can still detect one', () => {
+    it('reports no orphaned export, and the scan can still detect one', () => {
       const bodies = productionSources();
-      expect(pureExports.length).toBeGreaterThan(0);
+      expect(exportedFunctions.length).toBeGreaterThan(0);
       expect(bodies.length).toBeGreaterThan(1);
 
       // The scan MUST NOT see test files. This file imports the module by name,
@@ -148,7 +145,7 @@ describe('P-004 durable SU-session persistence', () => {
       const testFileMarker = 'su-session-persistence-reachability-scan-marker';
       expect(bodies.some((body) => body.includes(testFileMarker))).toBe(false);
 
-      const orphans = pureExports.filter((name) => callSites(name, bodies) === 0);
+      const orphans = exportedFunctions.filter((name) => callSites(name, bodies) === 0);
       expect(orphans).toEqual([]);
 
       // CALIBRATION: a name that is exported nowhere and called nowhere must read
