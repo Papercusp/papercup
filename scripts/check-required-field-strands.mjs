@@ -323,6 +323,116 @@ export function diffRequiredAdditions(beforeText, afterText, fileName = 'f.ts') 
   return added;
 }
 
+/**
+ * Normalise a type's source text so REFORMATTING is not mistaken for a type change.
+ * `foo(a: {x: string})` and a prettier-wrapped `foo(a: {\n  x: string;\n})` are the same
+ * type; reporting the second as a breach is how an advisory gets tuned out.
+ */
+const typeText = (node, sf) => (node ? node.getText(sf).replace(/\s+/g, ' ').trim() : null);
+
+/**
+ * Collect every EXPORTED callable's signature, keyed by name (`foo`) for function
+ * declarations and exported arrow consts, and by dotted path (`Iface.method`) for method
+ * signatures on exported interfaces.
+ *
+ * WHY THIS BELONGS IN THIS GUARD rather than a fifth sibling script: the three ported
+ * siblings (optional-seam, di-seam-arity, vimock-export) each analyse a DIFFERENT shape in
+ * a different place. This is the SAME analysis as the required-field scan — diff exported
+ * declarations of one file between two revisions, report the deltas that strand callers,
+ * escalate to the precise detector — so it shares the whole trigger/attribution/typecheck
+ * spine and differs only in the predicate. WI-37806 records what porting that spine costs:
+ * the siblings inherited this file's NOT-CHECKED prose but not its exit status, and the
+ * divergence had to be fixed after the fact.
+ */
+export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
+  const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const sigs = new Map(); // name -> { params: [{ name, optional, rest, type }], ret }
+
+  const record = (key, node) => {
+    sigs.set(key, {
+      params: node.parameters.map((p) => ({
+        name: ts.isIdentifier(p.name) ? p.name.text : '?',
+        optional: Boolean(p.questionToken || p.initializer),
+        rest: Boolean(p.dotDotDotToken),
+        type: typeText(p.type, sf),
+      })),
+      ret: typeText(node.type, sf),
+    });
+  };
+
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && isExported(stmt) && stmt.name) {
+      record(stmt.name.text, stmt);
+    } else if (ts.isVariableStatement(stmt) && isExported(stmt)) {
+      // `export const foo = (a: string) => …` is as much a public callable as a function
+      // declaration, and a large share of this repo's exported API takes that form.
+      for (const d of stmt.declarationList.declarations) {
+        if (!ts.isIdentifier(d.name) || !d.initializer) continue;
+        if (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) {
+          record(d.name.text, d.initializer);
+        }
+      }
+    } else if (ts.isInterfaceDeclaration(stmt) && isExported(stmt)) {
+      for (const m of stmt.members) {
+        if (!ts.isMethodSignature(m) || !m.name) continue;
+        const name = ts.isIdentifier(m.name) || ts.isStringLiteral(m.name) ? m.name.text : null;
+        if (name) record(`${stmt.name.text}.${name}`, m);
+      }
+    }
+  }
+  return sigs;
+}
+
+/**
+ * Signature changes in `after` that strand EXISTING call sites.
+ *
+ * Same suppression as diffRequiredAdditions: a callable that did not EXIST at `before` is
+ * skipped, because no file at `before` can call it and any site introduced alongside it is
+ * part of the same diff and is typechecked with it.
+ *
+ * A type CHANGE is reported without deciding whether it narrows or widens. That is
+ * deliberate and it is why this guard is advisory: distinguishing `string` → `string | null`
+ * (safe for callers) from `string | null` → `string` (strands them) needs the checker, not
+ * the syntax tree, and the whole design of this guard is a cheap trigger that hands the
+ * verdict to `--typecheck`. Guessing here would either miss real breaks or manufacture
+ * false ones, and a false block is the failure mode that gets a guard deleted.
+ */
+export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
+  const before = collectExportedSignatures(beforeText, fileName);
+  const after = collectExportedSignatures(afterText, fileName);
+  const breaks = [];
+
+  for (const [name, now] of after) {
+    const was = before.get(name);
+    if (!was) continue; // new callable — no pre-existing call sites to strand
+
+    for (let i = was.params.length; i < now.params.length; i++) {
+      const p = now.params[i];
+      // A rest or optional parameter is additive: every existing call still typechecks.
+      if (p.optional || p.rest) continue;
+      breaks.push({ path: `${name}(${p.name})`, reason: 'param-added-required' });
+    }
+    if (now.params.length < was.params.length) {
+      // TS rejects extra arguments, so dropping a parameter strands callers that pass it.
+      breaks.push({ path: `${name}()`, reason: 'param-removed' });
+    }
+    const common = Math.min(was.params.length, now.params.length);
+    for (let i = 0; i < common; i++) {
+      const a = was.params[i];
+      const b = now.params[i];
+      if (a.optional && !b.optional && !b.rest) {
+        breaks.push({ path: `${name}(${b.name})`, reason: 'param-optional-to-required' });
+      } else if (a.type && b.type && a.type !== b.type) {
+        breaks.push({ path: `${name}(${b.name})`, reason: 'param-type-changed' });
+      }
+    }
+    if (was.ret && now.ret && was.ret !== now.ret) {
+      breaks.push({ path: `${name} → ${now.ret}`, reason: 'return-type-changed' });
+    }
+  }
+  return breaks;
+}
+
 function workspaceFor(file) {
   return WORKSPACE_TYPECHECKS.find((w) => file.startsWith(w.prefix)) ?? null;
 }
@@ -592,7 +702,14 @@ function main() {
 
     examinedFiles.push(file);
     if (declaredFiles && beforeText !== null && beforeText === afterText) identicalFiles.push(file);
-    const added = diffRequiredAdditions(before, afterText, file);
+    // Both predicates answer the same question — "did this edit strand sites in files the
+    // diff never touched?" — so they share one findings list and one escalation. Keeping
+    // the shape ({ file, added: [{ path, reason }] }) identical is what lets the whole
+    // attribution / JSON / --typecheck spine below stay untouched.
+    const added = [
+      ...diffRequiredAdditions(before, afterText, file),
+      ...diffSignatureBreaks(before, afterText, file),
+    ];
     if (added.length) findings.push({ file, added });
   }
 
@@ -668,14 +785,42 @@ function main() {
     process.exit(noFindingsExit);
   }
 
+  const REASON_LABELS = {
+    'added-required': 'new required field',
+    'optional-to-required': 'optional → required',
+    'param-added-required': 'new required parameter',
+    'param-optional-to-required': 'parameter optional → required',
+    'param-removed': 'parameter removed',
+    'param-type-changed': 'parameter type changed',
+    'return-type-changed': 'return type changed',
+  };
+  const SIGNATURE_REASONS = new Set([
+    'param-added-required',
+    'param-optional-to-required',
+    'param-removed',
+    'param-type-changed',
+    'return-type-changed',
+  ]);
+
   if (!json) {
-    console.log('⚠ REQUIRED-FIELD ADDITION detected on an exported type.');
-    console.log('  Every construction site of this type in OTHER files just went stale —');
+    // The headline names what was ACTUALLY found. A run that only changed a signature used
+    // to be announced as a "REQUIRED-FIELD ADDITION", which sends the reader looking for a
+    // field that does not exist and teaches them the guard is unreliable.
+    const kinds = new Set(findings.flatMap((f) => f.added.map((a) => a.reason)));
+    const hasSig = [...kinds].some((k) => SIGNATURE_REASONS.has(k));
+    const hasField = [...kinds].some((k) => !SIGNATURE_REASONS.has(k));
+    const headline = hasField && hasSig
+      ? 'REQUIRED-FIELD ADDITION and EXPORTED-SIGNATURE CHANGE detected.'
+      : hasSig
+        ? 'EXPORTED-SIGNATURE CHANGE detected on a public callable.'
+        : 'REQUIRED-FIELD ADDITION detected on an exported type.';
+    console.log(`⚠ ${headline}`);
+    console.log('  Every call/construction site of this symbol in OTHER files may have gone stale —');
     console.log('  including files test:affected will not select and vitest cannot see.\n');
     for (const f of findings) {
       console.log(`  ${f.file}`);
       for (const a of f.added) {
-        const how = a.reason === 'optional-to-required' ? 'optional → required' : 'new required field';
+        const how = REASON_LABELS[a.reason] ?? a.reason;
         console.log(`    • ${a.path}  (${how})`);
       }
     }
