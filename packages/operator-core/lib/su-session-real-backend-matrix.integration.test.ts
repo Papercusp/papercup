@@ -1423,22 +1423,33 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       //
       // The disturbance half (4) asks whether an unrelated bare launch kills the
       // managed session. That question is only answerable against a session that
-      // INTENDS to keep running. After END it is not one: END's contract is
-      // honoured-OR-explicitly-refused, and ITS TEARDOWN IS ASYNCHRONOUS either
-      // way. Measured twice on the codex leg, the session closes ITSELF —
+      // INTENDS to keep running, and after END it is not one: END's contract is
+      // honoured-OR-explicitly-refused, and its teardown is ASYNCHRONOUS either
+      // way. (A refusal is the HOST declining to kill a not-agent-launched
+      // process; it is not a promise that the session survives.)
+      //
+      // ⚠ THE DEATHS ARE NOT ACTUALLY EXPLAINED — DO NOT WRITE THAT THEY ARE.
+      // An earlier version of this note asserted the session "closes ITSELF —
       // endedBy='self', exitCode=0, endedSignal=null, i.e. a clean voluntary
-      // exit, never a kill — between 142ms and several seconds after the end
-      // command, whether the pty host reported the shutdown honoured or REFUSED.
-      // (A refusal is the HOST declining to kill a not-agent-launched process;
-      // it is not a promise that the session survives.)
+      // exit, never a kill". That is FALSE reasoning: `self` is the value a row
+      // DEGRADES TO when end provenance is not captured, so it is absence of
+      // evidence, not evidence of a voluntary exit. What is actually measured is
+      // that EVERY codex managed session dies 11.5-49.2s after launch, and the
+      // same population records it BOTH ways — some `signal`/SIGHUP, some
+      // `self`/no-signal:
       //
-      //   run 1: shutdown-refused 19:19:33.565Z -> row 21312 closed 19:19:33.707Z
-      //   run 2: row 21315 closed 19:29:05.495Z, mid-launch-window
+      //   21326 34.9s self    (no end command was sent at all)
+      //   21318 49.2s self      21315 23.7s self     21312 27.2s self
+      //   21310 32.5s self      21307 13.6s SIGHUP   21305 11.5s SIGHUP
       //
-      // That teardown overlapped this case's ~8s launch window, so "the managed
-      // pid died while an unrelated bare launch ran" came out true, at random,
-      // for a session that was already closing on its own — a temporal
-      // coincidence read as causation.
+      // So the death is NOT END-correlated (21326 had no end), and whether it is
+      // a product defect or expected for a TTY-less codex session is OPEN.
+      // Tracked as EI-21908787009967815; do not close it by assumption.
+      //
+      // What this ordering DOES fix is the false causation: that ~30s death
+      // overlapped this case's ~8s launch window, so "the managed pid died while
+      // an unrelated bare launch ran" came out true at random, and reading that
+      // temporal coincidence as causation produced four false regression reports.
       //
       // TWO IN-PLACE REPAIRS WERE TRIED BEFORE THE MOVE AND BOTH WERE WRONG,
       // because each accepted the bad position and tried to gate around it:
@@ -1630,9 +1641,18 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           pidAlive(managedPid),
           `the managed ${backend} session (pid ${managedPid}) died during an unrelated bare ` +
             'launch, before END had even run and while its adv row was still OPEN — so it was ' +
-            `still meant to be running. ${howItDied}. endedBy='self' with exitCode=0 and no ` +
-            'signal is a clean voluntary exit and CANNOT have been killed by the bare launch; ' +
-            'read the row before blaming the launch.',
+            `still meant to be running. ${howItDied}. ` +
+            // ⚠ DO NOT re-add "endedBy='self' means it cannot have been killed". That claim
+            // was here and it is FALSE: `self` is the value a row DEGRADES TO when the end
+            // provenance is not captured, not positive evidence of a voluntary exit.
+            // adv-session-ended-provenance.test.ts:199 — "a rejected value degrades to
+            // ended_by='self'" — and :222 preserves the reaped rows 14851/14852, killed by a
+            // sidecar restart and recorded exit 0 / ended_by 'self'. Reading `self` as
+            // exculpatory is absence-of-evidence read as evidence-of-absence, and it cost
+            // four false regression reports on 2026-08-30. See EI-21908787009967815.
+            "NOTE: endedBy='self' is the DEGRADED default, not proof of a voluntary exit — a " +
+            'reaped session whose signal was not captured records exactly this shape. Treat ' +
+            "endedBy='signal' as the only positive kill evidence, and 'self' as UNKNOWN.",
         ).toBe(true);
         // Secondary, and only when the record still resolves: a DIFFERENT live
         // pid is the real respawn/adoption signature. An absent record while the
