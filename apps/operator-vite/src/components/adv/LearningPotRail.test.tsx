@@ -10,8 +10,8 @@
  * wiring itself: that the rail reads `automation.catalog`, without which the
  * whole component renders a permanently empty rail and nobody notices.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import type {
   AutomationArming,
   AutomationCatalog,
@@ -241,5 +241,186 @@ describe('LearningPotRail', () => {
       }),
     );
     expect(chips(container).map((c) => c.getAttribute('data-learning'))).toEqual(['on', 'off']);
+  });
+});
+
+/**
+ * THE PER-POT POPOVER (P-007).
+ *
+ * The chip stopped being inert here, so these assert the two things a control
+ * surface can get wrong in ways a render test above cannot see: WHICH tool a
+ * switch fires (with which args), and whether the panel tells the truth about
+ * state it could not read. Writes go through the gated `/api/agent-mcp/run-tool`
+ * bridge, so `fetch` is the seam — asserting the tool NAME and ARGS is asserting
+ * the actual contract, not a click handler's existence.
+ */
+describe('the per-pot popover', () => {
+  let calls: Array<{ name: string; args: Record<string, unknown> }>;
+
+  beforeEach(() => {
+    calls = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        calls.push(JSON.parse(init?.body ?? '{}'));
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            result: { content: [{ text: JSON.stringify({ ok: true }) }] },
+          }),
+        };
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Open the Nth chip's panel. Radix portals the content, so it lands in body. */
+  function openChip(container: HTMLElement, index = 0): HTMLElement {
+    const trigger = chips(container)[index].querySelector<HTMLElement>('.pc-potrail__trigger');
+    if (!trigger) throw new Error('chip has no popover trigger');
+    fireEvent.click(trigger);
+    const panel = document.body.querySelector<HTMLElement>('.pc-potrail__pop');
+    if (!panel) throw new Error('popover did not open');
+    return panel;
+  }
+
+  /** The switch on the row whose name cell reads `name`. */
+  function armSwitch(panel: HTMLElement, name: string): HTMLButtonElement {
+    const row = [...panel.querySelectorAll<HTMLElement>('.pc-potrail__poprow')].find(
+      (r) => r.querySelector('.pc-potrail__popname')?.textContent?.trim() === name,
+    );
+    if (!row) throw new Error(`no row named ${name} in the panel`);
+    const btn = row.querySelector<HTMLButtonElement>('.pc-potrail__arm');
+    if (!btn) throw new Error(`row ${name} has no arm switch`);
+    return btn;
+  }
+
+  it('makes the chip a real trigger and opens a panel', () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha')], potScope: scope([]) }),
+    );
+    expect(chips(container)[0].querySelector('.pc-potrail__trigger')).not.toBeNull();
+    expect(openChip(container).textContent).toContain('alpha');
+  });
+
+  it('fires learning:set-pot-scope for the MASTER switch, with this pot and the flipped value', async () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha')], potScope: scope([]) }),
+    );
+    const panel = openChip(container);
+    await act(async () => {
+      fireEvent.click(armSwitch(panel, 'Learning'));
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('learning:set-pot-scope');
+    // Pot is currently ON (empty scope), so the click must switch it OFF.
+    expect(calls[0].args).toMatchObject({ pots: ['alpha'], enabled: false });
+  });
+
+  it('fires gym:arm for the gym row and governor:arm for a lane row', async () => {
+    const { container } = renderRail(
+      arming({
+        gymPots: [gym('alpha')],
+        lanes: [lane('alpha', { loopId: 'dream:alpha', displayName: 'dream' })],
+        potScope: scope([]),
+      }),
+    );
+    let panel = openChip(container);
+    await act(async () => {
+      fireEvent.click(armSwitch(panel, 'Gym'));
+    });
+    expect(calls[0].name).toBe('gym:arm');
+    expect(calls[0].args).toMatchObject({ harness: 'alpha', enabled: false });
+
+    panel = document.body.querySelector<HTMLElement>('.pc-potrail__pop')!;
+    await act(async () => {
+      fireEvent.click(armSwitch(panel, 'dream'));
+    });
+    expect(calls[1].name).toBe('governor:arm');
+    expect(calls[1].args).toMatchObject({ loopId: 'dream:alpha', enabled: false });
+  });
+
+  it('offers EXPLICIT on/off when the scope is unreadable, instead of a switch asserting a position it never read', async () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha')], potScope: null }),
+    );
+    const panel = openChip(container);
+    const row = [...panel.querySelectorAll<HTMLElement>('.pc-potrail__poprow')].find(
+      (r) => r.getAttribute('data-master') === '1',
+    )!;
+    // No two-state toggle on an unreadable scope...
+    expect(row.querySelector('.pc-potrail__arm')).toBeNull();
+    // ...but the write is still well defined, so recovery must be reachable
+    // from the only surface that can perform it.
+    const buttons = [...row.querySelectorAll<HTMLButtonElement>('.pc-potrail__poptext')];
+    expect(buttons.map((b) => b.textContent)).toEqual(['Switch on', 'Switch off']);
+    await act(async () => {
+      fireEvent.click(buttons[0]);
+    });
+    expect(calls[0].args).toMatchObject({ pots: ['alpha'], enabled: true });
+  });
+
+  it('KEEPS lane switches operable while the pot is off — a lane owns its own arming', async () => {
+    // Rule 3: switching the pot back on must restore exactly what was armed, so
+    // arming a lane on a switched-off pot is meaningful, not a no-op to disable.
+    const { container } = renderRail(
+      arming({
+        gymPots: [gym('alpha', { enabled: false })],
+        lanes: [lane('alpha', { loopId: 'l1', displayName: 'lane one', enabled: false })],
+        potScope: scope(['alpha']),
+      }),
+    );
+    const panel = openChip(container);
+    const laneBtn = armSwitch(panel, 'lane one');
+    expect(laneBtn.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(laneBtn);
+    });
+    expect(calls[0]).toMatchObject({
+      name: 'governor:arm',
+      args: { loopId: 'l1', enabled: true },
+    });
+  });
+
+  it('gives Scout NO switch, because no per-pot scout arming exists to write', () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha')], potScope: scope([]) }),
+    );
+    const panel = openChip(container);
+    const scoutRow = [...panel.querySelectorAll<HTMLElement>('.pc-potrail__poprow')].find(
+      (r) => r.querySelector('.pc-potrail__popname')?.textContent?.trim() === 'Scout',
+    );
+    expect(scoutRow).toBeDefined();
+    expect(scoutRow!.querySelector('.pc-potrail__arm')).toBeNull();
+    expect(scoutRow!.textContent).toContain('follows the pot switch');
+  });
+
+  it('surfaces a refusal from the bridge instead of silently rendering the old state', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          // A validation failure arrives as PLAIN TEXT, not JSON — the exact
+          // case the shared run-tool helper exists to preserve.
+          result: { content: [{ text: 'invalid_input: unknown pot slug' }] },
+        }),
+      })),
+    );
+    const { container } = renderRail(
+      arming({ gymPots: [gym('alpha')], potScope: scope([]) }),
+    );
+    const panel = openChip(container);
+    await act(async () => {
+      fireEvent.click(armSwitch(panel, 'Learning'));
+    });
+    expect(
+      document.body.querySelector('.pc-potrail__poperr')?.textContent,
+    ).toContain('invalid_input: unknown pot slug');
   });
 });
