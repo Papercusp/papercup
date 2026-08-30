@@ -302,7 +302,12 @@ describe('windDownDispositionGateEnabled — FAIL-CLOSED', () => {
 
 // ─── the 'achieved' acceptance gate (consult-min-max-…-2026-08-17 P-009 / D-004 §2) ──
 describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptance evidence", () => {
-  const GOAL = { goalId: 'ship-a-paid-app-abc123', goalTitle: 'Ship a paid app', goalOwner: 'su-goal-owner' };
+  const GOAL = {
+    goalId: 'ship-a-paid-app-abc123',
+    goalTitle: 'Ship a paid app',
+    goalOwner: 'su-goal-owner',
+    workspaceId: 'test-ws',
+  };
   const card = (over: Partial<GoalAcceptanceCard> = {}): GoalAcceptanceCard => ({
     createdBy: 'su-goal-owner',
     rubricResolved: true,
@@ -325,6 +330,7 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
     getRubricRevision: async () => 3,
     listCards: async () => [],
     metaRubricId: 'meta-acceptance-rubric',
+    areLineageRelated: async (first, second) => first === second,
     ...over,
   });
   /** listCards stub answering the meta (vetting) and rubric (grading) reads separately. */
@@ -436,6 +442,49 @@ describe("evaluateGoalAcceptanceGate — 'achieved' is a claim needing acceptanc
     );
     expect(v.satisfied).toBe(false);
     expect(v.code).toBe('goal_self_graded_only');
+  });
+
+  it('rejects a grader descended from the goal owner even when its owner id differs', async () => {
+    const areLineageRelated = vi.fn(async (first: string | null | undefined, second: string | null | undefined) =>
+      first === 'su-goal-owner' && second === 'su-goal-child',
+    );
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        areLineageRelated,
+        listCards: cardsByRef([vettedCard()], [card({ createdBy: 'su-goal-child' })]),
+      }),
+    );
+    expect(v.satisfied).toBe(false);
+    expect(v.code).toBe('goal_self_graded_only');
+    expect(areLineageRelated).toHaveBeenCalledWith('su-goal-owner', 'su-goal-child', { workspaceId: 'test-ws' });
+  });
+
+  it('rejects a grader descended from the rubric author but accepts a sibling grader', async () => {
+    const areLineageRelated = vi.fn(
+      async (first: string | null | undefined, second: string | null | undefined) =>
+        first === 'su-rubric-author' && second === 'su-rubric-child',
+    );
+    const v = await evaluateGoalAcceptanceGate(
+      GOAL,
+      deps({
+        areLineageRelated,
+        getRubricForGoal: async () => ({
+          rubricId: 'ship-a-paid-app-acceptance',
+          criteria: [{ key: 'outcome-1' }],
+          proposedBy: 'su-rubric-author',
+        }),
+        listCards: cardsByRef(
+          [vettedCard()],
+          [card({ createdBy: 'su-rubric-child' }), card({ createdBy: 'su-sibling-grader' })],
+        ),
+      }),
+    );
+    expect(v).toEqual({
+      satisfied: true,
+      rubricId: 'ship-a-paid-app-acceptance',
+      gradedBy: 'su-sibling-grader',
+    });
   });
 
   it('vetted on the current revision + independently graded → satisfied with provenance', async () => {
