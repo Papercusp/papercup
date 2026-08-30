@@ -200,6 +200,12 @@ export interface GcpImageFamilyReleaseAdapterOptions {
   repoRoot?: string;
   packerExecutable?: string;
   packerPath?: string;
+  /**
+   * `gcloud` binary, used ONLY to prove Application Default Credentials can still mint a token
+   * before a billable build starts. Packer authenticates with ADC rather than with this
+   * release's `cloudCredentialRef`, so ADC is the credential that actually has to work.
+   */
+  gcloudExecutable?: string;
   scanExecutable?: string;
   scannerExecutable?: string;
   cleanRoomExecutable?: string;
@@ -1059,6 +1065,10 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       'packer',
       'packerExecutable',
     );
+    // ⚠ PROVE THE CREDENTIAL PACKER WILL ACTUALLY USE, before anything billable runs. Same
+    // motivation as the `packer validate` call below: fail in a second, not after a builder VM
+    // exists. See assertAdcCanMintForPacker for why this is not covered by the release preflight.
+    await this.assertAdcCanMintForPacker();
     const init = await this.commands.run(packer, ['init', '--upgrade=false', template], { cwd: root });
     assertSuccess(init, 'packer init');
     const varArgs: string[] = [];
