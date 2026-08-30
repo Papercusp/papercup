@@ -282,7 +282,11 @@ async function runFleetControlPostSaga(args: {
 
   if (args.fleet.leaderOwnerId) {
     const { ensureFleetLeaderControl, retireFleetLeaderWatches } = await import('./leader-control');
-    const leaderWork = await startBoundedOptional(
+    // The two branches return DIFFERENT types (a retired-watch count vs a control
+    // outcome), so inference collapses `T` to whichever branch it sees first and then
+    // rejects the other. Only `degraded` is read from this leg, so name the union
+    // explicitly instead of forcing the branches to agree on a shape nobody consumes.
+    const leaderWork = await startBoundedOptional<number | import('./leader-control').LeaderControlOutcome | null>(
       () =>
         args.action === 'wind-down'
           ? retireFleetLeaderWatches(args.fleet.leaderOwnerId!, args.slug)
