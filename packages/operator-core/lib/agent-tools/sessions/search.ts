@@ -23,7 +23,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
   formatSessionTurnRef,
-  refreshLiveSessionsBeforeRead, type WindowTurn,
+  refreshLiveSessionsBeforeRead, refreshTargetSessionBeforeRead, type WindowTurn,
 } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-origin';
@@ -161,7 +161,13 @@ export default defineTool({
     // and a hint blaming their query shape, for text that is sitting in the
     // transcript unindexed. Keep the receipt; a zero measured over a degraded
     // refresh is a DEGRADED MEASUREMENT, not a finding.
-    const liveRefresh = await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
+    // An explicit session filter is already bounded to one transcript. Do not
+    // fall through to the unfiltered refresh path: with no owner filter that
+    // path enumerates up to 20 open Codex owners before the actual query,
+    // turning a targeted read into unrelated filesystem work (EI-217206...).
+    const liveRefresh = filters?.sessionId
+      ? await refreshTargetSessionBeforeRead(ctx.tx, filters.sourceKind, filters.sessionId)
+      : await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
     const refreshDegraded = liveRefresh.attempted > liveRefresh.refreshed;
 
     interface RawHit {

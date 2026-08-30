@@ -219,6 +219,13 @@ export interface DailyDigestRunResult {
    * not consider the whole covered corpus.
    */
   promptItems: { included: number; omitted: number } | null;
+  /**
+   * What the model's reply had to be cut down to on arrival (D-033); null on a run
+   * that blocked before a reply existed. Nonzero counters mean this digest is
+   * TRIMMED — and `maxOverageChars` is what a future tuning pass must re-derive the
+   * field ceilings from, so that it measures the model instead of guessing at it.
+   */
+  clamps: DailyDigestClamps | null;
   modelCalled: boolean;
   tokensIn: number;
   tokensOut: number;
@@ -302,6 +309,119 @@ const UmbrellaSchema = z
   .strict();
 const UmbrellasSchema = z.object({ umbrellas: z.array(UmbrellaSchema).max(MAX_DAILY_DIGEST_UMBRELLAS) }).strict();
 
+/**
+ * What {@link clampDailyDigestPayload} had to cut, so the run can DISCLOSE it.
+ *
+ * `maxOverageChars` is the load-bearing field: it is the ONLY way to re-derive the
+ * field ceilings from what the model actually writes rather than from a guess. A
+ * digest that clamps every body by 20 chars and one that clamps every body in half
+ * are the same event to a counter and completely different engineering problems.
+ */
+export interface DailyDigestClamps {
+  umbrellasReturned: number;
+  umbrellasDropped: number;
+  titlesClamped: number;
+  bodiesClamped: number;
+  reasonsClamped: number;
+  memberListsClamped: number;
+  /** Largest overage seen per field, in characters beyond its ceiling. */
+  maxOverageChars: { title: number; body: number; reason: number };
+}
+
+const EMPTY_CLAMPS: DailyDigestClamps = {
+  umbrellasReturned: 0,
+  umbrellasDropped: 0,
+  titlesClamped: 0,
+  bodiesClamped: 0,
+  reasonsClamped: 0,
+  memberListsClamped: 0,
+  maxOverageChars: { title: 0, body: 0, reason: 0 },
+};
+
+/** Clamp to `max` chars on a word boundary where one is close, else hard-cut. */
+function clampToChars(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  const body = lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${body.trimEnd()}…`;
+}
+
+/**
+ * Bring a model reply INSIDE the output ceilings instead of rejecting it (D-033).
+ *
+ * ⚠ This is the difference between a ceiling the model must OBEY and one the
+ * receiver ENFORCES, and only the second is achievable. Run wi882767-digest-d032-2
+ * proved the point: the model returned a complete, well-formed, untruncated digest
+ * of 14+ umbrellas — the budget derivation (D-032) worked exactly as designed — and
+ * the whole ~5-minute run was then thrown away by `.max()` because 16 bodies ran
+ * past 700 characters. Nothing about that failure was recoverable by retrying, and
+ * nothing about it indicated a real budget problem.
+ *
+ * The ceilings themselves are NOT relaxed here (that would re-open the overflow
+ * D-032 closed); they are applied to the payload on arrival. Model compliance is a
+ * request, so it belongs in the prompt; the invariant belongs on the receiving side
+ * where it can be guaranteed. {@link UmbrellasSchema} then runs unchanged and STRICT
+ * — it has become an assertion that this clamp worked rather than a gate on the
+ * model's prose discipline, so a bug here still fails loudly.
+ *
+ * Umbrellas are dropped from the TAIL because the prompt asks for them ranked most
+ * significant first, so the tail is the least costly thing to lose.
+ *
+ * Every cut is reported, never silent — the same discipline as
+ * {@link encodeDailyDigestItems}, and for the same reason: silent truncation is
+ * what made the bulk-judge failure so expensive to find.
+ */
+export function clampDailyDigestPayload(payload: unknown): {
+  payload: unknown;
+  clamps: DailyDigestClamps;
+} {
+  if (typeof payload !== 'object' || payload === null || !('umbrellas' in payload)) {
+    return { payload, clamps: EMPTY_CLAMPS };
+  }
+  const raw = (payload as { umbrellas: unknown }).umbrellas;
+  if (!Array.isArray(raw)) return { payload, clamps: EMPTY_CLAMPS };
+
+  const clamps: DailyDigestClamps = {
+    ...EMPTY_CLAMPS,
+    umbrellasReturned: raw.length,
+    umbrellasDropped: Math.max(0, raw.length - MAX_DAILY_DIGEST_UMBRELLAS),
+    maxOverageChars: { title: 0, body: 0, reason: 0 },
+  };
+
+  const kept = raw.slice(0, MAX_DAILY_DIGEST_UMBRELLAS).map((entry) => {
+    if (typeof entry !== 'object' || entry === null) return entry;
+    const u = { ...(entry as Record<string, unknown>) };
+    const fields = [
+      { key: 'title', max: DAILY_DIGEST_UMBRELLA_TITLE_CHARS, counter: 'titlesClamped' },
+      { key: 'body', max: DAILY_DIGEST_UMBRELLA_BODY_CHARS, counter: 'bodiesClamped' },
+      { key: 'reason', max: DAILY_DIGEST_UMBRELLA_REASON_CHARS, counter: 'reasonsClamped' },
+    ] as const;
+    for (const { key, max, counter } of fields) {
+      const value = u[key];
+      if (typeof value !== 'string') continue;
+      const trimmed = value.trim();
+      if (trimmed.length <= max) {
+        u[key] = trimmed;
+        continue;
+      }
+      clamps[counter] += 1;
+      const overage = trimmed.length - max;
+      const field = key as 'title' | 'body' | 'reason';
+      if (overage > clamps.maxOverageChars[field]) clamps.maxOverageChars[field] = overage;
+      u[key] = clampToChars(trimmed, max);
+    }
+    const members = u.memberIds;
+    if (Array.isArray(members) && members.length > DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA) {
+      clamps.memberListsClamped += 1;
+      u.memberIds = members.slice(0, DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA);
+    }
+    return u;
+  });
+
+  return { payload: { ...(payload as object), umbrellas: kept }, clamps };
+}
+
 function normalizeTitle(value: string): string {
   return value
     .toLowerCase()
@@ -318,15 +438,22 @@ export function dailyDigestWatchdogKey(harnessSlug: string, title: string): stri
   return `${WORK_ITEM_ADMISSION_DAILY_DIGEST}:${harnessSlug}:${digest}`;
 }
 
-/** Validate and canonicalize the model's full-corpus cluster proposals. */
+/**
+ * Validate and canonicalize the model's full-corpus cluster proposals.
+ *
+ * Returns the clamps applied on arrival (D-033) alongside the proposals so the
+ * caller can DISCLOSE them on the run rather than silently shipping a trimmed
+ * digest. The ceilings are enforced here, not demanded of the model.
+ */
 export function parseDailyDigestProposals(
   payload: unknown,
   allowedIds: ReadonlySet<string>,
-): DailyDigestUmbrellaProposal[] {
-  const parsed = UmbrellasSchema.parse(payload);
+): { proposals: DailyDigestUmbrellaProposal[]; clamps: DailyDigestClamps } {
+  const { payload: clampedPayload, clamps } = clampDailyDigestPayload(payload);
+  const parsed = UmbrellasSchema.parse(clampedPayload);
   const seenTitles = new Set<string>();
   const assignedMembers = new Set<string>();
-  return parsed.umbrellas.map((raw) => {
+  const proposals = parsed.umbrellas.map((raw) => {
     const memberIds = [...new Set(raw.memberIds)];
     if (memberIds.length < MIN_DAILY_DIGEST_MEMBERS) {
       throw new Error(
@@ -347,6 +474,7 @@ export function parseDailyDigestProposals(
     memberIds.forEach((id) => assignedMembers.add(id));
     return { ...raw, memberIds: memberIds.sort() };
   });
+  return { proposals, clamps };
 }
 
 /** Collapse whitespace and bound length so one item is always exactly one line (D-029). */
@@ -688,6 +816,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         corpusSize: 0,
         coverage: null,
         promptItems: null,
+        clamps: null,
         modelCalled: false,
         tokensIn: 0,
         tokensOut: 0,
@@ -718,6 +847,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         corpusSize: 0,
         coverage: contextResult.coverage ?? null,
         promptItems: null,
+        clamps: null,
         modelCalled: false,
         tokensIn: 0,
         tokensOut: 0,
@@ -744,6 +874,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         corpusSize: 0,
         coverage: context.coverage,
         promptItems: null,
+        clamps: null,
         modelCalled: false,
         tokensIn: 0,
         tokensOut: 0,
@@ -768,7 +899,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       maxTokens: Math.max(1, Math.floor(opts.maxTokens ?? DEFAULT_DAILY_DIGEST_MAX_TOKENS)),
       ownerId: `${DAILY_DIGEST_ACTOR}:${runId}`,
     });
-    const proposals = parseDailyDigestProposals(
+    const { proposals, clamps } = parseDailyDigestProposals(
       responsePayload(response),
       new Set(context.items.map((item) => item.id)),
     );
@@ -806,6 +937,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       corpusSize: context.items.length,
       coverage: context.coverage,
       promptItems: { included: prompt.includedItems, omitted: prompt.omittedItems },
+      clamps,
       modelCalled: true,
       tokensIn,
       tokensOut,

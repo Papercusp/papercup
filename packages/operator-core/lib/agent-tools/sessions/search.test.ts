@@ -21,10 +21,13 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
 }));
 
+const refreshLiveSessionsBeforeRead = vi.fn(async (..._args: unknown[]) => ({ attempted: 0, refreshed: 0 }));
+const refreshTargetSessionBeforeRead = vi.fn(async (..._args: unknown[]) => ({ attempted: 1, refreshed: 1 }));
 vi.mock('./_shared', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   sessionSearchEnabled: vi.fn(async () => true),
-  refreshLiveSessionsBeforeRead: vi.fn(async () => ({ attempted: 0, refreshed: 0 })),
+  refreshLiveSessionsBeforeRead: (...a: unknown[]) => refreshLiveSessionsBeforeRead(...a),
+  refreshTargetSessionBeforeRead: (...a: unknown[]) => refreshTargetSessionBeforeRead(...a),
 }));
 
 // The verbatim tests below never reach the hybrid branch, but search.ts
@@ -87,6 +90,27 @@ describe('sessions:search limit contract', () => {
   it('validates the context window cap before handler execution', () => {
     expect(argsSchema.safeParse({ query: 'needle', context: 5 }).success).toBe(true);
     expect(argsSchema.safeParse({ query: 'needle', context: 6 }).success).toBe(false);
+  });
+});
+
+describe('sessions:search explicit session refresh scope (EI-21720673196644332)', () => {
+  it('refreshes only the requested active session instead of enumerating open Codex owners', async () => {
+    refreshLiveSessionsBeforeRead.mockClear();
+    refreshTargetSessionBeforeRead.mockClear();
+    const tx = makeTx([]);
+    const sessionId = '01a0504e-2562-7401-8bab-26d3cace9e8d';
+
+    const res = await callTool({
+      query: 'targeted needle',
+      mode: 'verbatim',
+      session: sessionId,
+      context: 0,
+    }, tx);
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.total_hits).toBe(0);
+    expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, undefined, sessionId);
+    expect(refreshLiveSessionsBeforeRead).not.toHaveBeenCalled();
   });
 });
 

@@ -83,7 +83,7 @@
  *   isStructuredPayloadArg(arg)           -> is this argv entry a JSON payload (data, not identity)?
  *   getOperationalArgv(argv)              -> argv with prompt + structured payloads removed
  *   matchesAdjacentArgvSequence(argv, seq) -> interpreter-backed literal argv adjacency match
- *   matchExternalProcesses(pattern, opts) -> operational matching rows, self + ancestors excluded
+ *   matchExternalProcesses(pattern, opts) -> operational/identity matching rows, self + ancestors excluded
  *   matchExternalProcessesDetailed(...)   -> operational, full, and argv-text-only rows
  */
 import { readFileSync, readdirSync } from "node:fs";
@@ -102,8 +102,8 @@ const GREEN_CHECKPOINT_CGROUP =
  * @property {number | null} ppid - null when `/proc/<pid>/stat` was unreadable or unparseable.
  * @property {string[]} argv - Raw process arguments, decoded from NUL-separated cmdline.
  * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
- * @property {{ greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }} [identity]
- *   Non-secret identity evidence read only when checking the known green-checkpoint workload.
+ * @property {{ ownerId: string | null; greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }} [identity]
+ *   Non-secret identity evidence read from PAPERCUSP_SID and known gate markers.
  */
 
 /**
@@ -310,16 +310,19 @@ export function matchesAdjacentArgvSequence(argv, sequence, opts = {}) {
 }
 
 /**
- * Read only the non-secret identity signals that distinguish a green-checkpoint
- * process from an agent that happens to mention the gate in its argv. Environment
- * values themselves are deliberately not retained or returned: the two marker
- * names and the cgroup path are the evidence, not the rest of the process env.
+ * Read only the non-secret identity signals that distinguish an agent or
+ * green-checkpoint process from a peer that happens to mention the target in its
+ * argv. Environment values themselves are deliberately not retained or
+ * returned: PAPERCUSP_SID, the two gate marker names, and the cgroup path are
+ * the evidence, not the rest of the process env.
  *
  * @param {string} procRoot
  * @param {number} pid
- * @returns {{ greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }}
+ * @param {{ readCgroup?: boolean }} [opts]
+ * @returns {{ ownerId: string | null; greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }}
  */
-function readProcessIdentity(procRoot, pid) {
+function readProcessIdentity(procRoot, pid, opts = {}) {
+  let ownerId = null;
   let greenCheckpointMarker = false;
   let releaseGateMarker = false;
   try {
@@ -331,6 +334,7 @@ function readProcessIdentity(procRoot, pid) {
       if (separator === -1) continue;
       const key = entry.slice(0, separator);
       const value = entry.slice(separator + 1);
+      if (key === "PAPERCUSP_SID" && value) ownerId = value;
       if (key === "GREEN_CHECKPOINT" && value === "1")
         greenCheckpointMarker = true;
       if (key === "PC_HEAVY_RELEASE_GATE" && value === "1")
@@ -341,14 +345,16 @@ function readProcessIdentity(procRoot, pid) {
   }
 
   let cgroupPath = null;
-  try {
-    cgroupPath = parseCgroupPath(
-      readFileSync(path.join(procRoot, String(pid), "cgroup"), "utf8"),
-    );
-  } catch {
-    // cgroup identity is supplementary; an unreadable file is not a match.
+  if (opts.readCgroup) {
+    try {
+      cgroupPath = parseCgroupPath(
+        readFileSync(path.join(procRoot, String(pid), "cgroup"), "utf8"),
+      );
+    } catch {
+      // cgroup identity is supplementary; an unreadable file is not a match.
+    }
   }
-  return { greenCheckpointMarker, releaseGateMarker, cgroupPath };
+  return { ownerId, greenCheckpointMarker, releaseGateMarker, cgroupPath };
 }
 
 function isGreenCheckpointPattern(pattern) {
@@ -363,6 +369,20 @@ function matchesGreenCheckpointIdentity(processRow) {
     (identity.cgroupPath !== null &&
       GREEN_CHECKPOINT_CGROUP.test(identity.cgroupPath))
   );
+}
+
+/**
+ * Match the stable owner identity carried by psu-launched processes. This is
+ * intentionally separate from argv matching: a launcher may omit the owner id
+ * from argv while its descendants still expose PAPERCUSP_SID in /proc.
+ *
+ * @param {string} pattern
+ * @param {ProcRow} processRow
+ * @returns {boolean}
+ */
+function matchesOwnerIdentity(pattern, processRow) {
+  const ownerId = processRow.identity?.ownerId;
+  return typeof ownerId === "string" && new RegExp(pattern).test(ownerId);
 }
 
 /**
@@ -390,7 +410,7 @@ export function parsePpid(statLine) {
  * Enumerate every live process as { pid, ppid, argv, cmdline }, from a /proc root (real or a test fixture).
  *
  * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
- * @param {{ readIdentity?: boolean }} [opts] - Read known-workload identity markers when requested.
+ * @param {{ readIdentity?: boolean; readGateIdentity?: boolean }} [opts] - Read PAPERCUSP_SID and, when requested, known-workload identity markers.
  * @returns {ProcRow[]}
  */
 export function listProcesses(procRoot = DEFAULT_PROC_ROOT, opts = {}) {
@@ -421,7 +441,10 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT, opts = {}) {
       ppid = null;
     }
     const row = { pid, ppid, argv, cmdline };
-    if (opts.readIdentity) row.identity = readProcessIdentity(procRoot, pid);
+    if (opts.readIdentity)
+      row.identity = readProcessIdentity(procRoot, pid, {
+        readCgroup: opts.readGateIdentity === true,
+      });
     out.push(row);
   }
   return out;
@@ -535,16 +558,19 @@ export function walkProcessTree(rootPid, opts = {}) {
 }
 
 /**
- * Processes matching `pattern` (a RegExp source) against operational argv,
- * EXCLUDING the caller's own pid and its whole ancestor chain. Operational argv
- * keeps the executable and real process arguments but excludes agent prompt
- * payloads and peers' structured (JSON) payloads. A genuinely unrelated
- * external process with the same pattern in a real argument still matches.
+ * Processes matching `pattern` (a RegExp source) against operational argv or
+ * PAPERCUSP_SID identity, EXCLUDING the caller's own pid and its whole ancestor
+ * chain. Operational argv keeps the executable and real process arguments but
+ * excludes agent prompt payloads and peers' structured (JSON) payloads. A
+ * genuinely unrelated external process with the same pattern in a real argument
+ * still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
- * For the known `green-checkpoint` workload, gate-owned environment/cgroup
- * identity is also accepted so argv-blind descendants are not missed.
+ * Agent identity is read from PAPERCUSP_SID so a live agent whose owner id is
+ * absent from argv is not reported absent. For the known `green-checkpoint`
+ * workload, gate-owned environment/cgroup identity is also accepted so
+ * argv-blind descendants are not missed.
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern, opts = {}) {
@@ -560,13 +586,25 @@ export function matchExternalProcesses(pattern, opts = {}) {
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * `identityMatches` includes PAPERCUSP_SID owner matches and known gate-marker/
+ * cgroup matches. The owner id itself is retained only in the in-memory identity
+ * evidence and is never printed as environment data.
+ *
  * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
 export function matchExternalProcessesDetailed(pattern, opts = {}) {
   const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
   const selfPid = opts.selfPid ?? process.pid;
   const knownIdentity = isGreenCheckpointPattern(pattern);
-  const all = listProcesses(procRoot, { readIdentity: knownIdentity });
+  // PAPERCUSP_SID is the stable identity channel for psu-launched agents. A
+  // launcher can omit the owner id from argv entirely, while every descendant
+  // still carries it in /proc/<pid>/environ. Read only the bounded identity
+  // fields, never the full environment, for every check so an absence in argv
+  // cannot become a false liveness negative.
+  const all = listProcesses(procRoot, {
+    readIdentity: true,
+    readGateIdentity: knownIdentity,
+  });
   const byPid = new Map(all.map((p) => [p.pid, p.ppid]));
   const excluded = getAncestryChain(selfPid, byPid);
   const re = new RegExp(pattern);
@@ -581,9 +619,11 @@ export function matchExternalProcessesDetailed(pattern, opts = {}) {
       )
     : external.filter((p) => re.test(getOperationalArgv(p.argv).join(" ")));
   const matchedOperationalPids = new Set(operationalMatches.map((p) => p.pid));
-  const identityMatches = knownIdentity
-    ? external.filter(matchesGreenCheckpointIdentity)
-    : [];
+  const identityMatches = external.filter(
+    (p) =>
+      ((!opts.argvSequence && matchesOwnerIdentity(pattern, p)) ||
+        (knownIdentity && matchesGreenCheckpointIdentity(p))),
+  );
   const matchedIdentityPids = new Set(identityMatches.map((p) => p.pid));
   const matches = external.filter(
     (p) => matchedOperationalPids.has(p.pid) || matchedIdentityPids.has(p.pid),
@@ -916,7 +956,7 @@ async function main(argv) {
   const rawSuffix =
     fullMatches.length === matches.length && identityMatches.length === 0
       ? ""
-      : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via gate markers/cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
+      : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via PAPERCUSP_SID or gate markers/cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
   console.log(
     `proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`,
   );
@@ -927,7 +967,9 @@ async function main(argv) {
     console.log(`  ${m.pid}  ${formatProcessCmdline(m.cmdline, { verbose })}`);
     if (identityMatches.some((identityMatch) => identityMatch.pid === m.pid)) {
       console.log(
-        "         identity: green-checkpoint gate markers or checkpoint cgroup",
+        matchesOwnerIdentity(re, m)
+          ? "         identity: PAPERCUSP_SID owner identity"
+          : "         identity: green-checkpoint gate markers or checkpoint cgroup",
       );
     }
     if (!busy) continue;
