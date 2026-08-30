@@ -641,12 +641,16 @@ export default defineTool({
     "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
       " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
-      " Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      " This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
     // EI-21600823435053404: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
     // a gate RED). Both cut sentences were redundant, not lost: the `limit` vs
     // `coord:orient.inboxLimit` mapping is already stated in the description above,
     // and the "OMP hook will do this once it ships" aside described unshipped work.
+    // EI-21903..: trimmed AGAIN (1578 — a second gate RED) by dropping the description's
+    // "Free-text `q` and time bounds (`since`) are not inbox arguments" sentence — it is now
+    // fully redundant with the argRedirects.since/argRedirects.q entries below, which teach
+    // the exact same redirect at ZERO prompt weight, paid only on the failure path.
     when: "At turn start; whenever you suspect another agent contacted you.",
     notWhen:
       'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll.',
