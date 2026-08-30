@@ -574,9 +574,11 @@ export class PgCoordLog implements CoordEventLog {
     // and starved the bg-host substrate drain into its 120s PASS TIMEOUT
     // (P-059 RED). LINE surfaces are append-only with a monotonic bigserial
     // `id`, so we now do ONE full read per (workspace, surface) per process —
-    // plus a TTL'd full refresh (READLINES_CACHE_FULL_REFRESH_MS) so rare GC
+    // plus a TTL'd re-check (READLINES_CACHE_FULL_REFRESH_MS) so rare GC
     // deletions fold out — and afterwards only the `id > watermark - overlap`
-    // delta. The overlap window re-reads the last READLINES_CACHE_OVERLAP_IDS
+    // delta. EI-21918895581219651: the TTL'd re-check is now a CHEAP indexed
+    // COUNT, not an unconditional full re-read — see the comment at the TTL
+    // branch below. The overlap window re-reads the last READLINES_CACHE_OVERLAP_IDS
     // ids to catch a row whose bigserial id was assigned before our snapshot
     // but whose transaction committed after it; `recentIds` dedupes the
     // overlap (and any interleaved concurrent delta read — new rows are always
@@ -598,10 +600,38 @@ export class PgCoordLog implements CoordEventLog {
     const ws = this.resolveWs();
     const key = `${ws}::${surface}`;
     const now = Date.now();
-    const entry = this.readLinesCache.get(key);
+    let entry = this.readLinesCache.get(key);
 
-    if (!entry || now - entry.fullReadAtMs > readLinesCacheRefreshMs()) {
-      // Full (re)read — first call for this key, or the refresh TTL elapsed.
+    if (entry && now - entry.fullReadAtMs > readLinesCacheRefreshMs()) {
+      // EI-21918895581219651: the TTL exists SOLELY to fold out rare GC deletions
+      // (message-log-gc runs once/day, cron '0 5 4 * * *') — appends are already
+      // caught on EVERY call by the delta leg below, independent of this TTL. So
+      // paying the full O(surface) body-fetch-and-sort unconditionally every 5
+      // minutes was buying almost nothing: measured live, this exact branch (the
+      // `SELECT id, body, ts, msg_id ... ORDER BY id ASC` with no LIMIT) produced
+      // a 389k-row / 277MB parallel-seq-scan-and-sort taking 8.6s-32.9s, recurring
+      // roughly every 5-10 minutes on a persistent process, forever, growing with
+      // the log. A COUNT served by the (workspace_id, surface, id) index tells us
+      // CHEAPLY whether anything was actually deleted since our last full read:
+      // appends can only ever grow the live count above what we already hold (the
+      // delta leg accounts for those independently of this TTL), so a live count
+      // BELOW what we're caching is the only way a genuine deletion shows up here.
+      const countRows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${ws} AND surface = ${surface}
+      `;
+      const liveCount = countRows[0]?.n ?? 0;
+      if (liveCount < entry.rows.length) {
+        entry = undefined; // a deletion happened — fall through to the full rebuild below
+      } else {
+        // Nothing deleted — re-arm the TTL clock without paying for the body
+        // fetch; the delta leg below still folds in anything appended since.
+        entry.fullReadAtMs = now;
+      }
+    }
+
+    if (!entry) {
+      // Full (re)read — first call for this key, or a deletion was detected above.
       // int8 `id` arrives as a STRING from postgres-js — Number() everywhere.
       const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
         SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
@@ -748,9 +778,11 @@ export class PgCoordLog implements CoordEventLog {
     // whole surface (`escalations` ≈ 27k rows / 14MB), and on 2026-07-10 one
     // such read stuck on a jammed client event loop (wait_event=ClientWrite,
     // 276s+) held the coord server down ~30min. Same cure as readLines — ONE
-    // full read per (workspace, surface) per process + a TTL'd full refresh,
-    // then deltas only — adapted for event-surface semantics (see
-    // ReadEventsCacheEntry: upsert ts-leg, replace-by-msg_id, GC fold-out).
+    // full read per (workspace, surface) per process + a TTL'd re-check, then
+    // deltas only — adapted for event-surface semantics (see ReadEventsCacheEntry:
+    // upsert ts-leg, replace-by-msg_id, GC fold-out). EI-21918895581219651: the
+    // TTL'd re-check is a CHEAP indexed COUNT, not an unconditional full
+    // re-read — see the comment at the TTL branch below.
     //
     // CONTRACT (unchanged from the pre-cache read): fresh array per call,
     // envelope OBJECTS shared across calls (callers treat them as read-only),
@@ -767,11 +799,37 @@ export class PgCoordLog implements CoordEventLog {
     const ws = this.resolveWs();
     const key = `${ws}::${surface}`;
     const now = Date.now();
-    const entry = this.readEventsCache.get(key);
+    let entry = this.readEventsCache.get(key);
 
-    if (!entry || now - entry.fullReadAtMs > readEventsCacheRefreshMs()) {
-      // Full (re)read — first call for this key, or the refresh TTL elapsed
-      // (folds out escalation-log-gc deletions, which never advance id/ts).
+    if (entry && now - entry.fullReadAtMs > readEventsCacheRefreshMs()) {
+      // EI-21918895581219651 (the readLines-leg sibling of this same class): the
+      // TTL exists SOLELY to fold out rare GC deletions (escalation-log-gc, which
+      // never advances id/ts) — new AND upserted rows are already caught on EVERY
+      // call by the delta leg below, independent of this TTL. Paying the full
+      // O(surface) body-fetch-and-sort unconditionally every 5 minutes buys almost
+      // nothing given GC's own cadence. A COUNT served by the
+      // (workspace_id, surface, id) index tells us CHEAPLY whether anything was
+      // actually deleted since our last full read: appends/upserts can only ever
+      // hold the live count steady or grow it (the delta leg accounts for those
+      // independently of this TTL — upserts don't change the row COUNT at all), so
+      // a live count BELOW what we're caching is the only way a genuine deletion
+      // shows up here.
+      const countRows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${ws} AND surface = ${surface}
+      `;
+      const liveCount = countRows[0]?.n ?? 0;
+      if (liveCount < entry.byMsgId.size) {
+        entry = undefined; // a deletion happened — fall through to the full rebuild below
+      } else {
+        // Nothing deleted — re-arm the TTL clock without paying for the body
+        // fetch; the delta leg below still folds in anything appended/upserted since.
+        entry.fullReadAtMs = now;
+      }
+    }
+
+    if (!entry) {
+      // Full (re)read — first call for this key, or a deletion was detected above.
       // int8 `id` arrives as a STRING under default postgres-js — Number().
       const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
         SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
