@@ -267,26 +267,11 @@ export interface ExecuteGatewayRequestKernelOptions<TRoute, TPrepared, TChunk, T
   inFlight: GatewayKernelInFlightRegistry;
 }
 
-/**
- * First strangler step for a shipped handler: resolve its typed lane/route, then
- * run the legacy task through the SAME callback-scoped admission seam used by
- * the full kernel. The task's settlement remains the sole release authority;
- * this bridge deliberately exposes no acquire/release lease.
- */
-export interface ExecuteGatewayLegacyLaneOptions<TRoute, TResult> {
-  context: GatewayKernelContext;
-  route: GatewayKernelRoute<TRoute>;
-  admission: Pick<GatewayKernelAdmissionController<TRoute, never, never>, 'run'>;
-  execute(context: GatewayKernelContext & { route: GatewayKernelRoute<TRoute> }): Promise<TResult>;
-}
-
-export function executeGatewayLegacyLane<TRoute, TResult>(
-  opts: ExecuteGatewayLegacyLaneOptions<TRoute, TResult>,
-): Promise<TResult> {
-  validateRoute(opts.context.lane, opts.route, opts.context.pin, true);
-  const admittedContext = { ...opts.context, route: opts.route };
-  return opts.admission.run(admittedContext, () => opts.execute(admittedContext));
-}
+// P-008 / D-028: `executeGatewayLegacyLane` — the strangler bridge's callback-scoped lane
+// admission seam — is DELETED. Every gateway lane now takes its admission at its own entry
+// handler (P-011 / D-027), so nothing resolves a synthetic legacy route to admit through any
+// more. `executeGatewayRequestKernel`'s own `admission.run` seam (below) is unaffected: it is
+// per-kernel-call by construction and remains what a single-kernel-call handler uses.
 
 export interface GatewayKernelExecutionResult<TRoute> {
   requestId: number;

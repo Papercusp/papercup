@@ -9,7 +9,6 @@ import {
 } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
-  executeGatewayLegacyLane,
   executeGatewayRequestKernel,
   GatewayRequestKernelError,
   type ExecuteGatewayRequestKernelOptions,
@@ -628,42 +627,10 @@ describe.each(laneCases.filter(({ lane }) => lane.capabilities.accountPinning !=
 );
 
 describe('gateway request kernel contract guards', () => {
-  it('strangles a legacy lane through the existing admission task-settle seam', async () => {
-    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
-    const lane = laneRegistry.anthropicMessages;
-    const order: string[] = [];
-
-    const result = await executeGatewayLegacyLane({
-      context: {
-        requestId: 42,
-        correlationId: 'legacy-42',
-        lane,
-        ownerId: 'owner-a',
-        pin: null,
-        signal: new AbortController().signal,
-        startedAt: Date.now(),
-      },
-      route: {
-        key: 'anthropic-messages:proxy',
-        value: 'proxy',
-        transport: 'oauth-http',
-      },
-      admission: {
-        run: (_context, task) => queue.run(0, task, { tier: 1 }),
-      },
-      execute: async () => {
-        expect(queue.snapshot()).toMatchObject({ running: 1, queued: 0 });
-        order.push('legacy-task');
-        order.push('inflight-unregister');
-        return 'served';
-      },
-    });
-
-    expect(result).toBe('served');
-    expect(order).toEqual(['legacy-task', 'inflight-unregister']);
-    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0, maxConcurrent: 1 });
-  });
-
+  // P-008 / D-028: the 'strangles a legacy lane through the existing admission task-settle
+  // seam' case was DELETED with `executeGatewayLegacyLane` itself. The property it asserted —
+  // that a real PriorityAdmissionQueue admits, runs and releases exactly once around a task —
+  // is covered against the REAL kernel by the very next case, so nothing went uncovered.
   it('maps directly onto the existing PriorityAdmissionQueue.run task-settle seam', async () => {
     const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
     const f = fixture(laneRegistry.anthropicMessages);
