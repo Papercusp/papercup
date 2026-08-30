@@ -35,11 +35,7 @@ import {
   type CursorState,
 } from '../coordination/read-cursors';
 import { pickUnreadCursor, readWatermark as readCoordWatermark } from '../coordination/watermarks';
-import {
-  censusCoordFold,
-  coordFoldObserverFor,
-  type CoordFoldCensus,
-} from './coord-fold-census';
+import { censusCoordFold, coordFoldObserverFor, type CoordFoldCensus } from './coord-fold-census';
 
 export const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
 export const INBOX_CURSOR_SURFACE = 'inbox';
@@ -75,9 +71,21 @@ export interface ActivityHookBundle {
 }
 
 type ToolContext = Parameters<typeof inboxTool.handler>[1];
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+export interface CoordGenerationDelta {
+  afterId: string;
+  throughId: string;
+}
 
 export interface ActivityHookBundleDeps {
   generation: () => Promise<string>;
+  /**
+   * Exact owner-recipient check over one same-host generation interval.
+   * Only an explicit `false` may suppress hydration; absence, throws, and any
+   * non-boolean result fail open to the existing full fold.
+   */
+  ownerRelevantDelta?: (ownerId: string, afterId: string, throughId: string) => Promise<boolean>;
   inbox: (sinceTs: string | null | undefined, ctx: ToolContext) => Promise<Record<string, unknown> | null>;
   glance: (ctx: ToolContext) => Promise<Record<string, unknown> | null>;
   /** Server-owned two-phase cursor for the windowed inbox surface. */
@@ -105,12 +113,70 @@ function parseToolPayload(result: unknown): Record<string, unknown> | null {
   if (!text) return null;
   try {
     const parsed = JSON.parse(text) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
   }
+}
+
+function parseCoordGeneration(value: string | null | undefined): { epoch: string; id: bigint } | null {
+  if (typeof value !== 'string') return null;
+  const separator = value.lastIndexOf(':');
+  if (separator <= 0 || separator === value.length - 1) return null;
+  const epoch = value.slice(0, separator);
+  const rawId = value.slice(separator + 1);
+  if (!/^\d+$/.test(rawId)) return null;
+  try {
+    return { epoch, id: BigInt(rawId) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the indexed id interval that is safe to inspect instead of hydrating.
+ * A restart (different epoch), malformed cursor, or non-forward id is not a
+ * usable interval and therefore keeps the existing fail-open full hydrate.
+ */
+export function sameHostCoordGenerationDelta(
+  clientGeneration: string | null | undefined,
+  serverGeneration: string,
+): CoordGenerationDelta | null {
+  const client = parseCoordGeneration(clientGeneration);
+  const server = parseCoordGeneration(serverGeneration);
+  if (!client || !server || client.epoch !== server.epoch || client.id >= server.id) return null;
+  return { afterId: client.id.toString(), throughId: server.id.toString() };
+}
+
+/**
+ * The same recipient membership predicate as readInbox's PG fast path, bounded
+ * by the already-indexed coord_event_log primary key. The boolean row is
+ * required: an unreadable result is uncertainty and must hydrate, never skip.
+ */
+export async function hasOwnerRelevantCoordDelta(
+  ownerId: string,
+  afterId: string,
+  throughId: string,
+  sqlOverride?: OrgSql,
+): Promise<boolean> {
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const rows = await sql<Array<{ relevant: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordScopeWorkspace()}
+         AND id > ${afterId}::bigint
+         AND id <= ${throughId}::bigint
+         AND surface = 'messages'
+         AND jsonb_typeof(body->'to') = 'array'
+         AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+    ) AS relevant
+  `;
+  const relevant = rows[0]?.relevant;
+  if (typeof relevant !== 'boolean') {
+    throw new Error('owner-relevant coordination delta query returned no boolean verdict');
+  }
+  return relevant;
 }
 
 async function currentGeneration(): Promise<string> {
@@ -124,6 +190,7 @@ async function currentGeneration(): Promise<string> {
 
 const defaultDeps: ActivityHookBundleDeps = {
   generation: currentGeneration,
+  ownerRelevantDelta: hasOwnerRelevantCoordDelta,
   // A missing durable baseline is an intentional full inbox baseline: the
   // server must not inherit the old client hook's `now` seed and skip mail.
   // Once a floor exists, keep the windowed read bounded by that server-owned
@@ -257,12 +324,22 @@ export async function buildActivityHookBundle(
   // ACK the previous delivery before deciding whether this heartbeat is quiet.
   // The call itself is the ACK; if the prior turn died, its pending floor is
   // promoted and the next changed heartbeat re-reads from that floor.
-  const [generation, inboxCursor] = await Promise.all([
-    deps.generation(),
-    deps.readInboxCursor(ownerId),
-  ]);
+  const [generation, inboxCursor] = await Promise.all([deps.generation(), deps.readInboxCursor(ownerId)]);
+  let changed = request.force_resync === true || request.generation !== generation;
+  if (changed && request.force_resync !== true && deps.ownerRelevantDelta) {
+    const delta = sameHostCoordGenerationDelta(request.generation, generation);
+    if (delta) {
+      try {
+        // Only an exact negative result closes the second gate. Any thrown or
+        // malformed outcome keeps `changed=true`, preserving fail-open delivery.
+        const relevant = await deps.ownerRelevantDelta(ownerId, delta.afterId, delta.throughId);
+        if (relevant === false) changed = false;
+      } catch {
+        /* relevance uncertainty hydrates through the existing path */
+      }
+    }
+  }
   const gateMs = deps.now().getTime() - startedMs;
-  const changed = request.force_resync === true || request.generation !== generation;
   const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
     generation,

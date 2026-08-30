@@ -2,32 +2,40 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ACTIVITY_HOOK_BUNDLE_SCHEMA,
   buildActivityHookBundle,
+  hasOwnerRelevantCoordDelta,
   INBOX_CURSOR_SURFACE,
   guardedLegacyInboxFloor,
+  sameHostCoordGenerationDelta,
   type ActivityHookBundleDeps,
 } from './hook-bundle';
 import { InMemoryReadCursorStore } from '../coordination/read-cursors';
 
 function deps(generation = 'host-a:42') {
-  const inbox = vi.fn(async (): Promise<Record<string, unknown>> => ({
-    entries: [],
-    summary: { newest_ts: null },
-  }));
+  const inbox = vi.fn(
+    async (): Promise<Record<string, unknown>> => ({
+      entries: [],
+      summary: { newest_ts: null },
+    }),
+  );
   const glance = vi.fn(async () => ({ display: { title: 'su-abc', notice: null } }));
   const cursor = new InMemoryReadCursorStore();
   const readInboxCursor = vi.fn((ownerId: string) => cursor.ackAndRead(ownerId, INBOX_CURSOR_SURFACE));
   const stageInboxCursor = vi.fn((ownerId: string, next: Record<string, unknown>) =>
     cursor.stage(ownerId, INBOX_CURSOR_SURFACE, next),
   );
-  const readWatermark = vi.fn(async (): Promise<{
-    messages_since_ts?: string | null;
-    messages_shown_ts?: string | null;
-  }> => ({
-    messages_since_ts: null,
-    messages_shown_ts: null,
-  }));
+  const readWatermark = vi.fn(
+    async (): Promise<{
+      messages_since_ts?: string | null;
+      messages_shown_ts?: string | null;
+    }> => ({
+      messages_since_ts: null,
+      messages_shown_ts: null,
+    }),
+  );
+  const ownerRelevantDelta = vi.fn(async () => true);
   const value: ActivityHookBundleDeps = {
     generation: vi.fn(async () => generation),
+    ownerRelevantDelta,
     inbox,
     glance,
     readInboxCursor,
@@ -35,7 +43,7 @@ function deps(generation = 'host-a:42') {
     readWatermark,
     now: () => new Date('2026-07-13T20:00:00.000Z'),
   };
-  return { value, inbox, glance, readInboxCursor, stageInboxCursor, readWatermark };
+  return { value, inbox, glance, ownerRelevantDelta, readInboxCursor, stageInboxCursor, readWatermark };
 }
 
 describe('activity hook bundle', () => {
@@ -83,7 +91,58 @@ describe('activity hook bundle', () => {
       d.value,
     );
     expect(result).toMatchObject({ changed: true, complete: true, generation: 'host-a:43' });
+    expect(d.ownerRelevantDelta).toHaveBeenCalledWith('su-abc', '42', '43');
     expect(d.inbox).toHaveBeenCalledWith('2026-07-13T19:00:00.000Z', expect.anything());
+  });
+
+  it('advances through an owner-irrelevant same-host delta without hydrating either surface', async () => {
+    const d = deps('host-a:43');
+    d.ownerRelevantDelta.mockResolvedValueOnce(false);
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+
+    expect(result).toMatchObject({ changed: false, complete: true, generation: 'host-a:43' });
+    expect(result.surfaces).toBeUndefined();
+    expect(d.ownerRelevantDelta).toHaveBeenCalledWith('su-abc', '42', '43');
+    expect(d.readWatermark).not.toHaveBeenCalled();
+    expect(d.inbox).not.toHaveBeenCalled();
+    expect(d.glance).not.toHaveBeenCalled();
+    expect(d.stageInboxCursor).not.toHaveBeenCalled();
+  });
+
+  it('fails open to hydration when the relevance read throws', async () => {
+    const d = deps('host-a:43');
+    d.ownerRelevantDelta.mockRejectedValueOnce(new Error('temporary'));
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+
+    expect(result).toMatchObject({ changed: true, complete: true, generation: 'host-a:43' });
+    expect(d.inbox).toHaveBeenCalledTimes(1);
+    expect(d.glance).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['an operator restart', 'host-a:42', 'host-b:43'],
+    ['a malformed client generation', 'not-a-generation', 'host-a:43'],
+    ['a non-forward client id', 'host-a:44', 'host-a:43'],
+  ])('fails open for %s instead of querying an unsafe interval', async (_label, client, server) => {
+    const d = deps(server);
+    const result = await buildActivityHookBundle('su-abc', { generation: client }, {} as never, d.value);
+    expect(result).toMatchObject({ changed: true, complete: true, generation: server });
+    expect(d.ownerRelevantDelta).not.toHaveBeenCalled();
+    expect(d.inbox).toHaveBeenCalledTimes(1);
+    expect(d.glance).toHaveBeenCalledTimes(1);
+  });
+
+  it('force-resync always hydrates without consulting the relevance shortcut', async () => {
+    const d = deps('host-a:43');
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42', force_resync: true },
+      {} as never,
+      d.value,
+    );
+    expect(result).toMatchObject({ changed: true, complete: true });
+    expect(d.ownerRelevantDelta).not.toHaveBeenCalled();
+    expect(d.inbox).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a first-call client cursor when no durable receipt exists', async () => {
@@ -103,12 +162,7 @@ describe('activity hook bundle', () => {
       entries: [],
       summary: { newest_ts: '2026-07-13T20:00:00.000Z' },
     });
-    await buildActivityHookBundle(
-      'su-abc',
-      { generation: null, force_resync: true },
-      {} as never,
-      d.value,
-    );
+    await buildActivityHookBundle('su-abc', { generation: null, force_resync: true }, {} as never, d.value);
 
     d.value.generation = vi.fn(async () => 'host-a:43');
     await buildActivityHookBundle(
@@ -135,12 +189,7 @@ describe('activity hook bundle', () => {
   it('marks a partial hydrate incomplete so the client retries instead of advancing', async () => {
     const d = deps();
     d.glance.mockRejectedValueOnce(new Error('temporary'));
-    const result = await buildActivityHookBundle(
-      'su-abc',
-      { generation: 'old' },
-      {} as never,
-      d.value,
-    );
+    const result = await buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value);
     expect(result).toMatchObject({ changed: true, complete: false });
     expect(result.surfaces?.inbox).toBeDefined();
     expect(result.surfaces?.glance).toBeUndefined();
@@ -149,13 +198,52 @@ describe('activity hook bundle', () => {
   it('marks a cursor-stage failure incomplete so the next heartbeat cannot skip the delivery', async () => {
     const d = deps();
     d.stageInboxCursor.mockRejectedValueOnce(new Error('temporary'));
-    const result = await buildActivityHookBundle(
-      'su-abc',
-      { generation: 'old' },
-      {} as never,
-      d.value,
-    );
+    const result = await buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value);
     expect(result).toMatchObject({ changed: true, complete: false });
+  });
+});
+
+describe('owner-relevant generation gate', () => {
+  it('parses the final colon and keeps bigint ids exact', () => {
+    expect(
+      sameHostCoordGenerationDelta(
+        'host-with-colon:segment:9007199254740993',
+        'host-with-colon:segment:9007199254740995',
+      ),
+    ).toEqual({ afterId: '9007199254740993', throughId: '9007199254740995' });
+  });
+
+  it.each([
+    ['different host epochs', 'host-a:41', 'host-b:42'],
+    ['malformed client id', 'host-a:nope', 'host-a:42'],
+    ['malformed server id', 'host-a:41', 'host-a:nope'],
+    ['equal ids', 'host-a:42', 'host-a:42'],
+    ['backward ids', 'host-a:43', 'host-a:42'],
+  ])('rejects %s as an unsafe delta', (_label, client, server) => {
+    expect(sameHostCoordGenerationDelta(client, server)).toBeNull();
+  });
+
+  it('uses the authoritative direct-or-broadcast inbox predicate inside the bounded primary-key range', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([{ relevant: false }]);
+    }) as never;
+
+    await expect(hasOwnerRelevantCoordDelta('su-abc', '41', '43', sql)).resolves.toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain("surface = 'messages'");
+    expect(calls[0]?.text).toContain("jsonb_typeof(body->'to') = 'array'");
+    expect(calls[0]?.text).toContain("jsonb_exists(body->'to', ?)");
+    expect(calls[0]?.text).toContain("jsonb_exists(body->'to', '*')");
+    expect(calls[0]?.text).toContain('id > ?::bigint');
+    expect(calls[0]?.text).toContain('id <= ?::bigint');
+    expect(calls[0]?.values).toEqual(expect.arrayContaining(['41', '43', 'su-abc']));
+  });
+
+  it('rejects an unreadable query result so the caller can fail open', async () => {
+    const sql = (() => Promise.resolve([])) as never;
+    await expect(hasOwnerRelevantCoordDelta('su-abc', '41', '43', sql)).rejects.toThrow('no boolean verdict');
   });
 });
 
@@ -202,12 +290,7 @@ describe('coord-fold census — instrument before changing the gate', () => {
 
   it('censuses the QUIET fold too — the ratio is uncomputable from expensive folds alone', async () => {
     const d = censusDeps();
-    const result = await buildActivityHookBundle(
-      'su-abc',
-      { generation: 'host-a:42' },
-      {} as never,
-      d.value,
-    );
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
 
     expect(result).toMatchObject({ changed: false, complete: true });
     expect(d.observe).toHaveBeenCalledTimes(1);
@@ -285,15 +368,24 @@ describe('coord-fold census — instrument before changing the gate', () => {
     expect(d.observe.mock.calls[0]?.[0]).toMatchObject({ changed: true, inboxAdvanced: false });
   });
 
+  it('directly records an owner-irrelevant global advance as a zero-hydration fold', async () => {
+    const d = censusDeps('host-a:43');
+    d.ownerRelevantDelta.mockResolvedValueOnce(false);
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+    expect(result).toMatchObject({ changed: false, complete: true, generation: 'host-a:43' });
+    expect(d.observe.mock.calls[0]?.[0]).toMatchObject({
+      changed: false,
+      reason: 'owner-irrelevant',
+      hydrateMs: 0,
+      reqGen: 'host-a:42',
+      gen: 'host-a:43',
+    });
+  });
+
   it('carries an incomplete fold through to the census instead of dropping the row', async () => {
     const d = censusDeps();
     d.stageInboxCursor.mockRejectedValueOnce(new Error('temporary'));
-    const result = await buildActivityHookBundle(
-      'su-abc',
-      { generation: 'old' },
-      {} as never,
-      d.value,
-    );
+    const result = await buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value);
     expect(result).toMatchObject({ complete: false });
     expect(d.observe.mock.calls[0]?.[0]).toMatchObject({ changed: true, complete: false });
   });
@@ -301,32 +393,24 @@ describe('coord-fold census — instrument before changing the gate', () => {
   it.each([
     ['quiet', 'host-a:42'],
     ['expensive', 'stale-gen'],
-  ])(
-    'never lets a throwing instrument break the %s fold it measures',
-    async (_label, generation) => {
-      // Guarded at the USE site, not just inside coordFoldObserverFor — an
-      // injected sink bypasses that constructor's own try/catch, and this runs
-      // synchronously for every agent on every tool call.
-      const d = censusDeps();
-      d.observe.mockImplementation(() => {
-        throw new Error('sink exploded');
-      });
-      const result = await buildActivityHookBundle(
-        'su-abc',
-        { generation },
-        {} as never,
-        d.value,
-      );
-      expect(result).toMatchObject({ schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA });
-      expect(d.observe).toHaveBeenCalledTimes(1);
-    },
-  );
+  ])('never lets a throwing instrument break the %s fold it measures', async (_label, generation) => {
+    // Guarded at the USE site, not just inside coordFoldObserverFor — an
+    // injected sink bypasses that constructor's own try/catch, and this runs
+    // synchronously for every agent on every tool call.
+    const d = censusDeps();
+    d.observe.mockImplementation(() => {
+      throw new Error('sink exploded');
+    });
+    const result = await buildActivityHookBundle('su-abc', { generation }, {} as never, d.value);
+    expect(result).toMatchObject({ schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA });
+    expect(d.observe).toHaveBeenCalledTimes(1);
+  });
 
   it('stays silent when the ctx carries no metadata channel, rather than throwing', async () => {
     const d = deps();
     // No `observe` dep and a bare ctx: coordFoldObserverFor returns undefined.
-    await expect(
-      buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value),
-    ).resolves.toMatchObject({ changed: true });
+    await expect(buildActivityHookBundle('su-abc', { generation: 'old' }, {} as never, d.value)).resolves.toMatchObject(
+      { changed: true },
+    );
   });
 });

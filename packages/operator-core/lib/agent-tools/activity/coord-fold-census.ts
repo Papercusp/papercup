@@ -97,7 +97,7 @@
  * exactly the case a version tag has to catch. A window spanning an unbumped
  * redefinition silently averages two different measurements.
  */
-export const COORD_FOLD_CENSUS_VERSION = 1;
+export const COORD_FOLD_CENSUS_VERSION = 2;
 
 /** The key this census is published under inside `tool_invocations.metadata_json`. */
 export const COORD_FOLD_CENSUS_KEY = 'coordFold';
@@ -113,6 +113,7 @@ export const COORD_FOLD_CENSUS_KEY = 'coordFold';
  */
 export type CoordFoldReason =
   | 'quiet'
+  | 'owner-irrelevant'
   | 'generation-mismatch'
   | 'force-resync'
   | 'no-client-generation';
@@ -186,6 +187,7 @@ function emptyToNull(value: string | null | undefined): string | null {
  * labeller reds a test instead of silently mislabelling a whole window.
  */
 export function coordFoldReason(input: {
+  changed: boolean;
   forceResync: boolean;
   reqGen: string | null | undefined;
   gen: string;
@@ -193,7 +195,7 @@ export function coordFoldReason(input: {
   if (input.forceResync) return 'force-resync';
   const reqGen = emptyToNull(input.reqGen);
   if (reqGen === null) return 'no-client-generation';
-  if (reqGen !== input.gen) return 'generation-mismatch';
+  if (reqGen !== input.gen) return input.changed ? 'generation-mismatch' : 'owner-irrelevant';
   return 'quiet';
 }
 

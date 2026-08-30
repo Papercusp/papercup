@@ -41,17 +41,25 @@ function observation(over: Partial<CoordFoldObservation> = {}): CoordFoldObserva
 
 describe('coordFoldReason', () => {
   it('labels a matching generation quiet — the O(1) path the optimization claims', () => {
-    expect(coordFoldReason({ forceResync: false, reqGen: 'host-a:42', gen: 'host-a:42' })).toBe('quiet');
+    expect(coordFoldReason({ changed: false, forceResync: false, reqGen: 'host-a:42', gen: 'host-a:42' })).toBe(
+      'quiet',
+    );
   });
 
   it('labels a genuine mismatch, which is the population EI-20582609088583997 is about', () => {
-    expect(coordFoldReason({ forceResync: false, reqGen: 'host-a:41', gen: 'host-a:42' })).toBe(
+    expect(coordFoldReason({ changed: true, forceResync: false, reqGen: 'host-a:41', gen: 'host-a:42' })).toBe(
       'generation-mismatch',
     );
   });
 
-  it('force-resync wins over everything, matching the fold\'s own || ordering', () => {
-    expect(coordFoldReason({ forceResync: true, reqGen: 'host-a:42', gen: 'host-a:42' })).toBe(
+  it('labels a globally advanced but owner-irrelevant fold directly', () => {
+    expect(coordFoldReason({ changed: false, forceResync: false, reqGen: 'host-a:41', gen: 'host-a:42' })).toBe(
+      'owner-irrelevant',
+    );
+  });
+
+  it("force-resync wins over everything, matching the fold's own || ordering", () => {
+    expect(coordFoldReason({ changed: true, forceResync: true, reqGen: 'host-a:42', gen: 'host-a:42' })).toBe(
       'force-resync',
     );
   });
@@ -63,7 +71,7 @@ describe('coordFoldReason', () => {
   ])(
     'separates a first call (%s client generation) from a real mismatch — it is legitimately expensive, not gate evidence',
     (_label, reqGen) => {
-      expect(coordFoldReason({ forceResync: false, reqGen, gen: 'host-a:42' })).toBe(
+      expect(coordFoldReason({ changed: true, forceResync: false, reqGen, gen: 'host-a:42' })).toBe(
         'no-client-generation',
       );
     },
@@ -136,7 +144,7 @@ describe('coordFoldObserverFor', () => {
     expect(coordFoldObserverFor(ctx)).toBeUndefined();
   });
 
-  it('swallows a throwing sink — this rides the fleet\'s synchronous hook path', () => {
+  it("swallows a throwing sink — this rides the fleet's synchronous hook path", () => {
     const observe = coordFoldObserverFor({
       metadata: () => {
         throw new Error('metadata channel exploded');
