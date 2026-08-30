@@ -285,6 +285,10 @@ export type {
   WorkspaceHostBootstrapAttestationCheck,
   WorkspaceHostBootstrapAttestation,
   WorkspaceHostBootstrapAttestationValidation,
+  WorkspaceHostNativeSoname,
+  WorkspaceHostNativeDependencyProvider,
+  WorkspaceHostNativeDependencyCoverageInput,
+  WorkspaceHostNativeDependencyCoverage,
 } from "./workspace-host-bootstrap";
 export {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
@@ -297,8 +301,16 @@ export {
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_BOOTSTRAP_CHECKS,
+  WORKSPACE_HOST_GLIBC_SONAMES,
+  WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE,
+  WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES,
+  WORKSPACE_HOST_BOOTSTRAP_NATIVE_RUNTIME_APT_PACKAGES,
+  WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   buildWorkspaceHostBootstrap,
+  normalizeWorkspaceHostSoname,
+  parseWorkspaceHostReadelfNeeded,
+  evaluateWorkspaceHostNativeDependencyCoverage,
   parseWorkspaceHostBootstrapAttestation,
   validateWorkspaceHostBootstrapAttestation,
 } from "./workspace-host-bootstrap";

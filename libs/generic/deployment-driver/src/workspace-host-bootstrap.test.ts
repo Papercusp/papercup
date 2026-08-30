@@ -4,13 +4,19 @@ import {
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
+  WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
   WORKSPACE_HOST_BOOTSTRAP_CHECKS,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_DATA_ROOT,
+  WORKSPACE_HOST_GLIBC_SONAMES,
+  WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE,
   WORKSPACE_HOST_RUNTIME_ROOT,
   WORKSPACE_HOST_STATE_ROOT,
   buildWorkspaceHostBootstrap,
+  evaluateWorkspaceHostNativeDependencyCoverage,
+  normalizeWorkspaceHostSoname,
+  parseWorkspaceHostReadelfNeeded,
   parseWorkspaceHostBootstrapAttestation,
   validateWorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapAttestation,
@@ -155,6 +161,9 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).toContain('runuser -u "$WORKSPACE_USER" -- test ! -r');
     expect(first).toContain('StandardOutput=journal');
     expect(first).toContain(WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX);
+    expect(first).toContain(
+      `apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(' ')}`,
+    );
     expect(first).not.toContain('RWQpublickey');
     expect(first).not.toMatch(/PAPERCUSP_(?:API_KEY|TOKEN|PASSWORD)=/);
     expect(first).not.toContain('AllowTcpForwarding yes');
@@ -345,6 +354,77 @@ describe('buildWorkspaceHostBootstrap', () => {
         ),
       ).toThrow();
     });
+  });
+});
+
+describe('workspace-host native dependency contract', () => {
+  it('parses and normalizes the readelf NEEDED union deterministically', () => {
+    const output = [
+      ' 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]',
+      ' 0x0000000000000001 (NEEDED)             Shared library: [libatomic.so.1]',
+      ' 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]',
+      ' 0x000000000000000e (SONAME)             Library soname: [ignored.so.1]',
+    ].join('\n');
+    expect(parseWorkspaceHostReadelfNeeded(output)).toEqual([
+      'libatomic.so.1',
+      'libstdc++.so.6',
+    ]);
+    expect(normalizeWorkspaceHostSoname('  [libasound.so.2]  ')).toBe(
+      'libasound.so.2',
+    );
+  });
+
+  it('subtracts glibc and bundle-internal libraries before checking providers', () => {
+    const result = evaluateWorkspaceHostNativeDependencyCoverage({
+      neededSonames: [
+        ...WORKSPACE_HOST_GLIBC_SONAMES,
+        'libonnxruntime.so.1',
+        'libatomic.so.1',
+        'libasound.so.2',
+      ],
+      bundleInternalSonames: ['libonnxruntime.so.1'],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.externalSonames).toEqual([
+      'libasound.so.2',
+      'libatomic.so.1',
+    ]);
+    expect(result.requiredAptPackages).toEqual([
+      'libasound2t64',
+      'libatomic1',
+    ]);
+    expect(result.missingAptPackages).toEqual([]);
+  });
+
+  it('fails closed for unknown SONAMEs and missing apt providers', () => {
+    const unknown = evaluateWorkspaceHostNativeDependencyCoverage({
+      neededSonames: ['libnew-native.so.1'],
+    });
+    expect(unknown.ok).toBe(false);
+    expect(unknown.unknownSonames).toEqual(['libnew-native.so.1']);
+
+    const missing = evaluateWorkspaceHostNativeDependencyCoverage({
+      neededSonames: ['libatomic.so.1', 'libstdc++.so.6'],
+      aptPackages: ['libatomic1'],
+    });
+    expect(missing.ok).toBe(false);
+    expect(missing.unknownSonames).toEqual([]);
+    expect(missing.missingAptPackages).toEqual(['libstdc++6']);
+  });
+
+  it('keeps the provider map and bootstrap apt contract aligned', () => {
+    const result = evaluateWorkspaceHostNativeDependencyCoverage({
+      neededSonames: Object.keys(WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.requiredAptPackages).toEqual(
+      expect.arrayContaining([
+        'libasound2t64',
+        'libatomic1',
+        'libgcc-s1',
+        'libstdc++6',
+      ]),
+    );
   });
 });
 
