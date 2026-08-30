@@ -1593,6 +1593,22 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         if (Array.isArray(md.last_oversized)) gitSyncOversizedCount += md.last_oversized.length;
       }
     } catch { /* routine metadata unreadable — leave git-sync delivery fields at defaults */ }
+    // WI-1258129: every ref above is a GIT position; none can see a long-lived
+    // process still executing pre-deploy code. bg-host's systemd ActiveEnterTimestamp
+    // is the ground truth for when it last (re)started — reused from the scout
+    // generation-watermark module (WI-5397) rather than re-deriving it here.
+    // Best-effort and fail-toward-not-proven-fresh: any unresolvable input leaves
+    // `bgHostCodeStale` NULL (unknown), never false, so an unreadable host cannot
+    // render a false all-clear.
+    let bgHostStartedAtMs: number | null = null;
+    try {
+      const { readBgHostActiveEnterMs } = await import('../scout/generation-watermark');
+      bgHostStartedAtMs = await readBgHostActiveEnterMs();
+    } catch {
+      /* systemd/unit unreadable — stays null, reported as unknown */
+    }
+    const bgHostCodeStale =
+      bgHostStartedAtMs !== null && s.deployedAtMs !== null ? bgHostStartedAtMs < s.deployedAtMs : null;
     const data: DeployHealth = {
       deployedShortSha: s.deployed?.shortSha ?? null,
       deployedBehindStaging: s.deployedBehindStaging,
@@ -1609,6 +1625,8 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
       gitSyncOversizedCount,
       gitSyncWorstInstallSlug,
       gitSyncFailingLeg,
+      bgHostStartedAtMs,
+      bgHostCodeStale,
     };
     const status = deployStatus(data, ctx.now);
     // EI-19275994927087666: a crit here means SOME git-sync leg is failing on SOME
@@ -1638,6 +1656,13 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         // Label is 'git-sync', not 'git-sync push' — the metric covers every leg.
         m('git-sync', syncFailing ? `${data.gitSyncFailingLeg ?? 'error'} FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), syncMetricTone),
         m('failing install', data.gitSyncWorstInstallSlug ?? '—'),
+        // WI-1258129: names WHY the panel warned. '?' is a real reading (host
+        // unreadable = not proven fresh), deliberately distinct from 'restarted'.
+        m(
+          'bg-host code',
+          data.bgHostCodeStale === null ? '?' : data.bgHostCodeStale ? 'PRE-DEPLOY' : 'restarted',
+          data.bgHostCodeStale === true ? 'warn' : undefined,
+        ),
       ],
     };
   });

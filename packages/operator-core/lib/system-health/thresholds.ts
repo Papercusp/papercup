@@ -415,14 +415,23 @@ export function watchdogStatus(d: WatchdogHealth): PanelStatus {
  *  signal and the escalation fire on the same threshold. */
 export const GIT_SYNC_PUSH_FAIL_CRIT = 3;
 
+/** Grace after a deploy before a not-yet-restarted bg-host is a WARNING rather than
+ *  a restart still in flight. A deploy legitimately leaves the old process up for a
+ *  short window; warning inside it would flap on every healthy deploy, and a panel
+ *  that is yellow after every deploy is wallpaper, not signal. Sized well above a
+ *  normal restart and far below the 175-minute stall that motivated the check
+ *  (WI-1258129), so the alarm means "this restart is not coming". */
+export const BG_HOST_STALE_CODE_GRACE_MS = 20 * 60_000;
+
 /**
  * Deploy. crit = git-sync push FAILING (>= GIT_SYNC_PUSH_FAIL_CRIT consecutive ticks:
  * local commits are NOT reaching origin — the EI-18 silent-failure class, the one
  * deploy condition severe enough to red the system; the ref-based checks below are
  * blind to it because new local commits keep `lastCommitAtMs` fresh). unknown = no
  * refs resolved (a box without the release checkout). warn = git-sync erroring or
- * excluding oversized blobs, git-sync lag (no recent staging commit), or the live
- * host far behind staging. ok otherwise.
+ * excluding oversized blobs, git-sync lag (no recent staging commit), the live host
+ * far behind staging, or bg-host still running PRE-DEPLOY code past the grace window.
+ * ok otherwise.
  */
 export function deployStatus(d: DeployHealth, now: number): PanelStatus {
   if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
@@ -430,6 +439,16 @@ export function deployStatus(d: DeployHealth, now: number): PanelStatus {
   if (d.gitSyncStatus === 'error' || d.gitSyncStatus === 'degraded' || d.gitSyncOversizedCount > 0) return 'warn';
   if (d.lastCommitAtMs !== null && now - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';
   if (d.deployedBehindStaging !== null && d.deployedBehindStaging > DEPLOY_BEHIND_WARN) return 'warn';
+  // WI-1258129: the refs above can ALL be healthy while a long-lived process runs
+  // pre-deploy code. Strictly `=== true`, never a truthiness test: `null` means the
+  // host was unreadable (not proven stale) and must not warn.
+  if (
+    d.bgHostCodeStale === true &&
+    d.deployedAtMs !== null &&
+    now - d.deployedAtMs > BG_HOST_STALE_CODE_GRACE_MS
+  ) {
+    return 'warn';
+  }
   return 'ok';
 }
 

@@ -35,6 +35,7 @@ import {
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
+  BG_HOST_STALE_CODE_GRACE_MS,
   GIT_SYNC_PUSH_FAIL_CRIT,
   POOL_PROJECTION_STALE_WARN_MS,
   POOL_PROJECTION_STALE_CRIT_MS,
@@ -58,6 +59,7 @@ import type {
   TokensHealth,
   WatchdogHealth,
   DeployHealth,
+  PanelStatus,
   PlansHealth,
   EscalationsHealth,
   AutonomyHealth,
@@ -367,7 +369,10 @@ describe('deployStatus', () => {
     lastCommitAtMs: now - 60_000, errors: [],
     gitSyncStatus: 'synced', gitSyncConsecutiveErrorTicks: 0,
     gitSyncPushBacklog: null, gitSyncLastSyncedAtMs: now - 60_000, gitSyncOversizedCount: 0,
-    gitSyncWorstInstallSlug: null, gitSyncFailingLeg: null, ...o,
+    gitSyncWorstInstallSlug: null, gitSyncFailingLeg: null,
+    // Healthy default: bg-host (re)started AFTER the deploy, so it is running the
+    // deployed code. Keeps every pre-existing case below exercising its own signal.
+    bgHostStartedAtMs: now - 500, bgHostCodeStale: false, ...o,
   });
   it('unknown when no refs resolved (a box without the release checkout)', () => {
     expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null }), now)).toBe('unknown');
@@ -394,6 +399,77 @@ describe('deployStatus', () => {
   });
   it('crit on push-failure even with no release refs (push-fail outranks unknown)', () => {
     expect(deployStatus(dp({ deployedShortSha: null, lastCommitAtMs: null, gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT + 2 }), now)).toBe('crit');
+  });
+
+  // WI-1258129 RUNNING-CODE freshness. Every other case in this describe keys on a
+  // GIT position; these key on whether the long-lived process is actually executing
+  // the deployed code. The motivating incident: bg-host ran 175-minute-stale code
+  // with every ref healthy and this panel reading 'ok', so a reconciler whose every
+  // write was reverted looked identical to one that worked.
+  it('warn when bg-host still runs PRE-DEPLOY code past the grace window', () => {
+    expect(deployStatus(dp({
+      deployedAtMs: now - BG_HOST_STALE_CODE_GRACE_MS - 1,
+      bgHostStartedAtMs: now - BG_HOST_STALE_CODE_GRACE_MS - 60_000,
+      bgHostCodeStale: true,
+    }), now)).toBe('warn');
+  });
+  it('stays ok inside the grace window (a restart still in flight is not a fault)', () => {
+    expect(deployStatus(dp({
+      deployedAtMs: now - 1000,
+      bgHostStartedAtMs: now - 60_000,
+      bgHostCodeStale: true,
+    }), now)).toBe('ok');
+  });
+  // The false-all-clear guard. `null` means the host was UNREADABLE, not fresh — and
+  // a truthiness test (`if (d.bgHostCodeStale)`) would pass this case by accident,
+  // so this asserts the distinction that keeps `null` from ever reading as proof.
+  it('does not warn when host freshness is UNKNOWN (null is not-proven, not stale)', () => {
+    expect(deployStatus(dp({
+      deployedAtMs: now - BG_HOST_STALE_CODE_GRACE_MS - 1,
+      bgHostStartedAtMs: null,
+      bgHostCodeStale: null,
+    }), now)).toBe('ok');
+  });
+  it('ok once bg-host has restarted onto the deployed code', () => {
+    expect(deployStatus(dp({
+      deployedAtMs: now - BG_HOST_STALE_CODE_GRACE_MS - 1,
+      bgHostStartedAtMs: now - 1000,
+      bgHostCodeStale: false,
+    }), now)).toBe('ok');
+  });
+
+  // ── Falsifiability control (repo rule: a module you import gets a permanent
+  // in-test control, never an in-tree mutation). `preFix` is deployStatus's body
+  // as it stood BEFORE the running-code clause. Without it these assertions would
+  // pass just as happily against a deployStatus that ignores bgHostCodeStale
+  // entirely — which is the only way to know the tests above test anything.
+  const preFix = (d: DeployHealth, at: number): PanelStatus => {
+    if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
+    if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
+    if (d.gitSyncStatus === 'error' || d.gitSyncStatus === 'degraded' || d.gitSyncOversizedCount > 0) return 'warn';
+    if (d.lastCommitAtMs !== null && at - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';
+    if (d.deployedBehindStaging !== null && d.deployedBehindStaging > DEPLOY_BEHIND_WARN) return 'warn';
+    return 'ok';
+  };
+  const staleHostCase = () => dp({
+    deployedAtMs: now - BG_HOST_STALE_CODE_GRACE_MS - 1,
+    bgHostStartedAtMs: now - BG_HOST_STALE_CODE_GRACE_MS - 60_000,
+    bgHostCodeStale: true,
+  });
+  // CALIBRATION — the control must agree with the real function everywhere the
+  // clause does not apply. If this drifts, `preFix` has stopped being a faithful
+  // pre-change implementation and the divergence assertion below proves nothing.
+  it('control calibration: preFix matches deployStatus on the pre-existing signals', () => {
+    for (const c of [dp(), dp({ lastCommitAtMs: now - SYNC_LAG_WARN_MS - 1 }),
+      dp({ deployedBehindStaging: DEPLOY_BEHIND_WARN + 1 }),
+      dp({ deployedShortSha: null, lastCommitAtMs: null }),
+      dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: GIT_SYNC_PUSH_FAIL_CRIT })]) {
+      expect(preFix(c, now)).toBe(deployStatus(c, now));
+    }
+  });
+  it('control divergence: the stale-host case is EXACTLY what the new clause adds', () => {
+    expect(preFix(staleHostCase(), now)).toBe('ok');
+    expect(deployStatus(staleHostCase(), now)).toBe('warn');
   });
   it('warn (not crit) on a single git-sync error tick below the threshold', () => {
     expect(deployStatus(dp({ gitSyncStatus: 'error', gitSyncConsecutiveErrorTicks: 1 }), now)).toBe('warn');

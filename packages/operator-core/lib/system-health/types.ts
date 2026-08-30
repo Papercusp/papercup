@@ -487,6 +487,24 @@ export interface DeployHealth {
   gitSyncLastSyncedAtMs: number | null;
   /** Oversized files git-sync EXCLUDED from the auto-commit (they will never push). */
   gitSyncOversizedCount: number;
+  // ── RUNNING-CODE freshness (WI-1258129) ──────────────────────────────────────
+  // Every field above measures GIT POSITIONS (staging→main→live) or git-sync
+  // delivery. None of them can see the distinct failure where the refs are all
+  // healthy and a LONG-LIVED PROCESS is still executing code from before the
+  // deploy: bg-host ran 175-minute-stale code while this panel read `ok`, and a
+  // reconciler whose every write was reverted is indistinguishable from one that
+  // works. The gap was found only by chasing an unrelated symptom, which is
+  // exactly what a health panel exists to prevent.
+  /** bg-host's ActiveEnterTimestamp (epoch ms) — when the long-lived host process
+   *  last (re)started. Ground truth from systemd; null when unresolvable (unit not
+   *  running, no systemd user session, non-Linux, timeout). */
+  bgHostStartedAtMs: number | null;
+  /** True when bg-host started BEFORE the currently-served deployment, so it cannot
+   *  be executing the deployed code. `null` = NOT PROVEN EITHER WAY (an input was
+   *  unresolvable) — deliberately not `false`, mirroring `RunningGeneration.staleHost`'s
+   *  fail-toward-not-proven-fresh convention, so an unreadable host never renders a
+   *  false all-clear. */
+  bgHostCodeStale: boolean | null;
 }
 
 /** Plans. */
