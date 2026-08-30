@@ -1,6 +1,6 @@
 import type { WorkspaceHostBootstrapAttestation, WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
 
-import { evaluateImageScanPolicy } from './image-scan-policy';
+import { evaluateImageScanPolicy, GCP_IMAGE_SCAN_POLICY } from './image-scan-policy';
 import {
   evaluateWorkspaceHostReleaseGate,
   type WorkspaceHostReleaseGateInput,
@@ -371,7 +371,10 @@ function validateScan(scan: GcpImageScanEvidence, artifact: WorkspaceHostImageAr
   if (!scan.trusted) {
     fail('GCP image scan must be trusted');
   }
-  const policy = evaluateImageScanPolicy(scan);
+  // GCP_IMAGE_SCAN_POLICY, not the shared default: the GCP scanner measures its own
+  // filesystem coverage, so it is held to proving it (WI-1092039 / D-196). AWS and
+  // Azure keep the shared policy because their scanners measure no coverage at all.
+  const policy = evaluateImageScanPolicy(scan, GCP_IMAGE_SCAN_POLICY);
   if (!policy.accepted) {
     fail(
       `GCP image scan violates the workspace-host release policy: ${policy.failures
