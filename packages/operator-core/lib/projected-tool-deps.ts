@@ -61,12 +61,24 @@ import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvi
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
- * superuser `papercusp-su` surface by an SU client. A judge-scoped call to the
- * plan-audit writer is intentionally denied (judge is evidence-only), but the
- * generic denial used to name only `system:judge`, hiding the authorized route
- * and making a server/configuration mismatch look like a missing user grant.
- * Keep judge least-privileged and teach only this precise MCP denial how to
- * recover through the already-authorized SU surface.
+ * superuser `papercusp-su` surface by an SU client. A judge-scoped call is
+ * intentionally denied (judge is evidence-only, least-privileged by design —
+ * its principal carries an empty capability set), but the generic denial
+ * names only `system:judge`, hiding the authorized route and making a
+ * server/configuration mismatch look like a missing user grant.
+ *
+ * This was originally scoped to ONE tool/capability pair (plans:audit /
+ * plans:write, EI-21543450341912836) — and the identical root cause was then
+ * independently re-filed against locks:acquire + capability:edit
+ * (EI-21364232422724692), db:next-migration + db:migrate
+ * (EI-21465277780923625), and memory:search (EI-21907885860611918). Every one
+ * of those reports is the SAME failure: an su/operator session dispatched
+ * through the plain `papercusp` server instead of the already-authorized
+ * `papercusp-su` server, and got resolved as the judge principal instead of
+ * its own identity. The tool/capability being denied is incidental to that
+ * misrouting, so the hint fires for the judge-mismatch SHAPE regardless of
+ * which tool/capability triggered it — an allowlist here just re-files this
+ * bug against the next tool it happens to hit.
  */
 export function authorizationFailureHint(input: {
   toolName: string;
@@ -77,13 +89,11 @@ export function authorizationFailureHint(input: {
     input.ctx.transport !== 'mcp' ||
     input.ctx.isSuperuser === true ||
     input.ctx.role !== 'judge' ||
-    input.ctx.principal?.slug !== 'system:judge' ||
-    input.toolName !== 'plans:audit' ||
-    input.missingCapability !== 'plans:write'
+    input.ctx.principal?.slug !== 'system:judge'
   ) {
     return undefined;
   }
-  return 'This is a judge-scoped MCP session; an authorized su/operator must invoke plans:audit through the papercusp-su MCP server (for example, tools:invoke).';
+  return `This is a judge-scoped MCP session; an authorized su/operator must invoke ${input.toolName} through the papercusp-su MCP server (for example, tools:invoke).`;
 }
 
 /**
