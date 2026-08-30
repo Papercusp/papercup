@@ -43,6 +43,7 @@ import { isCompilableSchema } from '../../json-schema-validation';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
@@ -374,6 +375,7 @@ export default defineTool({
     if (!installSlug) {
       return err('No harness in scope — goals are filed against an install_slug. Pass `harness`.');
     }
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as never);
 
     // EI-20049757392342975: the SAME refusal `goals:propose`, `goals:update` and
     // `goals:create` apply. This door was the one that mattered most and the one
