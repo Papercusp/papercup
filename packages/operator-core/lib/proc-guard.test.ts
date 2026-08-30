@@ -431,6 +431,26 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     expect(report.argvTextOnly.map((m) => m.pid).sort((a, b) => a - b)).toEqual([269555, 269556, 269557]);
   });
 
+  // EI-21714274321083230: psu-launched agents carry their stable owner id in
+  // PAPERCUSP_SID, but the launcher argv may not contain it at all. Matching
+  // argv alone therefore reports a live agent as absent and can invite a
+  // destructive force-release. Identity is read from the bounded environment
+  // evidence instead; the environment contents are never returned.
+  it('matches a live agent through PAPERCUSP_SID when its owner id is absent from argv', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'su-live-agent-7f9d';
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+    fixtureProc(fixtureRoot, 777, 1, ['node', '/home/dev/.papercusp/bin/psu', '--agent=codex']);
+    fixtureIdentity(fixtureRoot, 777, { environment: [`PAPERCUSP_SID=${PATTERN}`] });
+
+    const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
+    expect(report.matches.map((m) => m.pid)).toEqual([777]);
+    expect(report.identityMatches.map((m) => m.pid)).toEqual([777]);
+    expect(report.fullMatches).toEqual([]);
+    expect(report.argvTextOnly).toEqual([]);
+  });
+
   it('uses argv adjacency mode to ignore gitnexus prose while retaining real commands', () => {
     fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
     const PATTERN = 'gitnexus.*analyze';
