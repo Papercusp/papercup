@@ -1,5 +1,9 @@
 /** Exact specSetHash gate shared by plans:start and direct plan-item promotion (P-004). */
-import { listScorecards, scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import {
+  listScorecards,
+  scorecardEvidenceFingerprint,
+  type ScorecardRow,
+} from '../../scorecards';
 import { listSpecClauses } from './spec-clauses-store';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF, type PlanSpecQualityResult } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
@@ -43,6 +47,7 @@ function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult)
   const expectedFingerprint = scorecardEvidenceFingerprint({
     rubricRef: SPEC_QUALITY_RUBRIC_REF,
     ratings: evaluation.ratings,
+    instrumentSnapshots: card.instrumentSnapshots,
   });
   return (
     card.rubricRef === SPEC_QUALITY_RUBRIC_REF &&

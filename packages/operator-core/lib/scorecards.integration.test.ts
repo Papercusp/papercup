@@ -126,6 +126,7 @@ async function fileScorecard(
     rubricRef?: string;
     sourceHive?: string;
     ratings: Record<string, { rating: string; evidence: string }>;
+    instrumentSnapshots?: Record<string, unknown>;
     createdAt: string;
     createdBy?: string;
   },
@@ -140,6 +141,7 @@ async function fileScorecard(
         ...(opts.rubricRef ? { rubricRef: opts.rubricRef } : {}),
         ...(opts.sourceHive ? { sourceHive: opts.sourceHive } : {}),
         ratings: opts.ratings,
+        ...(opts.instrumentSnapshots ? { instrumentSnapshots: opts.instrumentSnapshots } : {}),
       },
     },
   });
@@ -177,6 +179,14 @@ describe('listScorecards (P-013) — real PG', () => {
         'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas' },
         'watchdog-determinism': { rating: 'degraded', evidence: '2 flaky red-tests' },
         'legacy-ad-hoc-check': { rating: 'healthy', evidence: 'old writer invented a dimension' },
+      },
+      instrumentSnapshots: {
+        'spec-quality.proof': {
+          verdict: 'pass',
+          measuredAt: '2026-06-20T11:59:30.000Z',
+          value: { checked: 4 },
+          evidenceRef: 'test:spec-quality-proof',
+        },
       },
     });
     // A PARTIAL papercusp scorecard (1 of 3) — the drift P-014 must catch.
@@ -350,6 +360,14 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(complete.rubricResolved).toBe(true);
     expect(complete.score10).toBe(5); // known criteria only: broken(0), healthy(10), degraded(5)
     expect(complete.ratings['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 unplaced' });
+    expect(complete.instrumentSnapshots).toEqual({
+      'spec-quality.proof': {
+        verdict: 'pass',
+        measuredAt: '2026-06-20T11:59:30.000Z',
+        value: { checked: 4 },
+        evidenceRef: 'test:spec-quality-proof',
+      },
+    });
 
     const partial = rows[1];
     expect(partial.nKeys).toBe(1);
