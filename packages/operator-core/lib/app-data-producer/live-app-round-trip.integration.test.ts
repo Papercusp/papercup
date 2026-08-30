@@ -133,6 +133,70 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
         expect(servedId, `the ${c.app} app must serve back the row it was sent`).toBe(externalId);
       });
 
+      // ── P-012: the app's judgment door is de-conflated, proven on the LIVE app ──
+      // `handleGmailTrigger` keeps `ingestCanonicalMessage` and no longer calls
+      // `seam.enqueueWorkItems`, so platform binding b7976842 stays the single
+      // judgment path. Its observable contract is exactly two facts: the content
+      // still lands, and `workItemIds` comes back EMPTY. The Email app repo's own
+      // unit test asserts that in-process; this asserts it against the DEPLOYED
+      // sidecar, which is the half that can rot without anyone noticing — and it
+      // is the only evidence for P-012 that resolves inside this repository.
+      if (c.app === 'email') {
+        const triggerExternalId = `p012-${randomUUID()}`;
+
+        it('ingests a Gmail trigger and mints ZERO work items (P-012 de-conflation)', async () => {
+          const occurredAt = new Date().toISOString();
+          const mapped = appRowFromSourceRecord({
+            source: c.source,
+            kind: 'message',
+            externalId: triggerExternalId,
+            occurredAt,
+            title: 'P-012 judgment-door de-conflation',
+            text: 'Posted straight at the app trigger door; must mint no work item.',
+            metadata: { from: 'p012@example.com', to: ['owner@example.com'] },
+          });
+          expect(mapped, `appForSource must map '${c.source}' to an app`).not.toBeNull();
+
+          const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
+          const res = await fetch(`${c.baseUrl}/api/triggers/gmail`, {
+            method: 'POST',
+            headers: { authorization, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              eventKey: 'ext:gmail:message.received',
+              dedupeKey: triggerExternalId,
+              payload: mapped!.row,
+            }),
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+          });
+          expect(res.status).toBe(200);
+          const body = (await res.json()) as {
+            ok: boolean;
+            deduplicated: boolean;
+            workItemIds: string[];
+            messageId?: string;
+          };
+          expect(body.ok).toBe(true);
+          expect(body.deduplicated).toBe(false);
+          // THE ASSERTION THIS TEST EXISTS FOR.
+          expect(body.workItemIds).toEqual([]);
+          // …and the content half still landed, so an empty list means the judgment
+          // half was REMOVED rather than the whole handler having been switched off.
+          // Without this second assertion a fully broken endpoint would also pass.
+          expect(body.messageId).toBe(triggerExternalId);
+
+          const served = await fetch(`${c.baseUrl}/api/threads/${triggerExternalId}`, {
+            headers: { authorization },
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+          });
+          expect(served.status).toBe(200);
+          const thread = (await served.json()) as { messages?: { id: string }[] };
+          expect(
+            thread.messages?.some((m) => m.id === triggerExternalId),
+            'the app must serve back the message its trigger door ingested',
+          ).toBe(true);
+        });
+      }
+
       it('reports a cursor for this app’s source ref', async () => {
         const authorization = await appServiceAuthHeader(c.app, ownerId, { secret: c.secret });
         const res = await fetch(

@@ -23,6 +23,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
+import { ensureHostedWorkspaceHostRuntime } from '@papercusp/operator-core/lib/workspace-host/hosted-workspace-host-runtime';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
@@ -1167,6 +1168,30 @@ export function runBootstrap(): void {
   // ON, unclustered) still stand down and let the in-process-periodic scheduler own the sweep;
   // :3170 (request-only, unclustered) still arms it as the documented fallback — all three are
   // `cluster.isPrimary === true`, so the guard is a no-op for them.
+  // [agent-virtual-desktops-2026-08-23 / WI-1064431] The outbound workspace-host
+  // relay connector. Until this call the relay adapter had ZERO non-test importers,
+  // so the hosted PTY plane and the P-013 desktop viewer were both libraries with no
+  // host process — measured, not assumed.
+  //
+  // No-ops unless this host is an ENROLLED hosted workspace (the three
+  // PAPERCUSP_HOSTED_* vars). Unenrolled is the normal state for a dev box, for the
+  // control plane, and for every non-BYOC operator, so absence is silent by design —
+  // warning about it would fire on nearly every host that runs this line.
+  //
+  // PRIMARY-ONLY, for the same reason as the two blocks above but with a sharper
+  // failure: a forked request worker inherits the environment, so an unguarded call
+  // would open one outbound connector PER worker (17 on the :3070 release cluster)
+  // under ONE enrollment — and the broker keys connectors by binding, so they would
+  // silently evict each other rather than erroring.
+  if (cluster.isPrimary) {
+    try {
+      const hosted = ensureHostedWorkspaceHostRuntime();
+      if (hosted) console.log('[api] hosted workspace-host connector started');
+    } catch (e) {
+      console.warn('[api] hosted workspace-host connector failed to start:', (e as Error)?.message ?? e);
+    }
+  }
+
   if (cluster.isPrimary) {
     try {
       ensureHarnessStatusSweep();

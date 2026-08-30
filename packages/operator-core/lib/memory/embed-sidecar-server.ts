@@ -92,6 +92,8 @@ import { activeWorkspaceId } from '../workspace-registry';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
+/** Optional production FIFO window; the systemd sidecar config sets this to 6. */
+export const EMBED_SIDECAR_CONCURRENCY_ENV = 'PAPERCUSP_EMBED_SIDECAR_CONCURRENCY';
 /** Comma-separated models to warm at boot (e.g. "gemma,harrier,rerank");
  *  default gemma, and no reranker.
  *  A host whose live embedder mode is harrier should warm it here too — under
@@ -150,6 +152,22 @@ export const EMBED_SIDECAR_RUNTIME = 'node-onnx-worker';
 export const EMBED_SIDECAR_CAP_HEALTHZ = 'GET /healthz';
 export const EMBED_SIDECAR_CAP_EMBED = 'POST /embed';
 export const EMBED_SIDECAR_CAP_RERANK = 'POST /rerank';
+
+/**
+ * Resolve the optional production scheduler window.
+ *
+ * The explicit `concurrency` option remains a PG-free local scheduler seam for
+ * deterministic tests. The environment setting is the production equivalent:
+ * it enables the same bounded FIFO while retaining durable governor admission
+ * for every unit that actually starts.
+ */
+export function resolveEmbedSidecarConcurrency(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env[EMBED_SIDECAR_CONCURRENCY_ENV]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.max(1, Math.floor(parsed));
+}
 
 /**
  * What a sidecar that advertises NOTHING may be assumed to serve.
@@ -364,8 +382,8 @@ export interface EmbedSidecarOptions {
   cacheMax?: number;
   /**
    * Explicit local scheduler window for tests only. Production admission is
-   * handled by the canonical durable governor and therefore has no configured
-   * concurrency ceiling. Supplying this seam keeps deterministic FIFO tests
+   * handled by the canonical durable governor. Supplying this seam overrides
+   * the production environment window and keeps deterministic FIFO tests
    * independent of Postgres.
    */
   concurrency?: number;
@@ -572,11 +590,11 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
 
   // Bounded-concurrency FIFO (P-004 memory-public-release-hardening): work
   // units (one TEXT each — see WI-4196 below) START in arrival order when the
-  // explicit `concurrency` seam is supplied. That seam exists for deterministic
-  // unit tests only. Production has no local ceiling: every unit is admitted by
-  // the durable capless governor below, whose live feedback owns queueing and
-  // resource pressure decisions. Rejections stay per-caller; a failed unit
-  // frees its local test slot via finally.
+  // explicit `concurrency` seam is supplied, or when the production
+  // PAPERCUSP_EMBED_SIDECAR_CONCURRENCY window is configured. The explicit
+  // option remains a PG-free test seam; the environment window still routes
+  // every started unit through the durable governor below. Rejections stay
+  // per-caller; a failed unit frees its scheduler slot via finally.
   //
   // Fairness is per REQUEST, not merely per text. A handler can receive a
   // 256-text batch and enqueue all of its units synchronously; a flat FIFO
@@ -586,9 +604,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // Each request still gets its texts in input order, while a large batch
   // cannot monopolize the sidecar after its first unit has started.
   const localScheduler = opts.concurrency !== undefined;
-  const concurrency = localScheduler
-    ? Math.max(1, Math.floor(opts.concurrency as number))
-    : Number.POSITIVE_INFINITY;
+  const configuredConcurrency = opts.concurrency ?? resolveEmbedSidecarConcurrency();
+  const concurrency = configuredConcurrency === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(1, Math.floor(configuredConcurrency));
   const workspaceId = opts.workspaceId?.trim() || (localScheduler ? undefined : activeWorkspaceId());
   const governed = opts.governedOperation ?? runGovernedOperation;
   const parentAdmission = admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT);
@@ -1051,9 +1070,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
           reranker: workerStates.reranker(),
         },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
-        // `null` means no local capacity ceiling: production units are admitted
-        // independently by the durable governor. A finite value is present
-        // only when a test explicitly supplied the local scheduler seam.
+        // `null` means no local capacity ceiling. A finite value comes from the
+        // explicit PG-free test seam or the production environment window; in
+        // the latter case durable governor admission still wraps every started
+        // unit.
         concurrency: Number.isFinite(concurrency) ? concurrency : null,
         admission: {
           mode: localScheduler ? 'local-test-scheduler' : 'durable-governor',

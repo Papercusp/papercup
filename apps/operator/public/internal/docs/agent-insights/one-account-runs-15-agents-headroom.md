@@ -1,10 +1,10 @@
-# One account runs ~15 agents — never read rate flags as "no headroom"
+# One account runs ~15 agents — never read rate flags as \"no headroom\"
 URL: /internal/docs/agent-insights/one-account-runs-15-agents-headroom
 
-The inference gateway paces ~15 concurrent agents per account. Do not treat healthyAccounts=1 / sustainedlyLimited / utilization7d=1.0 as "no capacity" or refuse to launch a fleet — that is a fabricated wall.
+The inference gateway paces ~15 concurrent agents per account. Do not treat healthyAccounts=1 / sustainedlyLimited / utilization7d=1.0 as \"no capacity\" or refuse to launch a fleet — that is a fabricated wall.
 
 **Owner directive (the owner, 2026-07-06):** *"AVIYNW HAS HEADROOM. DON'T MAKE UP
-THAT THERE IS NO HEADROOM. WE CAN RUN 15 SIMULTANEOUS AGENTS ON 1 ACCOUNT."*
+that there is no headroom. WE CAN RUN 15 SIMULTANEOUS AGENTS ON 1 ACCOUNT."*
 
 ## The mistake this prevents
 
@@ -52,7 +52,7 @@ capability:terminal {
   fleet: '<fleet-slug>',            // color only — the --fleet flag below is what joins
   terminals: [
     { command: 'psu --no-picker --fleet=<slug> --agent=claude --harness=<h> --plan=<plan> --account=auto --model=sonnet:high --launch-context=<composed-brief-path>', label: 'bd-N' },
-    // …one entry per remaining member (max 12 per call)
+    // …one entry per remaining member (bulk batches accept up to 12 entries per call; repeat as needed — there is no fixed fleet-size ceiling)
   ]
 }
 ```

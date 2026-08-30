@@ -1,7 +1,6 @@
-'use client';
+"use client";
 
-
-import { Tooltip } from '@/app/harness/Tooltip';
+import { Tooltip } from "@/app/harness/Tooltip";
 /**
  * Plans admin tab — nuqs-driven shell, additive-filter model (D-007).
  *
@@ -22,39 +21,55 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * `leaveGuard()` first.
  */
 
-import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, parseAsStringEnum } from 'nuqs';
-import { useSyncQuery } from '@papercusp/sync';
-import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { toast } from 'sonner';
-import PlanRail, { type PlanRailHandle } from './PlanRail';
-import PlanDetail from './PlanDetail';
-import PlanItemsList from './PlanItemsList';
-import PlanOtherList, { OtherDetail } from './PlanOtherList';
-import PlanItemPreview from './PlanItemPreview';
-import NewPlanButton from './NewPlanButton';
-import { FLAGS } from '@papercusp/flags';
-import { useFlag } from '@/lib/flag-hooks';
-import { useLexicon } from '@/lib/useLexicon';
-import { resolveLex } from '@/app/adv/create/use-create-data';
-import DecisionLog, { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
-import QueueSummary from './QueueSummary';
-import { queueTabs, queenLogLayers } from './queue-authorizer';
-import { ClipboardList, Inbox, Terminal, SlidersHorizontal, ChevronDown } from 'lucide-react';
-import * as Collapsible from '@radix-ui/react-collapsible';
+import {
+  useQueryState,
+  parseAsArrayOf,
+  parseAsBoolean,
+  parseAsInteger,
+  parseAsString,
+  parseAsStringEnum,
+} from "nuqs";
+import { useSyncQuery } from "@papercusp/sync";
+import { wsLocalKey } from "@papercusp/operator-core/lib/browser-workspace";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import PlanRail, { type PlanRailHandle } from "./PlanRail";
+import PlanDetail from "./PlanDetail";
+import PlanItemsList from "./PlanItemsList";
+import PlanOtherList, { OtherDetail } from "./PlanOtherList";
+import PlanItemPreview from "./PlanItemPreview";
+import NewPlanButton from "./NewPlanButton";
+import { FLAGS } from "@papercusp/flags";
+import { useFlag } from "@/lib/flag-hooks";
+import { useLexicon } from "@/lib/useLexicon";
+import { resolveLex } from "@/app/adv/create/use-create-data";
+import DecisionLog, {
+  DecisionDetail,
+  type DecisionRow,
+} from "@/app/_components/DecisionLog";
+import QueueSummary from "./QueueSummary";
+import { queueTabs, queenLogLayers } from "./queue-authorizer";
+import {
+  ClipboardList,
+  Inbox,
+  Terminal,
+  SlidersHorizontal,
+  ChevronDown,
+} from "lucide-react";
+import * as Collapsible from "@radix-ui/react-collapsible";
 import {
   SessionsRosterList,
   SessionsRosterDetail,
   type RosterFilters,
-} from '@/app/adv/sessions/SessionsRosterView';
-import { SessionsRosterProvider } from '@/app/adv/sessions/SessionsRosterContext';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
-import TwoPaneShell from '@/app/_components/layout/TwoPaneShell';
-import PlanFilters from './PlanFilters';
-import PlanBucketTabs from './PlanBucketTabs';
-import PlanSearchResults from './PlanSearchResults';
-import { Select } from '@/app/harness/Select';
-import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+} from "@/app/adv/sessions/SessionsRosterView";
+import { SessionsRosterProvider } from "@/app/adv/sessions/SessionsRosterContext";
+import { useWorkspaceId } from "@/lib/use-workspace-id";
+import TwoPaneShell from "@/app/_components/layout/TwoPaneShell";
+import PlanFilters from "./PlanFilters";
+import PlanBucketTabs from "./PlanBucketTabs";
+import PlanSearchResults from "./PlanSearchResults";
+import { Select } from "@/app/harness/Select";
+import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import {
   usePlanList,
   usePlanItems,
@@ -71,82 +86,93 @@ import {
   type PlanItemRow,
   type AttentionTier,
   type AttentionKind,
-} from './plans-api';
-import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
-import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
+} from "./plans-api";
+import { launchAgent } from "@papercusp/operator-core/lib/launch-agent";
+import {
+  resolveHarnessScope,
+  type HarnessNodeForScope,
+  HARNESS_SCOPE_MODES,
+  type HarnessScopeMode,
+} from "@papercusp/operator-core/lib/harness/scope";
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
-const ACTIVE_HARNESS_KEY = 'harness.activeProject';
+const ACTIVE_HARNESS_KEY = "harness.activeProject";
 
-type PaneMode = 'read' | 'edit';
-type PlanDetailTab = 'editor' | 'revisions' | 'agents';
+type PaneMode = "read" | "edit";
+type PlanDetailTab = "editor" | "revisions" | "agents";
 
 // Additive filter model: item-status facet (OR within) AND plan-status
 // bucket facet (OR within). Each item maps to one item-status category.
 type ItemStatusFilter =
-  | 'needs-human'
-  | 'todo'
-  | 'blocked'
-  | 'coord-escalation'
-  | 'coord-message'
-  | 'smoke-fail'
-  | 'operator-report'
-  | 'improvement'
-  | 'standing-approval'
-  | 'conversation'
-  | 'scout-grade';
+  | "needs-human"
+  | "todo"
+  | "blocked"
+  | "coord-escalation"
+  | "coord-message"
+  | "smoke-fail"
+  | "operator-report"
+  | "improvement"
+  | "standing-approval"
+  | "conversation"
+  | "scout-grade";
 const ITEM_STATUS_IDS = [
-  'needs-human',
-  'todo',
-  'blocked',
-  'coord-escalation',
-  'coord-message',
-  'smoke-fail',
-  'operator-report',
-  'improvement',
-  'standing-approval',
-  'conversation',
-  'scout-grade',
+  "needs-human",
+  "todo",
+  "blocked",
+  "coord-escalation",
+  "coord-message",
+  "smoke-fail",
+  "operator-report",
+  "improvement",
+  "standing-approval",
+  "conversation",
+  "scout-grade",
 ] as const;
 // The non-plan-item facets — each maps 1:1 to an AttentionItem kind from
 // the plans:attention reader (the "Other" surfaces, now split out).
 const OTHER_KIND_IDS = [
-  'coord-escalation',
-  'coord-message',
-  'smoke-fail',
-  'operator-report',
-  'improvement',
-  'standing-approval',
-  'conversation',
-  'scout-grade',
+  "coord-escalation",
+  "coord-message",
+  "smoke-fail",
+  "operator-report",
+  "improvement",
+  "standing-approval",
+  "conversation",
+  "scout-grade",
 ] as const;
 
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
-type QueueTierFilter = AttentionTier | 'all';
-const QUEUE_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
+type QueueTierFilter = AttentionTier | "all";
+const QUEUE_TIER_FILTERS = ["all", ...ATTENTION_TIERS] as const;
 // B1 (P-006) tab + layer constants moved to ./queue-authorizer (shared with the
 // Create dock's QueuePanel so the two Queue surfaces can't diverge).
 
 /** Map a plan-item status category to its inbox tier (D-006): needs-human → a
  *  Decision, blocked → an Alert, an actionable todo → Activity. Plan items don't
  *  carry the operator-only 'handled' tier on the plans:items path. */
-function tierOfPlanCategory(c: 'needs-human' | 'todo' | 'blocked'): AttentionTier {
-  return c === 'needs-human' ? 'decision' : c === 'blocked' ? 'alert' : 'activity';
+function tierOfPlanCategory(
+  c: "needs-human" | "todo" | "blocked",
+): AttentionTier {
+  return c === "needs-human"
+    ? "decision"
+    : c === "blocked"
+      ? "alert"
+      : "activity";
 }
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
-  'needs-human': 'Needs Human',
-  todo: 'ToDos',
-  blocked: 'Blocked',
-  'coord-escalation': 'Escalations',
-  'coord-message': 'Messages',
-  'smoke-fail': 'Smoke',
-  'operator-report': 'Reports',
-  improvement: 'Improvements',
-  'standing-approval': 'Approvals',
-  conversation: 'Questions',
+  "needs-human": "Needs Human",
+  todo: "ToDos",
+  blocked: "Blocked",
+  "coord-escalation": "Escalations",
+  "coord-message": "Messages",
+  "smoke-fail": "Smoke",
+  "operator-report": "Reports",
+  improvement: "Improvements",
+  "standing-approval": "Approvals",
+  conversation: "Questions",
   // {scout} → active cast word at render ("Blender" in classic/Pot) via resolveLex.
-  'scout-grade': '{scout}',
+  "scout-grade": "{scout}",
 };
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -161,76 +187,104 @@ export default function PlansClient() {
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
   // `?slug=` for the active harness (a global query param shared across
   // every /adv tab).
-  const [slug, setSlug] = useQueryState('plan', parseAsString);
-  const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
+  const [slug, setSlug] = useQueryState("plan", parseAsString);
+  const [q, setQ] = useQueryState("q", parseAsString.withDefault(""));
   const [, setPane] = useQueryState(
-    'pane',
-    parseAsStringEnum<PaneMode>(['read', 'edit']).withDefault('read'),
+    "pane",
+    parseAsStringEnum<PaneMode>(["read", "edit"]).withDefault("read"),
   );
   // `ptab` (plan-detail tab), NOT `tab` — AdvShell owns `?tab=` on /adv.
   const [, setTab] = useQueryState(
-    'ptab',
-    parseAsStringEnum<PlanDetailTab>(['editor', 'revisions', 'agents']).withDefault('editor'),
+    "ptab",
+    parseAsStringEnum<PlanDetailTab>([
+      "editor",
+      "revisions",
+      "agents",
+    ]).withDefault("editor"),
   );
-  const [, setJump] = useQueryState('jump', parseAsString);
+  const [, setJump] = useQueryState("jump", parseAsString);
   // Per-plan filter for the item list. The Plans view uses the same rail as
   // the Queue and Sessions views, but a plan click there opens the full plan
   // detail; only the latter two views use this multi-select OR filter.
   const [itemPlans, setItemPlans] = useQueryState(
-    'itemPlans',
+    "itemPlans",
     parseAsArrayOf(parseAsString).withDefault([]),
   );
 
   // Sessions view (P-007): the agent whose dossier is open in the right pane.
-  const [selectedAgent, setSelectedAgent] = useQueryState('agent', parseAsString);
+  const [selectedAgent, setSelectedAgent] = useQueryState(
+    "agent",
+    parseAsString,
+  );
   // Sessions roster facet filters (P-010) — each its own URL param.
-  const [sClient, setSClient] = useQueryState('sClient', parseAsString);
-  const [sLive, setSLive] = useQueryState('sLive', parseAsString);
-  const [sRole, setSRole] = useQueryState('sRole', parseAsString);
-  const [sFile, setSFile] = useQueryState('sFile', parseAsString.withDefault(''));
+  const [sClient, setSClient] = useQueryState("sClient", parseAsString);
+  const [sLive, setSLive] = useQueryState("sLive", parseAsString);
+  const [sRole, setSRole] = useQueryState("sRole", parseAsString);
+  const [sFile, setSFile] = useQueryState(
+    "sFile",
+    parseAsString.withDefault(""),
+  );
   // Stale agents (>10m idle) are hidden by default — show on demand (P perf fix).
-  const [sStale, setSStale] = useQueryState('sStale', parseAsBoolean.withDefault(false));
+  const [sStale, setSStale] = useQueryState(
+    "sStale",
+    parseAsBoolean.withDefault(false),
+  );
 
   // Additive filter facets.
   const [istatus, setIstatus] = useQueryState(
-    'istatus',
-    parseAsArrayOf(parseAsStringEnum<ItemStatusFilter>([...ITEM_STATUS_IDS])).withDefault([]),
+    "istatus",
+    parseAsArrayOf(
+      parseAsStringEnum<ItemStatusFilter>([...ITEM_STATUS_IDS]),
+    ).withDefault([]),
   );
   const [pBuckets] = useQueryState(
-    'pBuckets',
-    parseAsArrayOf(parseAsStringEnum<PlanBucket>([...BUCKET_IDS])).withDefault([]),
+    "pBuckets",
+    parseAsArrayOf(parseAsStringEnum<PlanBucket>([...BUCKET_IDS])).withDefault(
+      [],
+    ),
   );
   // Main-pane view: the plan browser (default — this is the Plans tab) vs the
   // item inbox. The Plans / Inbox header buttons flip it.
   const [view, setView] = useQueryState(
-    'view',
-    parseAsStringEnum<'plans' | 'queue' | 'sessions'>(['plans', 'queue', 'sessions']).withDefault('plans'),
+    "view",
+    parseAsStringEnum<"plans" | "queue" | "sessions">([
+      "plans",
+      "queue",
+      "sessions",
+    ]).withDefault("plans"),
   );
   // queue-authorization-redesign (P-004): the A1 authorizer-split Queue view
   // (group pending items by who must sign off). Default-ON; OFF = legacy tier grouping.
   const queueAuthzView = useFlag(FLAGS.QUEUE_AUTHORIZATION_VIEW);
   // B1 (P-006): which queue tab is shown + the Queen-log layer (disposition/action).
   const [queueTab, setQueueTab] = useQueryState(
-    'queueTab',
-    parseAsStringEnum<'pending' | 'queen-log'>(['pending', 'queen-log']).withDefault('pending'),
+    "queueTab",
+    parseAsStringEnum<"pending" | "queen-log">([
+      "pending",
+      "queen-log",
+    ]).withDefault("pending"),
   );
   const [qlLayer, setQlLayer] = useQueryState(
-    'qlLayer',
-    parseAsStringEnum<'disposition' | 'action'>(['disposition', 'action']).withDefault('disposition'),
+    "qlLayer",
+    parseAsStringEnum<"disposition" | "action">([
+      "disposition",
+      "action",
+    ]).withDefault("disposition"),
   );
   // Queen's-log selection is URL-driven (?decision=), looked up from the SAME
   // decision.ledger the log renders — the robust 3-pane path the Pending lists use
   // (?item= / ?other=), NOT a child→parent useState mirror (which didn't reliably
   // update the right pane). Deep-linkable + survives the ledger's refresh.
-  const [queueDecisionSel] = useQueryState('decision', parseAsInteger);
+  const [queueDecisionSel] = useQueryState("decision", parseAsInteger);
   const queenLogRows = useSyncQuery<DecisionRow>({
-    queryName: 'decision.ledger',
+    queryName: "decision.ledger",
     args: { layer: qlLayer, limit: 50 },
   });
   const selectedDecision = useMemo(
     () =>
       queueDecisionSel != null
-        ? (queenLogRows.data ?? []).find((r) => r.id === queueDecisionSel) ?? null
+        ? ((queenLogRows.data ?? []).find((r) => r.id === queueDecisionSel) ??
+          null)
         : null,
     [queueDecisionSel, queenLogRows.data],
   );
@@ -240,15 +294,20 @@ export default function PlansClient() {
   // deep-link contract (operator-vite's AdvOverviewTab tiles write ?inboxTier=),
   // not internal naming-debt. Renaming the key would be a functional change.
   const [queueTier, setQueueTier] = useQueryState(
-    'inboxTier',
-    parseAsStringEnum<QueueTierFilter>([...QUEUE_TIER_FILTERS]).withDefault('all'),
+    "inboxTier",
+    parseAsStringEnum<QueueTierFilter>([...QUEUE_TIER_FILTERS]).withDefault(
+      "all",
+    ),
   );
   // Inbox shared-preview selection: a plan-item (`?item=`, "<plan>::<id>") or
   // an Other attention item (`?other=`). The two list sections each set their
   // own param and clear the sibling, so at most one is live; the single shared
   // preview pane (right column) renders whichever it is.
-  const [queueItemSel] = useQueryState('item', parseAsString);
-  const [queueOtherSel, setQueueOtherSel] = useQueryState('other', parseAsString);
+  const [queueItemSel] = useQueryState("item", parseAsString);
+  const [queueOtherSel, setQueueOtherSel] = useQueryState(
+    "other",
+    parseAsString,
+  );
 
   // Queue Filter (redesign): the kind facet (qKinds — narrows the Other kinds in
   // the authorizer buckets; plan-items always show), the opt-in backlog toggles
@@ -256,28 +315,45 @@ export default function PlansClient() {
   // section; default OFF so the Queue defaults to "what needs attention", not the
   // whole work backlog), and the Filter panel's open state (a panel-open flag → nuqs).
   const [queueKinds, setQueueKinds] = useQueryState(
-    'qKinds',
-    parseAsArrayOf(parseAsStringEnum<AttentionKind>([...OTHER_KIND_IDS])).withDefault([]),
+    "qKinds",
+    parseAsArrayOf(
+      parseAsStringEnum<AttentionKind>([...OTHER_KIND_IDS]),
+    ).withDefault([]),
   );
   const toggleQueueKind = useCallback(
     (k: AttentionKind) =>
-      void setQueueKinds(queueKinds.includes(k) ? queueKinds.filter((x) => x !== k) : [...queueKinds, k]),
+      void setQueueKinds(
+        queueKinds.includes(k)
+          ? queueKinds.filter((x) => x !== k)
+          : [...queueKinds, k],
+      ),
     [queueKinds, setQueueKinds],
   );
-  const [qTodos, setQTodos] = useQueryState('qTodos', parseAsBoolean.withDefault(false));
-  const [qBlocked, setQBlocked] = useQueryState('qBlocked', parseAsBoolean.withDefault(false));
-  const [qFilterOpen, setQFilterOpen] = useQueryState('qFilter', parseAsBoolean.withDefault(false));
+  const [qTodos, setQTodos] = useQueryState(
+    "qTodos",
+    parseAsBoolean.withDefault(false),
+  );
+  const [qBlocked, setQBlocked] = useQueryState(
+    "qBlocked",
+    parseAsBoolean.withDefault(false),
+  );
+  const [qFilterOpen, setQFilterOpen] = useQueryState(
+    "qFilter",
+    parseAsBoolean.withDefault(false),
+  );
 
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   // P-024 + P-016 + P-015 + P-029: harness scope. `?h=` user filter →
   // `?slug=` active harness → `?scope=` expanded/self toggle.
-  const [harnessFilter, setHarnessFilter] = useQueryState('h', parseAsString);
-  const [advActiveSlug] = useQueryState('slug', parseAsString);
+  const [harnessFilter, setHarnessFilter] = useQueryState("h", parseAsString);
+  const [advActiveSlug] = useQueryState("slug", parseAsString);
   const [scopeMode] = useQueryState(
-    'scope',
-    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
+    "scope",
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault(
+      "expanded",
+    ),
   );
   // LIVE harness registry (harnessProjects.lite). Replaces the old one-shot
   // /api/harness/projects/lite fetch (data-sync-push-completion P-010): the
@@ -288,7 +364,7 @@ export default function PlansClient() {
   // HarnessNodeForScope is its structural subset (slug + parent_slug), so the
   // cast needs no field renaming.
   const registryQuery = useSyncQuery<HarnessNodeForScope>({
-    queryName: 'harnessProjects.lite',
+    queryName: "harnessProjects.lite",
     args: { includeHiveHomes: true },
     staleTime: 60_000,
   });
@@ -298,22 +374,24 @@ export default function PlansClient() {
   );
   const harnessSlugsForFetch = useMemo<readonly string[] | undefined>(() => {
     if (harnessFilter) return [harnessFilter];
-    // "All harnesses": fan out over every harness in the workspace. The
-    // plans server treats an omitted list as ctx-harness-only (NOT all),
-    // so we must pass every slug explicitly. Until the registry loads we
-    // fall back to undefined (ctx harness) and re-resolve once it arrives.
-    if (scopeMode === 'all') {
-      return registryProjects.length ? registryProjects.map((p) => p.slug) : undefined;
+    // "All harnesses" deliberately reuses the unscoped plans.list query. The
+    // UI read dispatcher turns that into workspaceWide:true, which is both the
+    // canonical all-workspace contract and the cache key shared by the other
+    // unscoped plan readers. Explicitly fanning out the live registry is wrong:
+    // harness_slugs is a bounded (max 64) targeted-scope primitive, so a large
+    // workspace makes the background list fail before the handler can run.
+    if (scopeMode === "all") {
+      return undefined;
     }
     if (!advActiveSlug) return undefined;
-    if (scopeMode === 'self') return [advActiveSlug];
+    if (scopeMode === "self") return [advActiveSlug];
     if (registryProjects.length === 0) return [advActiveSlug];
     return resolveHarnessScope(advActiveSlug, registryProjects);
   }, [harnessFilter, advActiveSlug, scopeMode, registryProjects]);
   const planList = usePlanList({
     includeArchived: true,
     includeLegacy: true,
-    harness_slugs: harnessSlugsForFetch,
+    ...(harnessSlugsForFetch ? { harness_slugs: harnessSlugsForFetch } : {}),
   });
   const harnessOptions = useMemo<string[]>(() => {
     const set = new Set<string>();
@@ -371,16 +449,18 @@ export default function PlansClient() {
   // any subset. All three always load — the main pane is always items.
   const itemsNeedsHuman = usePlanItems({ needsHuman: true });
   const itemsActionable = usePlanItems({ actionable: true });
-  const itemsBlocked = usePlanItems({ status: 'blocked' });
-  const itemsLoading = itemsNeedsHuman.loading || itemsActionable.loading || itemsBlocked.loading;
-  const itemsError = itemsNeedsHuman.error ?? itemsActionable.error ?? itemsBlocked.error;
+  const itemsBlocked = usePlanItems({ status: "blocked" });
+  const itemsLoading =
+    itemsNeedsHuman.loading || itemsActionable.loading || itemsBlocked.loading;
+  const itemsError =
+    itemsNeedsHuman.error ?? itemsActionable.error ?? itemsBlocked.error;
   // The "Other" facet: non-plan-item attention surfaces (coord escalations,
   // smoke-fails, plan reviews, messages) from the plans:attention reader.
   // Scope it to the active harness — otherwise OTHER harnesses' non-plan items
   // leak into a single-harness inbox. Under "All harnesses" (scope=all) pass
   // nothing so the whole workspace shows.
   const attention = usePlanAttention(
-    scopeMode === 'all'
+    scopeMode === "all"
       ? undefined
       : { harnessSlug: harnessFilter ?? advActiveSlug ?? undefined },
   );
@@ -393,9 +473,12 @@ export default function PlansClient() {
 
   const taggedItems = useMemo(() => {
     const out: Array<{ row: PlanItemRow; category: ItemStatusFilter }> = [];
-    for (const r of itemsNeedsHuman.data?.items ?? []) out.push({ row: r, category: 'needs-human' });
-    for (const r of itemsActionable.data?.items ?? []) out.push({ row: r, category: 'todo' });
-    for (const r of itemsBlocked.data?.items ?? []) out.push({ row: r, category: 'blocked' });
+    for (const r of itemsNeedsHuman.data?.items ?? [])
+      out.push({ row: r, category: "needs-human" });
+    for (const r of itemsActionable.data?.items ?? [])
+      out.push({ row: r, category: "todo" });
+    for (const r of itemsBlocked.data?.items ?? [])
+      out.push({ row: r, category: "blocked" });
     const seen = new Set<string>();
     const dedup: typeof out = [];
     for (const e of out) {
@@ -412,7 +495,10 @@ export default function PlansClient() {
   // a non-plan-scoped item appears in multiple groups server-side, so a bare
   // flatMap would render it once per group.
   const otherItems = useMemo(
-    () => flattenAttentionItems(attention.data?.groups ?? []).filter((i) => i.kind !== 'plan-item'),
+    () =>
+      flattenAttentionItems(attention.data?.groups ?? []).filter(
+        (i) => i.kind !== "plan-item",
+      ),
     [attention.data],
   );
 
@@ -433,8 +519,8 @@ export default function PlansClient() {
     });
   }, [qTodos, qBlocked, itemsActionable.data, itemsBlocked.data]);
 
-  const istatusKey = istatus.join('|');
-  const pBucketsKey = pBuckets.join('|');
+  const istatusKey = istatus.join("|");
+  const pBucketsKey = pBuckets.join("|");
   // The additive result: items whose category is in the item-status facet
   // (or all if empty) AND whose plan is in the bucket facet (or all).
   const filteredItems = useMemo(
@@ -442,13 +528,17 @@ export default function PlansClient() {
       taggedItems
         .filter((e) => istatus.length === 0 || istatus.includes(e.category))
         .filter(
-          (e) => pBuckets.length === 0 || pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft'),
+          (e) =>
+            pBuckets.length === 0 ||
+            pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? "draft"),
         )
         // Inbox tier filter (D-006): plan-item tier derives from its category.
         .filter(
           (e) =>
-            queueTier === 'all' ||
-            tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked') === queueTier,
+            queueTier === "all" ||
+            tierOfPlanCategory(
+              e.category as "needs-human" | "todo" | "blocked",
+            ) === queueTier,
         )
         .map((e) => e.row),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -461,20 +551,24 @@ export default function PlansClient() {
   // the plan buckets.
   const itemStatusCounts = useMemo(() => {
     const acc: Record<ItemStatusFilter, number> = {
-      'needs-human': 0,
+      "needs-human": 0,
       todo: 0,
       blocked: 0,
-      'coord-escalation': 0,
-      'coord-message': 0,
-      'smoke-fail': 0,
-      'operator-report': 0,
+      "coord-escalation": 0,
+      "coord-message": 0,
+      "smoke-fail": 0,
+      "operator-report": 0,
       improvement: 0,
-      'standing-approval': 0,
+      "standing-approval": 0,
       conversation: 0,
-      'scout-grade': 0,
+      "scout-grade": 0,
     };
     for (const e of taggedItems) {
-      if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
+      if (
+        pBuckets.length &&
+        !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? "draft")
+      )
+        continue;
       acc[e.category] += 1;
     }
     for (const it of otherItems) {
@@ -494,10 +588,21 @@ export default function PlansClient() {
   // (respecting the plan-bucket facet, like itemStatusCounts) + other items by
   // their (triage-overlaid) tier. The Decisions count is the headline badge.
   const tierCounts = useMemo(() => {
-    const acc: Record<AttentionTier, number> = { decision: 0, handled: 0, alert: 0, activity: 0 };
+    const acc: Record<AttentionTier, number> = {
+      decision: 0,
+      handled: 0,
+      alert: 0,
+      activity: 0,
+    };
     for (const e of taggedItems) {
-      if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
-      acc[tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked')] += 1;
+      if (
+        pBuckets.length &&
+        !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? "draft")
+      )
+        continue;
+      acc[
+        tierOfPlanCategory(e.category as "needs-human" | "todo" | "blocked")
+      ] += 1;
     }
     for (const it of otherItems) acc[it.tier] += 1;
     return acc;
@@ -512,24 +617,32 @@ export default function PlansClient() {
   // on ALL started plans, not just those with actionable items. (PlanRail
   // re-applies the same applyPlanFilters + bucket filter, so passing the full
   // set here yields exactly the chip-counted plans.)
-  const itemPlanSlugs = useMemo(() => new Set(filteredItems.map((r) => r.plan)), [filteredItems]);
+  const itemPlanSlugs = useMemo(
+    () => new Set(filteredItems.map((r) => r.plan)),
+    [filteredItems],
+  );
   const railVisiblePlans = useMemo(
-    () => (pBuckets.length > 0 ? visiblePlans : visiblePlans.filter((p) => itemPlanSlugs.has(p.slug))),
+    () =>
+      pBuckets.length > 0
+        ? visiblePlans
+        : visiblePlans.filter((p) => itemPlanSlugs.has(p.slug)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [visiblePlans, itemPlanSlugs, pBucketsKey],
   );
   const railList = useMemo(
     () => ({
       ...filteredPlanList,
-      data: filteredPlanList.data ? { ...filteredPlanList.data, plans: railVisiblePlans } : null,
+      data: filteredPlanList.data
+        ? { ...filteredPlanList.data, plans: railVisiblePlans }
+        : null,
     }),
     [filteredPlanList, railVisiblePlans],
   );
 
   // Heading text for the item list — reflects the active facets.
   const itemTitle = istatus.length
-    ? istatus.map((s) => resolveLex(ITEM_FILTER_LABEL[s], t)).join(' · ')
-    : 'All items';
+    ? istatus.map((s) => resolveLex(ITEM_FILTER_LABEL[s], t)).join(" · ")
+    : "All items";
 
   // Search-scope chips in PlanSearchResults (plans with needs-human /
   // todo items). Derived from plan-list item counts.
@@ -537,7 +650,7 @@ export default function PlansClient() {
     () =>
       new Set(
         (planList.data?.plans ?? [])
-          .filter((p) => (p.itemCounts?.['needs-human'] ?? 0) > 0)
+          .filter((p) => (p.itemCounts?.["needs-human"] ?? 0) > 0)
           .map((p) => p.slug),
       ),
     [planList.data],
@@ -568,17 +681,17 @@ export default function PlansClient() {
   const leaveGuard = useCallback(async (): Promise<boolean> => {
     if (!dirtyRef.current) return true;
     return askConfirm({
-      title: 'Discard unsaved edits?',
-      body: 'Your current plan edits will be discarded.',
-      confirmLabel: 'Discard',
+      title: "Discard unsaved edits?",
+      body: "Your current plan edits will be discarded.",
+      confirmLabel: "Discard",
       destructive: true,
     });
   }, [askConfirm]);
 
   const navSlug = useCallback(
     async (next: string | null) => {
-      if (!await leaveGuard()) return;
-      setPane('read');
+      if (!(await leaveGuard())) return;
+      setPane("read");
       setSlug(next);
     },
     [leaveGuard, setPane, setSlug],
@@ -590,11 +703,11 @@ export default function PlansClient() {
   // Plans view now) instead of silently shadowing the Queue/Sessions 3-pane.
   const navPlanTarget = useCallback(
     async (next: string, targetId?: string) => {
-      if (!await leaveGuard()) return;
-      setPane('read');
-      setTab('editor');
+      if (!(await leaveGuard())) return;
+      setPane("read");
+      setTab("editor");
       setJump(targetId ?? null);
-      void setView('plans');
+      void setView("plans");
       setSlug(next);
     },
     [leaveGuard, setJump, setPane, setSlug, setTab, setView],
@@ -609,12 +722,14 @@ export default function PlansClient() {
   itemPlansRef.current = itemPlans;
   const onSelectPlan = useCallback(
     (s: string) => {
-      if (viewRef.current === 'plans') {
+      if (viewRef.current === "plans") {
         void navSlug(s);
         return;
       }
       const current = itemPlansRef.current;
-      void setItemPlans(current.includes(s) ? current.filter((x) => x !== s) : [...current, s]);
+      void setItemPlans(
+        current.includes(s) ? current.filter((x) => x !== s) : [...current, s],
+      );
     },
     [navSlug, setItemPlans],
   );
@@ -623,48 +738,54 @@ export default function PlansClient() {
   // (active plan-status / harness filters stay). Closes any open plan +
   // search + per-plan rail selection so the full cross-plan Queue shows.
   const goQueue = useCallback(async () => {
-    if (!await leaveGuard()) return;
-    setPane('read');
+    if (!(await leaveGuard())) return;
+    setPane("read");
     setSlug(null);
     void setQ(null);
     void setIstatus([]);
     void setItemPlans([]);
-    void setView('queue');
+    void setView("queue");
   }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlans, setView]);
 
   // "Plans" — the plan browser view. Closes any open plan + search; plan-status
   // / harness filters stay applied (they scope which plans show).
   const goPlans = useCallback(async () => {
-    if (!await leaveGuard()) return;
-    setPane('read');
+    if (!(await leaveGuard())) return;
+    setPane("read");
     setSlug(null);
     void setQ(null);
-    void setView('plans');
+    void setView("plans");
   }, [leaveGuard, setPane, setSlug, setQ, setView]);
 
   // "Sessions" — the live agent roster. Closes any open plan + search; the rail
   // plan selection (itemPlans) STAYS, since it filters the roster's plan groups
   // exactly as it filters inbox items (D-003/D-005).
   const goSessions = useCallback(async () => {
-    if (!await leaveGuard()) return;
-    setPane('read');
+    if (!(await leaveGuard())) return;
+    setPane("read");
     setSlug(null);
     void setQ(null);
-    void setView('sessions');
+    void setView("sessions");
   }, [leaveGuard, setPane, setSlug, setQ, setView]);
 
   usePlanShortcuts({ navSlug, setQ, rail: railRef, search: searchRef });
 
   // P-007: dual-homed (/admin/plans + /adv?tab=plans). Fall back to the
   // localStorage active-harness for the New plan button on standalone /admin.
-  const [activeHarnessSlug] = useQueryState('slug', parseAsString);
-  const [fallbackHarnessSlug, setFallbackHarnessSlug] = useState<string | null>(null);
+  const [activeHarnessSlug] = useQueryState("slug", parseAsString);
+  const [fallbackHarnessSlug, setFallbackHarnessSlug] = useState<string | null>(
+    null,
+  );
   useEffect(() => {
     if (activeHarnessSlug) return;
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
     try {
-      setFallbackHarnessSlug(window.localStorage.getItem(wsLocalKey(ACTIVE_HARNESS_KEY)));
-    } catch { /* ignore */ }
+      setFallbackHarnessSlug(
+        window.localStorage.getItem(wsLocalKey(ACTIVE_HARNESS_KEY)),
+      );
+    } catch {
+      /* ignore */
+    }
   }, [activeHarnessSlug]);
   const resolvedHarnessSlug = activeHarnessSlug ?? fallbackHarnessSlug;
 
@@ -672,31 +793,39 @@ export default function PlansClient() {
   // ownerSlug is the EXPLICIT owning hive (steering-nested-hive-plan-tree P-005) —
   // the active scope when concrete, else the owner's menu choice (null = explicit
   // workspace-level). NewPlanButton makes the choice instead of silently defaulting.
-  const onNewPlan = useCallback(async (ownerSlug: string | null) => {
-    if (launchingNewPlan) return;
-    setLaunchingNewPlan(true);
-    try {
-      const result = await launchAgent({
-        slug: ownerSlug ?? null,
-        planSlug: null,
-        label: ownerSlug ? `new-plan · ${ownerSlug}` : 'new-plan',
-        kickoff: { kind: 'new-plan' },
-        // Open as a pane in the zellij dock (owner ask, pui-dock-agent-stack):
-        // record a pending workbench launch; the dock's pui dock-driver panes it
-        // reactively instead of the server spawning an OS terminal window.
-        deferSpawn: true,
-      });
-      if (result.ok) {
-        toast.success('Plan-drafting agent queued — opening as a pane in the dock.', { duration: 3000 });
-      } else if (result.installCmd) {
-        toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
-      } else {
-        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
+  const onNewPlan = useCallback(
+    async (ownerSlug: string | null) => {
+      if (launchingNewPlan) return;
+      setLaunchingNewPlan(true);
+      try {
+        const result = await launchAgent({
+          slug: ownerSlug ?? null,
+          planSlug: null,
+          label: ownerSlug ? `new-plan · ${ownerSlug}` : "new-plan",
+          kickoff: { kind: "new-plan" },
+          // Open as a pane in the zellij dock (owner ask, pui-dock-agent-stack):
+          // record a pending workbench launch; the dock's pui dock-driver panes it
+          // reactively instead of the server spawning an OS terminal window.
+          deferSpawn: true,
+        });
+        if (result.ok) {
+          toast.success(
+            "Plan-drafting agent queued — opening as a pane in the dock.",
+            { duration: 3000 },
+          );
+        } else if (result.installCmd) {
+          toast.error(
+            `${result.error ?? "OMP launch prerequisites are missing."} Run: ${result.installCmd}`,
+          );
+        } else {
+          toast.error(`Launch failed: ${result.error ?? "unknown error"}`);
+        }
+      } finally {
+        setLaunchingNewPlan(false);
       }
-    } finally {
-      setLaunchingNewPlan(false);
-    }
-  }, [launchingNewPlan]);
+    },
+    [launchingNewPlan],
+  );
 
   // The inbox's single shared sticky preview — renders the selected plan-item
   // (`?item=`) or Other attention item (`?other=`), or an empty prompt. Both
@@ -704,19 +833,21 @@ export default function PlansClient() {
   const renderQueuePreview = () => {
     // Queen's-log tab: the selected decision's full detail shows here (right pane),
     // not as an inline accordion in the list (3-pane consistency, P-004).
-    if (queueAuthzView && queueTab === 'queen-log') {
+    if (queueAuthzView && queueTab === "queen-log") {
       return (
         <aside className="pc-items__detail">
           {selectedDecision ? (
             <DecisionDetail row={selectedDecision} />
           ) : (
-            <div className="pc-items__detail-empty">Select a decision to see its full detail.</div>
+            <div className="pc-items__detail-empty">
+              Select a decision to see its full detail.
+            </div>
           )}
         </aside>
       );
     }
     if (queueItemSel) {
-      const idx = queueItemSel.indexOf('::');
+      const idx = queueItemSel.indexOf("::");
       const pSlug = idx === -1 ? null : queueItemSel.slice(0, idx);
       const iId = idx === -1 ? null : queueItemSel.slice(idx + 2);
       return (
@@ -724,7 +855,7 @@ export default function PlansClient() {
           key={queueItemSel}
           planSlug={pSlug}
           itemId={iId}
-          harnessSlug={pSlug ? harnessByPlan.get(pSlug) ?? null : null}
+          harnessSlug={pSlug ? (harnessByPlan.get(pSlug) ?? null) : null}
           onResolved={refreshItems}
           onViewFullPlan={navPlanTarget}
         />
@@ -745,7 +876,9 @@ export default function PlansClient() {
     }
     return (
       <aside className="pc-items__detail">
-        <div className="pc-items__detail-empty">Select an item to see its detail and actions.</div>
+        <div className="pc-items__detail-empty">
+          Select an item to see its detail and actions.
+        </div>
       </aside>
     );
   };
@@ -759,56 +892,75 @@ export default function PlansClient() {
             resolvedHarnessSlug={resolvedHarnessSlug}
             projects={registryProjects}
             launching={launchingNewPlan}
-            potLabel={t('pot', { lower: true })}
+            potLabel={t("pot", { lower: true })}
             onLaunch={onNewPlan}
           />
-          <Tooltip label={`Browse plans — open one to view/edit it. (Plan-status & ${t('pot', { lower: true })} filters stay applied.)`}><button
-            type="button"
-            className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
-            onClick={() => void goPlans()}
-
+          <Tooltip
+            label={`Browse plans — open one to view/edit it. (Plan-status & ${t("pot", { lower: true })} filters stay applied.)`}
           >
-            <ClipboardList size={14} aria-hidden />
-            Plans
-          </button></Tooltip>
-          <Tooltip label={`Open the Queue — every decision & action surface across plans the ${t('brain')} did not auto-handle, with item filters cleared (plan filters stay).`}><button
-            type="button"
-            className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
-            onClick={() => void goQueue()}
-
+            <button
+              type="button"
+              className={`pc-plans__plans-btn${view === "plans" ? " is-active" : ""}`}
+              onClick={() => void goPlans()}
+            >
+              <ClipboardList size={14} aria-hidden />
+              Plans
+            </button>
+          </Tooltip>
+          <Tooltip
+            label={`Open the Queue — every decision & action surface across plans the ${t("brain")} did not auto-handle, with item filters cleared (plan filters stay).`}
           >
-            <Inbox size={14} aria-hidden />
-            <span className="pc-plans__queue-btn-label">Queue</span>
-            {queueTotal > 0 ? <span className="pc-plans__queue-btn-count">{queueTotal}</span> : null}
-          </button></Tooltip>
-          <Tooltip label="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section."><button
-            type="button"
-            className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
-            onClick={() => void goSessions()}
-
-          >
-            <Terminal size={14} aria-hidden />
-            <span className="pc-plans__queue-btn-label">Sessions</span>
-          </button></Tooltip>
+            <button
+              type="button"
+              className={`pc-plans__queue-btn${view === "queue" ? " is-active" : ""}`}
+              onClick={() => void goQueue()}
+            >
+              <Inbox size={14} aria-hidden />
+              <span className="pc-plans__queue-btn-label">Queue</span>
+              {queueTotal > 0 ? (
+                <span className="pc-plans__queue-btn-count">{queueTotal}</span>
+              ) : null}
+            </button>
+          </Tooltip>
+          <Tooltip label="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section.">
+            <button
+              type="button"
+              className={`pc-plans__sessions-btn${view === "sessions" ? " is-active" : ""}`}
+              onClick={() => void goSessions()}
+            >
+              <Terminal size={14} aria-hidden />
+              <span className="pc-plans__queue-btn-label">Sessions</span>
+            </button>
+          </Tooltip>
         </div>
 
         {/* ── PLANS group — search + plan-status filters (scope which plans' items show). ── */}
         <div className="pc-plans__group">
           {harnessOptions.length > 1 ? (
             <div className="pc-plans__harness-filter">
-              <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
-                {t('pot')}
+              <label
+                className="pc-plans__harness-filter-label"
+                htmlFor="pc-plans-harness-filter"
+              >
+                {t("pot")}
               </label>
               <Select
                 id="pc-plans-harness-filter"
                 triggerClassName="pc-plans__harness-filter-select"
-                value={harnessFilter ?? ''}
-                onChange={(value) => void setHarnessFilter(value === '_all' ? null : value)}
-                ariaLabel={`Filter plans by ${t('pot', { lower: true })}`}
+                value={harnessFilter ?? ""}
+                onChange={(value) =>
+                  void setHarnessFilter(value === "_all" ? null : value)
+                }
+                ariaLabel={`Filter plans by ${t("pot", { lower: true })}`}
                 options={[
-                  { value: '_all', label: `All (${planList.data?.plans.length ?? 0})` },
+                  {
+                    value: "_all",
+                    label: `All (${planList.data?.plans.length ?? 0})`,
+                  },
                   ...harnessOptions.map((h) => {
-                  const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
+                    const count = (planList.data?.plans ?? []).filter(
+                      (p) => p.harness === h,
+                    ).length;
                     return { value: h, label: `${h} (${count})` };
                   }),
                 ]}
@@ -827,8 +979,12 @@ export default function PlansClient() {
               the Queue (which slices by authorizer, not plan lifecycle), so the
               Queue hides them — the rail there is just harness filter + search +
               the plan list as a per-plan queue filter. */}
-          {view !== 'queue' ? (
-            <PlanBucketTabs plans={visiblePlans} query={q} searchHitSlugs={searchHitSlugs} />
+          {view !== "queue" ? (
+            <PlanBucketTabs
+              plans={visiblePlans}
+              query={q}
+              searchHitSlugs={searchHitSlugs}
+            />
           ) : null}
         </div>
 
@@ -836,7 +992,7 @@ export default function PlansClient() {
           <PlanRail
             ref={railRef}
             list={railList}
-            selectedSlugs={view === 'plans' ? (slug ? [slug] : []) : itemPlans}
+            selectedSlugs={view === "plans" ? (slug ? [slug] : []) : itemPlans}
             query={q}
             searchHitSlugs={searchHitSlugs}
             onSelect={onSelectPlan}
@@ -852,7 +1008,7 @@ export default function PlansClient() {
             three views otherwise render through ONE persistent TwoPaneShell, so
             switching view swaps the list/detail content without remounting the
             2-pane frame. The roster poll is enabled only on Sessions. */}
-        {view === 'plans' && slug ? (
+        {view === "plans" && slug ? (
           <PlanDetail
             key={slug}
             slug={slug}
@@ -861,13 +1017,20 @@ export default function PlansClient() {
             onDirtyChange={(d) => {
               dirtyRef.current = d;
             }}
-            startStatus={visiblePlans.find((p) => p.slug === slug)?.startStatus ?? null}
+            startStatus={
+              visiblePlans.find((p) => p.slug === slug)?.startStatus ?? null
+            }
             onStartStatusChange={() => planList.refresh()}
             onPlanStatusChange={(status?: PlanStatus) => {
               if (status && planList.setData) {
                 planList.setData((prev) =>
                   prev
-                    ? { ...prev, plans: prev.plans.map((p) => (p.slug === slug ? { ...p, status } : p)) }
+                    ? {
+                        ...prev,
+                        plans: prev.plans.map((p) =>
+                          p.slug === slug ? { ...p, status } : p,
+                        ),
+                      }
                     : prev,
                 );
               } else {
@@ -875,7 +1038,7 @@ export default function PlansClient() {
               }
             }}
           />
-        ) : view === 'plans' && q.trim() ? (
+        ) : view === "plans" && q.trim() ? (
           <PlanSearchResults
             query={q}
             onPick={(s) => void navSlug(s)}
@@ -883,18 +1046,28 @@ export default function PlansClient() {
             needsDecisionPlans={needsDecisionPlans}
           />
         ) : (
-          <SessionsRosterProvider workspaceId={workspaceId} enabled={view === 'sessions'}>
+          <SessionsRosterProvider
+            workspaceId={workspaceId}
+            enabled={view === "sessions"}
+          >
             <TwoPaneShell
-              className={view === 'sessions' ? 'pc-twopane--sessions' : undefined}
+              className={
+                view === "sessions" ? "pc-twopane--sessions" : undefined
+              }
               list={
-                view === 'sessions' ? (
+                view === "sessions" ? (
                   <SessionsRosterList
                     planFilters={itemPlans}
                     planTitleBySlug={planTitleBySlug}
                     selectedAgent={selectedAgent}
                     onSelectAgent={(id) => void setSelectedAgent(id)}
                     filters={
-                      { client: sClient, liveness: sLive, role: sRole, file: sFile } as RosterFilters
+                      {
+                        client: sClient,
+                        liveness: sLive,
+                        role: sRole,
+                        file: sFile,
+                      } as RosterFilters
                     }
                     onFilterChange={(next) => {
                       void setSClient(next.client);
@@ -905,7 +1078,7 @@ export default function PlansClient() {
                     showStale={sStale}
                     onToggleStale={() => void setSStale(!sStale)}
                   />
-                ) : view === 'queue' ? (
+                ) : view === "queue" ? (
                   <div className="pc-queue__list">
                     {/* B1 (P-006): the two-halves summary + the Needs Decision|Queen's-log
                         segmented control — only in the redesigned Queue (flag-gated). */}
@@ -914,99 +1087,109 @@ export default function PlansClient() {
                         <QueueSummary waitingOnYou={tierCounts.decision} />
                         <nav className="pc-queue__tabs" aria-label="Queue tab">
                           {queueTabs(t).map((tb) => (
-                            <Tooltip key={tb.id} label={tb.hint}><button
-
-                              type="button"
-                              className={`pc-queue__tab${queueTab === tb.id ? ' is-active' : ''}`}
-                              aria-pressed={queueTab === tb.id}
-                              onClick={() => void setQueueTab(tb.id)}
-
-                            >
-                              {tb.label}
-                            </button></Tooltip>
+                            <Tooltip key={tb.id} label={tb.hint}>
+                              <button
+                                type="button"
+                                className={`pc-queue__tab${queueTab === tb.id ? " is-active" : ""}`}
+                                aria-pressed={queueTab === tb.id}
+                                onClick={() => void setQueueTab(tb.id)}
+                              >
+                                {tb.label}
+                              </button>
+                            </Tooltip>
                           ))}
                         </nav>
                       </>
                     ) : null}
-                    {queueAuthzView && queueTab === 'queen-log' ? (
-                      <section className="pc-queue__queenlog" aria-label={`${t('brain')}'s decision log`}>
-                        <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
+                    {queueAuthzView && queueTab === "queen-log" ? (
+                      <section
+                        className="pc-queue__queenlog"
+                        aria-label={`${t("brain")}'s decision log`}
+                      >
+                        <nav
+                          className="pc-queue__tabs pc-queue__layer-toggle"
+                          aria-label="Decision log layer"
+                        >
                           {queenLogLayers(t).map((l) => (
-                            <Tooltip key={l.id} label={l.hint}><button
-
-                              type="button"
-                              className={`pc-queue__tab${qlLayer === l.id ? ' is-active' : ''}`}
-                              aria-pressed={qlLayer === l.id}
-                              onClick={() => void setQlLayer(l.id)}
-
-                            >
-                              {l.label}
-                            </button></Tooltip>
+                            <Tooltip key={l.id} label={l.hint}>
+                              <button
+                                type="button"
+                                className={`pc-queue__tab${qlLayer === l.id ? " is-active" : ""}`}
+                                aria-pressed={qlLayer === l.id}
+                                onClick={() => void setQlLayer(l.id)}
+                              >
+                                {l.label}
+                              </button>
+                            </Tooltip>
                           ))}
                         </nav>
                         <DecisionLog
                           layer={qlLayer}
                           limit={50}
-                          title={qlLayer === 'disposition' ? `What the ${t('brain')} decided` : 'Governed actions (audit)'}
-                          description={
-                            qlLayer === 'disposition'
-                              ? `Every item the ${t('brain')} considered and what it chose — act, defer, reject, route, or no-op. Newest first.`
-                              : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
+                          title={
+                            qlLayer === "disposition"
+                              ? `What the ${t("brain")} decided`
+                              : "Governed actions (audit)"
                           }
-                          emptyText={`No decisions logged yet. As the ${t('brain')} considers items, they appear here.`}
+                          description={
+                            qlLayer === "disposition"
+                              ? `Every item the ${t("brain")} considered and what it chose — act, defer, reject, route, or no-op. Newest first.`
+                              : "Every governed action that ran, auto or gated — the full audit trail. Newest first."
+                          }
+                          emptyText={`No decisions logged yet. As the ${t("brain")} considers items, they appear here.`}
                           externalDetail
                         />
                       </section>
                     ) : (
-                    <>
-                    {/* ONE slicing model: the authorizer buckets (Needs you /
+                      <>
+                        {/* ONE slicing model: the authorizer buckets (Needs you /
                         Automatable / Alerts) over ALL attention items — needs-human
                         plan-items AND coord/smoke/etc. The old tier bar + 11-chip row
                         collapse into one Filter; the pickable-todo / blocked backlog
                         is opt-in (default off) as its own section so the default view
                         stays "what needs attention", not the whole work backlog. */}
-                    <QueueFilterBar
-                      kinds={queueKinds}
-                      onToggleKind={toggleQueueKind}
-                      counts={itemStatusCounts}
-                      showTodos={qTodos}
-                      showBlocked={qBlocked}
-                      onToggleTodos={() => void setQTodos(!qTodos)}
-                      onToggleBlocked={() => void setQBlocked(!qBlocked)}
-                      todoCount={itemsActionable.data?.items.length ?? 0}
-                      blockedCount={itemsBlocked.data?.items.length ?? 0}
-                      tierFilter={queueTier}
-                      onClearTier={() => void setQueueTier('all')}
-                      open={qFilterOpen}
-                      onOpenChange={(o) => void setQFilterOpen(o)}
-                    />
-                    <div className="pc-items__listpane">
-                      <PlanOtherList
-                        groups={attention.data?.groups ?? []}
-                        loading={attention.loading}
-                        error={attention.error}
-                        refresh={attention.refresh}
-                        title="Needs Decision"
-                        kinds={queueKinds}
-                        planFilters={itemPlans}
-                        tierFilter={queueTier}
-                        groupByAuthorizer
-                        includePlanItems
-                      />
-                      {qTodos || qBlocked ? (
-                        <PlanItemsList
-                          items={backlogItems}
-                          loading={itemsLoading}
-                          error={itemsError}
-                          refresh={refreshItems}
-                          harnessByPlan={harnessByPlan}
-                          planMeta={planMetaBySlug}
-                          planFilters={itemPlans}
-                          title="Backlog — pickable work"
+                        <QueueFilterBar
+                          kinds={queueKinds}
+                          onToggleKind={toggleQueueKind}
+                          counts={itemStatusCounts}
+                          showTodos={qTodos}
+                          showBlocked={qBlocked}
+                          onToggleTodos={() => void setQTodos(!qTodos)}
+                          onToggleBlocked={() => void setQBlocked(!qBlocked)}
+                          todoCount={itemsActionable.data?.items.length ?? 0}
+                          blockedCount={itemsBlocked.data?.items.length ?? 0}
+                          tierFilter={queueTier}
+                          onClearTier={() => void setQueueTier("all")}
+                          open={qFilterOpen}
+                          onOpenChange={(o) => void setQFilterOpen(o)}
                         />
-                      ) : null}
-                    </div>
-                    </>
+                        <div className="pc-items__listpane">
+                          <PlanOtherList
+                            groups={attention.data?.groups ?? []}
+                            loading={attention.loading}
+                            error={attention.error}
+                            refresh={attention.refresh}
+                            title="Needs Decision"
+                            kinds={queueKinds}
+                            planFilters={itemPlans}
+                            tierFilter={queueTier}
+                            groupByAuthorizer
+                            includePlanItems
+                          />
+                          {qTodos || qBlocked ? (
+                            <PlanItemsList
+                              items={backlogItems}
+                              loading={itemsLoading}
+                              error={itemsError}
+                              refresh={refreshItems}
+                              harnessByPlan={harnessByPlan}
+                              planMeta={planMetaBySlug}
+                              planFilters={itemPlans}
+                              title="Backlog — pickable work"
+                            />
+                          ) : null}
+                        </div>
+                      </>
                     )}
                   </div>
                 ) : (
@@ -1028,7 +1211,7 @@ export default function PlansClient() {
                 )
               }
               detail={
-                view === 'sessions' ? (
+                view === "sessions" ? (
                   <SessionsRosterDetail
                     selectedAgent={selectedAgent}
                     onSelectAgent={(id) => void setSelectedAgent(id)}
@@ -1090,27 +1273,45 @@ function QueueFilterBar({
 }) {
   const t = useLexicon();
   const activeCount =
-    kinds.length + (showTodos ? 1 : 0) + (showBlocked ? 1 : 0) + (tierFilter !== 'all' ? 1 : 0);
+    kinds.length +
+    (showTodos ? 1 : 0) +
+    (showBlocked ? 1 : 0) +
+    (tierFilter !== "all" ? 1 : 0);
   return (
-    <Collapsible.Root className="pc-queue__filterbar" open={open} onOpenChange={onOpenChange}>
+    <Collapsible.Root
+      className="pc-queue__filterbar"
+      open={open}
+      onOpenChange={onOpenChange}
+    >
       <div className="pc-queue__filterhead">
         <Collapsible.Trigger asChild>
-          <button type="button" className="pc-queue__filtertoggle" aria-expanded={open}>
+          <button
+            type="button"
+            className="pc-queue__filtertoggle"
+            aria-expanded={open}
+          >
             <SlidersHorizontal size={13} aria-hidden />
             <span>Filter</span>
-            {activeCount > 0 ? <span className="pc-queue__filteractive">{activeCount}</span> : null}
-            <ChevronDown size={13} aria-hidden className="pc-queue__filterchev" />
+            {activeCount > 0 ? (
+              <span className="pc-queue__filteractive">{activeCount}</span>
+            ) : null}
+            <ChevronDown
+              size={13}
+              aria-hidden
+              className="pc-queue__filterchev"
+            />
           </button>
         </Collapsible.Trigger>
-        {tierFilter !== 'all' ? (
-          <Tooltip label="A linked-in view filtered the Queue to this tier — click to clear."><button
-            type="button"
-            className="pc-queue__tierchip"
-            onClick={onClearTier}
-
-          >
-            {TIER_LABEL[tierFilter]} ✕
-          </button></Tooltip>
+        {tierFilter !== "all" ? (
+          <Tooltip label="A linked-in view filtered the Queue to this tier — click to clear.">
+            <button
+              type="button"
+              className="pc-queue__tierchip"
+              onClick={onClearTier}
+            >
+              {TIER_LABEL[tierFilter]} ✕
+            </button>
+          </Tooltip>
         ) : null}
       </div>
       <Collapsible.Content className="pc-queue__filterpanel">
@@ -1122,11 +1323,13 @@ function QueueFilterBar({
               <button
                 key={k}
                 type="button"
-                className={`pc-queue__filter${active ? ' is-active' : ''}`}
+                className={`pc-queue__filter${active ? " is-active" : ""}`}
                 aria-pressed={active}
                 onClick={() => onToggleKind(k)}
               >
-                <span className="pc-queue__filter-label">{resolveLex(ITEM_FILTER_LABEL[k as ItemStatusFilter], t)}</span>
+                <span className="pc-queue__filter-label">
+                  {resolveLex(ITEM_FILTER_LABEL[k as ItemStatusFilter], t)}
+                </span>
                 <span className="pc-queue__filter-count">{counts[k] ?? 0}</span>
               </button>
             );
@@ -1134,26 +1337,28 @@ function QueueFilterBar({
         </div>
         <div className="pc-queue__filtergroup">
           <span className="pc-queue__filterlabel">Backlog</span>
-          <Tooltip label="Show the agent-pickable todo backlog (off by default — the Queue defaults to what needs attention)."><button
-            type="button"
-            className={`pc-queue__filter${showTodos ? ' is-active' : ''}`}
-            aria-pressed={showTodos}
-            onClick={onToggleTodos}
-
-          >
-            <span className="pc-queue__filter-label">Pickable todos</span>
-            <span className="pc-queue__filter-count">{todoCount}</span>
-          </button></Tooltip>
-          <Tooltip label="Show blocked plan items."><button
-            type="button"
-            className={`pc-queue__filter${showBlocked ? ' is-active' : ''}`}
-            aria-pressed={showBlocked}
-            onClick={onToggleBlocked}
-
-          >
-            <span className="pc-queue__filter-label">Blocked</span>
-            <span className="pc-queue__filter-count">{blockedCount}</span>
-          </button></Tooltip>
+          <Tooltip label="Show the agent-pickable todo backlog (off by default — the Queue defaults to what needs attention).">
+            <button
+              type="button"
+              className={`pc-queue__filter${showTodos ? " is-active" : ""}`}
+              aria-pressed={showTodos}
+              onClick={onToggleTodos}
+            >
+              <span className="pc-queue__filter-label">Pickable todos</span>
+              <span className="pc-queue__filter-count">{todoCount}</span>
+            </button>
+          </Tooltip>
+          <Tooltip label="Show blocked plan items.">
+            <button
+              type="button"
+              className={`pc-queue__filter${showBlocked ? " is-active" : ""}`}
+              aria-pressed={showBlocked}
+              onClick={onToggleBlocked}
+            >
+              <span className="pc-queue__filter-label">Blocked</span>
+              <span className="pc-queue__filter-count">{blockedCount}</span>
+            </button>
+          </Tooltip>
         </div>
       </Collapsible.Content>
     </Collapsible.Root>
@@ -1171,9 +1376,14 @@ type PlanShortcutSetters = {
 
 function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
-  if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return true;
+  if (
+    t.tagName === "INPUT" ||
+    t.tagName === "TEXTAREA" ||
+    t.tagName === "SELECT"
+  )
+    return true;
   if (t.isContentEditable) return true;
-  if (t.closest('.vditor-ir, .vditor-wysiwyg, .vditor-sv')) return true;
+  if (t.closest(".vditor-ir, .vditor-wysiwyg, .vditor-sv")) return true;
   return false;
 }
 
@@ -1183,15 +1393,20 @@ function isTypingTarget(t: EventTarget | null): boolean {
  *   J / K   next / previous plan in the rail
  *   Esc     close the open plan (or clear search if focused there)
  */
-function usePlanShortcuts({ navSlug, setQ, rail, search }: PlanShortcutSetters) {
+function usePlanShortcuts({
+  navSlug,
+  setQ,
+  rail,
+  search,
+}: PlanShortcutSetters) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-      if (event.key === 'Escape') {
+      if (event.key === "Escape") {
         if (document.activeElement === search.current) {
           search.current?.blur();
-          if (search.current?.value) setQ('');
+          if (search.current?.value) setQ("");
           return;
         }
         if (!isTypingTarget(event.target)) {
@@ -1202,27 +1417,27 @@ function usePlanShortcuts({ navSlug, setQ, rail, search }: PlanShortcutSetters) 
 
       if (isTypingTarget(event.target)) return;
 
-      if (event.key === '/') {
+      if (event.key === "/") {
         event.preventDefault();
         search.current?.focus();
         search.current?.select();
         return;
       }
-      if (event.key === 'j' || event.key === 'J') {
+      if (event.key === "j" || event.key === "J") {
         event.preventDefault();
         rail.current?.next();
         return;
       }
-      if (event.key === 'k' || event.key === 'K') {
+      if (event.key === "k" || event.key === "K") {
         event.preventDefault();
         rail.current?.prev();
         return;
       }
     };
 
-    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener("keydown", onKeyDown);
     };
   }, [navSlug, setQ, rail, search]);
 }

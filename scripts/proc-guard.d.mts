@@ -145,8 +145,9 @@ export function walkProcessTree(rootPid: number, opts?: {
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
  * Agent identity is read from PAPERCUSP_SID so a live agent whose owner id is
  * absent from argv is not reported absent. For the known `green-checkpoint`
- * workload, gate-owned environment/cgroup identity is also accepted so
- * argv-blind descendants are not missed.
+ * workload, checkpoint-cgroup identity is also accepted so argv-blind
+ * descendants are not missed. Gate environment markers alone are deliberately
+ * insufficient because they can be inherited by long-lived sidecars.
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern: string, opts?: {
@@ -165,9 +166,10 @@ export function matchExternalProcesses(pattern: string, opts?: {
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
- * `identityMatches` includes PAPERCUSP_SID owner matches and known gate-marker/
- * cgroup matches. The owner id itself is retained only in the in-memory identity
- * evidence and is never printed as environment data.
+ * `identityMatches` includes PAPERCUSP_SID owner matches and checkpoint-cgroup
+ * matches. Gate markers are diagnostic evidence only; they are not sufficient
+ * without the checkpoint cgroup. The owner id itself is retained only in the
+ * in-memory identity evidence and is never printed as environment data.
  *
  * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */

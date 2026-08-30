@@ -64,6 +64,17 @@ describe('papercusp-worker hooks.json', () => {
     expect(pre.some((c) => c.includes('pretooluse-bash-resource-gate.sh'))).toBe(true);
   });
 
+  // WI-1079034 — if you are here because you narrowed this matcher and this test
+  // failed, know its SECOND consumer before you change the assertion. Firing on
+  // every tool is what writes a `tool_invocations` row for a NATIVE tool call
+  // (Bash/Read/Grep produce no MCP row of their own), and that row is the sole
+  // reason `FleetPresenceRow.lastToolCallAt` — an MCP-only max() feeding
+  // deriveMemberVerdict, delegated-spawn first-turn evidence, the unguarded-halt
+  // rescue and fleet-idle-drain — stays fresh across a native-tool turn. Narrow
+  // this and an agent working entirely in native tools reads as stalled to its
+  // leader, which is a silent failure: nothing errors, the verdict just goes
+  // wrong. (EI-21855682261256330 was filed as a bug against that field by an
+  // agent who had not found this coupling, and was dropped as invalid.)
   it('the activity hook fires on EVERY tool (matcher "*")', () => {
     const activityEntry = (hooks.hooks.PostToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>)
       .find((e) => e.hooks.some((h) => h.command.includes('posttooluse-activity-report.sh')));

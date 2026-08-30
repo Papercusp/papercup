@@ -502,17 +502,18 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
   });
 
-  it('matches argv-blind gate descendants through authoritative markers and cgroup identity', () => {
+  it('matches argv-blind gate descendants through checkpoint cgroup identity', () => {
     fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
     const PATTERN = 'green-checkpoint';
     fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
     fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
 
-    // The real gate descendants run from the checkpoint tree, whose argv does
-    // not name green-checkpoint. The suite env carries both dedicated markers.
+    // A process with both gate markers but OUTSIDE the checkpoint cgroup is
+    // not gate-owned: long-lived sidecars can inherit these markers.
     fixtureProc(fixtureRoot, 777, 1, ['node', '/repo/papercusp-checkpoint/scripts/affected-tests.mjs']);
     fixtureIdentity(fixtureRoot, 777, {
       environment: ['GREEN_CHECKPOINT=1', 'PC_HEAVY_RELEASE_GATE=1'],
+      cgroupPath: '/user.slice/user-1000.slice/papercusp.slice/papercusp-sidecar.slice/pc-sidecar.scope',
     });
 
     // GREEN_CHECKPOINT alone is intentionally insufficient: agents can export
@@ -520,16 +521,24 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     fixtureProc(fixtureRoot, 778, 1, ['node', '/repo/papercusp-checkpoint/scripts/worker.mjs']);
     fixtureIdentity(fixtureRoot, 778, { environment: ['GREEN_CHECKPOINT=1'] });
 
-    // The detached manual launcher supplies the same identity at the cgroup
-    // boundary even when a child does not expose the env files in the fixture.
+    // The detached manual launcher supplies the authoritative identity at the
+    // cgroup boundary even when a child does not expose the env files.
     fixtureProc(fixtureRoot, 779, 1, ['node', '/repo/papercusp-checkpoint/scripts/worker.mjs']);
     fixtureIdentity(fixtureRoot, 779, {
       cgroupPath: '/user.slice/user-1000.slice/papercup-green-checkpoint-manual-abc.service',
     });
 
+    // A normal gate child may expose both markers as well as the checkpoint
+    // cgroup; the cgroup leg remains the deciding identity evidence.
+    fixtureProc(fixtureRoot, 780, 1, ['node', '/repo/papercusp-checkpoint/scripts/worker.mjs']);
+    fixtureIdentity(fixtureRoot, 780, {
+      environment: ['GREEN_CHECKPOINT=1', 'PC_HEAVY_RELEASE_GATE=1'],
+      cgroupPath: '/user.slice/user-1000.slice/papercup-green-checkpoint.service',
+    });
+
     const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
-    expect(report.matches.map((m) => m.pid)).toEqual([777, 779]);
-    expect(report.identityMatches.map((m) => m.pid)).toEqual([777, 779]);
+    expect(report.matches.map((m) => m.pid)).toEqual([779, 780]);
+    expect(report.identityMatches.map((m) => m.pid)).toEqual([779, 780]);
     expect(report.fullMatches).toEqual([]);
     expect(report.argvTextOnly).toEqual([]);
 

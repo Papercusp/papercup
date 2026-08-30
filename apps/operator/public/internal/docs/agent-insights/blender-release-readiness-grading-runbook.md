@@ -253,7 +253,8 @@ observation: {
   kind: 'reinforce',
   rubricRef: 'blender-release-readiness',
   ratings: { <all seven criterion keys>: { rating, evidence } },
-  linkTo: [<the defects this pass filed or tracked>]
+  linkTo: [{ targetId: '<defect or follow-up EI-/WI->', rel: 'relates' }]
+  // Use [] when this pass has no defect or follow-up work-item to link.
 }
 ```
 

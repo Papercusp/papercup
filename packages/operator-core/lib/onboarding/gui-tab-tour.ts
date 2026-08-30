@@ -39,8 +39,15 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
     blurb:
       'The session board — every agent running right now, grouped by what it needs from you: waiting on an answer, blocked on a gate, working, or idle. Click a card to open that agent’s live conversation.',
   },
-  // ('brainstorm' left the /adv strip for the Quick Panel popup —
-  //  quick-panel-saved-prompts-2026-07-13 P-010; the tour mirrors ADV_TABS.)
+  // 'brainstorm' left the /adv strip for the Quick Panel popup
+  // (quick-panel-saved-prompts-2026-07-13 P-010) and was RESTORED as a per-pot
+  // secondary tab by WI-1008447. The tour mirrors ADV_TABS, so it is back here too.
+  {
+    id: 'brainstorm',
+    label: 'Brainstorm',
+    blurb:
+      'The per-pot idea workspace — somewhere to think roughly out loud, let an idea grow, and hand it to a plan once it is worth building. The Quick Panel popup is the fast global doorway to this same surface.',
+  },
   {
     id: 'plans',
     label: 'Create',

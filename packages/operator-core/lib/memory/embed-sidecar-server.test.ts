@@ -10,12 +10,14 @@ import { getRerankWorkerState, isCoherentTarget } from '@papercusp/rerank';
 import { getWorkerState as getMemoryWorkerState } from '@papercusp/memory';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AdmissionContext } from '../resource-governor/admission';
-import type { GovernedOperationInput } from '../resource-governor/execution';
+import type { GovernedOperationInput, runGovernedOperation } from '../resource-governor/execution';
 import {
   createEmbedSidecarServer,
   defaultWorkerStates,
+  EMBED_SIDECAR_CONCURRENCY_ENV,
   resolveWarmModels,
   resolveWarmRerankers,
+  resolveEmbedSidecarConcurrency,
   validateEmbedRequest,
   validateRerankRequest,
   EMBED_SIDECAR_WARM_ENV,
@@ -42,6 +44,19 @@ describe('resolveWarmModels', () => {
 
   it('falls back to gemma when every name is unknown', () => {
     expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'gpt-9,nope' })).toEqual(['gemma']);
+  });
+});
+
+describe('resolveEmbedSidecarConcurrency', () => {
+  it('accepts a positive integer environment window and floors fractional values', () => {
+    expect(resolveEmbedSidecarConcurrency({ [EMBED_SIDECAR_CONCURRENCY_ENV]: '6' })).toBe(6);
+    expect(resolveEmbedSidecarConcurrency({ [EMBED_SIDECAR_CONCURRENCY_ENV]: '2.9' })).toBe(2);
+  });
+
+  it('ignores blank, non-finite, and non-positive environment values', () => {
+    for (const value of ['', '  ', 'nope', '0', '-1', 'Infinity']) {
+      expect(resolveEmbedSidecarConcurrency({ [EMBED_SIDECAR_CONCURRENCY_ENV]: value })).toBeUndefined();
+    }
   });
 });
 
@@ -802,13 +817,17 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     expect(cond()).toBe(true);
   };
 
-  const boot = async (concurrency?: number): Promise<void> => {
+  const boot = async (
+    concurrency?: number,
+    governedOperation?: typeof runGovernedOperation,
+  ): Promise<void> => {
     handle = createEmbedSidecarServer({
       port: 0,
       warmAtBoot: false,
       log: () => {},
       builders: gated.builders,
       concurrency,
+      governedOperation,
     });
     baseUrl = `http://127.0.0.1:${await handle.listening}`;
   };
@@ -941,6 +960,60 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     await boot(3);
     const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as { concurrency: number };
     expect(body.concurrency).toBe(3);
+  });
+
+  it('uses the production environment window while retaining durable-governor admission', async () => {
+    gated = makeGated();
+    const previous = process.env[EMBED_SIDECAR_CONCURRENCY_ENV];
+    process.env[EMBED_SIDECAR_CONCURRENCY_ENV] = '2';
+    const admissions: Array<GovernedOperationInput<unknown>> = [];
+    const governedOperation = async <T>(
+      input: GovernedOperationInput<T>,
+      run: (context: AdmissionContext) => Promise<T>,
+    ): Promise<T> => {
+      admissions.push(input as GovernedOperationInput<unknown>);
+      return run({
+        contractVersion: 1,
+        requestId: `env-window-${admissions.length}`,
+        rootRequestId: `env-window-${admissions.length}`,
+        parentRequestId: null,
+        idempotencyKey: `env-window-${admissions.length}`,
+        admissionClass: input.admissionClass,
+        priority: 0,
+        demand: input.demand ?? {},
+        depth: 0,
+        createdAtMs: 0,
+        decisionGeneration: 1,
+      });
+    };
+    try {
+      await boot(undefined, governedOperation);
+      const request = post(['a', 'b', 'c']);
+      await waitFor(() => gated.started.length === 2);
+      expect(gated.started).toEqual(['a', 'b']);
+
+      const health = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+        concurrency: number | null;
+        admission: { mode: string };
+        queue: { depth: number; active: number; saturated: boolean };
+      };
+      expect(health).toMatchObject({
+        concurrency: 2,
+        admission: { mode: 'durable-governor' },
+        queue: { depth: 1, active: 2, saturated: true },
+      });
+      expect(admissions).toHaveLength(2);
+
+      gated.release.get('a')!();
+      await waitFor(() => gated.started.length === 3);
+      gated.release.get('b')!();
+      gated.release.get('c')!();
+      expect((await request).status).toBe(200);
+      expect(admissions).toHaveLength(3);
+    } finally {
+      if (previous === undefined) delete process.env[EMBED_SIDECAR_CONCURRENCY_ENV];
+      else process.env[EMBED_SIDECAR_CONCURRENCY_ENV] = previous;
+    }
   });
 });
 

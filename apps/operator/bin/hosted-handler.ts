@@ -12,7 +12,10 @@ import { WebSocketServer } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { authenticateHostedConnectorSocket } from "@papercusp/operator-core/lib/endpoint-route/routes/hosted-workspace-connector";
-import { HostedWorkspaceSessionBroker } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
+import {
+  HostedWorkspaceSessionBroker,
+  type HostedWorkspaceAttachRequest,
+} from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
 
 /** Local server-rendered namespaces that must never become SPA-looking 200s. */
 export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
@@ -21,6 +24,26 @@ export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
   "/wiki",
   "/drizzle-studio",
 ] as const;
+
+/**
+ * Read the P-013 desktop-attach intent off a browser upgrade.
+ *
+ * Every field is optional and an unrecognised value degrades to a PTY rather than
+ * failing the upgrade: a browser and this control plane ship independently, so an
+ * older client that sends nothing must still get its terminal. The one thing NOT
+ * defaulted is `desktopSessionId` — the broker refuses a desktop channel without
+ * one, because a blank viewer is a worse answer than an error.
+ */
+export function readAttachRequest(request: Request): HostedWorkspaceAttachRequest {
+  const params = new URL(request.url).searchParams;
+  if (params.get("kind") !== "desktop") return {};
+  const desktopSessionId = params.get("desktopSessionId")?.trim();
+  return {
+    kind: "desktop",
+    ...(desktopSessionId ? { desktopSessionId } : {}),
+    desktopMode: params.get("desktopMode") === "takeover" ? "takeover" : "watch",
+  };
+}
 
 export interface HostedHandler {
   readonly plane: AssembledHostedControlPlane;
@@ -71,7 +94,12 @@ export function createHostedHandler(
         const untrack = gateway.track(authenticated.binding, (reason) => websocket.close(4001, reason));
         websocket.once("close", untrack);
         if (authenticated.role === "connector") sessionBroker.attachConnector(authenticated.binding, websocket);
-        else sessionBroker.attachBrowser(authenticated.binding, websocket);
+        // P-013: which desktop a viewer wants rides on the upgrade query, alongside
+        // the ticket. The TICKET authorizes the workspace; the id selects within it —
+        // consistent with D-025 ruling 2, which records that the connector binding is
+        // the authorization boundary and that no second, weaker per-user filter is
+        // applied to what a viewer may see.
+        else sessionBroker.attachBrowser(authenticated.binding, websocket, readAttachRequest(fetchRequest));
         websocketServer.emit("connection", websocket, request);
       });
       return true;

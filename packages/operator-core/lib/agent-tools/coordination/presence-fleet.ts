@@ -110,7 +110,32 @@ export interface FleetPresenceRow {
   heartbeatAt: Date;
   /** Newest completed tool call attributed to this owner after this presence
    * row started. Presence alone is launcher-authored on some desktop paths;
-   * this is the proof that the agent actually took a turn (WI-35786). */
+   * this is the proof that the agent actually took a turn (WI-35786).
+   *
+   * WHY AN MCP-ONLY STORE ANSWERS THIS COMPLETELY (WI-1079034 — read this
+   * before "fixing" the source): it is sourced from `tool_invocations`, which
+   * records MCP calls only, so it LOOKS blind to a turn spent entirely in a
+   * client's native tools (Claude Bash/Read/Grep). It is not. The psu hook
+   * layer registers `posttooluse-activity-report.sh` on a PostToolUse matcher
+   * of `'*'` (and a PreToolUse sibling), so EVERY native tool call POSTs
+   * `activity:report` under the agent's own `coord_owner_id` and writes a row
+   * here. One incidental row per turn is all a max() needs.
+   *
+   * That is why the census/mix conclusion does NOT transfer to this field:
+   * `tool_invocations` genuinely cannot COUNT native tool use
+   * (EI-21847759967934033), but it does not go STALE on a native turn.
+   * Measured 2026-08-30 over a 3h window: of 110 owners with native
+   * `agent_activity` rows, 110 also had `tool_invocations` rows, none lagging
+   * past 60s (max 0.9s) — and the mean lag was NEGATIVE (~-215s), i.e. this
+   * store is fresher than `agent_activity`. Re-sourcing from `agent_activity`
+   * would therefore lose both coverage and freshness; EI-21855682261256330
+   * proposed exactly that and was dropped as invalid.
+   *
+   * The coupling is load-bearing: `ensureCcCoordHookEnrollment`
+   * (apps/operator/scripts/psu-launcher.mjs) verifies and self-repairs that
+   * hook. If it is ever narrowed off `'*'`, what degrades here is visibility
+   * of a stretch using NO MCP tools directly — an agent still calling MCP
+   * tools goes on looking fresh from its own real calls. */
   lastToolCallAt: Date | null;
 }
 

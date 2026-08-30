@@ -40,11 +40,33 @@ export interface HostedWorkspaceSessionBrokerOptions {
   onAudit?: (event: HostedWorkspaceSessionAuditEvent) => void;
 }
 
+/** What a browser attached to. `role` says WHO they are; this says WHAT they carry. */
+export type HostedWorkspaceChannelKind = 'pty' | 'desktop';
+
+/**
+ * What the browser asked for on its upgrade (P-013 / D-023 ruling 4).
+ *
+ * Absent means a PTY, which is what every pre-P-013 client sends. The default is
+ * part of the wire contract, not a shim: the browser SPA and the control plane ship
+ * independently, so an upgrade from an older client must keep opening terminals.
+ */
+export interface HostedWorkspaceAttachRequest {
+  kind?: HostedWorkspaceChannelKind;
+  /** Required for `kind:'desktop'`; the session the viewer picked off the roster. */
+  desktopSessionId?: string;
+  /**
+   * `watch` (default) or `takeover`. EXPLICIT for a desktop, never elected by
+   * arrival order — see the role note in `attachBrowser`.
+   */
+  desktopMode?: 'watch' | 'takeover';
+}
+
 type BrowserSession = {
   channelId: string;
   binding: HostedConnectorTicketBinding;
   socket: HostedWorkspaceRelaySocket;
   role: HostedWorkspaceTabRole;
+  kind: HostedWorkspaceChannelKind;
   connectorKey: string;
   controllerKey: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -174,7 +196,11 @@ export class HostedWorkspaceSessionBroker {
     return onClose;
   }
 
-  attachBrowser(binding: HostedConnectorTicketBinding, socket: HostedWorkspaceRelaySocket): () => void {
+  attachBrowser(
+    binding: HostedConnectorTicketBinding,
+    socket: HostedWorkspaceRelaySocket,
+    attach: HostedWorkspaceAttachRequest = {},
+  ): () => void {
     const key = connectorKey(binding);
     const connector = this.connectors.get(key);
     if (!connector || !open(connector)) {
@@ -186,22 +212,51 @@ export class HostedWorkspaceSessionBroker {
       socket.close(4403, 'session_binding_invalid');
       return () => {};
     }
+    const kind: HostedWorkspaceChannelKind = attach.kind === 'desktop' ? 'desktop' : 'pty';
+    const desktopSessionId = kind === 'desktop' ? attach.desktopSessionId : undefined;
+    // Refused rather than defaulted: a desktop channel with no session id can never
+    // carry pixels, and opening one anyway would surface as a blank viewer instead
+    // of an error the user can act on.
+    if (kind === 'desktop' && !desktopSessionId) {
+      socket.close(4403, 'desktop_session_required');
+      return () => {};
+    }
 
     const channelId = this.randomId();
     const controlKey = controllerKey(binding);
-    const role: HostedWorkspaceTabRole = this.controllers.has(controlKey) ? 'observer' : 'controller';
+    /**
+     * ROLE, and why the two kinds decide it differently.
+     *
+     * PTY keeps arrival-order election: one terminal has one writer, so the first
+     * tab drives and later ones observe until they claim control.
+     *
+     * DESKTOP must NOT be elected. Two independent reasons:
+     *  1. Role IS the credential (D-024 ruling 1) — `controller` dials KasmVNC as
+     *     the `-w` user. Electing the first arrival controller would hand INPUT to a
+     *     user who asked only to watch, silently, because they happened to be first.
+     *  2. Watch and takeover are explicitly CONCURRENT — `x-server-backend.ts` passes
+     *     `-AlwaysShared 1` with the note that the pairing IS the feature. So a
+     *     desktop channel never enters `controllers`: demoting a second viewer to
+     *     observer because someone else is already watching would contradict the
+     *     server we started.
+     */
+    const role: HostedWorkspaceTabRole =
+      kind === 'desktop'
+        ? (attach.desktopMode === 'takeover' ? 'controller' : 'observer')
+        : this.controllers.has(controlKey) ? 'observer' : 'controller';
     const session: BrowserSession = {
       channelId,
       binding,
       socket,
       role,
+      kind,
       connectorKey: key,
       controllerKey: controlKey,
       idleTimer: null,
       closed: false,
     };
     this.sessions.set(channelId, session);
-    if (role === 'controller') this.controllers.set(controlKey, channelId);
+    if (kind === 'pty' && role === 'controller') this.controllers.set(controlKey, channelId);
     this.touch(session);
     sendJson(socket, {
       type: 'session.bound',
@@ -223,6 +278,11 @@ export class HostedWorkspaceSessionBroker {
       hostedSessionId: binding.hostedSessionId,
       audience: binding.audience,
       role,
+      // P-013 / D-023 ruling 4. Sent only for a desktop: the host treats an absent
+      // `kind` as 'pty', and a workspace host runs on a pinned generation in the
+      // customer's VM, so an envelope this control plane mints must keep opening
+      // terminals on a host that predates the discriminator.
+      ...(kind === 'desktop' ? { kind, desktopSessionId } : {}),
     });
     this.audit(binding, 'browser_attached', channelId, role);
 
@@ -239,6 +299,21 @@ export class HostedWorkspaceSessionBroker {
       if (!type) return;
       this.touch(session);
       if (type === 'session.claim-control') {
+        // REFUSED on a desktop channel, and the refusal is the point (D-024 ruling 2).
+        // A desktop's privilege IS the KasmVNC credential, which was consumed by the
+        // dial and is not retained, so the host cannot promote a live channel. Letting
+        // this through would flip the broker's role and tell the browser it has
+        // control while KasmVNC went on dropping its input — a viewer that believes it
+        // has the keyboard and does not. A takeover is a FRESH channel, which is also
+        // what mints its own audit event.
+        if (session.kind === 'desktop') {
+          sendJson(socket, {
+            type: 'session.denied',
+            reason: 'desktop_role_fixed_at_open',
+            requestType: type,
+          });
+          return;
+        }
         this.claimControl(session);
         return;
       }

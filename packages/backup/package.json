@@ -16,6 +16,11 @@
       "types": "./src/application-names.ts",
       "import": "./src/application-names.ts",
       "default": "./src/application-names.ts"
+    },
+    "./snapshot-admission": {
+      "types": "./src/snapshot-admission.ts",
+      "import": "./src/snapshot-admission.ts",
+      "default": "./src/snapshot-admission.ts"
     }
   },
   "scripts": {

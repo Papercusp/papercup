@@ -157,6 +157,21 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
         'families by adding a readiness floor to one of them.',
     },
   ],
+  [
+    'harness/improvements/agent-review.ts#claimAgentReview',
+    {
+      klass: 'by-id-ungated',
+      note:
+        'The reviewer BY-ID claim — the caller names the review it wants, so D-008 applies and ' +
+        'readiness is not its concern; its self-select sibling claimNextAgentReview carries ' +
+        'that floor instead. It builds no query and therefore defines no floor of its own: it ' +
+        'delegates to claimWorkItem, inheriting that door\'s SECURITY/admission floor and CAS, ' +
+        'and adds only review-lane preconditions (open, eligible, agentReview=pending, not the ' +
+        'reviewer\'s own submission) which it re-checks after the claim and releases on a lost ' +
+        'race. Both halves — no readiness floor, and the delegation that supplies the security ' +
+        'floor — are asserted as a boundary below.',
+    },
+  ],
 
   // ---- floor builders: they serve nothing ---------------------------------
   [
@@ -414,7 +429,7 @@ describe('the two structural claims the classification rests on', () => {
     ).toBe(true);
   });
 
-  it('BOTH by-id doors keep the security floor and neither grows a readiness floor (D-008)', () => {
+  it('EVERY by-id door keeps the security floor and none grows a readiness floor (D-008)', () => {
     // blocking-floor-single-source.test.ts already asserts this for claimWorkItem. The issue
     // family's claimIssue was never asserted, so the SAME boundary rested on nothing on that
     // side — which is precisely the per-family asymmetry D-017 was.
@@ -436,6 +451,26 @@ describe('the two structural claims the classification rests on', () => {
         'operator override in BOTH families; adding the floor here would break reopen / ' +
         'inherit / attach-follow-up for issues while leaving features alone — a per-family ' +
         'asymmetry, which is the exact shape of D-017.',
+    ).toBe(false);
+
+    // The reviewer by-id door is the third of the family, and the only one that supplies the
+    // security floor by DELEGATION rather than in its own query. Both halves of that are
+    // asserted: dropping the delegation would silently strip the admission floor from a door
+    // whose entry claims to inherit it, and reads as a harmless refactor.
+    const agentReview = read('harness/improvements/agent-review.ts');
+    const reviewById = agentReview.slice(agentReview.indexOf('export async function claimAgentReview('));
+    const claimAgentReviewBody = withoutComments(reviewById.slice(0, reviewById.indexOf('\nexport ')));
+    expect(
+      /claimWorkItem\(/.test(claimAgentReviewBody),
+      'claimAgentReview no longer delegates to claimWorkItem. It is enumerated as a by-id door ' +
+        'that inherits the SECURITY/admission floor and CAS from that door rather than ' +
+        'defining its own; if it now claims rows itself it needs its own proof of that floor.',
+    ).toBe(true);
+    expect(
+      /dep_type\s*=\s*'blocks'|depsBlockedExclusionSql/.test(claimAgentReviewBody),
+      'claimAgentReview must NOT enforce dependency-blocking. Naming a review by id is the ' +
+        'deliberate override (D-008); the readiness floor belongs to its self-select sibling ' +
+        'claimNextAgentReview, which is asserted to carry it above.',
     ).toBe(false);
   });
 });

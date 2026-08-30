@@ -395,13 +395,17 @@ export async function emitScorecard(
       !args.vettingWorkItem &&
       args.vettingUnanswered !== true;
     if (missingAcceptanceRubricVetting) {
-      const subjectRubric = await getRubric(args.subject!.ref);
+      // `missingAcceptanceRubricVetting` already established subject?.kind === 'rubric',
+      // but that narrowing does not flow through the aliased conjunction — bind the ref
+      // once so the guard and the message cannot disagree about its nullability.
+      const vettedRubricRef = args.subject!.ref;
+      const subjectRubric = await getRubric(vettedRubricRef);
       if (subjectRubric?.kind === 'acceptance' && subjectRubric.status === 'active') {
         return {
           ok: false as const,
           code: 'acceptance_rubric_vetting_required' as const,
           error:
-            `meta-rubric scorecard for active acceptance rubric '${args.subject.ref}' requires vetting linkage — ` +
+            `meta-rubric scorecard for active acceptance rubric '${vettedRubricRef}' requires vetting linkage — ` +
             `pass vettingConsult:'<consult conversation_id>' or vettingWorkItem:'<review WI-/EI- id>'. ` +
             `If no critique is available, use vettingConsult with vettingUnanswered:true and ` +
             `vettingUnansweredReason:'<what you observed>' so the waiver is recorded visibly.`,

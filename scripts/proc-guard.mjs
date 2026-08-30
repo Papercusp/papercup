@@ -364,10 +364,13 @@ function isGreenCheckpointPattern(pattern) {
 function matchesGreenCheckpointIdentity(processRow) {
   const identity = processRow.identity;
   if (!identity) return false;
+  // Environment markers are inherited by descendants, including long-lived
+  // sidecars that outlive the gate. The cgroup is the authoritative lifetime
+  // boundary; marker-only (or marker + non-checkpoint-cgroup) matches are not
+  // evidence that a green-checkpoint run is alive.
   return (
-    (identity.greenCheckpointMarker && identity.releaseGateMarker) ||
-    (identity.cgroupPath !== null &&
-      GREEN_CHECKPOINT_CGROUP.test(identity.cgroupPath))
+    identity.cgroupPath !== null &&
+    GREEN_CHECKPOINT_CGROUP.test(identity.cgroupPath)
   );
 }
 
@@ -569,8 +572,9 @@ export function walkProcessTree(rootPid, opts = {}) {
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
  * Agent identity is read from PAPERCUSP_SID so a live agent whose owner id is
  * absent from argv is not reported absent. For the known `green-checkpoint`
- * workload, gate-owned environment/cgroup identity is also accepted so
- * argv-blind descendants are not missed.
+ * workload, checkpoint-cgroup identity is also accepted so argv-blind
+ * descendants are not missed. Gate environment markers alone are deliberately
+ * insufficient because they can be inherited by long-lived sidecars.
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern, opts = {}) {
@@ -586,9 +590,10 @@ export function matchExternalProcesses(pattern, opts = {}) {
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
- * `identityMatches` includes PAPERCUSP_SID owner matches and known gate-marker/
- * cgroup matches. The owner id itself is retained only in the in-memory identity
- * evidence and is never printed as environment data.
+ * `identityMatches` includes PAPERCUSP_SID owner matches and checkpoint-cgroup
+ * matches. Gate markers are diagnostic evidence only; they are not sufficient
+ * without the checkpoint cgroup. The owner id itself is retained only in the
+ * in-memory identity evidence and is never printed as environment data.
  *
  * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
@@ -956,7 +961,7 @@ async function main(argv) {
   const rawSuffix =
     fullMatches.length === matches.length && identityMatches.length === 0
       ? ""
-      : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via PAPERCUSP_SID or gate markers/cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
+      : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via PAPERCUSP_SID or checkpoint cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
   console.log(
     `proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`,
   );
@@ -967,9 +972,9 @@ async function main(argv) {
     console.log(`  ${m.pid}  ${formatProcessCmdline(m.cmdline, { verbose })}`);
     if (identityMatches.some((identityMatch) => identityMatch.pid === m.pid)) {
       console.log(
-        matchesOwnerIdentity(re, m)
+        matchesOwnerIdentity(pattern, m)
           ? "         identity: PAPERCUSP_SID owner identity"
-          : "         identity: green-checkpoint gate markers or checkpoint cgroup",
+          : "         identity: green-checkpoint checkpoint cgroup",
       );
     }
     if (!busy) continue;
