@@ -119,7 +119,7 @@ export interface DecisionMeasurementAdvisory {
 // failures. The returned warning is nevertheless machine-visible on the exact
 // write that needs review, rather than relying on a prompt sentence alone.
 const SOURCE_PATH_RE = /\b(?:[A-Za-z0-9_@.-]+\/)*[A-Za-z0-9_@.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|sql|rs|go|py)(?::\d+)?\b/g;
-const MEASURED_LINE_RE = /^Measured:\s+\S.+$/im;
+const MEASURED_LINE_RE = /^\s*Measured\b[^:\n]{0,80}:\s+\S.+$/im;
 
 export function decisionMeasurementAdvisory(body: string): DecisionMeasurementAdvisory | null {
   const paths = [...new Set(body.match(SOURCE_PATH_RE) ?? [])].slice(0, 12);

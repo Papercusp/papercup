@@ -168,6 +168,21 @@ describe('plans:add-decision — measure before you rule', () => {
     )).toBeNull();
     expect(decisionMeasurementAdvisory('Choose the shared provenance surface over a third one.')).toBeNull();
   });
+
+  it('accepts qualified Measured headers with parenthetical or bracketed context', () => {
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\nMeasured (2026-08-29, working tree vs HEAD): rg -n "evidence" relay-provenance.ts returned line 212.',
+    )).toBeNull();
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\nMeasured [current HEAD]: rg -n "evidence" relay-provenance.ts returned line 212.',
+    )).toBeNull();
+  });
+
+  it('does not treat an empty qualified Measured header as evidence', () => {
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\nMeasured (2026-08-29, working tree vs HEAD):',
+    )).toMatchObject({ code: 'tree_fact_measurement_missing' });
+  });
 });
 
 describe('plans:add-decision — affects uses the cross-plan slug namespace', () => {
