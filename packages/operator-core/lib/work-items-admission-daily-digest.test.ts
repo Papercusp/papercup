@@ -4,8 +4,12 @@ import {
   dailyDigestWatchdogKey,
   parseDailyDigestProposals,
   runWorkItemAdmissionDailyDigest,
+  encodeDailyDigestItems,
   MIN_DAILY_DIGEST_COVERAGE,
+  DAILY_DIGEST_MAX_PROMPT_CHARS,
+  DAILY_DIGEST_MAX_TITLE_CHARS,
   type DailyDigestContext,
+  type DailyDigestItem,
 } from './work-items-admission-daily-digest';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 
@@ -271,6 +275,81 @@ describe('work-item admission daily digest', () => {
 
     expect(result).toMatchObject({ status: 'blocked', blockedReason: 'census-coverage-mismatch', modelCalled: false });
     expect(harness.prompts).toHaveLength(0);
+  });
+
+  /**
+   * D-029. The prompt used to stringify every item's full `summary` as pretty-printed
+   * JSON. On the live corpus that produced a 3,220,412-token request against a 1,000,000
+   * ceiling — a hard 400, and the same defect class as the bulk-judge truncation: a
+   * payload sized without reference to the budget that must hold it. P-012 specified
+   * ~150-200k tokens of TITLES; these cases pin that shape and the budget guard.
+   */
+  describe('D-029 prompt budget', () => {
+    const bigItem = (index: number): DailyDigestItem => ({
+      id: `WI-${index}`,
+      // realistic live measurements: mean title ~110 chars, mean summary ~1,212 chars
+      title: `item ${index} ${'t'.repeat(100)}`,
+      summary: 's'.repeat(1_212),
+      state: 'open',
+      kind: 'bug',
+      admission: 'admitted',
+      shardId: index % 40,
+    });
+
+    it('sends titles, NOT summaries — the payload that blew the model ceiling', () => {
+      const prompt = buildDailyDigestPrompt({
+        ...context,
+        items: [{ ...context.items[0], summary: 'UNIQUE_SUMMARY_SENTINEL' }, ...context.items.slice(1)],
+      });
+      expect(prompt.user).toContain('Checkout command hangs');
+      expect(prompt.user).not.toContain('UNIQUE_SUMMARY_SENTINEL');
+    });
+
+    it('stays inside the budget at the real corpus scale that produced the 400', () => {
+      const items = Array.from({ length: 5_471 }, (_, index) => bigItem(index));
+      const prompt = buildDailyDigestPrompt({ ...context, items });
+
+      expect(prompt.user.length).toBeLessThanOrEqual(DAILY_DIGEST_MAX_PROMPT_CHARS);
+      expect(prompt.includedItems).toBe(5_471);
+      expect(prompt.omittedItems).toBe(0);
+      // CONTROL: the pre-fix shape (full summaries, pretty-printed) on this same corpus is
+      // multiples of the budget — so the assertion above is a real constraint, not a
+      // vacuous one that any encoding would satisfy
+      expect(JSON.stringify(items, null, 2).length).toBeGreaterThan(DAILY_DIGEST_MAX_PROMPT_CHARS * 4);
+    });
+
+    it('trims to the budget and DISCLOSES what it left out rather than silently truncating', () => {
+      const items = Array.from({ length: 50 }, (_, index) => bigItem(index));
+      const encoded = encodeDailyDigestItems(items, 400);
+
+      expect(encoded.included).toBeGreaterThan(0);
+      expect(encoded.included).toBeLessThan(50);
+      expect(encoded.included + encoded.omitted).toBe(50);
+      expect(encoded.lines.join('\n').length).toBeLessThanOrEqual(400);
+
+      // and the omission reaches the prompt as a visible note, not a silent gap
+      const prompt = buildDailyDigestPrompt({ ...context, items });
+      expect(prompt.omittedItems).toBe(0); // full budget fits 50 items
+      const tiny = encodeDailyDigestItems(items, 200);
+      expect(tiny.omitted).toBeGreaterThan(0);
+    });
+
+    it('keeps one item on exactly one line even when its title contains newlines or tabs', () => {
+      // the encoding is line- and tab-delimited, so unsanitized text would silently
+      // corrupt the corpus the model parses — inventing ids that were never in the queue
+      const encoded = encodeDailyDigestItems([
+        { ...bigItem(1), title: 'first line\nsecond\tline\r\nthird' },
+      ]);
+      expect(encoded.lines).toHaveLength(1);
+      expect(encoded.lines[0].split('\t')).toHaveLength(6);
+      expect(encoded.lines[0]).not.toMatch(/[\n\r]/);
+    });
+
+    it('caps one pathological title so it cannot consume the whole budget', () => {
+      const encoded = encodeDailyDigestItems([{ ...bigItem(1), title: 'x'.repeat(50_000) }]);
+      const titleCell = encoded.lines[0].split('\t')[5];
+      expect(titleCell.length).toBeLessThanOrEqual(DAILY_DIGEST_MAX_TITLE_CHARS);
+    });
   });
 
   it('D-028: an empty corpus still blocks as empty-corpus, never as a coverage mismatch', async () => {
