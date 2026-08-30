@@ -195,6 +195,27 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     expect(shutdownViaPtyMock).not.toHaveBeenCalled();
   });
 
+  it('REFUSES a new loopless holder even when the goal carries an older disposition', async () => {
+    activeGoalForOwnerMock.mockResolvedValue({ ...ACTIVE_GOAL, recordedDisposition: 'handoff' });
+
+    const got = await run({});
+
+    expect(got.isError).toBe(true);
+    expect(got.error).toContain('disposition');
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+  });
+
+  it('allows re-entrant session cleanup after a known-inactive loop already recorded disposition', async () => {
+    getLoopStatusMock.mockResolvedValue({ active: false });
+    activeGoalForOwnerMock.mockResolvedValue({ ...ACTIVE_GOAL, recordedDisposition: 'handoff' });
+
+    const got = await run({});
+
+    expect(got.isError).toBe(false);
+    expect(got.result).toBe('sent');
+    expect(applyGoalDispositionMock).not.toHaveBeenCalled();
+  });
+
   it('with a disposition: stamps the goal, delivers the owner report, then proceeds to shut down', async () => {
     activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
     const got = await run({ disposition: 'achieved', reason: 'goal complete' });

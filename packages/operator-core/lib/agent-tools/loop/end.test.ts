@@ -512,7 +512,21 @@ describe('the P-002 disposition gate (acceptance)', () => {
     expect(activeGoalForOwnerMock).not.toHaveBeenCalled();
   });
 
-  it('an already-recorded disposition passes the gate without re-demanding it', async () => {
+  it('a historical disposition cannot authorize ending a currently active GOAL loop', async () => {
+    activeGoalForOwnerMock.mockResolvedValue({ ...ACTIVE_GOAL, recordedDisposition: 'handoff' });
+
+    const got = await run({});
+    expect(got.isError).toBe(true);
+    expect(got.error).toContain('disposition');
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('an already-recorded disposition still covers a repeated inactive-loop cleanup', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      ownerId: 'su-caller-own-id',
+      active: false,
+    });
     activeGoalForOwnerMock.mockResolvedValue({ ...ACTIVE_GOAL, recordedDisposition: 'handoff' });
     const got = await run({});
     expect(got.isError).toBe(false);
