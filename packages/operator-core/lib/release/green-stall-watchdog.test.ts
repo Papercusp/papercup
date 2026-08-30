@@ -1480,7 +1480,7 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
     return calls.filter((call) => String(call[0]).includes('SET escalation ='));
   }
 
-  it('dispatches a stale uncovered escalation and records the claimed dispatch outcome', async () => {
+  it('dispatches a stale uncovered escalation with the repair-queue slot empty and preserves evidence', async () => {
     dispatchReleaseFixerMock.mockResolvedValue({ spawnId: 'spawn-1', runId: 'run-1' });
     const { sql, calls } = makeRecoveryFakeSql([recoveryRow()]);
 
@@ -1495,18 +1495,19 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
       { installSlug: 'oddsmith', workspaceId: 'papercusp-workspace' },
       'abcdef1234567890',
       ['pkg/a.test.ts'],
-      {
-        logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
-        runId: 'run-oddsmith-1',
-        integrationRoot: '/srv/oddsmith',
-      },
     );
     expect(notifyAttentionMock).not.toHaveBeenCalled();
     expect(broadcastSevereEventMock).not.toHaveBeenCalled();
 
     const updates = recoveryUpdates(calls);
     expect(updates).toHaveLength(2); // conditional claim, then dispatch result
-    expect(JSON.parse(String(updates[1]![1])).recovery).toMatchObject({
+    const dispatchedEscalation = JSON.parse(String(updates[1]![1]));
+    expect(dispatchedEscalation.checkpointEvidence).toEqual({
+      logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+      runId: 'run-oddsmith-1',
+      integrationRoot: '/srv/oddsmith',
+    });
+    expect(dispatchedEscalation.recovery).toMatchObject({
       attempts: 1,
       outcome: 'dispatched',
       notifiedAt: null,
