@@ -41,10 +41,13 @@ import { recordDesktopAudit } from '../desktop/desktop-audit';
 import { buildSshStreamArgs } from './remote-exec';
 import { sshTargetForFrame } from './frame-installer';
 import { loadDeployedFrame } from './deployed-frame';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   resolveLocalDesktopByDisplay,
   setDesktopViewer,
+  touchDesktopSession,
 } from '../desktop/desktop-session-registry';
+import { desktopViewerHeartbeatMs } from '../desktop/desktop-lifecycle';
 
 export type VncMode = 'watch' | 'takeover';
 
@@ -110,6 +113,30 @@ export interface ActiveVncSession {
 export const VNC_TICKET_TTL_MS = 30_000;
 /** Hard cap on a connected session (safety net over idle teardown). */
 export const VNC_MAX_SESSION_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long a bridged stream may go without a single byte FROM the viewer before
+ * it is torn down (P-014 idle-stream teardown).
+ *
+ * ⚠ The direction is the whole design, and the other one would not work. RFB is a
+ * client-PULL protocol: after each update the viewer sends its own
+ * FramebufferUpdateRequest, so viewer→server traffic flows continuously for a
+ * `watch` session exactly as it does for `takeover`, and it STOPS the moment the
+ * viewer wedges. Server→viewer bytes prove nothing by comparison — x11vnc keeps
+ * writing into a half-open socket until the kernel buffer fills, so a stream
+ * measured that way looks alive long after the human is gone.
+ *
+ * This is what makes the heartbeat below trustworthy rather than circular. A
+ * heartbeat with no idle detector behind it keeps asserting "someone is watching"
+ * for a viewer whose TCP connection is half-open, which is the same leak the old
+ * six-hour `VIEWER_HOLD_SEC` existed to bound — just at a shorter interval and
+ * with more confidence. Detecting the dead stream is what earns the shorter hold.
+ *
+ * Pinned against `VIEWER_STREAM_TEARDOWN_CEILING_SEC` by a test: the governor's
+ * hold is derived from that ceiling, so a longer window here would silently make
+ * the hold too short for this lane.
+ */
+export const VNC_STREAM_IDLE_MS = 10 * 60 * 1000;
 export const VNC_WS_PATH = '/api/deploy/vnc';
 
 export interface FrameVncDeps {
@@ -122,6 +149,24 @@ export interface FrameVncDeps {
   resolveLocalDesktop?: typeof resolveLocalDesktopByDisplay;
   /** P-004 viewer binding on the registry row; defaults to the registry. */
   setViewer?: typeof setDesktopViewer;
+  /**
+   * P-014 connected-viewer heartbeat (D-008 rule 4); defaults to the registry.
+   *
+   * Injectable because `managedSetInterval` is deliberately inert under Vitest,
+   * so the heartbeat is driven through this seam in tests rather than by letting
+   * a real timer fire inside a worker.
+   */
+  touchSession?: typeof touchDesktopSession;
+  /**
+   * P-014 test seam for the per-connection heartbeat timer.
+   *
+   * `managedSetInterval` is deliberately inert under Vitest (a production timer
+   * firing inside a worker mid-mock turns a passing run into an unhandled
+   * rejection), so a test that arms a real one measures nothing. Injecting the
+   * timer lets a test drive the tick directly and assert on what it DID, which is
+   * the behaviour that matters, rather than on the fact that a timer exists.
+   */
+  armHeartbeat?: (intervalMs: number, fn: () => void) => ManagedHandle;
 }
 
 const pending = new Map<string, PendingSession>();
@@ -176,6 +221,41 @@ function bindViewer(session: PendingSession, mode: VncMode | 'none'): void {
     }),
   ).catch((err) => {
     console.warn('[frame-vnc] viewer indicator write failed:', err);
+  });
+}
+
+/**
+ * Refresh this session's `last_active_at` while its stream is carrying traffic
+ * (P-014 / D-008 rule 4).
+ *
+ * Same fire-and-forget contract as `bindViewer`, and for the same reason: a
+ * failed beat must never tear down a working viewer. A MISSED beat is safe by
+ * construction — `DESKTOP_VIEWER_HEARTBEAT_DIVISOR` sizes the cadence so a viewer
+ * survives four consecutive misses before its desktop looks idle.
+ */
+/**
+ * Arm the per-connection viewer heartbeat.
+ *
+ * Named + listable rather than a bare `setInterval`, so a leaked per-connection
+ * timer shows up in `schedule:inventory` instead of only in a memory graph;
+ * `instanced` because every concurrent viewer arms one under the same name.
+ */
+function armHeartbeat(intervalMs: number, fn: () => void): ManagedHandle {
+  const arm =
+    depsOverride.armHeartbeat ??
+    ((ms: number, tick: () => void) =>
+      managedSetInterval('frame-vnc-viewer-heartbeat', ms, tick, {
+        category: 'lifecycle',
+        instanced: true,
+      }));
+  return arm(intervalMs, fn);
+}
+
+function beatViewer(session: PendingSession): void {
+  if (!session.desktopSessionId) return;
+  const touch = depsOverride.touchSession ?? touchDesktopSession;
+  void Promise.resolve(touch(session.desktopSessionId)).catch((err) => {
+    console.warn('[frame-vnc] viewer heartbeat failed:', err);
   });
 }
 
@@ -374,10 +454,19 @@ export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): Chil
   });
 
   let open = true;
+  // Last byte received FROM the viewer. Seeded at open so a stream that never
+  // sends anything still ages out rather than living until VNC_MAX_SESSION_MS.
+  let lastViewerByteMs = now();
+  // Declared before endSession rather than at its arming site: endSession runs on
+  // spawn-error too, and a `let` initialised further down would be in its temporal
+  // dead zone there — a ReferenceError inside the teardown path, not a no-op.
+  let heartbeat: ManagedHandle | null = null;
   const endSession = (why: string) => {
     if (!open) return;
     open = false;
     clearTimeout(maxTimer);
+    heartbeat?.stop();
+    heartbeat = null;
     active.delete(key);
     // Clear the cross-process viewer indicator. This runs on EVERY teardown
     // reason — viewer-left, remote-closed, spawn-error, max-session-ttl — so a
@@ -424,6 +513,26 @@ export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): Chil
 
   const maxTimer = setTimeout(() => endSession('max-session-ttl'), VNC_MAX_SESSION_MS);
 
+  /**
+   * One tick does BOTH halves of P-014's viewer liveness, in this order.
+   *
+   * The order is load-bearing. The idle check runs FIRST so a stream that has
+   * already gone quiet is torn down on this tick instead of being heartbeated one
+   * more time — otherwise the beat would keep asserting "a human is watching" for
+   * a viewer that is provably gone, which is exactly the stale-binding failure the
+   * shorter `VIEWER_HOLD_SEC` no longer has the slack to absorb.
+   */
+  const tick = () => {
+    if (!open) return;
+    if (now() - lastViewerByteMs > VNC_STREAM_IDLE_MS) {
+      endSession('stream-idle');
+      return;
+    }
+    beatViewer(session);
+  };
+
+  heartbeat = armHeartbeat(desktopViewerHeartbeatMs(), tick);
+
   child.stdout?.on('data', (chunk: Buffer) => {
     try {
       ws.send(chunk);
@@ -438,6 +547,10 @@ export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): Chil
   child.on('close', () => endSession('remote-closed'));
   child.on('error', () => endSession('spawn-error'));
   ws.on('message', (data: Buffer) => {
+    // The liveness signal for VNC_STREAM_IDLE_MS. Stamped before the write and
+    // unconditionally: the byte ARRIVED from the viewer, which is what proves the
+    // viewer is alive, whether or not the child is still there to receive it.
+    lastViewerByteMs = now();
     try {
       child.stdin?.write(data);
     } catch {

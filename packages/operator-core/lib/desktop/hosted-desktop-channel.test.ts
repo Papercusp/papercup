@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
   HOSTED_DESKTOP_USERS,
   HostedDesktopEndpointError,
   assertLoopbackDesktopEndpoint,
-  desktopViewerHeartbeatMs,
   desktopViewersHold,
   hostedDesktopGrant,
   type HostedDesktopAttachment,
@@ -12,6 +10,8 @@ import {
 import {
   DEFAULT_DESKTOP_LIFECYCLE_POLICY,
   DESKTOP_LIFECYCLE_POLICY,
+  DESKTOP_VIEWER_HEARTBEAT_DIVISOR,
+  desktopViewerHeartbeatMs,
   type DesktopLifecyclePolicy,
 } from './desktop-lifecycle';
 import { KASMVNC_CONTROL_USER, KASMVNC_LOOPBACK_INTERFACE, KASMVNC_VIEW_USER } from './x-server-backend';
