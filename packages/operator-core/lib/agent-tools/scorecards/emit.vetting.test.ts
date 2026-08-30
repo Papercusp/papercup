@@ -157,6 +157,36 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit vetting stamp (P-004)', () => {
+  it('refuses a meta-rubric card for an active acceptance rubric when vetting linkage is omitted', async () => {
+    const res = await emitScorecard(
+      {
+        rubricRef: 'meta-acceptance-rubric',
+        ratings: META_RATINGS,
+        subject: { kind: 'rubric', ref: 'ar-some-plan' },
+      } as never,
+      EMIT_INPUT,
+    );
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'acceptance_rubric_vetting_required',
+      error: expect.stringContaining('requires vetting linkage'),
+    });
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('vettingConsult');
+    expect(res.error).toContain('vettingWorkItem');
+    expect(res.error).toContain('vettingUnanswered');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('allows a plain meta-rubric scorecard when it has no acceptance-rubric subject', async () => {
+    const res = await emitScorecard(
+      { rubricRef: 'meta-acceptance-rubric', ratings: META_RATINGS } as never,
+      EMIT_INPUT,
+    );
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
   it('stamps observation.vetting { consultId, rubricRevision, critiquePosts, critics } + subject when the consult carries critique', async () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);

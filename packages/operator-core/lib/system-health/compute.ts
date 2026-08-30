@@ -40,6 +40,7 @@ import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import { accountFull } from '../deployment/account-pool';
 import { projectLiveEdgeThrottle } from '../deployment/account-pool-store';
+import type { LiveHealthReading, LiveHealthSignalKey, LiveHealthSnapshot } from '../resource-governor/live-health';
 import type {
   SystemHealth,
   SystemHealthPanels,
@@ -71,6 +72,7 @@ import type {
   LoopsHealth,
   CoordinationHealth,
   MemoryPanelHealth,
+  HostPressureSample,
 } from './types';
 import { PANEL_LABELS } from './types';
 import { getPanelRefreshCoalescer } from './refresh-coalescer';
@@ -92,6 +94,7 @@ import {
   improvementsStatus,
   infraStatus,
   infraSummary,
+  evaluateHostPressure,
   diskBandWithHysteresis,
   isReaperWedged,
   overwatchStatus,
@@ -338,6 +341,33 @@ export async function panelSafe<T>(
 
 function m(label: string, value: string | number, tone?: PanelStatus): HealthMetric {
   return tone ? { label, value, tone } : { label, value };
+}
+
+/**
+ * Project the versioned live-health snapshot onto the small host-pressure sample
+ * consumed by the SystemHealth thresholds. Only `measured` numeric readings are
+ * evidence; unknown/stale readings remain null so the detector can report an
+ * honest unknown instead of treating an unavailable signal as zero.
+ */
+export function hostPressureSampleFromLiveHealth(
+  snapshot: Pick<LiveHealthSnapshot, 'sampledAtMs' | 'profile' | 'signals'> | null | undefined,
+): HostPressureSample | null {
+  if (!snapshot) return null;
+  const measuredNumber = (key: LiveHealthSignalKey): number | null => {
+    const reading: LiveHealthReading = snapshot.signals[key];
+    return reading.state === 'measured' && typeof reading.value === 'number' && Number.isFinite(reading.value)
+      ? reading.value
+      : null;
+  };
+  return {
+    sampledAtMs: snapshot.sampledAtMs,
+    effectiveCores: snapshot.profile.effectiveCores,
+    cpuPsiSomePct: measuredNumber('cpu.psiSomePct'),
+    memoryPsiSomePct: measuredNumber('memory.psiSomePct'),
+    memoryPsiFullPct: measuredNumber('memory.psiFullPct'),
+    runnableCount: measuredNumber('scheduler.runnableCount'),
+    blockedCount: measuredNumber('scheduler.blockedCount'),
+  };
 }
 
 function agoMin(ms: number | null, now: number): string {
@@ -1894,6 +1924,16 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       // elevated ≥1.5s, critical ≥4s (a healthy pgHealth returns in tens of ms).
       pool = { probeMs, band: classifyPoolPressure(probeMs, 1500, 4000) };
     } catch { /* PG unreadable — collector still returns (gateway leg) */ }
+    // Fresh host-pressure evidence from the resource-governor monitor. The reader
+    // validates the atomic snapshot and rejects missing, malformed, future, or
+    // stale files; the pure detector then preserves unknown signal states rather
+    // than turning them into healthy zeroes.
+    let hostPressure: InfraHealth['hostPressure'] = null;
+    try {
+      const { readLiveHealthSnapshot } = await import('../resource-governor/live-health-monitor');
+      const snapshot = await readLiveHealthSnapshot(undefined, ctx.now);
+      hostPressure = evaluateHostPressure(hostPressureSampleFromLiveHealth(snapshot), ctx.now);
+    } catch { /* live-health unavailable — leave this optional leg absent */ }
     // Per-thread perf-SLO verdict from Lane E's latest perf-signals-v1 capture (F1/
     // P-030). Fail-soft: no capture / E1 not running on this box ⇒ perf null ⇒ infra
     // behaves exactly as before. Per-thread budgets (worker CPU%, event-loop lag,
@@ -2031,7 +2071,18 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const d = await checkMigrationDrift();
       migrationDrift = { unapplied: d.missing.length };
     } catch { /* drift unreadable — leave null */ }
-    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy, pool, disk, backup, migrationDrift, toolFailures };
+    const data: InfraHealth = {
+      pg,
+      gatewayReachable: ctx.gatewayReachable,
+      hostPressure,
+      perf,
+      mcpProxy,
+      pool,
+      disk,
+      backup,
+      migrationDrift,
+      toolFailures,
+    };
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
     const toolsCrit = toolFailures?.rating === 'broken';
@@ -2039,6 +2090,8 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
     const mcpWarn = mcpHard > 0 && !mcpCrit;
     const worstDisk = disk && disk.length > 0 ? Math.max(...disk.map((v) => v.usedPct)) : null;
+    const hostPressureTone =
+      hostPressure?.status === 'crit' ? 'crit' : hostPressure?.status === 'warn' ? 'warn' : undefined;
     return {
       status,
       summary: infraSummary(data, ctx.gatewayEnabled),
@@ -2051,6 +2104,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('mcp-proxy', mcpProxy ? (mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
+        m('host pressure', hostPressure?.status ?? 'n/a', hostPressureTone),
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),
         m(
           'backup',

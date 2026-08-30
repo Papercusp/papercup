@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { withFsMutex } from "./fs-mutex.mjs";
 // EI-21442389733525112: `task-exit-class.mjs` is dependency-free by design, so importing it
 // here cannot reintroduce the coupling its own header warns about — and it is the one module
 // that owns the refusal marker's grammar, for both the emitter below and the reader in
@@ -8,6 +9,20 @@ import { dirname, join } from "node:path";
 import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 
 export const DURATION_HISTORY_VERSION = 1;
+// EI-21669294176320490: the scheduler's worker/task counters are local to one
+// Node invocation.  A fleet of concurrent `test:affected` processes could
+// therefore each admit its own "bounded" pool and multiply Vitest workers and
+// Postgres clients until the host's acquire queues starved.  Reuse the proven
+// filesystem mutex so the admission boundary is shared across invocations.
+//
+// Keep the stale window longer than the largest bounded test-process timeout:
+// `withFsMutex` also confirms a same-host dead owner with kill(pid, 0), so a
+// crashed holder is still reclaimed immediately without allowing a live,
+// long-running test to be mistaken for an abandoned lock.
+const SHARED_TEST_PROCESS_ADMISSION_MUTEX = "papercusp-test-process-admission";
+const SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
+const SHARED_TEST_PROCESS_ADMISSION_STALE_MS = 2 * 60 * 60 * 1_000;
+const SHARED_TEST_PROCESS_ADMISSION_RETRY_MS = 250;
 // EI-21437241652128498 / EI-21437837415175286: one stateful test task first
 // reached 1,517 cgroup tasks, then exhausted a 2,048-task capability scope while
 // it was still progressing. A later operator-core pure lane reached 4,096 tasks
@@ -618,7 +633,7 @@ function takeShortest(pending) {
  * multiplying a per-workspace cap. A one-worker/memory-token budget collapses to serial.
  * Results are returned in declaration order regardless of completion order.
  */
-export async function runBudgetedTasks(tasks, options) {
+async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
   const budget = resolveTaskBudget(options);
   const estimateMs = options.estimateMs ?? (() => null);
   const runTask = options.runTask;
@@ -775,6 +790,27 @@ export async function runBudgetedTasks(tasks, options) {
       lastMemAvailableMb,
     },
   };
+}
+
+/**
+ * Run one scheduler invocation behind the shared test-process admission gate.
+ *
+ * The lock deliberately covers the whole invocation, not just the synchronous
+ * launch call: the child process and all of its Vitest descendants remain the
+ * admitted resident workload until `runTask` settles.  `withFsMutex` releases
+ * in a finally block and reclaims a stale/dead owner, so a failed or crashed
+ * runner cannot leave later verification permanently wedged.
+ */
+export async function runBudgetedTasks(tasks, options) {
+  return withFsMutex(
+    SHARED_TEST_PROCESS_ADMISSION_MUTEX,
+    () => runBudgetedTasksWithoutSharedAdmission(tasks, options),
+    {
+      timeoutMs: SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS,
+      staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
+      retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
+    },
+  );
 }
 
 /** Run deterministic shards sequentially while preserving declaration-order results. */

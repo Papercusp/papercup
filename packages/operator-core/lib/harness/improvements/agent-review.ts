@@ -48,6 +48,7 @@ import {
 } from '../../work-items';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
@@ -161,6 +162,131 @@ export async function resolveLedgerIdeaId(workItemId: string): Promise<string> {
   throw new Error(
     `agent review ledger collision: '${workItemId}' and '${fallback}' both route to other artifacts`,
   );
+}
+
+export interface PreserveAgentReviewAuthorityResult {
+  preserved: boolean;
+  ledgerIdeaId?: string;
+  reason?: 'not-found' | 'not-agent-review' | 'already-independent';
+}
+
+/**
+ * Preserve agent-review's grade authority before blender:route-idea reuses the
+ * work-item id as the plan-learning row's primary key.
+ *
+ * Enrollment already chooses `agent-review:<WI>` when the bare id is occupied at
+ * enrollment time. The inverse ordering was still unsafe: a feature could enter
+ * review first (so its payload + `wi:<WI>` ledger row both used the bare id), then
+ * a later plan route would upsert that same row to `plan:<slug>`. The payload kept
+ * pointing at the overwritten row, so review pickup remained pending forever while
+ * every grade was treated as an ordinary plan-learning grade.
+ *
+ * Lock the work item and both possible ledger rows, materialize the deterministic
+ * fallback, and repoint payload.agentReview in ONE transaction. A normal first
+ * route clones the review row (including any standing grade); a retry against the
+ * already-overwritten incident shape creates a clean review row instead of copying
+ * the unrelated plan grade. The caller may then safely upsert the bare id onto the
+ * plan rail. Retries converge once the payload points at the fallback.
+ */
+export async function preserveAgentReviewAuthorityBeforePlanRoute(input: {
+  workItemId: string;
+  workspaceId?: string;
+}): Promise<PreserveAgentReviewAuthorityResult> {
+  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  const fallback = `agent-review:${input.workItemId}`;
+  const reviewRef = `wi:${input.workItemId}`;
+  const now = Date.now();
+
+  return boundedOrgTxn(async (tx) => {
+    const workItems = await tx<{ payload: unknown; harness_slug: string; title: string }[]>`
+      SELECT payload, harness_slug, title
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${input.workItemId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task', 'feature'])
+       FOR UPDATE`;
+    const workItem = workItems[0];
+    if (!workItem) return { preserved: false, reason: 'not-found' };
+
+    const review = readAgentReviewState(workItem.payload);
+    if (!review) return { preserved: false, reason: 'not-agent-review' };
+    if (review.ledgerIdeaId !== input.workItemId) {
+      return { preserved: false, ledgerIdeaId: review.ledgerIdeaId, reason: 'already-independent' };
+    }
+
+    const ledgerRows = await tx<{ idea_id: string; routed_ref: string }[]>`
+      SELECT idea_id, routed_ref
+        FROM harness_shared.scout_routed_ideas
+       WHERE idea_id IN (${input.workItemId}, ${fallback})
+       FOR UPDATE`;
+    const byId = new Map(ledgerRows.map((row) => [row.idea_id, row.routed_ref]));
+    const fallbackRef = byId.get(fallback);
+    if (fallbackRef != null && fallbackRef !== reviewRef) {
+      throw new Error(
+        `agent review ledger collision: fallback '${fallback}' routes to '${fallbackRef}', not '${reviewRef}'`,
+      );
+    }
+
+    if (fallbackRef == null) {
+      const primaryIsReviewAuthority = byId.get(input.workItemId) === reviewRef;
+      if (primaryIsReviewAuthority) {
+        await tx`
+          INSERT INTO harness_shared.scout_routed_ideas
+            (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id,
+             lens, rail, routed_ref, title, addresses_pattern_refs, routed_at,
+             outcome, outcome_checked_at, human_grade, human_feedback, graded_by,
+             graded_at, origin, created_by, model_spec, model_config)
+          SELECT ${fallback}, workspace_id, harness_slug, source_hive, target_hive, cycle_id,
+                 lens, rail, routed_ref, title, addresses_pattern_refs, routed_at,
+                 outcome, outcome_checked_at, human_grade, human_feedback, graded_by,
+                 graded_at, origin, created_by, model_spec, model_config
+            FROM harness_shared.scout_routed_ideas
+           WHERE idea_id = ${input.workItemId}
+          ON CONFLICT (idea_id) DO NOTHING`;
+      } else {
+        // Retry/repair after the bare row has already become plan provenance: do
+        // not copy that row's plan grade into a review round that never received it.
+        await tx`
+          INSERT INTO harness_shared.scout_routed_ideas
+            (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id,
+             lens, rail, routed_ref, title, addresses_pattern_refs, routed_at,
+             outcome, outcome_checked_at, human_grade, human_feedback, graded_by,
+             graded_at, origin, created_by, model_spec, model_config)
+          VALUES
+            (${fallback}, ${workspaceId}, ${workItem.harness_slug}, ${workItem.harness_slug},
+             NULL, NULL, 'agent-review', 'improvement', ${reviewRef}, ${workItem.title},
+             NULL, ${now}, NULL, NULL, NULL, NULL, NULL, NULL, 'agent-review',
+             ${review.submittedBy}, NULL, NULL)
+          ON CONFLICT (idea_id) DO NOTHING`;
+      }
+    }
+
+    const fallbackRows = await tx<{ routed_ref: string }[]>`
+      SELECT routed_ref
+        FROM harness_shared.scout_routed_ideas
+       WHERE idea_id = ${fallback}`;
+    if (fallbackRows[0]?.routed_ref !== reviewRef) {
+      throw new Error(`agent review authority migration could not establish '${fallback}' -> '${reviewRef}'`);
+    }
+
+    const updated = await tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               COALESCE(payload, '{}'::jsonb),
+               '{agentReview,ledgerIdeaId}',
+               to_jsonb(${fallback}::text),
+               true
+             ),
+             updated_ts = ${now}
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${input.workItemId}
+         AND payload #>> '{agentReview,ledgerIdeaId}' = ${input.workItemId}
+      RETURNING feature_id`;
+    if (!updated[0]) {
+      throw new Error(`agent review authority migration lost work-item '${input.workItemId}'`);
+    }
+    return { preserved: true, ledgerIdeaId: fallback };
+  });
 }
 
 async function deliverRevision(input: {

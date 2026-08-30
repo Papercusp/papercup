@@ -1420,6 +1420,51 @@ async function routinesTickImpl(): Promise<void> {
     },
     { name: 'pot-throughput-tick' },
   );
+
+  // platform-to-app-data-producer-2026-08-30 P-005 (D-001): the app data
+  // producer's reconcile sweep. For each configured (owner, app) mapping it
+  // asks the APP where its cursor is (D-002), reads canonical personal_documents
+  // rows after it (D-004), and POSTs them through the SAME mapper the live push
+  // sink uses, so push and reconcile cannot produce divergent app rows.
+  //
+  // This is not merely a faster catch-up for a down app: per D-013 the push
+  // sink DECLINES registration when its gate fails, and a declined registration
+  // writes no delivery row at all — so this sweep is that case's only repair
+  // path. It is also the mechanism P-006's backfill rides rather than a second
+  // program.
+  //
+  // A workspace with no mappings does nothing and costs one indexed read. The
+  // sweep is fail-soft internally (every failure becomes a result row), so a
+  // single unreachable app can neither abort the tick nor stall its siblings.
+  await DBOS.runStep(
+    async () => {
+      const { sql } = getOrgPg();
+      const { appDataProducerReconcileSweep } = await import('../app-data-producer/reconcile');
+      const results = await appDataProducerReconcileSweep(sql, activeWorkspaceId());
+      for (const res of results) {
+        if (res.outcome === 'error' || res.outcome === 'skipped') {
+          console.warn(`[app-data-producer] ${res.outcome}: ${res.app}/${res.userId} — ${res.reason}`);
+        }
+      }
+      // Returned rather than voided so a swallowed failure is distinguishable
+      // from a healthy empty run in operation_outputs.
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        deliveredRows: results.reduce((n, r) => n + r.rowsDelivered, 0),
+        // Rows SCANNED, delivered or skipped. Distinct from deliveredRows on
+        // purpose: a backfill pass that reads its whole budget and delivers
+        // nothing (every row unmappable) is working, not idle, and only this
+        // number tells the two apart.
+        readRows: results.reduce((n, r) => n + r.rowsRead, 0),
+        errorCount: results.filter((r) => r.outcome === 'error').length,
+        skippedCount: results.filter((r) => r.outcome === 'skipped').length,
+        morePending: results.some((r) => r.more),
+        results: results.slice(0, 25),
+      };
+    },
+    { name: 'app-data-producer-reconcile-sweep' },
+  );
 }
 
 const routinesTickWorkflow = idempotentRegisterWorkflow('routinesTick', () =>

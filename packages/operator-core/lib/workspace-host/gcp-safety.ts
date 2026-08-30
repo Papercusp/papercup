@@ -483,9 +483,20 @@ export function censusGcpWorkspaceHostResources(
     }
     return Object.entries(requiredLabels).every(([key, value]) => entry.labels[key] === value);
   };
+  const matchesManagedWorkspace = (entry: GcpManagedWorkspaceHostResourceObservation) => {
+    const kind = entry.resource.kind as GcpWorkspaceHostCensusResourceKind;
+    return (
+      !deterministicKinds.has(kind) &&
+      entry.labels[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed] === 'true' &&
+      entry.labels[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId] ===
+        requiredLabels[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]
+    );
+  };
   const managed = input.observed.filter(matchesManagedIdentity);
   const labelMismatches = input.observed.filter(
-    (entry) => expectedKeys.has(resourceKey(entry.resource)) && !matchesManagedIdentity(entry),
+    (entry) =>
+      !matchesManagedIdentity(entry) &&
+      (expectedKeys.has(resourceKey(entry.resource)) || matchesManagedWorkspace(entry)),
   );
   const untracked = managed.filter((entry) => !expectedKeys.has(resourceKey(entry.resource)));
   const missing = input.expected.filter((entry) => {

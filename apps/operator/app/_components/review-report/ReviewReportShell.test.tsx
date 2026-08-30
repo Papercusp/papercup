@@ -511,6 +511,26 @@ describe("rendering", () => {
     );
   });
 
+  it("keeps complete state transitions inside constrained rows", () => {
+    const constrainedStart = REPORT_CSS.indexOf(
+      "@container (max-width: 760px)",
+    );
+    const phoneStart = REPORT_CSS.indexOf("@container (max-width: 420px)");
+    expect(constrainedStart).toBeGreaterThan(-1);
+    expect(phoneStart).toBeGreaterThan(constrainedStart);
+
+    const constrainedCss = REPORT_CSS.slice(constrainedStart, phoneStart);
+    expect(constrainedCss).toMatch(
+      /\.review-report__row-change,\s*\.review-report__row-detail-slot\s*\{[^}]*grid-column:\s*2 \/ -1;/s,
+    );
+    expect(constrainedCss).toMatch(
+      /\.review-report__transition\s*\{[^}]*max-width:\s*100%;[^}]*flex-wrap:\s*wrap;[^}]*white-space:\s*normal;/s,
+    );
+    expect(constrainedCss).toMatch(
+      /\.review-report__state\s*\{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+  });
+
   it("uses pointer cursors for clickable rows and their details control", () => {
     expect(REPORT_CSS).toMatch(
       /\.review-report__row\s*\{[^}]*cursor: pointer;/s,

@@ -19,6 +19,29 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 
 const GIB = 1024 ** 3;
+const AFFECTED_CARGO_WORKSPACE = '@papercusp/desktop';
+
+/**
+ * Decide whether an affected-test invocation owns the desktop Rust suite.
+ *
+ * Cargo used to run after every affected invocation, including a one-workspace JS change. That
+ * coupled a scoped Vitest verdict to unrelated native capacity/disk admission and could turn a
+ * clean JS run red before it emitted its terminal result. Keep the native suite fail-wide inside
+ * its actual workspace radius, and preserve the explicit `--all` route. An explicit desktop
+ * exclusion wins in both cases, matching the task collector's existing exclusion contract.
+ */
+export function shouldRunAffectedCargoSuite({
+  runAll = false,
+  affectedWorkspaceNames = [],
+  excludedWorkspaceNames = [],
+} = {}) {
+  const excluded = new Set(excludedWorkspaceNames ?? []);
+  if (excluded.has(AFFECTED_CARGO_WORKSPACE)) return false;
+  return (
+    runAll === true ||
+    new Set(affectedWorkspaceNames ?? []).has(AFFECTED_CARGO_WORKSPACE)
+  );
+}
 
 /**
  * Resolve an actual `cargo` binary rather than trusting a bare spawn to find it on inherited

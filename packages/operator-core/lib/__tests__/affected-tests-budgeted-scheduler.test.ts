@@ -218,6 +218,51 @@ describe('runBudgetedTasks', () => {
     expect((await outcome).error?.message).toBe('primary failed');
     expect(starts).toEqual(['long', 'short']);
   });
+
+  it('serializes concurrent scheduler invocations behind the shared process admission gate', async () => {
+    const lockRoot = mkdtempSync(join(tmpdir(), 'pc-test-process-admission-'));
+    const previousLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockRoot;
+    const firstStarted = deferred<void>();
+    const firstRelease = deferred<void>();
+    const starts: string[] = [];
+    let active = 0;
+    let peak = 0;
+
+    const runInvocation = (id: string, waitFor?: Promise<void>) =>
+      runBudgetedTasks([id], {
+        ...config,
+        maxConcurrentTasks: 1,
+        runTask: async () => {
+          starts.push(id);
+          active += 1;
+          peak = Math.max(peak, active);
+          if (id === 'first') firstStarted.resolve();
+          if (waitFor) await waitFor;
+          active -= 1;
+          return id;
+        },
+      });
+
+    try {
+      const first = runInvocation('first', firstRelease.promise);
+      await firstStarted.promise;
+
+      const second = runInvocation('second');
+      await new Promise<void>((resolveNext) => setImmediate(resolveNext));
+      expect(starts).toEqual(['first']);
+      expect(peak).toBe(1);
+
+      firstRelease.resolve();
+      await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+      expect(starts).toEqual(['first', 'second']);
+      expect(peak).toBe(1);
+    } finally {
+      if (previousLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockRoot;
+      rmSync(lockRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('near-tree-wide deterministic sharding (P-011)', () => {

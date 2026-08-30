@@ -91,6 +91,22 @@ async function fixture(
         sizeBytes: 2_048,
         executable: true,
       },
+      {
+        path: 'bin/pui',
+        sha256: '6'.repeat(64),
+        sizeBytes: 8_192,
+        executable: true,
+      },
+      {
+        path: 'pui-companion.wasm',
+        sha256: '7'.repeat(64),
+        sizeBytes: 4_096,
+      },
+      {
+        path: 'pui-install.json',
+        sha256: '8'.repeat(64),
+        sizeBytes: 512,
+      },
     ],
     parameters: [{ name: 'distribution_profile', value: 'vm-release' }],
     targets: [{ provider: 'gcp', locations: ['us-central1'] }],

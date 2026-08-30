@@ -543,4 +543,21 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
     expect(replay).toContain("logLine(r.stdout ?? '');");
     expect(replay).toContain("logLine(r.stderr ?? '');");
   });
+
+  it('publishes the pc-heavy finalization barrier after the initial task pool settles', () => {
+    const finalizationEnv = source.indexOf('PC_HEAVY_PSI_FINALIZATION_FILE');
+    const publishFn = source.indexOf('function publishPreemptFinalizationMarker');
+    const initialPool = source.indexOf('const initialPool = await runBudgetedTaskShards');
+    const publishCall = source.indexOf('publishPreemptFinalizationMarker();', initialPool);
+    const resultLine = source.indexOf('const resultLine = (status) =>');
+
+    expect(finalizationEnv).toBeGreaterThanOrEqual(0);
+    expect(publishFn).toBeGreaterThan(finalizationEnv);
+    expect(initialPool).toBeGreaterThanOrEqual(0);
+    expect(publishCall).toBeGreaterThan(initialPool);
+    expect(publishCall).toBeLessThan(resultLine);
+    expect(source).toContain("flag: 'wx'");
+    expect(source).toContain('PC_HEAVY_PSI_FINALIZATION pid=');
+    expect(source).toContain('cleanupPreemptFinalizationMarker();');
+  });
 });

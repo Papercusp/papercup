@@ -35,7 +35,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
@@ -47,6 +47,59 @@ import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPane
  *  fields, so these tests need no cast and stay honest if the shape changes. */
 const candidate = (id: string): ImprovementCandidate =>
   ({ id, kind: 'bug', scope: 'operator', title: `candidate ${id}` });
+
+describe('hostPressureSampleFromLiveHealth — measured-only projection', () => {
+  const reading = (state: 'measured' | 'unknown' | 'stale', value: unknown) => ({ state, value });
+
+  it('projects measured numeric readings and profile normalization into the detector sample', () => {
+    const snapshot = {
+      sampledAtMs: 10_000,
+      profile: { effectiveCores: 4 },
+      signals: {
+        'cpu.psiSomePct': reading('measured', 12),
+        'memory.psiSomePct': reading('measured', 3),
+        'memory.psiFullPct': reading('measured', 1),
+        'scheduler.runnableCount': reading('measured', 7),
+        'scheduler.blockedCount': reading('measured', 1),
+      },
+    } as unknown as Parameters<typeof hostPressureSampleFromLiveHealth>[0];
+
+    expect(hostPressureSampleFromLiveHealth(snapshot)).toEqual({
+      sampledAtMs: 10_000,
+      effectiveCores: 4,
+      cpuPsiSomePct: 12,
+      memoryPsiSomePct: 3,
+      memoryPsiFullPct: 1,
+      runnableCount: 7,
+      blockedCount: 1,
+    });
+  });
+
+  it('maps unknown/stale/non-numeric readings to null and preserves an absent snapshot', () => {
+    const snapshot = {
+      sampledAtMs: 10_000,
+      profile: { effectiveCores: 4 },
+      signals: {
+        'cpu.psiSomePct': reading('unknown', null),
+        'memory.psiSomePct': reading('stale', null),
+        'memory.psiFullPct': reading('measured', true),
+        'scheduler.runnableCount': reading('measured', 7),
+        'scheduler.blockedCount': reading('unknown', null),
+      },
+    } as unknown as Parameters<typeof hostPressureSampleFromLiveHealth>[0];
+
+    expect(hostPressureSampleFromLiveHealth(snapshot)).toMatchObject({
+      sampledAtMs: 10_000,
+      effectiveCores: 4,
+      cpuPsiSomePct: null,
+      memoryPsiSomePct: null,
+      memoryPsiFullPct: null,
+      runnableCount: 7,
+      blockedCount: null,
+    });
+    expect(hostPressureSampleFromLiveHealth(null)).toBeNull();
+  });
+});
 
 describe('readDiskPressure — process temp filesystem coverage (EI-21048564873280768)', () => {
   beforeEach(() => {

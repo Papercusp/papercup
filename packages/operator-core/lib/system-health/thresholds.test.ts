@@ -22,6 +22,7 @@ import {
   infraStatus,
   infraSummary,
   infraCritAmbientOnly,
+  evaluateHostPressure,
   statusSeverity,
   ackCovers,
   reconcilePausedQueen,
@@ -44,6 +45,10 @@ import {
   BACKUP_STALE_MS,
   UNANSWERED_DIRECTED_WARN_MS,
   isReaperWedged,
+  HOST_PRESSURE_MAX_AGE_MS,
+  HOST_PRESSURE_CPU_PSI_WARN_PCT,
+  HOST_PRESSURE_MEMORY_PSI_FULL_CRIT_PCT,
+  HOST_PRESSURE_RUNNABLE_WARN_PER_CORE,
 } from './thresholds';
 import type {
   QueenHealth,
@@ -64,6 +69,7 @@ import type {
   MemoryPanelHealth,
   ContextInjectionHealth,
   ContextInjectionClientRow,
+  HostPressureSample,
 } from './types';
 
 const queen = (o: Partial<QueenHealth> = {}): QueenHealth => ({
@@ -497,6 +503,97 @@ const infra = (o: Partial<InfraHealth> = {}): InfraHealth => ({
   pg: { version: '16', total: 10, active: 2, idle: 8, postmasterStartMs: null }, gatewayReachable: true, perf: null, mcpProxy: null, ...o,
 });
 
+const hostPressureSample = (o: Partial<HostPressureSample> = {}): HostPressureSample => ({
+  sampledAtMs: 10_000,
+  effectiveCores: 128,
+  cpuPsiSomePct: 0,
+  memoryPsiSomePct: 0,
+  memoryPsiFullPct: 0,
+  runnableCount: 0,
+  blockedCount: 0,
+  ...o,
+});
+
+describe('evaluateHostPressure — fresh resource-governor host evidence', () => {
+  it('reports healthy pressure only when every required reading is fresh and valid', () => {
+    const health = evaluateHostPressure(hostPressureSample(), 20_000);
+
+    expect(health.status).toBe('ok');
+    expect(health.ageMs).toBe(10_000);
+    expect(health.runnablePerCore).toBe(0);
+    expect(health.blockedPerCore).toBe(0);
+    expect(health.unknown).toEqual([]);
+    expect(health.summary).toContain('host pressure normal');
+  });
+
+  it('normalizes scheduler counts by effective cores instead of absolute host size', () => {
+    const small = evaluateHostPressure(hostPressureSample({ effectiveCores: 2, runnableCount: 3 }), 20_000);
+    const large = evaluateHostPressure(hostPressureSample({ effectiveCores: 128, runnableCount: 192 }), 20_000);
+
+    expect(small.runnablePerCore).toBe(1.5);
+    expect(large.runnablePerCore).toBe(1.5);
+    expect(small.status).toBe('warn');
+    expect(large.status).toBe('warn');
+    expect(small.summary).toContain(`${HOST_PRESSURE_RUNNABLE_WARN_PER_CORE}`);
+  });
+
+  it('reports crit for measured CPU, memory, and scheduler pressure', () => {
+    const health = evaluateHostPressure(
+      hostPressureSample({
+        cpuPsiSomePct: 90,
+        memoryPsiFullPct: HOST_PRESSURE_MEMORY_PSI_FULL_CRIT_PCT,
+        runnableCount: 384,
+        blockedCount: 128,
+      }),
+      20_000,
+    );
+
+    expect(health.status).toBe('crit');
+    expect(health.reasons).toHaveLength(4);
+    expect(health.summary).toContain('HOST PRESSURE:');
+    expect(health.summary).toContain('CPU PSI some');
+    expect(health.summary).toContain('memory PSI full');
+    expect(health.summary).toContain('scheduler runnable');
+    expect(health.summary).toContain('scheduler blocked');
+  });
+
+  it('never thresholds stale or future snapshots, even when their values are severe', () => {
+    const stale = evaluateHostPressure(
+      hostPressureSample({ sampledAtMs: 10_000, cpuPsiSomePct: 99, runnableCount: 999 }),
+      10_000 + HOST_PRESSURE_MAX_AGE_MS + 1,
+    );
+    const future = evaluateHostPressure(hostPressureSample({ sampledAtMs: 30_000, cpuPsiSomePct: 99 }), 20_000);
+
+    expect(stale.status).toBe('unknown');
+    expect(stale.reasons).toEqual([]);
+    expect(stale.unknown[0]).toContain('beyond');
+    expect(future.status).toBe('unknown');
+    expect(future.reasons).toEqual([]);
+    expect(future.unknown).toContain('live-health snapshot is from the future');
+  });
+
+  it('keeps missing/invalid readings explicit instead of fabricating a healthy zero', () => {
+    const missing = evaluateHostPressure(hostPressureSample({ memoryPsiFullPct: null }), 20_000);
+    const invalid = evaluateHostPressure(hostPressureSample({ blockedCount: -1 }), 20_000);
+
+    expect(missing.status).toBe('unknown');
+    expect(missing.unknown).toContain('memory.psiFullPct is unavailable');
+    expect(invalid.status).toBe('unknown');
+    expect(invalid.unknown).toContain('scheduler.blockedCount is invalid');
+  });
+
+  it('preserves a measured warning when another corroborating leg is unavailable', () => {
+    const health = evaluateHostPressure(
+      hostPressureSample({ cpuPsiSomePct: HOST_PRESSURE_CPU_PSI_WARN_PCT, memoryPsiFullPct: null }),
+      20_000,
+    );
+
+    expect(health.status).toBe('warn');
+    expect(health.reasons).toHaveLength(1);
+    expect(health.unknown).toContain('memory.psiFullPct is unavailable');
+  });
+});
+
 describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () => {
   it('ok when PG healthy, gateway up, no perf/mcp signal', () => {
     expect(infraStatus(infra())).toBe('ok');
@@ -510,6 +607,10 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   it('crit on a per-thread perf WEDGE (operator_degraded)', () => {
     // A minimal PerfVerdict-shaped object — only `status` is read by infraStatus.
     expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'] }))).toBe('crit');
+  });
+  it('crit on a measured host-pressure incident, even when PG is unreadable', () => {
+    const hostPressure = evaluateHostPressure(hostPressureSample({ cpuPsiSomePct: 90 }), 20_000);
+    expect(infraStatus(infra({ pg: null, hostPressure }))).toBe('crit');
   });
 
   // ── MCP tool-call transport SLO (W8/P-008) ──────────────────────────────────
@@ -694,6 +795,7 @@ describe('infraSummary — every crit must NAME its cause (the escalation body)'
       ['toolFailures broken', infra({ toolFailures: { rating: 'broken', evidence: 'facts:assert 100% fail' } as InfraHealth['toolFailures'] })],
       ['mcp proxy breach', infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) })],
       ['perf wedge', infra({ perf: { status: 'crit', reasons: ['operator degraded'] } as InfraHealth['perf'] })],
+      ['host pressure', infra({ hostPressure: evaluateHostPressure(hostPressureSample({ cpuPsiSomePct: 90 }), 20_000) })],
       ['disk pressure', infra({ disk: critDisk })],
       ['gateway down', infra({ gatewayReachable: false })],
     ];

@@ -381,6 +381,33 @@ export async function emitScorecard(
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   try {
+    // EI-21765534049482705: a meta-rubric card whose subject is an active
+    // acceptance rubric is the vetting attestation consumed by the completion
+    // gates. Without a linked critique channel it looks like a successful
+    // scorecard, but the plan/goal gates must (correctly) ignore it forever.
+    // Resolve the subject here so the writer rejects the inert card at the
+    // point where the missing evidence is still actionable. Plain meta-rubric
+    // scorecards without an acceptance-rubric subject remain valid.
+    const missingAcceptanceRubricVetting =
+      args.rubricRef === META_ACCEPTANCE_RUBRIC_ID &&
+      args.subject?.kind === 'rubric' &&
+      !args.vettingConsult &&
+      !args.vettingWorkItem &&
+      args.vettingUnanswered !== true;
+    if (missingAcceptanceRubricVetting) {
+      const subjectRubric = await getRubric(args.subject!.ref);
+      if (subjectRubric?.kind === 'acceptance' && subjectRubric.status === 'active') {
+        return {
+          ok: false as const,
+          code: 'acceptance_rubric_vetting_required' as const,
+          error:
+            `meta-rubric scorecard for active acceptance rubric '${args.subject.ref}' requires vetting linkage — ` +
+            `pass vettingConsult:'<consult conversation_id>' or vettingWorkItem:'<review WI-/EI- id>'. ` +
+            `If no critique is available, use vettingConsult with vettingUnanswered:true and ` +
+            `vettingUnansweredReason:'<what you observed>' so the waiver is recorded visibly.`,
+        };
+      }
+    }
     // Bind every scorecard to the exact rubric plan-row revision used for grading.
     // A failed read remains unrecorded; historical cards must not be back-filled
     // from whatever the rubric says today.

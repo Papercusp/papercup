@@ -45,12 +45,15 @@ function makeDeps(over: Partial<RouteIdeaDeps> = {}) {
   const recordRoutedIdea = over.recordRoutedIdea ?? vi.fn(async () => undefined);
   const getIssue = over.getIssue ?? vi.fn(async () => null as EngineerIssue | null);
   const linkIssue = over.linkIssue ?? vi.fn(async () => undefined);
+  const preserveAgentReviewAuthority =
+    over.preserveAgentReviewAuthority ?? vi.fn(async () => ({ preserved: false, reason: 'not-agent-review' as const }));
   return {
-    deps: { createPlanDraft, recordRoutedIdea, getIssue, linkIssue } as unknown as RouteIdeaDeps,
+    deps: { createPlanDraft, recordRoutedIdea, getIssue, linkIssue, preserveAgentReviewAuthority } as unknown as RouteIdeaDeps,
     createPlanDraft,
     recordRoutedIdea,
     getIssue,
     linkIssue,
+    preserveAgentReviewAuthority,
   };
 }
 
@@ -197,7 +200,7 @@ describe('runRouteIdea — draft path', () => {
 
 describe('runRouteIdea — re-route (featureId) path', () => {
   it('upserts the existing ledger row onto the plan rail, preserves the originator, links wi↔plan, leaves the wi open', async () => {
-    const { deps, createPlanDraft, recordRoutedIdea, getIssue, linkIssue } = makeDeps({
+    const { deps, createPlanDraft, recordRoutedIdea, getIssue, linkIssue, preserveAgentReviewAuthority } = makeDeps({
       getIssue: vi.fn(async () => issue()),
     });
     const out = await runRouteIdea({ featureId: 'EI-500', rail: 'plan' }, {}, deps);
@@ -219,6 +222,10 @@ describe('runRouteIdea — re-route (featureId) path', () => {
         lens: 'risk-first', // read from payload.ideation
         createdBy: 'su-originator', // the ORIGINATOR, not the re-router
       }),
+    );
+    expect(preserveAgentReviewAuthority).toHaveBeenCalledWith({ workItemId: 'EI-500', workspaceId: 'ws-1' });
+    expect(vi.mocked(preserveAgentReviewAuthority).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(recordRoutedIdea).mock.invocationCallOrder[0]!,
     );
     expect(linkIssue).toHaveBeenCalledWith(
       'EI-500',

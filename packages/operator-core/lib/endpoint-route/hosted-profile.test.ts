@@ -345,3 +345,70 @@ describe('hosted control plane integration', () => {
     ).toThrow(/not registered/);
   });
 });
+
+/**
+ * P-013 / D-023 ruling 5 — the hosted profile can never mount a loopback route.
+ *
+ * The plan item requires that the `auth: 'loopback'` desktop routes are never
+ * mounted in the hosted profile. That is already structural rather than
+ * configured, so what this suite owes is a FALSIFIABLE guard rather than new
+ * mounting code.
+ *
+ * The distinction matters: a test that merely asserted the desktop route is
+ * absent from `HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST` would pass against a broken
+ * version, because the allowlist is two health routes and absence is its default
+ * state. These tests instead ATTEMPT the unsafe thing — allowlisting a loopback
+ * route under each access tier — and require the refusal.
+ *
+ * They are written over the whole loopback CLASS rather than one path so that a
+ * desktop route added later inherits the guard instead of needing a new case.
+ */
+describe('hosted profile refuses loopback routes (P-013 / D-023 ruling 5)', () => {
+  const DESKTOP_VNC_ROUTE = { method: 'POST' as const, path: '/deploy/:slug/vnc-session' };
+
+  const loopbackRoutes = ALL_ROUTES.filter((r) => r.auth === 'loopback');
+
+  it('anchors on a real registered loopback desktop route', () => {
+    // If this fails the guard below is testing nothing, so it is asserted first.
+    const desktop = ALL_ROUTES.find(
+      (r) => r.method === DESKTOP_VNC_ROUTE.method && r.path === DESKTOP_VNC_ROUTE.path,
+    );
+    expect(desktop, 'the local desktop VNC route must still exist to guard').toBeDefined();
+    expect(desktop?.auth).toBe('loopback');
+    expect(loopbackRoutes.length).toBeGreaterThan(0);
+  });
+
+  it('refuses the desktop VNC route allowlisted as authenticated', () => {
+    expect(() =>
+      selectHostedControlPlaneRoutes(ALL_ROUTES, [{ ...DESKTOP_VNC_ROUTE, access: 'authenticated' }]),
+    ).toThrow(/must require an authenticated principal/);
+  });
+
+  it('refuses the desktop VNC route allowlisted as public', () => {
+    expect(() =>
+      selectHostedControlPlaneRoutes(ALL_ROUTES, [{ ...DESKTOP_VNC_ROUTE, access: 'public' }]),
+    ).toThrow(/different auth tier/);
+  });
+
+  it('refuses EVERY registered loopback route under both access tiers', () => {
+    for (const route of loopbackRoutes) {
+      const entry = { method: route.method, path: route.path };
+      expect(() =>
+        selectHostedControlPlaneRoutes(ALL_ROUTES, [{ ...entry, access: 'authenticated' }]),
+        `${route.method} ${route.path} must not be allowlistable as authenticated`,
+      ).toThrow();
+      expect(() =>
+        selectHostedControlPlaneRoutes(ALL_ROUTES, [{ ...entry, access: 'public' }]),
+        `${route.method} ${route.path} must not be allowlistable as public`,
+      ).toThrow();
+    }
+  });
+
+  it('mounts no loopback route in the shipped hosted allowlist', () => {
+    const shipped = [...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, ...HOSTED_AUTH_ROUTE_ALLOWLIST];
+    const loopbackKeys = new Set(loopbackRoutes.map((r) => `${r.method} ${r.path}`));
+    for (const entry of shipped) {
+      expect(loopbackKeys.has(`${entry.method} ${entry.path}`)).toBe(false);
+    }
+  });
+});

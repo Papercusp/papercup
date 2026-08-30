@@ -661,14 +661,25 @@
   }
 
   .review-report__row-identity,
-  .review-report__row-change,
   .review-report__row-evidence,
   .review-report__row-error {
     grid-column: 2 / 3;
   }
 
+  .review-report__row-change,
   .review-report__row-detail-slot {
     grid-column: 2 / -1;
+  }
+
+  .review-report__transition {
+    max-width: 100%;
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .review-report__state {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .review-report__row-conf {

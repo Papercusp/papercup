@@ -1018,6 +1018,25 @@ describe('background job deadlines (WI-6677)', () => {
     }
   }
 
+  /**
+   * WI-1046842 — wait until a job's OWN output proves a precondition, instead of
+   * assuming the job won a race against its own deadline. Returns a boolean rather
+   * than throwing so the caller can fail with a NAMED cause; a bare
+   * `expected false to be true` on the downstream assertion is exactly the
+   * uninformative shape that made this class expensive to diagnose.
+   */
+  async function waitForOutput(id: string, needle: string, ms = 5_000): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const job = getJob(id);
+      if (job && readJobOutput(job).includes(needle)) return true;
+      // Once the job is terminal its output can no longer grow, so keep polling
+      // only while it might still produce the needle.
+      if (job?.endedAt != null || Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
   it('a background job is NOT bound by the foreground pair — its default outlives a foreground call and its ceiling can host a real suite', () => {
     // Stated as an invariant rather than a literal so re-tuning the durations stays
     // free, while re-pointing background back at the foreground constants (the
@@ -1141,18 +1160,52 @@ describe('background job deadlines (WI-6677)', () => {
 
   it("⭐ hitting the deadline SIGTERMs first, so the job's own cleanup trap still runs (it used to SIGKILL and leak)", async () => {
     const marker = join(STATE, `cleanup-ran-${Date.now()}`);
+    // WI-1046842 — the deadline must not race the job's own STARTUP. The TERM trap
+    // is installed by the command itself, so a SIGTERM that lands before bash has
+    // run `trap` kills the job under the DEFAULT TERM action, no cleanup can
+    // possibly run, and the failure presents as a bare `expected false to be true`
+    // that reads like a cleanup REGRESSION rather than a fixture that never got to
+    // arm itself. Measured 2026-08-30: at a 20ms deadline this fails 25/25 with the
+    // job's own `echo working` never appearing, while the previous 400ms passed
+    // 40/40 at rest yet flaked repeatedly inside the full suite (ledger: fails at
+    // 04:12/03:47/03:10/01:51 interleaved with passes, on a byte-identical file).
+    // The deadline here is a fixture constant with no product meaning — what is
+    // asserted is still SIGTERM-before-SIGKILL — so the fix is to stop racing
+    // startup and to make any residual loss self-diagnosing, NOT to weaken the
+    // assertion or to widen a product timeout.
     const job = startBackground(
       {
         command: `trap 'echo cleaned > ${marker}; exit 143' TERM; echo working; sleep 30`,
         cwd: STATE,
         stateDir: STATE,
       },
-      400,
+      2_000,
     );
+    // `trap` precedes `echo working`, so observing that echo PROVES the trap is
+    // installed and the job has reached `sleep` — the only state in which this
+    // test's question (SIGTERM vs SIGKILL) is even meaningful.
+    const trapInstalled = await waitForOutput(job.id, 'working', 1_500);
+    expect(
+      trapInstalled,
+      'the job never reached its own `echo working`, so its TERM trap was never installed: this run cannot distinguish SIGTERM from SIGKILL (startup race — WI-1046842) and is NOT evidence of a cleanup regression',
+    ).toBe(true);
     await waitForEnd(job.id);
     expect(job.status).toBe('timed_out');
     // The whole point: a SIGKILLed job cannot leave this behind.
-    expect(existsSync(marker)).toBe(true);
+    //
+    // WI-1046842 — carry the job's EXIT CODE into the failure message, because it
+    // is the one field that discriminates the ways this can go wrong, and without
+    // it every one of them prints the same `expected false to be true`:
+    //   143 → the TERM trap ran (or bash died of TERM): a genuine cleanup fault
+    //     0 → bash exited NORMALLY, so the trap never fired — SIGTERM reached the
+    //         `sleep` but not bash itself, and bash simply ran off the end of the
+    //         script (this is NOT a cleanup regression)
+    //   137 → SIGKILLed: the escalation beat the trap
+    //  null → never observed a normal exit at all
+    expect(
+      existsSync(marker),
+      `the job's TERM trap left no marker; job.exitCode=${job.exitCode} status=${job.status} (WI-1046842: 143=trap ran, 0=bash exited normally so the trap never fired, 137=SIGKILLed before it could)`,
+    ).toBe(true);
     expect(readFileSync(marker, 'utf8')).toContain('cleaned');
   }, 30_000);
 

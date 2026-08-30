@@ -35,6 +35,7 @@ import {
   parseCargoTestResultLines,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
+  shouldRunAffectedCargoSuite,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
@@ -42,6 +43,7 @@ import {
 const GIB = 1024 ** 3;
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPORTER_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs'), 'utf8');
+const AFFECTED_TESTS_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/affected-tests.mjs'), 'utf8');
 const VERIFY_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/verify-tauri-headless.sh'), 'utf8');
 const RIG_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../papercusp-desktop/bin/lib/deb-hetzner-rig.sh'), 'utf8');
 
@@ -132,6 +134,37 @@ describe('cargo test result parsing', () => {
     ]);
     expect(results.map(({ outcome }) => outcome)).toEqual(['ok', 'ok', 'ignored']);
     expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
+  });
+});
+
+describe('affected-runner Cargo selection (EI-21851033142703518)', () => {
+  it('does not couple a scoped JS workspace verdict to unrelated Cargo admission', () => {
+    expect(
+      shouldRunAffectedCargoSuite({
+        affectedWorkspaceNames: ['@papercusp/pot-app-seam'],
+      }),
+    ).toBe(false);
+  });
+
+  it('still runs Cargo for desktop-related and explicit all-workspace invocations', () => {
+    expect(
+      shouldRunAffectedCargoSuite({
+        affectedWorkspaceNames: ['@papercusp/desktop'],
+      }),
+    ).toBe(true);
+    expect(shouldRunAffectedCargoSuite({ runAll: true })).toBe(true);
+  });
+
+  it('honours an explicit desktop exclusion even under --all and wires the policy into production', () => {
+    expect(
+      shouldRunAffectedCargoSuite({
+        runAll: true,
+        affectedWorkspaceNames: ['@papercusp/desktop'],
+        excludedWorkspaceNames: ['@papercusp/desktop'],
+      }),
+    ).toBe(false);
+    expect(AFFECTED_TESTS_SOURCE).toContain('shouldRunAffectedCargoSuite({');
+    expect(AFFECTED_TESTS_SOURCE).toContain('if (RUN_CARGO_SUITE)');
   });
 });
 

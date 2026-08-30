@@ -204,7 +204,7 @@ describe('GCP managed-resource census and orphan reaper', () => {
     expect(census.inventoryComplete).toBe(true);
     expect(census.clean).toBe(false);
     expect(census.untracked.map(({ resource: entry }) => entry.providerId)).toEqual(['disk-orphan']);
-    expect(census.labelMismatches.map(({ resource: entry }) => entry.providerId)).toEqual(['vm-1']);
+    expect(census.labelMismatches.map(({ resource: entry }) => entry.providerId)).toEqual(['vm-1', 'other-host']);
     expect(census.missing.map((entry) => entry.providerId)).toEqual(['vm-1', 'disk-expected']);
     expect(census.reaperPlan).toEqual([
       expect.objectContaining({
@@ -219,6 +219,33 @@ describe('GCP managed-resource census and orphan reaper', () => {
         ],
       }),
     ]);
+  });
+
+  it('surfaces same-workspace resources owned by another host as defects without reaper ownership', () => {
+    const ownedVm = resource('vm', 'vm-1');
+    const foreignDisk = resource('disk', 'disk-other-host');
+    const census = censusGcpWorkspaceHostResources({
+      hostId: 'host-1',
+      workspaceId: 'workspace-1',
+      expected: [ownedVm],
+      observed: [
+        { resource: ownedVm, labels: labels(), observedAt: NOW },
+        {
+          resource: foreignDisk,
+          labels: labels('host-2'),
+          firstObservedAt: '2026-08-22T20:00:00.000Z',
+          observedAt: NOW,
+        },
+      ],
+      inventoryEvidence: inventoryEvidence(),
+      evaluatedAt: NOW,
+      orphanGraceMs: HOUR,
+    });
+
+    expect(census.clean).toBe(false);
+    expect(census.labelMismatches.map(({ resource: entry }) => entry.providerId)).toEqual(['disk-other-host']);
+    expect(census.untracked).toEqual([]);
+    expect(census.reaperPlan).toEqual([]);
   });
 
   it('requires non-vacuous all-kind inventory evidence and detects deterministic Router/NAT orphans', () => {

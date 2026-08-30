@@ -312,6 +312,14 @@ export default defineTool({
     // what it accepts and never named the writer. Costs zero prompt weight (not
     // rendered into the description) and is paid only on that failure path.
     argRedirects: {
+      // EI-21771591408106167: assignment is intentionally not a mutable field on
+      // work_items:update. Point callers at the ownership door instead of leaving
+      // them to infer that "claim" also supports assigning a named agent.
+      assignee: {
+        tool: 'work_items:claim',
+        args: { id: '<work-item-id>', assignee: '<assignee>' },
+        note: 'assignment is performed by work_items:claim; pass the target agent as `assignee`',
+      },
       tags: {
         tool: 'work_items:tag',
         args: { id: '<work-item-id>', topic: '<topic>' },

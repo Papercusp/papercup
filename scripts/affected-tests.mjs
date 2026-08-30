@@ -106,7 +106,10 @@ import {
   formatLoadSuspectNotice,
   formatLoadSuspectMarker,
 } from "./lib/load-suspect.mjs";
-import { detectCargoTermination } from "./lib/cargo-result.mjs";
+import {
+  detectCargoTermination,
+  shouldRunAffectedCargoSuite,
+} from "./lib/cargo-result.mjs";
 import { listFilesIncludingUntracked, listTrackedFiles } from "./lib/tracked-files.mjs";
 // D-021/P-002: summed task work, measured per-run. The helper/marker retain their legacy
 // "serial" names, but after budgeted scheduling the sum is serial-equivalent work rather than
@@ -155,6 +158,7 @@ import {
   passingTaskVerdictCrossRunGateConfig,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
+  passingTaskVerdictSharedInputProvenance,
   PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
@@ -306,6 +310,14 @@ let terminalSuppressed = false;
 const preemptReadyFile =
   process.env.PC_HEAVY_PREEMPT_READY_FILE?.trim() || null;
 let preemptReadyPublished = false;
+// pc-heavy's after-ready wrapper also allocates a private finalization path. Once
+// every initial task has settled, publish it before replaying task output and
+// running the aggregate reporting/attribution steps below. Without this barrier,
+// the PSI supervisor can freeze/SIGKILL the aggregate in the narrow gap after the
+// last AFFECTED_TASK_OUTPUT_END but before AFFECTED_TESTS_RESULT is emitted.
+const preemptFinalizationFile =
+  process.env.PC_HEAVY_PSI_FINALIZATION_FILE?.trim() || null;
+let preemptFinalizationPublished = false;
 function cleanupPreemptReadyMarker() {
   if (!preemptReadyPublished || !preemptReadyFile) return;
   try {
@@ -320,6 +332,22 @@ function cleanupPreemptReadyMarker() {
     }
   } finally {
     preemptReadyPublished = false;
+  }
+}
+function cleanupPreemptFinalizationMarker() {
+  if (!preemptFinalizationPublished || !preemptFinalizationFile) return;
+  try {
+    unlinkSync(preemptFinalizationFile);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      logLine(
+        "PC_HEAVY_PSI_FINALIZATION cleanup failed: " +
+          String(error?.message ?? error) +
+          "\n",
+      );
+    }
+  } finally {
+    preemptFinalizationPublished = false;
   }
 }
 function publishPreemptReadyMarker() {
@@ -338,6 +366,26 @@ function publishPreemptReadyMarker() {
     errSync(
       "[affected-tests] refusing execution phase: could not publish the " +
         "pc-heavy after-ready marker: " +
+        String(error?.message ?? error),
+    );
+    process.exit(75);
+  }
+}
+function publishPreemptFinalizationMarker() {
+  if (!preemptFinalizationFile || preemptFinalizationPublished) return;
+  try {
+    // pc-heavy owns this unique, absent path. wx keeps an inherited or
+    // accidentally shared marker from being mistaken for this run's handoff.
+    writeFileSync(preemptFinalizationFile, String(process.pid) + "\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+    preemptFinalizationPublished = true;
+    logLine("PC_HEAVY_PSI_FINALIZATION pid=" + process.pid + "\n");
+  } catch (error) {
+    errSync(
+      "[affected-tests] refusing finalization phase: could not publish the " +
+        "pc-heavy PSI finalization marker: " +
         String(error?.message ?? error),
     );
     process.exit(75);
@@ -418,6 +466,7 @@ logLine(
 // escalation upstream. Check the loop before reaching for the trap.
 process.on("exit", (code) => {
   cleanupPreemptReadyMarker();
+  cleanupPreemptFinalizationMarker();
   cleanupForwardedFilesResponses();
   // Catches every remaining way out with no verdict: an uncaught exception, an
   // unhandled rejection, or an early process.exit() on a path that emits nothing
@@ -625,8 +674,16 @@ function gitTry(argv) {
 }
 
 const explicitBase = arg("--base", process.env.AFFECTED_BASE || null);
+const explicitBaseSha = explicitBase
+  ? gitTry(["rev-parse", "--verify", "--quiet", `${explicitBase}^{commit}`])
+  : null;
 const resolvedBase = explicitBase
-  ? { base: explicitBase, source: "explicit", sha: null, reason: "explicit" }
+  ? {
+      base: explicitBaseSha ?? explicitBase,
+      source: "explicit",
+      sha: explicitBaseSha,
+      reason: explicitBaseSha ? "explicit-resolved" : "explicit-unresolved",
+    }
   : resolveTestCertifiedBase({ git: gitTry, env: process.env });
 // Say so out loud: a run whose radius came from somewhere other than the documented
 // default must never be a silent difference when someone reads the log later.
@@ -659,8 +716,18 @@ const rangeFrom = arg("--range-from", null);
 const rangeTo = arg("--range-to", null);
 // A repo-wide guard that derives its subject from git must use the same base as this
 // runner's authoritative changed-path derivation. In prefix mode, the two-dot range
-// is the source of truth, so the guard's one-sided diff starts at rangeFrom.
-const repoWideGuardBase = rangeFrom && rangeTo ? rangeFrom : base;
+// is the source of truth, so the guard's one-sided diff starts at rangeFrom. Resolve
+// the forwarded ref once: a moving branch name is not a stable input to a cached proof.
+const repoWideGuardBaseRef = rangeFrom && rangeTo ? rangeFrom : base;
+const repoWideGuardBaseSha = repoWideGuardBaseRef
+  ? gitTry([
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${repoWideGuardBaseRef}^{commit}`,
+    ])
+  : null;
+const repoWideGuardBase = repoWideGuardBaseSha ?? repoWideGuardBaseRef;
 // --changed-paths a,b,c — compute the affected set from these paths instead of a
 // git diff. See affectedWorkspaces() for why a git-based probe cannot answer
 // "what would touching X select?" on this tree.
@@ -3325,7 +3392,12 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
     ws,
     script: guard.script,
     notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
-    ...(guard.forwardBase ? { guardBase: repoWideGuardBase } : {}),
+    ...(guard.forwardBase
+      ? {
+          guardBase: repoWideGuardBase,
+          guardBaseResolved: repoWideGuardBaseSha != null,
+        }
+      : {}),
     ...(guardArgs.length ? { guardArgs } : {}),
   });
 }
@@ -3975,6 +4047,25 @@ const taskVerdictGuardKeys = new Set(
     ({ workspace, script }) => `${workspace} :: ${script}`,
   ),
 );
+const taskVerdictSharedInputProvenance = TASK_VERDICT_CACHE_ENABLED
+  ? passingTaskVerdictSharedInputProvenance({
+      root: ROOT,
+      trackedScan: taskVerdictTrackedScan,
+    })
+  : null;
+
+/**
+ * Selection base is not a runtime input for an ordinary workspace test. Repo-wide guards and
+ * external integration suites are different: some derive their subject from base..HEAD, so their
+ * real child environment and proof identity retain AFFECTED_BASE.
+ */
+function isOrdinaryReusableTask(t) {
+  return (
+    !taskVerdictGuardKeys.has(taskKey(t)) &&
+    t.script !== "test:integration" &&
+    t.script !== "test:el-suite"
+  );
+}
 
 // WI-595883: what THIS run observed, so the NEXT run's `dependency-closure-changed` miss can name
 // the moved path instead of reporting only that a hash differs. Read fails open — the sidecar can
@@ -3994,6 +4085,12 @@ const taskVerdictIdentityEnvByGroup = {};
 
 function dependencyProvenanceForTask(t) {
   if (!TASK_VERDICT_CACHE_ENABLED) return null;
+  if (t.guardBaseResolved === false) {
+    return {
+      ok: false,
+      reason: "provenance-incomplete:affected-base-unresolved",
+    };
+  }
   const key = taskKey(t);
   const provenance = passingTaskVerdictDependencyProvenance({
     root: ROOT,
@@ -4003,6 +4100,7 @@ function dependencyProvenanceForTask(t) {
     workspaces: wsByName,
     trackedScan: taskVerdictTrackedScan,
     repoWideTaskKeys: taskVerdictGuardKeys,
+    sharedInputProvenance: taskVerdictSharedInputProvenance,
     digestCache: taskVerdictDigestCache,
   });
   if (provenance?.ok) {
@@ -4252,6 +4350,12 @@ function runCapturedTask(
     VITEST_MAX_FORKS: String(allocation.workers),
     VITEST_MAX_THREADS: String(allocation.workers),
   };
+  // Remove the selector from the REAL process, not merely from a hash clone. This makes the
+  // ordinary-task contract structural: if a test starts reading AFFECTED_BASE later it observes
+  // no task input, while base-dependent guards/integration suites keep the value unchanged.
+  if (isOrdinaryReusableTask(context.t)) {
+    delete childEnv.AFFECTED_BASE;
+  }
   let cacheIdentity = null;
   let crossRunCacheIdentity = null;
   let cacheDecision = null;
@@ -4365,28 +4469,12 @@ function runCapturedTask(
           passingTaskVerdictCrossRunIdentityEnvironment(childEnv);
         crossRunCacheIdentity = buildPassingTaskVerdictIdentity({
           ...cacheIdentitySpec,
-          // WI-761481: drop `affectedBase` from the CROSS-RUN identity, for the same reason
-          // `scheduler` is nulled above and in exactly the same shape. An unpinned local run
-          // resolves its base from the test-certified WATERMARK (resolveTestCertifiedBase), and
-          // that watermark moves on this shared box as peers land commits and the gate certifies
-          // — so hashing it made cross-run reuse structurally unable to hit. Measured: two
-          // identical back-to-back local runs missed with `cross-run:gate-config-changed` every
-          // time, and the ONLY variable that flipped them to `cross-run:identity-match` (hits=1,
-          // zero tasks spawned) was exporting a pinned AFFECTED_BASE.
-          //
-          // WHY THIS IS SAFE, i.e. what the base was actually protecting. `affectedBase` is the
-          // run's SELECTION RADIUS — it decides WHICH tasks get picked, never what a picked task
-          // exercises. Validity of a stored verdict is decided by `dependencyHash`, the content
-          // sha256 of that task's whole dependency closure, which fails closed on any enumeration
-          // gap. If not one byte a task reads has changed, re-running it at a different base
-          // cannot produce different information, so admitting it is not "reusing an older
-          // proof" — it is reusing a proof whose inputs are byte-identical.
-          //
-          // SCOPE: cross-run ONLY. The per-run/process-group identity above still carries
-          // affectedBase, and cross-run reuse is disabled outright under the gate
-          // (TASK_VERDICT_LOCAL_CROSS_RUN_ENABLED requires GREEN_CHECKPOINT !== "1"), so no gate
-          // certification path is widened by this. Storage and lookup both use this same
-          // identity, so the two stay symmetric.
+          // D-004/WI-1024071: selection base is task-shaped, not globally irrelevant. Ordinary
+          // reusable children receive no AFFECTED_BASE at all and bind their actual workspace,
+          // transitive dependency, runner, and config inputs in dependencyHash. Repo-wide guards
+          // retain AFFECTED_BASE and, when they consume it, carry a resolved immutable --base in
+          // their command identity; an unresolved required base disabled provenance above.
+          // Normalising the selector-shaped gate field here therefore removes no real input.
           // ONE definition, shared with the test that proves it: the neutralised set and the
           // reason each field is self-invalidating live on
           // `passingTaskVerdictCrossRunGateConfig`, beside its environment-side sibling. The
@@ -4944,6 +5032,10 @@ const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   runTask: (context, allocation) => runCapturedTask(context, allocation),
   onTaskSettled: persistCleanFirstPassTaskVerdict,
 });
+// The initial pool has now journaled every settled task. Keep the external
+// supervisor from freezing the aggregate while it replays those records,
+// performs retries/cargo attribution, and emits the terminal result line.
+publishPreemptFinalizationMarker();
 for (const scheduled of initialPool.results) {
   if (scheduled.value.__cacheStatus !== "hit") {
     recordLeg(scheduled.task.t, scheduled.value.__elapsedMs);
@@ -5345,82 +5437,90 @@ for (const scheduled of initialPool.results) {
 // construction rather than by an explicit exemption. Arithmetic + wording live in the helper.
 for (const line of formatSerialPhaseSummary(taskLegs)) outSync(line);
 
-// ── P-009: Wire cargo tests into the same cadence as vitest/playwright ────────
-// Run the Rust/cargo native suite reporter after all vitest tasks complete.
+// ── P-009: Wire related cargo tests into the affected cadence ────────────────
+// Run the Rust/cargo native suite reporter after all related Vitest tasks complete.
 // The reporter records test results in harness_shared.test_runs (framework='cargo')
-// so the Tests tab covers the desktop shell. Fail-soft per D-007: never affects
-// the overall exit code, only the ledger write.
-outSync(
-  `\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`,
-);
-try {
-  const cargoReporter = resolve(ROOT, "scripts", "report-cargo-tests.mjs");
-  const cargoManifest = resolve(
-    ROOT,
-    "papercusp-desktop",
-    "src-tauri",
-    "Cargo.toml",
+// so the Tests tab covers the desktop shell. A JS-only affected run does not own this
+// native suite: coupling the two made unrelated Cargo admission pressure terminal-red the
+// scoped JS verdict (EI-21851033142703518). Desktop-related and --all runs still gate on it.
+const RUN_CARGO_SUITE = shouldRunAffectedCargoSuite({
+  runAll,
+  affectedWorkspaceNames: affected.map(({ name }) => name),
+  excludedWorkspaceNames: [...excludes],
+});
+if (RUN_CARGO_SUITE) {
+  outSync(
+    `\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`,
   );
-  // EI-15802: this suite runs LAST, so on a non-TTY (background-task) caller its
-  // own summary is exactly what a fixed-size tail buffer retains — capture +
-  // log it the same way as the vitest tasks above, instead of 'inherit'-only,
-  // so an earlier JS/TS failure isn't hidden behind a trailing cargo pass/fail.
-  const cargoRun = captureOutput()
-    ? spawnSync(
-        process.execPath,
-        [cargoReporter, "--manifest-path", relative(ROOT, cargoManifest)],
-        {
-          cwd: ROOT,
-          encoding: "utf8",
-          maxBuffer: 256 * 1024 * 1024,
-        },
-      )
-    : spawnSync(
-        process.execPath,
-        [cargoReporter, "--manifest-path", relative(ROOT, cargoManifest)],
-        {
-          cwd: ROOT,
-          stdio: "inherit",
-        },
-      );
-  if (captureOutput()) {
-    writeAllSync(1, cargoRun.stdout ?? "");
-    writeAllSync(2, cargoRun.stderr ?? "");
-    logLine(cargoRun.stdout ?? "");
-    logLine(cargoRun.stderr ?? "");
-  }
-  if (cargoRun.status !== 0) {
-    const cargoOutput = `${cargoRun.stdout ?? ""}${cargoRun.stderr ?? ""}`;
-    const termination = detectCargoTermination(cargoOutput);
-    if (termination) {
-      errSync(
-        `>>> cargo test suite was killed by ${termination.signalName} (signal ${termination.signal}); ` +
-          "this is an external process termination, not a compiler diagnostic — re-run before source triage.",
-      );
-    } else {
-      errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
+  try {
+    const cargoReporter = resolve(ROOT, "scripts", "report-cargo-tests.mjs");
+    const cargoManifest = resolve(
+      ROOT,
+      "papercusp-desktop",
+      "src-tauri",
+      "Cargo.toml",
+    );
+    // EI-15802: this suite runs LAST, so on a non-TTY (background-task) caller its
+    // own summary is exactly what a fixed-size tail buffer retains — capture +
+    // log it the same way as the vitest tasks above, instead of 'inherit'-only,
+    // so an earlier JS/TS failure isn't hidden behind a trailing cargo pass/fail.
+    const cargoRun = captureOutput()
+      ? spawnSync(
+          process.execPath,
+          [cargoReporter, "--manifest-path", relative(ROOT, cargoManifest)],
+          {
+            cwd: ROOT,
+            encoding: "utf8",
+            maxBuffer: 256 * 1024 * 1024,
+          },
+        )
+      : spawnSync(
+          process.execPath,
+          [cargoReporter, "--manifest-path", relative(ROOT, cargoManifest)],
+          {
+            cwd: ROOT,
+            stdio: "inherit",
+          },
+        );
+    if (captureOutput()) {
+      writeAllSync(1, cargoRun.stdout ?? "");
+      writeAllSync(2, cargoRun.stderr ?? "");
+      logLine(cargoRun.stdout ?? "");
+      logLine(cargoRun.stderr ?? "");
     }
-    if (!quarantined.has("papercusp-desktop")) {
-      failed++;
-      failedTaskNames.push("papercusp-desktop :: cargo test");
-      // Not a vitest task — the vitest FAIL-row parser can never attribute it to files.
-      const cargoFailure = {
-        task: "papercusp-desktop :: cargo test",
-        reason: "non-vitest",
-      };
-      if (termination)
-        cargoFailure.reason = `killed-by-signal:${termination.signalName}`;
-      unattributedTasks.push(cargoFailure);
+    if (cargoRun.status !== 0) {
+      const cargoOutput = `${cargoRun.stdout ?? ""}${cargoRun.stderr ?? ""}`;
+      const termination = detectCargoTermination(cargoOutput);
+      if (termination) {
+        errSync(
+          `>>> cargo test suite was killed by ${termination.signalName} (signal ${termination.signal}); ` +
+            "this is an external process termination, not a compiler diagnostic — re-run before source triage.",
+        );
+      } else {
+        errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
+      }
+      if (!quarantined.has("papercusp-desktop")) {
+        failed++;
+        failedTaskNames.push("papercusp-desktop :: cargo test");
+        // Not a vitest task — the vitest FAIL-row parser can never attribute it to files.
+        const cargoFailure = {
+          task: "papercusp-desktop :: cargo test",
+          reason: "non-vitest",
+        };
+        if (termination)
+          cargoFailure.reason = `killed-by-signal:${termination.signalName}`;
+        unattributedTasks.push(cargoFailure);
+      }
     }
+  } catch (err) {
+    errSync(`>>> cargo test runner error: ${err.message}`);
+    failed++;
+    failedTaskNames.push("papercusp-desktop :: cargo test (runner error)");
+    unattributedTasks.push({
+      task: "papercusp-desktop :: cargo test (runner error)",
+      reason: "non-vitest",
+    });
   }
-} catch (err) {
-  errSync(`>>> cargo test runner error: ${err.message}`);
-  failed++;
-  failedTaskNames.push("papercusp-desktop :: cargo test (runner error)");
-  unattributedTasks.push({
-    task: "papercusp-desktop :: cargo test (runner error)",
-    reason: "non-vitest",
-  });
 }
 
 if (quarantinedFailed) {

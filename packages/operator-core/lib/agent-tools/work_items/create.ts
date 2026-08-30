@@ -27,7 +27,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { hiveArg } from '../_hive-scope';
-import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
+import {
+  createOneWorkItem,
+  type CreateOneWorkItemArgs,
+  type CreateOneWorkItemResult,
+} from './_create-core';
 import { looksLikeResidualClosure } from '../../plan-items/convert';
 import { TERMINAL_WORK_ITEM_STATES } from '../../work-items';
 import { LINK_RELS } from './link';
@@ -121,6 +125,16 @@ export function codeSmellsLikeCode(title: string, summary?: string): boolean {
   );
 }
 
+function describeDedupCoverageWarning(
+  coverage: NonNullable<CreateOneWorkItemResult['dedupCoverage']>,
+): string {
+  return (
+    `⚠ dedup coverage is degraded (lexical=${coverage.lexical}, semantic=${coverage.semantic}) — ` +
+    'a differently-worded duplicate may not have been found. Read dedupCoverage before treating ' +
+    'this create as checked clean.'
+  );
+}
+
 function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
   const payload = spec.payload ?? {};
   const numberOrNull = (value: unknown): number | null => {
@@ -208,7 +222,7 @@ export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
   description:
-    'Create ONE or MANY work-items. bug/change/task file tracked issues; feature/chunk enter the harness queue. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member\'s claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes.',
+    'Create ONE or MANY work-items. bug/change/task file tracked issues; feature/chunk enter the harness queue. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member\'s claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.',
   guidance: {
     when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, an ops step). A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several at once via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.',
     notWhen: 'NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
@@ -494,11 +508,19 @@ export default defineTool({
         // like code, attach a warning (never block) so the creator can re-kind it.
         const codeTaskWarning =
           spec.kind === 'task' && codeSmellsLikeCode(spec.title, spec.summary)
-            ? {
-                warning:
-                  'This looks like CODE work, but `task` is NON-CODE only (research / a decision / manual verification / ops). If it edits code, re-kind to `change` (or `feature` if pipeline-sized) via work_items:update.',
-              }
-            : {};
+            ? 'This looks like CODE work, but `task` is NON-CODE only (research / a decision / manual verification / ops). If it edits code, re-kind to `change` (or `feature` if pipeline-sized) via work_items:update.'
+            : undefined;
+        // EI-21764742458768014: a successful create used to expose degraded
+        // coverage only in the nested `dedupCoverage` object. That made the
+        // normal-looking `{ ok:true }` result easy to read as "checked clean",
+        // especially when the semantic embedder was unavailable. Keep the
+        // machine-readable coverage and add the visible `warning` channel.
+        const dedupCoverageWarning = res.dedupCoverage?.degraded
+          ? describeDedupCoverageWarning(res.dedupCoverage)
+          : undefined;
+        const warnings = [codeTaskWarning, dedupCoverageWarning].filter(
+          (value): value is string => Boolean(value),
+        );
         // EI-18655063958515097 non-blocking nudge: a title/summary that reads like an
         // unmet-acceptance residual split off a plan item, created with no plan link
         // (targetPlanItem/plan_item), is the exact "bare residual, no plan link, not
@@ -518,7 +540,7 @@ export default defineTool({
           id: res.workItem.id,
           title: spec.title,
           workItem: res.workItem,
-          ...codeTaskWarning,
+          ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
           ...residualLinkNudge,
           // EI-18784357226895330: filed, but the requested self-assignment was refused
           // by the fleet lane — the caller must see this on an ok:true result.

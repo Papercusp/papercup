@@ -129,6 +129,18 @@ function dryTasks(changedPaths: string, base?: string): string {
   return out;
 }
 
+function commitSha(ref: string): string {
+  const res = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  expect(res.status, `could not resolve ${ref}: ${res.stderr ?? ''}`).toBe(0);
+  const sha = (res.stdout ?? '').trim();
+  expect(sha).toMatch(/^[0-9a-f]{40}$/);
+  return sha;
+}
+
 function dryTaskLine(out: string, task: string): string {
   const line = out.split('\n').find((candidate) => candidate.includes(`:: ${task.split(' :: ')[1]}`));
   expect(line, `dry probe did not list ${task}:\n${out}`).toBeDefined();
@@ -211,8 +223,9 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('expands a file-level basename before selecting workspaces or forwarding guard files', () => {
-    const base = 'HEAD^';
-    const out = dryTasks(OUTSIDE_TS_BASENAME, base);
+    const baseRef = 'HEAD^';
+    const base = commitSha(baseRef);
+    const out = dryTasks(OUTSIDE_TS_BASENAME, baseRef);
     expect(
       out,
       `a file runner may report only ${OUTSIDE_TS_BASENAME}; affected-tests must resolve it ` +
@@ -257,8 +270,9 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('forwards the runner base and exact triggering paths to the vimock strand guard', () => {
-    const base = 'HEAD^';
-    const out = dryTasks(OUTSIDE_TS_PATH, base);
+    const baseRef = 'HEAD^';
+    const base = commitSha(baseRef);
+    const out = dryTasks(OUTSIDE_TS_PATH, baseRef);
     expect(
       out,
       `${VIMOCK_GUARD_TASK} must receive the same base that affected-tests used for its ` +
@@ -279,10 +293,11 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('attaches and forwards a SUBMODULE ROOT — the only superproject path for internal edits', () => {
-    const base = 'HEAD^';
+    const baseRef = 'HEAD^';
+    const base = commitSha(baseRef);
     const submodule = someSubmodulePath();
     expect(
-      dryTasks(submodule, base),
+      dryTasks(submodule, baseRef),
       `a runtime export added inside ${submodule} reaches affected-tests only as the bare ` +
         'gitlink path; a TS-extension-only predicate silently omits the guard for the whole submodule',
     ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base}) ` + `(guard args: --files=${submodule})`);
@@ -1156,8 +1171,9 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
   });
 
   it('forwards the authoritative base and exact triggering paths so git-sync cannot make it vacuous', () => {
-    const base = 'HEAD^';
-    const out = dryTasks(RFS_OUTSIDE_TS_PATH, base);
+    const baseRef = 'HEAD^';
+    const base = commitSha(baseRef);
+    const out = dryTasks(RFS_OUTSIDE_TS_PATH, baseRef);
     expect(
       out,
       'a post-git-sync run needs the before-image and exact scope; --files alone still ' +

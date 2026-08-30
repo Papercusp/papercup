@@ -28,6 +28,7 @@ import { getIssue, linkIssue } from '../../issues-engineer';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { createScoutPlanDraft, type CreateScoutPlanDraftInput } from '../../scout/scout-plan-draft';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
+import { preserveAgentReviewAuthorityBeforePlanRoute } from '../../harness/improvements/agent-review';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { hardText, softText, LIMITS } from '../limits';
 
@@ -105,6 +106,7 @@ export interface RouteIdeaDeps {
   recordRoutedIdea: typeof recordRoutedIdea;
   getIssue: typeof getIssue;
   linkIssue: typeof linkIssue;
+  preserveAgentReviewAuthority: typeof preserveAgentReviewAuthorityBeforePlanRoute;
 }
 
 /**
@@ -117,6 +119,7 @@ const defaultDeps: RouteIdeaDeps = {
   recordRoutedIdea,
   getIssue,
   linkIssue,
+  preserveAgentReviewAuthority: preserveAgentReviewAuthorityBeforePlanRoute,
 };
 
 /** kebab-case slug stem from a title; createScoutPlanDraft appends the date suffix. */
@@ -186,6 +189,14 @@ export async function runRouteIdea(
       rationale: buildRouteRationale({ framing: issue.body || null, sourceRef: `wi:${issue.id}` }),
     });
     const planRef = `plan:${slug}`;
+    // The same bare EI id is used by su-ideate's plan-learning row and, when
+    // review enrollment happened first, by agent-review's grade authority. Move
+    // the latter to its deterministic fallback before the plan upsert can reuse
+    // the key. This is a no-op for ordinary/non-review routes and on retries.
+    await deps.preserveAgentReviewAuthority({
+      workItemId: issue.id,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
     // idea_id ON CONFLICT upserts the feature's existing ledger row onto the
     // plan rail; created_by preserves the ORIGINATOR (not the re-router).
     await deps.recordRoutedIdea({

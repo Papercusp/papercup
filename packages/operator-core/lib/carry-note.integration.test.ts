@@ -264,10 +264,19 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     // Queue the newer writer first, then queue the stale writer with an older
     // admission watermark. Once the blocker releases, the newer commit wins
     // the lock queue and the stale writer must be rejected by the store guard.
-    const newer = setLoopCarryNoteWithPrior(LOOP, 'newer checkpoint');
+    // Use the underlying unbounded writer so this ordering test is not coupled
+    // to the loop wrapper's deliberately short contention budget. The separate
+    // bounded-loop test above owns the 100ms lock-timeout regression.
+    const write = (value: string) =>
+      setCarryNoteWithPrior(
+        { scope, workspaceId: 'default' },
+        value,
+        { bounded: false },
+      );
+    const newer = write('newer checkpoint');
     await new Promise((resolve) => setTimeout(resolve, 25));
     const staleClock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 10_000);
-    const stale = setLoopCarryNoteWithPrior(LOOP, 'stale checkpoint');
+    const stale = write('stale checkpoint');
     staleClock.mockRestore();
 
     release();

@@ -607,6 +607,17 @@ describe('work_items:update args schema — rejects lifecycle-state footguns (EI
   });
 });
 
+describe('work_items:update unknown-key redirects (EI-21771591408106167)', () => {
+  it('teaches callers that assignee belongs to work_items:claim', () => {
+    const redirect = tool.guidance?.argRedirects?.assignee;
+    expect(redirect).toMatchObject({
+      tool: 'work_items:claim',
+      args: { id: '<work-item-id>', assignee: '<assignee>' },
+    });
+    expect((redirect as { note?: string }).note).toMatch(/work_items:claim/);
+  });
+});
+
 // WI-4492: the item's primary text column had inverted names across the CRUD triad —
 // get RETURNS `summary`, create took `summary`, update took `body` — and each write verb
 // SILENTLY DISCARDED the wrong one (Zod stripped it) while returning ok:true. So the

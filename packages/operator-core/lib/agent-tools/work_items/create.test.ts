@@ -298,6 +298,51 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(b.results[0].queueAdmission).toEqual(queueAdmission);
   });
 
+  it('surfaces degraded dedup coverage as a visible warning on successful creates', async () => {
+    createM.mockImplementation(async (spec) =>
+      okCore(spec.title, {
+        dedupCoverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+      }),
+    );
+    const b = await body({ kind: 'bug', title: 'embedder unavailable while filing' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      dedupCoverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+      warning: expect.stringContaining('dedup coverage is degraded'),
+    });
+    expect(b.results[0].warning).toContain('lexical=unavailable');
+    expect(b.results[0].warning).toContain('semantic=unavailable');
+    expect(b.results[0].warning).toContain('differently-worded duplicate may not have been found');
+  });
+
+  it('does not add a dedup warning when coverage is healthy', async () => {
+    createM.mockImplementation(async (spec) =>
+      okCore(spec.title, {
+        dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+      }),
+    );
+    const b = await body({ kind: 'bug', title: 'healthy dedup coverage' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+    });
+    expect(b.results[0].warning).toBeUndefined();
+  });
+
+  it('preserves the task-kind warning while adding degraded coverage context', async () => {
+    createM.mockImplementation(async (spec) =>
+      okCore(spec.title, {
+        dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+      }),
+    );
+    const b = await body({ kind: 'task', title: 'refactor packages/foo/bar.ts' });
+
+    expect(b.results[0].warning).toContain('task` is NON-CODE only');
+    expect(b.results[0].warning).toContain('dedup coverage is degraded');
+  });
+
   it('surfaces queueAdmission and canonical identity on a coalesced non-creation', async () => {
     const queueAdmission = assessIssueAdmissionPressure({
       rawOccurrences: 455,
