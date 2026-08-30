@@ -114,6 +114,7 @@ import {
   markFrozenRepairStagingMismatch,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
+  type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import {
@@ -1100,6 +1101,10 @@ export interface CheckpointResult {
    * repair queue. Downstream recording uses it to suppress the legacy moving-tip
    * release-fixer dispatch; the queue already owns one targeted fixer. */
   repairQueue?: FrozenCandidateRepairQueue;
+  /** EI-21763163890991789: the frozen candidate pin was retired before this run continued
+   * with a fresher tip. The queue is intentionally cleared, so this evidence must travel on
+   * the result/event rather than disappear with the queue row. */
+  fossilAbandonment?: FrozenCandidateFossilAbandonment;
   /** EI-203121: durable per-leg execution identity, capped by the producer. */
   postSuiteLegs?: PostSuiteLegRecord[];
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
@@ -1309,6 +1314,9 @@ export async function emitInconclusiveCheckpointVerdict(
     // reach consumers only on the `green-checkpoint:red` emit this path no longer makes.
     // The other inconclusive reasons (skipped-locked, migrations-pending, …) carry none.
     ...(result.failingTests ? { failingTests: result.failingTests } : {}),
+    ...(result.fossilAbandonment
+      ? { fossilAbandonment: result.fossilAbandonment }
+      : {}),
   };
   const cancelSiblingKeysFor = checkpointVerdictSiblingKeys(pipeline);
   await emit({
@@ -6610,6 +6618,8 @@ export interface CheckpointOpts {
    *  is never organically out of time and the skip branch would otherwise be unreachable.
    *  Mirrors the isolation phase's own injectable `phaseDeadlineMs`. */
   salvageDeadlineMs?: number;
+  /** Internal carry for fossil-pin abandonment evidence across in-process refires. */
+  fossilAbandonment?: FrozenCandidateFossilAbandonment;
 }
 
 /**
@@ -6841,6 +6851,7 @@ async function tryLongestGreenPrefix(
   noPush: boolean,
   logPartialGreenGate: (line: string) => void,
   budget: SalvageBudget,
+  fossilAbandonment?: FrozenCandidateFossilAbandonment,
 ): Promise<CheckpointResult | null> {
   if (!deps.commitsInRange || !deps.affectedWorkspacesForRange) return null; // not wired (e.g. a minimal stub)
   if (!failingTests?.length) return null; // no signature → can't localize → don't guess
@@ -7233,6 +7244,7 @@ async function tryLongestGreenPrefix(
       redTip: candidate,
       pipeline,
       runId: deps.runId ?? null,
+      ...(fossilAbandonment ? { fossilAbandonment } : {}),
     };
     const cancelSiblingKeysFor = [
       "green-checkpoint:red",
@@ -7276,6 +7288,7 @@ async function tryLongestGreenPrefix(
     reason: "advanced-prefix",
     summary: confirm.summary,
     failingTests,
+    ...(fossilAbandonment ? { fossilAbandonment } : {}),
     ...(deps.runId ? { runId: deps.runId } : {}),
   };
 }
@@ -7782,6 +7795,11 @@ async function runGreenCheckpointInner(
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
   let initialCandidateVerification = false;
+  let fossilAbandonment = opts.fossilAbandonment;
+  const withFossilAbandonment = <T extends CheckpointResult>(result: T): T => {
+    if (!fossilAbandonment || result.fossilAbandonment) return result;
+    return { ...result, fossilAbandonment };
+  };
   // A queue created by this pass is still provisional until the red verdict's moving-tip
   // re-triage completes. Automatic candidates must not launch repair against a stale cut.
   let repairQueueCreatedThisPass = false;
@@ -8205,6 +8223,13 @@ async function runGreenCheckpointInner(
         pinAgeNowMs - (pinnedCommittedAtSec as number) * 1_000,
       );
       const fossilQueue = repairQueue;
+      fossilAbandonment = {
+        abandonedCandidate: fossilQueue.candidate,
+        ageMs: pinnedAgeMs,
+        thresholdMs: CANDIDATE_FOSSIL_AGE_MS,
+        reason: "candidate-fossil",
+      };
+      opts.fossilAbandonment = fossilAbandonment;
       await deps.writeFrozenRepairQueue?.(null);
       await deps
         .cleanupFrozenRepairWorktree?.(fossilQueue)
@@ -8246,7 +8271,7 @@ async function runGreenCheckpointInner(
             `Keeping the ready-to-promote queue, leaving ${cfg.releaseRef} unchanged, and refusing ` +
             `to select a moving integration tip`;
           deps.log(summary);
-          return {
+          return withFossilAbandonment({
             advanced: false,
             candidate: verifiedRepairHead,
             from: lastReady,
@@ -8254,7 +8279,7 @@ async function runGreenCheckpointInner(
             reason: "repair-in-progress",
             summary,
             repairQueue,
-          };
+          });
         }
         repairQueue = staged.queue;
         candidate = staged.candidate;
@@ -8340,7 +8365,7 @@ async function runGreenCheckpointInner(
         `(${decision.reason}) at ${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head ` +
         `and refusing to select a newer staging tip`;
       deps.log(summary);
-      return {
+      return withFossilAbandonment({
         advanced: false,
         candidate: repairQueue.repairHead,
         from: lastReady,
@@ -8348,7 +8373,7 @@ async function runGreenCheckpointInner(
         reason: "repair-in-progress",
         summary,
         repairQueue,
-      };
+      });
     } else if (decision.kind === "test-candidate") {
       candidate = await revParse(cfg.integrationRoot, decision.candidate);
       initialCandidateVerification = true;
@@ -8396,7 +8421,7 @@ async function runGreenCheckpointInner(
             dispatch.capacityHold,
           );
           deps.log(summary);
-          return {
+          return withFossilAbandonment({
             advanced: false,
             candidate: repairQueue.repairHead,
             from: lastReady,
@@ -8404,7 +8429,7 @@ async function runGreenCheckpointInner(
             reason: "repair-in-progress",
             summary,
             repairQueue,
-          };
+          });
         }
       }
       if (repairQueue && dispatch.reservationBlocked) {
@@ -8419,7 +8444,7 @@ async function runGreenCheckpointInner(
           ? `frozen repair fixer dispatch is reserved by another checkpoint until ${reservation.expiresAtMs}; candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`
           : `frozen repair fixer dispatch reservation was unavailable for ${repairQueue.repairHead.slice(0, 8)}; holding without a second launch`;
         deps.log(summary);
-        return {
+        return withFossilAbandonment({
           advanced: false,
           candidate: repairQueue.repairHead,
           from: lastReady,
@@ -8427,7 +8452,7 @@ async function runGreenCheckpointInner(
           reason: "repair-in-progress",
           summary,
           repairQueue,
-        };
+        });
       } else if (repairQueue) {
         repairQueue = dispatch.queue ?? repairQueue;
         const fired = dispatch.fired;
@@ -8435,7 +8460,7 @@ async function runGreenCheckpointInner(
           ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
           : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
         deps.log(summary);
-        return {
+        return withFossilAbandonment({
           advanced: false,
           candidate: repairQueue.repairHead,
           from: lastReady,
@@ -8443,14 +8468,14 @@ async function runGreenCheckpointInner(
           reason: "repair-in-progress",
           summary,
           repairQueue,
-        };
+        });
       }
     } else if (decision.kind === "wait-for-dispatch-reservation") {
       const summary =
         `frozen repair fixer dispatch reservation ${decision.reservationToken} is active until ${decision.reservationExpiresAtMs}; ` +
         `candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`;
       deps.log(summary);
-      return {
+      return withFossilAbandonment({
         advanced: false,
         candidate: repairQueue.repairHead,
         from: lastReady,
@@ -8458,11 +8483,11 @@ async function runGreenCheckpointInner(
         reason: "repair-in-progress",
         summary,
         repairQueue,
-      };
+      });
     } else if (decision.kind === "wait-for-fixer") {
       const summary = `frozen repair fixer ${decision.fixerSpawnId} is ${decision.liveness}; candidate ${repairQueue.candidate.slice(0, 8)} remains serialized and no suite was run`;
       deps.log(summary);
-      return {
+      return withFossilAbandonment({
         advanced: false,
         candidate: repairQueue.repairHead,
         from: lastReady,
@@ -8470,7 +8495,7 @@ async function runGreenCheckpointInner(
         reason: "repair-in-progress",
         summary,
         repairQueue,
-      };
+      });
     } else if (decision.kind === "verify-repair") {
       candidate = await revParse(cfg.integrationRoot, decision.candidate);
       repairVerification = true;
@@ -8538,7 +8563,7 @@ async function runGreenCheckpointInner(
               ? `re-queued the isolated head for a queue-authorized alignment fixer without spending a suite`
               : `holding without spending a suite because no queue writer is available`);
           deps.log(summary);
-          return {
+          return withFossilAbandonment({
             advanced: false,
             candidate,
             from: lastReady,
@@ -8546,7 +8571,7 @@ async function runGreenCheckpointInner(
             reason: "repair-staging-mismatch",
             summary,
             repairQueue,
-          };
+          });
         }
       }
     }
@@ -9772,6 +9797,7 @@ async function runGreenCheckpointInner(
               ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
               ...(typecheckPreflight ? { typecheckPreflight } : {}),
+              ...(fossilAbandonment ? { fossilAbandonment } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
             };
             await emitTerminalRed(terminalResult);
@@ -9872,27 +9898,28 @@ async function runGreenCheckpointInner(
     // "superseded" verdict and the terminal one can never drift in shape.
     const buildNotGreenResult = (
       forRetriage?: RedTriage & { tip: string | null },
-    ): CheckpointResult => ({
-      advanced: false,
-      candidate,
-      from: lastReady,
-      green: false,
-      candidateSource,
-      ...(diagnostic ? { diagnostic } : {}),
-      reason: "not-green",
-      summary: verdictSummary,
-      failingTests,
-      ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
-      failingTestNames: extractFailingTestNames(summary),
-      ...(forRetriage ? { retriage: forRetriage } : {}),
-      ...(deps.runId ? { runId: deps.runId } : {}),
-      ...(logPath ? { logPath } : {}),
-      ...(checkpointEvidence ? { checkpointEvidence } : {}),
-      ...(typecheckPreflight ? { typecheckPreflight } : {}),
-      ...(isolationNote ? { isolationNote } : {}),
-      ...(lineage ? { lineage } : {}),
-      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-    });
+    ): CheckpointResult =>
+      withFossilAbandonment({
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: false,
+        candidateSource,
+        ...(diagnostic ? { diagnostic } : {}),
+        reason: "not-green",
+        summary: verdictSummary,
+        failingTests,
+        ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
+        failingTestNames: extractFailingTestNames(summary),
+        ...(forRetriage ? { retriage: forRetriage } : {}),
+        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...(logPath ? { logPath } : {}),
+        ...(checkpointEvidence ? { checkpointEvidence } : {}),
+        ...(typecheckPreflight ? { typecheckPreflight } : {}),
+        ...(isolationNote ? { isolationNote } : {}),
+        ...(lineage ? { lineage } : {}),
+        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+      });
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
     // the failing file(s) — purely informational, same fail-soft shape as the
     // already-fixed-since check above; any error here just skips the note.
@@ -10544,6 +10571,7 @@ async function runGreenCheckpointInner(
           deadlineMs: salvageDeadlineMs,
           initialConfirmEstimateMs: salvageCostEstimateMs,
         },
+        fossilAbandonment,
       ).catch((e) => {
         salvageErrored = true;
         logPartialGreenGate(
@@ -11040,15 +11068,19 @@ export async function runGreenCheckpoint(
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
   const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
-  const result = await runGreenCheckpointInner(cfg, deps, {
+  const innerOpts: CheckpointOpts = {
     ...opts,
     candidateSource,
     ...(diagnostic ? { diagnostic } : {}),
-  });
+  };
+  const result = await runGreenCheckpointInner(cfg, deps, innerOpts);
   return {
     ...result,
     candidateSource,
     ...(diagnostic ? { diagnostic } : {}),
+    ...(innerOpts.fossilAbandonment
+      ? { fossilAbandonment: innerOpts.fossilAbandonment }
+      : {}),
   };
 }
 
