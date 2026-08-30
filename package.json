@@ -76,6 +76,7 @@
     "libs/generic/debounce-coalesce",
     "libs/generic/scheduled-registry",
     "libs/generic/module-singleton",
+    "libs/generic/ranked-selection",
     "libs/generic/dependency-order",
     "libs/generic/p2p-voice",
     "libs/generic/audio-dsp",
