@@ -98,7 +98,7 @@ export function kasmvncWebsocketPort(displayNumber: number): number {
 /**
  * Build the argv for a sandbox desktop's X server.
  *
- * The kasmvnc branch encodes four security properties, each of which is a DEPARTURE
+ * The kasmvnc branch encodes five security properties, each of which is a DEPARTURE
  * from what the package does if left alone:
  *
  *   1. `-interface 127.0.0.1` — the shipped default is `all`.
@@ -114,6 +114,29 @@ export function kasmvncWebsocketPort(displayNumber: number): number {
  *      credential is one whose only protection is the proxy in front of it, and
  *      D-020 specifies the per-session credential as defence-in-depth precisely so
  *      that a proxy bug is not a total compromise.
+ *   5. `-SecurityTypes None` — the RFB layer performs no second authentication,
+ *      because property 4 already authenticated the connection at the HTTP layer.
+ *
+ *      ⚠ READ THIS BEFORE "TIGHTENING" IT. `None` here does NOT mean the desktop is
+ *      unauthenticated, and removing it does not make anything safer — it makes the
+ *      desktop unreachable. Measured against a real KasmVNC (WI-1250866):
+ *
+ *        - WITHOUT this flag KasmVNC falls back to its default RFB security type,
+ *          VncAuth, and `-KasmPasswordFile` does NOT populate a VncAuth password —
+ *          that store is the Kasm/BasicAuth one, not the classic `-rfbauth` file. So
+ *          the server offers exactly one security type it cannot itself satisfy, and
+ *          EVERY client fails with `Authentication failure: No password configured
+ *          for VNC Auth`. No credential a viewer could present would work.
+ *        - WITH it, the websocket upgrade still 401s on a missing OR wrong
+ *          credential — property 4 is untouched and remains the only gate.
+ *        - KasmVNC then derives the RFB session's identity from that BasicAuth user
+ *          (`Generated username: papercusp-view` / `Authentication successful for
+ *          user: papercusp-view` in its own log), which is what preserves the D-020
+ *          view-only vs control split. Authenticating a SECOND time inside RFB would
+ *          not add a factor; it would just be the same secret spent twice.
+ *
+ *      Every desktop this repo has ever started carried the pre-fix argv, and it was
+ *      never caught because no build box has a KasmVNC to exercise it against.
  */
 export function buildXServerCommand(input: XServerCommandInput): XServerCommand {
   const { xServer, display, width, height } = input;
@@ -171,6 +194,10 @@ export function buildXServerCommand(input: XServerCommandInput): XServerCommand 
     // (4) per-session credential, BasicAuth left enabled.
     '-KasmPasswordFile',
     passwordFile,
+    // (5) the HTTP upgrade is the authenticator; the RFB layer inherits that identity.
+    // Omitting this makes the desktop unreachable, not safer — see property 5 above.
+    '-SecurityTypes',
+    'None',
     // D-020: clients may renegotiate size (`allow_resize`), which is what lets a
     // viewer window drive the desktop geometry instead of a fixed guess.
     '-AcceptSetDesktopSize',
