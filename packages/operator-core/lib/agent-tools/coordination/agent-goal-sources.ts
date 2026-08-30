@@ -232,6 +232,16 @@ async function readHeldWorkItems(sql: Sql, ws: string, owner: string): Promise<H
      WHERE workspace_id = ${ws}
        AND taken_by = ${owner}
        AND status <> ALL(${TERMINAL_WORK_ITEM_STATES})
+       -- Resource-governor receipts are local queue telemetry, not agent work
+       -- (EI-21870243647094665; mirrors carry-brief.ts's readHeldWorkItems
+       -- fix for the sibling defect, EI-21867218655207954). A receipt can
+       -- carry taken_by = owner with a non-terminal status while it is
+       -- briefly in flight, or as a legacy/partially-reconciled row whose
+       -- outer status column never caught up to its true terminal state — in
+       -- either case it must never compete as this agent's GOAL. Exclude by
+       -- the reserved payload marker rather than trusting the outer status
+       -- projection.
+       AND NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')
      ORDER BY taken_at DESC NULLS LAST
      LIMIT ${GOAL_LEG_CAP}`;
   return rows.filter((r) => r.id).map((r) => ({ id: r.id, takenAt: r.taken_at }));
