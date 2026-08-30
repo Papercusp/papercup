@@ -25,7 +25,7 @@ import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
+import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import { installDesignCompareVerbs } from './host-registry';
 import { createPgReferenceStore, type SqlTag } from './reference-store-pg';
 import { createPixelmatchProvider } from './provider';
@@ -127,13 +127,25 @@ export function designCompareDepsFor(harnessSlug: string): Promise<VerbDeps> {
 
 /** Build the production dependency bundle for one harness. */
 async function buildDeps(harnessSlug: string): Promise<VerbDeps> {
-  // Lazy so this module stays import-side-effect-free and the driver is not
-  // pulled into a browser/bundle graph that never calls these verbs.
-  const postgres = (await import('postgres')).default;
-  const sql = postgres(getHarnessAdminUrl(), { max: 2, idle_timeout: 30 });
+  // WI-1202547. This used to build its own pool — `postgres(getHarnessAdminUrl(), …)`
+  // — and hand the HANDLE to the store, which `designCompareDepsFor` then memoised
+  // per harness for the process lifetime. The URL was therefore asked exactly once,
+  // at operator start, and never again.
+  //
+  // That is why deleting `~/.papercusp/embedded-pg.json` (which correctly restores
+  // the healthy native :5432) took the design-evidence gate down on 2026-08-30 while
+  // every other database path was fine: the captured binding could not follow the
+  // endpoint. It surfaced as `password authentication failed for user
+  // "harness_admin"`, which reads as a credential rotation and nearly got one
+  // (EI-21891790341114171).
+  //
+  // A FUNCTION, not a handle: getLongLivedAdminPool re-resolves per call and rebinds
+  // when the endpoint moves, so the memoisation above is now safe — what is cached is
+  // the way to reach the pool, not a pool.
+  const db = (): SqlTag => getLongLivedAdminPool('design-compare', { max: 2 }) as unknown as SqlTag;
   return {
     harnessSlug,
-    store: createPgReferenceStore({ sql: sql as unknown as SqlTag }),
+    store: createPgReferenceStore({ getSql: db }),
     now: () => Date.now(),
     clock: () => new Date().toISOString(),
     materializeReferenceImage: filesystemReferenceMaterializer,

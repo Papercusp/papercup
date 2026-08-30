@@ -800,20 +800,15 @@ const SHORT_LIVED_EXEMPT: Record<string, string> = {
  * module-level singleton sites, so an entry naming a captured site would match nothing
  * there and trip its own shrink-only test.
  */
-const CAPTURED_PENDING_MIGRATION: Record<string, string> = {
-  // FOUND BY THIS WIDENING (EI-19386584249133403). `buildDeps()` binds the admin URL once
-  // and returns it captured inside `createPgReferenceStore({ sql })`; `designCompareDepsFor`
-  // then memoises that bundle in a pinned per-harness Map for the process lifetime. So it
-  // is long-lived AND transactional — the shape that should migrate.
-  //
-  // Not migrated in this change on purpose: `createPgReferenceStore` takes `sql` at
-  // construction and destructures it once, so migrating means moving it to the established
-  // `getSql: () => …` seam (issues-engineer.ts, PgTaggableStore) — an interface change with
-  // its own callers and its own verification. Bundling that into a ratchet widening is
-  // exactly the drive-by this item warned against. Tracked separately.
-  'packages/operator-core/lib/design-compare/host-install.ts':
-    'captured in a memoised per-harness deps bundle — migrate to getLongLivedAdminPool via a getSql seam',
-};
+// EMPTY, and that is the point: every captured transactional pool has been migrated.
+// design-compare/host-install.ts was the last entry and was migrated by WI-1202547 —
+// `PgReferenceStoreOptions` now takes `getSql: () => SqlTag` and buildDeps passes
+// `() => getLongLivedAdminPool('design-compare', { max: 2 })`, so no `postgres(...)`
+// call survives there for the scan to flag.
+//
+// The exemption was removed rather than kept green, which is the contract this map
+// declares: shrink-only, and it cannot outlive its reason.
+const CAPTURED_PENDING_MIGRATION: Record<string, string> = {};
 
 const CAPTURED_ALLOWLIST = { ...SHORT_LIVED_EXEMPT, ...CAPTURED_PENDING_MIGRATION };
 

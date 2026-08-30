@@ -140,7 +140,7 @@ describe('the applied schema admits the artifact kinds migration 948 declared', 
 describe('persisting and revising a reference', () => {
   it('stores the payload and its derived metadata projection', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
 
     const rows = await sql<{ id: string; kind: string; metadata: Record<string, unknown> }>`
@@ -173,7 +173,7 @@ describe('persisting and revising a reference', () => {
 
   it('leaves the superseded revision PAYLOAD byte-identical while its metadata moves', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
 
     const before = await sql<{ payload: unknown }>`
@@ -209,7 +209,7 @@ describe('persisting and revising a reference', () => {
 describe('the primary key is what makes revisions monotonic under concurrency', () => {
   it('lets exactly one of two racing ratifications of the same revision land', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
 
     // Both callers read revision 1 and both conclude 2 is next. A read-then-write
@@ -255,7 +255,7 @@ describe('evidence bound to a superseded revision', () => {
 
   it('is reported invalidated by the revision that superseded it', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await insertEvidence(scope, 'ev-1', {
       reference: { referenceId: scope.referenceId, revision: 1 },
@@ -281,7 +281,7 @@ describe('evidence bound to a superseded revision', () => {
     // "this revision cost you nothing" is the most reassuring wrong answer
     // available, so an unreadable row is always stale.
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await insertEvidence(scope, 'ev-malformed', {
       reference: { referenceId: scope.referenceId },
@@ -295,7 +295,7 @@ describe('evidence bound to a superseded revision', () => {
 
   it('does not pick up evidence for a different reference in the same feature', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await insertEvidence(scope, 'ev-other', {
       reference: { referenceId: 'a-different-reference', revision: 1 },
@@ -323,7 +323,7 @@ describe('evidence bound to a superseded revision', () => {
 describe('discovering every reference under a feature', () => {
   it('returns each reference ONCE regardless of how many revisions it has', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     const second: ReferenceScope = { ...scope, referenceId: `${scope.referenceId}-mobile` };
 
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
@@ -346,7 +346,7 @@ describe('discovering every reference under a feature', () => {
   it('does not leak references belonging to another feature or harness', async () => {
     const mine = freshScope();
     const otherFeature = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
 
     await ratifyReference(store, { scope: mine, candidate: candidate(mine, 1), image: IMAGE, now: clock });
     await ratifyReference(store, {
@@ -366,7 +366,7 @@ describe('discovering every reference under a feature', () => {
 
   it('reports a feature with no references as empty, not as an error', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     expect(
       await store.listFeatureReferenceIds({
         harnessSlug: scope.harnessSlug,
@@ -401,7 +401,7 @@ describe('discovering every reference under a feature', () => {
    */
   it('WI-41642: retracting the only revision leaves NO active revision on read-back', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
 
     // Precondition: it really is constraining before the retraction, so a
@@ -451,7 +451,7 @@ describe('discovering every reference under a feature', () => {
     });
 
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await retractReference(store, scope, {
       actor: 'su-integration',
@@ -486,7 +486,7 @@ describe('discovering every reference under a feature', () => {
     // highest active revision and would answer 2 whether or not revision 1 was
     // correctly demoted.
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 2), image: IMAGE, now: clock });
 
@@ -502,7 +502,7 @@ describe('discovering every reference under a feature', () => {
     // references away here would erase the difference between "ratified then
     // withdrawn" and "never ratified" before anyone could see it.
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await store.setLifecycle(scope, referenceArtifactId(scope.referenceId, 1), {
       state: 'retracted',
@@ -566,7 +566,7 @@ describe('storing comparison evidence', () => {
 
   it('round-trips a whole result, and the staleness projection sees the same row', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
 
     await store.insertEvidence({
@@ -594,7 +594,7 @@ describe('storing comparison evidence', () => {
 
   it('replaces a re-run of the same comparison instead of adding a rival row', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
 
     const row = {
@@ -617,7 +617,7 @@ describe('storing comparison evidence', () => {
 
   it('projects queryable metadata that agrees with the payload it describes', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await store.insertEvidence({
       artifactId: 'ev-meta',
@@ -644,7 +644,7 @@ describe('storing comparison evidence', () => {
 
   it('does not return another reference\'s evidence from the same feature', async () => {
     const scope = freshScope();
-    const store = createPgReferenceStore({ sql, now: clock });
+    const store = createPgReferenceStore({ getSql: () => sql, now: clock });
     await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
     await store.insertEvidence({
       artifactId: 'ev-foreign',

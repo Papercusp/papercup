@@ -54,7 +54,20 @@ export type SqlTag = <T = Record<string, unknown>>(
 ) => Promise<T[]>;
 
 export interface PgReferenceStoreOptions {
-  readonly sql: SqlTag;
+  /**
+   * Resolve the client PER CALL, never once at construction (WI-1202547).
+   *
+   * A captured handle silently outlives the endpoint it was bound to: when
+   * `~/.papercusp/embedded-pg.json` goes stale — or is DELETED, which correctly
+   * restores the healthy native :5432 — a store built with a captured `sql` keeps
+   * presenting the old binding until the whole process restarts. Measured
+   * 2026-08-30: that surfaced as `password authentication failed for user
+   * "harness_admin"` on the design-evidence completion gate and blocked
+   * `work_items:complete` fleet-wide, while every path that re-resolved per call
+   * was healthy against the same database (EI-21891790341114171). The failure
+   * names the credential, so it reads as a rotation rather than a stale handle.
+   */
+  readonly getSql: () => SqlTag;
   /** Wall clock, injectable so a test can assert the stored timestamp. */
   readonly now?: () => number;
 }
@@ -173,7 +186,17 @@ function toEvidenceRef(row: EvidenceRow): StoredEvidenceRef {
 }
 
 export function createPgReferenceStore(options: PgReferenceStoreOptions): ReferenceStorePort {
-  const { sql } = options;
+  const { getSql } = options;
+  // ONE re-resolving adapter rather than a `const sql = getSql()` line inside each
+  // method. Both fix today's bug; this one also fixes tomorrow's, because a method
+  // added later inherits the per-call resolution instead of being a site an author
+  // has to remember. The whole defect being repaired here is a binding that was
+  // resolved once and then trusted forever, so leaving seven places where that
+  // mistake can be re-made individually would be a thin fix.
+  const sql: SqlTag = <T = Record<string, unknown>>(
+    strings: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<T[]> => getSql()<T>(strings, ...values);
   const now = options.now ?? (() => Date.now());
 
   return {
