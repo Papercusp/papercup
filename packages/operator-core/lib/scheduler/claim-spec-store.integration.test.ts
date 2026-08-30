@@ -82,6 +82,8 @@ beforeAll(async () => {
   // kind` projection (the concurrency-diagnosis held-ids read) also has a real column to
   // select against — production's harness_shared.work_items has no `id` column at all;
   // the unified id lives in `feature_id` and the family/kind in `item_kind`.
+  // EI-21895667973178286: `payload` added so the fixture exercises the resource-governor
+  // claim_hold_by exclusion `getActiveClaimsForBee` filters on.
   await db.sql.unsafe(`CREATE TABLE harness_shared.work_items (
     -- WI-38326: FEATURE_COLS projects these five claim-spec filter columns; a fixture
     -- missing them fails that projection with "column does not exist" (D-014 debt).
@@ -95,7 +97,8 @@ beforeAll(async () => {
     admission text, admitted_at timestamptz, admitted_by text,
     taken_by text,
     status text NOT NULL DEFAULT 'todo',
-    item_kind text NOT NULL DEFAULT 'change'
+    item_kind text NOT NULL DEFAULT 'change',
+    payload jsonb
   )`);
 }, 180_000);
 afterAll(async () => {
@@ -131,6 +134,25 @@ describe('cup_claim_specs store (mig 372)', () => {
              ('default', 'WI-1250584-dropped', 'su-bee-terminal-drift', 'dropped')`;
 
     expect(await countActiveClaimsForBee({ cupId: 'su-bee-terminal-drift' }, db.sql)).toBe(0);
+  });
+
+  // EI-21895667973178286: a resource-governor admission receipt (title 'Queued agent
+  // admission' / 'Queued inference admission', payload.claim_hold_by = 'system:resource-
+  // governor') is bookkeeping for the bee's OWN spawn/inference-call admission, not real
+  // work. Left ACTIVE ('wip') it consumed the bee's only concurrency slot under the
+  // default cap of 1, so a freshly spawned bee's first scheduler:get_next refused before
+  // evaluating any lane. A real active claim alongside it must still count.
+  it('does not count an active resource-governor admission receipt as a claim, but counts real work beside it (EI-21895667973178286)', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status, payload)
+      VALUES ('default', 'WI-governor-receipt', 'su-bee-governor', 'wip',
+              '{"claim_hold_by": "system:resource-governor", "_claimHold": true}'::jsonb)`;
+    expect(await countActiveClaimsForBee({ cupId: 'su-bee-governor' }, db.sql)).toBe(0);
+
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+      VALUES ('default', 'WI-real-work', 'su-bee-governor', 'wip')`;
+    expect(await countActiveClaimsForBee({ cupId: 'su-bee-governor' }, db.sql)).toBe(1);
   });
 
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {

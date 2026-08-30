@@ -25,6 +25,7 @@ import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 import { recordClaimAttempt } from '../orchestrator/claim-audit';
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
+import { RESOURCE_GOVERNOR_PARK_OWNER } from '../resource-governor/queue';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 /**
@@ -76,6 +77,18 @@ export interface SetClaimSpecResult {
  * buildMissDiagnosis, which special-cases this BEFORE running the pool/floor
  * diagnosis (a caller at/over its concurrency limit never reaches the claim
  * query at all, so a floor-admissibility report is actively misleading).
+ *
+ * EI-21895667973178286: excludes rows claim_hold_by the resource-governor
+ * (`payload.claim_hold_by = RESOURCE_GOVERNOR_PARK_OWNER`). Those rows are NOT
+ * work — they are durable admission-queue bookkeeping the governor mints for a
+ * bee's OWN inference-call/spawn admission (title 'Queued agent admission' /
+ * 'Queued inference admission'), reusing `taken_by` purely as a lease marker.
+ * Counting them meant a freshly spawned bee's FIRST scheduler:get_next could
+ * refuse before evaluating any lane — under the default cap of 1 the bee
+ * arrived already "holding" its own admission receipt and could never claim
+ * real work. WI-1250584 fixed the terminal-status half of this same
+ * mis-count (a governor receipt left in 'done'/'dropped'); this fixes the
+ * still-active half (a receipt in 'wip' for an in-flight admission).
  */
 export async function getActiveClaimsForBee(
   args: { cupId: string; workspaceId?: string },
@@ -92,7 +105,8 @@ export async function getActiveClaimsForBee(
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ${args.cupId}
-       AND status NOT IN ${sql([...ALL_TERMINAL_STATUSES])}`) as Array<{
+       AND status NOT IN ${sql([...ALL_TERMINAL_STATUSES])}
+       AND payload->>'claim_hold_by' IS DISTINCT FROM ${RESOURCE_GOVERNOR_PARK_OWNER}`) as Array<{
     id: string;
     kind: string;
   }>;
