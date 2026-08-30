@@ -357,9 +357,18 @@ export default defineTool({
       'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". The embedding leg fails OPEN (semantic:"unavailable" when the embedder is down/over budget), so degraded:true means a differently-worded duplicate would NOT have been found and your empty result is "could not check", not "checked and clean".',
     seeAlso: [
       'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing',
-      'improvements:digest (triage the backlog this lands in)',
+      'improvements:digest (triage the backlog this lands in — but NEVER shows lane:"observation" rows; see below)',
       'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
       'plans:new (something needing real design — capture kind=feature linking it)',
+      // EI-21862468579844520: reported as "no improvements:list to verify whether a
+      // capture materialized" (e.g. after an ambiguous/timed-out call). There is no
+      // separate list verb — and should not be, since one already exists for each
+      // lane — so name the two real verification paths instead of leaving the
+      // caller to guess a nonexistent tool name.
+      'VERIFY A CAPTURE LANDED (no separate improvements:list — reuse the existing readers): ' +
+        'kind:bug/change/feature → the CREATE response already returned `issue.id`; re-check it with work_items:get { id }. ' +
+        'lane:"observation" → these are EXCLUDED from improvements:digest and the default work_items:list by design (D-005), ' +
+        'so use work_items:list { includeObservations:true, q:"<title fragment>" } instead.',
     ],
   },
   capability: 'coord:write',
