@@ -31,8 +31,10 @@ import {
   DEFAULT_TIMEOUT_MS,
   detectBufferingLastStage,
   detectSelfOutputRedirect,
+  detectUntrackedShellBackgrounding,
   formatBufferingPipelineAdvice,
   formatSelfRedirectAdvice,
+  formatUntrackedShellBackgroundAdvice,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   runForeground,
@@ -245,8 +247,8 @@ export default defineTool({
     // consumable export), which is why it lost to the rg/backtick and background-job
     // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
-      'Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; use a shell-safe single-quoted argument, since an unmatched backtick fails before either search tool runs. For repository regex searches, ' +
-      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
+      'Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; use a shell-safe single-quoted argument, since an unmatched backtick fails before either search tool runs. ' +
+      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; do not shell-background child with \`&\`/nohup/setsid/disown without \`wait\`; 4h/12h defaults.`,
     notWhen:
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
     chaining:
@@ -326,6 +328,24 @@ export default defineTool({
     // the child's misleading `spawn /usr/bin/bash ENOENT`.
     const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
     if (cwdError) throw new Error(cwdError);
+    if (args.run_in_background) {
+      const untrackedBackgrounding = detectUntrackedShellBackgrounding(args.command);
+      if (untrackedBackgrounding) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'untracked_shell_background',
+                message: formatUntrackedShellBackgroundAdvice(untrackedBackgrounding),
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
     // WI-6677: the default depends on the MODE. A background job is contractually
     // meant to outlive this call, so it must not inherit the short foreground
     // default — that made the tool SIGKILL exactly the long jobs it exists for.

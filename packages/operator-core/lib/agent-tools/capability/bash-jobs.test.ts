@@ -32,10 +32,12 @@ import {
   detectBufferingLastStage,
   detectMissingCommandDiagnostic,
   detectSelfOutputRedirect,
+  detectUntrackedShellBackgrounding,
   formatBufferingPipelineAdvice,
   formatSelfRedirectAdvice,
   formatPreflightAttributionSnapshot,
   formatJobLogEndMarker,
+  formatUntrackedShellBackgroundAdvice,
   getJob,
   isBackgroundTestCommand,
   killJob,
@@ -827,6 +829,52 @@ describe('formatBufferingPipelineAdvice (EI-20039247609786797)', () => {
     expect(advice).toContain('Read `log_path` directly');
     expect(advice).toContain('redirect output to a file you own');
     expect(advice).not.toContain('Keep polling capability:bash_output');
+  });
+});
+
+describe('detectUntrackedShellBackgrounding (EI-21810817545133564)', () => {
+  it('detects a detached child that the shell does not wait for', () => {
+    const diagnostic = detectUntrackedShellBackgrounding(
+      'nohup /tmp/p007-scope-watch.sh >/tmp/out 2>&1 & echo launched; sleep 1; cat /tmp/out',
+    );
+    expect(diagnostic).toMatchObject({ operator: '&', backgroundCount: 1 });
+    expect(diagnostic?.excerpt).toContain('nohup');
+    expect(formatUntrackedShellBackgroundAdvice(diagnostic!)).toContain('reaped when the shell finishes');
+  });
+
+  it('detects a background child followed by echoing its pid, not waiting for it', () => {
+    expect(detectUntrackedShellBackgrounding('watcher & echo "$!"')).toMatchObject({
+      operator: '&',
+      backgroundCount: 1,
+    });
+  });
+
+  it('does not confuse &&, redirects, quoted prose, pipe stderr, or heredoc data with backgrounding', () => {
+    expect(detectUntrackedShellBackgrounding('echo "a & b" && echo "&> file"')).toBeNull();
+    expect(detectUntrackedShellBackgrounding('echo hi 2>&1 |& cat')).toBeNull();
+    expect(
+      detectUntrackedShellBackgrounding("cat <<'SCRIPT'\necho 'child &'\nSCRIPT\nprintf '%s' ok"),
+    ).toBeNull();
+    expect(detectUntrackedShellBackgrounding('echo hi >&2')).toBeNull();
+    expect(detectUntrackedShellBackgrounding('echo hi &> /tmp/out')).toBeNull();
+  });
+
+  it('permits a single child joined by wait, including wait "$!"', () => {
+    expect(detectUntrackedShellBackgrounding('watcher & wait')).toBeNull();
+    expect(detectUntrackedShellBackgrounding('watcher & wait "$!"')).toBeNull();
+  });
+
+  it('requires a bare wait after multiple background children', () => {
+    expect(detectUntrackedShellBackgrounding('one & two & wait "$!"')).toMatchObject({
+      operator: '&',
+      backgroundCount: 2,
+    });
+    expect(detectUntrackedShellBackgrounding('one & two & wait')).toBeNull();
+  });
+
+  it('detects coproc unless the command joins it', () => {
+    expect(detectUntrackedShellBackgrounding('coproc watcher')).toMatchObject({ operator: 'coproc' });
+    expect(detectUntrackedShellBackgrounding('coproc watcher; wait')).toBeNull();
   });
 });
 

@@ -849,6 +849,289 @@ export function detectBufferingLastStage(command: string): string | null {
 }
 
 /**
+ * A shell-backgrounded child does not have the lifetime callers expect from
+ * `run_in_background:true`: the task service owns the shell's cgroup, and the
+ * service tears that cgroup down as soon as the shell exits. `nohup`, `setsid`,
+ * and `disown` change signal/session handling, but they do not move a process
+ * out of that cgroup. The common failure therefore looks like a successful
+ * launch followed by a silent empty file.
+ *
+ * This is intentionally a conservative, quote- and heredoc-aware heuristic,
+ * not a shell parser. A bare `&` is safe when the same command later waits for
+ * the child (`cmd & wait`, or one child followed by `wait "$!"`), so those
+ * forms remain valid. Multiple backgrounded children require a bare `wait`
+ * after the last one; `wait "$!"` only proves one child was joined.
+ */
+export interface UntrackedShellBackgrounding {
+  operator: '&' | 'coproc';
+  excerpt: string;
+  backgroundCount: number;
+}
+
+interface ShellWaitObservation {
+  index: number;
+  hasArgument: boolean;
+}
+
+const SHELL_WAIT_PREFIXES = new Set(['builtin', 'command']);
+const SHELL_COMMAND_KEYWORDS = new Set(['!', 'do', 'elif', 'else', 'if', 'then', 'until', 'while', '{']);
+
+/**
+ * Mask here-document bodies while preserving newlines and source indexes.
+ * Operators in a script body are data, not operators of the outer command.
+ */
+function maskShellHeredocBodies(command: string): string {
+  const lines = command.split('\n');
+  const masked: string[] = [];
+  let pending: Array<{ delimiter: string; stripTabs: boolean }> = [];
+
+  const heredocDelimiters = (line: string): Array<{ delimiter: string; stripTabs: boolean }> => {
+    const found: Array<{ delimiter: string; stripTabs: boolean }> = [];
+    let quote: "'" | '"' | null = null;
+    let escaped = false;
+    for (let i = 0; i < line.length - 1; i += 1) {
+      const ch = line[i]!;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (quote) {
+        if (ch === '\\' && quote === '"') escaped = true;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        continue;
+      }
+      if (ch !== '<' || line[i + 1] !== '<' || line[i + 2] === '<') continue;
+      let cursor = i + 2;
+      const stripTabs = line[cursor] === '-';
+      if (stripTabs) cursor += 1;
+      while (/\s/.test(line[cursor] ?? '')) cursor += 1;
+      const delimiterQuote = line[cursor] === "'" || line[cursor] === '"' ? line[cursor] : null;
+      if (delimiterQuote) cursor += 1;
+      const start = cursor;
+      while (cursor < line.length && !/\s/.test(line[cursor]!)) cursor += 1;
+      const delimiter = line.slice(start, cursor).replace(/^['"]|['"]$/g, '');
+      if (delimiter) found.push({ delimiter, stripTabs });
+      i = Math.max(i, cursor - 1);
+    }
+    return found;
+  };
+
+  for (const line of lines) {
+    if (pending.length > 0) {
+      masked.push('');
+      const current = pending[0]!;
+      const probe = current.stripTabs ? line.replace(/^\t+/, '') : line;
+      if (probe.trim() === current.delimiter) pending.shift();
+      continue;
+    }
+    masked.push(line);
+    pending = heredocDelimiters(line);
+  }
+  return masked.join('\n');
+}
+
+function shellOperatorExcerpt(command: string, index: number): string {
+  const start = Math.max(0, index - 48);
+  const end = Math.min(command.length, index + 72);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < command.length ? '…' : '';
+  return `${prefix}${command.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
+}
+
+/**
+ * Detect a background child that the shell can leave behind when it exits.
+ * `wait` recognition only accepts a command-position builtin, so prose such as
+ * `echo "cmd & wait"` and `echo wait` do not satisfy the guard.
+ */
+export function detectUntrackedShellBackgrounding(command: string): UntrackedShellBackgrounding | null {
+  const source = maskShellHeredocBodies(command);
+  const backgroundIndexes: number[] = [];
+  const coprocIndexes: number[] = [];
+  const waits: ShellWaitObservation[] = [];
+
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let token = '';
+  let tokenStart = -1;
+  let commandPosition = true;
+  let redirectTarget = false;
+  let currentWait: ShellWaitObservation | null = null;
+
+  const flushToken = (): void => {
+    if (!token) return;
+    const value = token;
+    const start = tokenStart;
+    const wasRedirectTarget = redirectTarget;
+    token = '';
+    tokenStart = -1;
+    redirectTarget = false;
+
+    if (wasRedirectTarget) return;
+
+    if (currentWait) currentWait.hasArgument = true;
+    if (!commandPosition) return;
+
+    if (value === 'wait') {
+      currentWait = { index: start, hasArgument: false };
+      waits.push(currentWait);
+      commandPosition = false;
+      return;
+    }
+    if (value === 'coproc') {
+      coprocIndexes.push(start);
+      commandPosition = false;
+      return;
+    }
+
+    // Keep command position through shell assignments and the two builtins that
+    // can validly introduce another builtin. `env wait`/`nohup wait` are not
+    // treated as waits because they do not invoke Bash's wait builtin.
+    if (SHELL_WAIT_PREFIXES.has(value) || SHELL_COMMAND_KEYWORDS.has(value) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
+      commandPosition = true;
+    } else {
+      commandPosition = false;
+    }
+  };
+
+  const separator = (): void => {
+    flushToken();
+    currentWait = null;
+    commandPosition = true;
+    redirectTarget = false;
+  };
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i]!;
+    if (escaped) {
+      token += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      token += ch;
+      if (ch === '\\' && quote === '"') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      if (tokenStart < 0) tokenStart = i;
+      token += ch;
+      quote = ch;
+      continue;
+    }
+    if (ch === '\\') {
+      if (tokenStart < 0) tokenStart = i;
+      token += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /[\s;|&()]/.test(source[i - 1]!))) {
+      flushToken();
+      while (i + 1 < source.length && source[i + 1] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '&' && source[i + 1] === '&') {
+      separator();
+      i += 1;
+      continue;
+    }
+    if (ch === '&') {
+      if (
+        source[i + 1] === '>' ||
+        source[i - 1] === '>' ||
+        source[i - 1] === '|' ||
+        source[i + 1] === '&'
+      ) {
+        if (tokenStart < 0) tokenStart = i;
+        token += ch;
+        continue;
+      }
+      flushToken();
+      backgroundIndexes.push(i);
+      currentWait = null;
+      commandPosition = true;
+      redirectTarget = false;
+      continue;
+    }
+    if (ch === '|' && source[i + 1] === '|') {
+      separator();
+      i += 1;
+      continue;
+    }
+    if (ch === ';' || ch === '\n' || ch === '|') {
+      separator();
+      continue;
+    }
+    if (ch === '>' || ch === '<') {
+      flushToken();
+      redirectTarget = true;
+      continue;
+    }
+    if (ch === '(' || ch === '{') {
+      flushToken();
+      currentWait = null;
+      commandPosition = true;
+      redirectTarget = false;
+      continue;
+    }
+    if (ch === ')' || ch === '}') {
+      flushToken();
+      currentWait = null;
+      commandPosition = false;
+      redirectTarget = false;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flushToken();
+      continue;
+    }
+    if (tokenStart < 0) tokenStart = i;
+    token += ch;
+  }
+  flushToken();
+
+  const asyncIndexes = [...backgroundIndexes, ...coprocIndexes].sort((a, b) => a - b);
+  if (asyncIndexes.length === 0) return null;
+  const lastAsyncIndex = asyncIndexes[asyncIndexes.length - 1]!;
+  const waitsAfterLastAsync = waits.filter((wait) => wait.index > lastAsyncIndex);
+  const joined =
+    asyncIndexes.length === 1
+      ? waitsAfterLastAsync.length > 0
+      : waitsAfterLastAsync.some((wait) => !wait.hasArgument);
+  if (joined) return null;
+
+  const operatorIndex =
+    coprocIndexes.length > 0 && coprocIndexes[coprocIndexes.length - 1]! > lastAsyncIndex
+      ? coprocIndexes[coprocIndexes.length - 1]!
+      : lastAsyncIndex;
+  return {
+    operator: coprocIndexes.includes(operatorIndex) ? 'coproc' : '&',
+    excerpt: shellOperatorExcerpt(command, operatorIndex),
+    backgroundCount: asyncIndexes.length,
+  };
+}
+
+/** Render the refusal returned before a background task can be launched. */
+export function formatUntrackedShellBackgroundAdvice(diagnostic: UntrackedShellBackgrounding): string {
+  const operator = diagnostic.operator === 'coproc' ? '`coproc`' : 'a shell background operator (`&`)';
+  return (
+    `Refused: this run_in_background command starts ${operator} without joining it before the shell exits ` +
+    `(${diagnostic.excerpt}). The task service owns the shell's cgroup, so the child is reaped when the ` +
+    `shell finishes; nohup/setsid/disown do not give it a different lifetime. Run the long-lived command ` +
+    `as the foreground payload (remove the shell backgrounding), or use the dedicated service launcher for ` +
+    `a different lifetime. If multiple in-task children are intentional, end the command with a bare ` +
+    '`wait` after all of them.'
+  );
+}
+
+/**
  * Explain how to preserve output from a buffering pipeline when the background
  * job's in-memory tracking is lost. Polling is a valid way to observe a healthy
  * job, but it cannot recover a buffered pipeline once the registry and terminal

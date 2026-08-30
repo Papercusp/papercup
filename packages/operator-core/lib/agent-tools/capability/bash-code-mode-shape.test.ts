@@ -88,6 +88,8 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(guidance?.when).toContain('shell-safe single-quoted argument');
     expect(guidance?.when).toContain('unmatched backtick');
     expect(guidance?.when).toContain('fails before either search tool runs');
+    expect(guidance?.when).toContain('do not shell-background child');
+    expect(guidance?.when).toContain('without `wait`');
   });
 
   it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {
@@ -169,5 +171,21 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(fgSeen.ok).toBe(true);
     expect(bgSeen.cwd).toBe(STATE);
     expect(fgSeen.cwd).toBe(STATE);
+  });
+
+  it('refuses an untracked shell-backgrounded child before creating a task', async () => {
+    const r = await bash.handler(
+      {
+        command: 'nohup sleep 30 >/tmp/capability-bash-untracked.log 2>&1 & echo launched; sleep 1',
+        run_in_background: true,
+      },
+      makeCtx({ codeMode: true }),
+    );
+    expect(r.isError).toBe(true);
+    const seen = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(seen).toMatchObject({ ok: false, reason: 'untracked_shell_background' });
+    expect(String(seen.message)).toContain('reaped when the shell finishes');
+    expect(String(seen.message)).toContain('foreground payload');
+    expect(seen.task_id).toBeUndefined();
   });
 });
