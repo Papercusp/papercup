@@ -43,8 +43,13 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '../../../util/cli-entry';
 import { loadavg, cpus as osCpus } from 'node:os';
-import type { PerfArtifact } from './artifact';
-import { captureRunProvenance, resolveRepoRoot, stampArtifactProvenance } from './provenance';
+import type { HostLoadEvidence, PerfArtifact } from './artifact';
+import {
+  captureRunProvenance,
+  finalizeArtifactProvenance,
+  resolveRepoRoot,
+  stampArtifactProvenance,
+} from './provenance';
 import { renderProvenanceLines } from './report';
 import {
   baselineFromArtifacts,
@@ -397,17 +402,7 @@ export interface RunSummary {
    *  computeHostHealth) — the swap-page delta is only the fallback for hosts
    *  where it reads `null` (non-Linux, permission denied). `swapPagesDelta` is
    *  still recorded as evidence regardless of which branch decided. */
-  hostLoad: {
-    loadavg1m: number;
-    cpus: number;
-    ratio1m: number;
-    oversubscribed: boolean;
-    swapPagesDelta: number | null;
-    memoryContended: boolean;
-    memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null;
-    psiMemSome60: number | null;
-    psiCpuSome60: number | null;
-  };
+  hostLoad: HostLoadEvidence;
 }
 
 function parseArgs(argv: string[]): Args | 'list' {
@@ -527,17 +522,6 @@ function renderReport(
   profile: string,
   artifacts: PerfArtifact[],
   compareText: string | null,
-  hostLoad?: {
-    loadavg1m: number;
-    cpus: number;
-    ratio1m: number;
-    oversubscribed: boolean;
-    swapPagesDelta: number | null;
-    memoryContended: boolean;
-    memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null;
-    psiMemSome60: number | null;
-    psiCpuSome60: number | null;
-  },
 ): string {
   const lines: string[] = [
     `# p2p-perf run \`${runId}\``,
@@ -545,29 +529,6 @@ function renderReport(
     `- profile: **${profile}**`,
     `- host: ${artifacts[0]?.host.hostname} (${artifacts[0]?.host.platform}, ${artifacts[0]?.host.cpus} cpus, node ${artifacts[0]?.host.node})`,
     `- artifacts: ${artifacts.length}`,
-    ...(hostLoad
-      ? [
-          `- host load: ${hostLoad.loadavg1m.toFixed(1)} / ${hostLoad.cpus} cpus (ratio ${hostLoad.ratio1m.toFixed(2)}×)` +
-            (hostLoad.swapPagesDelta !== null ? `, swap Δ ${hostLoad.swapPagesDelta} pages` : '') +
-            // EI-19301664378023382: PSI "some" stall-time — recorded ALWAYS (verdict or
-            // not), independent evidence alongside the loadavg/swap-delta proxies above.
-            (hostLoad.psiMemSome60 !== null || hostLoad.psiCpuSome60 !== null
-              ? `, PSI some avg60: mem=${hostLoad.psiMemSome60 !== null ? `${hostLoad.psiMemSome60.toFixed(1)}%` : 'n/a'} cpu=${hostLoad.psiCpuSome60 !== null ? `${hostLoad.psiCpuSome60.toFixed(1)}%` : 'n/a'}`
-              : '') +
-            (hostLoad.oversubscribed
-              ? ` — **⚠ OVERSUBSCRIBED (${[
-                  hostLoad.ratio1m > 1.0 ? 'CPU, EI-8843' : null,
-                  hostLoad.memoryContendedReason === 'psi-stall'
-                    ? 'memory stall per PSI, EI-19301664378023382'
-                    : hostLoad.memoryContendedReason === 'swap-pages-fallback'
-                      ? 'swap thrashing per page-delta fallback, EI-9145'
-                      : null,
-                ]
-                  .filter(Boolean)
-                  .join(' + ')}): baseline comparison below is UNCERTAIN, auto-filing skipped**`
-              : ''),
-        ]
-      : []),
     // D-026: the same "what code produced this" block report.ts renders, from
     // the SAME helper — the two renderers already diverge (this one is inline,
     // pre-dating report.ts's extraction) and a second hand-written copy of the
@@ -664,6 +625,7 @@ async function main(): Promise<void> {
   }
 
   const artifacts: PerfArtifact[] = [];
+  const artifactFiles: string[] = [];
   const ctx: ScenarioRunCtx = {
     profile: args.profile,
     sizes: args.sizes ?? prof.sizes,
@@ -680,6 +642,7 @@ async function main(): Promise<void> {
       const n = artifacts.length;
       const file = join(outDir, `${String(n).padStart(3, '0')}-${artifact.scenario.replace(/[^a-z0-9.-]/gi, '_')}.json`);
       writeFileSync(file, JSON.stringify(artifact, null, 2));
+      artifactFiles.push(file);
       const drift = artifact.provenance?.subjectDriftSinceCapture ?? [];
       if (drift.length) {
         console.log(
@@ -809,7 +772,7 @@ async function main(): Promise<void> {
     swapPagesDelta,
     psiMemSome60,
   });
-  const hostLoad = {
+  const hostLoad: HostLoadEvidence = {
     loadavg1m: loadavg()[0],
     cpus: osCpus().length,
     ratio1m,
@@ -820,6 +783,17 @@ async function main(): Promise<void> {
     psiMemSome60,
     psiCpuSome60,
   };
+
+  // D-026: the final/max host evidence and swap delta do not exist when each
+  // scenario emits. Preserve the crash-safe emit-time write above, then
+  // finalize and rewrite those SAME files once the end sample exists. A crash
+  // before here leaves an explicit `hostLoad: null` rather than inventing a
+  // quiet-host/zero-delta observation.
+  for (let i = 0; i < artifacts.length; i += 1) {
+    const finalized = finalizeArtifactProvenance(artifacts[i], hostLoad);
+    artifacts[i] = finalized;
+    writeFileSync(artifactFiles[i], JSON.stringify(finalized, null, 2));
+  }
   if (oversubscribed) {
     const reasons = [
       ratio1m > HOST_OVERSUBSCRIBED_RATIO ? `CPU load ratio ${ratio1m.toFixed(2)}× cpus (limit ${HOST_OVERSUBSCRIBED_RATIO}×, EI-8843)` : null,
@@ -887,7 +861,7 @@ async function main(): Promise<void> {
   }
 
   const reportPath = join(outDir, 'report.md');
-  writeFileSync(reportPath, renderReport(runId, args.profile, artifacts, compareText, hostLoad));
+  writeFileSync(reportPath, renderReport(runId, args.profile, artifacts, compareText));
   console.log(`\nartifacts: ${outDir}`);
   console.log(`report:    ${reportPath}`);
 

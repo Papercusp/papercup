@@ -54,6 +54,13 @@ export function renderProvenanceLines(artifacts: PerfArtifact[]): string[] {
     ];
   }
   const lines: string[] = [];
+  const unattributed = artifacts.filter((a) => !a.provenance).length;
+  if (unattributed) {
+    lines.push(
+      `- ⚠ provenance coverage: **${unattributed}/${artifacts.length} artifact(s) UNATTRIBUTED** —` +
+        ' do not treat the attributed subset as covering the whole run',
+    );
+  }
   const sha = p.lastCommitSha ? p.lastCommitSha.slice(0, 12) : '(unknown)';
   lines.push(
     `- code: last commit \`${sha}\`${p.lastCommitAt ? ` (${p.lastCommitAt})` : ''}` +
@@ -96,12 +103,42 @@ export function renderProvenanceLines(artifacts: PerfArtifact[]): string[] {
         ' describe every artifact here; this run is not one code state',
     );
   }
+  if (artifacts.some((a) => a.provenance && a.provenance.subjectDriftSinceCapture == null)) {
+    lines.push(
+      '- subject drift: **not fully probed** — this is not evidence that the run stayed on one code state',
+    );
+  }
   lines.push(
     `- host at run start: loadavg ${p.hostAtStart.loadavg1m.toFixed(1)} / ${p.hostAtStart.cpus} cpus` +
       ` (ratio ${p.hostAtStart.ratio1m.toFixed(2)}×), PSI some avg60 mem=` +
       `${p.hostAtStart.psiMemSome60 !== null ? `${p.hostAtStart.psiMemSome60.toFixed(1)}%` : 'n/a'}` +
       ` cpu=${p.hostAtStart.psiCpuSome60 !== null ? `${p.hostAtStart.psiCpuSome60.toFixed(1)}%` : 'n/a'}`,
   );
+  const hostLoad = p.hostLoad ?? null;
+  if (!hostLoad) {
+    lines.push(
+      '- host over run: **not finalized** — max load/PSI and swap delta are unavailable on this artifact',
+    );
+  } else {
+    lines.push(
+      `- host over run: loadavg(end) ${hostLoad.loadavg1m.toFixed(1)} / ${hostLoad.cpus} cpus` +
+        ` (max ratio ${hostLoad.ratio1m.toFixed(2)}×), swap Δ ${hostLoad.swapPagesDelta ?? 'n/a'} pages,` +
+        ` PSI some avg60(max) mem=${hostLoad.psiMemSome60 !== null ? `${hostLoad.psiMemSome60.toFixed(1)}%` : 'n/a'}` +
+        ` cpu=${hostLoad.psiCpuSome60 !== null ? `${hostLoad.psiCpuSome60.toFixed(1)}%` : 'n/a'}` +
+        (hostLoad.oversubscribed
+          ? ` — **⚠ OVERSUBSCRIBED (${[
+              hostLoad.ratio1m > 1.0 ? 'CPU, EI-8843' : null,
+              hostLoad.memoryContendedReason === 'psi-stall'
+                ? 'memory stall per PSI, EI-19301664378023382'
+                : hostLoad.memoryContendedReason === 'swap-pages-fallback'
+                  ? 'swap thrashing per page-delta fallback, EI-9145'
+                  : null,
+            ]
+              .filter(Boolean)
+              .join(' + ')}): baseline comparison is UNCERTAIN, auto-filing skipped**`
+          : ''),
+    );
+  }
   if (p.unavailable.length) {
     lines.push(`- provenance gaps: ${p.unavailable.join('; ')}`);
   }

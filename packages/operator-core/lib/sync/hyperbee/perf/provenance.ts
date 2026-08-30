@@ -77,7 +77,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PerfArtifact, RunProvenance, SubjectTreeStamp } from './artifact';
+import type { HostLoadEvidence, PerfArtifact, RunProvenance, SubjectTreeStamp } from './artifact';
 
 /**
  * Repo-relative prefixes treated as "the code under test" for the dirty-path
@@ -177,28 +177,28 @@ export function selectPathsInScope(paths: string[], scope: readonly string[]): s
 }
 
 /**
- * Compare a fresh subject-tree walk against the stamped one and name the
- * directories whose newest mtime ADVANCED.
+ * Compare complete path+mtime inventories and name every subject directory
+ * whose inventory changed. Creation, deletion, and a write to ANY source file
+ * all change the digest; a newest-only comparison cannot provide that guard.
  *
- * Only forward movement counts. A tree whose newest file was deleted reports
- * an OLDER newest-mtime, which is a change but not evidence that the code
- * under test was rewritten mid-run — and treating it as drift would make this
- * falsifier fire on ordinary cleanup. Both `null`s (unreadable either time)
- * are reported as no-drift for the same reason: an unreadable directory is an
- * absent observation, and `unavailable` is where absence is recorded.
+ * Null means the comparison could not answer. It is deliberately distinct
+ * from an empty array, which is the positive observation "the complete
+ * inventories matched".
  */
 export function diffSubjectDrift(
   captured: SubjectTreeStamp[] | null,
   now: SubjectTreeStamp[] | null,
-): string[] {
-  if (!captured || !now) return [];
-  const byDir = new Map(captured.map((s) => [s.dir, s]));
+): string[] | null {
+  if (!captured || !now) return null;
+  const byDir = new Map(now.map((s) => [s.dir, s]));
   const drifted: string[] = [];
-  for (const cur of now) {
-    const before = byDir.get(cur.dir);
-    if (!before) continue;
-    if (before.newestMtimeMs === null || cur.newestMtimeMs === null) continue;
-    if (cur.newestMtimeMs > before.newestMtimeMs) drifted.push(cur.dir);
+  for (const before of captured) {
+    const cur = byDir.get(before.dir);
+    // A missing/incomplete inventory is UNKNOWN, never evidence of no drift.
+    // `== null` deliberately catches schema-2 artifacts emitted before the
+    // digest field was added as well as an explicitly-null failed probe.
+    if (!cur || before.mtimesDigest == null || cur.mtimesDigest == null) return null;
+    if (cur.mtimesDigest !== before.mtimesDigest) drifted.push(cur.dir);
   }
   return drifted;
 }
@@ -226,22 +226,30 @@ function git(repoRoot: string, args: string[]): string | null {
 /**
  * Walk one repo-relative directory and summarise its newest write.
  *
- * An AGGREGATE (count + newest) rather than a per-file mtime list on purpose:
- * a per-file list of a few hundred entries on every artifact would dwarf the
- * measurements it annotates, while "did anything under here move, and what"
- * is the whole question the mtime leg is asked.
+ * The artifact carries a digest of the COMPLETE sorted path+mtime inventory,
+ * plus count/newest diagnostics. A raw per-file list of hundreds of entries on
+ * every artifact would dwarf the measurements it annotates; a newest-only
+ * aggregate is not sufficient because changing an older file would leave the
+ * maximum untouched. The digest preserves the all-files drift property without
+ * repeating that inventory in every emitted artifact.
  */
 export function stampSubjectTree(repoRoot: string, dir: string): SubjectTreeStamp {
   let fileCount = 0;
   let newestMtimeMs: number | null = null;
   let newestPath: string | null = null;
+  let complete = true;
+  const mtimes: Array<[path: string, mtimeMs: number]> = [];
 
   const walk = (relDir: string, depth: number): void => {
-    if (depth > 12) return;
+    if (depth > 12) {
+      complete = false;
+      return;
+    }
     let entries: import('node:fs').Dirent[];
     try {
       entries = readdirSync(join(repoRoot, relDir), { withFileTypes: true });
     } catch {
+      complete = false;
       return;
     }
     for (const e of entries) {
@@ -255,19 +263,25 @@ export function stampSubjectTree(repoRoot: string, dir: string): SubjectTreeStam
       fileCount += 1;
       try {
         const ms = statSync(join(repoRoot, rel)).mtimeMs;
+        mtimes.push([rel, ms]);
         if (newestMtimeMs === null || ms > newestMtimeMs) {
           newestMtimeMs = ms;
           newestPath = rel;
         }
       } catch {
         // A file that vanished between readdir and stat is a racing peer, not
-        // an error worth failing a run over.
+        // an error worth failing a run over — but it makes this stamp unknown.
+        complete = false;
       }
     }
   };
 
   walk(dir, 0);
-  return { dir, fileCount, newestMtimeMs, newestPath };
+  mtimes.sort(([a], [b]) => a.localeCompare(b));
+  const mtimesDigest = complete
+    ? createHash('sha256').update(JSON.stringify(mtimes)).digest('hex').slice(0, 16)
+    : null;
+  return { dir, fileCount, mtimesDigest, newestMtimeMs, newestPath };
 }
 
 export function stampSubjectTrees(
@@ -316,6 +330,7 @@ export function captureRunProvenance(input: CaptureProvenanceInput): RunProvenan
       subjects: null,
       subjectDriftSinceCapture: null,
       hostAtStart: input.hostAtStart,
+      hostLoad: null,
       unavailable: ['repo-root: git rev-parse --show-toplevel did not answer'],
     };
   }
@@ -382,6 +397,13 @@ export function captureRunProvenance(input: CaptureProvenanceInput): RunProvenan
     };
   }
 
+  const subjects = stampSubjectTrees(repoRoot, scope);
+  for (const subject of subjects) {
+    if (subject.mtimesDigest === null) {
+      unavailable.push(`subject-mtimes: could not read complete inventory for ${subject.dir}`);
+    }
+  }
+
   return {
     capturedAt: new Date().toISOString(),
     lastCommitSha,
@@ -390,11 +412,14 @@ export function captureRunProvenance(input: CaptureProvenanceInput): RunProvenan
     subjectLastCommitAt,
     submodulesDivergedFromGitlink,
     worktree,
-    subjects: stampSubjectTrees(repoRoot, scope),
+    subjects,
     // Meaningless on the run-level snapshot — it is filled per ARTIFACT, at
     // emit, by stampArtifactProvenance below.
     subjectDriftSinceCapture: null,
     hostAtStart: input.hostAtStart,
+    // The end/max samples and swap delta do not exist yet. runner.ts fills
+    // this after the final sample and rewrites the emitted artifact files.
+    hostLoad: null,
     unavailable,
   };
 }
@@ -414,11 +439,39 @@ export function stampArtifactProvenance(
   repoRoot: string | null,
 ): PerfArtifact {
   const nowStamps = repoRoot ? stampSubjectTrees(repoRoot, runProvenance.worktree?.scope ?? DEFAULT_SUBJECT_SCOPE) : null;
+  const recheckUnavailable =
+    nowStamps
+      ?.filter((stamp) => stamp.mtimesDigest === null)
+      .map((stamp) => `subject-mtimes-at-emit: could not read complete inventory for ${stamp.dir}`) ?? [];
   return {
     ...artifact,
     provenance: {
       ...runProvenance,
-      subjectDriftSinceCapture: nowStamps ? diffSubjectDrift(runProvenance.subjects, nowStamps) : null,
+      subjectDriftSinceCapture: diffSubjectDrift(runProvenance.subjects, nowStamps),
+      unavailable: [...runProvenance.unavailable, ...recheckUnavailable],
+    },
+  };
+}
+
+/**
+ * Attach the runner's final/max host evidence after the last scenario.
+ *
+ * Artifacts are first persisted at emit time so a later scenario failure does
+ * not erase earlier measurements. The runner calls this after its end sample
+ * and rewrites those same files. A crash before that point leaves `hostLoad:
+ * null`, which is an explicit incomplete observation rather than a fabricated
+ * zero-delta/quiet-host claim.
+ */
+export function finalizeArtifactProvenance(
+  artifact: PerfArtifact,
+  hostLoad: HostLoadEvidence,
+): PerfArtifact {
+  if (!artifact.provenance) return artifact;
+  return {
+    ...artifact,
+    provenance: {
+      ...artifact.provenance,
+      hostLoad: { ...hostLoad },
     },
   };
 }

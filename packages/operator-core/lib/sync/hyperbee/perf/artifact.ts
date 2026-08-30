@@ -107,10 +107,41 @@ export interface SubjectTreeStamp {
   dir: string;
   /** Source files found under it. */
   fileCount: number;
+  /**
+   * sha256 prefix over the COMPLETE sorted `(repo-relative path, mtimeMs)`
+   * inventory. This is the compact form of the per-file mtime stamp required
+   * by D-026: unlike `newestMtimeMs`, it changes when ANY file in the subject
+   * tree changes, including a file older than the tree's newest file.
+   *
+   * Null means at least one directory/file could not be read, so the stamp is
+   * incomplete and must never clear a drift suspicion.
+   */
+  mtimesDigest: string | null;
   /** Newest mtime over those files (ms since epoch); null when unreadable. */
   newestMtimeMs: number | null;
   /** Repo-relative path of the newest file — names WHAT moved, not just that something did. */
   newestPath: string | null;
+}
+
+/**
+ * The runner's existing whole-run host evidence, copied verbatim onto every
+ * artifact after the final sample. Keeping one shared type prevents the
+ * artifact and RunSummary from silently disagreeing about units or verdicts.
+ */
+export interface HostLoadEvidence {
+  /** Final loadavg sample; `ratio1m` below is the conservative start/end max. */
+  loadavg1m: number;
+  cpus: number;
+  /** max(start, end) loadavg1m / cpus. */
+  ratio1m: number;
+  oversubscribed: boolean;
+  /** Swap pages in+out over the run window; null when the probe could not answer. */
+  swapPagesDelta: number | null;
+  memoryContended: boolean;
+  memoryContendedReason: 'psi-stall' | 'swap-pages-fallback' | null;
+  /** max(start, end) PSI `some avg60` percentages. */
+  psiMemSome60: number | null;
+  psiCpuSome60: number | null;
 }
 
 /**
@@ -182,17 +213,17 @@ export interface RunProvenance {
      */
     scope: string[];
   } | null;
-  /** Newest-write stamp per subject tree at run start. Null ⇒ not probed. */
+  /** Complete path+mtime inventory digest per subject tree at run start. Null ⇒ not probed. */
   subjects: SubjectTreeStamp[] | null;
   /**
-   * Subject trees whose newest mtime ADVANCED between the run-start capture
-   * and THIS artifact's emit — the falsifier for "the snapshot still describes
-   * this artifact".
+   * Subject trees whose complete path+mtime inventory CHANGED between the
+   * run-start capture and THIS artifact's emit — the falsifier for "the
+   * snapshot still describes this artifact".
    *
    * Non-empty means the tree moved mid-run and the run must not be quoted as
-   * one code state. Empty means no forward mtime movement was seen, which is a
+   * one code state. Empty means the complete inventories matched, which is a
    * suspicion cleared, not a content diff (mtime over-reports on a rewrite of
-   * identical bytes and cannot see a change that never touched the file).
+   * identical bytes).
    * Null on the run-level snapshot (nothing to compare yet) and whenever the
    * re-check could not run.
    */
@@ -201,9 +232,8 @@ export interface RunProvenance {
    * Host contention AT RUN START, carried onto the artifact instead of being
    * spent only on the runner's internal health verdict (D-026). These are the
    * figures `runner.ts` already sampled — not a second, differently-timed
-   * sample. The run-level max(start,end) verdict stays in the report and
-   * `summary.json`; what an artifact needs is the state its own scenario
-   * started under.
+   * sample. The run-level max(start,end) evidence is finalized separately in
+   * `hostLoad`; this captures the state the first scenario started under.
    */
   hostAtStart: {
     loadavg1m: number;
@@ -216,6 +246,12 @@ export interface RunProvenance {
     /** vmstat swap pages in+out at start; the EI-9145 fallback's baseline. */
     swapPagesAtStart: number | null;
   };
+  /**
+   * The runner's final/max load, PSI, and swap-delta evidence for the whole run.
+   * Null while scenarios are still running (or if finalization never happened);
+   * `runner.ts` rewrites each emitted JSON artifact after computing host health.
+   */
+  hostLoad: HostLoadEvidence | null;
   /** One line per probe that could not answer. Empty ⇒ every leg reported. */
   unavailable: string[];
 }
