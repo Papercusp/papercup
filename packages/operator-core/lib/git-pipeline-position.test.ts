@@ -4187,6 +4187,24 @@ describe('changeInCandidate (P-004)', () => {
         expect(res.changeInCandidate.detail).toMatch(/Do NOT re-fire/);
       });
 
+      /**
+       * EI-19321297903353500: the "Do NOT re-fire" imperative answers for ONE path, but
+       * was phrased as a conclusion about the RUN — a session with several changes in
+       * flight across different paths (landing in different commits) would read "do NOT
+       * re-fire" for a path that IS covered while another path it also changed is NOT,
+       * and let a doomed run hold the gate singleton. The advice must name the path it
+       * covers and explicitly say other changed paths need their own check.
+       */
+      it('EI-19321297903353500: the re-fire verdict is scoped to THIS path, not the whole change-set', async () => {
+        const res = await run('MY_FIX_MARKER', 'before MY_FIX_MARKER after');
+        // Must name the exact path this verdict is about…
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry your change TO a\.ts/);
+        expect(res.changeInCandidate.detail).toMatch(/Do NOT re-fire FOR a\.ts/);
+        // …and must not let the reader generalise it to every file they touched.
+        expect(res.changeInCandidate.detail).toMatch(/PER-PATH, not per-run/);
+        expect(res.changeInCandidate.detail).toMatch(/re-check each other changed path separately/i);
+      });
+
       it('an absent marker still warns — the exoneration is not blanket', async () => {
         const res = await run('MY_FIX_MARKER', 'this commit predates the fix');
         expect(res.changeInCandidate.markerJudging?.present).toBe(false);
