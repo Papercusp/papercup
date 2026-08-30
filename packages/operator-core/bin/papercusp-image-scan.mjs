@@ -198,6 +198,16 @@ if [ "\$vuln_fixable" = "null" ]; then detail="vuln-fix-parse-failed"; exit 1; f
 # 0.0.18 candidate, where the answer had to be guessed for want of this field (D-171).
 vuln_fixable_by_severity=\$(jq -c '[.matches[]? | select(.vulnerability.fix.state == "fixed") | .vulnerability.severity] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
 if [ "\$vuln_fixable_by_severity" = "null" ]; then detail="vuln-fix-severity-parse-failed"; exit 1; fi
+# WHICH ECOSYSTEM the findings live in — the field that says whether a remediation can even
+# reach them. The 0.0.18 candidate carries a whole Ubuntu userland AND ~291 npm packages
+# under /opt/papercusp AND python dist-packages, so "apt-get dist-upgrade" is capable of
+# patching only one of the three. Without this split, a dist-upgrade that moved the count by
+# ~1 finding is indistinguishable from a dist-upgrade that never ran, and the only way to
+# tell was to guess (WI-1088331). Grype already labels every match with its package type.
+vuln_by_ecosystem=\$(jq -c '[.matches[]?.artifact.type] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_by_ecosystem" = "null" ]; then detail="vuln-ecosystem-parse-failed"; exit 1; fi
+vuln_fixable_by_ecosystem=\$(jq -c '[.matches[]? | select(.vulnerability.fix.state == "fixed") | .artifact.type] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_fixable_by_ecosystem" = "null" ]; then detail="vuln-fix-ecosystem-parse-failed"; exit 1; fi
 
 # Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
 # emitted: this document is read back over SSH and lands in release logs and work-item
@@ -207,6 +217,15 @@ secrets_by_rule=\$(jq -c '[.[]?.RuleID] | group_by(.) | map({key:.[0], value:len
 if [ "\$secrets_by_rule" = "null" ]; then detail="secret-rule-parse-failed"; exit 1; fi
 secrets_sample=\$(jq -c '[.[]? | {rule:.RuleID, file:.File, line:.StartLine}] | .[0:50]' /tmp/secrets.json 2>/dev/null || echo "null")
 if [ "\$secrets_sample" = "null" ]; then detail="secret-sample-parse-failed"; exit 1; fi
+# A CENSUS, because the sample above is capped at 50 and a real image produces hundreds.
+# Triaging the 0.0.18 candidate's 275 findings from a 50-row sample left 225 of them —
+# every one of the 50 'private-key' hits included — unclassifiable, so "are any of these a
+# real baked-in credential?" could not be answered without a second billable scan. Grouping
+# rule x top-level directory classifies EVERY finding while staying bounded: the number of
+# distinct (rule, /dir) pairs is small no matter how many findings there are. Still rule and
+# location only — no value, same rule as the sample above.
+secrets_by_area=\$(jq -c '[.[]? | (.RuleID + " @ /" + ((.File | split("/") | .[4]) // "?"))] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/secrets.json 2>/dev/null || echo "null")
+if [ "\$secrets_by_area" = "null" ]; then detail="secret-area-parse-failed"; exit 1; fi
 
 sbom_sha=\$(sha256sum /tmp/sbom.json | cut -d' ' -f1)
 
@@ -219,9 +238,12 @@ jq -n \\
   --argjson vulnerabilityBySeverity "\$vuln_by_severity" \\
   --argjson vulnerabilityFixable "\$vuln_fixable" \\
   --argjson vulnerabilityFixableBySeverity "\$vuln_fixable_by_severity" \\
+  --argjson vulnerabilityByEcosystem "\$vuln_by_ecosystem" \\
+  --argjson vulnerabilityFixableByEcosystem "\$vuln_fixable_by_ecosystem" \\
+  --argjson secretsByArea "\$secrets_by_area" \\
   --argjson secretsByRule "\$secrets_by_rule" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
+  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -418,8 +440,25 @@ async function scan(input) {
     ...(isPlainObject(measurement.vulnerabilityFixableBySeverity)
       ? { vulnerabilityFixableBySeverity: measurement.vulnerabilityFixableBySeverity }
       : {}),
+    // WHICH ECOSYSTEM, i.e. whether a given remediation can even reach these findings.
+    // This candidate carries an Ubuntu userland AND ~291 npm packages under /opt/papercusp
+    // AND python dist-packages, so apt can patch only one of the three; without the split,
+    // a dist-upgrade that moved the count by ~1 is indistinguishable from one that never ran.
+    ...(isPlainObject(measurement.vulnerabilityByEcosystem)
+      ? { vulnerabilityByEcosystem: measurement.vulnerabilityByEcosystem }
+      : {}),
+    ...(isPlainObject(measurement.vulnerabilityFixableByEcosystem)
+      ? { vulnerabilityFixableByEcosystem: measurement.vulnerabilityFixableByEcosystem }
+      : {}),
     ...(isPlainObject(measurement.secretsByRule)
       ? { secretsByRule: measurement.secretsByRule }
+      : {}),
+    // A CENSUS of every secret finding by rule x top-level directory, because secretSample
+    // below is capped at 50 and classifies only a fraction of a real image's findings.
+    // Bounded by distinct (rule, /dir) pairs, so it stays small however many findings there
+    // are. Location only, never a value — same rule as the sample.
+    ...(isPlainObject(measurement.secretsByArea)
+      ? { secretsByArea: measurement.secretsByArea }
       : {}),
     // rule/file/line only — the scanner never emits the matched value, and neither do we.
     ...(Array.isArray(measurement.secretSample)
