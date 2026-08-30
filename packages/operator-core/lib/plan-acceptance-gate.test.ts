@@ -554,6 +554,35 @@ describe('the floor-aware grader pick (unified-responder-selection-critique-and-
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_not_recorded', gradedBy: 'su-min' });
   });
 
+  it('an above-floor grading arriving SECOND does supersede — and re-opens the implementer verdict it post-dates', async () => {
+    // The mirror image, and the case the rule actually improves: the cascade woke
+    // grader 2, grader 2 cleared the floor, and the accept recorded against the
+    // below-floor first card no longer covers the grading that now stands.
+    mockScorecards.mockResolvedValue([
+      scorecard({ issueId: 'EI-min-first', createdAt: '2026-08-25T01:00:00Z', createdBy: 'su-min' }),
+      scorecard({
+        issueId: 'EI-accept-early',
+        createdAt: '2026-08-25T02:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'Accepted against the first grading.' },
+      }),
+      scorecard({ issueId: 'EI-floor-second', createdAt: '2026-08-25T03:00:00Z', createdBy: 'su-floor' }),
+    ]);
+    mockGraderVia.mockResolvedValue(
+      new Map([
+        ['su-min', 'minimum' as const],
+        ['su-floor', 'floor' as const],
+      ]),
+    );
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_not_recorded',
+      gradedBy: 'su-floor',
+      gradedVia: 'floor',
+    });
+  });
+
   it('where NO above-floor grader exists the minimum-fill grading still satisfies — and the verdict discloses it', async () => {
     // D-002 accepts this knowingly and asks that it not be rediscovered as a
     // surprise: the ship is allowed, and the reader is told the grading behind
