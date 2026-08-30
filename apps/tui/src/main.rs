@@ -281,8 +281,7 @@ async fn main() -> Result<()> {
         // panes. Tails the ONE shared session transcript so every desktop instance
         // shows the SAME live agent + survives shell exit (not a per-window psu shell).
         Some("brain-view") => {
-            return brain_view::run(brain_view::Scope::from_arg(cli.positional(1)))
-            .await;
+            return brain_view::run(brain_view::Scope::from_arg(cli.positional(1))).await;
         }
         Some("hud") => {}
         // Dock pane modes — fall through to the normal run loop. The old
@@ -359,24 +358,22 @@ async fn main() -> Result<()> {
     // no pair, the roster reducer binds the pane to the live Sentinel native
     // session; one half of the pair is rejected rather than guessed.
     let context_target = match subcommand.as_deref() {
-        Some("context-pane") | Some("plans-pane") => {
-            match (cli.positional(1), cli.positional(2)) {
-                (None, None) => None,
-                (Some(source), Some(id)) if !source.trim().is_empty() && !id.trim().is_empty() => {
-                    Some(models::ConversationContextProjectionTarget::new(
-                        source.trim(),
-                        id.trim(),
-                        cli.positional(3)
-                            .filter(|h| !h.trim().is_empty())
-                            .map(str::to_string),
-                    ))
-                }
-                _ => {
-                    eprintln!("usage: pui context-pane [SOURCE_KIND SESSION_ID [HARNESS]]");
-                    std::process::exit(2);
-                }
+        Some("context-pane") | Some("plans-pane") => match (cli.positional(1), cli.positional(2)) {
+            (None, None) => None,
+            (Some(source), Some(id)) if !source.trim().is_empty() && !id.trim().is_empty() => {
+                Some(models::ConversationContextProjectionTarget::new(
+                    source.trim(),
+                    id.trim(),
+                    cli.positional(3)
+                        .filter(|h| !h.trim().is_empty())
+                        .map(str::to_string),
+                ))
             }
-        }
+            _ => {
+                eprintln!("usage: pui context-pane [SOURCE_KIND SESSION_ID [HARNESS]]");
+                std::process::exit(2);
+            }
+        },
         _ => None,
     };
     // Wake-pane scope (owner ask 2026-06-11): bare `wake-pane` = the fleet-wide
@@ -400,13 +397,11 @@ async fn main() -> Result<()> {
         },
         // The agent-context panes share the wake-pane's scope grammar; their
         // bare default is the QUEEN (they sit in her dock column).
-        Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => {
-            match cli.positional(1) {
-                Some("--queen") | None => app::WakeFilter::Queen,
-                Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
-                _ => app::WakeFilter::Queen,
-            }
-        }
+        Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => match cli.positional(1) {
+            Some("--queen") | None => app::WakeFilter::Queen,
+            Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
+            _ => app::WakeFilter::Queen,
+        },
         _ => app::WakeFilter::All,
     };
     // The dock-driver drives the reactive agent stack (hive-agent-tabs
@@ -562,12 +557,9 @@ mod cli_help_tests {
 
     #[test]
     fn inherited_seat_context_is_reused_by_zellij_child_panes() {
-        let child = CliInvocation::parse(
-            args(&["hud"]),
-            Some("fed-drill"),
-            Some("sonnet:high:auto"),
-        )
-        .unwrap();
+        let child =
+            CliInvocation::parse(args(&["hud"]), Some("fed-drill"), Some("sonnet:high:auto"))
+                .unwrap();
         assert_eq!(child.positionals, ["hud"]);
         assert_eq!(child.fleet.as_deref(), Some("fed-drill"));
         assert_eq!(child.seat.as_deref(), Some("sonnet:high:auto"));
@@ -575,12 +567,9 @@ mod cli_help_tests {
 
     #[test]
     fn seat_context_refuses_missing_fleet_and_conflicting_sources() {
-        let missing = CliInvocation::parse(
-            args(&["--seat=sonnet:high:auto", "workbench"]),
-            None,
-            None,
-        )
-        .unwrap_err();
+        let missing =
+            CliInvocation::parse(args(&["--seat=sonnet:high:auto", "workbench"]), None, None)
+                .unwrap_err();
         assert!(missing.to_string().contains("requires --fleet"));
 
         let conflict = CliInvocation::parse(

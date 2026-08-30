@@ -101,6 +101,10 @@ const launchSu = defineTool({
       fleet?: string | null;
       fleet_name?: string | null;
       fleet_scheme?: string | null;
+      // Delegated agent-slot ref consumed by bootstrap-su. The canonical seat
+      // ledger/ref/cap validation stays there; this route only preserves the
+      // existing psu --seat transport for GUI/PUI launches.
+      seat?: string | null;
       // psu-account-chooser: 'default' | 'auto' | a pool account id. ALWAYS sent
       // by a GUI launch — psu with no --account opens an INTERACTIVE picker,
       // which would hang a spawned session waiting for a human at a terminal.
@@ -211,6 +215,10 @@ const launchSu = defineTool({
     if (account && !isLaunchAccountValue(account)) {
       return json({ status: 'error', error: 'invalid account' }, 400);
     }
+    const seat = body.seat?.trim() || null;
+    if (seat && (seat.length > 256 || /[\u0000-\u001f\u007f]/u.test(seat))) {
+      return json({ status: 'error', error: 'invalid seat ref' }, 400);
+    }
     const carry = body.carry?.trim() || null;
     if (carry && carry !== 'warm' && carry !== 'cold') {
       return json({ status: 'error', error: 'carry must be warm|cold' }, 400);
@@ -315,6 +323,15 @@ const launchSu = defineTool({
         return json({ status: 'error', error: `could not create fleet: ${e?.message ?? 'unknown error'}` }, 500);
       }
     }
+    if (seat && !fleetSlug) {
+      return json(
+        {
+          status: 'error',
+          error: 'seat requires fleet: delegated seats belong to an existing fleet',
+        },
+        400,
+      );
+    }
 
     let contextSize: SuContextSize = 'trimmed';
     let contextSizeNormalization: { requested: 'full'; effective: 'trimmed'; deprecated: true } | null = null;
@@ -413,6 +430,7 @@ const launchSu = defineTool({
     // so a GUI launch and a terminal launch produce an identical launch_argv.
     if (account) psuArgs.push(`--account=${account}`);
     if (fleetSlug) psuArgs.push(`--fleet=${fleetSlug}`);
+    if (seat) psuArgs.push(`--seat=${seat}`);
     if (carry) psuArgs.push(`--carry=${carry}`);
     if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);

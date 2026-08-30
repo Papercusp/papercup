@@ -439,6 +439,8 @@ describe('launch-su', () => {
       model: 'gpt-5.6-sol:low',
       effort: 'xhigh',
       account: 'auto',
+      fleet: 'fed-drill',
+      seat: 'sonnet:high:auto',
       mode: 'auto',
       defer_spawn: true,
     });
@@ -449,9 +451,23 @@ describe('launch-su', () => {
         '--plan=my-plan',
         '--model=gpt-5.6-sol:xhigh',
         '--account=auto',
+        '--fleet=fed-drill',
+        '--seat=sonnet:high:auto',
         '--auto',
       ]),
     );
+  });
+
+  it('refuses a delegated seat without its fleet before recording or spawning', async () => {
+    const res = await callPost({
+      agent: 'codex',
+      seat: 'sonnet:high:auto',
+      defer_spawn: true,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('seat requires fleet');
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   it('fails loudly when effort has no model instead of silently dropping it', async () => {
