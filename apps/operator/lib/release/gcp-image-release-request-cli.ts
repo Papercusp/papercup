@@ -101,6 +101,19 @@ function requiredString(value: unknown, label: string): string {
   return (value as string).trim();
 }
 
+/**
+ * A string copied through VERBATIM, whitespace included.
+ *
+ * `requiredString` trims, which is right for identifiers and catastrophic for the signing public
+ * key: its digest is taken over the exact bytes, trailing newline and all, so trimming it emits an
+ * artifact whose `signingKeySha256` no longer pins its own key. The gate rejects that — correctly,
+ * and with a message that points at the digest rather than at the trim that caused it.
+ */
+function requiredVerbatimString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) fail(`${label} must be a non-empty string`);
+  return value as string;
+}
+
 function requiredRecord(value: unknown, label: string): Record<string, unknown> {
   if (!isRecord(value)) fail(`${label} must be an object`);
   return value;
@@ -203,6 +216,7 @@ async function readJson(path: string, label: string): Promise<Record<string, unk
 async function resolveMaterials(
   raw: unknown,
   sourceRoot: string | undefined,
+  publishedMaterials: ReadonlyMap<string, WorkspaceHostBuildMaterial>,
 ): Promise<readonly WorkspaceHostBuildMaterial[]> {
   if (!Array.isArray(raw) || raw.length === 0) {
     // The manifest normalizer refuses an empty list, and rightly: a build manifest that names no
@@ -215,6 +229,21 @@ async function resolveMaterials(
     const record = requiredRecord(entry, `materials[${index}]`);
     const path = repoRelativePath(record.path, `materials[${index}].path`);
     const executable = record.executable === true;
+    // Some materials are not repository files at all — the remote initializer the provenance rule
+    // requires is a BUILT artifact inside the published bundle, addressed by its bundle-relative
+    // path. Its digest was already measured when the bundle was published, so transcribe that
+    // measurement rather than re-deriving it from a path that means something else here.
+    if (record.from === "publication-manifest") {
+      const published = publishedMaterials.get(path);
+      if (!published) {
+        fail(
+          `materials[${index}] asks for the publication manifest's measurement of ${path}, ` +
+            `but that manifest records no material at that path`,
+        );
+      }
+      materials.push(published);
+      continue;
+    }
     if (record.sha256 === undefined || record.sizeBytes === undefined) {
       if (!sourceRoot) {
         fail(`materials[${index}] omits sha256/sizeBytes and no --source-root was given to measure it`);
@@ -305,6 +334,22 @@ export async function buildImageArtifact(
   }
   if (trustReport.trusted !== true) fail("publication manifest trustReport is not trusted; refusing to compose a release");
 
+  // Measurements the publication run already took, indexed so a material can cite one instead of
+  // being hand-typed. Absent or malformed entries simply do not participate.
+  const publishedMaterials = new Map<string, WorkspaceHostBuildMaterial>();
+  if (Array.isArray(publishedManifest.materials)) {
+    for (const entry of publishedManifest.materials) {
+      if (!isRecord(entry) || typeof entry.path !== "string") continue;
+      if (typeof entry.sha256 !== "string" || typeof entry.sizeBytes !== "number") continue;
+      publishedMaterials.set(entry.path, {
+        path: entry.path,
+        sha256: entry.sha256,
+        sizeBytes: entry.sizeBytes,
+        ...(entry.executable === true ? { executable: true } : {}),
+      });
+    }
+  }
+
   const projectId = requiredString(input.projectId, "projectId");
   const imageName = requiredString(input.imageName, "imageName");
   if (!RESOURCE_NAME.test(imageName)) fail("imageName must be a valid GCP resource name");
@@ -346,7 +391,7 @@ export async function buildImageArtifact(
       templatePath,
       templateSha256: template.sha256,
     },
-    materials: await resolveMaterials(input.materials, args.sourceRoot),
+    materials: await resolveMaterials(input.materials, args.sourceRoot, publishedMaterials),
     parameters: resolveParameters(input.parameters),
     targets: resolveTargets(input.targets, projectId),
   };
@@ -373,7 +418,10 @@ export async function buildImageArtifact(
       bundleSha256,
       signatureUrl: requiredString(publishedRelease.signatureUrl, "publication manifest release.signatureUrl"),
       signingKeySha256: requiredDigest(publishedRelease.signingKeySha256, "publication manifest release.signingKeySha256"),
-      signingPublicKey: requiredString(publishedRelease.signingPublicKey, "publication manifest release.signingPublicKey"),
+      signingPublicKey: requiredVerbatimString(
+        publishedRelease.signingPublicKey,
+        "publication manifest release.signingPublicKey",
+      ),
     },
     lifecycle: { state: "active", publishedAt },
     compatibility: compatibility as WorkspaceHostImageArtifact["compatibility"],
@@ -436,7 +484,10 @@ export async function composeRequest(args: GcpImageReleaseRequestCliArgs): Promi
     },
     connection: {
       target: "gcp",
-      cloudCredentialRef: GCLOUD_ACTIVE_USER_CREDENTIAL_REF,
+      // A TYPED reference into the host's resolver, not a bare string: the composition seam reads
+      // `cloudCredentialRef.ref`, so a plain string reads as absent and the release dies at the
+      // connection parse before it does anything billable.
+      cloudCredentialRef: { kind: "cloud", ref: GCLOUD_ACTIVE_USER_CREDENTIAL_REF },
       scope: { kind: "project", id: built.projectId },
       provider: { projectId: built.projectId },
     },
