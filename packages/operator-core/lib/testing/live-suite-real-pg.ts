@@ -45,24 +45,45 @@ import { afterAll, beforeAll } from 'vitest';
  *   nothing, so the rail is left fully armed for the ordinary skipped run.
  */
 export function allowRealPgForLiveSuite(liveEnabled: boolean): void {
+  const gate = makeRealPgGateForLiveSuite(liveEnabled);
+  beforeAll(() => gate.lift());
+  afterAll(() => gate.restore());
+}
+
+/**
+ * The lift/restore logic behind {@link allowRealPgForLiveSuite}, separated from the hook
+ * wiring purely so it can be driven directly by a test.
+ *
+ * It has to be exported to be testable at all: the wrapper above registers vitest hooks at
+ * a suite's module scope, and a test cannot control when those fire. What actually needs
+ * guarding is not the wiring (two lines, obviously correct) but the RULE that the opt-out
+ * can never escape its live gate — see live-suite-real-pg.test.ts.
+ */
+export function makeRealPgGateForLiveSuite(liveEnabled: boolean): {
+  lift: () => void;
+  restore: () => void;
+} {
   let previous: string | undefined;
   let lifted = false;
 
-  beforeAll(() => {
-    if (!liveEnabled) return;
-    previous = process.env.PAPERCUSP_FORBID_REAL_PG;
-    delete process.env.PAPERCUSP_FORBID_REAL_PG;
-    lifted = true;
-  });
-
-  afterAll(() => {
-    // Guarded by `lifted` rather than by `liveEnabled` so this can only ever restore what
-    // this call actually changed — an afterAll that fires without its beforeAll having run
-    // must not write the env at all.
-    if (!lifted) return;
-    if (previous === undefined) delete process.env.PAPERCUSP_FORBID_REAL_PG;
-    else process.env.PAPERCUSP_FORBID_REAL_PG = previous;
-    lifted = false;
-    previous = undefined;
-  });
+  return {
+    lift(): void {
+      if (!liveEnabled) return;
+      previous = process.env.PAPERCUSP_FORBID_REAL_PG;
+      delete process.env.PAPERCUSP_FORBID_REAL_PG;
+      lifted = true;
+    },
+    restore(): void {
+      // Guarded by `lifted`, NOT by `liveEnabled`, so this can only ever restore what this
+      // gate actually changed. A restore that runs without its lift — a hook ordering
+      // surprise, an aborted suite — must not write the env at all, because writing it
+      // would be indistinguishable from a suite legitimately re-arming the rail and could
+      // just as easily DISARM it for whatever runs next in this worker.
+      if (!lifted) return;
+      if (previous === undefined) delete process.env.PAPERCUSP_FORBID_REAL_PG;
+      else process.env.PAPERCUSP_FORBID_REAL_PG = previous;
+      lifted = false;
+      previous = undefined;
+    },
+  };
 }
