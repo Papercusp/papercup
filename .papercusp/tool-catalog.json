@@ -20138,7 +20138,8 @@
         "curator",
         "kettle",
         "worker",
-        "cup"
+        "cup",
+        "judge"
       ],
       "guidance": {
         "when": "Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.",
