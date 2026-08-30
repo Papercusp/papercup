@@ -939,6 +939,81 @@ describe('diffSignatureBreaks', () => {
   });
 });
 
+/**
+ * WI-1324625 item 4 — exported CLASS methods and constructors.
+ *
+ * The interface walk needed no accessibility filter, because an interface has no
+ * inaccessible members. A class typically has several, and they have no cross-file call
+ * sites at all: recording them would report a "break" every time someone refactored a
+ * class's own internals. That noise, on edits that CANNOT strand a caller, is why the
+ * accessibility control below matters more than any of the positive cases.
+ */
+const CLASS_BEFORE = `
+export class ClaimStore {
+  constructor(db: Db) {}
+  read(id: string): Claim {}
+  static open(path: string): ClaimStore {}
+  private cache(k: string): void {}
+  protected hook(k: string): void {}
+  #secret(k: string): void {}
+}
+class NotExported {
+  reachable(a: string): void {}
+}
+`;
+
+describe('collectExportedSignatures — exported classes', () => {
+  it('records public methods, statics and the constructor; skips private, protected and #private', () => {
+    const sigs = collectExportedSignatures(CLASS_BEFORE);
+
+    expect([...sigs.keys()].sort()).toEqual(['ClaimStore.constructor', 'ClaimStore.open', 'ClaimStore.read']);
+  });
+});
+
+describe('diffSignatureBreaks — exported class surface', () => {
+  const reasons = (after: string, before = CLASS_BEFORE) =>
+    diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason);
+
+  it('flags a constructor that gained a required parameter — every `new` site just broke', () => {
+    const after = CLASS_BEFORE.replace('constructor(db: Db) {}', 'constructor(db: Db, log: Log) {}');
+
+    expect(reasons(after)).toEqual(['param-added-required']);
+  });
+
+  it('flags a public method removed from an exported class', () => {
+    const after = CLASS_BEFORE.replace('  read(id: string): Claim {}\n', '');
+
+    expect(reasons(after)).toEqual(['callable-removed']);
+  });
+
+  it('flags a changed static-method parameter type', () => {
+    const after = CLASS_BEFORE.replace('static open(path: string)', 'static open(path: URL)');
+
+    expect(reasons(after)).toEqual(['param-type-changed']);
+  });
+
+  // ——— The controls. No caller outside this file can reach any of these members. ———
+
+  it('stays SILENT on private, protected and #private member changes', () => {
+    for (const after of [
+      CLASS_BEFORE.replace('private cache(k: string)', 'private cache(k: string, n: number)'),
+      CLASS_BEFORE.replace('protected hook(k: string)', 'protected hook(k: number)'),
+      CLASS_BEFORE.replace('#secret(k: string)', '#secret(k: string, extra: boolean)'),
+      CLASS_BEFORE.replace('  private cache(k: string): void {}\n', ''),
+    ]) {
+      expect(reasons(after)).toEqual([]);
+    }
+  });
+
+  it('stays SILENT when a NON-exported class changes or loses a method', () => {
+    const changed = CLASS_BEFORE.replace('reachable(a: string)', 'reachable(a: string, b: number)');
+    const removed = CLASS_BEFORE.replace('  reachable(a: string): void {}\n', '');
+
+    expect(reasons(changed)).toEqual([]);
+    expect(reasons(removed)).toEqual([]);
+  });
+});
+
 describe('collectExportedValueNames — the export SURFACE, not the callable map', () => {
   it('collects functions, classes, consts, and named re-export aliases', () => {
     const names = collectExportedValueNames(`
@@ -1032,5 +1107,44 @@ describe('diffSignatureBreaks — an exported callable removed entirely', () => 
     const after = 'export function kept(b: number): void {}';
 
     expect(diffSignatureBreaks(before, after)).toEqual([]);
+  });
+
+  /**
+   * FALSIFIABILITY, kept permanently instead of proved once by a mutation probe.
+   *
+   * The pre-WI-1324625 predicate was a single `for (const [name, now] of after)` walk, so
+   * the ONLY symbols it could ever name were symbols present in the after-map. The two
+   * assertions below turn that into a standing structural check against the real code —
+   * no replica of the old function to drift, and no in-tree mutation.
+   *
+   * The second test is the one that gives the first its meaning. "The reported symbol is
+   * absent from the after-map" would be worthless if it were true of every finding this
+   * guard emits; the calibration shows an ordinary param-removed finding naming a symbol
+   * that IS in the after-map, so the property genuinely discriminates. Without it these
+   * controls would pass even if the property itself were broken.
+   */
+  it('reports symbols ABSENT from the after-map — structurally unreachable by the old walk', () => {
+    for (const after of [
+      SIG_BEFORE.replace('export function claimNext(owner: string, harness?: string): Promise<Claim> {}', ''),
+      SIG_BEFORE.replace('claimNext(owner', 'claimNextV2(owner'),
+      SIG_BEFORE.replace('  read(id: string): Claim;\n', ''),
+    ]) {
+      const found = diffSignatureBreaks(SIG_BEFORE, after) as { path: string; reason: string }[];
+      const afterMap = collectExportedSignatures(after);
+
+      expect(found).toHaveLength(1);
+      expect(found[0].reason).toBe('callable-removed');
+      // `path` is rendered as `name()`; the symbol is everything before the parens.
+      expect(afterMap.has(found[0].path.replace(/\(\)$/, ''))).toBe(false);
+    }
+  });
+
+  it('CALIBRATION: an ordinary signature finding DOES name a symbol in the after-map', () => {
+    const after = SIG_BEFORE.replace('claimNext(owner: string, harness?: string)', 'claimNext(owner: string)');
+    const found = diffSignatureBreaks(SIG_BEFORE, after) as { path: string; reason: string }[];
+    const afterMap = collectExportedSignatures(after);
+
+    expect(found.map((f) => f.reason)).toEqual(['param-removed']);
+    expect(afterMap.has(found[0].path.replace(/\(\)$/, ''))).toBe(true);
   });
 });

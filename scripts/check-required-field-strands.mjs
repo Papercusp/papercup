@@ -344,6 +344,22 @@ const typeText = (node, sf) => (node ? node.getText(sf).replace(/\s+/g, ' ').tri
  * the siblings inherited this file's NOT-CHECKED prose but not its exit status, and the
  * divergence had to be fixed after the fact.
  */
+/**
+ * A class member no other file can reach, and whose signature therefore strands nobody.
+ *
+ * `private` / `protected` / `#name` members are the reason exported CLASSES could not simply
+ * be walked like interfaces: an interface has no inaccessible members, so the interface walk
+ * needed no such filter, while a class typically has several. Recording them would report a
+ * "break" on every refactor of a class's own internals — noise on edits that cannot strand a
+ * caller, which is the failure mode that gets a guard switched off.
+ */
+const isInaccessible = (member) =>
+  Boolean(
+    member.modifiers?.some(
+      (mod) => mod.kind === ts.SyntaxKind.PrivateKeyword || mod.kind === ts.SyntaxKind.ProtectedKeyword,
+    ),
+  ) || Boolean(member.name && ts.isPrivateIdentifier(member.name));
+
 export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
   const sigs = new Map(); // name -> { params: [{ name, optional, rest, type }], ret }
@@ -375,6 +391,19 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
     } else if (ts.isInterfaceDeclaration(stmt) && isExported(stmt)) {
       for (const m of stmt.members) {
         if (!ts.isMethodSignature(m) || !m.name) continue;
+        const name = ts.isIdentifier(m.name) || ts.isStringLiteral(m.name) ? m.name.text : null;
+        if (name) record(`${stmt.name.text}.${name}`, m);
+      }
+    } else if (ts.isClassDeclaration(stmt) && isExported(stmt) && stmt.name) {
+      // An exported class is a public callable surface too, and its CONSTRUCTOR is the one
+      // every `new Foo(...)` site depends on — the highest-fanout signature a class has.
+      for (const m of stmt.members) {
+        if (isInaccessible(m)) continue;
+        if (ts.isConstructorDeclaration(m)) {
+          record(`${stmt.name.text}.constructor`, m);
+          continue;
+        }
+        if (!ts.isMethodDeclaration(m) || !m.name) continue;
         const name = ts.isIdentifier(m.name) || ts.isStringLiteral(m.name) ? m.name.text : null;
         if (name) record(`${stmt.name.text}.${name}`, m);
       }
