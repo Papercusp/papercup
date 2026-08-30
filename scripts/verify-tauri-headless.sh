@@ -168,6 +168,18 @@
 #                                binary (default 300 — cold/changed src-tauri
 #                                builds are intentionally outside the bridge
 #                                readiness budget)
+#   VERIFY_TAURI_HEALTH_TIMEOUT seconds to wait for the owned Hono+SPA origin
+#                                (/api/health and /) to answer 200 from inside
+#                                the webview AFTER the bridge is up (default
+#                                120 — EI-21894787139229424: the verify sidecar
+#                                boots the FULL operator substrate, ~3.3GB
+#                                fresh RSS per EI-11641, which can take well
+#                                over the old 15s default under fleet load
+#                                (loadavg ~100/128 cores measured live); a
+#                                healthy rig was FATALed and torn down after a
+#                                ~4-minute build+boot investment because this
+#                                clock alone was too tight, same rationale as
+#                                VERIFY_TAURI_BUILD_TIMEOUT above)
 #   VERIFY_TAURI_DOM_TIMEOUT    seconds VERIFY_TAURI_POLL waits for a DOM
 #                                assertion after navigation (default 30)
 #   VERIFY_TAURI_DOM_POLL_INTERVAL
@@ -2437,7 +2449,9 @@ export VERIFY_TAURI_POLL="$POLL"
 # re-fetches the origin. Assert the origin split BEFORE declaring ready, with a
 # short retry: right after the bridge log line, the SPA's first health fetch
 # may not have resolved yet.
-HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-15}"
+# EI-21894787139229424: was 15s — too tight for a substrate-booting sidecar
+# under fleet load; see the VERIFY_TAURI_HEALTH_TIMEOUT header doc above.
+HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-120}"
 HEALTH_DEADLINE=$((SECONDS + HEALTH_TIMEOUT))
 HEALTH_JSON=""
 HEALTH_PROBE_STATUS=0
