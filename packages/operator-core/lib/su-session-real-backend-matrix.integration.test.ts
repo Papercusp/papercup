@@ -61,9 +61,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFile, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   SU_SESSION_PROTOCOL_VERSION,
@@ -135,6 +137,12 @@ const RESOLVE_RUNTIME: Record<MatrixBackend, (b: PuiSuSessionBinding) => Promise
 // find a session's control socket, so reading it here is the production
 // discovery contract rather than a test-only backchannel.
 const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
+
+/** This file sits at packages/operator-core/lib/, so the repo root is three up.
+ *  Derived from the module URL rather than cwd: vitest's cwd is the workspace
+ *  package, not the checkout, and the containment check below must run git
+ *  against the checkout the operator was built from. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 interface PsuPtyDiscovery {
   ownerId?: string;
@@ -343,11 +351,94 @@ interface LiveLeg {
 }
 const liveLegs: LiveLeg[] = [];
 
-beforeAll(() => {
+/**
+ * The operator this matrix drives its CREATE hop against.
+ *
+ * WHY THIS IS PINNED, AND WHY THE DEFAULT IS :3170 RATHER THAN :3070
+ * -----------------------------------------------------------------
+ * `launchAgent` reaches launch-su over HTTP, and its endpoint list is
+ * same-origin -> :3070 -> :3055. Under vitest there is no `window`, so the
+ * same-origin branch is skipped and CREATE silently lands on :3070 — the
+ * RELEASE checkout, pinned to green `main`. Measured 2026-08-30, with the gate
+ * red for ~10 days, :3070 was serving code ~2.5 days behind staging.
+ *
+ * That made this file a HYBRID and nobody could see it: CREATE ran deployed
+ * code over HTTP while SPAWN/ATTACH/OWNER-TURN ran the working tree in-process.
+ * The trap is not that it fails — it is that it PASSES. The D-014 parity guard
+ * below asserts `--account=default` on the argv :3070 produced, so it would
+ * have certified a fix that was never in the operator it tested.
+ *
+ * So: pin the operator, and PROVE it carries this tree's launch-su before
+ * spending a single real token.
+ */
+const MATRIX_OPERATOR_BASE = (
+  process.env.PAPERCUSP_OPERATOR_BASE?.trim() || 'http://localhost:3170'
+).replace(/\/+$/, '');
+
+/** The path whose identity decides whether a CREATE result means anything. */
+const CREATE_PATH_UNDER_TEST = 'packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts';
+
+function gitOut(args: string[]): string | null {
+  try {
+    return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+beforeAll(async () => {
   if (!ENABLED) return;
   // Fail loudly rather than quietly addressing the wrong database: every hop
   // below reads rows the live operator wrote.
   if (!process.env.PAPERCUSP_WORKSPACE_ID) process.env.PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace';
+
+  // Make launchSuEndpoints() resolve to the pinned operator instead of falling
+  // through to :3070. This is the ONLY reason CREATE addresses the tree under
+  // test; without it the fallback order decides, silently.
+  process.env.PAPERCUSP_OPERATOR_BASE = MATRIX_OPERATOR_BASE;
+
+  const health = await fetch(`${MATRIX_OPERATOR_BASE}/api/health`).catch((e: unknown) => {
+    throw new Error(
+      `matrix operator ${MATRIX_OPERATOR_BASE} is unreachable (${String(e)}). ` +
+        'Start/restart it (dev:restart { target:"staging" }) — do NOT let this fall back to ' +
+        ':3070, which serves green `main` and would certify code that is not under test.',
+    );
+  });
+  if (!health.ok) {
+    throw new Error(`matrix operator ${MATRIX_OPERATOR_BASE} answered HTTP ${health.status}`);
+  }
+  const body = (await health.json()) as { sha?: string };
+  const servingSha = body.sha?.trim();
+  if (!servingSha) {
+    throw new Error(`matrix operator ${MATRIX_OPERATOR_BASE} reported no sha; cannot prove what it runs`);
+  }
+
+  // CONTAINMENT, not recency: compare the BLOB the serving commit has for the
+  // create path against this working tree's. Equal blobs mean the operator is
+  // executing the same launch-su this run is about to make claims about. A
+  // timestamp or a commit-distance check cannot answer that question.
+  const servingBlob = gitOut(['rev-parse', '--verify', '--quiet', `${servingSha}:${CREATE_PATH_UNDER_TEST}`]);
+  const treeBlob = gitOut(['hash-object', CREATE_PATH_UNDER_TEST]);
+  if (!servingBlob || !treeBlob) {
+    throw new Error(
+      `cannot resolve ${CREATE_PATH_UNDER_TEST} at serving sha ${servingSha} ` +
+        `(serving=${servingBlob ?? 'unresolved'} tree=${treeBlob ?? 'unresolved'}). ` +
+        'Refusing to run: an unprovable operator identity is exactly the silent-mismatch case.',
+    );
+  }
+  if (servingBlob !== treeBlob) {
+    throw new Error(
+      `matrix operator ${MATRIX_OPERATOR_BASE} (sha ${servingSha}) is running a DIFFERENT ` +
+        `${CREATE_PATH_UNDER_TEST} than this working tree (serving blob ${servingBlob}, tree blob ${treeBlob}). ` +
+        'Its CREATE result would not describe the code under test. Restart that operator onto this tree ' +
+        '(dev:restart { target:"staging", confirm:true, authorize:true }) and re-run.',
+    );
+  }
+  // eslint-disable-next-line no-console
+  console.log(
+    `[matrix] CREATE hop pinned to ${MATRIX_OPERATOR_BASE} @${servingSha} — ` +
+      `${CREATE_PATH_UNDER_TEST} blob ${treeBlob} matches this tree.`,
+  );
 });
 
 afterAll(async () => {
