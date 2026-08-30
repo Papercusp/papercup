@@ -66,9 +66,20 @@ const METHODS = ['cleanup'];
 
 const ROOTS = ['apps', 'packages', 'libs'];
 
-/** `await <ident>.<method>(` — the unguarded dereference we are hunting. */
+/**
+ * `await <ident>.<method>()` — the unguarded dereference we are hunting.
+ *
+ * The empty argument list is a load-bearing discriminator, not tidiness. A
+ * fixture teardown is always zero-arg (`await db.cleanup()`); a same-named
+ * module/class helper that takes arguments — e.g.
+ * `await cls.cleanup(h.sql, planted)` in red-queen.integration.test.ts — is a
+ * different thing entirely and is NOT the `let db` + `beforeAll` hazard. The
+ * first draft of this guard omitted the `()` and reported exactly that line as
+ * a violation on a tree already measured to zero, which is how the
+ * over-match was caught.
+ */
 const bareCall = (method) =>
-  new RegExp(String.raw`await\s+([A-Za-z_$][\w$]*)\s*\.\s*${method}\s*\(`);
+  new RegExp(String.raw`await\s+([A-Za-z_$][\w$]*)\s*\.\s*${method}\s*\(\s*\)`);
 
 function listIntegrationTestFiles() {
   // FALSIFIABILITY SEAM. Explicit paths override discovery, so this guard can

@@ -68,6 +68,24 @@ describe('plans:get-item handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, slug: 'plan-a', itemId: 'P-001', item: { id: 'P-001' } });
   });
 
+  it('EI-21901062936431252: `itemId` is an accepted alias for `item` in the single-read shorthand', async () => {
+    // plans:audit's own per-item entries are keyed `itemId` (audit.ts's itemSpec) —
+    // a caller reasonably reused that spelling here and was rejected, reproduced live
+    // 2026-08-30. The handler must resolve the alias the same as `item`.
+    getRowM.mockResolvedValue(rowOf('plan-a', ['P-001']));
+    const b = await body({ slug: 'plan-a', itemId: 'P-001' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, slug: 'plan-a', itemId: 'P-001', item: { id: 'P-001' } });
+  });
+
+  it('EI-21901062936431252: schema accepts `itemId` alone, and rejects `item`+`itemId` given DIFFERENT ids', () => {
+    expect(tool.args.safeParse({ slug: 'plan-a', itemId: 'P-001' }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: 'plan-a', item: 'P-001', itemId: 'P-001' }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: 'plan-a', item: 'P-001', itemId: 'P-002' }).success).toBe(false);
+    // Neither form present is still a validation error (the original combined check).
+    expect(tool.args.safeParse({ slug: 'plan-a' }).success).toBe(false);
+  });
+
   it('auto-resolves the owning harness for an exact slug when ambient scope is absent', async () => {
     getRowM.mockResolvedValue(rowOf('plan-a', ['P-001']));
     const b = await body({ slug: 'plan-a', item: 'P-001' });

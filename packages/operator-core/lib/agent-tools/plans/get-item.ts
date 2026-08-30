@@ -42,6 +42,19 @@ const argsSchema = z
       .regex(/^P-\d{3,}$/)
       .optional()
       .describe('single-read shorthand: the plan item id, e.g. "P-003".'),
+    // EI-21901062936431252: `itemId` is an ACCEPTED ALIAS for `item` in the single-read
+    // shorthand. plans:audit's own per-item entries are keyed `itemId` (see itemSpec in
+    // audit.ts), so a caller reasonably reused that spelling here and was rejected —
+    // reproduced live 2026-08-30. Same class as EI-10897 (work_items:comment's
+    // `comment`/`body`): accept the obvious spelling, reject a genuine conflict loudly.
+    // Resolved in the HANDLER, never via `.transform()` (EI-10996 — a trailing
+    // transform's output is unrepresentable in JSON Schema and crashes schema-gen for
+    // the whole tool catalog).
+    itemId: z
+      .string()
+      .regex(/^P-\d{3,}$/)
+      .optional()
+      .describe('alias for `item` (plans:audit uses this field name for its per-item entries) — pass either; both-with-different-values is rejected.'),
     itemIds: z
       .array(z.string().regex(/^P-\d{3,}$/))
       .min(1)
@@ -55,12 +68,24 @@ const argsSchema = z
       .optional()
       .describe('read many items across plans — each { slug, item, harness? }'),
   })
-  .refine(
-    (a) =>
-      (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && ((a.itemIds?.length ?? 0) > 0 || Boolean(a.item))),
-    { message: 'pass { slug, item } for one, { slug, itemIds:[…] } for many of one plan, or items:[{ slug, item }] for cross-plan' },
-  );
+  .superRefine((a, ctx) => {
+    if (a.item && a.itemId && a.item !== a.itemId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['itemId'],
+        message: '`item` and `itemId` are the SAME field and were both passed with DIFFERENT ids — pass one (which did you mean?).',
+      });
+      return;
+    }
+    const hasSingle = Boolean(a.item) || Boolean(a.itemId);
+    const ok = (a.items?.length ?? 0) > 0 || (Boolean(a.slug) && ((a.itemIds?.length ?? 0) > 0 || hasSingle));
+    if (!ok) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'pass { slug, item } for one, { slug, itemIds:[…] } for many of one plan, or items:[{ slug, item }] for cross-plan',
+      });
+    }
+  });
 
 interface ReadItem {
   slug: string;
@@ -90,11 +115,15 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    // EI-21901062936431252: resolve the `item`/`itemId` alias handler-side (the
+    // superRefine above already guarantees at least one is present, and that they
+    // don't conflict, for the single-read shape).
+    const singleItem = args.item ?? args.itemId;
     const list: ReadItem[] = args.items?.length
       ? args.items.map((it) => ({ slug: it.slug, itemId: it.item, harness: it.harness ?? args.harness }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({ slug: args.slug as string, itemId, harness: args.harness }))
-        : [{ slug: args.slug as string, itemId: args.item as string, harness: args.harness }];
+        : [{ slug: args.slug as string, itemId: singleItem as string, harness: args.harness }];
 
     // Match plans:get / plans:items: an exact homogeneous plan slug is enough to
     // recover the owning harness in an operator/superuser session whose ambient
