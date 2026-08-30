@@ -98,8 +98,13 @@ import {
   type SuSessionEvent,
   type SuSessionIdentity,
 } from '@papercusp/chat-protocol';
-import { openPuiSuSession, type PuiSuSessionBinding } from './launch-agent';
-import { getAdvSession, markAdvSessionLaunched, markAdvSessionEnded } from './adv-sessions';
+import { launchAgent, openPuiSuSession, type PuiSuSessionBinding } from './launch-agent';
+import {
+  DISPLAY_TERMINAL_LAUNCH,
+  getAdvSession,
+  markAdvSessionLaunched,
+  markAdvSessionEnded,
+} from './adv-sessions';
 import { managedSpawn, type ManagedSpawnResult } from './task-manager/managed-spawn';
 import { openClaudeSuSession, resolveClaudeSuRuntime } from './su-session-claude-adapter';
 import { openCodexSuSession, resolveCodexSuRuntime } from './su-session-codex-adapter';
@@ -311,6 +316,16 @@ interface AttachedLeg {
    *  which is exactly the window this matrix exists to wait through. */
   pump(): Promise<void>;
   events(): readonly SuSessionEvent[];
+  /** The live retention window as DATA: the event ids actually retained, plus
+   *  the floor/last pair the SSE resume contract publishes. Returned as plain
+   *  numbers rather than the host itself because the three hosts are
+   *  generically distinct types with no upstream union. */
+  retention(): { ids: readonly number[]; floorSequence: number; lastSequence: number };
+  /** How many retained events a Last-Event-ID resume from `sequence` replays.
+   *  The point of asking is the case where `sequence` is BELOW the floor: the
+   *  host must replay only what it still holds, never fabricate the prefix it
+   *  dropped. */
+  recentSinceCount(sequence: number): number;
   lifecycle(): string;
   /** The full descriptor, so capability visibility and `runtimeGeneration` can
    *  be asserted against the protocol rather than inferred from behaviour. */
@@ -387,6 +402,15 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
           await adapter.consumeTranscriptSnapshot();
         },
         events: () => adapter.host.recent.map((entry) => entry.event),
+        retention: () => {
+          const snapshot = adapter.host.snapshot();
+          return {
+            ids: adapter.host.recent.map((entry) => entry.id),
+            floorSequence: snapshot.floorSequence,
+            lastSequence: snapshot.lastSequence,
+          };
+        },
+        recentSinceCount: (sequence: number) => adapter.host.recentSince(sequence).length,
         lifecycle: () => adapter.host.descriptor().lifecycle,
         descriptor: () => adapter.host.descriptor(),
         replaceRuntime: async (reason) => {
@@ -419,6 +443,15 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
           await adapter.consumeRolloutSnapshot();
         },
         events: () => adapter.host.recent.map((entry) => entry.event),
+        retention: () => {
+          const snapshot = adapter.host.snapshot();
+          return {
+            ids: adapter.host.recent.map((entry) => entry.id),
+            floorSequence: snapshot.floorSequence,
+            lastSequence: snapshot.lastSequence,
+          };
+        },
+        recentSinceCount: (sequence: number) => adapter.host.recentSince(sequence).length,
         lifecycle: () => adapter.host.descriptor().lifecycle,
         descriptor: () => adapter.host.descriptor(),
         replaceRuntime: async (reason) => {
@@ -451,6 +484,15 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
           await adapter.consumeTranscriptSnapshot();
         },
         events: () => adapter.host.recent.map((entry) => entry.event),
+        retention: () => {
+          const snapshot = adapter.host.snapshot();
+          return {
+            ids: adapter.host.recent.map((entry) => entry.id),
+            floorSequence: snapshot.floorSequence,
+            lastSequence: snapshot.lastSequence,
+          };
+        },
+        recentSinceCount: (sequence: number) => adapter.host.recentSince(sequence).length,
         lifecycle: () => adapter.host.descriptor().lifecycle,
         descriptor: () => adapter.host.descriptor(),
         replaceRuntime: async (reason) => {
@@ -1062,6 +1104,120 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       ).toEqual([]);
     }, 60_000);
 
+    it('EVENT BACKPRESSURE: retention is bounded, and whatever it drops is REPORTED rather than silently missing', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      // WHAT BACKPRESSURE MEANS HERE — read from the host, not assumed.
+      // su-session-host.ts opens its channel with `ringSize: replaySize ?? 1024`
+      // ("Retained events available to Last-Event-ID reconnects") alongside
+      // `subscriberQueueSize: 4096` ("Per-live-client queue before the shared
+      // SSE layer closes/replays"). So a slow consumer NEVER blocks the live
+      // runtime: retention is capped and the OLDEST events fall out.
+      //
+      // A bounded ring that drops silently is indistinguishable from a lost
+      // event, so the property that actually matters is the one the SSE route
+      // publishes beside the replay: `resumeBounds: { floorId:
+      // snapshot.floorSequence, maxId: snapshot.lastSequence }`. A client
+      // resuming below the floor can SEE that its position is unreachable and
+      // resync. That legibility is the same contract shape as a conditional
+      // command's refusal — loss is permitted, SILENT loss is not.
+      //
+      // Overflow is forced with pumps rather than turns: a pump re-resolves the
+      // runtime and re-emits the WHOLE native record set (see transcriptText),
+      // so it costs one transcript re-read and no agent tokens.
+      const RING = 1024; // su-session-host.ts: `ringSize: options.replaySize ?? 1024`
+
+      const before = session.retention();
+      expect(
+        before.ids.length,
+        'the session retained no events at all, so retention is unproven',
+      ).toBeGreaterThan(0);
+
+      // Bounded in BOTH dimensions on purpose: a pump count alone cannot stop a
+      // slow backend from eating the whole test budget, and a deadline alone
+      // cannot stop a fast one from pumping tens of thousands of times.
+      let pumps = 0;
+      let stalled = false;
+      const pumpDeadline = Date.now() + 90_000;
+      while (session.retention().lastSequence <= RING && pumps < 200 && Date.now() < pumpDeadline) {
+        const priorLast = session.retention().lastSequence;
+        await session.pump();
+        pumps += 1;
+        if (session.retention().lastSequence === priorLast) {
+          // A pump that emits nothing cannot drive the ring any further. That
+          // is not a failure — it just means this leg proves the no-drop
+          // regime below rather than the overflow regime.
+          stalled = true;
+          break;
+        }
+      }
+
+      const after = session.retention();
+      const overflowed = after.lastSequence > RING;
+
+      // 1. THE RETAINED WINDOW HAS NO HOLES INSIDE IT. The floor and last the
+      //    resume contract publishes must be the real ends of what is held; a
+      //    gap here would hand a resuming client a contiguous-looking stream
+      //    that is missing events in the middle.
+      expect(after.floorSequence, `${backend}: published floor is not the first retained id`).toBe(after.ids[0]);
+      expect(after.lastSequence, `${backend}: published last is not the final retained id`).toBe(after.ids.at(-1));
+      expect(
+        after.lastSequence - after.floorSequence + 1,
+        `${backend} retained ${after.ids.length} events spanning ${after.floorSequence}..${after.lastSequence}; ` +
+          'the retained window has a hole in it, so a resume inside it would silently skip events.',
+      ).toBe(after.ids.length);
+
+      // 2. RETENTION IS BOUNDED — the producer is never blocked into growing it.
+      expect(
+        after.ids.length,
+        `${backend} retained ${after.ids.length} events, above the declared ${RING}-event ring: ` +
+          'an unbounded ring is a memory leak, not backpressure.',
+      ).toBeLessThanOrEqual(RING);
+
+      // 3. A RESUME BELOW THE FLOOR REPLAYS ONLY WHAT IS STILL HELD. The host
+      //    must not invent the prefix it dropped, and must not withhold what it
+      //    kept. Asserted in BOTH regimes.
+      expect(
+        session.recentSinceCount(0),
+        `${backend}: a resume from 0 replayed a different count than the host retains`,
+      ).toBe(after.ids.length);
+      expect(
+        session.recentSinceCount(after.floorSequence - 1),
+        `${backend}: a resume from just below the floor did not replay the whole retained window`,
+      ).toBe(after.ids.length);
+      expect(
+        session.recentSinceCount(after.lastSequence),
+        `${backend}: a resume from the newest event replayed events that do not exist yet`,
+      ).toBe(0);
+
+      if (overflowed) {
+        // 4a. OVERFLOW REGIME — the drop is REPORTED. floorSequence advancing
+        //     past 1 is precisely the signal a client compares its
+        //     Last-Event-ID against to learn it must resync instead of
+        //     assuming continuity.
+        expect(
+          after.floorSequence,
+          `${backend} emitted ${after.lastSequence} events past a ${RING}-event ring but still publishes floor=1, ` +
+            'so a client resuming from an evicted id would be told nothing was lost.',
+        ).toBeGreaterThan(1);
+        expect(
+          after.ids.length,
+          `${backend} overflowed the ring but retained ${after.ids.length} events instead of ${RING}`,
+        ).toBe(RING);
+      } else {
+        // 4b. NO-DROP REGIME — reached when this leg's pumps could not drive the
+        //     ring past its bound. Nothing was evicted, and that must be equally
+        //     visible: the floor is still the first event the session emitted.
+        expect(
+          after.floorSequence,
+          `${backend} retained ${after.ids.length} events without reaching the ${RING}-event bound ` +
+            `(pumps=${pumps}, stalled=${stalled}), so nothing was evicted and the floor must still be the first event.`,
+        ).toBe(before.ids[0]);
+      }
+    }, 180_000);
+
     it('INTERRUPT: the live runtime acknowledges an interrupt rather than dropping it', async () => {
       expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
       if (!attached) return;
@@ -1346,5 +1502,192 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         ).toBe(false);
       }
     }, 120_000);
+
+    it('UNCHANGED BARE-PSU BEHAVIOUR: an ordinary launch still live-spawns its OWN session and neither adopts nor disturbs the managed one', async (ctx) => {
+      // WHY THIS BELONGS IN A REAL-BACKEND MATRIX.
+      // P-012 added the PUI managed-session path: `deferSpawn`, a deferred adv
+      // row, a pane that runs `launchArgv`, and an attach that adopts the row.
+      // The risk it creates is not in that path — it is that the ORDINARY human
+      // `psu` launch quietly starts travelling through it too. launch-agent.ts
+      // already has a unit test for the request body it sends
+      // ('ordinary launch remains the live-spawn/bare-psu path'), but that
+      // asserts against a mocked fetch: it proves what the caller ASKS FOR, and
+      // cannot see what the live operator DOES with the ask. This runs the same
+      // call against the running operator and reads the consequence.
+      //
+      // THE OBSERVABLE DIFFERENCE between the two paths, from launch-agent.ts's
+      // own contract: `advSessionId` is "the recorded adv_sessions row id when
+      // deferSpawn was set (else absent)" — "on the terminal path no
+      // adv_sessions row exists at launch (psu records one asynchronously once
+      // it boots)". So a bare launch that comes back carrying an adv row id has
+      // been rerouted onto the deferred/attach path, which is the regression.
+      //
+      // COST: one extra agent BOOT per backend and no turn, so no provider
+      // tokens beyond session init. It is ended immediately below.
+      expect(attached, 'the managed leg must exist for the disturbance check to mean anything').toBeTruthy();
+      if (!attached || !advSessionId) return;
+
+      // NOT asserted live. This case runs AFTER END, whose contract is
+      // honoured-OR-explicitly-refused, so a closed managed session here is a
+      // legitimate outcome of the previous case rather than a fault in this
+      // one. When it is gone the disturbance half (4) is vacuous and skipped;
+      // the path-discrimination half (1-3) — the actual point — still runs.
+      const managedBefore = await discoverPsuPtyByAdvSessionId(advSessionId);
+      const managedWasLive = Boolean(managedBefore?.pid && pidAlive(managedBefore.pid));
+
+      const bare = await launchAgent({
+        agent: backend as 'claude' | 'codex' | 'omp',
+        slug: HARNESS,
+        // No desktop window: this runs headless on a shared box, and psu's
+        // --headless deliberately KEEPS the managed pty and its control socket,
+        // so the discovery contract below is the same one a windowed launch
+        // uses. It is the window that is dropped, not the launch path.
+        headless: true,
+        // REQUIRED, not a default: launch-agent.ts states that psu with no
+        // --account opens an interactive picker, which would hang this spawn
+        // forever behind a prompt no test can answer. 'default' is the system
+        // credential with the gateway skipped — the cheapest route for a boot
+        // that never takes a turn.
+        account: 'default',
+        ...(backend === 'omp' ? { model: OMP_MODEL } : {}),
+      });
+
+      expect(bare.ok, `an ordinary ${backend} launch was refused: ${bare.error ?? ''}`).toBe(true);
+      if (!bare.ok) return;
+
+      // 1. IT IS STILL THE LIVE-SPAWN PATH.
+      //
+      // ⚠ NOT "the response carries no advSessionId". That was this case's first
+      // discriminator and it is WRONG — it produced a confident false regression
+      // report the first time this ran (2026-08-30). It came from launch-agent.ts's
+      // own comment, "on the terminal path no adv_sessions row exists at launch
+      // (psu records one asynchronously once it boots)", which is STALE: WI-6376
+      // (owner ask 2026-07-25 — sessions must appear on the board "whether or not
+      // they are launched with the new session button or if they are launched with
+      // the psu utility") made launch-su record a STARTING row for every launch
+      // carrying an ownerId, and WI-37743 moved that insert ABOVE the spawn. The
+      // stale prose survives in TWO places (launch-agent.ts's LaunchAgentResult
+      // and launch-su.ts's own reply comment) and contradicts the line directly
+      // beside it, which returns the id.
+      //
+      // The field the CODE branches on is `display`. launch-su sets
+      // DISPLAY_TERMINAL_LAUNCH ('terminal') on the ordinary path and says why:
+      // "never 'workbench': that value is D-006's pui pane queue". The pui pane
+      // consumer selects exactly `WHERE display = 'workbench'`. So THAT is the
+      // reroute signature — assert against it, not against a comment.
+      expect(bare.ownerId, 'launch-su returned no pre-pinned owner id for a bare launch').toBeTruthy();
+      expect(
+        bare.deferred === true,
+        `an ordinary ${backend} launch reported deferred:true — it was routed onto the PUI deferred path`,
+      ).toBe(false);
+      if (bare.advSessionId != null) {
+        const bareRow = await getAdvSession(bare.advSessionId);
+        expect(
+          bareRow?.display,
+          `an ordinary ${backend} launch recorded adv row ${bare.advSessionId} with ` +
+            `display=${String(bareRow?.display)}; 'workbench' is D-006's PUI pane queue, so the ` +
+            'bare path has been rerouted through it.',
+        ).toBe(DISPLAY_TERMINAL_LAUNCH);
+      }
+
+      const bareOwnerId = bare.ownerId!;
+      let bareDiscovery: PsuPtyDiscovery | null = null;
+      // Same freeze hazard as the OWNER TURN wait, for the same reason: this
+      // poll is wall-clock and the process it waits on shares this test's
+      // freezable cgroup, so a pc-heavy SIGSTOP burns the budget without the
+      // subject ever getting to run.
+      const bootStall = createStallWatch();
+      const deadline = Date.now() + READY_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        bootStall.tick();
+        try {
+          bareDiscovery = JSON.parse(
+            await readFile(join(PSU_PTY_DIR, `${bareOwnerId}.json`), 'utf8'),
+          ) as PsuPtyDiscovery;
+          if (bareDiscovery?.pid && pidAlive(bareDiscovery.pid)) break;
+        } catch {
+          // not written yet, or written partially — poll again
+        }
+        bareDiscovery = null;
+        await delay(1_000);
+      }
+
+      const bareUp = Boolean(bareDiscovery?.pid && pidAlive(bareDiscovery.pid));
+      if (!bareUp && bootStall.stalled()) {
+        // NOT MEASURED, not red. Cleaned up first: skipping must not leak the
+        // process this case may still have started.
+        const strandedPid = bareDiscovery?.pid;
+        if (strandedPid && pidAlive(strandedPid)) {
+          try {
+            process.kill(strandedPid, 'SIGKILL');
+          } catch {
+            // already gone
+          }
+        }
+        console.warn(
+          `[matrix] NOT MEASURED — ${backend} BARE-PSU: this process lost ` +
+            `${Math.round(bootStall.maxGapMs() / 1000)}s to a single stall while waiting for the ` +
+            'launch to come up, so the budget expired without the subject being given a chance to ' +
+            'run. Re-run when the host is not under memory pressure.',
+        );
+        ctx.skip();
+        return;
+      }
+
+      // 2. A REAL PROCESS CAME UP. Without this the assertions above would pass
+      //    against a launch that returned ok and then died silently
+      //    (EI-18696184925888288 is exactly that failure mode).
+      expect(
+        bareUp,
+        `the ordinary ${backend} launch (owner ${bareOwnerId}) never reached a live managed-pty session ` +
+          `within ${Math.round(READY_TIMEOUT_MS / 1000)}s`,
+      ).toBeTruthy();
+
+      try {
+        // 3. IT DID NOT ADOPT THE MANAGED ROW. A bare launch records its own
+        //    session asynchronously; adopting the PUI row would make two
+        //    processes claim one identity.
+        expect(
+          Number(bareDiscovery!.advSessionId),
+          `the ordinary ${backend} launch adopted the managed PUI row ${advSessionId} instead of recording its own`,
+        ).not.toBe(advSessionId);
+
+        // 4. THE MANAGED SESSION IS UNDISTURBED — same pid, still alive. Only
+        //    meaningful while it survived END; see the note above.
+        if (managedWasLive) {
+          const managedAfter = await discoverPsuPtyByAdvSessionId(advSessionId);
+          expect(
+            managedAfter?.pid,
+            `the managed ${backend} session's pid changed (${managedBefore?.pid} -> ${managedAfter?.pid}) across an unrelated bare launch`,
+          ).toBe(managedBefore?.pid);
+          expect(
+            pidAlive(managedAfter?.pid),
+            `the managed ${backend} session died during an unrelated bare launch`,
+          ).toBe(true);
+        }
+      } finally {
+        // 5. NO ORPHAN. This test created a real process; it owns ending it,
+        //    whichever way the assertions above resolved. By PID, never by name
+        //    or pattern — a pattern kill on this box has twice taken out a
+        //    peer's live session.
+        const barePid = bareDiscovery?.pid;
+        if (barePid && pidAlive(barePid)) {
+          try {
+            process.kill(barePid, 'SIGTERM');
+          } catch {
+            // already gone between the check and the signal
+          }
+          const gone = Date.now() + 20_000;
+          while (Date.now() < gone && pidAlive(barePid)) await delay(500);
+          if (pidAlive(barePid)) {
+            try {
+              process.kill(barePid, 'SIGKILL');
+            } catch {
+              // ditto
+            }
+          }
+        }
+      }
+    }, 300_000);
   });
 });
