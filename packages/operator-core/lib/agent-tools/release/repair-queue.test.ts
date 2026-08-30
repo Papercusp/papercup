@@ -45,6 +45,12 @@ beforeEach(() => {
 });
 
 describe('release:repair-queue', () => {
+  it('makes its workspace-global scope explicit to prevent caller harness arguments', () => {
+    expect(tool.description).toContain('workspace-global');
+    expect(tool.description).toContain('omit harness/workspace');
+    expect(tool.guidance?.notWhen).toContain('scope belongs to the outer session/transport');
+  });
+
   it('get exposes one normalized queue with an exact retirement action', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toMatchObject({

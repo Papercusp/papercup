@@ -29,6 +29,7 @@
 
 import type postgres from 'postgres';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
@@ -103,6 +104,38 @@ export const OUTBOX_GC_BATCH = 5000;
  * 100k-row ceiling.
  */
 export const OUTBOX_GC_BUDGET_MS = 30_000;
+
+/**
+ * Process-wide admission for inline outbox GC.
+ *
+ * Every booted harness owns a drain loop, and every newly-wired loop starts an
+ * immediate catch-up pass. `boot-all` bounds handle creation, but
+ * `startOutboxDrain` deliberately detaches that first pass before returning, so
+ * the boot bound cannot bound the GC work that follows. On a 102-harness host
+ * that produced 102 overlapping DELETE loops, starved real row delivery, and
+ * wedged the main event loop until the host watchdog killed it (EI-218417).
+ *
+ * GC is best-effort maintenance and every later NOTIFY/poll pass retries it, so
+ * contention must SKIP rather than queue: queueing every harness behind one
+ * slow cleanup would put the delivery path behind maintenance again. The
+ * process-global try-lock admits one GC loop while every other drain proceeds
+ * directly to its undrained-row SELECT. Pinning keeps the guard shared across
+ * duplicate module evaluation in the long-lived host.
+ */
+const inlineGcAdmission = pinModuleState('@papercusp/operator-core.hyperbeeOutboxInlineGc', () => ({
+  inFlight: false,
+}));
+
+function tryAcquireInlineGc(): (() => void) | null {
+  if (inlineGcAdmission.inFlight) return null;
+  inlineGcAdmission.inFlight = true;
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    inlineGcAdmission.inFlight = false;
+  };
+}
 
 /** Default poll-fallback cadence for `startOutboxDrain` (ms). */
 export const DEFAULT_POLL_MS = 5000;
@@ -508,33 +541,38 @@ export async function drainOutboxOnce(
   const gcBudgetMs = opts._gcBudgetMs ?? OUTBOX_GC_BUDGET_MS;
   const gcNowMs = opts._gcNowMs ?? Date.now;
   const gcStartedAtMs = gcNowMs();
-  try {
-    for (let i = 0; ; i++) {
-      if (gcNowMs() - gcStartedAtMs >= gcBudgetMs) break;
-      const gc = await logIfStageStalls(
-        scope,
-        `gc-delete (batch ${i})`,
-        pg`
-        WITH del AS (
-          SELECT id
-            FROM harness_shared.substrate_outbox
-           WHERE workspace_id = ${handle.workspaceId}
-             AND harness_slug = ${handle.harnessSlug}
-             AND drained_at IS NOT NULL
-             AND drained_at < ${now - OUTBOX_GC_AGE_MS}
-           ORDER BY id
-           LIMIT ${gcBatch}
-           FOR UPDATE SKIP LOCKED
-        )
-        DELETE FROM harness_shared.substrate_outbox o
-         USING del
-         WHERE o.id = del.id`,
-      );
-      // Fewer than a full batch removed → backlog cleared for now.
-      if ((gc.count ?? 0) < gcBatch) break;
+  const releaseInlineGc = tryAcquireInlineGc();
+  if (releaseInlineGc) {
+    try {
+      for (let i = 0; ; i++) {
+        if (gcNowMs() - gcStartedAtMs >= gcBudgetMs) break;
+        const gc = await logIfStageStalls(
+          scope,
+          `gc-delete (batch ${i})`,
+          pg`
+          WITH del AS (
+            SELECT id
+              FROM harness_shared.substrate_outbox
+             WHERE workspace_id = ${handle.workspaceId}
+               AND harness_slug = ${handle.harnessSlug}
+               AND drained_at IS NOT NULL
+               AND drained_at < ${now - OUTBOX_GC_AGE_MS}
+             ORDER BY id
+             LIMIT ${gcBatch}
+             FOR UPDATE SKIP LOCKED
+          )
+          DELETE FROM harness_shared.substrate_outbox o
+           USING del
+           WHERE o.id = del.id`,
+        );
+        // Fewer than a full batch removed → backlog cleared for now.
+        if ((gc.count ?? 0) < gcBatch) break;
+      }
+    } catch {
+      // GC is non-fatal observability; continue to the actual drain.
+    } finally {
+      releaseInlineGc();
     }
-  } catch {
-    // GC is non-fatal observability; continue to the actual drain.
   }
 
   const rows = await logIfStageStalls(

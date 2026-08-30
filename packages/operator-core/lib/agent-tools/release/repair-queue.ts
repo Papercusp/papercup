@@ -64,7 +64,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect or explicitly retire the operator-home green-checkpoint frozen repair queue. get returns normalized phase/age/fixer/reservation/decision diagnostics. retire is dry-run unless confirm:true, refuses a live or unknown fixer and an active dispatch reservation, and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
+    'Inspect or explicitly retire the operator-home green-checkpoint frozen repair queue. This is workspace-global: omit harness/workspace from the payload because the target is derived from the active workspace operator home. get returns normalized phase/age/fixer/reservation/decision diagnostics. retire is dry-run unless confirm:true, refuses a live or unknown fixer and an active dispatch reservation, and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
   capability: 'operator:write',
   effectForCall: (args) => (args.op === 'get' ? 'read' : 'write'),
   requirePrincipal: false,
@@ -74,7 +74,7 @@ export default defineTool({
     when:
       'A release read reports repair-in-progress, a fossil/blocked repair queue, or a queue whose fixer is definitely dead. Call get first; retire only after independently establishing that this exact queue is terminal.',
     notWhen:
-      'Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify/promote work, or merely to make the gate move. This does not launch a checkpoint or deploy.',
+      'Do not pass harness or workspace in this tool payload: release:repair-queue is workspace-global and derives the operator-home target internally; scope belongs to the outer session/transport. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify/promote work, or merely to make the gate move. This does not launch a checkpoint or deploy.',
     chaining:
       'release:repair-queue{op:get} → verify the returned exact identity + retireAllowed → retire with those exact fields and confirm:true → let the ordinary scheduled green-checkpoint fire.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],

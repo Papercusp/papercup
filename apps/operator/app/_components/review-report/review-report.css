@@ -60,7 +60,13 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 0 4px;
-  background: transparent;
+  border-bottom: 1px solid
+    color-mix(in oklab, var(--review-accent), transparent 78%);
+  /* This surface must stay opaque: the sticky header sits over live report
+   * rows, and a translucent/blur-only scrim leaves their text competing with
+   * the report identity and destructive boundary actions. */
+  background: color-mix(in oklab, var(--bg) 94%, var(--bg-2));
+  box-shadow: 0 10px 18px color-mix(in oklab, var(--bg) 56%, transparent);
 }
 
 .review-report__identity {

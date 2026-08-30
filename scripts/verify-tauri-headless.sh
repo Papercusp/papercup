@@ -569,6 +569,8 @@ write_run_marker "$$" || {
 
 ASSERTION_INPUT_MANIFEST=""
 ASSERTION_INPUT_COUNT=0
+ASSERTION_SCRIPT_ORIGINAL_PATH=""
+ASSERTION_SCRIPT_SNAPSHOT_PATH=""
 write_assertion_input_manifest() {
   [ "$ASSERTION_MODE" -eq 1 ] || return 0
   command -v sha256sum >/dev/null 2>&1 || {
@@ -596,6 +598,89 @@ write_assertion_input_manifest() {
 }
 
 write_assertion_input_manifest || exit $?
+
+cleanup_assertion_script_snapshot() {
+  if [ -n "${ASSERTION_SCRIPT_SNAPSHOT_PATH:-}" ]; then
+    rm -f -- "$ASSERTION_SCRIPT_SNAPSHOT_PATH" 2>/dev/null || true
+    ASSERTION_SCRIPT_SNAPSHOT_PATH=""
+  fi
+}
+
+# EI-21678223719044345: bash and sh read file-backed scripts lazily. An
+# in-place edit after boot can therefore shift the interpreter's byte offset
+# into the still-running assertion source and silently corrupt the verdict.
+# Keep the existing input manifest as a change detector, but execute an
+# immutable copy for in-repo bash/sh assertions so the run never reads the
+# caller's moving checkout.
+snapshot_assertion_script() {
+  [ "$ASSERTION_MODE" -eq 1 ] || return 0
+  [ "${#ASSERTION_ARGS[@]}" -ge 2 ] || return 0
+  command -v sha256sum >/dev/null 2>&1 || {
+    echo "FATAL: sha256sum is required to freeze an in-repo assertion script" >&2
+    return 1
+  }
+
+  local shell_command script_arg resolved repo_dir_real
+  shell_command="${ASSERTION_ARGS[0]}"
+  case "$(basename -- "$shell_command")" in
+    bash|sh) ;;
+    *) return 0 ;;
+  esac
+
+  script_arg="${ASSERTION_ARGS[1]}"
+  case "$script_arg" in
+    ""|-*) return 0 ;;
+  esac
+
+  resolved="$(cd "$ASSERTION_CWD" 2>/dev/null && readlink -f -- "$script_arg" 2>/dev/null)" || return 0
+  [ -f "$resolved" ] || return 0
+  repo_dir_real="$(cd "$REPO_DIR" 2>/dev/null && pwd -P)" || return 1
+  case "$resolved" in
+    "$repo_dir_real"/*) ;;
+    *) return 0 ;;
+  esac
+
+  local tmp snapshot_hash source_hash_before source_hash_after
+  ASSERTION_SCRIPT_ORIGINAL_PATH="$resolved"
+  ASSERTION_SCRIPT_SNAPSHOT_PATH="$WORK/assertion-script.sh"
+  tmp="$WORK/.assertion-script.sh.tmp.$$"
+
+  source_hash_before="$(sha256sum -- "$resolved" | awk '{print $1}')" || {
+    echo "FATAL: could not hash in-repo assertion script $resolved" >&2
+    return 1
+  }
+  cp -- "$resolved" "$tmp" || {
+    rm -f -- "$tmp" 2>/dev/null || true
+    echo "FATAL: could not freeze in-repo assertion script $resolved" >&2
+    return 1
+  }
+  source_hash_after="$(sha256sum -- "$resolved" | awk '{print $1}')" || {
+    rm -f -- "$tmp" 2>/dev/null || true
+    echo "FATAL: could not re-hash in-repo assertion script $resolved" >&2
+    return 1
+  }
+  snapshot_hash="$(sha256sum -- "$tmp" | awk '{print $1}')" || {
+    rm -f -- "$tmp" 2>/dev/null || true
+    echo "FATAL: could not hash frozen assertion script $tmp" >&2
+    return 1
+  }
+  if [ "$source_hash_before" != "$source_hash_after" ] || [ "$source_hash_before" != "$snapshot_hash" ]; then
+    rm -f -- "$tmp" 2>/dev/null || true
+    echo "FATAL: in-repo assertion script changed while its startup snapshot was being captured" >&2
+    echo "       Re-run after $resolved is stable." >&2
+    return 1
+  fi
+  mv -f -- "$tmp" "$ASSERTION_SCRIPT_SNAPSHOT_PATH" || {
+    rm -f -- "$tmp" 2>/dev/null || true
+    echo "FATAL: could not publish frozen assertion script $ASSERTION_SCRIPT_SNAPSHOT_PATH" >&2
+    return 1
+  }
+
+  ASSERTION_ARGS[1]="$ASSERTION_SCRIPT_SNAPSHOT_PATH"
+  log "assertion script snapshot frozen at $ASSERTION_SCRIPT_SNAPSHOT_PATH (source $ASSERTION_SCRIPT_ORIGINAL_PATH) — IMMUTABLE for this run; restart to pick up a newer version."
+}
+
+snapshot_assertion_script || exit $?
 
 # EI-18805100008031244 (correct-state ask #3, "report contention honestly at
 # boot"): when the port picker retries or a bind loses a race, the caller was
@@ -1424,6 +1509,7 @@ teardown() {
   # the husk after its TTL, and is also what catches runs that never reach this trap
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
   rm -rf "$WORK/spa" 2>/dev/null
+  cleanup_assertion_script_snapshot
   cleanup_verifier_source_snapshot
   exit "$ec"
 }
@@ -2601,6 +2687,9 @@ EOF
 fi
 
 [ "${1:-}" = "--" ] && shift
+if [ "$ASSERTION_MODE" -eq 1 ]; then
+  set -- "${ASSERTION_ARGS[@]}"
+fi
 
 # ── EI-19444780917356384: RUN the freshness guard, don't just advertise it ──
 # The frozen SPA snapshot (EI-10364) is immutable by design, so an edit that

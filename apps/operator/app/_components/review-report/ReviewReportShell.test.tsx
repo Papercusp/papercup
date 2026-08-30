@@ -322,6 +322,21 @@ describe("rendering", () => {
     );
   });
 
+  it("isolates the sticky header from scrolling report rows", () => {
+    const headerRule = REPORT_CSS.match(
+      /\.review-report__head\s*\{([\s\S]*?)\}/,
+    )?.[1];
+
+    expect(headerRule).toBeTruthy();
+    expect(headerRule).toMatch(/position: sticky;/);
+    expect(headerRule).toMatch(
+      /background: color-mix\(in oklab, var\(--bg\) 94%, var\(--bg-2\)\);/,
+    );
+    expect(headerRule).not.toMatch(/background:\s*transparent;/);
+    expect(headerRule).toMatch(/border-bottom:/);
+    expect(headerRule).toMatch(/box-shadow:/);
+  });
+
   it("stacks header actions only below their side-by-side fit threshold", () => {
     expect(REPORT_CSS).toMatch(
       /@container \(max-width: 315px\)[\s\S]*?\.review-report__actions\s*\{[^}]*flex-direction: column;[^}]*align-items: stretch;/,
