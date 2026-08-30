@@ -53,6 +53,9 @@ export const SPILL_SECTION = 'Trimmed to fit this client’s budget';
  */
 export const EVIDENCE_SUFFIX = '#evidence';
 
+/** Marker emitted inside evidence rows that preserve pre-compression rule text. */
+export const FULL_PRECOMPRESSION_MARKER = '## Full pre-compression rule text (preserved)';
+
 /**
  * Where the composed corpus is written. This is the DB-free subject the doc-claims
  * guards read, and it exists for exactly one reason: those guards are UNIT tests, and
@@ -158,6 +161,220 @@ export const CLIENTS = [
   { client: 'claude', file: 'CLAUDE.md', reader: 'Claude Code' },
   { client: 'codex', file: 'AGENTS.md', reader: 'Codex / OpenAI agents' },
 ];
+
+/*
+ * `part_key` is generated from `target_section` + the first non-blank line of a
+ * source block, then truncated to 48 characters. It is useful as a cheap identity
+ * witness, but not as a complete re-generation contract: truncation can leave only
+ * generic words (or a language marker such as `bash`). Keep the vocabulary
+ * conservative so a body that merely contains "the" cannot bless an unrelated
+ * replacement.
+ */
+const IDENTITY_STOPWORDS = new Set([
+  'about',
+  'after',
+  'again',
+  'also',
+  'and',
+  'are',
+  'bash',
+  'before',
+  'being',
+  'body',
+  'can',
+  'could',
+  'does',
+  'docume',
+  'doing',
+  'each',
+  'every',
+  'first',
+  'fired',
+  'from',
+  'full',
+  'have',
+  'here',
+  'into',
+  'just',
+  'more',
+  'must',
+  'never',
+  'only',
+  'other',
+  'part',
+  'parts',
+  'read',
+  'rule',
+  'same',
+  'section',
+  'should',
+  'some',
+  'still',
+  'that',
+  'their',
+  'there',
+  'these',
+  'this',
+  'those',
+  'under',
+  'use',
+  'using',
+  'what',
+  'when',
+  'where',
+  'which',
+  'with',
+  'would',
+  'your',
+]);
+
+// Four-character technical tokens are often the only subject text left after key
+// truncation. They identify a command/tool family rather than ordinary English prose.
+const SHORT_IDENTITY_TOKENS = new Set([
+  'dbos',
+  'grep',
+  'hono',
+  'http',
+  'json',
+  'mcp',
+  'node',
+  'npm',
+  'pgrep',
+  'proc',
+  'sse',
+  'sql',
+  'tauri',
+  'tsx',
+  'uuid',
+  'vite',
+  'yaml',
+  'zero',
+]);
+
+/** The same slug normalization used by gen-claude-md-manifest.mjs, kept local to avoid a cycle. */
+function identitySlug(value, max = 48) {
+  return String(value ?? '')
+    .replace(/`|\*\*/g, '')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s-]+/g, '-')
+    .slice(0, max)
+    .replace(/^-+|-+$/g, '');
+}
+
+function identityTokens(value) {
+  return [
+    ...new Set(String(value ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? []),
+  ].filter(
+    (token) =>
+      (token.length >= 5 && !IDENTITY_STOPWORDS.has(token)) ||
+      SHORT_IDENTITY_TOKENS.has(token),
+  );
+}
+
+function hasIdentityToken(body, token) {
+  const lower = String(body ?? '').toLowerCase();
+  // Key tokens can be truncated words (`therefor`) or punctuation-collapsed phrases
+  // (`tabviewmode`, `scriptsmutation`). Check both the literal body and the same
+  // punctuation-stripped form used to create part keys.
+  return lower.includes(token) || identitySlug(lower, Number.MAX_SAFE_INTEGER).includes(token);
+}
+
+/**
+ * Extract the subject fragment that remains in a generated part key after its
+ * target-section prefix. Returns [] when the key does not have the shape this
+ * projector itself generates; custom/manual keys are deliberately not guessed.
+ */
+function partKeyIdentityTokens(part) {
+  if (!part || typeof part.part_key !== 'string' || typeof part.target_section !== 'string') return [];
+  const sectionSlug = identitySlug(part.target_section, 28);
+  if (!sectionSlug) return [];
+  const prefix = `${sectionSlug}-`;
+  if (!part.part_key.startsWith(prefix)) return [];
+  // Duplicate keys receive a numeric suffix during extraction; it is not subject text.
+  const subject = part.part_key.slice(prefix.length).replace(/-\d+$/, '');
+  return identityTokens(subject);
+}
+
+/**
+ * Find canonical projected rows whose identity has become internally inconsistent.
+ *
+ * This is intentionally a conservative guard, not a full natural-language
+ * classifier: generated projecting rows must retain at least one discriminating
+ * token from the subject fragment in their body, while custom keys, corpus-only
+ * prose, tombstones, and `#evidence` rows are not judged by the key/body heuristic.
+ * Evidence rows carrying a pre-compression block must still have a live projecting
+ * sibling with at least one discriminating content token in common. The function
+ * only reports; it never rewrites canonical rows or expands evidence into the
+ * client projection.
+ *
+ * @returns {Array<{part_key: string, code: string, detail: string, tokens?: string[]}>}
+ */
+export function docPartIdentityProblems(parts) {
+  const live = (Array.isArray(parts) ? parts : []).filter(
+    (part) => part && part.tombstone !== true,
+  );
+  const byKey = new Map(
+    live
+      .filter((part) => typeof part.part_key === 'string')
+      .map((part) => [part.part_key, part]),
+  );
+  const problems = [];
+
+  for (const part of live) {
+    if (typeof part.part_key !== 'string' || part.part_key.endsWith(EVIDENCE_SUFFIX)) continue;
+    if (!Array.isArray(part.client_scope) || part.client_scope.length === 0) continue;
+
+    const tokens = partKeyIdentityTokens(part);
+    if (!tokens.length) continue;
+    const body = typeof part.body === 'string' ? part.body : '';
+    if (tokens.some((token) => hasIdentityToken(body, token))) continue;
+
+    problems.push({
+      part_key: part.part_key,
+      code: 'key-body-mismatch',
+      detail:
+        `projecting body contains none of the discriminating tokens from its key ` +
+        `subject (${tokens.map((token) => JSON.stringify(token)).join(', ')})`,
+      tokens,
+    });
+  }
+
+  for (const evidence of live) {
+    if (typeof evidence.part_key !== 'string' || !evidence.part_key.endsWith(EVIDENCE_SUFFIX)) continue;
+    if (typeof evidence.body !== 'string') continue;
+    const markerAt = evidence.body.indexOf(FULL_PRECOMPRESSION_MARKER);
+    if (markerAt === -1) continue;
+
+    const baseKey = evidence.part_key.slice(0, -EVIDENCE_SUFFIX.length);
+    const sibling = byKey.get(baseKey);
+    if (!sibling || !Array.isArray(sibling.client_scope) || sibling.client_scope.length === 0) {
+      problems.push({
+        part_key: evidence.part_key,
+        code: 'orphaned-full-precompression-evidence',
+        detail: `full pre-compression evidence has no live projecting sibling ${JSON.stringify(baseKey)}`,
+      });
+      continue;
+    }
+
+    const tokens = identityTokens(evidence.body.slice(markerAt + FULL_PRECOMPRESSION_MARKER.length));
+    if (!tokens.length) continue;
+    const siblingBody = typeof sibling.body === 'string' ? sibling.body : '';
+    if (tokens.some((token) => hasIdentityToken(siblingBody, token))) continue;
+
+    problems.push({
+      part_key: evidence.part_key,
+      code: 'evidence-not-backed-by-projected-sibling',
+      detail:
+        `full pre-compression evidence shares no discriminating token with its ` +
+        `projecting sibling ${JSON.stringify(baseKey)}`,
+      tokens,
+    });
+  }
+
+  return problems;
+}
 
 /**
  * Parse an explicit, compare-and-swap acknowledgement for a generated client file
@@ -960,6 +1177,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // writing it destroys nothing — and P-004 cannot land without it, since it is
     // the location the doc-claims guards are being re-pointed at.
     const allParts = await readAllParts(client, docId);
+    const identityProblems = docPartIdentityProblems(allParts);
+    const canonicalRowsSafe = identityProblems.length === 0;
+    if (identityProblems.length) {
+      failed = true;
+      console.error(
+        `\n  ✗ DOC-PART IDENTITY REFUSAL: ${identityProblems.length} canonical row(s) ` +
+          `do not agree with their generated key/body identity.`,
+      );
+      for (const problem of identityProblems) {
+        console.error(`    ${problem.part_key} [${problem.code}] ${problem.detail}`);
+      }
+    }
     const corpus = composeCorpus(allParts, { sourceSha: doc.generated_from_sha ?? doc.content_hash ?? null });
     const corpusPath = resolve(ROOT, CORPUS_FILE);
     const corpusOnDisk = existsSync(corpusPath) ? readFileSync(corpusPath, 'utf8') : null;
@@ -986,9 +1215,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         `Re-run with --write-corpus after reviewing the canonical rows.`,
       );
     }
-    if (write || writeCorpus) {
+    if ((write || writeCorpus) && canonicalRowsSafe) {
       writeFileSync(corpusPath, corpus.text, 'utf8');
       console.log(`    ✓ wrote ${CORPUS_FILE}`);
+    } else if (write || writeCorpus) {
+      console.error(`    ✗ NOT writing ${CORPUS_FILE}: canonical doc-part identity check failed.`);
     }
 
     console.log(`  budget         ${fmt(budget)} chars  (context ${fmt(contextTokens)} × ${MEMORY_WARN_CONTEXT_FRACTION} × ${charsPerToken} chars/token, floor ${fmt(MEMORY_WARN_FLOOR_CHARS)})`);
@@ -1113,6 +1344,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         console.error(`    ✗ NOT writing ${spec.file}: the invariant-cut safety check above failed.`);
       } else if (docClaimCuts.length) {
         console.error(`    ✗ NOT writing ${spec.file}: the doc-claim pin safety check above failed.`);
+      } else if (write && !canonicalRowsSafe) {
+        console.error(`    ✗ NOT writing ${spec.file}: canonical doc-part identity check failed.`);
       } else if (write) {
         // The symlink is retired here, not by hand, so each client genuinely owns its
         // file. Unlinking first matters: writeFileSync THROUGH a symlink would write
@@ -1132,7 +1365,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
     }
 
-    if (write) {
+    if (write && canonicalRowsSafe) {
       // Per client, and merged — so a client that was refused keeps its old record
       // rather than having it dropped by its sibling's successful run. Gating this on a
       // GLOBAL failure flag is what made the original drift COMPOUND: one refusal threw
@@ -1147,6 +1380,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         await writeCache(client, docId, primaryText, sourceShaSeed(doc));
         console.log(`  ✓ cached the ${CLIENTS[0].file} composition on harness_docs.content`);
       }
+    } else if (write) {
+      console.error(`\n  ✗ NOT recording projection metadata/cache: canonical doc-part identity check failed.`);
     }
 
     if (!write) {
