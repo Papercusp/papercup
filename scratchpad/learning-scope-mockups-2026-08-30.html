@@ -295,6 +295,55 @@ table.map .tool { font-family: var(--mono); font-size: 12px; color: var(--ink-2)
 .tag { display: inline-block; font-family: var(--mono); font-size: 10.5px; color: var(--con-fg-2); border: 1px solid var(--con-rule); border-radius: 3px; padding: 1px 6px; margin: 0 4px 4px 0; background: var(--con-sunk); }
 .tag.on { color: var(--con-armed); border-color: color-mix(in oklab, var(--con-armed) 40%, transparent); }
 
+/* master switch — the pot-level on/off */
+.master {
+  display: flex; align-items: center; gap: 11px; padding: 11px 13px;
+  background: color-mix(in oklab, var(--con-armed) 9%, transparent);
+  border-bottom: 1px solid var(--con-rule);
+}
+.master .lbl2 { font-family: var(--cond); font-size: 13px; color: var(--con-fg); font-weight: 600; flex: 1; }
+.tgl { width: 30px; height: 17px; border-radius: 999px; background: #2c3340; border: 1px solid var(--con-rule); position: relative; flex: none; }
+.tgl::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--con-fg-3); }
+.tgl.on { background: color-mix(in oklab, var(--con-armed) 34%, transparent); border-color: color-mix(in oklab, var(--con-armed) 55%, transparent); }
+.tgl.on::after { left: auto; right: 2px; background: var(--con-armed); }
+
+/* multi-select sheet */
+.sheet { background: var(--con-bg); }
+.sheet .sh-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--con-rule); }
+.sheet .sh-head .t { font-family: var(--cond); font-size: 15px; font-weight: 600; color: var(--con-fg); }
+.sheet .search {
+  flex: 1; max-width: 260px; font-family: var(--mono); font-size: 11.5px; color: var(--con-fg-3);
+  background: var(--con-sunk); border: 1px solid var(--con-rule); border-radius: 3px; padding: 4px 9px;
+}
+.sheet .cnt { font-family: var(--mono); font-size: 11.5px; color: var(--con-fg-2); font-variant-numeric: tabular-nums; }
+.sheet .link { font-family: var(--cond); font-size: 11.5px; color: var(--con-accent); }
+.srow { display: flex; align-items: center; gap: 11px; padding: 7px 16px; border-bottom: 1px solid var(--con-rule-2); }
+.srow .nm { font-family: var(--mono); font-size: 12px; color: var(--con-fg); min-width: 200px; }
+.srow.off .nm { color: var(--con-fg-2); }
+.srow .note { font-family: var(--cond); font-size: 11.5px; color: var(--con-fg-3); flex: 1; }
+.srow .note.warn { color: var(--con-signal); }
+.srow .sp2 { font-family: var(--mono); font-size: 11px; color: var(--con-fg-3); font-variant-numeric: tabular-nums; }
+.cb { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid var(--con-fg-3); flex: none; position: relative; }
+.cb.on { background: var(--con-armed); border-color: var(--con-armed); }
+.cb.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 7px; border: solid var(--con-bg); border-width: 0 2px 2px 0; transform: rotate(42deg); }
+.cb.sel { background: var(--con-accent); border-color: var(--con-accent); }
+.cb.sel::after { content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 7px; border: solid var(--con-bg); border-width: 0 2px 2px 0; transform: rotate(42deg); }
+.divrow { padding: 6px 16px; background: var(--con-sunk); border-bottom: 1px solid var(--con-rule-2); font-family: var(--cond); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--con-fg-3); }
+.sh-foot { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-top: 1px solid var(--con-rule); background: var(--con-panel); }
+.sh-foot .who { font-family: var(--mono); font-size: 11.5px; color: var(--con-fg-2); flex: 1; }
+.btn { font-family: var(--cond); font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 3px; border: 1px solid var(--con-rule); color: var(--con-fg-2); background: var(--con-sunk); }
+.btn.pri { color: var(--con-bg); background: var(--con-armed); border-color: var(--con-armed); }
+
+/* the cut note */
+.cut {
+  margin-top: 60px; padding: 24px 28px; border: 1px dashed var(--rule); border-radius: 4px;
+  background: transparent;
+}
+.cut h3 { color: var(--ink-2); margin-bottom: 10px; }
+.cut h3 s { color: var(--ink-3); text-decoration-thickness: 1px; }
+.cut p { color: var(--ink-2); font-size: 14.5px; margin-bottom: 0; max-width: 70ch; }
+.cut p + p { margin-top: .8em; }
+
 /* option header + scoring */
 .opt { margin-top: 60px; }
 .opt .ohead { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
@@ -330,7 +379,7 @@ footer { margin-top: 80px; padding-top: 22px; border-top: 1px solid var(--rule);
   <header class="masthead">
     <div class="kicker">Papercusp · operator · Learning tab · 2026-08-30</div>
     <h1>Which pots are we<br>learning on?</h1>
-    <p class="deck">There is no answer to that question anywhere in the product today — not because the setting is missing, but because it is <b>split across four surfaces and organised by mechanism instead of by pot</b>. Here is what actually exists, and three mockups for the one screen that would answer it.</p>
+    <p class="deck">There is no answer to that question anywhere in the product today — not because the setting is missing, but because it is <b>split across four surfaces and organised by mechanism instead of by pot</b>. Here is what actually exists, and the two controls that would fix it: <b>a scope rail</b> for picking the pots, and <b>a pot drawer</b> for tuning one.</p>
     <div class="meta">
       <span><b>Asked by</b> Avi</span>
       <span><b>Workspace</b> papercusp-workspace</span>
@@ -442,10 +491,22 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
   </section>
 
   <section>
-    <div class="eyebrow">The idea behind all three mockups</div>
+    <div class="eyebrow">The idea behind both mockups</div>
     <h2>Don't add a setting — transpose the one you have</h2>
-    <p class="prose">Nothing below needs a new table, a new column or a new write path. Every value is already in <code>automation.catalog</code>, and every write already has an audited tool — <code>gym:arm</code>, <code>governor:arm</code>, <code>routines:set</code>. The whole proposal is a <strong>pivot</strong>: the same rows, keyed by pot instead of by mechanism, surfaced where you already go to look at learning.</p>
-    <p class="prose">All three use one atom, so they compose rather than compete — a lane switch that carries its own state, budget and enforcement in a single glanceable chip: <span class="segs" aria-hidden="true"><i class="on"></i><i></i><i class="on"></i></span></p>
+    <p class="prose">Almost nothing below needs a new write path. Every value already sits in <code>automation.catalog</code>, and every lane already has an audited tool — <code>gym:arm</code>, <code>governor:arm</code>, <code>routines:set</code>. Most of the proposal is a <strong>pivot</strong>: the same rows, keyed by pot instead of by mechanism, surfaced where you already go to look at learning.</p>
+    <p class="prose">Both use one atom, so they compose rather than compete — a lane switch carrying its own state, budget and enforcement in a single glanceable chip: <span class="segs" aria-hidden="true"><i class="on"></i><i></i><i class="on"></i></span></p>
+  </section>
+
+  <section>
+    <div class="eyebrow">The one thing that genuinely doesn't exist yet</div>
+    <h2>A pot-level on/off — and it has to be a real gate, not a bulk write</h2>
+    <p class="prose">You're right that neither mockup had this. Both showed <em>lane</em> switches; neither had <strong>"this pot is learning / this pot is not"</strong> as a control of its own — which is the actual question you started with. It is also the only piece here that has no existing switch to pivot, because today "is this pot learning" is merely <em>derived</em> from whether any lane happens to be armed.</p>
+    <p class="prose">That derivation is why a master toggle can't just be a bulk write. If turning a pot off means writing <code>enabled:false</code> across its lanes, turning it back on has no idea which ones were on — and it would silently revive a lane you had deliberately parked. There are two honest ways to build it:</p>
+    <ul class="tight prose">
+      <li><strong>A real gate.</strong> One stored per-pot flag every lane's preflight checks, on top of its own arming. Off means off no matter what an agent writes underneath; each lane keeps its own config untouched, so on/off is perfectly lossless. Costs a migration and a line in each preflight.</li>
+      <li><strong>A remembered bulk write.</strong> No new gate: turning a pot off writes its lanes off and <em>stamps</em> each row with who held it, so resume restores exactly what the pause held and never revives a deliberate pre-existing hold. This is not a new idea — it is precisely what <code>routines:group-set</code> already does for the <code>self-improvement</code> group, so the semantics are proven here. Cheaper, but an agent calling <code>gym:arm</code> can still re-arm a pot you switched off.</li>
+    </ul>
+    <p class="prose">The mockups below draw the gate version, because the whole point of this control is spend safety and the second option leaves a hole an autonomous agent can walk through. It is a real fork though, and it's yours — I've asked it below.</p>
   </section>
 
   <!-- ─────────────────────────── MOCKUP A ─────────────────────────── -->
@@ -454,7 +515,7 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
       <span class="letter">Mockup A</span>
       <h3>Scope rail</h3>
     </div>
-    <p class="sub">A strip of pot chips under the stage stepper, always visible on the Learning tab. Each chip shows the pot, its three-lane arming state and its 7-day spend; clicking one opens a popover with the per-lane switches. Answers "which pots" in a glance without leaving the tab.</p>
+    <p class="sub">A strip of pot chips under the stage stepper, always visible on the Learning tab. Each chip is a pot that is currently learning; clicking one opens its popover — master switch first, lanes underneath. <strong>Edit scope</strong> opens the picker where you select and deselect pots in bulk.</p>
 
     <div class="mock">
       <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span>Papercusp — /adv?tab=learning&amp;lview=improvements</span></div>
@@ -484,11 +545,12 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
           <span class="chip armed"><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="nm">portal</span><span class="sp">$0.00</span><span class="car">⌄</span></span>
           <span class="chip armed"><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="nm">stonebrook-android</span><span class="sp">$0.00</span><span class="car">⌄</span></span>
           <span class="chip armed"><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="nm">thornbury-iphone</span><span class="sp">$0.00</span><span class="car">⌄</span></span>
-          <span class="more">+ 21 idle ⌄</span>
+          <span class="more">Edit scope ⌄</span>
         </div>
 
         <div class="pop">
           <div class="ph"><span>papercusp</span><span style="color:var(--con-fg-3)">spent to date · $50.50</span></div>
+          <div class="master"><span class="lbl2">Learning on this pot</span><span class="tgl on" aria-hidden="true"></span></div>
           <div class="prow"><span class="sw na" aria-hidden="true"><span class="sh"></span>—</span><span class="nm">Scout — ideation</span><span class="bg">no schedule</span></div>
           <div class="prow"><span class="sw drift" aria-hidden="true"><span class="sh"></span>drift</span><span class="nm">Gym — experiments</span><span class="bg">no cap set</span></div>
           <div class="prow"><span class="sw on" aria-hidden="true"><span class="sh"></span>on</span><span class="nm">Frontier — 10 lanes</span><span class="bg">$46.85 / $250</span></div>
@@ -500,132 +562,60 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
     </div>
     <p class="caption">Rail chips read left-to-right as scout · gym · lanes. Amber = the two gating layers disagree.</p>
 
+    <h4 style="margin-top:38px">A·2 — the scope picker</h4>
+    <p class="sub" style="margin-top:8px">The select/deselect surface, opened from <strong>Edit scope</strong>. Every pot in the workspace, armed ones first, with a checkbox that is the master switch. Tick several and the footer arms or disarms them in one write — which is the bulk operation the matrix was carrying, at a fraction of its cost.</p>
+
+    <div class="mock">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span>Papercusp — Edit learning scope</span></div>
+      <div class="body"><div class="scroller"><div class="sheet">
+
+        <div class="sh-head">
+          <span class="t">Learning scope</span>
+          <span class="search">⌕ filter pots…</span>
+          <span class="cnt">6 of 27 learning</span>
+          <span class="link">Select none</span>
+        </div>
+
+        <div class="divrow">Learning now — 6</div>
+        <div class="srow"><span class="cb on" aria-hidden="true"></span><span class="nm">papercusp</span><span class="segs" aria-hidden="true"><i></i><i class="drift"></i><i class="on"></i></span><span class="note warn">gym armed with no cap — will refuse every tick</span><span class="sp2">$50.50</span></div>
+        <div class="srow"><span class="cb on" aria-hidden="true"></span><span class="nm">calendar</span><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="note">dream · $1 per cycle</span><span class="sp2">$0.00</span></div>
+        <div class="srow"><span class="cb on" aria-hidden="true"></span><span class="nm">email</span><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="note">dream · $1 per cycle</span><span class="sp2">$0.00</span></div>
+        <div class="srow"><span class="cb on" aria-hidden="true"></span><span class="nm">portal</span><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="note">dream · $1 per cycle</span><span class="sp2">$0.00</span></div>
+        <div class="srow"><span class="cb on" aria-hidden="true"></span><span class="nm">stonebrook-android-20260821</span><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="note">dream · $1 per cycle</span><span class="sp2">$0.00</span></div>
+        <div class="srow"><span class="cb on" aria-hidden="true"></span><span class="nm">thornbury-iphone-20260821</span><span class="segs" aria-hidden="true"><i></i><i></i><i class="on"></i></span><span class="note">dream · $1 per cycle</span><span class="sp2">$0.00</span></div>
+
+        <div class="divrow">Not learning — 21</div>
+        <div class="srow off"><span class="cb sel" aria-hidden="true"></span><span class="nm">oddsmith-hive</span><span class="segs" aria-hidden="true"><i></i><i></i><i></i></span><span class="note">no lane armed · will start with Scout at $0.25/cycle</span><span class="sp2">—</span></div>
+        <div class="srow off"><span class="cb sel" aria-hidden="true"></span><span class="nm">papercusp-public-site-pot</span><span class="segs" aria-hidden="true"><i></i><i></i><i></i></span><span class="note">scout schedule exists, paused</span><span class="sp2">—</span></div>
+        <div class="srow off"><span class="cb" aria-hidden="true"></span><span class="nm">hello-world-3-pot</span><span class="segs" aria-hidden="true"><i></i><i></i><i></i></span><span class="note">scout schedule exists, paused</span><span class="sp2">—</span></div>
+        <div class="srow off"><span class="cb" aria-hidden="true"></span><span class="nm">quartermaster-hive</span><span class="segs" aria-hidden="true"><i></i><i></i><i></i></span><span class="note">no lane armed</span><span class="sp2">—</span></div>
+        <div class="srow off"><span class="cb" aria-hidden="true"></span><span class="nm">readinglist</span><span class="segs" aria-hidden="true"><i></i><i></i><i></i></span><span class="note">no lane armed</span><span class="sp2">—</span></div>
+        <div class="srow off"><span class="cb" aria-hidden="true"></span><span class="nm">sidestage</span><span class="segs" aria-hidden="true"><i></i><i></i><i></i></span><span class="note">no lane armed</span><span class="sp2">—</span></div>
+
+        <div class="divrow" style="color:var(--con-signal)">▸ 28 arming rows whose pot is not in the registry — clean up</div>
+
+        <div class="sh-foot">
+          <span class="who">2 selected · oddsmith-hive, papercusp-public-site-pot</span>
+          <span class="btn">Disarm</span>
+          <span class="btn pri">Start learning</span>
+        </div>
+
+      </div></div></div>
+    </div>
+    <p class="caption">Ticking a pot that has never learned needs a starting lane — the row says which one it will arm, so nothing starts spending on a default you didn't read.</p>
+
     <dl class="scorebar">
-      <div><dt>Build cost</dt><dd>Smallest. One rail component + one popover, both over <code>automation.catalog</code>.</dd></div>
-      <div><dt>Wins at</dt><dd>Ambient awareness — you cannot open Learning without seeing the scope.</dd></div>
-      <div><dt>Breaks at</dt><dd>27 pots. The rail either wraps three lines deep or hides most of them behind "+21 idle".</dd></div>
+      <div><dt>Build cost</dt><dd>Small. Rail + popover + picker over <code>automation.catalog</code>, plus the pot gate itself.</dd></div>
+      <div><dt>Wins at</dt><dd>Both halves of the question — which pots, and changing which pots, without leaving the tab.</dd></div>
+      <div><dt>Watch for</dt><dd>The rail must stay short. It shows only what is learning; everything else lives behind the picker.</dd></div>
     </dl>
   </div>
 
-  <!-- ─────────────────────────── MOCKUP B ─────────────────────────── -->
-  <div class="opt">
-    <div class="ohead">
-      <span class="letter">Mockup B</span>
-      <h3>Scope matrix</h3>
-    </div>
-    <p class="sub">A dedicated pots × lanes grid — the direct, complete answer to the question. Rows are pots, columns are lanes, cells are the switch. Column headers arm a lane across every pot; row headers arm a pot across every lane. Sorted armed-first, dead installs folded away behind one line.</p>
-
-    <div class="mock">
-      <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span>Papercusp — /adv?tab=learning&amp;lview=scope</span></div>
-      <div class="body"><div class="scroller">
-
-        <div class="stagerow" style="padding-bottom:12px">
-          <span class="st sel"><span class="g"></span>Scope</span><span class="ln"></span>
-          <span class="st"><span class="g"></span>Observe</span><span class="ln"></span>
-          <span class="st"><span class="g"></span>Analyze</span><span class="ln"></span>
-          <span class="st"><span class="g"></span>Improve</span><span class="ln"></span>
-          <span class="st"><span class="g"></span>Retain</span><span class="ln"></span>
-          <span class="st"><span class="g"></span>Verify</span>
-          <span class="spacer"></span>
-          <span class="loopchip paused"><span class="dot"></span>6 of 27 pots armed · group paused</span>
-        </div>
-
-        <table class="ctab">
-          <thead>
-            <tr>
-              <th style="min-width:210px">Pot &nbsp;<span style="color:var(--con-fg-3);font-weight:400;text-transform:none;letter-spacing:0">— 27 registered, 6 armed</span></th>
-              <th>Scout</th><th>Gym</th><th>Frontier</th><th>Dream</th>
-              <th style="text-align:right">Spent</th>
-              <th style="text-align:right">Whole pot</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr class="foldrow"><td colspan="7" style="color:var(--con-signal)">⏸ The <b>self-improvement</b> group is paused — 33 routines held. Nothing below is ticking until it resumes. <span style="color:var(--con-fg-3)">Resume ▸</span></td></tr>
-            <tr>
-              <td class="slug">papercusp <span style="color:var(--con-fg-3)">· platform</span></td>
-              <td><span class="sw na"><span class="sh"></span>no sched</span></td>
-              <td><span class="sw drift"><span class="sh"></span>no cap</span></td>
-              <td><span class="sw on"><span class="sh"></span>10 lanes</span></td>
-              <td><span class="sw na"><span class="sh"></span>—</span></td>
-              <td class="num">$50.50</td>
-              <td class="num"><span class="sw on"><span class="sh"></span>on</span></td>
-            </tr>
-            <tr>
-              <td class="slug">calendar</td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw on"><span class="sh"></span>$1/cy</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw on"><span class="sh"></span>on</span></td>
-            </tr>
-            <tr>
-              <td class="slug">email</td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw on"><span class="sh"></span>$1/cy</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw on"><span class="sh"></span>on</span></td>
-            </tr>
-            <tr>
-              <td class="slug">portal</td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw on"><span class="sh"></span>$1/cy</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw on"><span class="sh"></span>on</span></td>
-            </tr>
-            <tr>
-              <td class="slug">stonebrook-android-20260821</td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw on"><span class="sh"></span>$1/cy</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw on"><span class="sh"></span>on</span></td>
-            </tr>
-            <tr>
-              <td class="slug">thornbury-iphone-20260821</td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw on"><span class="sh"></span>$1/cy</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw on"><span class="sh"></span>on</span></td>
-            </tr>
-            <tr class="dim">
-              <td class="slug">papercusp-public-site-pot</td>
-              <td><span class="sw"><span class="sh"></span>sched off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw na"><span class="sh"></span>—</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw"><span class="sh"></span>off</span></td>
-            </tr>
-            <tr class="dim">
-              <td class="slug">hello-world-3-pot</td>
-              <td><span class="sw"><span class="sh"></span>sched off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw"><span class="sh"></span>off</span></td>
-              <td><span class="sw na"><span class="sh"></span>—</span></td>
-              <td class="num">$0.00</td>
-              <td class="num"><span class="sw"><span class="sh"></span>off</span></td>
-            </tr>
-            <tr class="foldrow"><td colspan="7">▸ 19 idle pots &nbsp;·&nbsp; ▸ 28 arming rows whose pot is not in the registry <span style="color:var(--con-signal)">— clean up</span></td></tr>
-          </tbody>
-        </table>
-
-      </div></div>
-    </div>
-    <p class="caption">The orphan-row fold is the garbage-collection surface finding #1 has been missing.</p>
-
-    <dl class="scorebar">
-      <div><dt>Build cost</dt><dd>Medium. One new <code>lview=scope</code> pane; reuses VirtualGrid + the existing column-filter bar.</dd></div>
-      <div><dt>Wins at</dt><dd>Being the answer. One screen, every pot, every lane, drift visible, orphans visible.</dd></div>
-      <div><dt>Breaks at</dt><dd>Nothing yet — but it is a screen you must navigate to, so it needs A's chip to advertise it.</dd></div>
-    </dl>
+  <!-- ─────────────────── CUT: the scope matrix (was Mockup B) ─────────────────── -->
+  <div class="cut">
+    <h3><s>Mockup B — Scope matrix</s> &nbsp;·&nbsp; cut</h3>
+    <p>The proposed third screen was a full pots × lanes grid on its own <code>lview=scope</code> pane. Owner call, 2026-08-30: it doesn't earn its place next to A and C — and that's right. Its only capability neither of the others had was <strong>bulk operations across pots</strong>, and A's scope picker now does that with checkboxes at a fraction of the cost.</p>
+    <p>Everything else it offered was a second, heavier rendering of data A already carries: the per-pot lane state is in the rail chips, the per-pot detail is in the drawer, and the orphan-row cleanup is one fold in the picker — better still, a teardown at pot-dissolve means those rows never accumulate to be cleaned up.</p>
   </div>
 
   <!-- ─────────────────────────── MOCKUP C ─────────────────────────── -->
@@ -634,7 +624,7 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
       <span class="letter">Mockup C</span>
       <h3>Pot learning drawer</h3>
     </div>
-    <p class="sub">One pot's complete learning configuration in a drawer, opened from the pot selector you already use. This is the surface that retires the JSON textareas in Settings → Pot customization: same values, real fields, with the units and enforcement mode spelled out so a per-cycle cap can never again read as a lifetime overrun.</p>
+    <p class="sub">One pot's complete learning configuration in a drawer, opened from a rail chip or the pot selector. The master switch sits at the top — the same gate the picker's checkbox writes — and everything below it is that pot's detail. This is also the surface that retires the JSON textareas in Settings → Pot customization: same values, real fields, with units and enforcement spelled out so a per-cycle cap can never again read as a lifetime overrun.</p>
 
     <div class="mock">
       <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span>Papercusp — /adv?tab=learning&amp;potCfg=papercusp</span></div>
@@ -652,6 +642,11 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
           <div class="dh">
             <div class="t">papercusp</div>
             <div class="s">learning configuration · platform pot</div>
+          </div>
+
+          <div class="master">
+            <span class="lbl2">Learning on this pot<br><span style="font-family:var(--mono);font-size:10.5px;font-weight:400;color:var(--con-fg-3)">off holds every lane below and remembers them</span></span>
+            <span class="tgl on" aria-hidden="true"></span>
           </div>
 
           <div class="dsec">
@@ -697,22 +692,21 @@ Arming lives in → <b>AutomationPane</b> (left sidebar)</div>
     <dl class="scorebar">
       <div><dt>Build cost</dt><dd>Largest — real fields for values that are free-text JSON today, plus a migration path off the textareas.</dd></div>
       <div><dt>Wins at</dt><dd>Tuning one pot properly, and killing the JSON-textarea settings page.</dd></div>
-      <div><dt>Breaks at</dt><dd>Surveying. One pot at a time cannot answer "which pots", which is the question asked.</dd></div>
+      <div><dt>Pairs with</dt><dd>A. The rail says which pots; the drawer says what each one is doing.</dd></div>
     </dl>
   </div>
 
   <section>
-    <div class="eyebrow">Recommendation</div>
-    <h2>B first, then A, then C</h2>
+    <div class="eyebrow">The plan</div>
+    <h2>A, then C</h2>
     <div class="rec">
       <ol>
-        <li><strong>Build B, the scope matrix</strong>, as a new <code>lview=scope</code> pane on the Learning tab. It is the literal answer to the question, it exposes the drift and the orphan rows nothing currently shows, and it needs no schema change — <code>automation.catalog</code> already returns every value it renders.</li>
-        <li><strong>Add A's chip</strong> to the Learning header next to the loop control — <span class="mono">"6 of 27 pots armed"</span> plus the spend the chip already tracks — as the always-visible summary that opens B. Retarget the three <em>Open Arming</em> buttons at it, which also fixes the button that currently lands on the wrong screen.</li>
-        <li><strong>Then C</strong>, once B tells us which knobs anyone actually turns. Doing it first would mean hand-building fields for JSON we may find nobody edits.</li>
+        <li><strong>The pot gate first</strong> — one stored per-pot learning flag, checked by every lane's preflight. It is the smallest piece and everything else reads or writes it, so it lands before either screen.</li>
+        <li><strong>Then A</strong>: the rail, the popover, and the scope picker. This is the whole of "which pots are we learning on, and change it" — and it retargets the three <em>Open Arming</em> buttons, fixing the one that currently lands on the wrong screen.</li>
+        <li><strong>Then C</strong>, the per-pot drawer, once A tells us which knobs anyone actually turns. Building it first would mean hand-authoring fields for JSON we may find nobody edits.</li>
       </ol>
     </div>
-    <p class="prose" style="margin-top:26px">Two fixes fall out of B for nearly nothing and are worth doing regardless of which mockup you pick: teach the money label to read <code>budget_kind</code> so a per-cycle cap stops rendering as an overrun, and give <code>gym_autoloop_config</code> the teardown at pot-dissolve that would have kept 24 dead benchmark harnesses off the list.</p>
-    <p class="prose"><strong>Tell me which one to build</strong> and I'll take it from there — or say the word and I'll do the two cheap fixes now while you decide.</p>
+    <p class="prose" style="margin-top:26px">Two fixes are worth doing regardless and cost almost nothing: teach the money label to read <code>budget_kind</code> so a per-cycle cap stops rendering as an overrun, and give <code>gym_autoloop_config</code> the teardown at pot-dissolve that would have kept 28 dead rows off the list.</p>
   </section>
 
   <footer>
