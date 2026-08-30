@@ -2,9 +2,14 @@
  * LearningPotRail — the Learning tab's rail of pot chips
  * (plan learning-pot-scope-gate-2026-08-30, P-006).
  *
- * One chip per pot that DOES learning, sitting under the stage stepper:
+ * One chip per pot that is ACTUALLY learning, sitting under the stage stepper:
  *
- *   [ papercusp   ◍ scout  ◍ gym  ◍ lanes 3/4   $12.40+ ]  [ acme  ◌ … ]
+ *   [ papercusp  ◍ scout ◍ gym ◍ lanes 3/4  $12.40+ ]  [ acme … ]  [ +47 idle ]
+ *
+ * "Only pots that are learning" is decided in the model, not here, and it is
+ * narrower than mere presence — see `isPotChipDormant`. The live workspace has
+ * 54 pots with a learning setup and 7 with anything armed, so the tail is
+ * summarised in one chip rather than rendered as 47 more.
  *
  * WHY A SEPARATE FILE. Its sibling on the same stage row, LearningLoopControl,
  * scopes its own `pc-lloop__*` CSS the same way. Keeping the rail's markup and
@@ -30,6 +35,7 @@ import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
 import {
   buildLearningPotRail,
+  partitionLearningPotRail,
   type LearningPotChip,
   type PotRailSegment,
   type PotSegmentState,
@@ -131,21 +137,42 @@ export default function LearningPotRail() {
     staleTime: 15_000,
   });
   const arming = catalogQuery.data?.[0]?.arming ?? null;
-  const chips = useMemo(() => buildLearningPotRail(arming), [arming]);
+  const { active, dormant } = useMemo(
+    () => partitionLearningPotRail(buildLearningPotRail(arming)),
+    [arming],
+  );
 
-  // No chips is the honest empty: either nothing has learned yet or the catalog
-  // has not arrived. A placeholder row would push the whole stepper down for a
-  // rail with nothing in it, so the rail simply is not there.
-  if (chips.length === 0) return null;
+  // Nothing to say is the honest empty: no pot is learning, or the catalog has
+  // not arrived. A placeholder row would push the whole stepper down for a rail
+  // with nothing in it, so the rail simply is not there.
+  if (active.length === 0 && dormant.length === 0) return null;
+
+  const potWord = t("pot", { plural: dormant.length !== 1, lower: true });
 
   return (
     <ul
       className="pc-potrail"
       aria-label={`${t("pot", { plural: true })} that are learning`}
     >
-      {chips.map((chip) => (
+      {active.map((chip) => (
         <LearningPotRailChip key={chip.potSlug} chip={chip} />
       ))}
+
+      {/* The dormant tail is ACCOUNTED FOR, not dropped — measured live, 47 of
+          54 pots have a learning setup with nothing armed, and rendering them
+          as chips buries the 7 that are actually running. P-008's picker is the
+          every-pot surface this count hands off to. */}
+      {dormant.length > 0 ? (
+        <li className="pc-potrail__chip pc-potrail__chip--dormant">
+          <Tooltip
+            label={`${dormant.length} ${potWord} have a learning setup — a gym autoloop or governor lanes — with nothing armed right now. They are not switched off; nothing is running for them.`}
+          >
+            <span className="pc-potrail__dormant">
+              {`+${dormant.length} idle`}
+            </span>
+          </Tooltip>
+        </li>
+      ) : null}
 
       <style>{`
         .pc-potrail {
@@ -188,6 +215,8 @@ export default function LearningPotRail() {
         .pc-potrail__seg[data-state="absent"] { color: var(--fg-mute); }
         .pc-potrail__segnum { color: var(--fg-mute); }
         .pc-potrail__spend { color: var(--fg); font-weight: 500; }
+        .pc-potrail__chip--dormant { border-style: dashed; color: var(--fg-mute); }
+        .pc-potrail__dormant { color: var(--fg-mute); }
         .pc-potrail__sr {
           position: absolute; width: 1px; height: 1px; margin: -1px;
           padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;

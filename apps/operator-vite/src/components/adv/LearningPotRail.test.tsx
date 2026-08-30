@@ -200,6 +200,36 @@ describe('LearningPotRail', () => {
     ).toBe('$3.75+');
   });
 
+  it('summarises the dormant tail instead of rendering it as chips', () => {
+    // The shape measured live: a handful armed, a long tail of configured-but-idle.
+    const { container } = renderRail(
+      arming({
+        gymPots: [
+          gym('armed', { spentUsd: 4 }),
+          ...['i1', 'i2', 'i3'].map((s) => gym(s, { enabled: false, spentUsd: 0 })),
+        ],
+        potScope: scope([]),
+      }),
+    );
+    const rendered = chips(container).filter((c) => !c.className.includes('--dormant'));
+    expect(rendered).toHaveLength(1);
+    expect(container.querySelector('.pc-potrail__dormant')?.textContent).toBe('+3 idle');
+  });
+
+  it('renders no dormant summary when every pot is actually learning', () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('armed')], potScope: scope([]) }),
+    );
+    expect(container.querySelector('.pc-potrail__dormant')).toBeNull();
+  });
+
+  it('still renders a rail when EVERY pot is dormant — the count, not nothing', () => {
+    const { container } = renderRail(
+      arming({ gymPots: [gym('i1', { enabled: false })], potScope: scope([]) }),
+    );
+    expect(container.querySelector('.pc-potrail__dormant')?.textContent).toBe('+1 idle');
+  });
+
   it('orders switched-off pots last so the live ones read first', () => {
     const { container } = renderRail(
       arming({
