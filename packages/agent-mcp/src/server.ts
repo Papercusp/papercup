@@ -155,7 +155,7 @@ function valueAtPath(input: unknown, segs: PropertyKey[]): unknown {
  * Generic over any field/tool; non-too_big issues keep their original
  * `path: message`.
  */
-function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknown): string {
+export function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknown): string {
   const render = (issue: ValidationIssue, prefix: PropertyKey[], depth: number): string[] => {
     const segs = [
       ...prefix,
