@@ -13,6 +13,7 @@
  */
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -23,6 +24,7 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import type { ReportBlock } from "@papercusp/chat-protocol";
 import type { AuthorIdentity } from "../../_components/AuthorBadge";
+import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 
 export type { AuthorIdentity };
 
@@ -394,6 +396,108 @@ export interface AttentionGroup {
   maxImportance: Importance;
 }
 
+/** The default bounded page used by interactive attention-list consumers. */
+export const DEFAULT_ATTENTION_PAGE_SIZE = 100;
+/** Keep an accidental UI request below the wire budget even when a caller
+ * supplies its own page size. The server applies the same ceiling. */
+export const MAX_ATTENTION_PAGE_SIZE = 500;
+
+/** Metadata attached to the first group of a bounded \`plans.attention\` page. */
+export interface AttentionPageMeta {
+  total: number;
+  totalCount: number;
+  offset: number;
+  limit: number | null;
+  returned: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+type AttentionGroupWithMeta = AttentionGroup & {
+  _meta?: Record<string, unknown>;
+};
+
+/**
+ * Read the server's page contract from a flat sync group array.
+ *
+ * Sync deltas may move the carrier row, so this deliberately delegates to
+ * \`readListMeta\` instead of assuming \`groups[0]\` owns \`_meta\`. Malformed or
+ * legacy rows return null and are treated as an already-complete feed.
+ */
+export function readAttentionPageMeta(
+  groups: readonly AttentionGroup[] | null | undefined,
+): AttentionPageMeta | null {
+  const raw = readListMeta(groups as readonly AttentionGroupWithMeta[] | null | undefined);
+  if (!raw) return null;
+  const totalValue = raw.total ?? raw.totalCount;
+  const total =
+    typeof totalValue === "number" && Number.isFinite(totalValue)
+      ? Math.max(0, Math.floor(totalValue))
+      : null;
+  const offset =
+    typeof raw.offset === "number" && Number.isFinite(raw.offset)
+      ? Math.max(0, Math.floor(raw.offset))
+      : null;
+  const returned =
+    typeof raw.returned === "number" && Number.isFinite(raw.returned)
+      ? Math.max(0, Math.floor(raw.returned))
+      : null;
+  if (total == null || offset == null || returned == null) return null;
+  const nextValue = raw.nextOffset;
+  const nextOffset =
+    typeof nextValue === "number" && Number.isFinite(nextValue)
+      ? Math.max(0, Math.floor(nextValue))
+      : null;
+  const hasMore = raw.hasMore === true && nextOffset != null && nextOffset > offset;
+  const limit =
+    raw.limit === null
+      ? null
+      : typeof raw.limit === "number" && Number.isFinite(raw.limit)
+        ? Math.max(1, Math.floor(raw.limit))
+        : null;
+  return {
+    total,
+    totalCount: total,
+    offset,
+    limit,
+    returned,
+    hasMore,
+    nextOffset: hasMore ? nextOffset : null,
+  };
+}
+
+/**
+ * Merge already-windowed attention pages in request order.
+ *
+ * The server's page ordering is deterministic. Keeping page order here means
+ * the flattened Inbox view remains stable while a later page is appended;
+ * global id de-duplication also handles synthetic alert groups that repeat an
+ * owner-wall or other workspace-scoped row.
+ */
+export function mergeAttentionGroupPages(
+  pages: readonly (readonly AttentionGroup[])[],
+): AttentionGroup[] {
+  const groups = new Map<string, AttentionGroup>();
+  const seen = new Set<string>();
+  for (const page of pages) {
+    for (const group of page) {
+      const target =
+        groups.get(group.key) ??
+        (() => {
+          const next: AttentionGroup = { ...group, items: [] };
+          groups.set(group.key, next);
+          return next;
+        })();
+      for (const item of group.items) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        target.items.push(item);
+      }
+    }
+  }
+  return [...groups.values()];
+}
+
 /**
  * Live-query deltas can briefly expose a sparse row while a keyed attention
  * group is being replaced. The Queue reads `.kind` synchronously, so one
@@ -469,6 +573,13 @@ export interface PlanGetResult {
   harness?: string | null;
   archived: boolean;
   legacy: boolean;
+  /** Plan title, mirrored from PlanListRow for callers doing a targeted
+   *  single-plan fetch instead of relying on the (possibly windowed) list. */
+  title?: string;
+  /** Plan-level lifecycle status, mirrored from PlanListRow. */
+  status?: PlanStatus;
+  /** Derived started/paused/done state, mirrored from PlanListRow. */
+  startStatus?: Exclude<PlanStartStatus, null>;
   frontmatter?: Record<string, unknown>;
   now?: { state: string | null; next: string | null } | null;
   items?: PlanItem[];
@@ -1311,13 +1422,73 @@ export function usePlanItems(params?: {
   );
 }
 
+export interface PlanAttentionResult
+  extends AsyncResult<{ groups: AttentionGroup[] }> {
+  /** Number of distinct items in the complete feed snapshot. */
+  totalItemCount: number;
+  /** Number of distinct items currently loaded across pages. */
+  loadedItemCount: number;
+  /** True when another bounded page can be requested. */
+  hasMore: boolean;
+  /** True while the continuation page is being fetched. */
+  loadingMore: boolean;
+  /** Request the next page; a no-op when the feed is exhausted or unbounded. */
+  loadMore: () => void;
+  /** Current continuation offset (zero for the first page). */
+  offset: number;
+  /** Effective page size, or null for the explicit unbounded escape hatch. */
+  pageSize: number | null;
+}
+
+function normalizeAttentionPageSize(value: number | null | undefined): number | null {
+  if (value === null) return null;
+  if (value === undefined || !Number.isFinite(value)) return DEFAULT_ATTENTION_PAGE_SIZE;
+  return Math.min(MAX_ATTENTION_PAGE_SIZE, Math.max(1, Math.floor(value)));
+}
+
+/** A compact revision for detecting a fresh first-page snapshot. */
+function attentionPageRevision(
+  groups: readonly AttentionGroup[],
+  meta: AttentionPageMeta | null,
+): string {
+  return JSON.stringify([
+    meta?.total ?? null,
+    meta?.offset ?? null,
+    groups.map((g) => [
+      g.key,
+      g.items.map((i) => [i.id, i.tier, i.status, i.occurredAt ?? null]),
+    ]),
+  ]);
+}
+
 export function usePlanAttention(params?: {
   harnessSlug?: string;
   includeArchived?: boolean;
   enabled?: boolean;
-}): AsyncResult<{ groups: AttentionGroup[] }> {
+  /**
+   * Bounded page size for interactive list consumers. Defaults to 100.
+   * null is an explicit unbounded escape hatch for consumers that need the
+   * complete snapshot (for example a detail resolver).
+   */
+  pageSize?: number | null;
+}): PlanAttentionResult {
   const enabled = params?.enabled ?? true;
-  const args = useMemo<Record<string, unknown>>(
+  const pageSize = normalizeAttentionPageSize(params?.pageSize);
+  const scopeKey = JSON.stringify([
+    params?.harnessSlug ?? null,
+    params?.includeArchived ?? null,
+    pageSize,
+    enabled,
+  ]);
+  const [offset, setOffset] = useState(0);
+  const [pages, setPages] = useState<Map<number, AttentionGroup[]>>(
+    () => new Map(),
+  );
+  const [settledOffset, setSettledOffset] = useState<number | null>(null);
+  const firstRevisionRef = useRef<string | null>(null);
+  const scopeRef = useRef(scopeKey);
+
+  const baseArgs = useMemo<Record<string, unknown>>(
     () => ({
       ...(params?.harnessSlug ? { harnessSlug: params.harnessSlug } : {}),
       ...(params?.includeArchived !== undefined
@@ -1326,19 +1497,167 @@ export function usePlanAttention(params?: {
     }),
     [params?.harnessSlug, params?.includeArchived],
   );
-  const raw = useSyncResource<unknown, "groups">(
-    "plans.attention",
-    args,
-    "groups",
+  const firstArgs = useMemo(
+    () => ({ ...baseArgs, limit: pageSize, offset: 0 }),
+    [baseArgs, pageSize],
+  );
+  const continuationArgs = useMemo(
+    () => ({ ...baseArgs, limit: pageSize, offset }),
+    [baseArgs, pageSize, offset],
+  );
+
+  // Keep page zero subscribed even after a load-more. A live invalidation can
+  // reorder the feed; the effects below then discard continuation pages.
+  const firstQuery = useSyncQuery<AttentionGroupWithMeta>({
+    queryName: "plans.attention",
+    args: firstArgs,
     enabled,
+  });
+  const continuationQuery = useSyncQuery<AttentionGroupWithMeta>({
+    queryName: "plans.attention",
+    args: continuationArgs,
+    enabled: enabled && pageSize !== null && offset > 0,
+  });
+  const firstGroups = useMemo(
+    () => normalizeAttentionGroups(enabled ? firstQuery.data ?? [] : []),
+    [enabled, firstQuery.data],
   );
-  const groups = useMemo(
-    () => normalizeAttentionGroups(raw.data?.groups ?? []),
-    [raw.data?.groups],
+  const continuationGroups = useMemo(
+    () =>
+      normalizeAttentionGroups(
+        enabled && offset > 0 ? continuationQuery.data ?? [] : [],
+      ),
+    [enabled, offset, continuationQuery.data],
   );
+  const firstMeta = useMemo(
+    () => readAttentionPageMeta(firstGroups),
+    [firstGroups],
+  );
+  const continuationMeta = useMemo(
+    () => readAttentionPageMeta(continuationGroups),
+    [continuationGroups],
+  );
+
+  // Scope changes (including disabling/re-enabling a panel) start a new
+  // snapshot and prevent a prior harness's rows flashing in the new one.
+  useEffect(() => {
+    if (scopeRef.current === scopeKey) return;
+    scopeRef.current = scopeKey;
+    firstRevisionRef.current = null;
+    setOffset(0);
+    setSettledOffset(null);
+    setPages(new Map());
+  }, [scopeKey]);
+
+  // A first-page push is the snapshot boundary for all loaded continuation
+  // pages. This handles both SSE invalidation and polling.
+  useEffect(() => {
+    if (!enabled) return;
+    const revision = attentionPageRevision(firstGroups, firstMeta);
+    if (firstRevisionRef.current === revision) return;
+    firstRevisionRef.current = revision;
+    setPages(new Map([[0, firstGroups]]));
+    setSettledOffset(null);
+    if (offset !== 0) setOffset(0);
+  }, [enabled, firstGroups, firstMeta, offset]);
+
+  // Store a continuation only after its response metadata confirms the
+  // requested offset. keepPreviousData can expose page zero while page N is
+  // in flight; accepting that placeholder would duplicate the first page.
+  useEffect(() => {
+    if (!enabled || pageSize === null || offset === 0) return;
+    if (continuationMeta?.offset !== offset) return;
+    setPages((previous) => {
+      const current = previous.get(offset);
+      if (current === continuationGroups) return previous;
+      const next = new Map(previous);
+      next.set(offset, continuationGroups);
+      return next;
+    });
+    setSettledOffset(offset);
+  }, [continuationGroups, continuationMeta?.offset, enabled, offset, pageSize]);
+
+  // An empty continuation has no row on which the server can carry metadata.
+  // Once that query settles, treat it as exhausted instead of leaving the
+  // previous page's hasMore bit active forever.
+  useEffect(() => {
+    if (!enabled || pageSize === null || offset === 0) return;
+    if (continuationQuery.loading || continuationQuery.fetching) return;
+    if (continuationMeta?.offset === offset) return;
+    if (continuationQuery.error) setSettledOffset(offset);
+    else if (Array.isArray(continuationQuery.data)) setSettledOffset(offset);
+  }, [
+    continuationMeta?.offset,
+    continuationQuery.data,
+    continuationQuery.error,
+    continuationQuery.fetching,
+    continuationQuery.loading,
+    enabled,
+    offset,
+    pageSize,
+  ]);
+
+  const mergedGroups = useMemo(() => {
+    const byOffset = new Map<number, AttentionGroup[]>(pages);
+    byOffset.set(0, firstGroups);
+    if (offset > 0 && continuationMeta?.offset === offset) {
+      byOffset.set(offset, continuationGroups);
+    }
+    const ordered = [...byOffset.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, groups]) => groups);
+    return mergeAttentionGroupPages(ordered);
+  }, [
+    continuationGroups,
+    continuationMeta?.offset,
+    firstGroups,
+    offset,
+    pages,
+  ]);
+  const currentMeta =
+    offset > 0 && continuationMeta?.offset === offset
+      ? continuationMeta
+      : firstMeta;
+  const loadingMore =
+    enabled &&
+    pageSize !== null &&
+    offset > 0 &&
+    (continuationQuery.loading || continuationQuery.fetching);
+  const continuationExhausted =
+    offset > 0 && settledOffset === offset && continuationMeta?.offset !== offset;
+  const hasMore =
+    !continuationExhausted &&
+    currentMeta?.hasMore === true &&
+    currentMeta.nextOffset != null &&
+    currentMeta.nextOffset > offset;
+  const loadedItemCount = flattenAttentionItems(mergedGroups).length;
+  const totalItemCount = currentMeta?.total ?? loadedItemCount;
+
+  const loadMore = useCallback(() => {
+    if (!enabled || pageSize === null || loadingMore || !hasMore) return;
+    const next = currentMeta?.nextOffset;
+    if (next == null || next <= offset) return;
+    setSettledOffset(null);
+    setOffset(next);
+  }, [currentMeta, enabled, hasMore, loadingMore, offset, pageSize]);
+  const refresh = useCallback(() => {
+    firstQuery.invalidate();
+    if (offset > 0) continuationQuery.invalidate();
+  }, [continuationQuery, firstQuery, offset]);
+
   return {
-    ...raw,
-    data: { groups },
+    data: { groups: enabled ? mergedGroups : [] },
+    loading: firstQuery.loading,
+    error:
+      firstQuery.error?.message ?? continuationQuery.error?.message ?? null,
+    refresh,
+    totalItemCount,
+    loadedItemCount,
+    hasMore,
+    loadingMore,
+    loadMore,
+    offset,
+    pageSize,
   };
 }
 
