@@ -59,6 +59,19 @@ export function mintKasmvncSessionCredentials(input: {
 
   mkdirSync(dirname(input.passwordFile), { recursive: true, mode: 0o700 });
 
+  // ⚠ TWO KasmVNC behaviours measured against a real install (WI-1250866), both of which
+  // produce a desktop that connects fine and then shows the viewer NOTHING:
+  //
+  //   1. The permission bits in this file are what decide whether a user may SEE the
+  //      framebuffer. A user written without `-r` authenticates successfully, and the
+  //      server then logs `User <u> has no read permissions` and sends `Framebuffer
+  //      updates: 0` — a blank viewer with no client-side error at all.
+  //   2. `kasmvncpasswd -u <user> -n <file>` reads like an inspect-only call ("don't
+  //      change password"). It is a WRITE: with no permission flags it sets that user's
+  //      permissions to NOTHING. Never reach for it to check what is recorded — `cat`
+  //      the file instead; the third colon-separated field is the permission string.
+  //
+  // Both are why `kasmvncPasswordArgv` always emits `-r`, and why its tests assert it.
   const write = (user: string, secret: string, mode: 'view' | 'control'): void => {
     const argv = kasmvncPasswordArgv({ user, passwordFile: input.passwordFile, mode });
     // kasmvncpasswd prompts twice for the password and reads them from stdin.
