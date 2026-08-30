@@ -1965,6 +1965,43 @@ export function makeSubmitVerifier({
   };
 }
 
+/** WI-1378748: may a verifier exhaustion for THIS submit label kill the host?
+ *
+ *  WI-41044 made every exhaustion host-fatal. That is defensible for a STARTUP
+ *  submit (a launch kickoff / recycle carry-note / session-port seed that never
+ *  took leaves a session that exists but can never work — tearing it down frees
+ *  the discovery key, socket and child subtree, and the launcher records a
+ *  nonzero outcome). It is NOT defensible for a WAKE inject, and the difference
+ *  is the whole bug:
+ *
+ *  A `turn`/`reset` inject is a NOTIFICATION delivered into a session that is
+ *  usually alive and mid-work. The verifier's sole evidence is "the pty stayed
+ *  quiet", and it cannot see WHY. Quiet has causes other than a swallowed CR —
+ *  the one that bit us is a RATE-LIMITED agent: a Claude Code sitting on a
+ *  weekly/5h quota wall repaints nothing at all, so a wake injected into it can
+ *  never take, and the host answered by SIGTERMing a live agent mid-edit.
+ *  Measured 2026-08-30: 160 hosts killed this way since WI-41044 landed, 102 of
+ *  them on a `turn inject`, arriving in mass clusters (6 sessions inside 3s at
+ *  20:22, 3 more at 21:04) because ONE coord broadcast wakes every session at
+ *  once and every quota-silent recipient dies together.
+ *
+ *  The costs are wildly asymmetric. Not killing loses at most one coord wake —
+ *  and loses nothing silently, because the delivery failure is still recorded
+ *  (`submit-verify-unconfirmed`) and the sender already has to verify pickup.
+ *  Killing destroys in-flight work and respawns the session straight back into
+ *  the same wall. So a wake inject may never be host-fatal; only a startup
+ *  submit may.
+ *
+ *  Deliberately the DEFAULT (not a per-call-site flag): a future caller that
+ *  forgets the argument gets the safe behaviour for a wake label. Pure;
+ *  exported for tests. */
+export function submitExhaustionTerminatesHost(label) {
+  const normalized = String(label ?? '')
+    .trim()
+    .toLowerCase();
+  return !(normalized === 'turn inject' || normalized === 'reset inject');
+}
+
 /** Translate the submit verifier's semantic negative outcomes into the stable
  * delivery reasons consumed by launch/recycle callers. A human-input abort is
  * not proof that the injected turn landed, so it must remain distinguishable
@@ -4175,7 +4212,12 @@ export function hostThroughPty(o) {
   // bare CR at each quiet observation in a bounded post-submit window (see
   // makeSubmitVerifier). writeCr reads the live `child` closure so it survives a
   // recycle; a fresh verifier per call keeps the human-input abort baseline fresh.
-  const verifySubmitted = async (label, { terminateOnExhaustion = true } = {}) => {
+  const verifySubmitted = async (
+    label,
+    // WI-1378748: default by LABEL, not a blanket `true` — a wake inject
+    // (turn/reset) must never be host-fatal. See submitExhaustionTerminatesHost.
+    { terminateOnExhaustion = submitExhaustionTerminatesHost(label) } = {},
+  ) => {
     const verifier = makeSubmitVerifier({
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
@@ -4203,22 +4245,42 @@ export function hostThroughPty(o) {
       // A managed session-port kickoff has a stronger, independent proof:
       // waitForNativeTranscriptMarker below. Its target can persist the marker
       // after the TUI goes quiet, so WI-41044's generic host teardown would race
-      // the authoritative native-persistence acknowledgement. Ordinary injected
-      // turns retain the host-fatal exhaustion behavior.
-      onExhausted: terminateOnExhaustion
-        ? ({ polls, resubmits, outputObservedAfterResubmit }) => {
-            terminateSubmitVerifyExhaustion({
-              label,
-              polls,
-              resubmits,
-              maxResubmits: positiveNumber(
-                env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR,
-                SUBMIT_VERIFY_MAX_RESUBMITS,
-              ),
-              outputObservedAfterResubmit,
-            });
-          }
-        : undefined,
+      // the authoritative native-persistence acknowledgement. Startup submits
+      // otherwise retain the host-fatal exhaustion behavior; WAKE injects never
+      // do (WI-1378748).
+      onExhausted: ({ polls, resubmits, outputObservedAfterResubmit }) => {
+        const details = {
+          label,
+          polls,
+          resubmits,
+          maxResubmits: positiveNumber(
+            env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR,
+            SUBMIT_VERIFY_MAX_RESUBMITS,
+          ),
+          outputObservedAfterResubmit,
+        };
+        if (terminateOnExhaustion) {
+          terminateSubmitVerifyExhaustion(details);
+          return;
+        }
+        // WI-1378748: NOT fatal — but never silent either. Trading a loud kill
+        // for a silent drop would just swap one invisible failure for another,
+        // so the undelivered wake is recorded on the same event log the kill
+        // used to write, and says plainly that the session was left running.
+        appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
+          ...details,
+          reason: 'max-resubmits-without-output',
+          terminated: false,
+        });
+        try {
+          process.stderr.write(
+            `psu-pty-host: ${label} submit unconfirmed for ${ownerId} after ` +
+              `${resubmits} resubmit CRs — wake not delivered, session left running (WI-1378748)\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+      },
     });
     return verifier.verify();
   };

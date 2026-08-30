@@ -40,6 +40,7 @@ import {
   makeAgentBusyGate,
   makeCarryRearmController,
   makeSubmitVerifier,
+  submitExhaustionTerminatesHost,
   submitVerificationFailureReason,
   verifyNativeTurnStartWithRetry,
   carryTurnProofRequiresNativeId,
@@ -1979,6 +1980,33 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
       'submit-verification-aborted-human-input',
     );
     expect(submitVerificationFailureReason({ exhausted: false, aborted: null })).toBeNull();
+  });
+
+  // WI-1378748 regression guard. WI-41044 made EVERY submit-verify exhaustion
+  // SIGTERM the host. A wake inject's only evidence is "the pty stayed quiet",
+  // which a RATE-LIMITED agent produces indefinitely while perfectly alive — so
+  // a coord broadcast into a quota-walled fleet killed live agents mid-work en
+  // masse (measured 2026-08-30: 160 hosts, 102 of them on a `turn inject`).
+  // A wake is a notification; it may never be host-fatal. If this flips back to
+  // an unconditional true, that outage returns.
+  it('WI-1378748: a wake inject exhaustion is never host-fatal, a startup submit still is', () => {
+    // The two labels the control socket emits for a coord wake (`${msg.mode} inject`).
+    expect(submitExhaustionTerminatesHost('turn inject')).toBe(false);
+    expect(submitExhaustionTerminatesHost('reset inject')).toBe(false);
+
+    // The startup submits WI-41044 was actually written for: a session that
+    // never took its first turn is useless, so tearing it down is correct.
+    expect(submitExhaustionTerminatesHost('launch kickoff')).toBe(true);
+    expect(submitExhaustionTerminatesHost('recycle carry-note')).toBe(true);
+    expect(submitExhaustionTerminatesHost('session-port seed')).toBe(true);
+
+    // Label matching must not be defeated by casing/padding drift at the call site.
+    expect(submitExhaustionTerminatesHost('  Turn Inject  ')).toBe(false);
+
+    // Fail CLOSED for an unknown/missing label: an unrecognised submit keeps the
+    // WI-41044 teardown rather than silently inheriting the wake exemption.
+    expect(submitExhaustionTerminatesHost('some future submit')).toBe(true);
+    expect(submitExhaustionTerminatesHost(undefined)).toBe(true);
   });
 });
 

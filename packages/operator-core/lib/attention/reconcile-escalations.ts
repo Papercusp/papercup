@@ -1084,5 +1084,6 @@ export async function rerouteUnackedEscalationsOnce(
     predicateSkipped,
     artifactUnknownSkipped,
     artifactMissingWarnings,
+    subjectActivelyWorkedSkipped,
   };
 }

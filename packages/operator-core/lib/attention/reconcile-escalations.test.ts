@@ -18,6 +18,12 @@ vi.mock('../agent-tools/coordination/presence', () => ({
   probeProcessLiveness: vi.fn(),
 }));
 
+const getWorkItemMock = vi.fn();
+vi.mock('../work-items', () => ({
+  getWorkItem: (...a: unknown[]) => getWorkItemMock(...a),
+  TERMINAL_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed'],
+}));
+
 import {
   selectStaleEscalations,
   reconcileStaleEscalationsOnce,
@@ -587,6 +593,130 @@ describe('rerouteUnackedEscalationsOnce (EI-7024)', () => {
       ['su-driver'],
       expect.objectContaining({ source: 'system:escalation-sla-reroute', workspaceId: 'ws-a' }),
     );
+  });
+
+  // EI-21834041480805949: never wake a second member when the escalation's own
+  // subject work-item already has a live, actively-progressing assignee.
+  describe('subject-work-item liveness guard (EI-21834041480805949)', () => {
+    const baseArgs = {
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      workspaceId: 'ws-a',
+      readResponseMarkersFn: vi.fn(async () => new Set<string>()),
+      listPresenceFn: vi.fn(async () => [
+        { ownerId: 'su-author', agentRole: 'su', currentPlanSlug: 'plan-a', potSlug: 'pot-a', heartbeatAt: iso(0), stale: false, host: '', pid: null, source: 'omp-hook-session' },
+        { ownerId: 'su-driver', agentRole: 'su', currentPlanSlug: 'plan-a', potSlug: 'pot-a', heartbeatAt: iso(0), stale: false, host: '', pid: null, source: 'omp-hook-session' },
+        { ownerId: 'su-progressing', agentRole: 'su', currentPlanSlug: 'plan-a', potSlug: 'pot-a', heartbeatAt: iso(0), stale: false, host: '', pid: null, source: 'omp-hook-session' },
+      ]) as never,
+      resolveSessionStatesFn: vi.fn(
+        async () =>
+          new Map([
+            ['su-author', { sessionState: 'parked' }],
+            ['su-driver', { sessionState: 'live' }],
+            ['su-progressing', { sessionState: 'live' }],
+          ]),
+      ) as never,
+      fetchPresenceFleetFn: vi.fn(async () => new Map()) as never,
+      getFleetFn: vi.fn(async () => null) as never,
+    };
+
+    it('suppresses the reroute when the named subject already has a live, actively-progressing assignee', async () => {
+      const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+      const wake = vi.fn(async () => ({ woken: 1 }));
+      getWorkItemMock.mockResolvedValueOnce({
+        id: 'WI-924391',
+        state: 'wip',
+        assignee: 'su-progressing',
+        takenAt: iso(5 * 60 * 1000),
+        lastProgressAt: iso(60 * 1000), // 1 minute ago — well within the staleness window
+      });
+      const result = await rerouteUnackedEscalationsOnce({
+        ...baseArgs,
+        listEscalationsFn: vi.fn(async () => [
+          rerouteRow({ summary: 'take over unacknowledged escalation for WI-924391' }),
+        ]) as typeof listMock,
+        sendMessageFn: send as never,
+        wakeRecipientsFn: wake as never,
+      });
+      expect(result).toMatchObject({
+        scanned: 1,
+        selected: 0,
+        rerouted: 0,
+        subjectActivelyWorkedSkipped: 1,
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(wake).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no subject id in prose', 'human decision is waiting', () => {}],
+      [
+        'subject is terminal',
+        'take over unacknowledged escalation for WI-924391',
+        () =>
+          getWorkItemMock.mockResolvedValueOnce({
+            id: 'WI-924391',
+            state: 'passed',
+            assignee: 'su-progressing',
+            takenAt: iso(5 * 60 * 1000),
+            lastProgressAt: iso(60 * 1000),
+          }),
+      ],
+      [
+        'subject has no assignee',
+        'take over unacknowledged escalation for WI-924391',
+        () =>
+          getWorkItemMock.mockResolvedValueOnce({
+            id: 'WI-924391',
+            state: 'wip',
+            assignee: null,
+            takenAt: null,
+            lastProgressAt: null,
+          }),
+      ],
+      [
+        "subject's assignee is stale (no recent progress)",
+        'take over unacknowledged escalation for WI-924391',
+        () =>
+          getWorkItemMock.mockResolvedValueOnce({
+            id: 'WI-924391',
+            state: 'wip',
+            assignee: 'su-progressing',
+            takenAt: iso(60 * DAY),
+            lastProgressAt: iso(60 * DAY), // far past the staleness window
+          }),
+      ],
+      [
+        "subject's assignee is absent from the live roster",
+        'take over unacknowledged escalation for WI-924391',
+        () =>
+          getWorkItemMock.mockResolvedValueOnce({
+            id: 'WI-924391',
+            state: 'wip',
+            assignee: 'su-unknown-elsewhere',
+            takenAt: iso(60 * 1000),
+            lastProgressAt: iso(60 * 1000),
+          }),
+      ],
+      [
+        'subject id does not resolve to a real work-item',
+        'take over unacknowledged escalation for WI-924391',
+        () => getWorkItemMock.mockResolvedValueOnce(null),
+      ],
+    ])('still selects the reroute when %s', async (_label, summary, arrange) => {
+      arrange();
+      const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+      const wake = vi.fn(async () => ({ woken: 1 }));
+      const result = await rerouteUnackedEscalationsOnce({
+        ...baseArgs,
+        listEscalationsFn: vi.fn(async () => [rerouteRow({ summary })]) as typeof listMock,
+        sendMessageFn: send as never,
+        wakeRecipientsFn: wake as never,
+      });
+      expect(result).toMatchObject({ scanned: 1, selected: 1, rerouted: 1, subjectActivelyWorkedSkipped: 0 });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(wake).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('annotates malformed and contradicted predicates before fail-closed suppression', async () => {

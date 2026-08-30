@@ -102,6 +102,26 @@ describe('conversations:get handler (bulk keyed-array)', () => {
     expect(r.posts[0]).not.toHaveProperty('secret'); // extra store columns are not leaked
   });
 
+  // EI-21914051456641891: when the core resolved a hand-truncated id via
+  // its unique-prefix fallback, the tool surfaces an explicit `warning`
+  // naming the real full id — never silently swaps ids into the response
+  // with no trace that a fallback happened.
+  it('surfaces a `warning` naming the real id when the core resolved via prefix fallback', async () => {
+    getM.mockResolvedValue({ ...detail('conv-mtg3t543-0000-abc'), resolvedFromPrefix: 'conv-mtg3t543' });
+    const b = await body({ id: 'conv-mtg3t543' });
+    const r = b.results[0];
+    expect(r).toMatchObject({ ok: true, id: 'conv-mtg3t543' });
+    expect(r.conversation.id).toBe('conv-mtg3t543-0000-abc');
+    expect(r.warning).toMatch(/conv-mtg3t543-0000-abc/);
+    expect(r.warning).toMatch(/prefix/i);
+  });
+
+  it('an EXACT match carries no `warning` field at all', async () => {
+    getM.mockResolvedValue(detail('c1'));
+    const b = await body({ id: 'c1' });
+    expect(b.results[0]).not.toHaveProperty('warning');
+  });
+
   it('ids:[…]: one found + one missing — the miss fails only its item', async () => {
     getM.mockImplementation(async (id: string) => (id === 'c404' ? null : detail(id)));
     const b = await body({ ids: ['c1', 'c404'] });

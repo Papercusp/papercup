@@ -427,7 +427,16 @@ function makeDbHealthAlert(
             severity: 'blocker',
             summary,
             body,
-            meta: { source: SOURCE, failingOps: snapshot.failingOps, connectionLevel: snapshot.connectionLevel, lastError: snapshot.lastError },
+            // EI-21843060786178076 audit: same read-then-write race as credential-health above —
+            // add the stable subjectSignature so a raced double-fire still coalesces atomically.
+            // This condition is global (one gateway DB), so the key carries no per-entity suffix.
+            meta: {
+              source: SOURCE,
+              failingOps: snapshot.failingOps,
+              connectionLevel: snapshot.connectionLevel,
+              lastError: snapshot.lastError,
+              subjectSignature: 'inference-gateway:db-health',
+            },
           });
         }
       } catch (e) {

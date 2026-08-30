@@ -318,10 +318,25 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
     20_000,
   );
 
+  // WI-1378748 (supersedes the WI-41044 shape of this case). This case used to
+  // assert that an unconfirmed `mode:turn` submit SIGTERMs the host. That is
+  // exactly the outage: the child below is SILENT BUT ALIVE, which is precisely
+  // what a rate-limited agent looks like from the pty (a Claude Code sitting on
+  // a weekly-quota wall repaints nothing), and the host answered by killing it
+  // mid-work. Measured 2026-08-30: 160 hosts killed, 102 on a `turn inject`,
+  // in mass clusters because one coord broadcast wakes every session at once.
+  //
+  // A wake inject is a NOTIFICATION; failing to deliver it may cost the wake and
+  // nothing more. So the bounded-CR half of the original assertion is KEPT (no
+  // endless retries — still capped at maxResubmits, still recorded), while the
+  // teardown half is INVERTED: the session must survive and exit on its OWN
+  // terms. The host-fatal path still exists for STARTUP submits and is covered
+  // by psu-pty-host.integration.test.ts / the carry-delivery guard; the control
+  // socket cannot reach it, since it only ever emits turn/reset injects.
   it(
-    'terminates and records a bounded submit-verification exhaustion instead of accepting endless CR retries (WI-41044)',
+    'WI-1378748: an unconfirmed wake submit is bounded and recorded, but never kills the live session',
     async () => {
-      const ownerId = uniqueOwner('SUBMIT-EXHAUSTED');
+      const ownerId = uniqueOwner('SUBMIT-UNCONFIRMED');
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { io } = fakeIo();
@@ -335,19 +350,16 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         // clock competing with a load-sensitive prologue (spawn + waitForHost +
         // inject) — and this file's header already documents that waitForHost
         // alone can take seconds once several real node-pty children share the
-        // box. When the child won, it exited 0 on its own BEFORE exhaustion was
-        // ever declared, `done` resolved with that 0, and the failure surfaced
-        // as the deeply unhelpful `expected +0 to be 1` (measured at sha
-        // 5c5de968cc, saturationSuspect). Confirmed as a load flake in the
-        // test-run ledger alongside the mid-turn wake flake.
+        // box.
         //
-        // A TTL far past this case's own 20s vitest timeout removes the race
-        // WITHOUT weakening the assertion: on the happy path the child is
-        // SIGTERM'd by exhaustion within ~1s of the inject, so runtime is
-        // unchanged; and if exhaustion never fires, the case still goes RED —
-        // now via the vitest timeout, which points at the stalled exhaustion
-        // path instead of at a misleading exit-code mismatch.
-        args: ['-e', silentChildCode(60_000)],
+        // WI-1378748: the TTL is now also the test's TEARDOWN, because nothing
+        // else ends this child any more — surviving the exhaustion IS the
+        // assertion. It must therefore comfortably outlast that load-sensitive
+        // prologue (so exhaustion is always declared first, on a child that is
+        // still alive to be spared) while still landing inside the case's own
+        // raised timeout. If the prologue ever did outrun it, the event-log
+        // assertion below goes RED rather than passing vacuously.
+        args: ['-e', silentChildCode(15_000)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -373,18 +385,44 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       expect(host).not.toBeNull();
       expect(await injectIntoHost(host!.sock, { mode: 'turn', data: 'never-confirmed' })).toBe(true);
 
+      // Wait for the verifier to spend its whole CR budget and give up. Polling
+      // the event log (rather than sleeping a fixed span) keeps this robust on a
+      // loaded box, where the verify window drifts.
+      const eventLog = eventLogPathForOwner(ownerId);
+      const deadline = Date.now() + 10_000;
+      let events = '';
+      while (Date.now() < deadline) {
+        events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+        if (events.includes('"kind":"submit-verify-unconfirmed"')) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      // Recorded, and still BOUNDED — the CR cap is the half of WI-41044 that
+      // was always right: an undeliverable wake must not retry forever.
+      expect(events).toContain('"kind":"submit-verify-unconfirmed"');
+      expect(events).toContain('"resubmits":2');
+      expect(events).toContain('"terminated":false');
+      // The kill is gone. If this string ever comes back on a wake inject, the
+      // mass-kill outage is back with it.
+      expect(events).not.toContain('"kind":"submit-verify-exhausted"');
+
+      // THE POINT: the session is still alive and still serving. A dead host
+      // unlinks both of these on the way out, so their presence after the
+      // verifier gave up is the survival proof.
+      expect(existsSync(sock)).toBe(true);
+      expect(existsSync(meta)).toBe(true);
+      expect(exitCode).toBeNull();
+      expect(exitSignal).toBeNull();
+
+      // And it ends on its OWN terms (the child's TTL), never by SIGTERM.
       const code = await done;
-      expect(code).toBe(1);
-      expect(exitCode).toBe(1);
-      expect(exitSignal).toBe('SIGTERM');
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(exitSignal).toBeNull();
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
-
-      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
-      expect(events).toContain('"kind":"submit-verify-exhausted"');
-      expect(events).toContain('"resubmits":2');
     },
-    20_000,
+    30_000,
   );
 });
 

@@ -135,6 +135,16 @@ class InMemoryConversationStore implements ConversationStoreLike {
     return row ? { ...row } : null;
   }
 
+  /** Mirrors PgConversationStore.getByPrefix (EI-21914051456641891): a real
+   *  `LIKE '<prefix>%'` prefix match, unbounded by the store's own limit —
+   *  the CALLER (getConversationCore) is what decides "unique vs ambiguous". */
+  async getByPrefix(prefix: string, limit = 5): Promise<ConversationRow[]> {
+    return [...this.rows.values()]
+      .filter((r) => r.id.startsWith(prefix))
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
   async list(opts: ListConversationsOpts = {}): Promise<ConversationRow[]> {
     this.listCalls.push({ ...opts });
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
@@ -828,6 +838,54 @@ describe('getConversationCore', () => {
     expect(detail?.posts).toEqual([]);
     expect(detail?.topics).toEqual([]);
     expect(detail?.subscriber_count).toBe(0);
+  });
+
+  /**
+   * EI-21914051456641891: a real conversation id is minted as
+   * `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>` (three hyphen-delimited
+   * segments after the prefix). A durable citation (a plan `## Now`, a
+   * rubric methodRef) commonly gets hand-truncated to just the leading
+   * `<prefix>-<ms>` segment — which LOOKS like a complete short id on its
+   * own — and an exact-match lookup on that truncated form used to return a
+   * clean `not_found`, indistinguishable from genuine absence. These pin the
+   * fallback: resolve when the truncated form UNIQUELY prefix-matches one
+   * real id, and — critically — NEVER guess when it is ambiguous or truly
+   * absent.
+   */
+  describe('prefix-fallback (EI-21914051456641891)', () => {
+    it('resolves a hand-truncated id that uniquely prefix-matches one real conversation, and flags resolvedFromPrefix', async () => {
+      await store.create({
+        id: 'conv-mtg3t543-0000-7f6b6e8460be4af0b94dbfc0f6858f00',
+        kind: 'consult',
+        scope: 'operator',
+        asker_id: 'a',
+        body: 'the seed',
+        producer: 'test',
+        created_ts: T0,
+      });
+      const detail = await getConversationCore(deps, 'conv-mtg3t543');
+      expect(detail).not.toBeNull();
+      // The conversation itself is the REAL, full id — never the truncated request.
+      expect(detail?.conversation.id).toBe('conv-mtg3t543-0000-7f6b6e8460be4af0b94dbfc0f6858f00');
+      expect(detail?.resolvedFromPrefix).toBe('conv-mtg3t543');
+    });
+
+    it('an EXACT match wins outright — no prefix fallback attempted, no resolvedFromPrefix flag', async () => {
+      await store.create({ id: 'conv-exact', kind: 'discussion', scope: 'operator', asker_id: 'a', body: 'b', producer: 'test', created_ts: T0 });
+      const detail = await getConversationCore(deps, 'conv-exact');
+      expect(detail?.conversation.id).toBe('conv-exact');
+      expect(detail?.resolvedFromPrefix).toBeUndefined();
+    });
+
+    it('AMBIGUOUS prefix (matches ≥2 real ids) returns null — never guesses which one was meant', async () => {
+      await store.create({ id: 'conv-mtg9-aaaa', kind: 'discussion', scope: 'operator', asker_id: 'a', body: 'b', producer: 'test', created_ts: T0 });
+      await store.create({ id: 'conv-mtg9-bbbb', kind: 'discussion', scope: 'operator', asker_id: 'a', body: 'b', producer: 'test', created_ts: T0 });
+      expect(await getConversationCore(deps, 'conv-mtg9')).toBeNull();
+    });
+
+    it('a truncated id with NO real match still returns null (genuine absence, not a crash)', async () => {
+      expect(await getConversationCore(deps, 'conv-totally-bogus')).toBeNull();
+    });
   });
 });
 

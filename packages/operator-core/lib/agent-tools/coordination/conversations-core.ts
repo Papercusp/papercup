@@ -45,6 +45,11 @@ import type { CaptureResult, CaptureTarget } from './answer-capture';
 export interface ConversationStoreLike {
   create(input: CreateConversationInput): Promise<ConversationRow>;
   get(id: string): Promise<ConversationRow | null>;
+  /** EI-21914051456641891: prefix-match fallback for a hand-truncated id
+   *  (see conversations-store.ts's getByPrefix doc). Optional so an older
+   *  test double without it degrades to "no fallback available", never a
+   *  type error. */
+  getByPrefix?(prefix: string, limit?: number): Promise<ConversationRow[]>;
   list(opts?: ListConversationsOpts): Promise<ConversationRow[]>;
   setState(id: string, state: ConversationState, opts: { now_ts: string }): Promise<void>;
   supersede(
@@ -721,16 +726,42 @@ export interface ConversationDetail {
   topics: string[];
   posts: ThreadPostRow[];
   subscriber_count: number;
+  /**
+   * EI-21914051456641891: set ONLY when `id` did not resolve as an exact
+   * match but UNIQUELY matched as a prefix (a hand-truncated citation of a
+   * longer real id — see getByPrefix's doc). `conversation.id` is always the
+   * real, full, canonical id; this records what the CALLER actually passed,
+   * so the caller can be warned to cite the full id from here on.
+   */
+  resolvedFromPrefix?: string;
 }
 
 export async function getConversationCore(deps: ConversationDeps, id: string): Promise<ConversationDetail | null> {
-  const conversation = await deps.conversations.get(id);
+  let conversation = await deps.conversations.get(id);
+  let resolvedFromPrefix: string | undefined;
+  if (!conversation && deps.conversations.getByPrefix) {
+    // Exact match missed — try the prefix fallback (EI-21914051456641891).
+    // Ambiguous (>1) is treated exactly like a genuine miss: this NEVER
+    // guesses which conversation the caller meant.
+    const candidates = await deps.conversations.getByPrefix(id, 2);
+    if (candidates.length === 1) {
+      conversation = candidates[0];
+      resolvedFromPrefix = id;
+      id = conversation.id;
+    }
+  }
   if (!conversation) return null;
   const topics = await deps.tags.listTags(convRef(id));
   const thread = await deps.threads.getThreadByParent(convRef(id));
   const posts = thread ? await deps.threads.listPosts(thread.thread_id) : [];
   const subscribers = await deps.subs.listTargetSubscribers('object', objectToTargetRef(convRef(id)));
-  return { conversation, topics, posts, subscriber_count: subscribers.length };
+  return {
+    conversation,
+    topics,
+    posts,
+    subscriber_count: subscribers.length,
+    ...(resolvedFromPrefix ? { resolvedFromPrefix } : {}),
+  };
 }
 
 // ── Promote → engineer issue (D-005) ─────────────────────────────────────────

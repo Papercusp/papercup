@@ -22,6 +22,7 @@
  * should read the SAME verdict rather than re-derive it.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { SelectionVia } from '@papercusp/ranked-selection';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
@@ -34,6 +35,7 @@ import {
 } from './rubrics';
 import { listScorecards } from './scorecards';
 import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
 import {
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageGateVerdict,
@@ -95,6 +97,21 @@ export interface PlanAcceptanceGateVerdict {
   rubricId?: string;
   /** The independent grader satisfying the gate, when satisfied by a grading. */
   gradedBy?: string | null;
+  /**
+   * HOW that grader was selected, read from the durable grading-cascade row
+   * (unified-responder-selection-critique-and-grading-2026-08-30 P-004):
+   * `'floor'` = cleared the relevance floor; `'minimum'` = a below-floor
+   * minimum-fill (D-002); `null` = not attributable to a cascade selection
+   * (owner-filed, hand-dispatched, predating the cascade, or a row that could
+   * not be read) — which ranks AS floor but is not asserted to be it.
+   *
+   * Carried on the satisfied verdict for the reason `vettedUnderWaiver` is:
+   * D-002 accepts knowingly that where no above-floor grader exists a
+   * minimum-fill one grades anyway, and states that cost is not to be
+   * rediscovered as a surprise. A reader of a successful ship is entitled to
+   * see that the grading behind it came from a peer the router did not match.
+   */
+  gradedVia?: SelectionVia | null;
   /** Set when an explicit reasoned `force` waived the code-truth checks (D-003). The
    *  caller stamps this on the plan so the waiver is permanent and visible, never a
    *  silent bypass — a force that is easy to hide is worth very little. */
@@ -706,10 +723,26 @@ export async function evaluatePlanAcceptanceGate(
         `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005).`,
     };
   }
-  const independent = complete
-    .filter((s) => !implementer || (s.createdBy != null && !isImplementerScorecard(s)))
-    .slice()
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  // ── the authoritative grading among several (P-004) ──
+  // Grading is a CASCADE of up to two graders since D-003 [owner], and D-002
+  // [owner] allows the second to be a BELOW-FLOOR minimum-fill. A plain
+  // `sort(desc createdAt)[0]` was inert while grading was n=1; with a menu it
+  // would hand the verdict to whoever happened to file last, which under those
+  // two rulings together can be the party the router did NOT match. So rank by
+  // selection authority first — `outranks('floor','minimum')` — and only then
+  // by recency, which stays the tie-break that makes latest-wins coherent
+  // between two equally-qualified graders (D-003: grader 2 holds grader 1's
+  // card, so the later card is the better-informed one).
+  //
+  // The `via` comes from the DURABLE cascade row, not from the lifecycle return
+  // value (D-006), and a card with no cascade provenance ranks as floor rather
+  // than being demoted — see acceptance-grading-authority.ts for both.
+  const independentCards = complete.filter(
+    (s) => !implementer || (s.createdBy != null && !isImplementerScorecard(s)),
+  );
+  const graderVia = await readGraderSelectionVia(rubric.workspaceId, rubric.rubricId);
+  const independent = pickAuthoritativeGrading(independentCards, (s) => gradingViaOf(s, graderVia));
+  const independentVia = independent ? gradingViaOf(independent, graderVia) : null;
   if (!independent) {
     return {
       satisfied: false,
@@ -741,6 +774,7 @@ export async function evaluatePlanAcceptanceGate(
       code: 'acceptance_rubric_vetted_after_grading',
       rubricId: rubric.rubricId,
       gradedBy: independent.createdBy ?? null,
+      gradedVia: independentVia,
       message:
         `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
         `${vettingAttestedAt}, AFTER the independent grading at ${independent.createdAt} — so the grading was ` +
@@ -765,6 +799,7 @@ export async function evaluatePlanAcceptanceGate(
       code: 'acceptance_not_recorded',
       rubricId: rubric.rubricId,
       gradedBy: independent.createdBy ?? null,
+      gradedVia: independentVia,
       message:
         `plan '${planSlug}' has a complete independent grading by '${independent.createdBy ?? 'unknown'}', but ` +
         `its implementer${implementer ? ` ('${implementer}')` : ''} has not recorded the post-grading acceptance ` +
@@ -779,6 +814,7 @@ export async function evaluatePlanAcceptanceGate(
       code: 'acceptance_rejected',
       rubricId: rubric.rubricId,
       gradedBy: independent.createdBy ?? null,
+      gradedVia: independentVia,
       message:
         `plan '${planSlug}' cannot be marked shipped: implementer '${implementer}' recorded REJECT — ` +
         `${latestVerdict.acceptance.reasoning}. Address the grading, then record a newer acceptance verdict with ` +
@@ -791,6 +827,7 @@ export async function evaluatePlanAcceptanceGate(
     ...(vettedUnderWaiver ? { vettedUnderWaiver } : {}),
     ...(specCoverage ? { specCoverage } : {}),
     gradedBy: independent.createdBy ?? null,
+    gradedVia: independentVia,
     ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
   };
 }

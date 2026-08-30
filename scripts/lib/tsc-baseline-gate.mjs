@@ -2255,7 +2255,7 @@ export function lintTscScopeFromArgv(argv) {
  * more specific claim about WHY nothing was typechecked (in practice they are mutually
  * exclusive: the coverage branch exits before the preflight runs).
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, routed?: boolean }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, routed?: boolean, runStartIso?: string | null, headSha?: string | null }} input
  * @returns {string}
  */
 export function formatLintTscResultMarker({

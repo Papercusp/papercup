@@ -21,6 +21,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import { readGraderSelectionVia } from './acceptance-grading-authority';
 import {
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageGateVerdict,
@@ -56,6 +57,14 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
+// P-004: only the DURABLE READ is stubbed. The ranking kernel it feeds
+// (pickAuthoritativeGrading/gradingViaOf) stays real, so these cases exercise
+// the gate's actual ordering rather than a re-implementation of it — the read
+// is stubbed because it is the one part that needs a consult_state row.
+vi.mock('./acceptance-grading-authority', async (orig) => ({
+  ...(await orig<typeof import('./acceptance-grading-authority')>()),
+  readGraderSelectionVia: vi.fn(),
+}));
 // P-008's spec-coverage census is mocked here on purpose: this suite's subject is the
 // WIRING (does the acceptance gate refuse, waive under force, and carry the aggregate),
 // not the census itself — that has its own suite next to the module.
@@ -78,6 +87,7 @@ const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
 const mockLineageRelated = vi.mocked(areAcceptanceLineageRelated);
+const mockGraderVia = vi.mocked(readGraderSelectionVia);
 const mockSpecCoverage = vi.mocked(evaluatePlanSpecCoverageGate);
 
 const coverageVerdict = (over: Partial<PlanSpecCoverageGateVerdict> = {}): PlanSpecCoverageGateVerdict => ({
@@ -153,6 +163,10 @@ beforeEach(() => {
   // Safe default so a suite that never opts the P-008 flag in cannot trip over an
   // unstubbed mock if the flag mapping above is ever widened.
   mockSpecCoverage.mockResolvedValue(coverageVerdict());
+  // Default: no grading cascade provenance is on record, so every card ranks as
+  // floor-qualified — which is precisely the pre-P-004 latest-wins these cases
+  // were written against, and why they still express what they always did.
+  mockGraderVia.mockResolvedValue(new Map());
   // Default: the subject plan row exists and is a plain work plan (no exemption).
   mockPg.mockReturnValue(
     sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null, content: null }]),
@@ -489,6 +503,89 @@ describe('evaluatePlanAcceptanceGate', () => {
     mockRubric.mockResolvedValue(null);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+  });
+});
+
+describe('the floor-aware grader pick (unified-responder-selection-critique-and-grading-2026-08-30 P-004)', () => {
+  // Grading is a cascade of up to two graders (D-003 [owner]) and the second may
+  // be a below-floor minimum-fill (D-002 [owner]). These cases are about the one
+  // residual D-003 names: latest-wins would otherwise hand the verdict to the
+  // party the router did NOT match.
+  const floorCard = scorecard({ issueId: 'EI-floor', createdAt: '2026-08-25T01:00:00Z', createdBy: 'su-floor' });
+  const minimumCard = scorecard({ issueId: 'EI-min', createdAt: '2026-08-25T03:00:00Z', createdBy: 'su-min' });
+  const implementerAccept = scorecard({
+    issueId: 'EI-accept',
+    createdAt: '2026-08-25T02:00:00Z',
+    createdBy: 'su-implementer',
+    acceptance: { verdict: 'accept', reasoning: 'The independent grading meets the plan.' },
+  });
+
+  beforeEach(() => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+  });
+
+  it('a LATER minimum-fill card does not supersede the floor grading the implementer accepted', async () => {
+    mockScorecards.mockResolvedValue([minimumCard, implementerAccept, floorCard]);
+    mockGraderVia.mockResolvedValue(
+      new Map([
+        ['su-floor', 'floor' as const],
+        ['su-min', 'minimum' as const],
+      ]),
+    );
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-floor',
+      gradedVia: 'floor',
+    });
+  });
+
+  it('CONTROL (falsifiability, in-test — no tree mutation): relabel that same minimum-fill as ABOVE the floor and the identical fixture refuses', async () => {
+    // Nothing changes but one label. Under plain latest-wins the case above
+    // would already produce THIS verdict, so the pair proves the floor card wins
+    // there because of its selection provenance and not because of its dates.
+    mockScorecards.mockResolvedValue([minimumCard, implementerAccept, floorCard]);
+    mockGraderVia.mockResolvedValue(
+      new Map([
+        ['su-floor', 'floor' as const],
+        ['su-min', 'floor' as const],
+      ]),
+    );
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_not_recorded', gradedBy: 'su-min' });
+  });
+
+  it('where NO above-floor grader exists the minimum-fill grading still satisfies — and the verdict discloses it', async () => {
+    // D-002 accepts this knowingly and asks that it not be rediscovered as a
+    // surprise: the ship is allowed, and the reader is told the grading behind
+    // it came from a peer the router did not match.
+    mockScorecards.mockResolvedValue([
+      minimumCard,
+      scorecard({
+        issueId: 'EI-accept-min',
+        createdAt: '2026-08-25T04:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'Below-floor grading read and accepted.' },
+      }),
+    ]);
+    mockGraderVia.mockResolvedValue(new Map([['su-min', 'minimum' as const]]));
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-min',
+      gradedVia: 'minimum',
+    });
+  });
+
+  it('a grading with no cascade provenance reports gradedVia:null — ranked AS floor, never asserted to BE floor', async () => {
+    mockScorecards.mockResolvedValue([floorCard, implementerAccept]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: true, gradedBy: 'su-floor' });
+    expect(v.gradedVia).toBeNull();
+  });
+
+  it('reads the provenance for THIS rubric, in the RUBRIC’s workspace rather than the ambient one', async () => {
+    mockScorecards.mockResolvedValue([floorCard, implementerAccept]);
+    await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(mockGraderVia).toHaveBeenCalledWith('test-ws', 'ar-some-plan');
   });
 });
 

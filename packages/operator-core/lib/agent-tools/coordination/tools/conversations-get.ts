@@ -20,7 +20,7 @@ import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 export default defineTool({
   name: 'conversations:get',
   description:
-    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays "open" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting).',
+    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays "open" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).',
   guidance: {
     when: 'You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.',
     notWhen: 'Browsing many → conversations:list.',
@@ -65,11 +65,28 @@ export default defineTool({
       async (id) => {
         const detail = await getConversation(id, identity);
         if (!detail) return { ok: false as const, id, error: 'not_found' };
-        const { conversation: c, topics, posts, subscriber_count } = detail;
+        const { conversation: c, topics, posts, subscriber_count, resolvedFromPrefix } = detail;
         const consult = consultStates.get(id);
         return {
           ok: true as const,
           id,
+          /**
+           * EI-21914051456641891: `id` (the requested value, above) did NOT
+           * resolve as an exact match — it uniquely matched as a PREFIX of
+           * `conversation.id` (the real, full id, below). Ids are minted as
+           * `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`, and a durable
+           * citation (a plan `## Now`, a rubric methodRef) commonly gets
+           * hand-truncated to just the leading segment, which reads exactly
+           * like a complete short id — so an EXACT lookup on that truncated
+           * form used to return a clean, confident `not_found`
+           * indistinguishable from genuine absence. Present ONLY on that
+           * fallback path; cite `conversation.id` (the full id) from here on.
+           */
+          ...(resolvedFromPrefix
+            ? {
+                warning: `requested id '${resolvedFromPrefix}' did not exist as an exact conversation id — it matched uniquely as a PREFIX of the real id '${c.id}', and was resolved to it. This request likely came from a truncated/hand-typed citation; cite the full id ('${c.id}') going forward.`,
+              }
+            : {}),
           /**
            * Present ONLY for a consult conversation, so no existing consumer
            * shape changes. `conversation.state` above is the CONVERSATION's

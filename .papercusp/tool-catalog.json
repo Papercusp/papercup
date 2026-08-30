@@ -5284,7 +5284,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays \"open\" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting).",
+      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays \"open\" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).",
       "capabilities": [
         "coord:read"
       ],
@@ -25909,7 +25909,7 @@
           "POST"
         ]
       },
-      "description": "Full-text search rubrics by id / characteristic / title / description. Use before rubrics:propose to avoid a duplicate, or to locate an existing standard by keywords.",
+      "description": "Full-text search rubrics by id / characteristic / title / description. Use before rubrics:propose to avoid a duplicate, or to locate an existing standard by keywords. Default scope is kind:'standard' (acceptance rubrics — one per plan — are excluded so the shared library stays bounded); a 0-count result under a single-kind scope carries `scopeNote` when the OTHER kind actually matches, so a scoped-empty read is never mistaken for genuine absence — check it before concluding none exists / proposing a duplicate.",
       "capabilities": [
         "coord:read"
       ],

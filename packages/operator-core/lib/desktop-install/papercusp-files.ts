@@ -1104,6 +1104,21 @@ export const CC_HOOK_FILES = [
   // lookahead is exactly what separates a banned `0.04em` from the REQUIRED `letter-spacing: 0`,
   // so a drifted copy would fire on every compliant declaration in the tree.
   'posttooluse-css-design-primitives-nudge.mjs',
+  // frozen-candidate-compliance-enforcement-2026-08-30 P-004/P-005: PostToolUse (matcher
+  // "Edit|Write|MultiEdit") ADVISORY nudge when the edited path is one the FROZEN gate
+  // candidate is failing on. Under freeze-and-converge (D-007) every run RESUMES one frozen
+  // candidate, so a fix committed to `staging` lands ABOVE the sha under judgment: nothing
+  // fails, the gate keeps reporting the same red, and the author reports it fixed. Both are
+  // locally true. Measured 2026-08-30: 3 of 10 reds on candidate 4184805d were already fixed
+  // at tip. D-001 (ratified) rules out documentation/prose/tool-text/opt-in diagnostics for
+  // this class — all were tried and measurably did not hold — so the remedy has to fire
+  // without the agent knowing to ask. The gate-side detector
+  // (detectFrozenRepairSharedTreeCollision) has existed since P-009 but is REPORT-ONLY and
+  // speaks hours later, inside the gate, to whoever reads a diagnostic; this speaks
+  // milliseconds after the write while it is still the author's turn. Costs one failed read
+  // when nothing is frozen (no marker file ⇒ no DB round-trip), which is what makes it safe
+  // to fire on every edit fleet-wide.
+  'posttooluse-frozen-candidate-edit-nudge.mjs',
   // Shared python libs, NOT hooks: statusline-fleet.sh + posttooluse-objective-title.sh
   // import pc_tty, while the MCP response hooks import mcp_response. Omit either and
   // the importing hooks raise ImportError, fail OPEN, and silently lose their guard,
@@ -2673,6 +2688,20 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-css-design-primitives-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-css-design-primitives-nudge.mjs'),
+    });
+  // merge_frozen_candidate_edit_hook — PostToolUse (frozen-candidate-compliance-enforcement
+  // -2026-08-30 P-004/P-005), the desktop counterpart of install-standalone-mcp.sh:1090. Advisory
+  // only, and it MUST stay advisory: editing a failing path is often exactly right — what is wrong
+  // is doing it believing the gate will see it. Uses `fileWriteMatcher`, NOT the bare
+  // 'Edit|Write|MultiEdit' its neighbours above carry, and the difference is load-bearing here:
+  // psu agents are instructed to write through capability:edit/capability:write (those arrive as
+  // mcp__<server>__capability_edit/write — WI-38363), so the bare literal would go silent on the
+  // dominant write path on this box and leave the hook firing mostly for native-tool edits. A
+  // nudge that misses the writes agents actually make is the failure mode the file exists to stop.
+  if (has('posttooluse-frozen-candidate-edit-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-frozen-candidate-edit-nudge.mjs'), {
+      matcher: fileWriteMatcher,
+      hooks: cmd('posttooluse-frozen-candidate-edit-nudge.mjs'),
     });
   // merge_registry_census_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19401978567233485). Advisory only, and it MUST stay advisory: PostToolUse cannot block,
