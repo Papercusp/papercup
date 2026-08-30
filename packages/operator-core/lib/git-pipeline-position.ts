@@ -827,6 +827,15 @@ export function assessGateCandidate(input: {
     // candidate is NOT YET PUBLISHED, never a measured absence. Returning
     // `no-active-run` here handed callers permission to fire into that setup window.
     if (input.checkpointRunInFlight?.active === true) return 'candidate-not-yet-published';
+    // EI-21862849770458561: `checkpointRunInFlight === undefined/null` means the mapper
+    // (`mapCheckpointRunInFlight`) could not measure liveness at all (both its cache and
+    // live-lock reads came back empty/failed) — genuinely UNKNOWN, not a measured "not
+    // active". `checkpointRunInFlight?.active === true` above is false in that case too,
+    // so without this guard an unmeasured liveness read fell through to the same
+    // `no-active-run` branch as a confidently-measured absence, contradicting that code's
+    // own "a measured absence, not a failed read" meaning and steering a reader into
+    // firing release:checkpoint-run when a run could in fact still be in flight.
+    if (input.checkpointRunInFlight == null) return null;
     return input.verdictUnknownLegs.includes('changeInCandidate.judgingSha') ? null : 'no-active-run';
   }
   if (input.judgingShaSource !== 'retriage-marker' && input.judgingShaSource !== 'in-flight-candidate')

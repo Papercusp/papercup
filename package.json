@@ -237,6 +237,7 @@
     "lint:no-unhosted-remote-core": "node scripts/check-no-unhosted-remote-core.mjs",
     "lint:no-unthreaded-apply": "node scripts/check-no-unthreaded-apply.mjs",
     "lint:partial-index-alignment": "node scripts/check-partial-index-alignment.mjs",
+    "lint:partial-install": "node scripts/check-partial-install.mjs",
     "lint:no-undrained-stdout-exit": "node scripts/check-undrained-stdout-exit.mjs",
     "lint:no-undrained-stdout-exit:report": "node scripts/check-undrained-stdout-exit.mjs --report",
     "lint:typeless-reexport": "node scripts/check-typeless-reexport-trap.mjs",

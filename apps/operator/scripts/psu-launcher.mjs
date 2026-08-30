@@ -1273,6 +1273,17 @@ export const NATIVE_SCHEDULER_DENY_FLAG =
  * KEEPS the tool for a launch (also surfaced as a psu picker toggle + a
  * `fleet:launch-on-plan { allowSubagents }` arg). No longer follows the
  * native-scheduler-lockout D-003 human-keeps-it carve-out.
+ *
+ * ⚠ THIS DENY WORKS BECAUSE Task/Agent/Workflow ARE NATIVE TOOLS. Do NOT extend
+ * this (or any `--disallowedTools=` flag in this file) with an `mcp__*` entry
+ * expecting the tool to be withheld: an MCP tool executes SERVER-side, and the
+ * permitted `tools:invoke { name, args }` dispatches to it BY NAME without the
+ * server ever seeing the client's deny list — so one call re-reaches it. That is
+ * documented behaviour, not an exploit. An `mcp__*` deny here buys discovery
+ * friction, not confinement; a real boundary must be enforced server-side.
+ * Related trap: a deny is observably IDENTICAL to a never-seeded tool, so never
+ * confirm one without a same-server, same-tier control. Full write-up:
+ * /internal/docs/agent-insights/disallowed-tools-cannot-withhold-an-mcp-tool
  */
 export const NO_SUBAGENTS_DENY_FLAG = "--disallowedTools=Task,Agent,Workflow";
 

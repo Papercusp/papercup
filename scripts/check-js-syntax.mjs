@@ -39,7 +39,7 @@
  * (e.g. the desktop sidecar's monaco) whose baseline is unmeasured; this guard
  * ships ENFORCING because the `.mjs` baseline was measured clean first.
  */
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { availableParallelism } from 'node:os';
 import { resolve, dirname, isAbsolute } from 'node:path';
@@ -110,12 +110,71 @@ export function findJsSyntaxError(absPath) {
  */
 const LOAD_CHECK_CONFIG = { languageOptions: { ecmaVersion: 'latest', sourceType: 'module' }, rules: {} };
 
+/**
+ * A CONSTANT synthetic name, never the file's real path.
+ *
+ * Passing an absolute path here makes eslint treat the file as outside its base
+ * path and skip it: `verify` returns a message and `getSourceCode()` returns
+ * null, so the analyser silently examines NOTHING. That is how the first draft of
+ * this check reported every file clean — including a deliberately broken control.
+ * A bare basename cannot match an ignore pattern (it has no slash), and the name
+ * is never surfaced: offenders are reported against their real path.
+ */
+const LOAD_PROBE_FILENAME = 'check-js-syntax-load-probe.mjs';
+
+/**
+ * The load leg builds a full AST + scope graph; `node --check` only parses and
+ * retains nothing. That difference is not academic here: the tree contains a
+ * 44.7 MB vendored bundle (papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs),
+ * and scope-analysing it — 32 files wide, via availableParallelism() — exhausted the
+ * default 4 GB heap and killed the guard with a V8 OOM.
+ *
+ * 1 MB is chosen against the measured distribution, not guessed: the largest
+ * hand-edited `.mjs` in the tree is apps/operator/scripts/psu-launcher.mjs at 0.54 MB,
+ * and only 3 files exceed 0.5 MB. Everything this leg exists to protect stays in
+ * scope; what falls out is vendored bundles, which are not hand-edited and cannot
+ * acquire a glued-keyword typo from an interrupted refactor.
+ *
+ * Files over the cap are still fully covered by the `node --check` leg, and are
+ * REPORTED as skipped rather than folded silently into the ✓ — an unmeasured file
+ * quietly counted as clean is the exact defect this whole check was added to fix.
+ */
+export const LOAD_CHECK_MAX_BYTES = 1_000_000;
+
+/** The shared analysis both the calibration and the real check run. */
+function undeclaredWriteIn(linter, text) {
+  const messages = linter.verify(text, LOAD_CHECK_CONFIG, LOAD_PROBE_FILENAME);
+  if (messages.some((m) => m.fatal)) return { unparseable: true, hit: null };
+  const globalScope = linter.getSourceCode()?.scopeManager?.globalScope;
+  if (!globalScope) return { scopeUnavailable: true, hit: null };
+  const ref = globalScope.through.find((r) => r.isWrite?.());
+  return { hit: ref ? { line: ref.identifier?.loc?.start?.line ?? null, name: ref.identifier?.name ?? '<unknown>' } : null };
+}
+
 let linterPromise;
 function loadLinter() {
   // eslint is a declared root dependency (^10.4.1). Imported lazily so this module
   // stays importable by tests, and so a missing install surfaces as a NAMED failure
   // rather than an import-time crash of the whole guard.
-  linterPromise ??= import('eslint').then(({ Linter }) => new Linter());
+  linterPromise ??= import('eslint').then(({ Linter }) => {
+    const linter = new Linter();
+    // CALIBRATION — the instrument proves it still detects before it is trusted to
+    // report clean. A detector that has silently stopped detecting is the exact
+    // failure this whole check exists to fix, so it must not be possible here:
+    // the absolute-path bug above produced a perfectly clean run over a broken file.
+    const bad = undeclaredWriteIn(linter, 'undeclaredCalibrationTarget = 1;\n');
+    if (bad.hit?.name !== 'undeclaredCalibrationTarget') {
+      throw new Error(
+        'check-js-syntax: load-check CALIBRATION FAILED — the analyser did not flag a known undeclared write, ' +
+          'so a clean result from it would be meaningless. Refusing to run it.',
+      );
+    }
+    const good = undeclaredWriteIn(linter, 'const declared = 1;\nexport default declared;\n');
+    if (good.hit) {
+      throw new Error('check-js-syntax: load-check CALIBRATION FAILED — the analyser flagged a clean control.');
+    }
+    return linter;
+  });
   return linterPromise;
 }
 
@@ -129,16 +188,13 @@ function loadLinter() {
 export async function findJsLoadError(absPath, source) {
   const linter = await loadLinter();
   const text = source ?? readFileSync(absPath, 'utf8');
-  const messages = linter.verify(text, LOAD_CHECK_CONFIG, absPath);
-  if (messages.some((m) => m.fatal)) return null; // unparseable — findJsSyntaxError owns it
-  const globalScope = linter.getSourceCode()?.scopeManager?.globalScope;
-  if (!globalScope) {
+  const result = undeclaredWriteIn(linter, text);
+  if (result.unparseable) return null; // findJsSyntaxError owns the parse class
+  if (result.scopeUnavailable) {
     // A checker that cannot run must not turn a broken file into a clean one.
     throw new Error(`check-js-syntax: eslint scope graph unavailable for ${absPath} — the load check cannot run`);
   }
-  const hit = globalScope.through.find((ref) => ref.isWrite?.());
-  if (!hit) return null;
-  return { line: hit.identifier?.loc?.start?.line ?? null, name: hit.identifier?.name ?? '<unknown>' };
+  return result.hit;
 }
 
 async function mapPool(items, limit, fn) {
@@ -184,20 +240,72 @@ async function main() {
 
   const results = await mapPool(targets, Math.max(4, availableParallelism()), async (f) => {
     const abs = isAbsolute(f) ? f : resolve(ROOT, f);
-    return { f, hit: await findJsSyntaxError(abs) };
+    const parseHit = await findJsSyntaxError(abs);
+    // A file that does not PARSE cannot be scope-analysed, and reporting one break
+    // as two offenders would misstate the count. The parse leg owns those.
+    let loadHit = null;
+    let loadCheckError = null;
+    let loadSkippedBytes = null;
+    if (!parseHit) {
+      try {
+        const { size } = statSync(abs);
+        // Stat BEFORE reading: the 44.7 MB bundle must never be read or parsed here.
+        if (size > LOAD_CHECK_MAX_BYTES) loadSkippedBytes = size;
+        else loadHit = await findJsLoadError(abs);
+      } catch (e) {
+        loadCheckError = e?.message ?? String(e);
+      }
+    }
+    return { f, parseHit, loadHit, loadCheckError, loadSkippedBytes };
   });
 
-  const offenders = results.filter((r) => r.hit).map((r) => `${r.f}:${r.hit.line ?? '?'}  ${r.hit.reason}`);
+  const parseOffenders = results
+    .filter((r) => r.parseHit)
+    .map((r) => `${r.f}:${r.parseHit.line ?? '?'}  ${r.parseHit.reason}`);
+  const loadOffenders = results
+    .filter((r) => r.loadHit)
+    .map((r) => `${r.f}:${r.loadHit.line ?? '?'}  ReferenceError on load — assignment to undeclared binding '${r.loadHit.name}'`);
+  // A leg that could not RUN is not a pass; it is an unmeasured file.
+  const unrunnable = results.filter((r) => r.loadCheckError).map((r) => `${r.f}  ${r.loadCheckError}`);
 
-  if (offenders.length === 0) {
-    console.log(`✓ all ${targets.length} tracked .mjs parse cleanly (node --check)${scopeNote}.${describeUnscanned(unscanned)}`);
+  // Named, never silent: a file the load leg did not measure must not read as one it cleared.
+  const loadSkipped = results.filter((r) => r.loadSkippedBytes);
+  const skipNote = loadSkipped.length
+    ? `\n  load check skipped for ${loadSkipped.length} file(s) over ${(LOAD_CHECK_MAX_BYTES / 1e6).toFixed(1)} MB` +
+      ` (parse-checked only): ${loadSkipped.map((r) => `${r.f} (${(r.loadSkippedBytes / 1e6).toFixed(1)} MB)`).join(', ')}`
+    : '';
+
+  if (parseOffenders.length === 0 && loadOffenders.length === 0 && unrunnable.length === 0) {
+    console.log(
+      `✓ all ${targets.length} tracked .mjs parse AND load cleanly ` +
+        `(node --check + undeclared-write scope check)${scopeNote}.${describeUnscanned(unscanned)}${skipNote}`,
+    );
     process.exit(0);
   }
 
-  console.error(`✗ syntactically BROKEN .mjs module(s) — a hard \`node --check\` parse failure:\n`);
-  for (const o of offenders) console.error('    ' + o);
+  if (parseOffenders.length) {
+    console.error(`✗ syntactically BROKEN .mjs module(s) — a hard \`node --check\` parse failure:\n`);
+    for (const o of parseOffenders) console.error('    ' + o);
+  }
+
+  if (loadOffenders.length) {
+    console.error(
+      `${parseOffenders.length ? '\n' : ''}✗ UNLOADABLE .mjs module(s) — these PARSE, so \`node --check\` passes them,` +
+        `\n  but they throw ReferenceError the moment anything imports them (EI-21892432987434951):\n`,
+    );
+    for (const o of loadOffenders) console.error('    ' + o);
+  }
+
+  if (unrunnable.length) {
+    console.error(
+      `${parseOffenders.length || loadOffenders.length ? '\n' : ''}✗ load check COULD NOT RUN for ${unrunnable.length} file(s)` +
+        ` — unmeasured, which is not a pass:\n`,
+    );
+    for (const o of unrunnable) console.error('    ' + o);
+  }
+
   console.error(
-    `\n  ${offenders.length} offender(s) of ${targets.length} scanned. Until fixed, every test file that` +
+    `\n  ${parseOffenders.length + loadOffenders.length + unrunnable.length} offender(s) of ${targets.length} scanned. Until fixed, every test file that` +
       `\n  transitively imports one reds with a "coverage=complete" break set naming INNOCENT files.` +
       `\n  See EI-20035436440627349.`,
   );

@@ -1411,7 +1411,7 @@ export async function callToolWithPressureRetry(
         // ordinary request primitive with the protocol CallToolResult schema:
         // wire-shape validation remains, while the incompatible cached
         // full-output-schema check is correctly skipped for this partial view.
-        const { CallToolResultSchema } = await import('@modelcontextprotocol/sdk/types.js');
+        const { CallToolResultSchema } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js');
         return await client.request(
           { method: 'tools/call', params },
           CallToolResultSchema,
@@ -1833,6 +1833,82 @@ export function buildMcpUrl(operatorUrl, {
   return url;
 }
 
+const SDK_IMPORT_RETRY_TOTAL_MS = 150_000;
+const SDK_IMPORT_RETRY_INTERVAL_MS = 1_500;
+
+function isModuleNotFoundError(error) {
+  const code = error && typeof error === 'object' ? error.code : undefined;
+  return code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND';
+}
+
+/**
+ * EI-21860372620642128 — `npm run install:safe` rewrites shared node_modules
+ * IN PLACE while holding a repo-keyed fs mutex (scripts/lib/fs-mutex.mjs), so
+ * a ptool invocation launched during that window can hit a transiently
+ * missing `@modelcontextprotocol/sdk` deep import and fail outright, even
+ * though the identical import succeeds moments later once the install
+ * finishes (reproduced 2026-08-30: five ptool calls retried ~78-81 times over
+ * ~120s, then failed `Cannot find module`).
+ *
+ * ptool itself must never be wrapped in install:safe's own reader guard
+ * (EI-21267836337650976 / EI-21250765620092599 — that swallowed a completed
+ * write into a near-silent no-op), so this coordinates IN-PROCESS instead:
+ * on a MODULE_NOT_FOUND for one of these deep SDK imports, confirm — via the
+ * mutex's own non-blocking `peekFsMutexSync` diagnostic peek, never a
+ * blocking reader marker, which would reintroduce that exact class of hang —
+ * that an install:safe write is ACTUALLY in flight for this repo before
+ * retrying. A MODULE_NOT_FOUND with no install in flight is a genuine
+ * missing dependency and is rethrown immediately, unretried.
+ */
+export async function importSdkModuleWithInstallAwareness(
+  specifier,
+  {
+    doImport = (spec) => import(spec),
+    sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+    loadInstallMutex = () =>
+      Promise.all([
+        import('../../../scripts/lib/fs-mutex.mjs'),
+        import('../../../scripts/npm-install-safe.mjs'),
+      ]),
+    totalMs = SDK_IMPORT_RETRY_TOTAL_MS,
+    intervalMs = SDK_IMPORT_RETRY_INTERVAL_MS,
+  } = {},
+) {
+  const startedAt = Date.now();
+  let warned = false;
+  for (;;) {
+    try {
+      return await doImport(specifier);
+    } catch (error) {
+      if (!isModuleNotFoundError(error)) throw error;
+
+      let peek;
+      try {
+        const [{ peekFsMutexSync }, { repoLockName }] = await loadInstallMutex();
+        peek = peekFsMutexSync(repoLockName());
+      } catch {
+        // Best-effort diagnostic only — an unloadable helper (or a repo that
+        // predates this mutex) must never mask the real missing-module error.
+        throw error;
+      }
+      if (!peek.held) throw error;
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= totalMs) throw error;
+      if (!warned) {
+        warned = true;
+        const owner = peek.owner ?? {};
+        const ownerDetail = owner.pid ? ` (pid ${owner.pid}${owner.host ? `@${owner.host}` : ''})` : '';
+        console.error(
+          `ptool: ${specifier} is transiently missing while npm run install:safe rewrites shared ` +
+            `node_modules${ownerDetail} — waiting for it to finish instead of failing (EI-21860372620642128).`,
+        );
+      }
+      await sleep(Math.min(intervalMs, Math.max(0, totalMs - elapsed)));
+    }
+  }
+}
+
 /** Connect an MCP client to the operator's superuser endpoint. Returns the
  *  connected client; caller closes it.
  *
@@ -1844,8 +1920,8 @@ export function buildMcpUrl(operatorUrl, {
  *  arg (the newer EI-30 path). The flags are ALSO merged into the args object
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
 async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { timeoutMs } = {}) {
-  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  const { Client } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/streamableHttp.js');
   const tokenPaths = resolveTokenPaths({ tokenFile });
   const token = readToken({ tokenFile });
   if (!token) {
