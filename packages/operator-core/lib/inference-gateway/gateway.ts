@@ -6084,10 +6084,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return iterable;
     };
 
+    // `AccountPool.active()` ADVANCES the round-robin — that is why the contract
+    // also carries a non-advancing `peek()`. The bearer-vs-CLI resolution above has
+    // already spent this request's one `active()` call to decide it could serve at
+    // all, so letting the adapter's `selectInitial` call it again would advance the
+    // pool TWICE per request and start every unpinned request on the SECOND account.
+    // Replay that account for the initial selection and delegate everything after it.
+    const bearerPool = adapter.pool!;
+    let initialSelectionServed = false;
+    const kernelPool: AccountPool = {
+      active: () => {
+        if (initialSelectionServed) return bearerPool.active();
+        initialSelectionServed = true;
+        return active;
+      },
+      onExhausted: (exhaustedId, resetAt) => bearerPool.onExhausted(exhaustedId, resetAt),
+      select: (accountId) => bearerPool.select?.(accountId) ?? null,
+    };
+
     const kernelAdapter = createCodexBearerKernelAdapter({
       // By here the `if (cli) { …; return }` above has served every CLI-bridge case,
       // and the no-pool case 503'd, so both of these are resolved.
-      pool: adapter.pool!,
+      pool: kernelPool,
       upstreamBase: adapter.upstreamBase!,
       urlPath: url,
       method: req.method ?? 'POST',
@@ -6129,7 +6147,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       },
       fetch: async (target, init) => {
         const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
-        if (init.body) fetchInit.body = init.body;
+        // The adapter types its buffered body as `Uint8Array<ArrayBufferLike>`, which
+        // is wider than `BodyInit` (that excludes a SharedArrayBuffer backing store).
+        // Every producer here is a plain `new Uint8Array(Buffer)`, so this is a cast
+        // rather than the per-attempt re-copy the widening would otherwise force.
+        if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
         const upstream = await doFetch(target, fetchInit as RequestInit);
         return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
