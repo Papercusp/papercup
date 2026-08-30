@@ -3307,10 +3307,17 @@ function codexTurnResubmitCrDelay(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS, CODEX_TURN_RESUBMIT_CR_DELAY_MS);
 }
 
-/** Backend-aware write plan for an injected turn. Codex receives one redundant
- *  delayed submit CR because the first CR can be consumed as input, leaving the
- *  turn text visible but unsent. A `reset` (RESET-CONTEXT) is a turn PREFIXED by
- *  the backend's context-clear command (see resetWritesForAgent).
+function ompTurnResubmitCrDelay(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_OMP_RESUBMIT_CR_MS, CODEX_TURN_RESUBMIT_CR_DELAY_MS);
+}
+
+/** Backend-aware write plan for an injected turn. Codex and OMP receive one
+ *  redundant delayed submit CR because the first CR can be consumed as input,
+ *  leaving the turn text visible but unsent. OMP used to receive LF instead of
+ *  the terminal Enter byte; a real OMP 16.x session acknowledged the control
+ *  write but persisted no user message and produced no transcript at all.
+ *  A `reset` (RESET-CONTEXT) is a turn PREFIXED by the backend's context-clear
+ *  command (see resetWritesForAgent).
  *  @param {EnvironmentMap} [env]
  */
 export function controlWritesForAgent(decoded, agent, env = process.env) {
@@ -3320,13 +3327,11 @@ export function controlWritesForAgent(decoded, agent, env = process.env) {
 
   if (normalized === 'omp') {
     const crDelayMs = turnSubmitCrDelayForAgent(agent, env);
-    if (crDelayMs > 0) {
-      return [
-        { data: decoded.data, delayMs: 0 },
-        { data: '\n', delayMs: crDelayMs },
-      ];
-    }
-    return [{ data: decoded.data, delayMs: 0 }];
+    return [
+      { data: decoded.data, delayMs: 0 },
+      { data: '\r', delayMs: crDelayMs },
+      { data: '\r', delayMs: ompTurnResubmitCrDelay(env) },
+    ];
   }
 
   if (normalized !== 'codex') {
