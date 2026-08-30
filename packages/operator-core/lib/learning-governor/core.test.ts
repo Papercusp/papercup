@@ -88,6 +88,41 @@ describe('checkLoopVerdict — the D-004 unattended-refusal rule', () => {
   });
 });
 
+describe('checkLoopVerdict — the per-pot master switch (learning-pot-scope-gate D-001)', () => {
+  it('refuses a perfectly healthy loop when its POT is switched off', () => {
+    // The lane is armed, budgeted and solvent — the only thing stopping it is
+    // the pot gate, which is exactly the control the owner asked for.
+    const v = checkLoopVerdict(reg({ budgetUsd: 10, spentUsd: 1 }), undefined, false);
+    expect(v).toEqual({ allow: false, reason: 'pot-disabled', remainingUsd: 9 });
+  });
+
+  it('reports pot-disabled rather than disabled when BOTH are off', () => {
+    // Precedence matters for the UI: the pot switch is the outer control, and
+    // the lane's own `disabled` flag is NOT what the gate set — reporting
+    // 'disabled' here would point the owner at the wrong switch.
+    expect(checkLoopVerdict(reg({ enabled: false }), undefined, false).reason).toBe('pot-disabled');
+  });
+
+  it('outranks exhausted and unbudgeted too', () => {
+    expect(checkLoopVerdict(reg({ budgetUsd: 10, spentUsd: 12 }), undefined, false).reason).toBe('pot-disabled');
+    expect(checkLoopVerdict(reg({ budgetUsd: null }), undefined, false).reason).toBe('pot-disabled');
+  });
+
+  it('still refuses UNREGISTERED first — an unregistered loop has no pot to gate', () => {
+    expect(checkLoopVerdict(null, undefined, false).reason).toBe('unregistered');
+  });
+
+  it('changes NOTHING when the pot is enabled or unresolved', () => {
+    // R-5, at the verdict layer: an unresolved pot (undefined) is not a
+    // disabled pot, so every pre-gate call site keeps its exact behaviour.
+    const healthy = reg({ budgetUsd: 10, spentUsd: 1 });
+    expect(checkLoopVerdict(healthy, undefined, true)).toEqual({ allow: true, remainingUsd: 9 });
+    expect(checkLoopVerdict(healthy, undefined, undefined)).toEqual({ allow: true, remainingUsd: 9 });
+    expect(checkLoopVerdict(reg({ enabled: false }), undefined, true).reason).toBe('disabled');
+    expect(checkLoopVerdict(reg({ enabled: false }), undefined, undefined).reason).toBe('disabled');
+  });
+});
+
 describe('remainingLoopBudgetUsd', () => {
   it('lifetime = budget − spent; per-cycle = the cap; null budget = null', () => {
     expect(remainingLoopBudgetUsd(reg({ budgetUsd: 10, spentUsd: 3 }))).toBe(7);

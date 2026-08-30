@@ -22,6 +22,7 @@ import {
   recordLearningSpend,
   registerLearningLoop,
 } from './store';
+import { setPotLearningScope } from '../learning/pot-gate/store';
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -207,6 +208,43 @@ describe('governorCheck — the unattended-refusal lifecycle on live rows', () =
 
   it('disabled ⇒ refuse', async () => {
     await registerLearningLoop(sql, { workspaceId: WS, loopId: 'frontier:ekg', enabled: false });
+    expect((await governorCheck(sql, { workspaceId: WS, loopId: 'frontier:ekg' })).reason).toBe('disabled');
+  });
+});
+
+describe('governorCheck — the per-pot master switch (learning-pot-scope-gate D-001)', () => {
+  const POT = 'gated-pot';
+  const LOOP = 'frontier:in-a-pot';
+
+  it('allows a healthy loop while its pot has no scope row (fail-open, R-5)', async () => {
+    await registerLearningLoop(sql, { workspaceId: WS, loopId: LOOP, potSlug: POT, budgetUsd: 5 });
+    // Control for the two assertions below: without it, a gate that refused
+    // everything would look identical to a gate that works.
+    expect((await governorCheck(sql, { workspaceId: WS, loopId: LOOP })).allow).toBe(true);
+  });
+
+  it('refuses with pot-disabled once the pot is switched off — through the real relation', async () => {
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [POT], enabled: false, setBy: 'su-test' });
+    const v = await governorCheck(sql, { workspaceId: WS, loopId: LOOP });
+    expect(v.reason).toBe('pot-disabled');
+    expect(v.allow).toBe(false);
+  });
+
+  it('leaves the loop\'s OWN registration untouched, so switching the pot back on restores it', async () => {
+    // The lane never learns it was gated: `enabled` is still true and its
+    // budget is intact, which is why the restore needs no bookkeeping.
+    const reg = await getLearningLoop(sql, { workspaceId: WS, loopId: LOOP });
+    expect(reg?.enabled).toBe(true);
+    expect(reg?.budgetUsd).toBe(5);
+
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [POT], enabled: true, setBy: 'su-test' });
+    expect((await governorCheck(sql, { workspaceId: WS, loopId: LOOP })).allow).toBe(true);
+  });
+
+  it('does not gate a POT-LESS loop, whatever the scope table holds', async () => {
+    // frontier:ekg carries no pot_slug; a disabled row for some other pot must
+    // not reach it, or the gate would silently widen to every legacy loop.
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [POT], enabled: false, setBy: 'su-test' });
     expect((await governorCheck(sql, { workspaceId: WS, loopId: 'frontier:ekg' })).reason).toBe('disabled');
   });
 });

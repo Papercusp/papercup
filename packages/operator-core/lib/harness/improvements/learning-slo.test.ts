@@ -196,6 +196,24 @@ describe('governorStarvationSignals (D-004 starvation)', () => {
   it('honors the floor tunable', () => {
     expect(governorStarvationSignals([loop({ spentUsd: 8 })], { governorStarvationFloorUsd: 2.5 })).toHaveLength(1);
   });
+
+  it('stays silent for a loop whose POT is switched off (learning-pot-scope-gate D-001)', () => {
+    // A starvation signal asks the owner to raise a budget. Raising it for a pot
+    // they deliberately switched off is a false alarm — the loop did not
+    // "silently stop learning", it was stopped on purpose. A false alarm is a
+    // bug in the alarm, so the gate has to reach this reporting path too.
+    const inPot = loop({ potSlug: 'switched-off-pot' });
+    expect(governorStarvationSignals([inPot])).toHaveLength(1); // control: it IS starved
+    expect(governorStarvationSignals([inPot], {}, new Set(['switched-off-pot']))).toEqual([]);
+  });
+
+  it('excludes only the named pots, and never a pot-less loop', () => {
+    const potted = loop({ potSlug: 'pot-a' });
+    const potless = loop({ potSlug: null });
+    expect(governorStarvationSignals([potted, potless], {}, new Set(['pot-b']))).toHaveLength(2);
+    // A pot-less loop cannot be gated by a pot switch — it must keep reporting.
+    expect(governorStarvationSignals([potless], {}, new Set(['pot-a', 'pot-b']))).toHaveLength(1);
+  });
 });
 
 describe('memoryZeroHitSignalsFromAggregate (B-10 telemetry spike)', () => {

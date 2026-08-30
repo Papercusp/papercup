@@ -137,6 +137,17 @@ describe('isEligibleAutoloop — the hard cost guard', () => {
     expect(isEligibleAutoloop(autoloop({ budgetUsd: 10, spentUsd: 9.5 }), floor)).toBe(false); // exactly the floor
     expect(isEligibleAutoloop(autoloop({ budgetUsd: 10, spentUsd: 9.4 }), floor)).toBe(true); // 0.60 left
   });
+
+  it('rejects a perfectly healthy autoloop whose POT is switched off (D-001)', () => {
+    // Gym's governor rows are enforcement:'native', so THIS predicate is gym's
+    // only gate — if the switch does not bite here it does not bite at all.
+    expect(isEligibleAutoloop(autoloop(), floor, false)).toBe(false);
+  });
+
+  it('defaults to enabled when no pot verdict is passed — the pre-gate behaviour (R-5)', () => {
+    expect(isEligibleAutoloop(autoloop(), floor)).toBe(true);
+    expect(isEligibleAutoloop(autoloop(), floor, true)).toBe(true);
+  });
 });
 
 describe('remainingBudgetUsd', () => {
@@ -196,6 +207,47 @@ describe('runGymAutoloopTick — selection + bounds', () => {
     await runGymAutoloopTick(deps);
     expect(rec.cycleReqs[0].budgetUsd).toBeCloseTo(7.5);
     expect(rec.cycleReqs[0].workspaceId).toBe('ws-1');
+  });
+
+  it('skips candidates whose pot is switched off, and reports pot-disabled (D-001)', async () => {
+    const { deps, rec } = makeDeps([autoloop({ harnessSlug: 'gated-pot' })], {
+      disabledPots: async () => new Set(['gated-pot']),
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('idle');
+    // Distinct from 'no-eligible-autoloop': the candidate WAS eligible.
+    expect(out.reason).toBe('pot-disabled');
+    expect(rec.cycleReqs).toHaveLength(0); // and it must not have spent
+  });
+
+  it('still runs the pots that are NOT switched off', async () => {
+    const { deps, rec } = makeDeps(
+      [autoloop({ harnessSlug: 'gated-pot', lastCycleAt: 100 }), autoloop({ harnessSlug: 'live-pot', lastCycleAt: 900 })],
+      { disabledPots: async () => new Set(['gated-pot']) },
+    );
+    const out = await runGymAutoloopTick(deps);
+    // 'gated-pot' is least-recently-run, so without the gate it would have won.
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('live-pot');
+    expect(rec.cycleReqs.map((r) => r.harnessSlug)).toEqual(['live-pot']);
+  });
+
+  it('fails OPEN when the pot gate cannot be read — never a fleet-wide learning outage', async () => {
+    // R-5's posture at the tick layer: an unreadable gate must not stop gym.
+    const { deps, rec } = makeDeps([autoloop({ harnessSlug: 'some-pot' })], {
+      disabledPots: async () => {
+        throw new Error('pot gate unreachable');
+      },
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(rec.cycleReqs).toHaveLength(1);
+  });
+
+  it('is unchanged when the pot gate dep is unwired', async () => {
+    // The hermetic contract the other optional gates keep: no dep ⇒ no filter.
+    const { deps } = makeDeps([autoloop({ harnessSlug: 'some-pot' })]);
+    expect((await runGymAutoloopTick(deps)).action).toBe('ran');
   });
 
   it('respects a custom budget floor', async () => {

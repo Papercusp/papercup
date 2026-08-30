@@ -113,6 +113,9 @@ export function formatCandidateDirections(
 // Eligibility + round-robin selection
 // ---------------------------------------------------------------------------
 
+/** Shared empty set — the unwired / read-failed pot gate, allocated once. */
+const EMPTY_POT_SET: ReadonlySet<string> = new Set<string>();
+
 /** Remaining budget for an autoloop row; null when no explicit cap is set. */
 export function remainingBudgetUsd(cfg: Pick<GymAutoloopConfig, 'budgetUsd' | 'spentUsd'>): number | null {
   return cfg.budgetUsd === null ? null : cfg.budgetUsd - cfg.spentUsd;
@@ -122,9 +125,20 @@ export function remainingBudgetUsd(cfg: Pick<GymAutoloopConfig, 'budgetUsd' | 's
  * Tick eligibility: enabled AND idle AND an EXPLICIT budget with remaining
  * above the floor. (Null budget = ineligible: the unattended path refuses to
  * spend without a cap — the hard cost guard.)
+ *
+ * `potEnabled` is the per-pot master switch (learning-pot-scope-gate-2026-08-30
+ * D-001). Gym's governor rows are `enforcement:'native'`, meaning THIS predicate
+ * IS gym's gate — routing gym through the governor's own `pot-disabled` refusal
+ * would gate nothing — so the switch has to be applied right here. Omitted ⇒
+ * enabled, which is both R-5's fail-open default and the pre-gate behaviour.
  */
-export function isEligibleAutoloop(cfg: GymAutoloopConfig, budgetFloorUsd: number): boolean {
+export function isEligibleAutoloop(
+  cfg: GymAutoloopConfig,
+  budgetFloorUsd: number,
+  potEnabled: boolean = true,
+): boolean {
   if (!cfg.enabled) return false;
+  if (!potEnabled) return false;
   if (cfg.status !== 'idle') return false;
   const remaining = remainingBudgetUsd(cfg);
   return remaining !== null && remaining > budgetFloorUsd;
@@ -221,6 +235,21 @@ export interface GymTickDeps {
    */
   isBlueprintRetired?(harnessSlug: string): Promise<BlueprintRetirementInfo | null>;
   /**
+   * The per-pot learning master switch (learning-pot-scope-gate-2026-08-30
+   * D-001): the pots switched OFF in this workspace (live wiring:
+   * `disabledPotSlugs` over harness_shared.learning_pot_scope). Gym's
+   * `harness_slug` IS the pot slug — per-hive by construction, the same
+   * assumption the governor mirror already makes when it ledgers gym spend
+   * (`potSlug: input.ran.harnessSlug`) — so the set is matched against it
+   * directly. One indexed read per tick, not one per candidate.
+   *
+   * Same optional-predicate shape as the two gates above: unwired ⇒ no filter
+   * (the hermetic unit-test contract is unchanged), and a read failure fails
+   * OPEN — a pot gate that cannot be read must not stop the fleet learning,
+   * which is R-5's whole posture.
+   */
+  disabledPots?(): Promise<ReadonlySet<string>>;
+  /**
    * P-030 (B-09): finalize due post-acceptance champion-outcome windows
    * (live wiring: finalizePendingChampionOutcomes — cheap SQL, no LLM).
    * Optional; returns the finalized count. Failures log, never fail the tick.
@@ -237,7 +266,15 @@ export interface GymTickOutcome {
    *  single runner for, so THIS node stood down. 'blueprint-retired' (WI-5645):
    *  eligible autoloops existed but every one's harness resolves to a RETIRED
    *  blueprint (itself or an ancestor). */
-  reason?: 'no-eligible-autoloop' | 'fire-gate-backoff' | 'not-hive-runner' | 'blueprint-retired';
+  /*  'pot-disabled' (learning-pot-scope-gate D-001): eligible autoloops existed
+   *  but every one belongs to a pot switched off at the per-pot master gate —
+   *  distinct from 'no-eligible-autoloop', which would read as "nothing to do". */
+  reason?:
+    | 'no-eligible-autoloop'
+    | 'fire-gate-backoff'
+    | 'not-hive-runner'
+    | 'blueprint-retired'
+    | 'pot-disabled';
   harnessSlug?: string;
   /** How many autoloops were eligible this tick (before the fire-gate walk). */
   eligibleCount: number;
@@ -326,7 +363,26 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     ...(outcomesFinalized !== undefined ? { outcomesFinalized } : {}),
   };
 
-  let eligiblePool = pool.filter((c) => isEligibleAutoloop(c, floor));
+  // The per-pot master switch (learning-pot-scope-gate D-001), read ONCE per
+  // tick. Fail-open on a read error: an unreadable pot gate must never become a
+  // fleet-wide learning outage (R-5), and the candidate simply stays eligible.
+  let disabledPots: ReadonlySet<string> = EMPTY_POT_SET;
+  if (deps.disabledPots) {
+    try {
+      disabledPots = await deps.disabledPots();
+    } catch (e) {
+      log(`pot-scope gate read failed — allowing every pot: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  let eligiblePool = pool.filter((c) => isEligibleAutoloop(c, floor, !disabledPots.has(c.harnessSlug)));
+
+  // Candidates existed but every one belongs to a pot the owner switched off.
+  // Reported distinctly (like 'not-hive-runner') so an idle tick does not read
+  // as "nothing to do" when the real answer is "you turned these pots off".
+  if (eligiblePool.length === 0 && disabledPots.size > 0 && pool.some((c) => isEligibleAutoloop(c, floor))) {
+    return { action: 'idle', reason: 'pot-disabled', eligibleCount: 0, gateBlocked: [], ...reclaimExtra };
+  }
 
   // P-020 cross-node single-runner: drop candidates whose Hive THIS node is not the
   // elected authority for, so a SHARED Hive's gym cycle fires on exactly one node

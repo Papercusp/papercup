@@ -296,7 +296,13 @@ export interface ScoutTickResult {
     | 'cycle-error'
     | 'workspace-ceiling'
     | 'not-hive-runner'
-    | 'no-capacity';
+    | 'no-capacity'
+    /** 'pot-disabled' (learning-pot-scope-gate-2026-08-30 D-001): the POT this
+     *  install learns for is switched off at the per-pot master gate. Scout had
+     *  no preflight refusal of its own before this — its only gate was the
+     *  routine's `active` flag — so this ADDS a refusal rather than passing a
+     *  parameter to an existing one. */
+    | 'pot-disabled';
   cycleId?: string;
   routedCount?: number;
   /** The fired cycle's reported LLM spend (cycle.costUsd) — FB-01 learning-governor ledgering. */

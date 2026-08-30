@@ -216,6 +216,22 @@ export interface ScoutCycleDeps {
    * gate resolves to run:true (authority / not-in-hive), so behaviour is unchanged.
    */
   hiveRunnerGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ run: boolean; reason?: string }>;
+  /**
+   * The per-pot learning master switch (learning-pot-scope-gate-2026-08-30
+   * D-001). Consulted FIRST — before every other gate — because it is the
+   * outermost control: when the owner switches a pot off, no Scout cycle for
+   * that pot may fire, whatever the cadence, ceiling or fire-gate say.
+   *
+   * This is a NEW refusal, not a parameter on an existing one. Scout has never
+   * had a preflight (see this file's header: "per-cycle cap + reported spend,
+   * never a preflight"); its only gate was the `scout-cycle` routine's `active`
+   * flag, which is workspace-wide and therefore cannot express "this pot only".
+   *
+   * Unwired ⇒ no gate (the hermetic unit-test contract, same as the two gates
+   * above), and the production wiring fails OPEN on a read error — R-5: an
+   * unreadable pot gate must not become a fleet-wide learning outage.
+   */
+  potGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ enabled: boolean }>;
 }
 
 /**
@@ -234,6 +250,20 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
       /* best-effort — observability never fails the tick */
     }
   };
+
+  // learning-pot-scope-gate D-001: the per-pot learning master switch, consulted
+  // BEFORE every other gate — it is the outermost control, and a pot the owner
+  // switched off must not spend a cycle for any reason. Unlike the ceiling gate
+  // below, a refusal here does NOT mirror the per-cycle cap to the governor: the
+  // pot is off, so there is no live sub-budget to keep current, and writing one
+  // would make a switched-off pot look like an active learner in the ledger.
+  if (deps.potGate) {
+    const pot = await deps.potGate({ workspaceId: input.workspaceId, installSlug: input.installSlug });
+    if (!pot.enabled) {
+      await note({ status: 'gated', gate: 'pot-disabled', detail: { reason: 'pot-disabled' } });
+      return { fired: false, reason: 'pot-disabled' };
+    }
+  }
 
   // P-019 (I3): the cross-node SINGLE-RUNNER gate — consulted FIRST, before any
   // cadence/budget/ceiling work. Scout's single-flight (autoloop.claimFire) is a

@@ -160,6 +160,14 @@ export async function runGymCycleInline(workspaceId: string): Promise<void> {
       // blueprint (or an ancestor) is retired — the hard cost guard for the exact
       // scenario EI-18177667809538623 hit (spend via a retired ancestor blueprint).
       isBlueprintRetired: (slug) => isHarnessBlueprintRetired(workspaceId, slug),
+      // learning-pot-scope-gate-2026-08-30 D-001: the per-pot learning master
+      // switch. Gym's governor rows are enforcement:'native', so the tick's own
+      // eligibility filter IS gym's gate — this is where the pot switch has to
+      // reach it. One indexed read per tick; an absent row means enabled.
+      disabledPots: async () => {
+        const { gymDisabledPots } = await import('../../learning/pot-gate/gates');
+        return gymDisabledPots(sql, workspaceId);
+      },
       // P-030 (B-09): settle elapsed post-acceptance champion-outcome windows each tick.
       finalizeOutcomes: () =>
         finalizePendingChampionOutcomes(sql, { workspaceId, log: (m) => console.log(`[gym-cycle] ${m}`) }),
