@@ -25,6 +25,8 @@
  *     `status` backtick token (EI-480)
  *   - supersession recorded (`superseded-by:` frontmatter / a "superseded by
  *     [[X]]" Now note) but status not `superseded` → warn (EI-154)
+ *   - terminal status (shipped/superseded) but non-terminal items remain
+ *     (todo/wip/blocked/needs-human) → warn (EI-21843057910518424)
  *
  * Returns { errors, warnings } per plan + overall pass/fail.
  */

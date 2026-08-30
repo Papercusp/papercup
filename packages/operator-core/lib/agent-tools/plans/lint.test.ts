@@ -757,6 +757,61 @@ describe('plans:lint — terminal_status_stale_now (WI-38303)', () => {
   });
 });
 
+describe('plans:lint — terminal_status_open_items (EI-21843057910518424)', () => {
+  // The plan-level lifecycle label vs. the child-item graph: a terminal
+  // status (shipped/superseded) with non-terminal items left behind. Measured
+  // live: 15+ papercusp plans, several with EVERY item still open despite a
+  // terminal label — a daily-digest census found a dozen-plus independently
+  // filed reports all naming this same mechanism.
+  const planDoc = (opts: { status: string; items: string }) =>
+    `---\ntitle: T\nslug: terminal-open-items-lint-test\nstatus: ${opts.status}\ncreated: 2026-08-30\n---\n\n` +
+    `# T\n\n## Now\n\n**State:** done\n\n**Next:** none\n\n## Phase 1\n\n${opts.items}\n\n## Decisions\n`;
+  const lintDoc = async (raw: string) => lintParsed(parsePlan(raw), 'terminal-open-items-lint-test', false);
+  const has = (r: { warnings: { code: string }[] }) =>
+    codes(r.warnings).includes('terminal_status_open_items');
+
+  it('warns when a SHIPPED plan still carries a todo item', async () => {
+    const r = await lintDoc(
+      planDoc({ status: 'shipped', items: '- **P-001** `done` build it\n- **P-002** `todo` write the last test' }),
+    );
+    expect(has(r)).toBe(true);
+    expect(codes(r.errors)).not.toContain('terminal_status_open_items'); // warning, never error
+    const msg = r.warnings.find((f) => f.code === 'terminal_status_open_items')!.message;
+    expect(msg).toMatch(/'shipped'/);
+    expect(msg).toMatch(/P-002/);
+  });
+
+  it('warns on a SUPERSEDED plan with blocked/wip/needs-human items too', async () => {
+    const r = await lintDoc(
+      planDoc({
+        status: 'superseded',
+        items: '- **P-001** `wip` in progress\n- **P-002** `blocked` waiting\n- **P-003** `needs-human` ask owner',
+      }),
+    );
+    expect(has(r)).toBe(true);
+    const msg = r.warnings.find((f) => f.code === 'terminal_status_open_items')!.message;
+    expect(msg).toMatch(/3 of its 3/);
+  });
+
+  it('does NOT warn when every item is done/dropped', async () => {
+    const r = await lintDoc(
+      planDoc({ status: 'shipped', items: '- **P-001** `done` built it\n- **P-002** `dropped` not needed' }),
+    );
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn on a live status — draft/ready/active plans are allowed open items', async () => {
+    for (const status of ['draft', 'ready', 'active']) {
+      expect(has(await lintDoc(planDoc({ status, items: '- **P-001** `todo` do a thing' })))).toBe(false);
+    }
+  });
+
+  it('does NOT warn on a terminal plan with no items at all', async () => {
+    const r = await lintDoc(planDoc({ status: 'shipped', items: '' }));
+    expect(has(r)).toBe(false);
+  });
+});
+
 describe('plans:lint — DAG parallelism diagnostics (WI-40832)', () => {
   const planDoc = (phases: string) =>
     `---\ntitle: DAG lint\nslug: dag-lint-test\nstatus: active\ncreated: 2026-08-23\n---\n\n` +
