@@ -379,6 +379,56 @@ export function coerceCompletionShape(raw: unknown): unknown {
 }
 
 /**
+ * EI-21868028531788587: `assumptions` is a SIBLING of `completion` (declared on
+ * `itemSpec.assumptions` in complete.ts), never a field of `CompletionRecordSchema`.
+ * An LLM caller naturally reaches for the adjacent, plausible-sounding location —
+ * "the assumptions THIS completion rests on" — and nests it inside `completion`
+ * instead. Because `CompletionRecordSchema` has no `assumptions` field, Zod 4's
+ * default strict-object behaviour rejects it as an unrecognized key, discarding a
+ * genuinely-finished unit of work's closing call exactly like the other LLM
+ * mis-shapes this file rescues (a bare-string completion, a scalar/array swap, a
+ * flat completion with no wrapper).
+ *
+ * Hoist ONLY when the top-level sibling is not already set — an explicit top-level
+ * `assumptions` always wins, and a caller who set BOTH gets the ordinary
+ * unrecognized-key refusal (a genuine disagreement, not a shape fumble; mirrors
+ * ASSUMPTIONS_CONTRADICTION_MESSAGE's rule of never silently resolving one side of
+ * a real conflict).
+ */
+function hoistCompletionAssumptions(item: Record<string, unknown>): Record<string, unknown> {
+  if (item.assumptions !== undefined) return item;
+  if (!isPlainObject(item.completion) || !('assumptions' in item.completion)) return item;
+  const completion = { ...item.completion };
+  const hoisted = completion.assumptions;
+  delete completion.assumptions;
+  return { ...item, completion, assumptions: hoisted };
+}
+
+/**
+ * Apply {@link hoistCompletionAssumptions} across BOTH call shapes: the single-
+ * complete shorthand (assumptions belongs beside `completion` at the top level)
+ * and the bulk `items:[…]` form (assumptions belongs beside each item's own
+ * `completion`). Must run BEFORE the strict per-item schema sees the payload —
+ * wired into complete.ts's top-level preprocess, ahead of `gatherFlatCompletion`.
+ * A non-object `raw`/`completion`, or an object `completion` with no `assumptions`
+ * key, is returned unchanged (same reference where nothing needed rescuing).
+ */
+export function hoistMisplacedAssumptions(raw: unknown): unknown {
+  if (!isPlainObject(raw)) return raw;
+  if (Array.isArray(raw.items)) {
+    let changed = false;
+    const items = raw.items.map((it) => {
+      if (!isPlainObject(it)) return it;
+      const hoisted = hoistCompletionAssumptions(it);
+      if (hoisted !== it) changed = true;
+      return hoisted;
+    });
+    return changed ? { ...raw, items } : raw;
+  }
+  return hoistCompletionAssumptions(raw);
+}
+
+/**
  * Rescue a FLAT completion at the top-level args boundary: when the caller passed
  * completion fields directly on the args (no `completion` wrapper) alongside an
  * `id`, gather them into `completion` so the single-complete shorthand validates

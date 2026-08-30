@@ -550,6 +550,55 @@ describe('composeDispatch', () => {
       expect(res.skippedItems).toBeUndefined();
       expectQueuedWake(res);
     });
+
+    describe('EI-21868454553879365: DAG-blocked descendants (raw stored status disagrees with blocked-by)', () => {
+      it('drops a descendant stored "todo" whose blocked-by dependency is unresolved — the reported regression', async () => {
+        // Exact reproduction shape: P-511 is stored 'todo' (nothing ever flagged
+        // it 'blocked' by hand) but declares blocked-by: P-508, and P-508 itself
+        // is still 'todo' (unresolved). The pre-fix guard only read P-511's own
+        // raw itemStatus ('todo') and let it through — this is the bug.
+        const { call, calls } = mockCall({
+          'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+          'plan_items:status': {
+            items: [
+              { itemId: 'P-508', itemStatus: 'todo', blockedBy: [], claim: null },
+              { itemId: 'P-511', itemStatus: 'todo', blockedBy: ['P-508'], claim: null },
+            ],
+          },
+          'plan_items:assign': { ok: true, results: [{ ok: true }] },
+          'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+        });
+        const res = await composeDispatch({ ...baseArgs, items: ['P-508', 'P-511'] }, call);
+
+        // P-508 is a genuinely open (unblocked) todo item, so it is legitimately
+        // assignable itself — only P-511 (the DAG-blocked descendant) is skipped.
+        const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+        expect(assignCall?.args).toMatchObject({ itemIds: ['P-508'] });
+        expect(res.assigned?.items).toEqual(['P-508']);
+        expect(res.skippedItems).toEqual([
+          { item: 'P-511', reason: expect.stringMatching(/blocked by unresolved dependency \(P-508\)/) },
+        ]);
+      });
+
+      it('assigns a descendant whose blocked-by dependency has already resolved (done) — no false positive', async () => {
+        const { call, calls } = mockCall({
+          'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+          'plan_items:status': {
+            items: [
+              { itemId: 'P-508', itemStatus: 'done', blockedBy: [], claim: null },
+              { itemId: 'P-511', itemStatus: 'todo', blockedBy: ['P-508'], claim: null },
+            ],
+          },
+          'plan_items:assign': { ok: true, results: [{ ok: true }] },
+          'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+        });
+        const res = await composeDispatch({ ...baseArgs, items: ['P-511'] }, call);
+
+        const assignCall = calls.find((c) => c.name === 'plan_items:assign');
+        expect(assignCall?.args).toMatchObject({ itemIds: ['P-511'] });
+        expect(res.skippedItems).toBeUndefined();
+      });
+    });
   });
 });
 

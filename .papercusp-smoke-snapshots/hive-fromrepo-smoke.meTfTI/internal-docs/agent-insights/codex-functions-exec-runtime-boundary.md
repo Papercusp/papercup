@@ -1,0 +1,54 @@
+# Codex functions.exec is a V8 isolate: use session-preserving recovery paths
+URL: /internal/docs/agent-insights/codex-functions-exec-runtime-boundary
+
+Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion and raw markdown backticks out of outer JS template literals, and use tracked-session ptool for authenticated local agent-tools verification.
+
+# The boundary
+
+Codex `functions.exec` is a V8 execution isolate, not a Node.js child process. In that runtime, `typeof process` is `undefined`, so a replay snippet that reads `process.env.PAPERCUSP_SUPERUSER_TOKEN` cannot construct an authenticated HTTP request. This is a runtime boundary, not evidence that the operator endpoint or bearer token is invalid.
+
+# JavaScript template literals do not defer shell expansion
+
+The JavaScript passed to `functions.exec` is evaluated before its nested `exec_command` call starts. Shell syntax such as `${PAPERCUSP_WORKSPACE}` is therefore dangerous inside an outer JavaScript template literal: V8 tries to resolve it as a JavaScript identifier first and can throw `ReferenceError` before `ptool` or the shell runs.
+
+Raw markdown backticks are the other parse-time hazard. If a command is assembled inside an outer JavaScript template literal, an unescaped backtick in prose or a markdown work-item comment closes that outer literal before `exec_command` is dispatched, producing a `SyntaxError` and zero nested-tool calls. This is a client-wrapper parse failure, not a Papercusp endpoint failure.
+
+Keep shell commands and JSON payloads in ordinary JavaScript strings or structured objects. For a payload that may contain markdown punctuation, stringify the object and concatenate the shell command instead of embedding the payload in a template literal:
+
+```js
+const payload = { body: "A comment containing `markdown` and an apostrophe" };
+const cmd = "ptool work_items:comment --json - " + JSON.stringify(payload);
+```
+
+Keep the shell command in a normal JavaScript string when it contains shell environment expansion:
+
+```js
+const cmd = "ptool tools:find --json - \"${PAPERCUSP_WORKSPACE}\"";
+```
+
+If a JavaScript template literal is necessary, escape the dollar sign so V8 emits the shell expression literally:
+
+```js
+const cmd = `ptool tools:find --json - \"\${PAPERCUSP_WORKSPACE}\"`;
+```
+
+The first form avoids JavaScript interpolation entirely; the second produces a literal `${PAPERCUSP_WORKSPACE}` for the shell to expand. This is separate from `ptool`'s own workspace resolution and does not change the authenticated recovery paths below.
+
+# Supported recovery paths
+
+Use a session-aware route:
+
+* Call `capability:fetch` directly through the Papercusp MCP surface when the target endpoint is public or the caller supplies the target service's own safe headers. `capability:fetch` is a generic outbound request and deliberately does **not** forward the calling MCP/superuser bearer to arbitrary URLs.
+* For authenticated local Papercusp HTTP projections, use the tracked-session `ptool` CLI. It carries the current `PAPERCUSP_SID`, resolves workspace scope, and reads the managed superuser bearer inside its transport process. This is the supported way to verify staging `/api/agent-tools/*` routes such as `release:trace`; do not paste the bearer into a replay script or prompt. For payloads containing normal prose or apostrophes, send JSON through stdin:
+
+```bash
+ptool release:trace --url=http://127.0.0.1:3170 --json - <<'EOF'
+{"path":"packages/operator-core/lib/agent-tools/release/trace.ts"}
+EOF
+```
+
+# Verification and port caveat
+
+On 2026-08-12, a direct `capability:fetch` POST to staging `/api/agent-tools/release/trace` returned HTTP 500 `handler_error` because the nested request had no verified power-user, principal, or signed-spawn identity. `ptool release:trace --url=http://127.0.0.1:3170` succeeded with the same target, proving the transport/authentication distinction. A direct `capability:fetch` health request can still return HTTP 200; that does not prove an authenticated agent-tools projection will accept the nested request.
+
+`:3070` serves green `main`; use pipeline position and a fresh deployment check before claiming that a recovery-related repository change is live there.

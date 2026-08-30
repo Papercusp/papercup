@@ -1,0 +1,16 @@
+{
+  "version": "0.0.18",
+  "buildSha": "",
+  "reused": false,
+  "gitHead": "8555f0fcf67587d1580e67ce877b2a9dbb450cae",
+  "gitDirty": true,
+  "gitHeadAtEmit": "07d08d81d908acb47456ef3e85a4b2369c315dcc",
+  "gitDirtyAtEmit": true,
+  "releaseHostSha256": null,
+  "sidecar": null,
+  "builtAtUtc": "2026-08-30T16:07:00Z",
+  "artifacts": [
+    { "name": "serve.mjs", "bytes": 56223639, "sha256": "5d1369fd4d6bf54a4db3f7c8ee5059d34438bcc7825fa76068539342f92a47a9", "sig": false },
+    { "name": "bin/node", "bytes": 105653744, "sha256": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db", "sig": false }
+  ]
+}

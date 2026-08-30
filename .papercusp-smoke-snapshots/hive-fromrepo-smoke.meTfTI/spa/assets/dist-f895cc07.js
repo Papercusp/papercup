@@ -1,0 +1,1 @@
+import{o as s}from"./chunk-a1a4177d.js";import{t as n}from"./react-ea1d8b8b.js";import{t as c}from"./dist-222ed7b6.js";var i=s(n(),1);function d(a,e=globalThis?.document){const t=c(a);i.useEffect(()=>{const r=o=>{o.key==="Escape"&&t(o)};return e.addEventListener("keydown",r,{capture:!0}),()=>e.removeEventListener("keydown",r,{capture:!0})},[t,e])}export{d as t};

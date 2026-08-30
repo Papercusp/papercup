@@ -26,7 +26,7 @@ export default defineTool({
   profile: 'engineer',
   guidance: {
     when: 'User asks "what triggered this?", "show me the lineage of agent X", or you need the parent-child spawn graph for an Intel-panel-style view.',
-    notWhen: 'For LIVE running spawns only, use `orchestrator.list_active`. spawn_tree is historical + structural; list_active is the now-snapshot.',
+    notWhen: 'For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot.',
   },
   capability: 'intel:read',
   args: z.object({

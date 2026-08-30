@@ -26,6 +26,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-parser';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText } from '../../limits';
@@ -300,17 +301,49 @@ export async function composeDispatch(
             items?: Array<{
               itemId: string;
               itemStatus: string | null;
+              /** Structured plan-DAG dependency ids (mergedPlanItemStates). Absent
+               *  on older/mocked envelopes — treated as no declared dependencies. */
+              blockedBy?: string[];
               claim: { owner?: string; ownerName?: string | null } | null;
             }>;
           }
         | undefined;
-      const byId = new Map((statusEnv?.items ?? []).map((it) => [it.itemId, it]));
+      const rawItems = statusEnv?.items ?? [];
+      const byId = new Map(rawItems.map((it) => [it.itemId, it]));
+      // EI-21868454553879365: `itemStatus` above is the RAW stored token. An item
+      // stored `todo` with an unresolved `blocked-by` dependency (e.g. P-511
+      // blocked-by unresolved P-508) reads itemStatus:'todo', so the old raw check
+      // (`itemStatus === 'blocked'`) missed exactly the case this guard exists to
+      // catch — a DAG-blocked descendant got assigned anyway, contradicting the
+      // tool's own documented "blocked descendants stay unassigned" guarantee.
+      // Resolve the DAG with the SAME resolver `plans:items`/`plans:get` use
+      // (plan-parser's resolveEffectiveStatusForItems — sticky stored 'blocked'
+      // token, cycle detection, and unresolved blocked-by chains all fold into
+      // one `effectiveStatus`), over the WHOLE item universe so each item's own
+      // blockers are resolvable, then gate on that instead of the raw token.
+      const synthetic: PlanItem[] = rawItems.map((it) => ({
+        id: it.itemId,
+        text: '',
+        storedStatus: (it.itemStatus ?? 'todo') as PlanItem['storedStatus'],
+        importance: 'normal',
+        blockedBy: it.blockedBy ?? [],
+        decisionRefs: [],
+        phase: null,
+        lineNumber: 0,
+        rawLine: '',
+      }));
+      const resolved = new Map(resolveEffectiveStatusForItems(synthetic).items.map((r) => [r.id, r]));
       const targetOwnerId = presenceOwnerId || args.to;
       const kept: string[] = [];
       for (const item of args.items) {
         const st = byId.get(item);
-        if (st?.itemStatus === 'needs-human' || st?.itemStatus === 'blocked') {
-          skippedItems.push({ item, reason: `item is ${st.itemStatus} (owner-gated) — not re-assigned` });
+        const eff = resolved.get(item);
+        if (eff && (eff.effectiveStatus === 'needs-human' || eff.effectiveStatus === 'blocked')) {
+          const reason =
+            eff.effectiveStatus === 'blocked' && eff.unresolvedBlockers.length > 0
+              ? `blocked by unresolved dependency (${eff.unresolvedBlockers.join(', ')}) — not re-assigned`
+              : `item is ${eff.effectiveStatus} (owner-gated) — not re-assigned`;
+          skippedItems.push({ item, reason });
           continue;
         }
         if (st?.claim?.owner && st.claim.owner !== targetOwnerId) {
