@@ -1133,7 +1133,9 @@ export default defineTool({
                     : incomingBody;
                 if (shouldAppendRefresh) autoAppendedRefresh = true;
                 const patchedExistingChecks =
-                  (additiveChecks || preservePriorOnShrink) && suppliedChecks !== undefined && suppliedChecks.length > 0
+                  (additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace')) &&
+                  suppliedChecks !== undefined &&
+                  suppliedChecks.length > 0
                     ? patchExistingCheckEntries(suppliedChecks, prior, Date.now())
                     : null;
                 // EI-19944669306930709: under `append: true` the supplied rows are
@@ -1165,10 +1167,20 @@ export default defineTool({
                 // automatic concise-refresh retry is the exception: that retry is
                 // explicitly additive, so it carries the prior rows forward. Retiring a
                 // row while appending remains two calls, by design.
+                // EI-21851633473920728: `preservePriorOnShrink` exists to protect the
+                // BODY-shrink retry from silently evicting rows it never intended to
+                // touch — it must not also override an EXPLICIT `rowsMode:'replace'`.
+                // A caller who asked to retire stale rows and got a shrink-triggered
+                // retry is entitled to the SAME replace semantics (and the same
+                // ReplaceWouldDropError guard) the first attempt would have given them;
+                // silently downgrading to additive/merge here is what produced a
+                // self-contradicting `ok:true` with every supplied row reported as
+                // `checksNotRetained` while the stale carried rows were kept as `checks`.
+                const checksAdditiveOnThisWrite = additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace');
                 const effectiveChecks =
                   suppliedChecks === undefined
                     ? undefined
-                    : additiveChecks || preservePriorOnShrink
+                    : checksAdditiveOnThisWrite
                       ? [...suppliedChecks, ...orderCarriedForUnion(suppliedChecks, prior)]
                       : suppliedChecks;
                 // An empty additive list is a true no-op, including for legacy notes
@@ -1356,7 +1368,11 @@ export default defineTool({
                 // recovery shapes. It must not reject a legacy note that already carries
                 // more rows than the current cap; there are no supplied rows to evict.
                 if (suppliedChecks.length === 0) return null;
-                if (!(additiveChecks || preservePriorOnShrink)) return null;
+                // EI-21851633473920728: an explicit rowsMode:'replace' must not be
+                // pulled into additive/preserve-carried handling just because the
+                // body-shrink retry set `preservePriorOnShrink` — see the matching
+                // note on `checksAdditiveOnThisWrite` above.
+                if (!(additiveChecks || (preservePriorOnShrink && rowsMode !== 'replace'))) return null;
                 const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
                 if (overflowCount === 0) return null;
                 /**
@@ -1408,6 +1424,22 @@ export default defineTool({
                 );
               }
             : null;
+        // EI-21851633473920728: shared so the shrink-retry below (which now honours an
+        // explicit rowsMode:'replace' instead of silently downgrading it to additive)
+        // reports the SAME refusal shape as the first attempt, rather than letting the
+        // error escape the retry uncaught.
+        const replaceWouldDropResponse = (error: ReplaceWouldDropError) => ({
+          ok: false as const,
+          id: it.id,
+          error: 'checkpoint_replace_would_drop_rows',
+          errorCode: 'checkpoint_replace_would_drop_rows',
+          retryable: true,
+          checksDropped: error.droppedChecks,
+          message:
+            "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
+            'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
+            'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+        });
         let res;
         try {
           res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
@@ -1422,20 +1454,7 @@ export default defineTool({
             ...depsOpt,
           });
         } catch (error) {
-          if (error instanceof ReplaceWouldDropError) {
-            return {
-              ok: false as const,
-              id: it.id,
-              error: 'checkpoint_replace_would_drop_rows',
-              errorCode: 'checkpoint_replace_would_drop_rows',
-              retryable: true,
-              checksDropped: error.droppedChecks,
-              message:
-                "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
-                'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
-                'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
-            };
-          }
+          if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
           throw error;
         }
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
@@ -1452,13 +1471,29 @@ export default defineTool({
         // `isPlainReplace`, hence no append, so it could never fire here anyway — and
         // arming an inert guard would break the invariant that this retry runs unguarded
         // except where a real loss is possible.
+        //
+        // EI-21851633473920728: an explicit rowsMode:'replace' keeps its replace
+        // semantics through this retry (see `checksAdditiveOnThisWrite` above), so a
+        // retry whose supplied rows would retire carried ones — without confirmRetire —
+        // must still be able to REFUSE, exactly like the first attempt. Left uncaught,
+        // that refusal would escape as an unhandled rejection instead of the same
+        // `checkpoint_replace_would_drop_rows` response the first attempt returns.
         if (res.blockedReason?.includes('plain replace would shrink') && isPlainReplace && !wantsConfirmShrink) {
           preservePriorOnShrink = true;
-          res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
-            ...(checksTransform ? { transform: checksTransform } : {}),
-            guard: composeGuards(bodyPreservationGuard, overflowGuard),
-            ...depsOpt,
-          });
+          try {
+            res = await setWorkItemCheckpointWithPrior(
+              { harness, workItemId: it.id, workspaceId },
+              checkpointToStore,
+              {
+                ...(checksTransform ? { transform: checksTransform } : {}),
+                guard: composeGuards(bodyPreservationGuard, overflowGuard),
+                ...depsOpt,
+              },
+            );
+          } catch (error) {
+            if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
+            throw error;
+          }
         }
         stored = res.stored;
         priorLength = res.priorLength;
