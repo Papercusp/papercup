@@ -43,7 +43,11 @@ export interface RawGatewayStats {
   /** The CONFIGURED admission-concurrency ceiling (AIMD recovers toward it). */
   concurrencyCap?: number;
   /** AIMD admission-concurrency state — `effective < cap` = currently throttled (sustained storm). */
-  aimd?: { effective?: number; cap?: number; floor?: number; decreases?: number };
+  /** `decreases` is scoped by `countersSinceMs` (epoch-ms of its last reset) and is NOT a lifetime count —
+   *  the gateway's per-lane view restarts it on every process restart. Both stay optional for deploy-skew:
+   *  a pre-EI-21842988251907640 gateway omits `countersSinceMs`, and absent must be read as UNKNOWN scope,
+   *  never as "lifetime". Do not difference `decreases` across two samples whose epochs differ. */
+  aimd?: { effective?: number; cap?: number; floor?: number; decreases?: number; countersSinceMs?: number };
   /** P-005/W3 slot-leak recurrence guard (D-001): count of self-heal sweeps where the held-slot counter
    *  and the in-flight registry disagreed in a way the valve could not reclaim — a leaked admission slot
    *  surfaced as a COUNTED signal. Optional (deploy-skew): a pre-P-005 gateway omits it → read as 0. */
@@ -86,8 +90,14 @@ export interface GatewayMetrics {
   aimdEffective: number | null;
   /** AIMD ceiling; null on a pre-AIMD gateway. */
   aimdCap: number | null;
-  /** Lifetime AIMD multiplicative-decrease count (a climbing value = an active storm); null pre-AIMD. */
+  /** AIMD multiplicative-decrease count SINCE `aimdCountersSinceMs` — NOT a lifetime count (EI-21842988251907640).
+   *  A climbing value across samples with the SAME epoch = an active storm; null pre-AIMD. */
   aimdDecreases: number | null;
+  /** Epoch-ms that bounds `aimdDecreases` — when that counter last reset (gateway process restart / lane
+   *  registration). REQUIRED so the bounded number can never travel without its bound; `null` means the
+   *  gateway did not report one, which is UNKNOWN scope, never "lifetime". A change in this value between
+   *  two samples means the counter RESET, so a drop in `aimdDecreases` is a restart, not a recovery. */
+  aimdCountersSinceMs: number | null;
   /** P-005/W3 slot-leak recurrence guard (D-001): count of un-reclaimable slot-reconcile mismatches. 0 on a
    *  pre-P-005 gateway (deploy-skew) or in healthy operation; any positive value = a leaked admission slot. */
   slotReconcileMismatch: number;
@@ -188,6 +198,9 @@ export function summarizeGatewayMetrics(stats: RawGatewayStats): GatewayMetrics 
     aimdEffective: typeof stats.aimd?.effective === 'number' ? stats.aimd.effective : null,
     aimdCap: typeof stats.aimd?.cap === 'number' ? stats.aimd.cap : null,
     aimdDecreases: typeof stats.aimd?.decreases === 'number' ? stats.aimd.decreases : null,
+    // EI-21842988251907640: carry the EPOCH alongside the counter. Extracting `decreases` without it is
+    // what let a per-process 0 be read as "never contracted"; a pre-fix gateway omits it → null = UNKNOWN.
+    aimdCountersSinceMs: typeof stats.aimd?.countersSinceMs === 'number' ? stats.aimd.countersSinceMs : null,
     slotReconcileMismatch: n(stats.slotReconcileMismatch),
   };
 }
