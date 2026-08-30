@@ -26337,7 +26337,7 @@
           "POST"
         ]
       },
-      "description": "Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the \"is the data layer alive at all?\" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness).",
+      "description": "Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the \"is the data layer alive at all?\" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.",
       "capabilities": [
         "coord:read"
       ],
