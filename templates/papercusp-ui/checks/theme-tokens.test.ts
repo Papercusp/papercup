@@ -44,6 +44,16 @@ const RAW_HEX = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/g;
 
 const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
+/**
+ * Raw hex is permitted ONLY inside custom-property DEFINITIONS (`--x: …;`) —
+ * that is the D-011 per-app override layer (a calendar's `--today`, a distinct
+ * `--accent`), which defines the var for both modes and is theme-correct by
+ * construction. Hex in a USAGE position (background/color/border/shadow
+ * values) is the dark-flip hazard this check exists to catch.
+ */
+const stripCustomPropertyDefinitions = (line: string): string =>
+  line.replace(/--[A-Za-z0-9-]+\s*:\s*[^;{}]*/g, "");
+
 describe.skipIf(!section)("theme-tokens", () => {
   it("the generated tokens.css carries the 3-state light/dark/system model", () => {
     const css = readFileSync(inApp(section!.tokensCss), "utf8");
@@ -59,13 +69,13 @@ describe.skipIf(!section)("theme-tokens", () => {
     }
   });
 
-  it("app CSS contains no raw hex colors — every color routes through the semantic vars", () => {
+  it("app CSS contains no raw hex colors in usage positions — every color routes through the semantic vars", () => {
     const offenders: string[] = [];
     for (const rel of section!.appCss) {
       const path = inApp(rel);
       const lines = stripComments(readFileSync(path, "utf8")).split("\n");
       lines.forEach((line, i) => {
-        const hits = line.match(RAW_HEX);
+        const hits = stripCustomPropertyDefinitions(line).match(RAW_HEX);
         if (hits) offenders.push(`${rel}:${i + 1}: ${hits.join(" ")}`);
       });
     }
