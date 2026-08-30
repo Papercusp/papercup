@@ -34,11 +34,23 @@ describe('run-start capture', () => {
     mkdirSync(join(root, scope));
     const source = join(root, scope, 'source.ts');
     writeFileSync(source, 'committed');
-    execFileSync('git', ['init', '-q'], { cwd: root });
-    execFileSync('git', ['config', 'user.name', 'p2p provenance test'], { cwd: root });
-    execFileSync('git', ['config', 'user.email', 'p2p-provenance@example.invalid'], { cwd: root });
-    execFileSync('git', ['add', scope], { cwd: root });
-    execFileSync('git', ['commit', '-q', '-m', 'fixture'], { cwd: root });
+    execFileSync('git', ['init', '-q'], { cwd: root, timeout: 10_000, killSignal: 'SIGKILL' });
+    execFileSync('git', ['config', 'user.name', 'p2p provenance test'], {
+      cwd: root,
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
+    execFileSync('git', ['config', 'user.email', 'p2p-provenance@example.invalid'], {
+      cwd: root,
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
+    execFileSync('git', ['add', scope], { cwd: root, timeout: 10_000, killSignal: 'SIGKILL' });
+    execFileSync('git', ['commit', '-q', '-m', 'fixture'], {
+      cwd: root,
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     writeFileSync(source, 'dirty');
 
     const captured = captureRunProvenance({
