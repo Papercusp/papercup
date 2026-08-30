@@ -15,6 +15,7 @@ import {
   createOmpSuSessionAdapter,
   ompThreadIdFromTranscriptPath,
   openOmpSuSession,
+  resolveOmpSuRuntime,
   type OmpSuRuntimeBinding,
   type OmpSuSessionControls,
 } from './su-session-omp-adapter';
@@ -103,6 +104,15 @@ describe('OMP SU-session backend — PUI entry and native session translation', 
       expect(all.find((event) => event.type === 'card' && event.phase === 'opened' && event.card.correlationId === 'call-ask')).toMatchObject({ card: { prompt: 'Ship this change?', presentation: { kind: 'radio' } } });
       expect(all.find((event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === 'call-ask')).toMatchObject({ resolution: 'submitted' });
     } finally { adapter.dispose(); }
+  });
+
+  it('repairs a stale shared-home attach handle to the tracked per-row OMP home', async () => {
+    const returned = runtime(THREAD_A, '/home/test/.omp/agent').nativeSession;
+    const resolved = await resolveOmpSuRuntime(binding(returned));
+    expect(resolved?.nativeSession.agentHome).toMatch(
+      /\/\.papercusp\/su-omp-homes\/session-91\/agent$/,
+    );
+    expect(resolved?.nativeSession.agentHome).not.toBe('/home/test/.omp/agent');
   });
 
   it('maps interrupt/resume, preserves identity on replacement, and converges unexpected exit', async () => {

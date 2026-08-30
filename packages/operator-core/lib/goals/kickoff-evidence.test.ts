@@ -1,0 +1,232 @@
+/**
+ * WI-939561 — GOAL kickoff evidence must be a real, current-window dispatch
+ * gate rather than a prompt-only request.
+ */
+
+import { readFileSync } from 'node:fs';
+import type { Sql } from 'postgres';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  GOAL_KICKOFF_GUARDED_TOOLS,
+  GOAL_KICKOFF_REQUIRED_READS,
+  goalKickoffRefusalPayload,
+  isGoalKickoffGuardedTool,
+  readGoalKickoffEvidence,
+  type GoalKickoffRead,
+} from './kickoff-evidence';
+
+const WINDOW = '2026-08-29T21:40:51.000Z';
+const GOAL = 'work-on-everything-070565';
+const OWNER = 'su-goal-holder';
+const WS = 'papercusp-workspace';
+
+interface Fixture {
+  mode?:
+    | false
+    | {
+        subject?: string | null;
+        setAt?: string;
+        goalExists?: boolean;
+        standing?: boolean;
+        killCriterion?: string | null;
+      };
+  reads?: Partial<Record<GoalKickoffRead, string>>;
+  reportAt?: string | null;
+  reportGoalId?: string;
+  modeError?: string;
+  evidenceError?: string;
+}
+
+const completeReads = (): Record<GoalKickoffRead, string> => ({
+  'goals:list': '2026-08-29T21:41:00.000Z',
+  'pot:list': '2026-08-29T21:41:01.000Z',
+  'plans:list': '2026-08-29T21:41:02.000Z',
+  'search:semantic': '2026-08-29T21:41:03.000Z',
+});
+
+function mockSql(fixture: Fixture): Sql {
+  const fn = (first: unknown, ...values: unknown[]): unknown => {
+    // postgres.js also calls the Sql object as a normal function to build an IN
+    // fragment. The fake need only preserve a placeholder for the tagged query.
+    if (!Array.isArray(first) || !('raw' in (first as object))) return { values: first };
+    const text = (first as string[]).join('¤').replace(/\s+/g, ' ');
+
+    if (text.includes('FROM harness_shared.agent_modes')) {
+      if (fixture.modeError) return Promise.reject(new Error(fixture.modeError));
+      if (fixture.mode === false) return Promise.resolve([]);
+      const mode = fixture.mode ?? {};
+      const subject = mode.subject === undefined ? GOAL : mode.subject;
+      return Promise.resolve([
+        {
+          workspace_id: WS,
+          owner_id: OWNER,
+          axis_key: 'overlay:goal',
+          mode: 'goal',
+          reason: 'test',
+          set_by: OWNER,
+          owner_directed: true,
+          subject,
+          set_at: mode.setAt ?? WINDOW,
+        },
+      ]);
+    }
+
+    if (text.includes('FROM harness_shared.goals')) {
+      const mode = fixture.mode === false ? {} : (fixture.mode ?? {});
+      if (mode.goalExists === false) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          id: mode.subject === undefined ? GOAL : mode.subject,
+          standing: mode.standing ?? false,
+          kill_criterion: mode.killCriterion ?? null,
+        },
+      ]);
+    }
+
+    if (text.includes('FROM harness_shared.tool_invocations')) {
+      if (fixture.evidenceError) return Promise.reject(new Error(fixture.evidenceError));
+      return Promise.resolve(
+        Object.entries(fixture.reads ?? {}).map(([tool_name, invoked_at]) => ({ tool_name, invoked_at })),
+      );
+    }
+
+    if (text.includes('FROM harness_shared.coord_event_log')) {
+      if (fixture.evidenceError) return Promise.reject(new Error(fixture.evidenceError));
+      const latestReadAt = String(values[2]);
+      const requiredGoal = String(values[3]);
+      const reportGoal = fixture.reportGoalId ?? GOAL;
+      const reportAt = fixture.reportAt ?? null;
+      return Promise.resolve(
+        reportAt && reportGoal === requiredGoal && reportAt >= latestReadAt ? [{ ts: reportAt }] : [],
+      );
+    }
+
+    return Promise.resolve([]);
+  };
+  return fn as unknown as Sql;
+}
+
+async function read(fixture: Fixture) {
+  const flushTelemetry = vi.fn(async () => {});
+  const evidence = await readGoalKickoffEvidence({
+    workspaceId: WS,
+    ownerId: OWNER,
+    sql: mockSql(fixture),
+    flushTelemetry,
+  });
+  return { evidence, flushTelemetry };
+}
+
+describe('GOAL kickoff required-leg gate', () => {
+  for (const missing of GOAL_KICKOFF_REQUIRED_READS) {
+    it(`refuses when ${missing} is absent from the current GOAL window`, async () => {
+      const reads = completeReads();
+      delete reads[missing];
+      const { evidence } = await read({
+        reads,
+        reportAt: '2026-08-29T21:42:00.000Z',
+      });
+
+      expect(evidence.applies).toBe(true);
+      expect(evidence.complete).toBe(false);
+      expect(evidence.missing).toContain(missing);
+      // A report cannot be valid until every required read precedes it.
+      expect(evidence.missing).toContain('owner-report');
+    });
+  }
+
+  it('refuses when all reads exist but no owner-facing report follows them', async () => {
+    const { evidence } = await read({ reads: completeReads(), reportAt: null });
+    expect(evidence.complete).toBe(false);
+    expect(evidence.missing).toEqual(['owner-report']);
+  });
+
+  it('refuses a report that predates the last required read', async () => {
+    const { evidence } = await read({
+      reads: completeReads(),
+      reportAt: '2026-08-29T21:41:02.500Z',
+    });
+    expect(evidence.complete).toBe(false);
+    expect(evidence.missing).toEqual(['owner-report']);
+  });
+
+  it('refuses a report for a different goal subject', async () => {
+    const { evidence } = await read({
+      reads: completeReads(),
+      reportAt: '2026-08-29T21:42:00.000Z',
+      reportGoalId: 'some-other-goal',
+    });
+    expect(evidence.complete).toBe(false);
+    expect(evidence.missing).toEqual(['owner-report']);
+  });
+
+  it('positive control: admits a STANDING goal with all evidence and no kill criterion', async () => {
+    const { evidence, flushTelemetry } = await read({
+      mode: { standing: true, killCriterion: null },
+      reads: completeReads(),
+      reportAt: '2026-08-29T21:42:00.000Z',
+    });
+
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
+    expect(evidence).toMatchObject({
+      applies: true,
+      complete: true,
+      goalId: GOAL,
+      standing: true,
+      killCriterion: null,
+      missing: [],
+      ownerReportAt: '2026-08-29T21:42:00.000Z',
+    });
+  });
+
+  it('does not gate an ordinary caller or a goal-descendant without mode=goal', async () => {
+    const { evidence, flushTelemetry } = await read({ mode: false });
+    expect(evidence).toMatchObject({ applies: false, complete: false, missing: [] });
+    expect(flushTelemetry).not.toHaveBeenCalled();
+  });
+
+  it('fails closed after a GOAL row is known when its evidence ledger is unavailable', async () => {
+    const { evidence } = await read({ evidenceError: 'telemetry unavailable' });
+    expect(evidence.applies).toBe(true);
+    expect(evidence.complete).toBe(false);
+    expect(evidence.missing).toEqual(['evidence-unavailable']);
+    expect(evidence.degradedReason).toContain('telemetry unavailable');
+  });
+
+  it('names the exact recovery sequence and preserves standing-goal semantics in the refusal', async () => {
+    const { evidence } = await read({ mode: { standing: true }, reads: completeReads() });
+    const refusal = goalKickoffRefusalPayload('fleet:launch-on-plan', evidence);
+    expect(refusal.error).toBe('goal_kickoff_incomplete');
+    expect(refusal.message).toContain('goals:list, pot:list, plans:list, and search:semantic');
+    expect(refusal.message).toContain('no kill criterion is required');
+  });
+});
+
+describe('shared dispatch coverage', () => {
+  it('covers every create/launch/placement door named by WI-939561', () => {
+    expect(GOAL_KICKOFF_GUARDED_TOOLS).toEqual(
+      expect.arrayContaining([
+        'goals:create',
+        'pot:create',
+        'plans:new',
+        'plans:start',
+        'work_items:create',
+        'coord:dispatch',
+        'fleet:place_batch',
+        'fleet:launch-on-plan',
+        'capability:launch-agent',
+      ]),
+    );
+    for (const name of GOAL_KICKOFF_GUARDED_TOOLS) expect(isGoalKickoffGuardedTool(name)).toBe(true);
+    expect(isGoalKickoffGuardedTool('goals:list')).toBe(false);
+  });
+
+  it('wires the evaluator and telemetry flush at the one projected dispatch seam', () => {
+    const source = readFileSync(new URL('../projected-tool-deps.ts', import.meta.url), 'utf8');
+    expect(source).toContain('if (isGoalKickoffGuardedTool(toolName))');
+    expect(source).toContain('readGoalKickoffEvidence({');
+    expect(source).toContain('flushTelemetry: flushPendingTelemetry');
+    expect(source).toContain('goalKickoffRefusalPayload(toolName, evidence)');
+    expect(source).toContain('isError: true');
+  });
+});

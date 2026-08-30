@@ -57,6 +57,7 @@ import { readAgentStateStamp } from './agent-state-stamp';
 import { classifyCallOrigin } from './telemetry-call-origin';
 import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
+import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvidence } from './goals/kickoff-evidence';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -803,21 +804,73 @@ async function checkCapabilityEnvelopeImpl(input: {
  */
 const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => {
   const uic = ctx.uiClientId;
-  if (typeof uic !== 'string' || !uic.startsWith('llm-testing/')) return PASS_THROUGH;
-  const runId = uic.slice('llm-testing/'.length);
-  const override = getOverride(runId);
-  if (!override) return PASS_THROUGH;
-  const result = await override.override(toolName, args);
-  // `@papercusp/testing-shell`'s ToolDispatchOverride and `@papercusp/agent-mcp`'s
-  // ToolDispatchOverrideFn each define their OWN `Symbol('PASS_THROUGH')` sentinel —
-  // two distinct `unique symbol` values (a real bug the typecheck caught, not just a
-  // type annoyance: dispatch-stack.ts's invokeStep compares the override's return
-  // against the tooldef PASS_THROUGH via `!==`, so testing-shell's sentinel passing
-  // through UNTRANSLATED would fail that comparison and be rendered as a bogus
-  // ToolResult instead of falling through to the real handler). Translate at this
-  // boundary so both packages can keep their own symbol without a new cross-package
-  // dependency.
-  return result === TESTING_SHELL_PASS_THROUGH ? PASS_THROUGH : result;
+  if (typeof uic === 'string' && uic.startsWith('llm-testing/')) {
+    const runId = uic.slice('llm-testing/'.length);
+    const override = getOverride(runId);
+    if (!override) return PASS_THROUGH;
+    const result = await override.override(toolName, args);
+    // `@papercusp/testing-shell`'s ToolDispatchOverride and `@papercusp/agent-mcp`'s
+    // ToolDispatchOverrideFn each define their OWN `Symbol('PASS_THROUGH')` sentinel —
+    // two distinct `unique symbol` values (a real bug the typecheck caught, not just a
+    // type annoyance: dispatch-stack.ts's invokeStep compares the override's return
+    // against the tooldef PASS_THROUGH via `!==`, so testing-shell's sentinel passing
+    // through UNTRANSLATED would fail that comparison and be rendered as a bogus
+    // ToolResult instead of falling through to the real handler). Translate at this
+    // boundary so both packages can keep their own symbol without a new cross-package
+    // dependency.
+    return result === TESTING_SHELL_PASS_THROUGH ? PASS_THROUGH : result;
+  }
+
+  // WI-939561: the GOAL kickoff is an evidence-backed dispatch precondition,
+  // not another instruction each create/launch door must remember to repeat.
+  // This override runs after role/capability/authorize gates and before the
+  // handler, at the ONE chokepoint shared by MCP, HTTP, IPC and tools:invoke's
+  // inner re-dispatch. Ordinary callers and goal-descendant implementers have no
+  // active mode='goal' row and pass through unchanged.
+  if (isGoalKickoffGuardedTool(toolName)) {
+    const workspaceId =
+      ctx.workspaceId && ctx.workspaceId !== '*'
+        ? ctx.workspaceId
+        : ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*'
+          ? ctx.principal.workspaceId
+          : null;
+    let ownerId: string | null = null;
+    try {
+      ownerId = resolveAgentIdentity(ctx).ownerId ?? null;
+    } catch {
+      // An unattributable principal cannot own an agent_modes row. Preserve the
+      // pre-existing handler behavior (some owner/UI calls are intentionally
+      // principal-only) instead of turning an identity gap into a global write
+      // outage.
+    }
+
+    if (workspaceId && ownerId) {
+      const evidence = await readGoalKickoffEvidence({
+        workspaceId,
+        ownerId,
+        flushTelemetry: flushPendingTelemetry,
+      });
+      if (evidence.applies && !evidence.complete) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(goalKickoffRefusalPayload(toolName, evidence)),
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (evidence.degradedReason) {
+        // The mode read failed before applicability could be established. The
+        // helper deliberately fails open for ordinary callers; keep the gap
+        // visible rather than silently pretending the gate ran.
+        console.warn(`[goal-kickoff-gate] ${evidence.degradedReason}`);
+      }
+    }
+  }
+
+  return PASS_THROUGH;
 };
 
 /** Shared deps singleton. Same object reference is safe to pass to

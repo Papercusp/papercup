@@ -36,7 +36,7 @@ import {
 } from './launch-agent';
 import { nativeSessionHandleForAdvSession, type OmpNativeSessionHandle } from './native-session-handles';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
-import { findOmpSessionPath } from './session-transcript-resolvers';
+import { findOmpSessionPath, ompAgentHomeForSessionKey } from './session-transcript-resolvers';
 import { createOmpTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
 import {
   SuSessionHost,
@@ -106,10 +106,16 @@ export type OpenOmpSuSessionResult =
 
 function materializedOmpHandle(
   handle: OmpNativeSessionHandle | null | undefined,
+  advSessionId?: number,
 ): OmpSuRuntimeBinding['nativeSession'] | null {
   if (!handle?.ompThreadId || !handle.exactResumeSupported || handle.missingReason) return null;
   return {
     ...handle,
+    // launch-su attach responses historically normalized adv rows against the
+    // operator's ambient shared OMP home. The adv row is the authority for a
+    // tracked session, and its store is always keyed by that row id; repair the
+    // returned handle at the adapter boundary rather than trusting a stale root.
+    agentHome: advSessionId == null ? handle.agentHome : ompAgentHomeForSessionKey(advSessionId),
     ompThreadId: handle.ompThreadId,
     exactResumeSupported: true,
     missingReason: null,
@@ -129,7 +135,7 @@ async function findOmpTranscript(handle: OmpNativeSessionHandle, advSessionId: n
 export async function resolveOmpSuRuntime(binding: PuiSuSessionBinding): Promise<OmpSuRuntimeBinding | null> {
   if (binding.backend !== 'omp') return null;
   const returnedHandle = binding.nativeSession?.backend === 'omp'
-    ? materializedOmpHandle(binding.nativeSession)
+    ? materializedOmpHandle(binding.nativeSession, binding.advSessionId)
     : null;
   if (returnedHandle) {
     return {

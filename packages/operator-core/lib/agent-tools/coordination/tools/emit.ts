@@ -24,6 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { sendMessage } from '../messages';
 import { COORD_ROLES } from '../roles';
+import { goalRefSchema } from '../../../agent-goal-ref';
 
 export default defineTool({
   name: 'coord:emit',
@@ -61,9 +62,9 @@ export default defineTool({
     plan_slug: z.string().optional(),
     /** Chain to a prior message (e.g. a window 'done' referencing its 'open'). */
     related_msg_id: z.string().optional(),
-    /** Typed work-item refs explicitly covered by an intent lifecycle event. */
+    /** Typed goal refs explicitly covered by an intent lifecycle event. */
     declared_goal_refs: z
-      .array(z.string().regex(/^(?:WI|EI)-\d+$/, 'work-item ref required'))
+      .array(goalRefSchema)
       .min(1)
       .max(40)
       .optional(),

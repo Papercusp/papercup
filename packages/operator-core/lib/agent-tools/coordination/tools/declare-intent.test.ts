@@ -105,18 +105,21 @@ describe('coord:declare-intent scheduler work-item bridge', () => {
     expect(contract).toContain('WI-/EI-');
   });
 
-  it('validates typed declared work-item refs at the tool boundary', () => {
+  it('validates generated goal refs and work-item refs at the tool boundary', () => {
     const args = (declareIntentTool.args as { parse: (input: unknown) => Record<string, unknown> }).parse({
       intent: 'reconcile two held items',
-      declared_goal_refs: ['WI-1', 'EI-2'],
+      declared_goal_refs: [' work-on-everything-070565 ', 'WI-1', 'EI-2'],
     });
-    expect(args.declared_goal_refs).toEqual(['WI-1', 'EI-2']);
-    expect(() =>
-      (declareIntentTool.args as { parse: (input: unknown) => Record<string, unknown> }).parse({
-        intent: 'not a typed declaration',
-        declared_goal_refs: ['P-001'],
-      }),
-    ).toThrow(/work-item ref required/);
+    expect(args.declared_goal_refs).toEqual(['work-on-everything-070565', 'WI-1', 'EI-2']);
+
+    for (const value of ['', '   ', '184073']) {
+      expect(() =>
+        (declareIntentTool.args as { parse: (input: unknown) => Record<string, unknown> }).parse({
+          intent: 'not an actionable typed declaration',
+          declared_goal_refs: [value],
+        }),
+      ).toThrow(/goal ref required/);
+    }
   });
 
   it('accepts null current_plan_slug as equivalent to omission at the tool boundary', async () => {

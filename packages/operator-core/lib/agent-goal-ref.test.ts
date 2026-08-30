@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   asGoalRef,
   fleetMissionRef,
+  goalRefSchema,
   planItemRef,
   resolveAgentGoal,
   type GoalCandidates,
@@ -31,6 +32,20 @@ describe('asGoalRef', () => {
     expect(asGoalRef('   ')).toBeNull();
     expect(asGoalRef(null)).toBeNull();
     expect(asGoalRef(undefined)).toBeNull();
+  });
+});
+
+describe('goalRefSchema', () => {
+  it('accepts generated goal slugs and work-item refs while normalizing whitespace', () => {
+    expect(goalRefSchema.parse(' work-on-everything-070565 ')).toBe('work-on-everything-070565');
+    expect(goalRefSchema.parse(' WI-6407 ')).toBe('WI-6407');
+    expect(goalRefSchema.parse(' EI-18810823481386446 ')).toBe('EI-18810823481386446');
+  });
+
+  it('rejects blank and bare numeric values at the wire boundary', () => {
+    for (const value of ['', '   ', '184073']) {
+      expect(() => goalRefSchema.parse(value)).toThrow(/goal ref required/);
+    }
   });
 });
 

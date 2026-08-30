@@ -56,6 +56,8 @@
  * the operation it decorates. The PG reads live in `agent-goal-sources.ts`.
  */
 
+import { z } from 'zod';
+
 /**
  * The registry id of the cell this resolver backs (`AGENT_GOAL_CELL.cell`).
  *
@@ -223,6 +225,25 @@ export function asGoalRef(itemId: string | null | undefined): string | null {
   if (!s || BARE_BIGINT.test(s)) return null;
   return s;
 }
+
+/**
+ * The wire validator for an explicitly declared goal ref.
+ *
+ * Keep this beside {@link asGoalRef}: the same guard defines whether a ref is
+ * usable on both the derived goal cell and the declaration tools. A declared
+ * ref may be a generated goal slug, a WI-/EI- work-item ref, or another
+ * resolvable pointer. Blank values and bare numeric ids are not actionable.
+ *
+ * This is intentionally a `z.preprocess` over a plain string schema rather
+ * than a transform/refine. Tool argument schemas are converted to JSON Schema
+ * at registration time; the preprocess keeps the published wire shape a
+ * string while still applying the canonical runtime guard and whitespace
+ * normalization.
+ */
+export const goalRefSchema = z.preprocess(
+  (value) => (typeof value === 'string' ? (asGoalRef(value) ?? '') : value),
+  z.string().min(1, 'goal ref required'),
+);
 
 /**
  * The plan-item ref form — `<planSlug>#<itemId>`.

@@ -45,6 +45,7 @@ import { FOREGROUND_TIMEOUT_CEILING_MS } from '../../capability/foreground-trans
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../compaction-recovery';
 import { shapeOrient } from './orient-shape';
+import { shapeLeaderBrief } from '../../fleet/leader-brief-shape';
 import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
 // Type-only: the runtime half (interestFold) is dynamically imported at its use site,
 // like the other advisory folds, so a module-load failure cannot cost orientation.
@@ -64,6 +65,7 @@ import { goalIdFromModes } from '../../../modes/goal-session';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { fixedCohortIds } from '../../../scheduler/claim-spec';
+import { goalRefSchema } from '../../../agent-goal-ref';
 import type { AckResult, CursorState } from '../read-cursors';
 import {
   FLEET_DELTA_SCHEMA_VERSION,
@@ -85,6 +87,9 @@ export interface RecoveredFleetScope {
   fleetSlug: ControlAnchorFleetRoute['fleet'];
   fleetRole: ControlAnchorFleetRoute['role'];
 }
+
+export const ORIENT_LEADER_BRIEF_SCHEMA_VERSION = 'orient-leader-brief-v1' as const;
+export const ORIENT_FLEET_HEALTH_SCHEMA_VERSION = 'orient-fleet-health-v1' as const;
 
 /** Extract the fleet route from the post-compaction control anchor without widening
  * the recovery seam to an untyped object. A self/mug route (or missing anchor) leaves
@@ -277,7 +282,9 @@ export interface OrientArgs {
    *  (coord:declare-intent) AND used as the memory:search recall query — the
    *  two halves of the bootstrap that need an intent, folded into the one call. */
   intent?: string;
-  /** Optional typed work-item refs explicitly covered by the declaration. */
+  /** Optional typed goal refs explicitly covered by the declaration. Generated
+   *  goal slugs and WI-/EI- work-item refs are accepted; blank/bare numeric
+   *  refs are rejected. */
   declared_goal_refs?: string[];
   /** Explicit memory:search query (overrides `intent` for the recall fold). */
   memoryQuery?: string;
@@ -309,10 +316,8 @@ export interface OrientArgs {
   includeCatchup?: boolean;
   /** Max fleet catch-up messages to fold (default 8, hard-capped 25; 0 skips the fold). */
   fleetCatchUpLimit?: number;
-  /** Fold a COMPACT fleet-health glance (coord:glance's health subset — bees
-   *  running/working, staged wakes, paused governor buckets) when you belong to a
-   *  named fleet: the health read agents otherwise re-fetch via coord:glance right
-   *  after orient (compaction-fold-audit-2026-07-06). Default true; full mode only. */
+  /** Fold a versioned fleet-health availability/reference when you belong to a
+   *  named fleet. Rich health remains behind coord:glance; default true, full mode only. */
   includeFleetHealth?: boolean;
   /** Set true on your FIRST orient after a compaction. Beefs the inbox fold (more
    *  entries + fuller bodies — a just-compacted agent lost its message context), and
@@ -586,11 +591,15 @@ export interface OrientResult {
    *  deliberately empty (server-side cursor, surface 'orient:fleetCatchUp') — see
    *  `planEvents.unchanged`. */
   fleetCatchUp?: { fleet: string; total: number; recent: unknown[]; unchanged?: boolean } | null;
-  /** A COMPACT fleet-health glance (coord:glance's health subset: bees, wake,
-   *  governor) — present only when the caller is in a fleet and includeFleetHealth
-   *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
-   *  right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). */
-  fleetHealth?: { bees?: unknown; wake?: unknown; governor?: unknown } | null;
+  /** A deliberately tiny general fleet-health reference. Rich fleet state belongs
+   *  to leaderBrief (D-002); this field carries only availability and the recovery
+   *  handle so non-leaders do not pay for a second rich payload. */
+  fleetHealth?: {
+    schemaVersion: typeof ORIENT_FLEET_HEALTH_SCHEMA_VERSION;
+    status: 'available' | 'unavailable';
+    ref: 'coord:glance';
+    reason?: string;
+  };
   /** P-009 (coord-authority-hardening H4): the caller's fleet TYPED control state,
    *  folded whenever it is NOT plain 'active' — how a LATE JOINER (or a member who
    *  missed the cue) learns the fleet is winding down without any message having
@@ -617,12 +626,9 @@ export interface OrientResult {
    *  Load-bearing rather than cosmetic — an undisclosed drop here means the agent
    *  never learns a gate key exists, so it parks on the wrong event or on none. */
   announcedGatesTruncated?: { shown: number; total: number; more: string };
-  /** A fleet LEADER's per-member health brief (fleet:leader-brief) — folded automatically
-   *  on a MONITOR tick when the caller resolves (via their launch-env fleet membership)
-   *  to a fleet leader: the lever that collapses "monitor orient + a separate
-   *  fleet:assignments scan for the whole fleet" into ONE round-trip
-   *  (fleet-reliability-verification-2026-07-10 P-007). Absent for a non-leader / non-fleet
-   *  caller, or in full mode; null on a failed fold. */
+  /** A registered fleet leader's bounded, actionable leaderBrief summary. The
+   *  regular orient path reuses shapeLeaderBrief's 5 KB projection; monitor and
+   *  recovery paths retain their richer internal fold before outer shaping. */
   leaderBrief?: unknown | null;
   /** Count-only summaries for every fleet led by the caller on monitor and
    * post-compaction recovery. `null` means the led-fleet read failed; an
@@ -963,15 +969,17 @@ export async function composeOrient(
           }
         })()
       : null;
-  // EI-18731216945970087: only exercised when presence itself found no fleet at all,
-  // in monitor mode (the original failure's exact shape). EI-20201050911711528
+  // EI-18731216945970087: exercised when presence itself found no fleet at all.
+  // P-007 extends this registry-authority check to ordinary orient: registered
+  // leaders receive the bounded leader summary on every path, even when the soft
+  // presence projection has not settled yet. EI-20201050911711528
   // adds the same registry authority check for a named fleet whose role projection
   // is stale. A caught drift is treated as authoritative 'leader' for the REST of
   // this call (the leaderBrief gate + the fleet-scoped legs below), and reported
   // LOUDLY via `result.presenceDrift` rather than silently fixed.
   let effectiveFleetMembership = fleetMembership;
   let presenceDrift: OrientResult['presenceDrift'];
-  if (monitor && !fleetMembership?.fleetSlug && presenceDriftCheck) {
+  if (!fleetMembership?.fleetSlug && presenceDriftCheck) {
     try {
       const ledFleet = await presenceDriftCheck();
       if (ledFleet) {
@@ -992,12 +1000,7 @@ export async function composeOrient(
       /* best-effort — never break orientation over a drift cross-check */
     }
   }
-  if (
-    (monitor || args.afterCompaction === true) &&
-    fleetMembership?.fleetSlug &&
-    fleetMembership.fleetRole !== 'leader' &&
-    fleetLeadershipCheck
-  ) {
+  if (fleetMembership?.fleetSlug && fleetMembership.fleetRole !== 'leader' && fleetLeadershipCheck) {
     try {
       const ledFleet = await fleetLeadershipCheck();
       if (ledFleet === fleetMembership.fleetSlug) {
@@ -1372,8 +1375,7 @@ export async function composeOrient(
   // the presence-drift recovery above already defends against, arriving through the one
   // door that defence does not cover. A recovery orient happens once per compaction, so
   // the extra fold is negligible against the cost the monitor-only gate is protecting.
-  const foldLeaderBrief = monitor || args.afterCompaction === true;
-  if (foldLeaderBrief && effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
+  if (effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
     try {
       const brief = await call('fleet:leader-brief', {
         fleet: effectiveFleetMembership.fleetSlug,
@@ -1456,12 +1458,19 @@ export async function composeOrient(
       }
       result.leaderBrief = hydrated;
     } catch {
-      result.leaderBrief = null;
+      result.leaderBrief = {
+        orientProjection: {
+          schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+          status: 'unavailable',
+          reason: 'fleet:leader-brief read failed',
+          recoverVia: `fleet:leader-brief { fleet: '${effectiveFleetMembership.fleetSlug}' }`,
+        },
+      };
     }
   }
 
   if (
-    foldLeaderBrief &&
+    (monitor || args.afterCompaction === true) &&
     effectiveFleetMembership?.fleetRole === 'leader' &&
     effectiveFleetMembership.fleetSlug &&
     fleetSummariesFold
@@ -2074,7 +2083,12 @@ export async function composeOrient(
         { fallback: undefined, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:coord:glance' },
       );
       const g = glanceResult.value;
-      result.fleetHealth = g ? { bees: g.bees, wake: g.wake, governor: g.governor } : null;
+      result.fleetHealth = {
+        schemaVersion: ORIENT_FLEET_HEALTH_SCHEMA_VERSION,
+        status: g ? 'available' : 'unavailable',
+        ref: 'coord:glance',
+        ...(!g ? { reason: 'coord:glance read failed or timed out' } : {}),
+      };
     }
   }
 
@@ -2270,11 +2284,42 @@ export async function composeOrient(
   // P-015: gate + release snapshots ride the same hydrated leader brief as
   // member health/claim spec/walls. Keep the established top-level fields too
   // for compatibility: one authoritative read, two projections, no new API.
-  if (monitor && result.leaderBrief && typeof result.leaderBrief === 'object') {
-    Object.assign(result.leaderBrief as Record<string, unknown>, {
-      announcedGates: result.announcedGates ?? [],
-      release: result.pipeline ?? null,
-    });
+  if (result.leaderBrief && typeof result.leaderBrief === 'object') {
+    const brief = result.leaderBrief as Record<string, unknown>;
+    const unavailable =
+      brief.orientProjection &&
+      typeof brief.orientProjection === 'object' &&
+      (brief.orientProjection as { status?: unknown }).status === 'unavailable';
+    if (!unavailable) {
+      Object.assign(brief, {
+        announcedGates: result.announcedGates ?? [],
+        release:
+          result.pipeline ??
+          ({
+            status: 'unavailable',
+            reason: 'pipeline fold unavailable',
+            recoverVia: 'dev:pipeline_position { path }',
+          } as const),
+      });
+      const projection = {
+        schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+        status: 'available' as const,
+        kind: !monitor && args.afterCompaction !== true ? 'bounded-summary' : 'rich-fold',
+        recoverVia: `fleet:leader-brief { fleet: '${effectiveFleetMembership?.fleetSlug ?? ''}' }`,
+      };
+      if (!monitor && args.afterCompaction !== true) {
+        const shaped = shapeLeaderBrief(brief, 'trimmed');
+        result.leaderBrief = {
+          ...(shaped && typeof shaped === 'object' && !Array.isArray(shaped)
+            ? (shaped as Record<string, unknown>)
+            : {}),
+          orientProjection: projection,
+          release: brief.release,
+        };
+      } else {
+        brief.orientProjection = projection;
+      }
+    }
   }
 
   // P-006: stage the cursor only AFTER the canonical leader snapshot and its
@@ -2782,12 +2827,12 @@ export default defineTool({
         'Your one-line intent for this turn — DECLARED to peers (coord:declare-intent) AND used as the memory:search recall query. The bootstrap-in-one-call lever.',
       ),
     declared_goal_refs: z
-      .array(z.string().regex(/^(?:WI|EI)-\d+$/, 'work-item ref required'))
+      .array(goalRefSchema)
       .min(1)
       .max(40)
       .optional()
       .describe(
-        'Optional typed work-item refs explicitly covered by the declared intent; omission preserves the untyped path.',
+        'Optional typed goal refs explicitly covered by the declared intent — generated goal slugs and WI-/EI- work-item refs are accepted; blank and bare numeric refs are rejected. Omission preserves the untyped path.',
       ),
     memoryQuery: z
       .string()
@@ -3024,15 +3069,13 @@ export default defineTool({
     // projection, but the registry is authoritative for WHO LEADS that fleet.
     // A failed fleet:take-leadership projection (or a stale append-only role fact)
     // can leave the caller labeled 'member' even after agent_fleets.leader_owner_id
-    // names it as leader. Only install this extra check for the leaderBrief gates,
-    // and only for a non-leader projection; ordinary correctly-labeled leaders and
-    // non-monitor/full calls keep their existing read cost.
+    // names it as leader. P-007 requires this check on ordinary orient too: the
+    // registry, not a stale presence role, decides who receives the leader-only fold.
     const currentFleetSlug = fleetMembership?.fleetSlug;
     const fleetLeadershipCheck =
       ownerId &&
       currentFleetSlug &&
-      fleetMembership?.fleetRole !== 'leader' &&
-      (args.mode === 'monitor' || args.afterCompaction === true)
+      fleetMembership?.fleetRole !== 'leader'
         ? async () => {
             const { getFleet } = await import('../../../agent-fleets-store');
             const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);

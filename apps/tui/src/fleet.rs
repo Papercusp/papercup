@@ -794,16 +794,18 @@ fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, a
         .claimable_now
         .get("value")
         .and_then(serde_json::Value::as_i64);
-    let mut lower = vec![
-        Line::from(format!(
-            "invariants: {} · admission blocks: {}",
-            invariant_count
-                .map(|count| count.to_string())
-                .unwrap_or_else(|| "unavailable".into()),
-            brief.admission_blocked.len(),
-        )),
-    ];
-    lower.extend(fleet_metric_lines(brief, claimable).into_iter().map(Line::from));
+    let mut lower = vec![Line::from(format!(
+        "invariants: {} · admission blocks: {}",
+        invariant_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        brief.admission_blocked.len(),
+    ))];
+    lower.extend(
+        fleet_metric_lines(brief, claimable)
+            .into_iter()
+            .map(Line::from),
+    );
     f.render_widget(
         Paragraph::new(lower).block(Theme::block(
             " declared invariants + admission ".into(),
@@ -2642,7 +2644,10 @@ mod tests {
         });
 
         let lines = fleet_metric_lines(&brief, Some(99));
-        assert_eq!(lines[0], "stock: 12 · spec spec-42@7 · window fleet-lifetime");
+        assert_eq!(
+            lines[0],
+            "stock: 12 · spec spec-42@7 · window fleet-lifetime"
+        );
         assert!(lines[1].contains("population: current-spec-work-items"));
         assert!(lines[1].contains("quality exact/fresh"));
         assert!(!lines.iter().any(|line| line.contains("99")));
@@ -2679,7 +2684,7 @@ mod tests {
         let lines = fleet_metric_lines(&brief, Some(2));
         assert!(lines[0].starts_with("legacy queue aliases (scope unavailable):"));
         assert!(lines[0].contains("claimable 2"));
-        assert!(lines[0].contains("matched 5 / pool 20 / revision 3"));
+        assert!(lines[0].contains("matched 5 / pool 20 · revision 3"));
     }
 
     #[test]

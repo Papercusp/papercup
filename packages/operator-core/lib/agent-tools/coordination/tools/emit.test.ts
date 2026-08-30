@@ -48,13 +48,13 @@ describe('coord:emit', () => {
     const parsed = (coordEmit.args as { parse: (x: unknown) => unknown }).parse({
       category: 'intent',
       summary: 'working on two linked items',
-      declared_goal_refs: ['WI-1', 'EI-2'],
+      declared_goal_refs: [' work-on-everything-070565 ', 'WI-1', 'EI-2'],
       declared_plan_items: ['P-016'],
       to: [],
     });
     await coordEmit.handler(parsed as never, ctx);
     const env = (await log.readLines('messages'))[0] as Record<string, unknown>;
-    expect(env.declared_goal_refs).toEqual(['WI-1', 'EI-2']);
+    expect(env.declared_goal_refs).toEqual(['work-on-everything-070565', 'WI-1', 'EI-2']);
     expect(env.declared_plan_items).toEqual(['P-016']);
   });
 

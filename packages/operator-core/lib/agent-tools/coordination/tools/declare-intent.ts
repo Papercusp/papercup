@@ -54,6 +54,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { cellTranscriptionHint } from '../../../cell-transcription-detector';
+import { goalRefSchema } from '../../../agent-goal-ref';
 
 /**
  * EI-9484 — "coord:declare-intent timing out repeatedly": the watchdog observed
@@ -112,9 +113,9 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
 export default defineTool({
   name: 'coord:declare-intent',
   description:
-    'Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), files, and optional ambient-retrieval exclusions. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items`, `current_files`, and `ambient_excluded_refs` (omission preserves; [] clears). A broad "all remaining items" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).',
+    'Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), files, optional typed goal refs, and optional ambient-retrieval exclusions. `declared_goal_refs` accepts generated goal slugs and WI-/EI- refs; blank and bare numeric refs are rejected. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items`, `current_files`, and `ambient_excluded_refs` (omission preserves; [] clears). A broad "all remaining items" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).',
   guidance: {
-    when: 'Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad "take everything remaining" work, enumerate items to expose overlap (EI-5873).',
+    when: 'Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. For explicit multi-goal coverage, pass resolvable refs (generated goal slugs or WI-/EI- ids) as `declared_goal_refs`; blank and bare numeric refs are rejected. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad "take everything remaining" work, enumerate items to expose overlap (EI-5873).',
     notWhen: 'Every turn — the OMP hook heartbeats automatically; call this when your intent changes.',
     chaining:
       'coord:declare-intent { intent, current_plan_slug, items: ["P-001"] } → work → plans:set-status done. Conflicts mean a peer holds the item; coordinate or re-lane. `claims.unknown` means an id was not claimed.',
@@ -143,12 +144,12 @@ export default defineTool({
         'P-NNN plan items you are taking (your LANE) — each is auto-claimed; your other claims in this plan are released. A non-empty lane requires current_plan_slug. Pass [] with a plan to release your whole lane; pass [] without a plan for a replacement-member presence re-declaration that does not touch plan claims. Omit to leave claims untouched. WI-/EI- work-item ids belong to scheduler:get_next, not this field.',
       ),
     declared_goal_refs: z
-      .array(z.string().regex(/^(?:WI|EI)-\d+$/, 'work-item ref required'))
+      .array(goalRefSchema)
       .min(1)
       .max(40)
       .optional()
       .describe(
-        'Optional typed work-item refs explicitly covered by this declaration. Omit when no multi-goal declaration is intended; prose is never inferred.',
+        'Optional typed goal refs explicitly covered by this declaration — generated goal slugs and WI-/EI- work-item refs are accepted; blank and bare numeric refs are rejected. Omit when no multi-goal declaration is intended; prose is never inferred.',
       ),
     harness: z
       .string()

@@ -30,6 +30,17 @@ export interface LegacyVoiceUnitResult {
   unit: string;
   ok: boolean;
   action: LegacyVoiceUnitAction;
+  /**
+   * Did the mask VERIFIABLY take effect (systemd reports LoadState=masked)?
+   *
+   * `undefined` when no mask was requested. `false` means systemctl reported
+   * success and the unit is still startable — see maskVerification. Never infer
+   * this from the exit code; that is the bug this field exists to expose
+   * (WI-934065).
+   */
+  masked?: boolean;
+  /** What the readback actually saw, so a caller never has to re-derive it. */
+  maskVerification?: { loadState: string; effective: boolean };
   detail?: string;
 }
 
@@ -92,15 +103,60 @@ async function disableUnit(
         unit,
         ok: true,
         action: 'disabled',
+        masked: false,
         detail:
           `disabled and stopped, but runtime mask failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
+    // ── VERIFY THE MASK. DO NOT TRUST THE EXIT CODE. (WI-934065) ────────────
+    //
+    // `systemctl --user mask --runtime` can SUCCEED — exit 0, "Created symlink
+    // … → /dev/null" — and leave the unit fully startable. The catch block
+    // above cannot see that, because nothing threw. Measured on this host
+    // (systemd 255): the mask landed in /run/user/1000/systemd/user, which
+    // `systemd-analyze --user unit-paths` ranks NINTH, while the legacy unit
+    // file lives in ~/.config/systemd/user, ranked FIFTH. The higher-precedence
+    // fragment shadows the mask, so LoadState stayed `loaded`, FragmentPath
+    // stayed the real unit, and `systemctl --user start` brought the broken
+    // unit up. For a unit installed under ~/.config/systemd/user, --runtime
+    // masking is STRUCTURALLY incapable of masking it — and the persistent mask
+    // is refused outright ("File … already exists"), so neither systemctl mask
+    // form can protect it while that fragment is on disk.
+    //
+    // A reconciler that reports "runtime-masked" on the exit code therefore
+    // reports protection the host does not have, which is worse than reporting
+    // nothing: a health surface goes green over a unit anyone can start.
+    let loadState = 'unknown';
+    try {
+      const shown = await runSystemctl(['--user', 'show', unit, '-p', 'LoadState', '--value']);
+      loadState = shown.stdout.trim() || 'unknown';
+    } catch {
+      loadState = 'unknown';
+    }
+    const effective = loadState === 'masked';
+    if (!effective) {
+      return {
+        unit,
+        ok: true,
+        action: 'disabled',
+        masked: false,
+        maskVerification: { loadState, effective },
+        detail:
+          `disabled and stopped, but the mask DID NOT TAKE EFFECT: systemctl reported success and ` +
+          `LoadState is "${loadState}", not "masked" — the unit is still startable. A unit file in a ` +
+          `higher-precedence directory (typically ~/.config/systemd/user) shadows the runtime mask; ` +
+          `retire that fragment before masking. Treat this host as UNPROTECTED.`,
       };
     }
     return {
       unit,
       ok: true,
       action: 'disabled',
-      detail: 'disabled, stopped, and runtime-masked; operator-managed local voice is canonical',
+      masked: true,
+      maskVerification: { loadState, effective },
+      detail:
+        'disabled, stopped, and runtime-masked (VERIFIED LoadState=masked); operator-managed local voice is canonical',
     };
   }
 

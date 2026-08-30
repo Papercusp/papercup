@@ -51,6 +51,15 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...real, getOrgPg: () => ({ sql: {} }) };
 });
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
+// Collaborator mock, matching emit-evaluate.test.ts. emit.ts's acceptance branch
+// calls these identity helpers, which fall back to a REAL org-admin pool when no
+// sql seam is injected — a unit tier must not open a live connection. This file
+// declares itself unit-level ("collaborators are mocked") and simply predated the
+// callerInImplementerLineage guard added to emit.ts on 2026-08-30.
+vi.mock('../../acceptance-author-identity', () => ({
+  isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+}));
 // These tests own deterministic criterion checks, not the post-write wake bridge.
 // Keep the newly-created-card event from reaching its real PG-backed await latch.
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));

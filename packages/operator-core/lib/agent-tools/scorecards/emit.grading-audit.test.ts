@@ -32,6 +32,14 @@ vi.mock('../../harness/improvements/capture-core', () => ({
 vi.mock('../../scout/generation-watermark', () => ({
   readRunningGeneration: async () => null,
 }));
+// Collaborator mock, matching emit-evaluate.test.ts. emit.ts's acceptance branch
+// calls these identity helpers, which fall back to a REAL org-admin pool when no
+// sql seam is injected — a unit tier must not open a live connection. This file
+// predated the callerInImplementerLineage guard added to emit.ts on 2026-08-30.
+vi.mock('../../acceptance-author-identity', () => ({
+  isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+}));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();
   return { ...real, getIssue: (...a: unknown[]) => getIssue(...a) };
