@@ -88,7 +88,7 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
 });
 
 beforeEach(async () => {
