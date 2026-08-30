@@ -13,7 +13,8 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
-import { pgbouncerEnabled, buildConnectionOptions } from '@papercusp/db-org';
+import { pgbouncerEnabled, buildConnectionOptions, getOrgPg } from '@papercusp/db-org';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import {
   TXN_TIMEOUTS_DEFAULTS,
   txnTimeoutsConfig,
@@ -47,13 +48,94 @@ function json(obj: unknown) {
  * never by restating its `!pooled` branch here: that duplicate is exactly what let
  * this tool's own description claim the cap bound the class "at the source"
  * (derived-truth ladder, rung 1 — a second copy of a truth the code owns drifts).
+ *
+ * ---------------------------------------------------------------------------
+ * WI-1194246 — that derivation alone is NOT ENOUGH, and would go dishonest again
+ * the moment the cap is enforced by the one mechanism that survives PgBouncer.
+ *
+ * A role- or database-level default (`ALTER ROLE harness_admin SET statement_timeout
+ * = …`) is applied by the SERVER at session start, not sent by the client, so
+ * buildConnectionOptions is structurally blind to it: it would keep answering
+ * "nothing sent" while every bare pool query was in fact being cancelled at the cap.
+ * That is the same applied-vs-stored dishonesty EI-21866253550551759 was filed to
+ * remove, re-introduced from the opposite direction — a report that under-states
+ * enforcement instead of over-stating it. So the report must also OBSERVE.
+ *
+ * The observation is `pg_settings.reset_val`, which is the value a session RESETs
+ * to. It therefore sees THROUGH whatever per-call `SET` / `SET LOCAL` the observing
+ * query itself is running under, and reports what a BARE pool checkout actually
+ * gets. Measured on the live pooled org-admin pool 2026-08-30:
+ *
+ *     statement_timeout  setting=5000   reset_val=0      source=session  <- a per-call SET
+ *     lock_timeout       setting=15000  reset_val=15000  source=user     <- a real role default
+ *
+ * i.e. the column discriminates a role default from a session SET, which is exactly
+ * the distinction the derived answer cannot make. It also covers BOTH enforcement
+ * mechanisms with one reading: a connect-time startup parameter lands in reset_val
+ * as source=client, a role default as source=user.
  */
-export function adminPoolTimeoutReport(
+
+/**
+ * What a BARE checkout on the org-admin pool actually resets to. `unknown` is a
+ * first-class answer and is NEVER collapsed into "not enforced": an unreadable
+ * pool is the one state most likely to be misreported as a reassuring absence.
+ */
+export type AdminPoolDefaultObservation =
+  | { status: 'observed'; poolDefaultMs: number; source: string; roleName: string }
+  | { status: 'unknown'; reason: string };
+
+async function observeAdminPoolDefault(): Promise<AdminPoolDefaultObservation> {
+  // The read itself is a non-blocking catalog scan, so the only way it fails to
+  // return is a wedged pool or a hung connection ACQUIRE — neither of which a
+  // server-side statement_timeout could bound anyway. withBoundedTimeout bounds
+  // only THIS caller (the statement, if any, runs to completion server-side); that
+  // is proportionate here precisely because the abandoned statement is a read of
+  // an in-memory catalog, and the degraded answer is `unknown` rather than a guess.
+  const outcome = await withBoundedTimeout(
+    async () => {
+      const { sql } = getOrgPg();
+      return (await sql`
+        SELECT reset_val, source, current_user::text AS role_name
+          FROM pg_settings
+         WHERE name = 'statement_timeout'
+      `) as unknown as Array<{ reset_val: string; source: string; role_name: string }>;
+    },
+    { fallback: null, timeoutMs: 3_000, label: 'adminPoolTimeoutReport:observe' },
+  );
+
+  if (outcome.degraded) {
+    return {
+      status: 'unknown',
+      reason:
+        outcome.reason === 'timeout'
+          ? `could not read pg_settings within ${outcome.elapsedMs}ms (pool wedged or connection acquire hung)`
+          : `pg_settings read failed: ${outcome.errorMessage ?? 'unknown error'}`,
+    };
+  }
+  const row = outcome.value?.[0];
+  if (!row) return { status: 'unknown', reason: 'pg_settings returned no statement_timeout row' };
+  const poolDefaultMs = Number(row.reset_val);
+  if (!Number.isFinite(poolDefaultMs)) {
+    return { status: 'unknown', reason: `unparseable pg_settings.reset_val ${JSON.stringify(row.reset_val)}` };
+  }
+  return {
+    status: 'observed',
+    poolDefaultMs,
+    source: String(row.source),
+    roleName: String(row.role_name),
+  };
+}
+
+export async function adminPoolTimeoutReport(
   storedMs: number | undefined,
-  // Injectable ONLY so the guard test can drive both branches while still exercising
+  // Injectable ONLY so the guard test can drive every branch while still exercising
   // the real buildConnectionOptions below — mocking that away would test the mock,
-  // not the omission this whole report exists to expose. Production passes neither.
-  deps: { resolvedMs?: number; pooled?: boolean } = {},
+  // not the omission this whole report exists to expose. Production passes none.
+  deps: {
+    resolvedMs?: number;
+    pooled?: boolean;
+    observe?: () => Promise<AdminPoolDefaultObservation>;
+  } = {},
 ) {
   const resolvedMs = deps.resolvedMs ?? adminPoolStatementTimeoutMs();
   const behindPgBouncer = deps.pooled ?? pgbouncerEnabled();
@@ -66,23 +148,53 @@ export function adminPoolTimeoutReport(
   }).statement_timeout;
   const appliedAtConnect = sent !== undefined;
   const stored = storedMs ?? 0;
+
+  const observed = await (deps.observe ?? observeAdminPoolDefault)();
+  const observedMs = observed.status === 'observed' ? observed.poolDefaultMs : null;
+
+  // TRUE / FALSE only when actually observed. `null` means UNKNOWN and must stay
+  // distinguishable from `false` — collapsing them is the whole defect class here.
+  const enforcedOnBarePoolQueries = observedMs === null ? null : observedMs > 0;
+
+  const bounds =
+    observedMs === null
+      ? 'UNVERIFIED — the pool default could not be read, so enforcement is UNKNOWN (this is not evidence that it is absent).'
+      : observedMs > 0
+        ? `every statement on an org-admin pool connection (session default ${observedMs}ms, source=${observed.status === 'observed' ? observed.source : '?'})`
+        : appliedAtConnect
+          ? `CONTRADICTION: a ${resolvedMs}ms connect-time cap is reported as sent, but the live pool resets to 0. The running pool predates the config change, or the parameter was dropped in transit. Trust the observation, not the derivation.`
+          : 'per-tx SET LOCAL only (boundedOrgTxn / inWorkspaceTxn) — a bare pool query is UNBOUNDED';
+
+  // The OBSERVED verdict leads; the configuration explanation follows it. Order
+  // matters: after an ALTER ROLE rollout `resolvedMs` is still 0 (the role default
+  // is set outside this config surface), so a config-first answer would open with
+  // "OFF" about a pool that is in fact bounded.
+  const observedVerdict =
+    observedMs === null
+      ? `UNVERIFIED: could not observe the pool's session default (${observed.status === 'unknown' ? observed.reason : ''}) — treat enforcement as UNKNOWN, not as absent.`
+      : observedMs > 0
+        ? `ENFORCED: a bare org-admin pool query resets to ${observedMs}ms (pg_settings.reset_val, source=${observed.status === 'observed' ? observed.source : '?'}), which survives PgBouncer.`
+        : 'NOT ENFORCED: a bare org-admin pool query resets to 0, so it runs unbounded.';
+
+  const configWhy =
+    resolvedMs === 0 && stored > 0
+      ? 'STORED BUT INERT: the papercusp-txn-timeouts-config kill-switch is OFF, so the resolver returns 0 and no connect-time cap is configured at all.'
+      : resolvedMs === 0
+        ? 'OFF: no connect-time admin-pool cap configured (adminPoolStatementTimeoutMs = 0).'
+        : appliedAtConnect
+          ? 'APPLIED: sent as a startup parameter on each new org pool connection.'
+          : 'CONFIGURED BUT NOT APPLIED AT CONNECT: PgBouncer rejects statement_timeout as an unsupported startup parameter, so it is omitted. Only queries already inside boundedOrgTxn / inWorkspaceTxn are bounded by it.';
+
   return {
     storedMs: stored,
     resolvedMs,
     behindPgBouncer,
     appliedAtConnect,
     appliedStatementTimeoutMs: sent === undefined ? null : Number(sent),
-    bounds: appliedAtConnect
-      ? 'every new org pool connection (connect-time GUC)'
-      : 'per-tx SET LOCAL only (boundedOrgTxn / inWorkspaceTxn) — a bare pool query is UNBOUNDED',
-    why:
-      resolvedMs === 0 && stored > 0
-        ? 'STORED BUT INERT: the papercusp-txn-timeouts-config kill-switch is OFF, so the resolver returns 0 and no cap is configured at all.'
-        : resolvedMs === 0
-          ? 'OFF: no admin-pool cap configured (0 = the admin pool is deliberately unbounded).'
-          : appliedAtConnect
-            ? 'APPLIED: sent as a startup parameter on each new org pool connection.'
-            : 'CONFIGURED BUT NOT APPLIED AT CONNECT: PgBouncer rejects statement_timeout as an unsupported startup parameter, so it is omitted. Only queries already inside boundedOrgTxn / inWorkspaceTxn are bounded.',
+    observed,
+    enforcedOnBarePoolQueries,
+    bounds,
+    why: `${observedVerdict} ${configWhy}`,
   };
 }
 
@@ -90,7 +202,7 @@ export default defineTool({
   name: 'db:txn-timeouts',
   profile: 'engineer',
   description:
-    "Read/set/reset runtime PG timeouts. The required op discriminator selects the operation: use { op: 'get' } to read, { op: 'set', ... } to write, or { op: 'reset' } to clear. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections applied at connect ONLY when not behind PgBouncer (op:get adminPool); 0 = OFF (today's behavior). Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
+    "Read/set/reset runtime PG timeouts. The required op discriminator selects the operation: use { op: 'get' } to read, { op: 'set', ... } to write, or { op: 'reset' } to clear. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections applied at connect ONLY when not behind PgBouncer; 0 = OFF. op:get adminPool OBSERVES real enforcement. Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
   capability: 'operator:write',
   guidance: {
     when: 'To inspect the effective timeouts + override, call db:txn-timeouts with { op: "get" } — op is required; do not call it with {}. For state-mutating tools failing with workspace_contended (PG lock_timeout 55P03 / statement_timeout 57014) under same-workspace contention, widen the incident window by raising lockTimeoutMs and/or statementTimeoutMs.',
@@ -139,7 +251,11 @@ export default defineTool({
         // EI-21866253550551759: `effective` covers only the per-workspace pair, so
         // without this block the admin-pool cap appeared solely as a stored override
         // value with nothing to contradict it.
-        adminPool: adminPoolTimeoutReport(override.adminPoolStatementTimeoutMs),
+        // WI-1194246: awaited because the report now OBSERVES the live pool default
+        // (pg_settings.reset_val) as well as deriving the connect-time answer — a
+        // role-level `ALTER ROLE … SET statement_timeout` is invisible to the
+        // derivation and would otherwise be reported as "not applied" while enforced.
+        adminPool: await adminPoolTimeoutReport(override.adminPoolStatementTimeoutMs),
       });
     }
 
