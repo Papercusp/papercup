@@ -107,6 +107,14 @@ export interface PromoterRunResult {
   tokensOut: number;
   censusBefore: number;
   censusAfter: number;
+  /**
+   * pairKeys this run rendered a FINAL (non-hold) judgement for that still lack a
+   * `dedup_adjudications` row after persisting — the targeted writer-integrity signal.
+   * Empty on every healthy run, including one where the raw global census rose from
+   * concurrent corpus growth or from this run's own legitimate `hold` verdicts. See
+   * `judgedPairsMissingAdjudication`.
+   */
+  writerCoverageGap: string[];
 }
 
 /**
@@ -721,6 +729,43 @@ async function unadjudicatedCensus(sql: OrgSql, workspaceId: string, harnessSlug
   return Number(rows[0]?.count ?? 0);
 }
 
+/**
+ * The unadjudicated CENSUS (unadjudicatedCensus above) is a live, workspace-wide count that
+ * moves for reasons entirely outside this tick's control — new near-duplicate work items are
+ * created continuously by a busy fleet, adding fresh `dedup_edges` rows between the censusBefore
+ * and censusAfter reads, and a `hold` verdict deliberately does NOT retire its pair (it means
+ * "still needs review", not "resolved") so a normal tick that holds some pairs makes zero census
+ * progress on those by design. Comparing that raw global delta across two non-atomic wall-clock
+ * reads is therefore not a test of "did this run's writer work correctly" — it is dominated by
+ * organic corpus growth and legitimate holds, and produces recurring false-positive "regression"
+ * alarms (EI-21728201456300634, EI-21866311570152646) that independent investigation twice
+ * confirmed were not writer defects.
+ *
+ * This is the TARGETED replacement: it checks only the pairs THIS tick actually rendered a
+ * final (non-hold) judgement for — merge/distinct/related — and confirms each now carries a
+ * `dedup_adjudications` row. Those pairs are scoped by exact (a,b) identity, so the check is
+ * immune to concurrent unrelated corpus growth and to legitimate holds; a non-empty result here
+ * is a genuine writer defect (a judged pair that failed to persist).
+ */
+export async function judgedPairsMissingAdjudication(
+  sql: OrgSql,
+  workspaceId: string,
+  harnessSlug: string,
+  judgedPairs: ReadonlyArray<{ pairKey: string; a: string; b: string }>,
+): Promise<string[]> {
+  if (judgedPairs.length === 0) return [];
+  const aIds = judgedPairs.map((pair) => pair.a);
+  const bIds = judgedPairs.map((pair) => pair.b);
+  const rows = await sql<Array<{ a: string; b: string }>>`
+    SELECT a, b
+      FROM harness_shared.dedup_adjudications
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND (a, b) IN (SELECT * FROM unnest(${aIds}::text[], ${bIds}::text[]))`;
+  const present = new Set(rows.map((row) => admissionPairKey(row.a, row.b)));
+  return judgedPairs.filter((pair) => !present.has(pair.pairKey)).map((pair) => pair.pairKey);
+}
+
 async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; mode: 'promoter' | 'fail-open' },
@@ -1310,6 +1355,19 @@ export async function runWorkItemAdmissionPromoter(opts: {
     const promoted = plan.dispositions.filter((d) => d.action === 'promote').length;
     const merged = plan.dispositions.filter((d) => d.action === 'merge').length;
     const held = plan.dispositions.filter((d) => d.action === 'hold').length;
+    // Targeted writer-integrity check, scoped to exactly the pairs THIS tick rendered a final
+    // (non-hold) judgement for — immune to concurrent corpus growth and to legitimate holds.
+    // See judgedPairsMissingAdjudication for why the raw global census delta cannot be trusted.
+    const writerCoverageGap = await judgedPairsMissingAdjudication(
+      sql,
+      opts.workspaceId,
+      opts.harnessSlug,
+      plan.adjudications.map((adjudication) => ({
+        pairKey: admissionPairKey(adjudication.a, adjudication.b),
+        a: adjudication.a,
+        b: adjudication.b,
+      })),
+    );
     const censusAfter = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
     const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(
       sql,
@@ -1340,6 +1398,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
           return acc;
         }, {}),
+        // Only ever non-empty on a genuine writer defect; see writerCoverageGap on the result.
+        writerCoverageGap,
       },
     });
     return {
@@ -1354,6 +1414,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       tokensOut,
       censusBefore,
       censusAfter,
+      writerCoverageGap,
     };
   } catch (error) {
     await failRun(sql, runId, 'promoter', error, Math.max(0, now() - startedAt));

@@ -41,6 +41,7 @@ describe('work-item admission routine actions', () => {
       tokensOut: 20,
       censusBefore: 5,
       censusAfter: 0,
+      writerCoverageGap: [],
     }));
     await makeWorkItemAdmissionPromoterAction({ run, alarm, invalidate, log })(ctx);
     expect(run).toHaveBeenCalledWith(ctx);
@@ -49,7 +50,10 @@ describe('work-item admission routine actions', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('promoted=1 merged=5 held=0'));
   });
 
-  it('raises the durable census alarm only when the unadjudicated census rises', async () => {
+  // EI-21728201456300634 / EI-21866311570152646: a raw global census rise (concurrent corpus
+  // growth, or this tick's own legitimate `hold` verdicts) is NOT a writer defect and must
+  // never alarm on its own.
+  it('does not alarm on a raw census rise from organic growth or a legitimate hold', async () => {
     const alarm = vi.fn(async () => undefined);
     const invalidate = vi.fn(async () => undefined);
     const base = {
@@ -64,6 +68,47 @@ describe('work-item admission routine actions', () => {
       tokensOut: 2,
       censusBefore: 4,
       censusAfter: 5,
+      writerCoverageGap: [] as string[],
+    };
+    await makeWorkItemAdmissionPromoterAction({
+      run: async () => base,
+      alarm,
+      invalidate,
+      log: vi.fn(),
+    })(ctx);
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(alarm).not.toHaveBeenCalled();
+
+    // Also a zero-pair tick (nothing judged) can never carry a coverage gap, no matter how far
+    // the global census moved from concurrent corpus growth.
+    alarm.mockClear();
+    await makeWorkItemAdmissionPromoterAction({
+      run: async () => ({ ...base, flaggedPairs: 0, held: 0, modelCalled: false, censusAfter: 9 }),
+      alarm,
+      invalidate,
+      log: vi.fn(),
+    })(ctx);
+    expect(alarm).not.toHaveBeenCalled();
+  });
+
+  it('raises the durable alarm only when a judged pair fails to persist its adjudication', async () => {
+    const alarm = vi.fn(async () => undefined);
+    const invalidate = vi.fn(async () => undefined);
+    const base = {
+      runId: 'p-gap',
+      batchSize: 1,
+      flaggedPairs: 1,
+      promoted: 0,
+      merged: 1,
+      held: 0,
+      modelCalled: true,
+      tokensIn: 10,
+      tokensOut: 2,
+      censusBefore: 4,
+      // Census can even FALL and the alarm must still fire when the writer left a genuine gap —
+      // the two signals are independent.
+      censusAfter: 3,
+      writerCoverageGap: ['WI-1::WI-2'],
     };
     await makeWorkItemAdmissionPromoterAction({
       run: async () => base,
@@ -76,7 +121,7 @@ describe('work-item admission routine actions', () => {
 
     alarm.mockClear();
     await makeWorkItemAdmissionPromoterAction({
-      run: async () => ({ ...base, censusAfter: 4 }),
+      run: async () => ({ ...base, writerCoverageGap: [] }),
       alarm,
       invalidate,
       log: vi.fn(),

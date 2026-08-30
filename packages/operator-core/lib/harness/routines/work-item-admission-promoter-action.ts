@@ -59,18 +59,36 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
   });
 }
 
+/**
+ * EI-21728201456300634 and EI-21866311570152646 both fired this alarm on a raw global census
+ * rise, and both closed as false alarms after real investigation found zero corresponding
+ * `dedup_edges`/`dedup_adjudications` activity for the flagged run. Root cause: the raw
+ * censusBefore/censusAfter delta compares a live, workspace-wide count across two non-atomic
+ * wall-clock reads separated by real time (an LLM call in between) — on a fleet that creates
+ * near-duplicate work items continuously, new `dedup_edges` rows routinely appear in that
+ * window, and a `hold` verdict deliberately never retires its pair (it means "still needs
+ * review", not "resolved"). Neither is a writer defect, so the raw delta is not a usable
+ * regression signal — see judgedPairsMissingAdjudication's doc comment.
+ *
+ * The alarm now fires on `writerCoverageGap`: pairs THIS run rendered a final (non-hold)
+ * judgement for that still lack a `dedup_adjudications` row after persisting. That is scoped
+ * to exact pair identity, so it cannot be tripped by concurrent corpus growth or by a
+ * legitimate hold, and a non-empty result is a genuine writer defect.
+ */
 async function productionCensusRiseAlarm(ctx: SystemActionCtx, result: PromoterRunResult): Promise<void> {
-  if (result.censusAfter <= result.censusBefore) return;
-  const delta = result.censusAfter - result.censusBefore;
+  if (result.writerCoverageGap.length === 0) return;
+  const gap = result.writerCoverageGap;
   await captureImprovement({
-    title: `Work-item admission census rose for ${ctx.installSlug}`,
+    title: `Work-item admission writer failed to persist ${gap.length} judged pair(s) for ${ctx.installSlug}`,
     kind: 'bug',
     severity: 'major',
     body:
-      `The unadjudicated >=0.90 pair census rose by ${delta} during promoter run ${result.runId} ` +
-      `(${result.censusBefore} -> ${result.censusAfter}). This violates the monotone non-increase ` +
-      `contract: every adjudication should retire a pair permanently. Inspect the run in ` +
-      `/admin/admission and repair the writer or adjudication coverage before the next bulk pass.`,
+      `Promoter run ${result.runId} rendered a final (non-hold) judgement for ${gap.length} pair(s) ` +
+      `that still have no harness_shared.dedup_adjudications row after persisting: ` +
+      `${gap.slice(0, 10).join(', ')}${gap.length > 10 ? ', …' : ''}. This is the writer failing to ` +
+      `retire a pair it explicitly judged — a genuine coverage gap, not organic corpus growth. ` +
+      `Inspect the run in /admin/admission and repair persistAdmissionPlan's adjudication insert ` +
+      `for these pairs before the next bulk pass.`,
     foundDuring: `${WORK_ITEM_ADMISSION_PROMOTER} routine`,
     dedupScope: 'open',
     watchdogKey: `work-item-admission-census-rise:${ctx.installSlug}`,
@@ -92,10 +110,11 @@ export function makeWorkItemAdmissionPromoterAction(overrides: Partial<Admission
   return async (ctx: SystemActionCtx): Promise<void> => {
     const result = await deps.run(ctx);
     await deps.invalidate();
-    if (result.censusAfter > result.censusBefore) await deps.alarm(ctx, result);
+    if (result.writerCoverageGap.length > 0) await deps.alarm(ctx, result);
     deps.log(
       `${ctx.installSlug}: run=${result.runId} batch=${result.batchSize} pairs=${result.flaggedPairs} ` +
-        `promoted=${result.promoted} merged=${result.merged} held=${result.held}`,
+        `promoted=${result.promoted} merged=${result.merged} held=${result.held} ` +
+        `census=${result.censusBefore}->${result.censusAfter} writerCoverageGap=${result.writerCoverageGap.length}`,
     );
   };
 }
