@@ -53,6 +53,12 @@ export const GATEWAY_PAYLOAD_ADDRESSING: ContentAddressing = {
 
 /** 32 MiB. An inference request body above this is a client error, not a spool candidate. */
 export const DEFAULT_MAX_SPOOL_BYTES = 32 * 1024 * 1024;
+/** Accepted-but-never-executed receipts retain their body for one day by default. */
+export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 24 * 60 * 60 * 1000;
+/** Keep each lifecycle GC pass bounded so it cannot monopolize the gateway database. */
+export const DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT = 2_000;
+/** Legacy rows without an expiry are safe to collect after a short idle grace period. */
+export const DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS = 2 * 60 * 60 * 1000;
 
 export interface GatewayPayloadSpoolOptions {
   /** Storage backend. Defaults to the Postgres-backed store. */
@@ -173,7 +179,7 @@ class BlobStoreGatewayPayloadSpool implements GatewayPayloadSpool {
   }
 
   async sweep(options: { readonly limit?: number } = {}): Promise<number> {
-    return (await this.#refcount?.sweep(options.limit ?? 100)) ?? 0;
+    return (await this.#refcount?.sweep(options.limit ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT)) ?? 0;
   }
 }
 
@@ -188,6 +194,7 @@ export interface PgGatewayPayloadStoreOptions {
   readonly sql?: SqlClient;
   readonly workspaceId?: string;
   readonly ttlMs?: number;
+  readonly legacyGraceMs?: number;
   readonly now?: () => number;
 }
 
@@ -198,13 +205,21 @@ export interface PgGatewayPayloadStoreOptions {
 export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size: number }>, RefcountPort {
   readonly #sql: SqlClient;
   readonly #workspaceId: string;
-  readonly #ttlMs: number | null;
+  readonly #ttlMs: number;
+  readonly #legacyGraceMs: number;
   readonly #now: () => number;
 
   constructor(options: PgGatewayPayloadStoreOptions = {}) {
     this.#sql = options.sql ?? getOrgPg().sql;
     this.#workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
-    this.#ttlMs = options.ttlMs ?? null;
+    this.#ttlMs =
+      options.ttlMs === undefined || !Number.isFinite(options.ttlMs)
+        ? DEFAULT_PAYLOAD_SPOOL_TTL_MS
+        : Math.max(0, options.ttlMs);
+    this.#legacyGraceMs =
+      options.legacyGraceMs === undefined || !Number.isFinite(options.legacyGraceMs)
+        ? DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS
+        : Math.max(0, options.legacyGraceMs);
     this.#now = options.now ?? (() => Date.now());
   }
 
@@ -221,7 +236,7 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
 
   async put(key: string, body: ArrayBuffer | Uint8Array, opts?: { contentType?: string }): Promise<void> {
     const bytes = body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(new Uint8Array(body));
-    const expiresAt = this.#ttlMs ? new Date(this.#now() + this.#ttlMs) : null;
+    const expiresAt = this.#ttlMs > 0 ? new Date(this.#now() + this.#ttlMs) : null;
     // ON CONFLICT DO NOTHING, not DO UPDATE: the key is the content hash, so a
     // conflicting row already holds byte-identical content. Overwriting it would
     // reset another receipt's refcount for no gain.
@@ -272,16 +287,48 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
   }
 
   async sweep(limit: number): Promise<number> {
+    const batchLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT;
+
+    // Migration 1022 intentionally allowed NULL expires_at, and rows written before the
+    // finite-TTL policy therefore need a bounded backfill. Backfill referenced rows too:
+    // expiry is a policy timestamp, while ref_count is the independent safety floor that
+    // prevents a live receipt from being deleted.
+    if (this.#ttlMs > 0) {
+      await this.#sql`
+        WITH legacy AS (
+          SELECT workspace_id, blob_key
+            FROM harness_shared.gateway_payload_blobs
+           WHERE workspace_id = ${this.#workspaceId}
+             AND expires_at IS NULL
+           ORDER BY created_at, blob_key
+           LIMIT ${batchLimit}
+        )
+        UPDATE harness_shared.gateway_payload_blobs AS blobs
+           SET expires_at = blobs.created_at + (${this.#ttlMs} * interval '1 millisecond')
+        FROM legacy
+       WHERE blobs.workspace_id = legacy.workspace_id
+         AND blobs.blob_key = legacy.blob_key
+         AND blobs.expires_at IS NULL`;
+    }
+
     const rows = await this.#sql<{ blob_key: string }[]>`
-      DELETE FROM harness_shared.gateway_payload_blobs
-       WHERE (workspace_id, blob_key) IN (
-         SELECT workspace_id, blob_key
-           FROM harness_shared.gateway_payload_blobs
-          WHERE workspace_id = ${this.#workspaceId}
-            AND ref_count = 0
-            AND (expires_at IS NOT NULL AND expires_at <= now())
-          ORDER BY last_accessed_at
-          LIMIT ${Math.max(1, Math.floor(limit))}
+      DELETE FROM harness_shared.gateway_payload_blobs AS blobs
+       WHERE blobs.workspace_id = ${this.#workspaceId}
+         AND blobs.ref_count = 0
+         AND (blobs.workspace_id, blobs.blob_key) IN (
+         SELECT candidate.workspace_id, candidate.blob_key
+           FROM harness_shared.gateway_payload_blobs AS candidate
+          WHERE candidate.workspace_id = ${this.#workspaceId}
+            AND candidate.ref_count = 0
+            AND (
+              (candidate.expires_at IS NOT NULL AND candidate.expires_at <= now())
+              OR (
+                candidate.expires_at IS NULL
+                AND candidate.last_accessed_at <= now() - (${this.#legacyGraceMs} * interval '1 millisecond')
+              )
+            )
+          ORDER BY candidate.last_accessed_at, candidate.blob_key
+          LIMIT ${batchLimit}
        )
       RETURNING blob_key`;
     return rows.length;
@@ -295,7 +342,8 @@ export function createGatewayPayloadSpool(options: GatewayPayloadSpoolOptions & 
       ? new PgGatewayPayloadStore({
           ...(options.sql ? { sql: options.sql } : {}),
           ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
-          ...(options.ttlMs ? { ttlMs: options.ttlMs } : {}),
+          ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+          ...(options.legacyGraceMs !== undefined ? { legacyGraceMs: options.legacyGraceMs } : {}),
           ...(options.now ? { now: options.now } : {}),
         })
       : null;

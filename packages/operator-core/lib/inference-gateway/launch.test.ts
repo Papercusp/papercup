@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
+import type { GatewayPayloadSpool } from './payload-spool';
 
 /** The per-account multiplier P-010 deleted along with `accountScaledCodexConcurrency`.
  *  Spelled here only so the falsifier below can name the number that must not return. */
@@ -60,6 +61,45 @@ test('startGatewayService composes account → resolver → proxy; /healthz + a 
   });
   assert.equal(res.status, 200);
   assert.equal(up.lastAuth(), 'Bearer bound-token', 'gateway injected the bound account token');
+});
+
+test('payload-spool lifecycle sweep is injectable, bounded, and stopped with the gateway', async () => {
+  const up = await startUpstream();
+  const limits: number[] = [];
+  const payloadSpool: GatewayPayloadSpool = {
+    spool: async () => ({ payloadRef: null, bytes: 0, deduped: false }),
+    read: async () => null,
+    retain: async () => {},
+    release: async () => {},
+    sweep: async (options) => {
+      limits.push(options?.limit ?? -1);
+      return 0;
+    },
+  };
+
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccount: async () => ({ accountId: 'test-acct', credentialRef: 'token:/dev/null', source: 'env' }),
+    makeResolver: () => ({ kind: 'token', current: async () => 'bound-token', invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+    localBackendReloadIntervalMs: 0,
+    payloadSpool,
+    payloadSpoolSweepIntervalMs: 10,
+    payloadSpoolSweepLimit: 7,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  const callsBeforeStop = limits.length;
+  assert.ok(callsBeforeStop >= 2, 'startup sweep plus at least one lifecycle tick ran');
+  assert.ok(limits.every((limit) => limit === 7), 'every lifecycle sweep uses the configured bound');
+
+  await svc.stop();
+  svc = undefined;
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(limits.length, callsBeforeStop, 'stop clears the payload-spool lifecycle timer');
 });
 
 test('startGatewayService sizes both provider priority-tier layers from the ONE shared admission seed', async () => {

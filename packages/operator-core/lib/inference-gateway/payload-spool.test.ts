@@ -1,14 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { sha256Hex, type BlobStore } from '@papercusp/artifact-registry';
 import {
   DEFAULT_MAX_SPOOL_BYTES,
+  DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS,
+  DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT,
+  DEFAULT_PAYLOAD_SPOOL_TTL_MS,
   GATEWAY_PAYLOAD_ADDRESSING,
   PayloadSpoolPersistenceError,
   PayloadTooLargeError,
+  PgGatewayPayloadStore,
+  type PgGatewayPayloadStoreOptions,
   memoryGatewayPayloadSpool,
 } from './payload-spool';
 
 const body = (text: string) => Buffer.from(text, 'utf8');
+
+type SqlCall = { text: string; values: unknown[] };
+let sqlCalls: SqlCall[] = [];
+
+function fakeSql(responses: unknown[] = []): NonNullable<PgGatewayPayloadStoreOptions['sql']> {
+  let responseIndex = 0;
+  return ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    sqlCalls.push({ text: strings.join(' '), values });
+    return Promise.resolve((responses[responseIndex++] ?? []) as never);
+  }) as unknown as NonNullable<PgGatewayPayloadStoreOptions['sql']>;
+}
+
+beforeEach(() => {
+  sqlCalls = [];
+});
 
 describe('gateway payload spool — content addressing', () => {
   it('returns the sha256 of the body as the payloadRef', async () => {
@@ -222,5 +242,60 @@ describe('gateway payload spool — refcounted retention', () => {
     // sweep would collect a payload that a live receipt is about to execute.
     expect(await spool.sweep()).toBe(0);
     expect(await spool.read(payloadRef!)).not.toBeNull();
+  });
+});
+
+describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
+  it('writes a finite default expiry for newly stored payloads', async () => {
+    const now = Date.parse('2026-08-30T00:00:00.000Z');
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSql(),
+      workspaceId: 'ws-payload-test',
+      now: () => now,
+    });
+
+    await store.put('a'.repeat(64), body('finite-retention'));
+
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0]!.text).toContain('expires_at');
+    expect(sqlCalls[0]!.values.at(-1)).toEqual(new Date(now + DEFAULT_PAYLOAD_SPOOL_TTL_MS));
+  });
+
+  it('backfills bounded legacy rows from created_at and rechecks ref_count in the outer DELETE', async () => {
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSql([[], [{ blob_key: 'a'.repeat(64) }]]),
+      workspaceId: 'ws-payload-test',
+      ttlMs: DEFAULT_PAYLOAD_SPOOL_TTL_MS,
+      legacyGraceMs: DEFAULT_PAYLOAD_SPOOL_LEGACY_GRACE_MS,
+    });
+
+    await expect(store.sweep(7.9)).resolves.toBe(1);
+
+    expect(sqlCalls).toHaveLength(2);
+    const [backfill, deletion] = sqlCalls;
+    expect(backfill!.text).toContain('expires_at IS NULL');
+    expect(backfill!.text).toContain('created_at');
+    expect(backfill!.text).toContain('LIMIT');
+    expect(backfill!.text).toContain('SET expires_at = blobs.created_at');
+    expect(backfill!.values).toContain(7);
+
+    // The candidate predicate and the outer DELETE predicate must both require
+    // ref_count = 0: retain() can race after candidate selection.
+    expect((deletion!.text.match(/ref_count = 0/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(deletion!.text).toContain('last_accessed_at');
+    expect(deletion!.text).toContain('expires_at IS NULL');
+    expect(deletion!.values).toContain(7);
+  });
+
+  it('uses the bounded default sweep size when the caller passes a non-finite limit', async () => {
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSql([[], []]),
+      workspaceId: 'ws-payload-test',
+    });
+
+    await store.sweep(Number.NaN);
+
+    expect(sqlCalls).toHaveLength(2);
+    expect(sqlCalls.flatMap((call) => call.values)).toContain(DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT);
   });
 });

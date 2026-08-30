@@ -36,6 +36,8 @@ import {
 } from './durable-admission';
 import {
   createGatewayPayloadSpool,
+  DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT,
+  type GatewayPayloadSpool,
   type GatewayPayloadSpoolOptions,
   type PgGatewayPayloadStoreOptions,
 } from './payload-spool';
@@ -54,6 +56,8 @@ import { trackDetached } from '../detached-imports';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
+/** Payload-spool GC runs once a minute so its bounded batch keeps up with bursty ingest. */
+export const DEFAULT_PAYLOAD_SPOOL_SWEEP_INTERVAL_MS = 60_000;
 /** Reserved-floor fraction of the admission pool held for tier 1 (gateway-priority-tiers-2026-06-22).
  *  `reserve = max(1, ceil(poolSlots * frac))`. Env-tunable via `GATEWAY_T1_RESERVE_FRAC`. */
 export const DEFAULT_T1_RESERVE_FRAC = 0.15;
@@ -169,7 +173,14 @@ export interface GatewayServiceOptions {
    * Pass `false` to run the durable queue without spooling (a test seam), or an options object to
    * tune the ceiling / TTL.
    */
-  payloadSpool?: boolean | Omit<GatewayPayloadSpoolOptions & PgGatewayPayloadStoreOptions, 'workspaceId'>;
+  payloadSpool?:
+    | boolean
+    | GatewayPayloadSpool
+    | Omit<GatewayPayloadSpoolOptions & PgGatewayPayloadStoreOptions, 'workspaceId'>;
+  /** Lifecycle sweep interval for the durable payload spool. 0 disables the timer. */
+  payloadSpoolSweepIntervalMs?: number;
+  /** Maximum rows reclaimed by one payload-spool lifecycle sweep. */
+  payloadSpoolSweepLimit?: number;
 }
 
 export interface RunningGatewayService {
@@ -638,9 +649,16 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // `false` disables it, so enabling the durable queue can never silently produce receipts whose
   // payload was not persisted.
   const payloadSpoolRequested = opts.payloadSpool ?? durableAdmission !== undefined;
+  const isPayloadSpool = (value: unknown): value is GatewayPayloadSpool =>
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Partial<GatewayPayloadSpool>).spool === 'function' &&
+    typeof (value as Partial<GatewayPayloadSpool>).sweep === 'function';
   const payloadSpool =
     payloadSpoolRequested === false
       ? undefined
+      : isPayloadSpool(payloadSpoolRequested)
+        ? payloadSpoolRequested
       : createGatewayPayloadSpool({
           workspaceId: opts.workspace,
           ...(typeof payloadSpoolRequested === 'object' ? payloadSpoolRequested : {}),
@@ -1148,6 +1166,26 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     localBackendTimer.unref?.();
   }
 
+  // D-004/D-011: the production payload spool is lazy-GC'd rather than deleting on every
+  // release, so a retried receipt can still resurrect its body. Keep the sweep bounded
+  // and fail-soft: an individual maintenance failure must not take down the gateway.
+  const payloadSpoolSweepMs = opts.payloadSpoolSweepIntervalMs ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_INTERVAL_MS;
+  const payloadSpoolSweepLimit = opts.payloadSpoolSweepLimit ?? DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT;
+  let payloadSpoolSweepTimer: ReturnType<typeof setInterval> | undefined;
+  const sweepPayloadSpool = (): void => {
+    if (!payloadSpool) return;
+    void payloadSpool.sweep({ limit: payloadSpoolSweepLimit }).catch((e) => {
+      log('warn', `inference-gateway: payload-spool sweep failed: ${(e as Error).message}`);
+    });
+  };
+  if (payloadSpool && Number.isFinite(payloadSpoolSweepMs) && payloadSpoolSweepMs > 0) {
+    // Run once at startup so a restart does not leave an already-overdue legacy backlog
+    // waiting for the first interval tick.
+    sweepPayloadSpool();
+    payloadSpoolSweepTimer = setInterval(sweepPayloadSpool, payloadSpoolSweepMs);
+    payloadSpoolSweepTimer.unref?.();
+  }
+
   return {
     gateway,
     port,
@@ -1161,6 +1199,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       if (reloadTimer) clearInterval(reloadTimer);
       if (hintTimer) clearInterval(hintTimer);
       if (localBackendTimer) clearInterval(localBackendTimer);
+      if (payloadSpoolSweepTimer) clearInterval(payloadSpoolSweepTimer);
       // EI-19303809952284205: drop the alert handler with the service. The tracker is a process
       // singleton, so leaving it registered would let a torn-down service (a test, a restarted
       // in-process gateway) keep firing escalations at the fleet.
