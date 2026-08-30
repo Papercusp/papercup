@@ -435,15 +435,22 @@ async function writeToPg(
     // P-008: the receipt (emitted below) reports whether the wake fan actually
     // re-invoked anyone here — woken stays null when the fan didn't run.
     let fanWoken: number | null = null;
+    // WI-7043 fix #3: distinguish "the directed fan was never attempted" (wake
+    // not requested, empty `to`, or below the wake comms-tier — none of which
+    // is this machine's fault and none of which the sender should read as
+    // absence) from "the fan WAS eligible to run and this machine's own
+    // per-author budget suppressed it". Only the latter gets an honest
+    // `suppressed:'rate-limit'` receipt below — everything else keeps M5a's
+    // silence-means-not-applicable contract unchanged.
+    let fanSuppressedByRate = false;
     // P-003: both fans below spend from the author DEVICE's hourly wake budget
     // (provenance authorPubkey — the verified source-log identity, never the
     // spoofable body.from). Over budget ⇒ the wake is suppressed but the message
     // is already applied — delivery is never dropped, only the re-invoke. The
     // addressee fan costs one token per addressee (each is a billable turn).
+    const directedFanEligible = b.wake === true && to.length > 0 && commsTierAtLeast(authorTier, 'wake');
     if (
-      b.wake === true &&
-      to.length > 0 &&
-      commsTierAtLeast(authorTier, 'wake') &&
+      directedFanEligible &&
       // WI-7043: DIRECTED — may draw on the whole cap, including the reserve that
       // ambient fed_event/receipt traffic is held out of.
       tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length, Date.now(), 'directed')
@@ -459,12 +466,20 @@ async function writeToPg(
         });
         fanWoken = typeof (fan as { woken?: unknown })?.woken === 'number' ? (fan as { woken: number }).woken : 0;
       } catch (e) {
-         
+
         console.warn(
           `[coord-message] federated wake fan failed for ${row.msg_id} (message persisted; recipient sees it next turn):`,
           e instanceof Error ? e.message : String(e),
         );
       }
+    } else if (directedFanEligible) {
+      // WI-7043 fix #3: the fan WAS eligible (wake requested, real addressees,
+      // author cleared comms tier) but this machine's own per-author budget
+      // suppressed it — as opposed to not being attempted at all. Record that so
+      // a `receipt:true` sender gets an honest "suppressed by rate" answer below
+      // instead of the silence that previously read identically to
+      // recipient_absent (the exact false-negative this WI measured).
+      fanSuppressedByRate = true;
     }
 
     // ── P-002 (cross-machine-coord-parity-and-trust-2026-07-01): the wake-on-reply
@@ -580,7 +595,14 @@ async function writeToPg(
     // (the honesty contract returning false positives). A recipient that is
     // homed-but-asleep everywhere wakes nowhere → no receipt → the sender's
     // events:await times out to recipient_absent, which is the honest outcome.
-    if (b.receipt === true && to.length > 0 && fanWoken !== null && fanWoken > 0) {
+    // WI-7043 fix #3: emit a receipt for a genuine budget suppression too, not
+    // only for a confirmed wake — same M5a rule against a FALSE delivered:true
+    // (this machine woke nobody in either case), but now the sender gets a
+    // `suppressed:'rate-limit'` verdict instead of the silence that is
+    // indistinguishable from `recipient_absent`. Every other not-attempted case
+    // (wake not requested, no addressees, below wake tier) stays silent — that
+    // silence is a correct "not applicable", not a hidden failure.
+    if (b.receipt === true && to.length > 0 && ((fanWoken !== null && fanWoken > 0) || fanSuppressedByRate)) {
       try {
         const { sendMessage } = await import('../../../agent-tools/coordination/messages');
         const { machineFingerprint } = await import('../../../identity/device-keychain-id');
@@ -602,9 +624,10 @@ async function writeToPg(
                 key: `coord:receipt:${row.msg_id}`,
                 payload: {
                   msg_id: row.msg_id,
-                  delivered: true,
+                  delivered: fanWoken !== null && fanWoken > 0,
                   woken: fanWoken ?? 0,
                   machine: machineFingerprint(),
+                  ...(fanSuppressedByRate ? { suppressed: 'rate-limit' as const } : {}),
                 },
                 source: 'fed-receipt',
               },
@@ -612,7 +635,7 @@ async function writeToPg(
           },
         );
       } catch (e) {
-         
+
         console.warn(
           `[coord-message] delivery receipt failed for ${row.msg_id} (message applied; sender falls back to reply/inbox confirmation):`,
           e instanceof Error ? e.message : String(e),

@@ -150,7 +150,7 @@ export default defineTool({
   guidance: {
     when: `Investigating substrate boot state, claim error rates, or workspace-level dogfood health. The substrate always boots, so run this any time after the operator has started.`,
     notWhen: `For per-harness Insights or feature-level data, use the harness:* tools. This is the dogfood substrate layer specifically.`,
-    chaining: `Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy.`,
+    chaining: `Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy. Any \`replicationLiveness[].logs[]\` row with \`stale:true\` (verdict 'sampling_stale') has every live-looking field (mergedPosition, knownLength, msSince* etc.) nulled out — the merge loop hasn't fed its registry entry recently, so those numbers are frozen and comparing two stale reads proves nothing (EI-19328421457282435). For actual merge progress on a stale row, query \`harness_shared.substrate_merge_cursor\` (position + updated_at) directly — it's the ground truth this diagnostic's sampler can silently fall behind.`,
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],

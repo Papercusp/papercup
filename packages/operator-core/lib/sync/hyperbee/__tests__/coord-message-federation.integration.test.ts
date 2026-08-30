@@ -763,22 +763,33 @@ describe('coord_event_log federation (real PG)', () => {
       expect(sendMessage).not.toHaveBeenCalled();
     });
 
-    it('M5a: a receipt is emitted ONLY when the wake actually woke someone here; a budget-suppressed wake delivers but emits NO false receipt', async () => {
+    it('M5a: a receipt never claims false delivery; a budget-suppressed wake now gets an honest suppressed:rate-limit receipt (WI-7043 fix #3), never silence indistinguishable from recipient_absent', async () => {
       process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '1';
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const p = proj();
         // msg 1: budget allows → wake fan runs, mock wakes 1 → ONE receipt (delivered:true, woken:1).
         await p.writeToPg(receiptRow('rcpt-5'), { authorPubkey: 'spender', origin: 'remote' });
-        // msg 2: budget exhausted → wake fan SKIPPED (fanWoken stays null) → NO receipt (M5a: the
-        // machine that woke nobody must not claim delivery). The row still APPLIES (delivery durable).
+        // msg 2: budget exhausted → wake fan SKIPPED (fanWoken stays null) but the fan WAS eligible
+        // (wake requested, real addressee, tier cleared) → WI-7043 fix #3: this machine now emits an
+        // honest `suppressed:'rate-limit'` receipt (never delivered:true — M5a's no-false-delivery
+        // guarantee is unchanged) instead of staying silent, which previously read identically to
+        // recipient_absent to the sender's events:await. The row still APPLIES (delivery durable).
         await p.writeToPg(receiptRow('rcpt-6'), { authorPubkey: 'spender', origin: 'remote' });
-        expect(sendMessage).toHaveBeenCalledTimes(1);
+        expect(sendMessage).toHaveBeenCalledTimes(2);
         const first = vi.mocked(sendMessage).mock.calls[0][1] as {
           extra?: { fed_event?: { payload: Record<string, unknown> } };
         };
         expect(first.extra?.fed_event?.payload).toMatchObject({ delivered: true, woken: 1 });
-        // msg 2 still landed in the inbox despite no receipt.
+        const second = vi.mocked(sendMessage).mock.calls[1][1] as {
+          extra?: { fed_event?: { payload: Record<string, unknown> } };
+        };
+        expect(second.extra?.fed_event?.payload).toMatchObject({
+          delivered: false,
+          woken: 0,
+          suppressed: 'rate-limit',
+        });
+        // msg 2 still landed in the inbox despite the suppressed wake.
         expect(
           await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='rcpt-6'`,
         ).toHaveLength(1);
@@ -786,6 +797,16 @@ describe('coord_event_log federation (real PG)', () => {
         warnSpy.mockRestore();
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
       }
+    });
+
+    it('WI-7043 fix #3: a fan that was never ELIGIBLE (wake:false) stays SILENT — only an eligible-but-rate-suppressed fan gets the suppressed receipt', async () => {
+      const p = proj();
+      // wake:false ⇒ never eligible for the directed fan ⇒ no receipt at all, regardless of budget.
+      await p.writeToPg(
+        { ...receiptRow('rcpt-7'), body: envelope('rcpt-7', { wake: false, receipt: true, to: ['su-B'] }) },
+        { authorPubkey: 'spender2', origin: 'remote' },
+      );
+      expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('M4: a fed_event / receipt row from a below-message-tier peer is NOT quarantined (control-plane exemption)', async () => {

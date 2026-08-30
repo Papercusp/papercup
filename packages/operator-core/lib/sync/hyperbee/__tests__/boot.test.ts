@@ -3620,6 +3620,94 @@ describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home'
   });
 });
 
+// EI-18804225902691617: a gh-bound harness caught between join-hive.ts stamping
+// hive_slug in the registry and its swarm binding actually re-keying onto the hive
+// topic previously had `hiveGitServe`/`hiveGitDial` silently omitted for the entire
+// process lifetime — no boot event, no log line, nothing — because
+// `bindingResolvesHiveHomeProjection` gates 'gh' bindings OUT of both the retry loop
+// AND its terminal-failure report. The fix splits "should we retry resolving" from
+// "should we report staying silent": retries stay gated exactly as before (a real
+// extra cost, only worth paying once resolution can plausibly matter), but a single
+// cheap non-retried check now distinguishes a genuinely stuck-mid-join gh harness
+// (loud boot event) from the ordinary non-hive-forever gh harness (silence,
+// unchanged — the overwhelming common case, which must stay zero-noise).
+describe('bootHarnessSubstrate — EI-18804225902691617 gh-binding stuck-mid-join visibility', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-ei18804225-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  const HARNESS_SLUG = 'ei18804225-harness';
+  const REPO_ID = 918042259;
+
+  function ghStuckDiag(workspaceId: string) {
+    return listBootHistory({
+      workspaceId,
+      harnessSlug: HARNESS_SLUG,
+      kinds: ['merge_error'],
+    }).filter((e) => (e.message ?? '').includes('still on its gh binding'));
+  }
+
+  it('a gh-bound harness whose registry ALREADY has a hive home gets a loud boot event (was: totally silent)', async () => {
+    const workspaceId = 'ws-ei18804225-stuck';
+    const joiner = makeAnnounceIdentityOverride('ei18804225-stuck', 9901, 'kc-ei18804225-stuck');
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug: HARNESS_SLUG,
+      swarmBinding: { kind: 'gh', github_repository_id: REPO_ID },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      joinerPotHomeSlugOverride: async () => null,
+      // The registry ALREADY has a hive home for this harness (join-hive.ts
+      // stamped hive_slug) even though the swarm binding is still 'gh' — the
+      // re-key hasn't landed yet. This is the reachable stuck-mid-join state.
+      potHomeSlugForHarnessOverride: async () => 'some-hive-home',
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const fired = ghStuckDiag(workspaceId);
+    expect(fired).toHaveLength(1);
+    expect(fired[0]?.message ?? '').toContain('pot-git serve stays off');
+  });
+
+  it('NEGATIVE CONTROL: an ordinary gh-bound harness with no hive home stays silent (byte-identical to today)', async () => {
+    const workspaceId = 'ws-ei18804225-ordinary';
+    const joiner = makeAnnounceIdentityOverride('ei18804225-ordinary', 9902, 'kc-ei18804225-ordinary');
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug: HARNESS_SLUG,
+      swarmBinding: { kind: 'gh', github_repository_id: REPO_ID },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      joinerPotHomeSlugOverride: async () => null,
+      // No hive home in the registry at all — an ordinary gh-bound harness
+      // that will never be a hive member. Must stay silent: this is the
+      // overwhelming common case and must remain zero-noise.
+      potHomeSlugForHarnessOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    expect(ghStuckDiag(workspaceId)).toEqual([]);
+  });
+});
+
 // WI-3288 (offline pot): the admitted-set otherwise grows only via swarm announces, so a
 // swarm-less packaged install (offline / gh-unauthenticated) merged NOTHING from the
 // WI-3232-restored seed corestore — pot visible, content empty (the owner's Windows VM).

@@ -616,6 +616,63 @@ describe('read-time verdicts + registry lifecycle', () => {
     expect(h!.counts.samplingStale).toBe(1);
   });
 
+  describe('EI-19328421457282435: a stale row cannot be mistaken for a live one', () => {
+    it('nulls every live-looking field once the row goes sampling_stale, and marks it unmissably', () => {
+      const sampleAt = 1_000_000;
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        {
+          keyHex: KEY,
+          knownLength: 630251,
+          mergedPosition: 600962,
+          peersCount: 1,
+          mergeQueueIndex: 0,
+          mergeQueueHeadKeyHex: KEY,
+          swarmConnections: 2,
+        },
+        { graceMs: GRACE, nowMs: sampleAt },
+      );
+      // Still fresh: every field reads live, `stale` is false, `sampledAt`
+      // pins the exact sample time.
+      const [freshHarness] = getReplicationLiveness({ nowMs: sampleAt, graceMs: GRACE });
+      const freshRow = freshHarness!.logs[0]!;
+      expect(freshRow.stale).toBe(false);
+      expect(freshRow.sampledAt).toBe(sampleAt);
+      expect(freshRow.knownLength).toBe(630251);
+      expect(freshRow.mergedPosition).toBe(600962);
+
+      // Two reads of the SAME frozen sample, 20 minutes apart — the exact
+      // shape of the incident: an investigator polling twice and diffing
+      // mergedPosition/knownLength across the gap.
+      const readOne = sampleAt + SAMPLING_STALE_AFTER_MS + 1;
+      const readTwo = readOne + 20 * 60 * 1000;
+      for (const readAt of [readOne, readTwo]) {
+        const [h] = getReplicationLiveness({ nowMs: readAt, graceMs: GRACE });
+        const row = h!.logs[0]!;
+        expect(row.verdict).toBe('sampling_stale');
+        expect(row.stale).toBe(true);
+        // `sampledAt` is identical across both reads — the unmissable tell
+        // that this is ONE frozen sample, not two live observations.
+        expect(row.sampledAt).toBe(sampleAt);
+        // Every field the false root cause was built on diffing must be
+        // null, so there is nothing left to compare across the two reads.
+        expect(row.knownLength).toBeNull();
+        expect(row.localLength).toBeNull();
+        expect(row.mergedPosition).toBeNull();
+        expect(row.peersCount).toBeNull();
+        expect(row.msSinceReplicatorSeen).toBeNull();
+        expect(row.msSinceIngestProgress).toBeNull();
+        expect(row.mergeQueueIndex).toBeNull();
+        expect(row.mergeQueueHeadKeyHex).toBeNull();
+        expect(row.msSinceMergeQueueHead).toBeNull();
+        expect(row.lastSwarmConnections).toBeNull();
+        // The staleness signal itself remains live and accurate.
+        expect(row.msSinceSampled).toBe(readAt - sampleAt);
+      }
+    });
+  });
+
   describe('EI-20453145044075727: touchReplicationLivenessSamples (intra-pass heartbeat)', () => {
     it('a heartbeat inside the dead-man window keeps a legitimately-slow, actively-progressing log off sampling_stale', () => {
       let now = 1_000_000;

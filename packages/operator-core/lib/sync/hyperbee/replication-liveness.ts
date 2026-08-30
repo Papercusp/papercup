@@ -44,7 +44,15 @@
  *                          (attached-but-dead: blocks/ingest not flowing).
  *   - 'sampling_stale'  — the registry itself hasn't been fed for this log
  *                          recently: the merge loop is dead/wedged — the
- *                          detector's own dead-man switch.
+ *                          detector's own dead-man switch. EI-19328421457282435:
+ *                          `getReplicationLiveness` NULLS every live-looking
+ *                          field (mergedPosition/knownLength/msSince* etc.) on
+ *                          a row with this verdict — a frozen sample must not
+ *                          be diffable against a later read as if both were
+ *                          live (that false "unchanged mergedPosition" read
+ *                          produced a fully-written-up false root cause). Read
+ *                          `harness_shared.substrate_merge_cursor` for ground
+ *                          truth when a row comes back stale.
  *
  * Pure in-process state: no PG, no timers, no fetch. The registry lives in
  * whichever process runs the substrate merge loop (main process by default;
@@ -156,31 +164,80 @@ export type ReplicationLogVerdict =
 export interface ReplicationLogLiveness {
   keyHex: string;
   verdict: ReplicationLogVerdict;
-  knownLength: number;
-  /** Blocks physically present on this receiver, distinct from signed writer high-water. */
-  localLength: number;
+  /**
+   * EI-19328421457282435: `null` whenever `stale:true` below. A row whose
+   * sample age has crossed `SAMPLING_STALE_AFTER_MS` is a frozen snapshot of
+   * whatever the merge loop last reported before it stopped feeding the
+   * registry — rendering it as a live number invites a caller to diff two
+   * stale reads and conclude "unchanged" (a wedged-merge signature) when the
+   * true cause is a dead SAMPLER, not a dead merge. Nulling every live-looking
+   * field on a stale row makes that misreading structurally impossible: there
+   * is nothing left to diff.
+   */
+  knownLength: number | null;
+  /** Blocks physically present on this receiver, distinct from signed writer high-water. `null` when `stale:true` (see `knownLength`). */
+  localLength: number | null;
   mergedPosition: number | null;
   peersCount: number | null;
-  /** ms since the log last showed a live replicator peer; null = never. */
+  /** ms since the log last showed a live replicator peer; null = never, or `stale:true`. */
   msSinceReplicatorSeen: number | null;
-  /** ms since the merge position last advanced (or since first sample). */
+  /** ms since the merge position last advanced (or since first sample); null when `stale:true`. */
   msSinceIngestProgress: number | null;
-  /** ms since this log was last sampled (merge-loop dead-man input). */
+  /** ms since this log was last sampled (merge-loop dead-man input) — ALWAYS populated, staleness-detector input, never nulled. */
   msSinceSampled: number;
-  /** Current backlog queue index: 0=head, >0=waiting, null=not queued/unknown. */
+  /**
+   * EI-19328421457282435: absolute epoch-ms of the last real sample (=
+   * `Date.now() - msSinceSampled` at read time, but rendered directly so a
+   * caller never has to reconstruct it, and so two reads of the SAME frozen
+   * sample carry an identical, unmissable timestamp instead of two different-
+   * looking `msSinceSampled` values that merely differ by the polling gap).
+   * ALWAYS populated, even when `stale:true`.
+   */
+  sampledAt: number;
+  /**
+   * EI-19328421457282435: true when this row's sample age has crossed
+   * `SAMPLING_STALE_AFTER_MS` (equivalently, `verdict === 'sampling_stale'`).
+   * Every "as if current" field on this row (`knownLength`, `localLength`,
+   * `mergedPosition`, `peersCount`, `msSinceReplicatorSeen`,
+   * `msSinceIngestProgress`, `mergeQueueIndex`, `mergeQueueHeadKeyHex`,
+   * `msSinceMergeQueueHead`, `lastSwarmConnections`) is nulled when this is
+   * true — check this flag (or `verdict`) before trusting any of them, and
+   * prefer `harness_shared.substrate_merge_cursor` (position + updated_at)
+   * as ground truth for actual merge progress when a row reads stale.
+   */
+  stale: boolean;
+  /** Current backlog queue index: 0=head, >0=waiting, null=not queued/unknown, or `stale:true`. */
   mergeQueueIndex: number | null;
-  /** Current backlog head key, when queue position is known. */
+  /** Current backlog head key, when queue position is known; null when `stale:true`. */
   mergeQueueHeadKeyHex: string | null;
-  /** ms since this log most recently became queue head; null unless index=0. */
+  /** ms since this log most recently became queue head; null unless index=0, or `stale:true`. */
   msSinceMergeQueueHead: number | null;
   /**
    * The swarmConnections value the LAST sample carried — what the
    * connected_never_replicated axis actually sees. null = the sampler never
-   * passed one (axis disabled at the source). Diagnostics: the m1783120511
-   * silent-detector incident was only diagnosable by rebuilding with this
-   * field — keep it so the next "axis never fired" is one RPC read.
+   * passed one (axis disabled at the source), or `stale:true`. Diagnostics:
+   * the m1783120511 silent-detector incident was only diagnosable by
+   * rebuilding with this field — keep it so the next "axis never fired" is
+   * one RPC read.
    */
   lastSwarmConnections: number | null;
+  /**
+   * WI-6873: `max(0, knownLength - mergedPosition)` — how many ops this log
+   * still has to replay before it is caught up. `null` when `stale:true` or
+   * `mergedPosition` is unknown (same nulling convention as the other
+   * derived fields above).
+   *
+   * Closes the WI-6873 class: a `verdict:'live'` log mid-replay after a
+   * restart (e.g. ~600k ops / ~15 min backlog) and a `verdict:'live'` log
+   * that is fully caught up were PREVIOUSLY INDISTINGUISHABLE on this row —
+   * both just read "live". `knownLength`/`mergedPosition` were already
+   * present and a caller COULD subtract them, but nothing named the
+   * resulting number, so a consumer waiting on a specific just-published op
+   * (e.g. a `spawn_request` offer) had no way to tell "still catching up,
+   * give it a few minutes" from "broken, go investigate". See also
+   * `counts.catchingUp`.
+   */
+  backlogOps: number | null;
 }
 
 /** Read-time view of one harness's replication liveness. */
@@ -1543,23 +1600,44 @@ export function getReplicationLiveness(
       else if (verdict === 'frozen') counts.frozen += 1;
       else if (verdict === 'dht_universe_mismatch') counts.dhtUniverseMismatch += 1;
       else counts.samplingStale += 1;
+      // EI-19328421457282435: `sampling_stale` means the merge loop has not fed
+      // this log's registry entry within SAMPLING_STALE_AFTER_MS — every other
+      // field below is a FROZEN snapshot of whatever it last reported. Emitting
+      // those as if current lets a caller diff two stale reads and conclude
+      // "unchanged" (a wedged-merge signature) when the true fault is a dead
+      // SAMPLER. Null every live-looking field on a stale row so there is
+      // nothing left to misread as a live comparison; `msSinceSampled` and the
+      // new `sampledAt`/`stale` markers remain populated — they ARE the
+      // staleness signal.
+      const stale = verdict === 'sampling_stale';
       rows.push({
         keyHex: st.keyHex,
         verdict,
-        knownLength: st.knownLength,
-        localLength: st.localLength,
-        mergedPosition: st.mergedPosition,
-        peersCount: st.peersCount,
-        msSinceReplicatorSeen:
-          st.lastNonZeroPeersMs === null ? null : now - st.lastNonZeroPeersMs,
-        msSinceIngestProgress:
-          st.lastIngestProgressMs === null ? null : now - st.lastIngestProgressMs,
+        stale,
+        sampledAt: st.lastSampleMs,
+        knownLength: stale ? null : st.knownLength,
+        localLength: stale ? null : st.localLength,
+        mergedPosition: stale ? null : st.mergedPosition,
+        peersCount: stale ? null : st.peersCount,
+        msSinceReplicatorSeen: stale
+          ? null
+          : st.lastNonZeroPeersMs === null
+            ? null
+            : now - st.lastNonZeroPeersMs,
+        msSinceIngestProgress: stale
+          ? null
+          : st.lastIngestProgressMs === null
+            ? null
+            : now - st.lastIngestProgressMs,
         msSinceSampled: now - st.lastSampleMs,
-        mergeQueueIndex: st.mergeQueueIndex,
-        mergeQueueHeadKeyHex: st.mergeQueueHeadKeyHex,
-        msSinceMergeQueueHead:
-          st.lastMergeQueueHeadMs === null ? null : now - st.lastMergeQueueHeadMs,
-        lastSwarmConnections: st.lastSwarmConnections,
+        mergeQueueIndex: stale ? null : st.mergeQueueIndex,
+        mergeQueueHeadKeyHex: stale ? null : st.mergeQueueHeadKeyHex,
+        msSinceMergeQueueHead: stale
+          ? null
+          : st.lastMergeQueueHeadMs === null
+            ? null
+            : now - st.lastMergeQueueHeadMs,
+        lastSwarmConnections: stale ? null : st.lastSwarmConnections,
       });
     }
     out.push({

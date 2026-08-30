@@ -8948,7 +8948,7 @@
       "guidance": {
         "when": "Investigating substrate boot state, claim error rates, or workspace-level dogfood health. The substrate always boots, so run this any time after the operator has started.",
         "notWhen": "For per-harness Insights or feature-level data, use the harness:* tools. This is the dogfood substrate layer specifically.",
-        "chaining": "Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy."
+        "chaining": "Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy. Any `replicationLiveness[].logs[]` row with `stale:true` (verdict 'sampling_stale') has every live-looking field (mergedPosition, knownLength, msSince* etc.) nulled out — the merge loop hasn't fed its registry entry recently, so those numbers are frozen and comparing two stale reads proves nothing (EI-19328421457282435). For actual merge progress on a stale row, query `harness_shared.substrate_merge_cursor` (position + updated_at) directly — it's the ground truth this diagnostic's sampler can silently fall behind."
       }
     },
     {
@@ -14373,7 +14373,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item's rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Mug's judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.",
+        "when": "To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item's rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Mug's judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.",
         "notWhen": "You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.",
         "chaining": "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding."
       }

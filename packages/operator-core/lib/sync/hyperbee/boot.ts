@@ -5074,6 +5074,41 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             'hiveGit home-resolve failed after join-time retries — pot-git SERVE stays off for this join (dial is binding-gated and unaffected)',
           );
         }
+      } else if (hiveGitHomeSlug == null && binding?.kind === 'gh') {
+        // EI-18804225902691617: `bindingResolvesHiveHomeProjection` deliberately
+        // excludes 'gh' above so the common case (a plain gh-bound harness that is
+        // never going to be a hive member — the overwhelming majority of boots) pays
+        // zero extra cost and stays completely silent, which is correct. But
+        // boot.ts's own join-sequencing comment (~L1066) documents a real transient
+        // — and, if the re-key never completes or gets reverted, PERMANENT — state
+        // where a harness IS a hive member (join-hive.ts has already stamped
+        // hive_slug in the registry) while its swarm binding is STILL 'gh' (the
+        // re-key hasn't landed): `hiveGitServe`/`hiveGitDial` are then omitted for
+        // the entire process lifetime with NO boot event and NO log line at all.
+        // One cheap, NON-retried registry read distinguishes the two: if this
+        // harness's home resolves to something despite the gh binding, we're in
+        // that reachable stuck-mid-join state and it is worth saying so loudly; if
+        // it resolves to nothing (the ordinary non-hive-forever gh harness), stay
+        // silent exactly as before — this branch must never become per-boot noise
+        // for the common case. Deliberately reports only; does NOT assign
+        // hiveGitHomeSlug — serve stays gated off for a gh binding exactly as
+        // before, unchanged from today's behavior.
+        try {
+          const resolve =
+            opts.potHomeSlugForHarnessOverride ??
+            (await loadHiveFederationModule()).potHomeSlugForHarness;
+          const maybeHiveHome = (await resolve(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+          if (maybeHiveHome) {
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'merge_error',
+              'pot-git serve stays off: harness still on its gh binding, hive re-key has not engaged (dial is binding-gated and unaffected)',
+            );
+          }
+        } catch {
+          // best-effort diagnostic only — never let this probe affect the join
+        }
       }
       swarmHandle = await joinHarnessSwarm({
         store,

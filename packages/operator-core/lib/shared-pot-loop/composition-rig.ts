@@ -180,6 +180,18 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   await ensureCoordEventLogTable(sql);
 
   await sql.unsafe(`
+    -- hive-epoch-boot-deps (2026-08-27): bootHarnessSubstrate now reads this table
+    -- on EVERY boot (buildHiveRekeyBootDeps → potHomeSlugForHarness →
+    -- loadHarnessRegistry → readOperatorState('harness_registry')), even for a
+    -- non-hive harness — an empty registry correctly resolves "not a hive" (no
+    -- rekey deps) with no row required, but the TABLE itself must exist or the
+    -- read throws and boot fails closed (EI-18815759786278298).
+    CREATE TABLE harness_shared.harness_registry (
+      workspace_id text NOT NULL,
+      payload      jsonb NOT NULL,
+      updated_at   bigint DEFAULT 0 NOT NULL
+    );
+
     CREATE TABLE harness_shared.harness_features_consolidated (
       workspace_id        TEXT NOT NULL DEFAULT '',
       harness_slug        TEXT NOT NULL,
@@ -1198,7 +1210,16 @@ export class CompositionRig {
     let applyA: ((op: OpEnvelope) => Promise<boolean>) | undefined;
     let applyB: ((op: OpEnvelope) => Promise<boolean>) | undefined;
 
-    handleA = await bootHarnessSubstrate({
+    // WI-1206492 / EI-18815759786278298: bootHarnessSubstrate now (2026-08-27,
+    // hive-epoch-boot-deps) touches getOrgPg() during boot (buildHiveRekeyBootDeps →
+    // potHomeSlugForHarness → loadHarnessRegistry → readOperatorState) — a call the
+    // rig's own db-org mocks (see cell-scope.ts's documented pattern, and the
+    // strict throw-on-no-scope variant in cross-swarm-supervision.integration.test.ts)
+    // expect to be reachable ONLY inside `runAsCell`. Each cell's own boot must run
+    // inside ITS OWN cell scope so that incidental getOrgPg() calls during boot are
+    // routed to (or validated against) the right cell's PG, exactly like every other
+    // production code path this rig exercises post-boot via `runAsCell`.
+    handleA = await runWithCellSql(dbA.sql, () => bootHarnessSubstrate({
       workspaceRoot: rootA,
       workspaceId: this.workspaceId,
       harnessSlug: this.harnessSlug,
@@ -1214,13 +1235,13 @@ export class CompositionRig {
       loadRevokedOverride: async () => new Set(),
       announceIdentityOverride: idA.override,
       hlcClock: hlcA,
-    });
+    }));
     this.cleanups.push(async () => {
       await handleA?.close();
       await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: this.harnessSlug });
     });
 
-    handleB = await bootHarnessSubstrate({
+    handleB = await runWithCellSql(dbB.sql, () => bootHarnessSubstrate({
       workspaceRoot: rootB,
       workspaceId: this.workspaceId,
       harnessSlug: this.harnessSlug,
@@ -1236,7 +1257,7 @@ export class CompositionRig {
       loadRevokedOverride: async () => new Set(),
       announceIdentityOverride: idB.override,
       hlcClock: hlcB,
-    });
+    }));
     this.cleanups.push(async () => {
       await handleB?.close();
       await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: this.harnessSlug });

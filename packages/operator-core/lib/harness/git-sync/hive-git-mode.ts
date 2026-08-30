@@ -183,13 +183,20 @@ export async function setPotGitMode(
  * ephemeral routine; back-to-legacy (or a cleared setting) disarms it in place
  * (row + cadence config kept for re-activation; the action's own mode
  * self-gate stays as defense-in-depth, not the primary gate). Arms against the
- * hive-home's PRIMARY bare store (`repoKey = potHomeSlug` — the same
- * `hiveGitRepoPath(potHomeSlug, slug)` key git-sync-action's legs use for the
- * home harness); a hive binding additional repos edits the routine's
- * trigger_config rather than growing this seam. Failures propagate: this runs
- * on the explicit admin flip path, where a silent skip would re-create the
- * unbounded-ref-growth gap this call exists to close (the mode setting itself
- * has already committed; the upsert/disarm is idempotent on retry).
+ * hive-home's PRIMARY bare store — `repoKey = canonicalRepoKey(entry)`, the
+ * SAME federated key `hiveGitRepoPath(potHomeSlug, repoKey)` resolves to for
+ * every other leg (git-sync-action.ts), NOT the bare `potHomeSlug` (EI-19342015342118497):
+ * once an entry re-keys off its local slug onto `gh-<github_repository_id>`
+ * (WI-5168), a routine armed on the pre-rekey slug keeps `git gc`'ing the now-
+ * abandoned slug-named store forever — its mtimes look "actively written"
+ * (repack touches the pack/ref files every tick) even though nothing publishes
+ * into it, which is exactly the false "still wedged at the incident sha"
+ * symptom that store can reproduce on demand. Registry-unreadable / no entry
+ * found falls back to `potHomeSlug` (the pre-WI-5168 behavior) rather than
+ * failing the mode flip — the mode setting itself has already committed, and a
+ * missing registry entry means the derivation was never possible anyway. A
+ * hive binding additional repos edits the routine's trigger_config rather than
+ * growing this seam.
  */
 async function syncPotGitGcRoutine(
   workspaceId: string,
@@ -202,5 +209,20 @@ async function syncPotGitGcRoutine(
     await setPotGitGcRoutineActive(s, potHomeSlug, false);
     return;
   }
-  await upsertPotGitGcRoutine(s, { workspaceId, potHomeSlug, repoKey: potHomeSlug, active: true });
+  // Lazy, like the `@papercusp/db-org` import above (D-024): this module sits
+  // on the substrate boot path and must not statically pull in the harness
+  // registry's module graph for every peer process.
+  let repoKey = potHomeSlug;
+  try {
+    const [{ loadHarnessRegistry }, { canonicalRepoKey }] = await Promise.all([
+      import('../../harness-registry'),
+      import('../../sync/pot-git/repo-identity'),
+    ]);
+    const entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === potHomeSlug);
+    if (entry) repoKey = canonicalRepoKey(entry);
+  } catch {
+    // registry unreadable — fall back to the pre-WI-5168 slug-keyed guess
+    // rather than failing the mode-flip write, which has already committed.
+  }
+  await upsertPotGitGcRoutine(s, { workspaceId, potHomeSlug, repoKey, active: true });
 }

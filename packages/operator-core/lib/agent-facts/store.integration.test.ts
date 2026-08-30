@@ -464,7 +464,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${FACTS_PER_SCOPE_CAP + 4}`);
   });
 
-  it('EI-21442182972969040: an ordinary at-cap write refuses cross-author verified eviction atomically, while exempt slots remain writable', async () => {
+  it('EI-21442182972969040: ranking-aware cross-author verified admission protects weaker writes while allowing a better replacement, and exempt slots remain writable', async () => {
     const scopeRef = 'su-protect-verified-cap';
     const peer = 'su-peer-verified';
     const writer = 'su-new-writer';
@@ -497,22 +497,45 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     };
     const preview = await previewFactCapImpact(incoming, db.sql);
 
-    // The dry-run forecast must establish that refusal is protecting a real
-    // peer fact rather than silently treating this as a no-op.
+    // The dry-run forecast must establish that the cap is real and identify
+    // the exact peer row the ranking would displace.
     expect(preview.atCap).toBe(true);
     expect(preview.populationSize).toBe(FACTS_PER_SCOPE_CAP);
     expect(preview.wouldEvict).toHaveLength(1);
     expect(preview.wouldEvict[0]).toMatchObject({ confidence: 'verified', createdBy: peer });
 
-    await expect(assertFact(incoming, db.sql)).rejects.toThrow(
+    // A fresh verified row has the maximum remaining-TTL fraction, so it
+    // outranks the near-death tail even though the victim is another author's
+    // verified fact. The old confidence-only guard incorrectly refused this
+    // write and turned a saturated all-verified scope into a write lock.
+    const admitted = await assertFact(incoming, db.sql);
+    expect(admitted.evicted?.map((row) => row.key)).toEqual(['peer-0']);
+    expect(admitted.survival).toMatchObject({ rank: 1, nextVictim: false });
+
+    // A weaker cross-author write still refuses before insertion: the ranking
+    // tail remains a peer's verified row, and the guard's protection is intact.
+    const weakerIncoming = {
+      ...base,
+      key: 'incoming-cross-author-weaker',
+      body: 'a provisional finding',
+      createdBy: 'su-weaker-writer',
+      confidence: 'provisional' as const,
+      ttlSec: 30 * 86400,
+    };
+    const weakerPreview = await previewFactCapImpact(weakerIncoming, db.sql);
+    expect(weakerPreview.atCap).toBe(true);
+    expect(weakerPreview.wouldEvict).toHaveLength(1);
+    expect(weakerPreview.wouldEvict[0]).toMatchObject({ confidence: 'verified', createdBy: peer });
+    await expect(assertFact(weakerIncoming, db.sql)).rejects.toThrow(
       /REFUSED before write:.*another author's verified fact/i,
     );
 
-    // Refusal is pre-write: the incoming row is absent, all peer rows remain
-    // live, and the attempted admission stamped no machine eviction.
+    // The weaker refusal is pre-write: the admitted row and 199 surviving peer
+    // rows remain live, and only the better write's victim is marked evicted.
     const [afterRefusal] = await db.sql<{
       peerLive: number;
       incomingRows: number;
+      weakerIncomingRows: number;
       evictedRows: number;
     }[]>`
       SELECT count(*) FILTER (
@@ -520,12 +543,14 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
                  AND retracted_at IS NULL AND expires_at > now()
              )::int AS "peerLive",
              count(*) FILTER (WHERE key = 'incoming-cross-author')::int AS "incomingRows",
+             count(*) FILTER (WHERE key = 'incoming-cross-author-weaker')::int AS "weakerIncomingRows",
              count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
-    expect(afterRefusal.peerLive).toBe(FACTS_PER_SCOPE_CAP);
-    expect(afterRefusal.incomingRows).toBe(0);
-    expect(afterRefusal.evictedRows).toBe(0);
+    expect(afterRefusal.peerLive).toBe(FACTS_PER_SCOPE_CAP - 1);
+    expect(afterRefusal.incomingRows).toBe(1);
+    expect(afterRefusal.weakerIncomingRows).toBe(0);
+    expect(afterRefusal.evictedRows).toBe(1);
 
     // Typed safety slots and conventions do not consume ordinary cap seats,
     // so they bypass the guard even when the ranked partition is saturated.
@@ -558,9 +583,9 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
              count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
-    expect(afterExempt.peerLive).toBe(FACTS_PER_SCOPE_CAP);
+    expect(afterExempt.peerLive).toBe(FACTS_PER_SCOPE_CAP - 1);
     expect(afterExempt.exemptLive).toBe(exemptWrites.length);
-    expect(afterExempt.evictedRows).toBe(0);
+    expect(afterExempt.evictedRows).toBe(1);
   });
 
   it('EI-21488671343297100: concurrent writers cannot race past the protected-victim guard', async () => {
