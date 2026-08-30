@@ -44,6 +44,17 @@ vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => n
 vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
 vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
 
+// EI-21872682653374832 — createOneWorkItem stamps goal provenance (_create-core.ts:1198).
+// Unmocked, resolveGoalContext reaches the real authority read, which fails CLOSED with
+// `goal_holder_authority_unreadable` (goal-context.ts:54) because no fixture can supply that
+// authority. The stamp's catch console.warns by design (EI-20075667133396690) and
+// vitest-fail-on-console turns that warn into a failure BEFORE these tests reach their own
+// assertions. null is the honest fixture answer: this agent runs under no goal, which is the
+// majority production path. Do NOT silence the production warn instead — the warn is the feature.
+vi.mock('../../modes/goal-context', () => ({
+  resolveGoalContext: vi.fn(async () => null),
+}));
+
 import { createOneWorkItem } from './_create-core';
 import { findMirroredOpenItem } from './mirror-guard';
 import { getFlag } from '@papercusp/flags/server';
