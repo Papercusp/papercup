@@ -50,6 +50,7 @@ import {
 } from '../../harness/improvements/tool-error-classifier';
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from '../work_items/drain-flow';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -1228,6 +1229,26 @@ export default defineTool({
         ],
       };
     } catch (err) {
+      // A bounded admin-pool transaction that exhausts its contention budget is
+      // retryable and should not degrade into a generic MCP handler_error.
+      if (err instanceof OrgTxnTimeoutError) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'timeout',
+                retryable: true,
+                pgCode: err.pgCode,
+                message:
+                  `improvements:capture write hit transient database contention (${err.pgCode}): ${err.message}. ` +
+                  'No improvement was captured; retry now.',
+              }),
+            },
+          ],
+        };
+      }
       // Surface a rubric-rating contract violation (missing evidence / rubricRef)
       // as a clean tool error instead of an opaque throw (D-002 evidence gate).
       if (err instanceof ObservationEvidenceError) {

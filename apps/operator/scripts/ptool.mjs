@@ -145,12 +145,18 @@ export function parseArgs(argv = []) {
     if (a.startsWith('--') && eq > 0) {
       const key = valueFlags[a.slice(0, eq)];
       if (key) { out[key] = a.slice(eq + 1); continue; }
+      throw new Error(
+        `unknown flag ${a}; tool-specific arguments must be supplied in the JSON payload via --json, --json-file, or --json -`,
+      );
     }
     // `--json -` / `--script -` are documented stdin forms. Convenience
     // flags may be interleaved between the source flag and the sentinel, so
     // do not consume the first option as JSON/script text when a later `-`
     // is present.
-    if (valueFlags[a] && i + 1 < argv.length) {
+    if (valueFlags[a]) {
+      if (i + 1 >= argv.length) {
+        throw new Error(`--${a.slice(2)} requires a value`);
+      }
       const next = argv[i + 1];
       const nextLooksLikeFlag = next !== '-'
         && (next.startsWith('--') || next === '-h' || next === '-l');
@@ -158,8 +164,16 @@ export function parseArgs(argv = []) {
         out[valueFlags[a]] = '-';
         continue;
       }
+      if (nextLooksLikeFlag) {
+        throw new Error(`--${a.slice(2)} requires a value`);
+      }
       out[valueFlags[a]] = argv[++i];
       continue;
+    }
+    if (a.startsWith('--')) {
+      throw new Error(
+        `unknown flag ${a}; tool-specific arguments must be supplied in the JSON payload via --json, --json-file, or --json -`,
+      );
     }
     // A bare positional: the tool name first, then (if --list was given) a
     // catalog filter term.
@@ -991,6 +1005,22 @@ export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 // instead of becoming outcome-unknown at the client.
 export const PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS = 70_000;
 
+// `work_items:create` performs deduplication, goal/fleet admission, the
+// create+claim transaction, links, and lifecycle emission before returning.
+// With no explicit tool timeout it uses the route-stack's 30s handler budget,
+// while MCP's flat deadline is ~55s. Keep the client outside that transport
+// window so a server-side result wins the race instead of a post-connect
+// ECONNRESET/outcome-unknown at the old 30s client cutoff
+// (EI-21832411975767034).
+export const PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
+// `fleet:wind-down` performs the durable control-state write, scheduler drain
+// stamp, pause-hold reconciliation, and best-effort member cue before returning.
+// It inherits the dispatch stack's 60s default (the tool has no explicit
+// timeoutSec), so the ordinary 30s ptool deadline can report an ambiguous
+// outcome while the mutation is still settling (EI-21831468700319864).
+export const PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // WI-2944 / EI-21637077415806005: capability:launch-agent uses the tooldef
 // default 60s handler budget. The MCP transport deliberately waits another 5s
 // so the handler can settle, commit, and persist mcp_tool_results. A 60s ptool
@@ -1104,6 +1134,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // the writer can outlive the ordinary 30s client deadline, so preserve its
   // typed receipt instead of reconnecting with an outcome-unknown result.
   ['work_items:complete', PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS],
+  // EI-21832411975767034: work_items:create has a 30s route-stack default,
+  // but ptool's old 30s client cutoff could win after the mutation started.
+  ['work_items:create', PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS],
+  // EI-21831468700319864: fleet:wind-down inherits the 60s dispatch default,
+  // but the old 30s ptool client cutoff could win after the control mutation
+  // started and leave its outcome unknown.
+  ['fleet:wind-down', PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS],
   // EI-21386877660531420: activity:tool-log scans and compacts the activity
   // ledger. In a concurrent projected batch that read can outlive ptool's
   // ordinary 30s deadline even though it is bounded and still progressing.

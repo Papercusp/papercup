@@ -148,15 +148,93 @@ function normalizedLayer(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
 }
 
+function clauseIdentity(clause: SpecClauseRevision): string {
+  return `${clause.planSlug}/${clause.specId}@${clause.revision} (${clause.contentHash})`;
+}
+
+function clauseProbe(clause: SpecClauseRevision): string {
+  return (
+    `Probe plans:get-spec-evidence with planSlug=${JSON.stringify(clause.planSlug)}, ` +
+    `specId=${JSON.stringify(clause.specId)}, specRevision=${clause.revision}, ` +
+    `specFingerprint=${JSON.stringify(clause.contentHash)}.`
+  );
+}
+
+function bindingDescription(row: SpecEvidenceForAdequacy): string {
+  const details = detailsOf(row);
+  const fields = [
+    `kind=${row.evidenceKind}`,
+    `ref=${JSON.stringify(row.evidenceRef)}`,
+    `currentness=${row.currentness.overall}`,
+    `sourceFingerprint=${JSON.stringify(row.fingerprints.sourceFingerprint)}`,
+    row.fingerprints.testFingerprint ? `testFingerprint=${JSON.stringify(row.fingerprints.testFingerprint)}` : null,
+    row.fingerprints.fixtureFingerprint
+      ? `fixtureFingerprint=${JSON.stringify(row.fingerprints.fixtureFingerprint)}`
+      : null,
+    row.fingerprints.rubricFingerprint
+      ? `rubricFingerprint=${JSON.stringify(row.fingerprints.rubricFingerprint)}`
+      : null,
+    row.fingerprints.environmentFingerprint
+      ? `environmentFingerprint=${JSON.stringify(row.fingerprints.environmentFingerprint)}`
+      : null,
+    row.coverageEvidenceRef !== null ? `coverageEvidenceRef=${row.coverageEvidenceRef}` : null,
+    row.testRunId !== null ? `testRunId=${row.testRunId}` : null,
+    details.fixtureCalibrated !== undefined ? `fixtureCalibrated=${details.fixtureCalibrated}` : null,
+    details.falsifiable !== undefined ? `falsifiable=${details.falsifiable}` : null,
+    details.testLayer !== undefined ? `testLayer=${JSON.stringify(details.testLayer)}` : null,
+    details.pathReachable !== undefined ? `pathReachable=${details.pathReachable}` : null,
+    details.oracleIndependent !== undefined ? `oracleIndependent=${details.oracleIndependent}` : null,
+    details.collected !== undefined ? `collected=${details.collected}` : null,
+    details.skipped !== undefined ? `skipped=${details.skipped}` : null,
+    details.executed !== undefined ? `executed=${details.executed}` : null,
+    details.outcome !== undefined ? `outcome=${JSON.stringify(details.outcome)}` : null,
+    details.targeted !== undefined ? `targeted=${details.targeted}` : null,
+    details.coverageRungs
+      ? `coverageRungs=${(['l1', 'l2', 'l3', 'l4'] as const)
+          .filter((rung) => details.coverageRungs?.[rung] !== undefined)
+          .map((rung) => `${rung}:${details.coverageRungs?.[rung]}`)
+          .join('|')}`
+      : null,
+    row.currentness.staleReasons.length > 0
+      ? `staleReasons=${JSON.stringify(row.currentness.staleReasons)}`
+      : null,
+    row.currentness.unknownReasons.length > 0
+      ? `unknownReasons=${JSON.stringify(row.currentness.unknownReasons)}`
+      : null,
+  ].filter((field): field is string => field !== null);
+  return fields.join(', ');
+}
+
+function bindingSummary(rows: SpecEvidenceForAdequacy[]): string {
+  const ordered = [...rows].sort((a, b) =>
+    `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
+  );
+  if (ordered.length === 0) {
+    return '(no bound evidence rows; probe plans:get-spec-evidence for the exact clause)';
+  }
+  const maxRows = 6;
+  const shown = ordered.slice(0, maxRows).map(bindingDescription).join('; ');
+  return ordered.length > maxRows ? `${shown}; +${ordered.length - maxRows} more binding(s)` : shown;
+}
+
+function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]): string {
+  return `${statement} Bound evidence: ${bindingSummary(rows)}.`;
+}
+
 function booleanRating(
   evidence: SpecEvidenceForAdequacy[],
   pick: (details: AdequacyDetails) => boolean | undefined,
   labels: { pass: string; fail: string; unknown: string },
 ): AdequacyRatingEntry {
-  const values = evidence.map((row) => pick(detailsOf(row))).filter((v): v is boolean => v !== undefined);
-  if (values.includes(true)) return { rating: 'pass', evidence: labels.pass };
-  if (values.includes(false)) return { rating: 'fail', evidence: labels.fail };
-  return { rating: 'unknown', evidence: labels.unknown };
+  const evaluated = evidence
+    .map((row) => ({ row, value: pick(detailsOf(row)) }))
+    .filter((entry): entry is { row: SpecEvidenceForAdequacy; value: boolean } => entry.value !== undefined);
+  const inspected = evaluated.length > 0 ? evaluated.map(({ row }) => row) : evidence;
+  const passing = evaluated.filter(({ value }) => value).map(({ row }) => row);
+  const failing = evaluated.filter(({ value }) => !value).map(({ row }) => row);
+  if (passing.length > 0) return { rating: 'pass', evidence: evidenceWithBindings(labels.pass, passing) };
+  if (failing.length > 0) return { rating: 'fail', evidence: evidenceWithBindings(labels.fail, failing) };
+  return { rating: 'unknown', evidence: evidenceWithBindings(labels.unknown, inspected) };
 }
 
 function l4WaiverOf(exemption: Record<string, unknown> | null, now: Date): L4Waiver | null {
@@ -197,7 +275,13 @@ function riskFloorRating(
 ): { floor: 'none' | 'l3' | 'l4'; rating: AdequacyRatingEntry } {
   const floor = requiredProofFloor(clause, classRef);
   if (floor === 'none') {
-    return { floor, rating: { rating: 'not-applicable', evidence: 'This non-automated clause declares no test layer.' } };
+    return {
+      floor,
+      rating: {
+        rating: 'not-applicable',
+        evidence: `Clause ${clauseIdentity(clause)} is non-automated and declares no required test layer. ${clauseProbe(clause)}`,
+      },
+    };
   }
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));
   const meetsL3 = detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
@@ -212,7 +296,21 @@ function riskFloorRating(
     if (meetsL4) {
       return {
         floor,
-        rating: { rating: 'pass', evidence: 'Targeted L4 proof is bound to this exact clause revision.' },
+        rating: {
+          rating: 'pass',
+          evidence: evidenceWithBindings(
+            `Targeted L4 proof meets the ${clauseIdentity(clause)} floor.`,
+            detailRows
+              .filter(
+                ({ row, details }) =>
+                  details.coverageRungs?.l4 === true ||
+                  ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+                    details.targeted === true &&
+                    SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')),
+              )
+              .map(({ row }) => row),
+          ),
+        },
       };
     }
     const waiver = l4WaiverOf(clause.exemption, now);
@@ -221,7 +319,9 @@ function riskFloorRating(
         floor,
         rating: {
           rating: 'waived',
-          evidence: `L4 explicitly waived by ${waiver.approvalRef}: ${waiver.justification}${waiver.expiresAt ? ` (expires ${waiver.expiresAt})` : ''}`,
+          evidence:
+            `L4 for ${clauseIdentity(clause)} is explicitly waived by approvalRef=${waiver.approvalRef}: ` +
+            `${waiver.justification}${waiver.expiresAt ? ` (expires ${waiver.expiresAt})` : ''}. ${clauseProbe(clause)}`,
         },
       };
     }
@@ -231,8 +331,14 @@ function riskFloorRating(
       rating: {
         rating: hasExplicitL4Miss ? 'fail' : 'unknown',
         evidence: hasExplicitL4Miss
-          ? 'The bound coverage row explicitly misses L4 and no current approved waiver exists.'
-          : 'No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound.',
+          ? evidenceWithBindings(
+              `Bound coverage explicitly reports L4=false for ${clauseIdentity(clause)} and no current approved waiver exists.`,
+              detailRows.filter(({ details }) => details.coverageRungs?.l4 === false).map(({ row }) => row),
+            )
+          : `${evidenceWithBindings(
+              `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
+              evidence,
+            )} ${clauseProbe(clause)}`,
         suggestion: 'Bind targeted L4 proof or record a justified approvalRef-bearing waiver on the spec revision.',
       },
     };
@@ -241,12 +347,24 @@ function riskFloorRating(
   return {
     floor,
     rating: meetsL3
-      ? { rating: 'pass', evidence: 'Targeted L3 intent proof is bound to this exact clause revision.' }
+      ? {
+          rating: 'pass',
+          evidence: evidenceWithBindings(
+            `Targeted L3 intent proof meets the ${clauseIdentity(clause)} floor.`,
+            detailRows.filter(({ details }) => details.coverageRungs?.l3 === true).map(({ row }) => row),
+          ),
+        }
       : {
           rating: hasExplicitL3Miss ? 'fail' : 'unknown',
           evidence: hasExplicitL3Miss
-            ? 'The bound coverage row explicitly misses the L3 intent-test floor.'
-            : 'No explicit meets_l3 result is bound; depth or a generic passing test is not a rung verdict.',
+            ? evidenceWithBindings(
+                `Bound coverage explicitly reports L3=false for ${clauseIdentity(clause)}.`,
+                detailRows.filter(({ details }) => details.coverageRungs?.l3 === false).map(({ row }) => row),
+              )
+            : `${evidenceWithBindings(
+                `No explicit meets_l3 result is bound for ${clauseIdentity(clause)}; depth or a generic passing test is not a rung verdict.`,
+                evidence,
+              )} ${clauseProbe(clause)}`,
           suggestion: 'Bind a coverage-census row whose independent meets_l3 flag is current.',
         },
   };
@@ -339,11 +457,14 @@ export function evaluateSpecTestAdequacy(input: {
   ratings.traceability = evidence.length
     ? {
         rating: 'pass',
-        evidence: `${evidence.length} immutable binding(s) name ${clause.planSlug}/${clause.specId}@${clause.revision} (${clause.contentHash}).`,
+        evidence: evidenceWithBindings(
+          `${evidence.length} immutable binding(s) resolve ${clauseIdentity(clause)}.`,
+          evidence,
+        ),
       }
     : {
         rating: 'fail',
-        evidence: `No immutable evidence binding names ${clause.planSlug}/${clause.specId}@${clause.revision}.`,
+        evidence: `No immutable evidence binding resolves ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
         suggestion: 'Bind the work item and proof through plans:bind-spec-evidence.',
       };
 
@@ -352,11 +473,14 @@ export function evaluateSpecTestAdequacy(input: {
     evidence.some((row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null);
   ratings['fixture-calibration'] = fixtureApplicable
     ? booleanRating(evidence, (d) => d.fixtureCalibrated, {
-        pass: 'At least one applicable binding explicitly demonstrates fixture calibration.',
-        fail: 'Applicable binding metadata explicitly reports an uncalibrated fixture.',
-        unknown: 'A fixture is required or used, but no binding attests fixture calibration.',
+        pass: 'An applicable binding explicitly attests fixtureCalibrated=true.',
+        fail: 'Applicable binding metadata explicitly attests fixtureCalibrated=false.',
+        unknown: 'A fixture is required or used, but no binding attests fixtureCalibrated=true/false.',
       })
-    : { rating: 'not-applicable', evidence: 'The clause and its bindings use no fixture.' };
+    : {
+        rating: 'not-applicable',
+        evidence: `No fixture binding or fixture fingerprint is present for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(evidence)}.`,
+      };
 
   const falsificationEvidence = evidence.some((row) => {
     const details = detailsOf(row);
@@ -367,17 +491,30 @@ export function evaluateSpecTestAdequacy(input: {
     );
   });
   ratings.falsifiability = falsificationEvidence
-    ? { rating: 'pass', evidence: 'A bound negative control, counterexample, or killed mutant demonstrates red capability.' }
+    ? {
+        rating: 'pass',
+        evidence: evidenceWithBindings(
+          `A bound negative control, counterexample, or killed mutant demonstrates red capability for ${clauseIdentity(clause)}.`,
+          evidence.filter((row) => {
+            const details = detailsOf(row);
+            return (
+              details.falsifiable === true ||
+              ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+                SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''))
+            );
+          }),
+        ),
+      }
     : booleanRating(evidence, (d) => d.falsifiable, {
-        pass: 'A bound proof explicitly demonstrates falsifiability.',
-        fail: 'Bound metadata explicitly reports non-falsifiable proof.',
-        unknown: 'No bound evidence demonstrates how the proof fails when behavior is wrong.',
+        pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
+        fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
+        unknown: `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
       });
 
   if (clause.requiredTestLayers.length === 0) {
     ratings['correct-layer'] = {
       rating: 'not-applicable',
-      evidence: 'The clause declares no required test layer.',
+      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseProbe(clause)}`,
     };
   } else {
     const required = [...new Set(clause.requiredTestLayers.map(normalizedLayer))];
@@ -396,27 +533,49 @@ export function evaluateSpecTestAdequacy(input: {
     ratings['correct-layer'] = missing.length || unreachable.length
       ? {
           rating: 'fail',
-          evidence: `Required layer/path gaps: ${[
-            ...missing.map((layer) => `${layer}:missing`),
-            ...unreachable.map((layer) => `${layer}:unreachable`),
-          ].join(', ')}.`,
+          evidence: `${evidenceWithBindings(
+            `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
+              ...missing.map((layer) => `${layer}:missing`),
+              ...unreachable.map((layer) => `${layer}:unreachable`),
+            ].join(', ')}.`,
+            evidence,
+          )} ${clauseProbe(clause)}`,
           suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
         }
       : unresolved.length
         ? {
             rating: 'unknown',
-            evidence: `Required layer(s) are represented but path reachability is unverified: ${unresolved.join(', ')}.`,
+            evidence: evidenceWithBindings(
+              `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+              evidence.filter((row) => {
+                const details = detailsOf(row);
+                return (
+                  typeof details.testLayer === 'string' &&
+                  unresolved.includes(normalizedLayer(details.testLayer))
+                );
+              }),
+            ),
           }
         : {
             rating: 'pass',
-            evidence: `Every required layer reaches the claimed path: ${required.join(', ')}.`,
+            evidence: evidenceWithBindings(
+              `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.join(', ')}.`,
+              evidence.filter((row) => {
+                const details = detailsOf(row);
+                return (
+                  typeof details.testLayer === 'string' &&
+                  required.includes(normalizedLayer(details.testLayer)) &&
+                  details.pathReachable === true
+                );
+              }),
+            ),
           };
   }
 
   ratings['oracle-independence'] = booleanRating(evidence, (d) => d.oracleIndependent, {
-    pass: 'At least one bound proof explicitly uses an implementation-independent oracle.',
-    fail: 'Bound metadata explicitly reports an implementation-coupled oracle.',
-    unknown: 'No bound evidence establishes oracle independence.',
+    pass: `A bound proof explicitly uses an implementation-independent oracle for ${clauseIdentity(clause)}.`,
+    fail: `Bound metadata explicitly reports oracleIndependent=false for ${clauseIdentity(clause)}.`,
+    unknown: `No bound evidence establishes oracle independence for ${clauseIdentity(clause)}.`,
   });
 
   const executable = evidence.filter((row) =>
@@ -438,40 +597,74 @@ export function evaluateSpecTestAdequacy(input: {
   ratings['execution-integrity'] = explicitBadExecution
     ? {
         rating: 'fail',
-        evidence: 'At least one relied-on binding reports an uncollected, skipped, unexecuted, or failing outcome.',
+        evidence: evidenceWithBindings(
+          `At least one relied-on binding reports an uncollected, skipped, unexecuted, or failing outcome for ${clauseIdentity(clause)}.`,
+          executable.filter((row) => {
+            const d = detailsOf(row);
+            return (
+              d.collected === false ||
+              d.skipped === true ||
+              d.executed === false ||
+              FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+            );
+          }),
+        ),
       }
     : successfulExecution
       ? {
           rating: 'pass',
-          evidence: 'Bound proof was collected, not skipped, executed, and produced a successful outcome.',
+          evidence: evidenceWithBindings(
+            `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
+            executable.filter((row) => {
+              const d = detailsOf(row);
+              return (
+                d.collected === true &&
+                d.skipped === false &&
+                d.executed === true &&
+                SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+              );
+            }),
+          ),
         }
       : {
           rating: executable.length ? 'unknown' : 'fail',
           evidence: executable.length
-            ? 'Executable bindings exist, but collection/skip/execution/outcome metadata is incomplete.'
-            : 'No executable test/check/mutation/counterexample/coverage/operational proof is bound.',
+            ? evidenceWithBindings(
+                `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
+                executable,
+              )
+            : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
         };
 
   const freshnessStates = evidence.map((row) => row.currentness.overall);
   ratings.freshness = freshnessStates.includes('stale')
     ? {
         rating: 'fail',
-        evidence: `Stale binding(s): ${evidence
-          .filter((row) => row.currentness.overall === 'stale')
-          .map((row) => `${row.evidenceRef} [${row.currentness.staleReasons.join(',')}]`)
-          .join('; ')}.`,
+        evidence: evidenceWithBindings(
+          `Stale binding(s) invalidate freshness for ${clauseIdentity(clause)}.`,
+          evidence.filter((row) => row.currentness.overall === 'stale'),
+        ),
       }
     : freshnessStates.includes('unknown')
       ? {
           rating: 'unknown',
-          evidence: `Current fingerprints are missing for: ${evidence
-            .filter((row) => row.currentness.overall === 'unknown')
-            .map((row) => `${row.evidenceRef} [${row.currentness.unknownReasons.join(',')}]`)
-            .join('; ')}.`,
+          evidence: evidenceWithBindings(
+            `Current fingerprints are missing for: ${evidence
+              .filter((row) => row.currentness.overall === 'unknown')
+              .map((row) => row.evidenceRef)
+              .join(', ')}.`,
+            evidence.filter((row) => row.currentness.overall === 'unknown'),
+          ),
         }
       : evidence.length
-        ? { rating: 'pass', evidence: 'Every bound proof dimension is current.' }
-        : { rating: 'fail', evidence: 'No evidence exists whose freshness can be established.' };
+        ? {
+            rating: 'pass',
+            evidence: evidenceWithBindings(`Every bound proof dimension is current for ${clauseIdentity(clause)}.`, evidence),
+          }
+        : {
+            rating: 'fail',
+            evidence: `No evidence exists whose freshness can be established for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
+          };
 
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
   ratings['plan-class-risk-floor'] = risk.rating;

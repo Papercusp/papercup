@@ -118,6 +118,8 @@ export interface RubricCriterion {
 
 export interface Rubric {
   rubricId: string;
+  /** Current `harness_plans.version`; omitted for legacy/unversioned rows. */
+  revision?: number;
   workspaceId: string;
   /**
    * The rubric's kind (acceptance-rubrics-on-every-plan-2026-08-11): 'standard' = a
@@ -240,6 +242,7 @@ interface RubricPlanRow {
   created: string | null;
   updated: string | null;
   updated_at: string | Date;
+  version?: string | number | null;
   owner: string | null;
   archived: boolean;
   template_data: unknown;
@@ -302,8 +305,13 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
   const kind = rubricKindOf(d);
   const updatedAt = tsIso(row.updated_at);
   const status = planStatusToRubricStatus(row.status, row.archived);
+  const revision =
+    row.version == null || (typeof row.version === 'string' && row.version.trim() === '')
+      ? undefined
+      : Number(row.version);
   return {
     rubricId: row.plan_slug,
+    ...(revision !== undefined && Number.isFinite(revision) ? { revision } : {}),
     workspaceId: row.workspace_id,
     kind,
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
@@ -394,7 +402,7 @@ async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Ru
           : sql`(template_data->>'kind' IS DISTINCT FROM 'acceptance')`;
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
-             owner, archived, template_data
+             version, owner, archived, template_data
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
@@ -707,7 +715,7 @@ export async function getRubric(rubricId: string): Promise<Rubric | null> {
     const { sql } = getOrgPg();
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
-             owner, archived, template_data
+             version, owner, archived, template_data
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
@@ -736,7 +744,7 @@ export async function getAcceptanceRubricsForPlan(planSlug: string): Promise<Rub
     const { sql } = getOrgPg();
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
-             owner, archived, template_data
+             version, owner, archived, template_data
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
@@ -775,7 +783,7 @@ export async function getAcceptanceRubricForGoal(goalId: string): Promise<Rubric
     const { sql } = getOrgPg();
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
-             owner, archived, template_data
+             version, owner, archived, template_data
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}

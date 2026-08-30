@@ -317,6 +317,59 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps injected-client acquisition deadlines unmeasured by default', async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = boundedPgReadTxn(
+        async () => 'never',
+        {
+          client: { begin: () => new Promise(() => {}) } as never,
+          timeoutMs: 100,
+          acquireTimeoutMs: 100,
+        },
+      );
+      const caught = promise.then(
+        () => {
+          throw new Error('expected a deadline rejection');
+        },
+        (error: unknown) => error as { pool: string | null; measured: string | null },
+      );
+      await vi.advanceTimersByTimeAsync(101);
+      const error = await caught;
+      expect(error.pool).toBeNull();
+      expect(error.measured).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('attributes an injected-client acquisition deadline when acquirePool is explicit', async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = boundedPgReadTxn(
+        async () => 'never',
+        {
+          client: { begin: () => new Promise(() => {}) } as never,
+          acquirePool: 'org-admin',
+          timeoutMs: 100,
+          acquireTimeoutMs: 100,
+        },
+      );
+      const caught = promise.then(
+        () => {
+          throw new Error('expected a deadline rejection');
+        },
+        (error: unknown) => error as { pool: string | null; measured: string | null },
+      );
+      await vi.advanceTimersByTimeAsync(101);
+      const error = await caught;
+      expect(error.pool).toBe('org-admin');
+      expect(error.measured).toMatch(/1 acquisition\(s\) WAITING/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('pgReadQuery — same-transaction positive control (WI-41165)', () => {

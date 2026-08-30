@@ -36,6 +36,7 @@ const planRow = (over: Partial<Parameters<typeof planRowToRubric>[0]> = {}) => (
   created: '2026-06-20',
   updated: '2026-06-20',
   updated_at: '2026-06-20T10:00:00.000Z',
+  version: 3,
   owner: 'queen-1',
   archived: false,
   template_data: baseData,
@@ -67,6 +68,7 @@ describe('planRowToRubric', () => {
     const r = planRowToRubric(planRow());
     expect(r).not.toBeNull();
     expect(r!.rubricId).toBe('pot-coordination-health');
+    expect(r!.revision).toBe(3);
     expect(r!.title).toBe('Hive coordination health');
     expect(r!.characteristic).toBe('hive-coordination');
     expect(r!.criteria).toHaveLength(1);
@@ -77,6 +79,13 @@ describe('planRowToRubric', () => {
     expect(r!.status).toBe('active');
     expect(r!.ratifiedBy).toBe('queen-1'); // active ⇒ owner recorded as ratifier
     expect(r!.updatedAt).toBe('2026-06-20T10:00:00.000Z');
+  });
+
+  it('projects only finite plan versions as the optional rubric revision', () => {
+    expect(planRowToRubric(planRow({ version: '42' }))?.revision).toBe(42);
+    expect(planRowToRubric(planRow({ version: null }))).not.toHaveProperty('revision');
+    expect(planRowToRubric(planRow({ version: Number.NaN }))).not.toHaveProperty('revision');
+    expect(planRowToRubric(planRow({ version: Number.POSITIVE_INFINITY }))).not.toHaveProperty('revision');
   });
 
   it('falls back title → slug, description → "" when absent', () => {

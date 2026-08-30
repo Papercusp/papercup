@@ -99,13 +99,21 @@ const rubricData = {
  *  explicit workspaceId to exercise cross-workspace scoping. */
 async function insertRubricPlan(
   slug: string,
-  opts: { status?: string; data?: unknown; title?: string; templateSlug?: string | null; archived?: boolean; workspaceId?: string } = {},
+  opts: {
+    status?: string;
+    data?: unknown;
+    title?: string;
+    templateSlug?: string | null;
+    archived?: boolean;
+    workspaceId?: string;
+    version?: number;
+  } = {},
 ) {
   await db.adminSql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
        created, updated, owner, archived, template, template_data, template_slug, origin)
-    VALUES (${opts.workspaceId ?? activeWorkspaceId()}, 'papercusp', ${slug}, '', md5(${slug}), 1, ${opts.title ?? slug},
+    VALUES (${opts.workspaceId ?? activeWorkspaceId()}, 'papercusp', ${slug}, '', md5(${slug}), ${opts.version ?? 1}, ${opts.title ?? slug},
             ${opts.status ?? 'active'}, '2026-06-20', '2026-06-20', 'queen-1', ${opts.archived ?? false},
             'rubric', ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null}, 'local')`;
 }
@@ -139,6 +147,32 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect(r!.criteria[0].key).toBe('placement-health');
     expect(r!.criteria[0].ratingScale).toContain('n/a');
     expect(r!.methodRef).toBe('pot-coordination-health-runbook');
+  });
+
+  it('projects harness_plans.version as revision across every rubric read path', async () => {
+    await insertRubricPlan('versioned-standard', { version: 7 });
+    await insertRubricPlan('versioned-plan-acceptance', {
+      version: 11,
+      data: {
+        ...rubricData,
+        kind: 'acceptance',
+        subjectPlan: 'subject-plan-for-versioned-acceptance',
+      },
+    });
+    await insertRubricPlan('versioned-goal-acceptance', {
+      version: 13,
+      data: {
+        ...rubricData,
+        kind: 'acceptance',
+        subjectGoal: 'goal-for-versioned-acceptance',
+      },
+    });
+
+    expect((await rubrics.listRubrics({})).find((r) => r.rubricId === 'versioned-standard')?.revision).toBe(7);
+    expect((await rubrics.getRubric('versioned-standard'))?.revision).toBe(7);
+    expect((await rubrics.getRubric('versioned-plan-acceptance'))?.revision).toBe(11);
+    expect((await rubrics.getAcceptanceRubricsForPlan('subject-plan-for-versioned-acceptance'))[0]?.revision).toBe(11);
+    expect((await rubrics.getAcceptanceRubricForGoal('goal-for-versioned-acceptance'))?.revision).toBe(13);
   });
 
   it('does not fabricate a ratifier for active acceptance rubrics while preserving the standard legacy fallback', async () => {

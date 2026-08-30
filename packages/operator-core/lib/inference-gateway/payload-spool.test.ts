@@ -256,6 +256,10 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
 
     await store.put('a'.repeat(64), body('finite-retention'));
 
+    // The default must stay within the measured seconds-to-minutes retry/lease
+    // window; a day-scale default can fill the host before expiry despite a
+    // healthy bounded sweep.
+    expect(DEFAULT_PAYLOAD_SPOOL_TTL_MS).toBe(2 * 60 * 60 * 1000);
     expect(sqlCalls).toHaveLength(1);
     expect(sqlCalls[0]!.text).toContain('expires_at');
     expect(sqlCalls[0]!.values.at(-1)).toEqual(new Date(now + DEFAULT_PAYLOAD_SPOOL_TTL_MS));

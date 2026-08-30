@@ -1165,6 +1165,48 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
       else process.env.PAPERCUSP_WORKSPACE_ID = prior;
     }
   });
+
+  it('excludes resource-governor receipts even when their outer claim projection looks held', async () => {
+    const receipt = {
+      issue_id: 'WI-986693',
+      title: 'Durable resource-governor receipt',
+      body: 'local admission receipt',
+      scope: 'operator',
+      source_plan_slug: null,
+      source_plan_item_ids: null,
+      resource_governor: true,
+    };
+    const realWork = {
+      issue_id: 'WI-986694',
+      title: 'Actual agent work',
+      body: 'in-flight work',
+      scope: 'harness:papercusp',
+      source_plan_slug: null,
+      source_plan_item_ids: null,
+      resource_governor: false,
+    };
+    const calls: Array<{ text: string; params: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      const text = strings.join('¶');
+      calls.push({ text, params: vals });
+      // Model the row discriminator the production SQL must enforce. The
+      // receipt intentionally has a non-terminal outer shape; only the
+      // reserved payload marker distinguishes it from real held work.
+      return Promise.resolve(
+        text.includes("NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')")
+          ? [realWork]
+          : [receipt, realWork],
+      );
+    }) as unknown as never;
+
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql,
+      getWorkItemCheckpointFn: async () => 'checkpoint',
+    });
+
+    expect(calls[0]!.text).toContain("NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')");
+    expect(held.map((item) => item.id)).toEqual(['WI-986694']);
+  });
 });
 
 describe('readDeferredWorkItems — session-authored/commented unheld work', () => {

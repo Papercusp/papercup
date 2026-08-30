@@ -38,6 +38,15 @@
  *      these tables (461, 564, 689). Must be two-phase. Enforced from
  *      INDEX_SWAP_ENFORCED_FROM; `-- lint-migrations: allow-index-swap <reason>`
  *      opts a genuinely-safe swap out.
+ *   4b. VIEW LOCK-ORDER INVERSION — `ALTER TABLE <t>` and THEN
+ *      `CREATE OR REPLACE VIEW <v>` where `<v>` selects from `<t>`, with no
+ *      up-front lock on `<v>`. A reader locks view → table; this locks table →
+ *      view, which on a hot table deadlocks against a reader caught between the
+ *      two. The failure MISLEADS: it first surfaces as `lock timeout`, and the
+ *      documented lever for that (widening lock_timeout) queues the whole fleet
+ *      and converted 721's timeout into a deadlock. Fix is two LOCK TABLE lines
+ *      in reader order. Enforced from VIEW_LOCK_ORDER_ENFORCED_FROM;
+ *      `-- lint-migrations: allow-view-lock-order <reason>` opts out.
  *   5. UNRESERVED NUMBER — every NNN ≥ ENFORCED_FROM must have a row in
  *      harness_shared.migration_reservations (i.e. was allocated via
  *      db:next-migration, not `ls | tail`). Skipped with a notice when PG is
@@ -574,6 +583,137 @@ export function findUnacknowledgedExclusiveLock(sqlText) {
   return hits;
 }
 
+/**
+ * Enforcement boundary for the VIEW LOCK-ORDER INVERSION check (below).
+ *
+ * Its OWN boundary, for the usual reason: 11 already-applied files carry the
+ * shape (136, 178, 374, 382, 418, 432, 485, 551, 554, 555, 677) — measured over
+ * all 875 files in the live dir, not estimated — and they are applied+ledgered,
+ * so editing one now would break its recorded sha256 without re-running it.
+ * 677 is the highest; enforcement starts at the next number. This stops the
+ * NEXT one.
+ *
+ * Bump this ONLY when deliberately re-grandfathering more applied history —
+ * NEVER to silence a genuinely new violation. Use the documented pragma for a
+ * swap that is actually safe (see findViewLockOrderInversion).
+ */
+export const VIEW_LOCK_ORDER_ENFORCED_FROM = 678;
+
+/**
+ * Opt-out pragma, same shape and contract as `allow-index-swap`: it forces the
+ * author to STATE why the inversion is safe here, not to prove it.
+ */
+export const VIEW_LOCK_ORDER_ACK =
+  /^[ \t]*--[ \t]*lint-migrations:[ \t]*allow-view-lock-order[ \t]+\S/im;
+
+/**
+ * The migration-721 class (EI-19320370563025481): a file that `ALTER TABLE <t>`
+ * and THEN `CREATE OR REPLACE VIEW <v>` where `<v>` selects from `<t>`, without
+ * first taking the lock on `<v>`.
+ *
+ * WHY THIS DEADLOCKS, AND WHY THE OBVIOUS FIX IS THE WRONG ONE. A reader of the
+ * view locks **view → base table**. This migration locks **table (ALTER) → view
+ * (CREATE OR REPLACE)**. That inversion is a textbook lock-order deadlock, and
+ * on a fleet-hot table there is ALWAYS a reader mid-way between the two objects:
+ *
+ *     Process A waits for AccessExclusiveLock on engineer_issues; blocked by B.
+ *     Process B waits for AccessShareLock      on work_items;      blocked by A.
+ *
+ * The failure actively misleads. Attempt 1's symptom is `canceling statement due
+ * to lock timeout`, which reads as "the table is busy, wait longer" — and the
+ * documented lever for that (`lock_timeout_sec`) makes it WORSE: a longer wait on
+ * ACCESS EXCLUSIVE queues the entire fleet behind you (FIFO), and on 721 it
+ * converted the timeout into a deadlock. Diagnosing pg_stat_activity/pg_locks
+ * first correctly rules out the documented long-holder case, which makes plain
+ * contention look even more like the answer. The real cause is in the file.
+ *
+ * The fix is two lines at the top of the transaction — take both locks up front,
+ * in READER order — after which 721 applied on attempt 1 under the same traffic
+ * that had just failed 7 attempts:
+ *
+ *     LOCK TABLE harness_shared.engineer_issues IN ACCESS EXCLUSIVE MODE;
+ *     LOCK TABLE harness_shared.work_items      IN ACCESS EXCLUSIVE MODE;
+ *
+ * PRECISION. Two shapes are deliberately NOT flagged, because neither can
+ * deadlock: (a) the view re-declared BEFORE the ALTER — that is already reader
+ * order; (b) a base table CREATEd in the same migration — a brand-new relation
+ * has no concurrent reader to invert against. Excluding (b) is what takes the
+ * measured population from 13 files to 11 (846 creates its tables in-file).
+ *
+ * Comments and string literals are masked (`maskLiveBodies`) while `$$` body CODE
+ * stays live, matching the exclusive-lock guard: DDL inside a DO block really
+ * executes, whereas prose describing the hazard must read clean.
+ *
+ * @param {string} sqlText raw migration text
+ * @returns {{ view: string, table: string, hot: boolean }[]}
+ */
+export function findViewLockOrderInversion(sqlText) {
+  // The ack is a COMMENT, so it is tested against the RAW text — masking would
+  // erase the very line being looked for.
+  if (VIEW_LOCK_ORDER_ACK.test(sqlText)) return [];
+  const stripped = maskLiveBodies(sqlText);
+  const IDENT = '(?:"?[\\w$]+"?\\.)?"?[\\w$]+"?';
+
+  const alters = [];
+  const alterRe = new RegExp(
+    `\\bALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:ONLY\\s+)?(${IDENT})`,
+    "gi",
+  );
+  let a;
+  while ((a = alterRe.exec(stripped)) !== null)
+    alters.push({ table: bareName(a[1]), idx: a.index });
+  if (!alters.length) return [];
+
+  // A relation CREATEd in this same file has no pre-existing reader, so no
+  // reader can hold the opposing lock order against it.
+  const createdHere = new Set();
+  const createRe = new RegExp(
+    `\\bCREATE\\s+(?:UNLOGGED\\s+|TEMP\\s+|TEMPORARY\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENT})`,
+    "gi",
+  );
+  let c;
+  while ((c = createRe.exec(stripped)) !== null)
+    createdHere.add(bareName(c[1]));
+
+  const locks = [];
+  const lockRe = new RegExp(`\\bLOCK\\s+(?:TABLE\\s+)?(${IDENT})`, "gi");
+  let l;
+  while ((l = lockRe.exec(stripped)) !== null)
+    locks.push({ rel: bareName(l[1]), idx: l.index });
+
+  const hits = new Map();
+  const viewRe = new RegExp(
+    `\\bCREATE\\s+OR\\s+REPLACE\\s+VIEW\\s+(${IDENT})\\s+AS`,
+    "gi",
+  );
+  let v;
+  while ((v = viewRe.exec(stripped)) !== null) {
+    const view = bareName(v[1]);
+    const end = stripped.indexOf(";", v.index);
+    const body = stripped.slice(v.index, end === -1 ? stripped.length : end);
+    const refs = new Set();
+    const refRe = new RegExp(`\\b(?:FROM|JOIN)\\s+(${IDENT})`, "gi");
+    let r;
+    while ((r = refRe.exec(body)) !== null) refs.add(bareName(r[1]));
+
+    for (const al of alters) {
+      if (!refs.has(al.table)) continue;
+      if (al.idx > v.index) continue; // view first = reader order, already safe
+      if (createdHere.has(al.table)) continue; // new relation: no reader to race
+      const lockedFirst = locks.some(
+        (lk) => lk.rel === view && lk.idx < al.idx,
+      );
+      if (lockedFirst) continue;
+      hits.set(`${view}<${al.table}`, {
+        view,
+        table: al.table,
+        hot: EXCLUSIVE_LOCK_HOT_TABLES.has(al.table),
+      });
+    }
+  }
+  return [...hits.values()];
+}
+
 /** Bare relation/index name: drop quotes and any schema qualifier. */
 function bareName(ident) {
   const s = String(ident).replace(/"/g, "");
@@ -988,6 +1128,33 @@ async function main() {
               .join(", ")} is one of the hottest tables in the system`
           : ""
       }. A PENDING exclusive request queues every subsequent READER behind it, so an attempt that merely WAITS still stalls reads fleet-wide; and because migrations auto-apply at boot, an armed file carrying this can fail — or stall — during startup, precisely when the box is busiest. Measured on 1020 under live fleet load: five attempts, all "canceling statement due to lock timeout" (EI-21698566084995732). Usually you do not need it at all: 868/870/950 disabled triggers because they rewrote \`status\` and wanted the state-change stamping silent, but a payload-only UPDATE wants those triggers LIVE — emit_change_notify_trg is the sync invalidation that makes the repair show up in the UI. Delete the DISABLE/ENABLE pair if the triggers are wanted (1020 did, and its guard re-passed with all 24 user triggers live). If the lock is genuinely required, say why with "-- EXCLUSIVE-LOCK: <why this table can take ACCESS EXCLUSIVE at apply time>".`,
+    );
+  }
+
+  // 6c. view lock-order inversion (the 721 class — EI-19320370563025481)
+  //
+  // Its own boundary (VIEW_LOCK_ORDER_ENFORCED_FROM), not ENFORCED_FROM: 11
+  // applied+ledgered files already carry the shape, the highest at 677.
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
+    if (num < VIEW_LOCK_ORDER_ENFORCED_FROM) continue;
+    const hits = findViewLockOrderInversion(
+      readFileSync(join(SQL_DIR, f), "utf8"),
+    );
+    if (!hits.length) continue;
+    failed = true;
+    const hot = hits.filter((h) => h.hot);
+    const first = hits[0];
+    console.error(
+      `✗ ${f}: ${hits
+        .map((h) => `ALTER TABLE ${h.table} … then CREATE OR REPLACE VIEW ${h.view} (which selects from ${h.table})`)
+        .join(
+          " · ",
+        )} — this takes the two locks in the INVERSE of reader order and deadlocks${
+        hot.length
+          ? `, and ${hot.map((h) => h.table).join(", ")} is one of the hottest tables in the system`
+          : ""
+      }. A reader of the view locks view → base table; this file locks table (ALTER) → view (CREATE OR REPLACE), so with a live fleet there is always a reader mid-way between the two objects: "Process A waits for AccessExclusiveLock on ${first.view}, blocked by B; process B waits for AccessShareLock on ${first.table}, blocked by A." THE OBVIOUS FIX IS THE WRONG ONE: attempt 1's symptom is "canceling statement due to lock timeout", which reads as ordinary contention, but widening lock_timeout_sec makes it WORSE — a longer wait on ACCESS EXCLUSIVE queues the entire fleet behind you (FIFO), and on 721 it converted the timeout into a deadlock (5 attempts exhausted, then "deadlock detected" at the view statement). Take BOTH locks up front, in READER order, at the top of the transaction:\n     LOCK TABLE ${first.view} IN ACCESS EXCLUSIVE MODE;\n     LOCK TABLE ${first.table} IN ACCESS EXCLUSIVE MODE;\n   721 then applied on ATTEMPT 1 under the same traffic that had just failed 7 attempts. Re-declaring the view BEFORE the ALTER is equally safe (that is already reader order). If the inversion is genuinely safe here, say why with "-- lint-migrations: allow-view-lock-order <reason>".`,
     );
   }
 

@@ -42,6 +42,7 @@ import { resolveFleetCaller } from './_shared';
 import { classifyFleetControlInvoker } from './fleet-auth';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import type { FleetPauseHoldResult } from './pause-holds';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import {
   clearSessionBriefReleasedForFleet,
   markSessionBriefReleased,
@@ -53,6 +54,11 @@ const ACTION_TO_STATE: Record<FleetControlAction, FleetControlState> = {
   'wind-down': 'winding-down',
   resume: 'active',
 };
+
+/** Optional control-plane reads/writes must never hold the receipt path indefinitely. */
+export const FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS = 2_000;
+/** The typed state flip is durable before this bounded best-effort saga starts. */
+export const FLEET_CONTROL_RESPONSE_TIMEOUT_MS = 5_000;
 
 export interface FleetControlResult {
   ok: boolean;
@@ -78,6 +84,10 @@ export interface FleetControlResult {
    *  back into the claimable pool the moment members comply with it. Absent when nothing
    *  matched or the leg failed soft. */
   pauseHolds?: FleetPauseHoldResult;
+  /** True when the durable state flip returned before optional release/cue work settled. */
+  postControlPending?: boolean;
+  /** True when the optional post-flip saga failed before it could return a receipt. */
+  postControlDegraded?: boolean;
   error?: string;
   message?: string;
 }

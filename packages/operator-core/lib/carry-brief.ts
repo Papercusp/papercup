@@ -322,6 +322,11 @@ export async function readHeldWorkItems(
       FROM harness_shared.work_items
      WHERE taken_by = ${ownerId}
        AND (workspace_id = ${ws} OR workspace_id = 'default')
+       -- Resource-governor receipts are local queue telemetry, not agent work.
+       -- Exclude by the reserved payload marker rather than trusting the outer
+       -- status/assignee projection: legacy or partially-reconciled terminal
+       -- receipts can still look held to this reader.
+       AND NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')
        AND (
          (item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
          OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[])))

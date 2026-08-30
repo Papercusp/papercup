@@ -195,17 +195,54 @@ function safeStat(path) {
   try { return statSync(path); } catch { return null; }
 }
 
+const FILESYSTEM_BLOCK_SIZE_BYTES = 512;
+
+function allocatedBytes(stat) {
+  const blocks = Number(stat?.blocks);
+  return Number.isFinite(blocks) && blocks >= 0
+    ? blocks * FILESYSTEM_BLOCK_SIZE_BYTES
+    : 0;
+}
+
 function safeDirBytes(path) {
-  const stat = (() => {
-    try { return lstatSync(path); } catch { return null; }
-  })();
-  if (!stat || stat.isSymbolicLink()) return 0;
-  if (stat.isFile()) return stat.size;
-  if (!stat.isDirectory()) return 0;
-  let total = 0;
-  let entries;
-  try { entries = readdirSync(path, { withFileTypes: true }); } catch { return 0; }
-  for (const entry of entries) total += safeDirBytes(join(path, entry.name));
+  // `stat.size` is the apparent/logical size. Cargo targets and candidate
+  // worktrees can contain hardlinks into a peer tree, so summing it claims
+  // reclaim that deleting this path cannot actually free. Count allocated
+  // filesystem blocks instead, and only count a file when every hardlink is
+  // inside the path being removed. This keeps the byte cap and the reported
+  // `bytesReclaimed` aligned with the space the delete can really return.
+  const files = new Map();
+  const visit = (current) => {
+    const stat = (() => {
+      try { return lstatSync(current); } catch { return null; }
+    })();
+    if (!stat || stat.isSymbolicLink()) return 0;
+    if (stat.isFile()) {
+      const device = Number.isFinite(Number(stat.dev)) ? Number(stat.dev) : current;
+      const inode = Number.isFinite(Number(stat.ino)) ? Number(stat.ino) : current;
+      const key = `${device}:${inode}`;
+      const record = files.get(key) ?? {
+        allocated: allocatedBytes(stat),
+        links: Number.isInteger(stat.nlink) && stat.nlink > 0 ? stat.nlink : 1,
+        seen: 0,
+      };
+      record.seen += 1;
+      files.set(key, record);
+      return 0;
+    }
+    if (!stat.isDirectory()) return 0;
+
+    let total = allocatedBytes(stat);
+    let entries;
+    try { entries = readdirSync(current, { withFileTypes: true }); } catch { return total; }
+    for (const entry of entries) total += visit(join(current, entry.name));
+    return total;
+  };
+
+  let total = visit(path);
+  for (const file of files.values()) {
+    if (file.seen >= file.links) total += file.allocated;
+  }
   return total;
 }
 

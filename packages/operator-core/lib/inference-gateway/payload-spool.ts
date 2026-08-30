@@ -53,8 +53,16 @@ export const GATEWAY_PAYLOAD_ADDRESSING: ContentAddressing = {
 
 /** 32 MiB. An inference request body above this is a client error, not a spool candidate. */
 export const DEFAULT_MAX_SPOOL_BYTES = 32 * 1024 * 1024;
-/** Accepted-but-never-executed receipts retain their body for one day by default. */
-export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * Accepted-but-never-executed receipts retain their body for two hours by default.
+ *
+ * The synchronous compatibility path pins a payload only for the request/lease
+ * lifetime (seconds-to-minutes, with a bounded 30-minute durable lease). Two
+ * hours leaves a generous retry-resurrection margin without allowing the
+ * unreferenced spool to grow past the host's available disk at observed
+ * ingestion rates.
+ */
+export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 2 * 60 * 60 * 1000;
 /** Keep each lifecycle GC pass bounded so it cannot monopolize the gateway database. */
 export const DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT = 2_000;
 /** Legacy rows without an expiry are safe to collect after a short idle grace period. */

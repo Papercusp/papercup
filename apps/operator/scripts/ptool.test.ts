@@ -34,6 +34,8 @@ import {
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
+  PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS,
+  PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
   PTOOL_RETRY_JITTER_MS,
@@ -159,6 +161,36 @@ describe('ptool MCP identity binding', () => {
     expect(resolvePayloadHarnessScope(payload, { toolName: 'tools:invoke' })).toBe('papercusp');
     expect(resolveHarnessScope({ payload, toolName: 'tools:invoke', env })).toBe('papercusp');
   });
+
+  it('rejects unsupported tool-specific flags instead of silently dropping them', () => {
+    expect(() => parseArgs([
+      'fleet:assignments',
+      '--json',
+      '-',
+      '--workspace=papercusp-workspace',
+      '--harness=papercusp',
+      '--fleet=goal-drain-work-on-everything-070565',
+    ])).toThrow(
+      'unknown flag --fleet=goal-drain-work-on-everything-070565; tool-specific arguments must be supplied in the JSON payload via --json, --json-file, or --json -',
+    );
+    expect(() => parseArgs(['fleet:assignments', '--fleet', 'goal-drain-work-on-everything-070565']))
+      .toThrow('unknown flag --fleet;');
+  });
+
+  it('keeps the quoting-safe JSON-body scope form supported', () => {
+    expect(parseArgs([
+      'fleet:assignments',
+      '--json',
+      '-',
+      '--workspace=papercusp-workspace',
+      '--harness=papercusp',
+    ])).toMatchObject({
+      tool: 'fleet:assignments',
+      json: '-',
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+    });
+  });
 });
 
 describe('ptool bearer-token resolution', () => {
@@ -198,6 +230,15 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
+    // EI-21831468700319864: fleet:wind-down inherits the 60s dispatch default;
+    // cover direct and tools:invoke-wrapped calls so the client deadline does
+    // not race its durable control-state mutation.
+    expect(timeoutForTool('fleet:wind-down')).toBe(PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'fleet:wind-down',
+      args: { fleet: 'nonp2p-bug-drain-luna-max-50', reason: 'test timeout mapping' },
+    })).toBe(PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS);
+    expect(PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     // EI-21388931083718076: the respawn orchestration's client deadline must outlive
     // its 660s server budget (+5s transport buffer) — a 30s client abort turned five
     // server-side-successful respawns into -32001 outcome-unknown.
@@ -249,6 +290,14 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('events:status')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('work_items:complete')).toBe(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS);
     expect(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS).toBeGreaterThan(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-21832411975767034: cover direct and tools:invoke-wrapped create calls
+    // so the client deadline cannot drift back to the flat 30s cutoff.
+    expect(timeoutForTool('work_items:create')).toBe(PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:create',
+      args: { kind: 'task', title: 'timeout mapping regression' },
+    })).toBe(PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS);
+    expect(PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);

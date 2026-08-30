@@ -2532,6 +2532,13 @@ export async function boundedPgReadTxn<T>(
     client?: OrgSql;
     timeoutMs?: number;
     acquireTimeoutMs?: number;
+    /**
+     * Optional acquisition-registry pool label. Injected clients are
+     * deliberately unmeasured by default because they may not be backed by
+     * this process's org-admin pool; callers that can identify their pool may
+     * opt in to attribution explicitly.
+     */
+    acquirePool?: string;
   } = {},
 ): Promise<T> {
   const timeoutMs = Math.max(
@@ -2543,7 +2550,7 @@ export async function boundedPgReadTxn<T>(
     Math.min(DEFAULT_TX_ACQUIRE_DEADLINE_MS, Math.trunc(opts.acquireTimeoutMs ?? PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS)),
   );
   const sql = opts.client ?? getOrgPg().sql;
-  const acquirePool = opts.client ? undefined : 'org-admin';
+  const acquirePool = opts.acquirePool ?? (opts.client ? undefined : 'org-admin');
   const callDeadlineMs = acquireTimeoutMs + timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
   const work = withAcquisitionDeadline(
     ({ disarm, expired }) =>

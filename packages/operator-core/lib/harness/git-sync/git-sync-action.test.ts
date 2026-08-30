@@ -877,6 +877,38 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     );
   });
 
+  // EI-21876778499591361: a TRANSIENT pg contention timeout on the live-lock read used to skip the
+  // tick, which stalls commits FLEET-WIDE (observed 2026-08-30: missed_intervals=3, no successful
+  // sync for >10min, 34 files stuck). Failing closed is still correct for a genuinely unreadable
+  // lock plane — the test below this one is the negative control that pins it, and it asserts the
+  // read is attempted exactly ONCE, so this retry must never become unconditional.
+  it('rides out a transient pg contention timeout on the live-lock read and still runs the sync', async () => {
+    tryAcquireResourceMock.mockResolvedValue({ ok: true });
+    const contended = Object.assign(new Error('canceling statement due to statement timeout'), {
+      code: '57014',
+    });
+    // Fails once, then the dip clears. One real 500ms backoff — the first entry of
+    // LOCK_CONTENTION_BACKOFFS_MS — rather than mocking the retry we are trying to prove.
+    liveLockHoldingsStrictMock.mockRejectedValueOnce(contended).mockResolvedValue([]);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(liveLockHoldingsStrictMock).toHaveBeenCalledTimes(2);
+      // The tick PROCEEDED — this is the whole point; previously it returned skipped.
+      expect(runGitSyncMock).toHaveBeenCalled();
+      expect(allRoutinePatches()).not.toContainEqual(
+        expect.objectContaining({ last_skip_reason: 'live-lock-read-failed' }),
+      );
+      expect(error).not.toHaveBeenCalledWith(
+        expect.stringContaining('live lock read failed (fail-closed)'),
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('fails closed when the live-lock read is unavailable — records the error and releases acquired resources', async () => {
     const lockReadError = new Error('side-DB unreachable');
     tryAcquireResourceMock.mockResolvedValue({ ok: true });

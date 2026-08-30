@@ -7,10 +7,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -590,6 +592,48 @@ describe('native-suite admission reclaim reaches its own producer output (P-001)
 
       expect(result.stoppedEarly).toBe(false);
       expect(result.reclaimed).toBeGreaterThanOrEqual(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports only blocks this delete can actually free when a Cargo artifact is hardlinked elsewhere', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-hardlink-accounting-'));
+    const target = resolve(root, '.cargo-target');
+    const debug = resolve(target, 'debug');
+    const shared = resolve(root, 'shared-artifact');
+    const privateArtifact = resolve(debug, 'private-artifact');
+
+    try {
+      mkdirSync(debug, { recursive: true });
+      // Make the externally-linked file large enough that directory metadata
+      // cannot obscure the distinction between apparent and physically freed
+      // bytes on filesystems with small directory allocations.
+      writeFileSync(shared, Buffer.alloc(1024 * 1024));
+      linkSync(shared, resolve(debug, 'shared-artifact'));
+      writeFileSync(privateArtifact, 'private');
+      age(debug);
+      age(target);
+
+      const sharedBlocks = Number(statSync(shared).blocks) * 512;
+      const privateBlocks = Number(statSync(privateArtifact).blocks) * 512;
+      expect(sharedBlocks).toBeGreaterThan(0);
+      expect(privateBlocks).toBeGreaterThan(0);
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [target],
+        now: Date.now(),
+        policy: stalePolicy,
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+
+      expect(existsSync(debug)).toBe(false);
+      expect(existsSync(shared)).toBe(true);
+      expect(result.reclaimed).toBe(1);
+      expect(result.bytesReclaimed).toBeGreaterThanOrEqual(privateBlocks);
+      expect(result.bytesReclaimed).toBeLessThan(sharedBlocks + privateBlocks);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

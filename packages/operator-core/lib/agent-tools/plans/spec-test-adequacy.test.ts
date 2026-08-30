@@ -117,6 +117,15 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(Object.keys(result.ratings)).toHaveLength(8);
     expect(result.ratings['correct-layer'].rating).toBe('pass');
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
+    for (const [criterion, rating] of Object.entries(result.ratings)) {
+      expect(rating.evidence).toContain('surface:reconnect');
+      expect(rating.evidence).not.toMatch(
+        /^Every bound proof dimension is current\.?$|^Bound proof was collected, not skipped, executed, and produced a successful outcome\.?$/,
+      );
+    }
+    expect(result.ratings.traceability.evidence).toContain('kind=coverage-census');
+    expect(result.ratings['execution-integrity'].evidence).toContain('testRunId=43');
+    expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
   });
 
   it('requires targeted L4 for high-risk, bugfix, migration, and mutation-required clauses', () => {

@@ -13,6 +13,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { computeObservationsImpact } from '../../scout/observation-impact-leg';
 import { getModes } from '../../modes/store';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
 const drainAdmission = vi.hoisted(() => ({
   blocked: false,
@@ -517,6 +518,21 @@ describe('improvements:capture tool envelope', () => {
     const res = await callTool({ title: 'x', kind: 'bug' });
     const body = JSON.parse(res.content[0].text);
     expect(body).toEqual({ ok: true, id: 'EI-42', created: true, duplicateOf: null });
+  });
+
+  it('maps bounded database contention to a retryable timeout envelope', async () => {
+    mockCapture.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
+
+    const res = await callTool({ title: 'contention', kind: 'bug' });
+    const body = JSON.parse(res.content[0].text) as Record<string, unknown>;
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      pgCode: '55P03',
+    });
+    expect(body.message).toEqual(expect.stringContaining('retry now'));
   });
 
   it('returns a byte-identical plain success for fresh and folded unkeyed observations (P-008)', async () => {
