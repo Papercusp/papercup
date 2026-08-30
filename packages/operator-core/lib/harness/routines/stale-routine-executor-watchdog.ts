@@ -42,12 +42,19 @@ import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import {
   processBootCommitSha,
   processBootTimeMs,
+  resolveCommitsBehind,
   resolveCurrentHeadCommit,
 } from '../../dbos/process-boot-identity';
 
 // Throttled — never shell out to git on every 30s routinesTick.
 const CURRENT_HEAD_REFRESH_MS = 5 * 60_000;
 let cachedCurrentHead: { sha: string | null; atMs: number } | null = null;
+
+// Same reason, same cadence: once a process IS stale this sweep keeps running
+// every tick (the alarm is debounced, the sweep is not), so the drift count is
+// cached per head-pair rather than re-shelled 120×/hour for a number that only
+// moves when HEAD does.
+const cachedCommitsBehind = { key: '', value: null as number | null, atMs: 0 };
 
 async function currentHeadCommit(now: number): Promise<string | null> {
   if (cachedCurrentHead && now - cachedCurrentHead.atMs < CURRENT_HEAD_REFRESH_MS) {
@@ -56,6 +63,22 @@ async function currentHeadCommit(now: number): Promise<string | null> {
   const sha = await resolveCurrentHeadCommit();
   cachedCurrentHead = { sha, atMs: now };
   return sha;
+}
+
+/** Drift count for a boot/head PAIR, memoised on that pair. Keyed by both shas
+ *  (not by time alone) so a moving HEAD invalidates it immediately while a
+ *  static one is answered from cache — the count cannot change unless one of
+ *  the two endpoints does. */
+async function commitsBehindCached(bootCommit: string, currentCommit: string, now: number): Promise<number | null> {
+  const key = `${bootCommit}..${currentCommit}`;
+  if (cachedCommitsBehind.key === key && now - cachedCommitsBehind.atMs < CURRENT_HEAD_REFRESH_MS) {
+    return cachedCommitsBehind.value;
+  }
+  const value = await resolveCommitsBehind(bootCommit, currentCommit);
+  cachedCommitsBehind.key = key;
+  cachedCommitsBehind.value = value;
+  cachedCommitsBehind.atMs = now;
+  return value;
 }
 
 // ── tunables (env-overridable, like every sibling watchdog) ───────────────────
@@ -133,12 +156,20 @@ export interface ExecutorStalenessInput {
   bootTimeMs: number;
   now: number;
   thresholdMs: number;
+  /** How many commits this process's boot code is behind the tree, when it can
+   *  be resolved. OPTIONAL and injected (the decider stays pure): an omitted or
+   *  null value degrades the alarm to its uptime-only wording rather than
+   *  printing a fabricated magnitude. */
+  commitsBehind?: number | null;
 }
 
 export interface ExecutorStalenessVerdict {
   stale: boolean;
   reason: string;
   ageMs: number;
+  /** Echoed through so the pager/broadcast can rank by DRIFT, not just uptime.
+   *  null whenever it could not be resolved. */
+  commitsBehind?: number | null;
 }
 
 /**
@@ -175,15 +206,22 @@ export function evaluateExecutorStaleness(input: ExecutorStalenessInput): Execut
     return { stale: false, reason: 'boot commit still matches this checkout\'s tree HEAD — nothing has moved since boot', ageMs };
   }
   const ageHours = Math.round(ageMs / 3_600_000);
+  // Lead with DRIFT, not uptime. A reader anchors on the first number they see,
+  // and uptime systematically understates the harm: the 2026-08-30 incident
+  // paged as "has run 2h" — mild-sounding — while the executor was 109 commits
+  // behind. Hours measure how long it has been wrong; commits measure how wrong.
+  const behind = typeof input.commitsBehind === 'number' && input.commitsBehind > 0 ? input.commitsBehind : null;
+  const drift = behind === null ? '' : ` and is ${behind} COMMIT${behind === 1 ? '' : 'S'} BEHIND the tree`;
   return {
     stale: true,
     reason:
-      `this process has run ${ageHours}h with PAPERCUSP_DBOS_ROUTINES=1, code loaded at boot commit ` +
+      `this process has run ${ageHours}h with PAPERCUSP_DBOS_ROUTINES=1${drift}, code loaded at boot commit ` +
       `${input.bootCommit.slice(0, 10)}, while this checkout's tree HEAD has since moved to ` +
       `${input.currentCommit.slice(0, 10)} — scheduled-routine fixes committed since boot are not loaded by this process ` +
       `(EI-19409061552037718). Restart this host to pick up current code, or, if it no longer needs to run ` +
       `routines, unset PAPERCUSP_DBOS_ROUTINES on it.`,
     ageMs,
+    commitsBehind: input.commitsBehind ?? null,
   };
 }
 
@@ -195,6 +233,15 @@ function phaseFor(identity: string): string {
 
 function conditionKeyFor(identity: string): string {
   return `stale-routine-executor:${identity}`;
+}
+
+/** " and 109 COMMITS BEHIND", or '' when the count could not be resolved — a
+ *  page must never print a fabricated magnitude, and an absent number has to
+ *  read as absent rather than as zero. */
+function driftSuffix(verdict: ExecutorStalenessVerdict): string {
+  const n = verdict.commitsBehind;
+  if (typeof n !== 'number' || n <= 0) return '';
+  return ` and ${n} COMMIT${n === 1 ? '' : 'S'} BEHIND`;
 }
 
 async function raiseExecutorStalenessAlarm(opts: {
@@ -226,7 +273,13 @@ async function raiseExecutorStalenessAlarm(opts: {
         importance: 'urgent',
         workspaceId,
         harnessSlug: installSlug,
-        data: { ageHours, identity, unit: alarmContext.unit, restartLever: alarmContext.restartLever },
+        data: {
+          ageHours,
+          commitsBehind: verdict.commitsBehind ?? null,
+          identity,
+          unit: alarmContext.unit,
+          restartLever: alarmContext.restartLever,
+        },
       });
     } catch (e) {
       console.warn(`[stale-routine-executor] notify failed: ${e instanceof Error ? e.message : e}`);
@@ -235,8 +288,8 @@ async function raiseExecutorStalenessAlarm(opts: {
     const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
     await broadcastSevereEvent({
       summary:
-        `stale routine executor ${alarmContext.identityLabel} has run ${ageHours}h with code from its boot while ` +
-        `PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved — scheduled-routine fixes committed since boot ` +
+        `stale routine executor ${alarmContext.identityLabel} has run ${ageHours}h${driftSuffix(verdict)} with code from ` +
+        `its boot while PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved — scheduled-routine fixes committed since boot ` +
         `are not loaded by this process; restart ${alarmContext.unit} with ${alarmContext.restartLever} to pick up current code.`,
       body:
         `${verdict.reason}\n\nThe worker identity is not necessarily the systemd MainPID. Do NOT kill or duplicate a worker PID ` +
@@ -332,13 +385,23 @@ export async function staleRoutineExecutorSweep(opts: {
 
   try {
     const [bootCommit, currentCommit] = await Promise.all([processBootCommitSha(), currentHeadCommit(now)]);
+    const bootTimeMs = processBootTimeMs();
+    const thresholdMs = thresholdSec * 1_000;
+    // Only pay for the drift count once this process is ALREADY past the uptime
+    // threshold AND the shas differ. A young process on a moving tree is the
+    // common case and must not shell out to git on every 30s tick.
+    const commitsBehind =
+      now - bootTimeMs >= thresholdMs && bootCommit && currentCommit && bootCommit !== currentCommit
+        ? await commitsBehindCached(bootCommit, currentCommit, now)
+        : null;
     const verdict = evaluateExecutorStaleness({
       routinesEnabled: enabled,
       bootCommit,
       currentCommit,
-      bootTimeMs: processBootTimeMs(),
+      bootTimeMs,
       now,
-      thresholdMs: thresholdSec * 1_000,
+      thresholdMs,
+      commitsBehind,
     });
 
     if (!verdict.stale) {

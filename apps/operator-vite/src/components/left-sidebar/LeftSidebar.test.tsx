@@ -67,6 +67,7 @@ vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-account
 // tab rather than lingering as a harmless-looking line.)
 vi.mock('./WorkspacePulseTab', () => ({ default: () => <div data-testid="panel-pulse" /> }));
 vi.mock('./ConversationsTab', () => ({ default: () => <div data-testid="panel-conversations" /> }));
+vi.mock('./PhoneTab', () => ({ default: () => <div data-testid="panel-phone" /> }));
 // SwarmTab / VoiceTab are deliberately NOT stubbed: this rail no longer mounts
 // them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
 // hide a regression that re-added them. See the "moved out" test below.
@@ -220,6 +221,11 @@ describe('<LeftSidebar> shell', () => {
       // what survives the park, and holding that position is precisely what makes
       // flipping the flag back on a one-click change rather than a code change.
       'Convos',
+      // ☎ WI-1403107 — APPENDED for the same reason Convos was, and note it lands
+      // AFTER a dark tab: with CONVERSATIONS_RAIL_TAB off at runtime the rail
+      // reads Accounts · Papercup · Pulse · Phone, while the array order pinned
+      // here keeps Convos' parked position intact underneath.
+      'Phone',
       // NOTE there is deliberately no 'Tasks' here any more: the task manager left
       // this rail on 2026-08-02 for the AdvShell header (WI-6844, owner ask) and is
       // now TasksRunningPill. Removing it was a REMOVAL from the end, so every
@@ -258,6 +264,11 @@ describe('<LeftSidebar> shell', () => {
       // matches the nuqs literal parser and falls through to the default tab.)
       'pulse',
       'conversations',
+      // ☎ 'phone' — owner ask 2026-08-30, WI-1403107. APPENDED, which is the
+      // whole point of this assertion: a new tab must take the end of the array
+      // and leave every owner-set position above it untouched. If a later change
+      // moves 'phone' up, this test is what catches the reshuffle.
+      'phone',
     ]);
   });
 

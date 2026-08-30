@@ -53,6 +53,15 @@ vi.mock('../../work-items', () => ({
   // predicate's text-compare, which matches both the boolean and the legacy string form.
   isClaimHoldParked: (payload: unknown) =>
     !!payload && typeof payload === 'object' && String((payload as Record<string, unknown>)._claimHold) === 'true',
+  // EI-21921431863111143: same trap, fourth instance — checkpoint.ts now also imports
+  // isSelfOwnerRecord (the not_holder guard's prefix-tolerant identity match). Mirrors the
+  // real predicate: exact match, or `recorded` a non-empty strict prefix of `caller`.
+  isSelfOwnerRecord: (recorded: string | null | undefined, caller: string) => {
+    const holder = recorded?.trim();
+    if (!holder) return false;
+    if (holder === caller) return true;
+    return caller.length > holder.length && caller.startsWith(holder);
+  },
 }));
 import checkpoint from './checkpoint';
 // EI-19400299440742193: the guard asserts against the REAL caps, not literals, so a
@@ -715,6 +724,17 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       setWorkItemCheckpoint.mockResolvedValue('my own progress');
       const r = await one({ id: 'WI-7', checkpoint: 'my own progress' });
       expect(r.ok).toBe(true);
+    });
+
+    it('EI-21921431863111143: allows the write when the item is assigned to a TRUNCATED PREFIX of the caller\'s own ownerId', async () => {
+      // The exact repro: an upstream dispatch write persisted `opspawn-bee` (a strict
+      // prefix of the caller's real `opspawn-bee-1`) instead of the canonical full
+      // id — this used to deadlock as not_holder against a "peer" that never existed.
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup', assignee: 'opspawn-bee' });
+      setWorkItemCheckpoint.mockResolvedValue('my own progress, truncated assignee');
+      const r = await one({ id: 'WI-7', checkpoint: 'my own progress, truncated assignee' });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemCheckpoint).toHaveBeenCalled();
     });
 
     it('allows the write when the item is UNASSIGNED (about to be claimed)', async () => {

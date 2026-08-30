@@ -15,7 +15,11 @@ import {
   executorIdentity,
   staleExecutorThresholdSec,
 } from './stale-routine-executor-watchdog';
-import { captureProcessBootIdentity, processBootTimeMs } from '../../dbos/process-boot-identity';
+import {
+  captureProcessBootIdentity,
+  processBootTimeMs,
+  resolveCommitsBehind,
+} from '../../dbos/process-boot-identity';
 
 const TWO_H = 2 * 3_600_000;
 const BOOT = 1_000_000;
@@ -149,6 +153,71 @@ describe('evaluateExecutorStaleness — the pure decider', () => {
     expect(v.reason).not.toContain('claim race');
     expect(v.reason).not.toContain('HALF-APPLIED');
     expect(v.ageMs).toBe(now - BOOT);
+  });
+});
+
+/**
+ * The 2026-08-30 recurrence: the page said "has run 2h", which reads as mild,
+ * while the executor was 109 commits behind. Uptime measures how LONG it has
+ * been wrong; commits measure how WRONG it is — and a reader anchors on the
+ * first number. These pin the magnitude into the alarm and, just as important,
+ * pin that an unresolvable count stays ABSENT rather than rendering as zero.
+ */
+describe('evaluateExecutorStaleness — drift magnitude, not just uptime', () => {
+  const boot = 'd'.repeat(40);
+  const head = 'e'.repeat(40);
+  const stale = (commitsBehind?: number | null) =>
+    evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: boot,
+      currentCommit: head,
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H,
+      thresholdMs: TWO_H,
+      commitsBehind,
+    });
+
+  it('reports the commit drift in the reason when it is resolvable (the measured 109-commit case)', () => {
+    const v = stale(109);
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('109 COMMITS BEHIND');
+    expect(v.commitsBehind).toBe(109);
+  });
+
+  it('singularises a one-commit drift', () => {
+    expect(stale(1).reason).toContain('1 COMMIT BEHIND');
+    expect(stale(1).reason).not.toContain('1 COMMITS BEHIND');
+  });
+
+  it('degrades to the uptime-only wording when the count is unresolvable — never a fabricated magnitude', () => {
+    for (const missing of [null, undefined]) {
+      const v = stale(missing);
+      expect(v.stale).toBe(true); // staleness itself does NOT depend on the count
+      expect(v.reason).not.toContain('BEHIND');
+      expect(v.reason).toContain('2h');
+      expect(v.commitsBehind ?? null).toBeNull();
+    }
+  });
+
+  it('treats a zero count as absent rather than printing "0 COMMITS BEHIND"', () => {
+    // Reachable when HEAD moves back onto the boot commit between the two
+    // reads. "0 behind" beside a STALE verdict would read as self-contradictory.
+    expect(stale(0).reason).not.toContain('BEHIND');
+  });
+});
+
+describe('resolveCommitsBehind — fail-safe and argv-safe', () => {
+  it('answers 0 for an identical pair without consulting git', async () => {
+    const sha = 'a'.repeat(40);
+    await expect(resolveCommitsBehind(sha, sha)).resolves.toBe(0);
+  });
+
+  it('refuses anything that is not a full 40-hex sha, so a revision range can never become an option', async () => {
+    const good = 'a'.repeat(40);
+    for (const bad of ['--all', 'HEAD', '', 'z'.repeat(40), 'a'.repeat(39), null]) {
+      await expect(resolveCommitsBehind(bad as string | null, good)).resolves.toBeNull();
+      await expect(resolveCommitsBehind(good, bad as string | null)).resolves.toBeNull();
+    }
   });
 });
 

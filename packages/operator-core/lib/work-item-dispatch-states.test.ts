@@ -79,6 +79,23 @@ describe('cross-family terminal union (EI-18653071581558556)', () => {
   });
 });
 
+describe('ISSUE_TERMINAL_STATES recognizes the unified `dropped` terminal (EI-21921121818266895)', () => {
+  it('includes `dropped` — the unified spelling `closed`/`deprecated` issue writes normalize onto', () => {
+    // Regression: this list omitted `dropped` for over a month after the issue-family
+    // writer started storing it (work-item-status-full-unify), making 3,992+ live
+    // dropped issue rows invisible to every terminal-scoped issue diagnostic
+    // (issues-engineer.ts's audit + completionAuthority buckets) and to
+    // premise-probes.ts's `#completion`-anchor terminality check.
+    expect(ISSUE_TERMINAL_STATES).toContain('dropped');
+  });
+
+  it('still carries the pre-unification legacy issue spellings', () => {
+    for (const s of ['resolved', 'closed', 'deprecated', 'done']) {
+      expect(ISSUE_TERMINAL_STATES).toContain(s);
+    }
+  });
+});
+
 describe('feature-state constant invariants', () => {
   it('the claimable and terminal states are members of the family vocabulary', () => {
     for (const s of CLAIM_STATES_ALLOWLIST) expect(FEATURE_FAMILY_STATES).toContain(s);

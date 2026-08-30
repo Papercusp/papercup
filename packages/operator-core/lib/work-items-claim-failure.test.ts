@@ -57,6 +57,35 @@ describe('classifyClaimFailure (EI-2197)', () => {
     expect(classifyClaimFailure({ assignee: '  me  ' }, 'me')).toEqual({ reason: 'gated', holder: null });
   });
 
+  it('EI-21921431863111143: a TRUNCATED-prefix assignee is self-held (gated), not a live peer conflict', () => {
+    // The exact repro: assignee stored as the 11-char prefix of the caller's own
+    // full su-<uuid> ownerId.
+    expect(
+      classifyClaimFailure({ assignee: 'su-4408713d' }, 'su-4408713d-7181-47d5-b249-0e006b69ed65'),
+    ).toEqual({ reason: 'gated', holder: null });
+    // Padding around the truncated prefix is still tolerated.
+    expect(
+      classifyClaimFailure({ assignee: '  su-4408713d  ' }, 'su-4408713d-7181-47d5-b249-0e006b69ed65'),
+    ).toEqual({ reason: 'gated', holder: null });
+  });
+
+  it('EI-21921431863111143: the prefix match is directional — a caller impersonating a longer stored holder is still a conflict', () => {
+    // The reverse shape (caller's own id is SHORTER than, and a prefix of, the
+    // stored holder) is NOT self-held — that would let a short/truncated caller
+    // identity match against an unrelated longer holder id.
+    expect(classifyClaimFailure({ assignee: 'su-4408713d-xyz' }, 'su-4408713d')).toEqual({
+      reason: 'conflict',
+      holder: 'su-4408713d-xyz',
+    });
+  });
+
+  it('EI-21921431863111143: a holder that shares NO common prefix with the caller is still a conflict', () => {
+    expect(classifyClaimFailure({ assignee: 'su-3bd530b3' }, 'su-4408713d-7181-47d5-b249-0e006b69ed65')).toEqual({
+      reason: 'conflict',
+      holder: 'su-3bd530b3',
+    });
+  });
+
   it('EI-15027: a literal "unassigned" sentinel assignee reads as unclaimed (gated), never as a live holder', () => {
     // Repro: WI-5303 had assignee:"unassigned" (some federated/legacy writer's "not
     // taken" placeholder instead of NULL/'') and work_items:claim reported

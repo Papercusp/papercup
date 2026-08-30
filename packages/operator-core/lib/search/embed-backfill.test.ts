@@ -58,6 +58,8 @@ import {
   recipeColOf,
   activeRecipeVersion,
   BASELINE_RECIPE_VERSION,
+  __sweepStateForTest,
+  resetSweepStateForTest,
   type BackfillTarget,
 } from './embed-backfill';
 // Import the width — the sweep writes into the prose columns, so a width change
@@ -68,18 +70,12 @@ import { PROSE_VECTOR_DIMS } from './prose-vector-dims';
 // would silently stop testing anything if the profile changed.
 import { getResourceProfile } from '../resource-profile';
 
+// Reset THROUGH the module's own seam. Reaching for `globalThis[Symbol.for(...)]`
+// targets the storage LOCATION rather than the module's state, so it keeps
+// compiling and silently resets NOTHING once the state moves — which is exactly
+// what a pinModuleState migration does (EI-19479108855357092).
 function resetSweepState(): void {
-  const key = Symbol.for('papercusp.embedBackfillSweepState');
-  const g = globalThis as Record<
-    symbol,
-    { running: boolean; lastResult: unknown; sweepCounter?: number } | undefined
-  >;
-  const s = g[key];
-  if (s) {
-    s.running = false;
-    s.lastResult = null;
-    s.sweepCounter = 0; // WI-2905 rotation offset — deterministic order per test
-  }
+  resetSweepStateForTest();
 }
 
 const VEC = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
@@ -159,9 +155,7 @@ describe('runBackfillSweep (P-010)', () => {
     // `already_running` and the backfill was wedged until the host restarted.
     // Measured 2026-08-03: a sweep hung at 04:45:04Z, the next 9 ticks each
     // no-opped in ~265ms, and 451k rows stayed unembedded with ZERO log output.
-    const state = (globalThis as Record<symbol, unknown>)[
-      Symbol.for('papercusp.embedBackfillSweepState')
-    ] as { running: boolean; startedAt: number | null };
+    const state = __sweepStateForTest();
 
     // Simulate a sweep that took the latch and never gave it back.
     state.running = true;
@@ -191,9 +185,7 @@ describe('runBackfillSweep (P-010)', () => {
     // Guard the other direction: the WI-7327 takeover must fire ONLY on a hang.
     // A ceiling that is too eager would let two sweeps run concurrently and
     // double-embed, which is the bug the latch exists to prevent.
-    const state = (globalThis as Record<symbol, unknown>)[
-      Symbol.for('papercusp.embedBackfillSweepState')
-    ] as { running: boolean; startedAt: number | null };
+    const state = __sweepStateForTest();
 
     // 20 MINUTES — deliberately longer than a naive "surely a sweep is done by
     // now" guess. Measured 2026-08-03: consecutive HEALTHY sweeps took 14.5min
@@ -321,10 +313,7 @@ describe('runBackfillSweep (P-010)', () => {
  * search returned noise (measured: a row's own exact text ranked #6574 of 8383).
  */
 describe('embedder-resolution deadline (WI-7348)', () => {
-  const sweepState = () =>
-    (
-      globalThis as Record<symbol, { running: boolean; startedAt: number | null } | undefined>
-    )[Symbol.for('papercusp.embedBackfillSweepState')];
+  const sweepState = () => __sweepStateForTest();
 
   afterEach(() => {
     vi.useRealTimers();

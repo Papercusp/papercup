@@ -302,13 +302,17 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       // a completion of the migration. See the note in that file.
       'packages/operator-core/lib/operator-state-pg.ts',
       'packages/operator-core/lib/posthog-config.ts',
-      // Tranche 11 — three sibling search sync-states, identical IIFE shape.
-      // Their 4th sibling, search/embed-backfill.ts, is NOT here: its test
-      // pokes the key directly in 4 places, so it needs a reset seam in the
-      // same tranche that migrates it.
+      // Tranche 11 — four sibling search sync-states, identical IIFE shape.
+      // embed-backfill lagged the other three by one tranche: its test poked the
+      // key directly in 4 places, so it needed BOTH a reset seam and a live READ
+      // seam (__sweepStateForTest) before it could move. Its two in-place shape
+      // upgrades (pre-WI-2905, pre-WI-7327) stayed OUTSIDE the pin factory —
+      // the factory runs only on first create, so folding them in would have
+      // silently stopped upgrading the stale shapes they exist for.
       'packages/operator-core/lib/search/doc-embed-sync.ts',
       'packages/operator-core/lib/search/session-ingest.ts',
       'packages/operator-core/lib/search/turn-chunk-sync.ts',
+      'packages/operator-core/lib/search/embed-backfill.ts',
       // Tranche 12 — BOTH of its pins (the discovery cache and the dev
       // file-watcher handle ~1250 lines apart) folded into ONE, so a split
       // can't pin the cache while leaving a second fs.watch per record.
@@ -318,14 +322,25 @@ describe('no-hand-rolled-module-pin — the tree', () => {
     }
   });
 
-  it('the population is measured in BOTH key forms, not just Symbol.for', () => {
-    // A tree-level companion to the string-key predicate controls above. If the
-    // scanner ever narrows back to one spelling this drops to zero and fails,
-    // rather than quietly reporting a smaller, cleaner-looking population —
-    // which is exactly how 18 files stayed invisible (EI-19479108855357092).
+  it('labels every pin it finds in the tree with a known key form', () => {
+    // The scanner's BOTH-FORM capability is proven by 'reports BOTH key forms
+    // present in one file' above, against a synthetic fixture — and scanTree()
+    // routes every file through that same findPins(), so that fixture covers
+    // this property completely and cannot decay.
+    //
+    // This tree-level companion used to additionally require a `symbol`-form pin
+    // to EXIST in the tree. That made it a guard which goes red on SUCCESS: the
+    // moment the last hand-rolled Symbol.for site migrated (embed-backfill, the
+    // only one left), it failed — demanding a hand-rolled pin exist forever to
+    // satisfy the lint that exists to remove them. Proving detector capability
+    // from live-tree contents inverts exactly when the migration completes.
+    //
+    // What the tree CAN attest without decaying: every hit it reports is labelled
+    // with a real form, so a scanner that starts emitting unlabelled or
+    // mystery-form hits is still caught — at any population size, including zero.
     const { everyPin } = scanTree();
-    const forms = new Set(everyPin.map((p: { form: string }) => p.form));
-    expect(forms.has('string')).toBe(true);
-    expect(forms.has('symbol')).toBe(true);
+    for (const pin of everyPin as { form: string }[]) {
+      expect(['string', 'symbol']).toContain(pin.form);
+    }
   });
 });

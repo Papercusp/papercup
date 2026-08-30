@@ -12,6 +12,8 @@
  * refreshes live after a toggle.
  */
 
+import { runAgentTool } from './run-tool';
+
 /** One row of the `hive.controlState` sync query (per registered LOCAL hive). */
 export interface HiveControlRow {
   slug: string;
@@ -47,34 +49,9 @@ export async function runHiveControl(
   slug: string,
   extraArgs: Record<string, unknown> = {},
 ): Promise<void> {
-  const res = await fetch('/api/agent-mcp/run-tool', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: tool, args: { harness: slug, ...extraArgs }, confirmed: true }),
-  });
-  const body = (await res.json().catch(() => ({}))) as {
-    ok?: boolean;
-    error?: string;
-    message?: string;
-    result?: { content?: Array<{ text?: string }> };
-  };
-  if (!res.ok || !body.ok) {
-    throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
-  }
-  const text = body.result?.content?.[0]?.text;
-  if (!text) return;
-
-  // Validation failures from the projected-tool dispatcher are intentionally
-  // plain text (for example `invalid_input: invalid_args: ...`), while normal
-  // tool results are JSON strings. Never replace the useful server error with
-  // a client-side `JSON.parse` SyntaxError.
-  let payload: { ok?: boolean; message?: string; error?: string };
-  try {
-    payload = JSON.parse(text) as typeof payload;
-  } catch {
-    throw new Error(text);
-  }
-  if (payload.ok === false) {
-    throw new Error(payload.message ?? payload.error ?? `${tool} refused`);
-  }
+  // Delegates to the ONE shared dispatch (P-007). The guarded plain-text error
+  // handling that used to live inline here is the reason `run-tool.ts` exists:
+  // it was the only one of six copies that had it, so it became the shared
+  // implementation rather than being left as this file's private lesson.
+  await runAgentTool(tool, { harness: slug, ...extraArgs });
 }

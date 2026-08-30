@@ -46,7 +46,7 @@ import type { BoundLexicon } from '@papercusp/lexicon';
 // nothing else in this rail uses it.
 // `Network` left with the Pots tab (2026-08-10) — it was that tab's icon and
 // nothing else in this rail uses it.
-import { Activity, CupSoda, KeyRound, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Activity, CupSoda, KeyRound, MessagesSquare, PanelLeftOpen, PanelLeftClose, Phone } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -103,6 +103,9 @@ const WorkspacePulseTab = lazy(() => import('./WorkspacePulseTab'));
 // lives in Workspace pulse (AskAgentPane), so the rail has exactly one place to
 // ask and one place to read.
 const ConversationsTab = lazy(() => import('./ConversationsTab'));
+// ☎ Phone (WI-1403107). Lazy like every sibling: its pane's resolver shells out
+// to systemd, so it must not load for a rail the user never opens.
+const PhoneTab = lazy(() => import('./PhoneTab'));
 // (The 🎯 Goals tab is REMOVED from this rail — owner directive 2026-08-09,
 // verbatim: "remove the goals middle pane tab entirely. We already have a goals
 // tab inside the hud tab lets just use that." It shipped here two days earlier
@@ -213,6 +216,21 @@ const TABS = [
   // order test keeps policing that position while the tab is dark. Deleting the
   // entry would have made the flip a code change.
   { id: 'conversations', label: (_t: BoundLexicon) => 'Convos', icon: MessagesSquare, tip: (_t: BoundLexicon) => 'Conversations — agent messages, group decisions and agent chats', render: (a: boolean) => <ConversationsTab active={a} /> },
+  // ☎ Phone — owner ask 2026-08-30, verbatim: "add a phone button to the sidebar"
+  // (WI-1403107). APPENDED rather than inserted, for the same reason the Convos
+  // entry above was: the order before it is OWNER-SET and pinned by a test, so a
+  // new tab takes the end of the array and nothing already placed moves.
+  //
+  // Adding the entry is the whole registration — `TabId` and `TAB_IDS` are both
+  // DERIVED from this array, so `phone` enters the type and the nuqs `?lst=`
+  // parser with no second edit. That also means the id is now FROZEN: deep
+  // links, ui:dispatch and the collapsed rail button all key on it.
+  //
+  // The tip deliberately does NOT promise a working telephone. The media plane
+  // and the agent are real (plan phone-app-2026-08-30 P-002/P-004), but P-003 —
+  // a carrier number — is owner-gated and unprovisioned, so the pane states that
+  // wall and the tip stays honest about what this surface currently shows.
+  { id: 'phone', label: (_t: BoundLexicon) => 'Phone', icon: Phone, tip: (_t: BoundLexicon) => 'Phone — the self-hosted call plane: media server, SIP gateway, and whether a carrier number is provisioned yet', render: (a: boolean) => <PhoneTab active={a} /> },
   // (The 📊 Tasks tab MOVED to the AdvShell header — owner ask 2026-08-02,
   // WI-6844: "move the location of it from the middle pane to a button on our top
   // bar to the right of the 'agents running' button". It is now TasksRunningPill,

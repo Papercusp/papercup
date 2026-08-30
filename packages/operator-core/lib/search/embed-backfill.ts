@@ -31,6 +31,7 @@
 
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { getResourceProfile } from '../resource-profile';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../memory/embed-admission';
 import {
@@ -1119,21 +1120,40 @@ interface SweepState {
  * minutes is not slow, it is gone.
  */
 const SWEEP_LATCH_STALE_MS = 60 * 60 * 1000;
-const __sweepStateKey = Symbol.for('papercusp.embedBackfillSweepState');
-const __sweepState: SweepState = (() => {
-  const g = globalThis as typeof globalThis & { [__sweepStateKey]?: SweepState };
-  if (!g[__sweepStateKey]) {
-    g[__sweepStateKey] = { running: false, lastResult: null, sweepCounter: 0, startedAt: null };
-  }
-  // Upgrade an older pinned shape (pre-WI-2905) in place.
-  if (typeof g[__sweepStateKey]!.sweepCounter !== 'number') g[__sweepStateKey]!.sweepCounter = 0;
-  // Upgrade a pre-WI-7327 pinned shape: an already-held latch has no start stamp,
-  // so date it now rather than leaving it immortal.
-  if (g[__sweepStateKey]!.startedAt === undefined) {
-    g[__sweepStateKey]!.startedAt = g[__sweepStateKey]!.running ? Date.now() : null;
-  }
-  return g[__sweepStateKey]!;
-})();
+const __sweepState: SweepState = pinModuleState<SweepState>(
+  '@papercusp/operator-core.embedBackfillSweepState',
+  () => ({ running: false, lastResult: null, sweepCounter: 0, startedAt: null }),
+);
+
+// ⚠ These two shape upgrades MUST stay OUTSIDE the factory above. `pinModuleState`
+// runs its factory only on FIRST create, so a state pinned by an older build (or by
+// another module record mid-split) is handed back AS-IS — moving these inside the
+// factory would silently stop upgrading exactly the stale shapes they exist for.
+// Upgrade an older pinned shape (pre-WI-2905) in place.
+if (typeof __sweepState.sweepCounter !== 'number') __sweepState.sweepCounter = 0;
+// Upgrade a pre-WI-7327 pinned shape: an already-held latch has no start stamp,
+// so date it now rather than leaving it immortal.
+if (__sweepState.startedAt === undefined) {
+  __sweepState.startedAt = __sweepState.running ? Date.now() : null;
+}
+
+/**
+ * Test seams for the pinned sweep state.
+ *
+ * Do NOT reach for `globalThis[Symbol.for(...)]` in a test: that targets the storage
+ * LOCATION rather than this module's state, so it keeps compiling and silently
+ * reads/resets NOTHING the moment the state moves (EI-19479108855357092).
+ */
+export function __sweepStateForTest(): SweepState {
+  return __sweepState;
+}
+
+export function resetSweepStateForTest(): void {
+  __sweepState.running = false;
+  __sweepState.lastResult = null;
+  __sweepState.sweepCounter = 0; // WI-2905 rotation offset — deterministic order per test
+  __sweepState.startedAt = null;
+}
 
 export function getLastBackfillResult(): BackfillStats[] | null {
   return __sweepState.lastResult;

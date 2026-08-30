@@ -7,12 +7,18 @@
  *   tsx packages/operator-core/lib/harness/routines/check-bespoke-active-seeds.ts
  *
  * Exit codes:
- *   0 — every registered routine has an ACTIVE row for its seed writer's target harness
- *   1 — at least one is missing or inactive (prints the exact `tsx …` command to fix it)
+ *   0 — every registered routine has an ACTIVE row for its seed writer's target harness,
+ *       and that row is actually EXECUTING
+ *   1 — at least one is missing, inactive, or dark (prints the exact `tsx …` command to fix it)
  *   2 — environment problem (DB unreachable, etc.)
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { BESPOKE_ACTIVE_SEEDS, checkBespokeActiveSeeds, operatorHomeScope } from './bespoke-active-seeds-check';
+import {
+  BESPOKE_ACTIVE_SEEDS,
+  DARK_STALE_INTERVAL_MULTIPLE,
+  checkBespokeActiveSeeds,
+  operatorHomeScope,
+} from './bespoke-active-seeds-check';
 
 async function main(): Promise<void> {
   const { installSlug, workspaceId } = operatorHomeScope();
@@ -42,6 +48,18 @@ async function main(): Promise<void> {
       `[check-bespoke-active-seeds] INACTIVE: "${entry.name}" row for "${entry.installSlug}" is seeded but active=false — ` +
         `its own header commits to ACTIVE by default. Pause reason: ${why}${held}. Fix: ` +
         `routines:set { name: "${entry.name}", installSlug: "${entry.installSlug}", active: true }`,
+    );
+  }
+  for (const entry of result.dark) {
+    const cadence = entry.intervalSec === null ? 'cron' : `every ${entry.intervalSec}s`;
+    const age = `${Math.round(entry.ageSec / 60)}m`;
+    console.error(
+      entry.neverFired
+        ? `[check-bespoke-active-seeds] DARK: "${entry.name}" row for "${entry.installSlug}" is ACTIVE (${cadence}) but has ` +
+            `NEVER fired in the ${age} since it was created — nothing is executing it. For the ephemeral tier the ` +
+            `executor reads the routine table ONCE at host boot, so a row seeded after that boot never gets a timer.`
+        : `[check-bespoke-active-seeds] DARK: "${entry.name}" row for "${entry.installSlug}" is ACTIVE (${cadence}) but last ` +
+            `fired ${age} ago — over ${DARK_STALE_INTERVAL_MULTIPLE}× its own declared cadence.`,
     );
   }
   await sql.end({ timeout: 5 });

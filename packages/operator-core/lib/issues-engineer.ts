@@ -2729,11 +2729,20 @@ export async function claimIssue(
        -- (fromHolder = the CALLER). Absent, it falls back to the assignee and is a
        -- duplicate of the disjunct before it, leaving this predicate equivalent to
        -- its pre-change behavior.
+       --
+       -- EI-21921431863111143: the final disjunct self-heals a TRUNCATED assignee
+       -- (some assignment path persisted a prefix of the real ownerId instead of the
+       -- canonical full one, deadlocking checkpoint/claim against it). A stored
+       -- assignee that is a non-empty strict prefix of the incoming assignee can
+       -- only realistically BE that same caller's own truncated id (see
+       -- isSelfOwnerRecord in work-items.ts), so the match both lets the true owner
+       -- re-claim its own row and rewrites assignee to the full id in this UPDATE.
        AND (
          assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned'
          OR assignee = ${assignee}
          OR assignee = ${opts.fromHolder ?? assignee}
          ${expectedAssignee ? sql` OR assignee = ${expectedAssignee}` : sql``}
+         OR (assignee IS NOT NULL AND btrim(assignee) <> '' AND position(assignee in ${assignee}) = 1)
        )
        -- Born-pending admission is orthogonal to lifecycle status. A named claim
        -- cannot jump the promoter any more than scheduler:get_next can, EXCEPT

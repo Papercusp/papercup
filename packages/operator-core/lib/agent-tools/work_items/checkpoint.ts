@@ -139,7 +139,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
-import { markFeatureProgress, markIssueProgress, isClaimHoldParked } from '../../work-items';
+import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
@@ -859,7 +859,12 @@ export default defineTool({
         // cause of a false "currently holding" directive surviving into a compaction
         // summary. An unassigned item (assignee null/undefined — about to be claimed, or
         // an older row shape) or one already assigned to the caller is unaffected.
-        if (item && item.assignee && item.assignee !== ident.ownerId) {
+        // EI-21921431863111143: `item.assignee` may be a TRUNCATED prefix of the
+        // caller's own ownerId (an upstream dispatch-write bug), which a strict `!==`
+        // misreads as a different, live peer — deadlocking the item against its own
+        // holder (checkpoint refuses, and work_items:claim's re-claim refuses too).
+        // isSelfOwnerRecord treats that prefix the same as an exact match.
+        if (item && item.assignee && !isSelfOwnerRecord(item.assignee, ident.ownerId)) {
           return {
             ok: false as const,
             id: it.id,

@@ -41,8 +41,20 @@
 export const FEATURE_TERMINAL_STATES: readonly string[] = ['passed', 'deprecated', 'done', 'dropped'];
 
 /** Issue-family (bug/change/task) settled states — the mirror of
- *  FEATURE_TERMINAL_STATES for the `engineer_issues` dialect. */
-export const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'deprecated', 'done'];
+ *  FEATURE_TERMINAL_STATES for the `engineer_issues` dialect.
+ *
+ *  work-item-status-full-unify (2026-07-19) flipped the issue-family writer to
+ *  STORE the unified terminal spellings — `closed`/`deprecated` inputs now write
+ *  `dropped`, exactly as `resolved`/`passed` inputs write `done` (see
+ *  FEATURE_STATE_ALIASES). This list omitted `dropped` for over a month
+ *  (EI-21921121818266895): measured live 2026-08-30, `harness_shared.work_items`
+ *  carries 4,322 issue-family rows at status='dropped' — a real, actively-written
+ *  terminal state, not a stray/invalid value — every one of them silently
+ *  invisible to every terminal-scoped issue diagnostic (`issues-engineer.ts`'s
+ *  audit + completionAuthority buckets) and to `premise-probes.ts`'s
+ *  `#completion`-anchor terminality check. `resolved`/`closed`/`deprecated` are
+ *  kept as the pre-unification legacy spellings (still present on old rows). */
+export const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'deprecated', 'done', 'dropped'];
 
 /**
  * Terminal in EITHER kind-family — the canonical cross-family union.

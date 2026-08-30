@@ -4731,6 +4731,43 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── phone.plane — the Phone rail tab's live call-plane status ──
+  //
+  // (WI-1403107, owner ask 2026-08-30 "add a phone button to the sidebar".)
+  // The self-hosted media plane from plan phone-app-2026-08-30 P-002 is two
+  // systemd units; this reports what systemd actually says about them.
+  //
+  // DERIVED, never hand-maintained. The tempting version of this pane is a
+  // short list of strings naming which pieces exist — a second copy of a truth
+  // the units already own, which goes stale silently the first time one is
+  // renamed or stopped. `probeUnitStates` is the same reader `dev:service_health`
+  // uses, so this pane and that tool cannot disagree.
+  //
+  // `known` is carried through deliberately: systemd reports a NONEXISTENT unit
+  // as `inactive`, identical to a stopped one, so a pane rendering activeState
+  // alone would show a typo'd unit name as a service that is merely down.
+  // NOT table-backed — refreshes on mount and on manual invalidate.
+  'phone.plane': {
+    resolve: async () => {
+      const { probeUnitStates } = await import('../agent-tools/dev/systemd-service-probe');
+      const { states, unitsUnknown } = await probeUnitStates(
+        ['papercusp-phone-livekit', 'papercusp-phone-sip'],
+        'user',
+      );
+      return states.map((u) => ({
+        id: u.unit,
+        unit: u.unit,
+        // What the unit IS, for a reader who does not know the unit names.
+        role: u.unit.includes('sip') ? 'SIP gateway' : 'Media server',
+        known: u.known,
+        activeState: u.activeState,
+        subState: u.subState ?? null,
+        up: u.known && u.activeState === 'active',
+        unknownUnit: unitsUnknown.includes(u.unit),
+      }));
+    },
+  },
+
   // ── learning.health — the composite learning-infra status chip ──
   //
   // (self-improvement-consume-edges-2026-06-12 P-003 / D-002). ONE

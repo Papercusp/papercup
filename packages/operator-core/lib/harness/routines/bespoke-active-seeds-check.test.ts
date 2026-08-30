@@ -324,3 +324,156 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
     expect(isAlwaysOnSystemRoutine('some-human-gated-bringup')).toBe(false);
   });
 });
+
+/**
+ * The liveness level: a row that is PRESENT and ACTIVE but not executing.
+ *
+ * Regression cover for the ephemeral executor's boot-only rescan — `armEphemeralExecutor`
+ * reads `harness_shared.routines` exactly once at host boot, so a row seeded afterwards by a
+ * standalone `tsx` seed script (a different process from the bg-host holding the
+ * module-singleton arm-set) never receives a timer. `frozen-candidate-drift-sweep` sat
+ * active=true / last_fired_at=NULL that way, passing every existence check in the system.
+ */
+describe('checkBespokeActiveSeeds — dark (active but not executing)', () => {
+  const T = Date.parse('2026-08-30T23:50:00Z');
+  type LiveRow = {
+    name: string;
+    active: boolean;
+    metadata: { pause?: Record<string, unknown> } | null;
+    last_fired_at: string | Date | null;
+    created_at: string | Date | null;
+    trigger_config: { interval_sec?: unknown } | null;
+  };
+  const live = (over: Partial<LiveRow> & { name: string }): LiveRow => ({
+    active: true,
+    metadata: null,
+    last_fired_at: null,
+    created_at: null,
+    trigger_config: null,
+    ...over,
+  });
+  const check = (rows: LiveRow[]) =>
+    checkBespokeActiveSeeds({
+      sql: (async () => rows) as unknown as Parameters<typeof checkBespokeActiveSeeds>[0]['sql'],
+      installSlug: 'papercusp',
+      workspaceId: 'ws',
+      entries: [{ name: 'foo-routine', seedScript: 'seed-foo-routine.ts' }],
+      now: T,
+    });
+
+  it('flags the real frozen-candidate-drift-sweep shape: active, 900s, seeded 77m ago, never fired', async () => {
+    const res = await check([
+      live({
+        name: 'foo-routine',
+        created_at: '2026-08-30T22:33:05.794Z',
+        trigger_config: { interval_sec: 900 },
+      }),
+    ]);
+    expect(res.dark).toHaveLength(1);
+    expect(res.dark[0]!.neverFired).toBe(true);
+    expect(res.dark[0]!.intervalSec).toBe(900);
+    expect(res.dark[0]!.lastFiredAtMs).toBeNull();
+    // It is neither missing nor paused — which is exactly why nothing caught it before.
+    expect(res.missing).toEqual([]);
+    expect(res.inactive).toEqual([]);
+    expect(res.escalatable.map((e) => e.name)).toEqual(['foo-routine']);
+    expect(res.ok).toBe(false);
+  });
+
+  it('does NOT flag a freshly seeded row that has not reached its first tick', async () => {
+    const res = await check([
+      live({
+        name: 'foo-routine',
+        created_at: new Date(T - 60_000).toISOString(), // 1m old, 900s cadence
+        trigger_config: { interval_sec: 900 },
+      }),
+    ]);
+    expect(res.dark).toEqual([]);
+    expect(res.ok).toBe(true);
+  });
+
+  it('does NOT flag a routine firing inside its declared cadence', async () => {
+    const res = await check([
+      live({
+        name: 'foo-routine',
+        created_at: '2026-08-18T04:44:04Z',
+        last_fired_at: new Date(T - 221_000).toISOString(), // coverage-census, live-measured
+        trigger_config: { interval_sec: 900 },
+      }),
+    ]);
+    expect(res.dark).toEqual([]);
+    expect(res.ok).toBe(true);
+  });
+
+  it('flags a routine whose last fire is far past its own cadence (the corpus-term-df shape)', async () => {
+    const res = await check([
+      live({
+        name: 'foo-routine',
+        created_at: '2026-08-03T17:12:20Z',
+        last_fired_at: new Date(T - 127_324_000).toISOString(), // 35h ago, 6h cadence => 5.9x
+        trigger_config: { interval_sec: 21_600 },
+      }),
+    ]);
+    expect(res.dark).toHaveLength(1);
+    expect(res.dark[0]!.neverFired).toBe(false);
+    expect(res.ok).toBe(false);
+  });
+
+  it('holds the 4x boundary: 3.9x is healthy, 4.1x is dark', async () => {
+    const at = async (mult: number) =>
+      (
+        await check([
+          live({
+            name: 'foo-routine',
+            created_at: '2026-08-03T17:12:20Z',
+            last_fired_at: new Date(T - mult * 900 * 1000).toISOString(),
+            trigger_config: { interval_sec: 900 },
+          }),
+        ])
+      ).dark.length;
+    expect(await at(3.9)).toBe(0);
+    expect(await at(4.1)).toBe(1);
+  });
+
+  it('does not judge lateness for a cron row with no declared interval_sec', async () => {
+    const res = await check([
+      live({
+        name: 'foo-routine',
+        created_at: '2026-07-17T13:36:34Z',
+        last_fired_at: new Date(T - 69_877_000).toISOString(), // 19h since last fire, cron
+        trigger_config: null,
+      }),
+    ]);
+    expect(res.dark).toEqual([]);
+  });
+
+  it('still flags a NEVER-fired cron row once a full day has passed', async () => {
+    const day = 86_400_000;
+    const res = await check([
+      live({ name: 'foo-routine', created_at: new Date(T - day - 1000).toISOString() }),
+    ]);
+    expect(res.dark).toHaveLength(1);
+    expect(res.dark[0]!.neverFired).toBe(true);
+    expect(res.dark[0]!.intervalSec).toBeNull();
+    const fresh = await check([
+      live({ name: 'foo-routine', created_at: new Date(T - day + 60_000).toISOString() }),
+    ]);
+    expect(fresh.dark).toEqual([]);
+  });
+
+  it('fails OPEN on an unreadable created_at rather than accusing a routine', async () => {
+    const res = await check([
+      live({ name: 'foo-routine', created_at: 'not-a-timestamp', trigger_config: { interval_sec: 900 } }),
+    ]);
+    expect(res.dark).toEqual([]);
+    expect(res.ok).toBe(true);
+  });
+
+  it('reports a paused row as inactive, never as dark (the repair differs)', async () => {
+    const res = await check([
+      live({ name: 'foo-routine', active: false, created_at: '2026-06-11T22:38:01Z' }),
+    ]);
+    expect(res.dark).toEqual([]);
+    expect(res.inactive).toHaveLength(1);
+  });
+});
