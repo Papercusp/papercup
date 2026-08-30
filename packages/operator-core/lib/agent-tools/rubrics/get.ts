@@ -10,7 +10,8 @@
  * counts } — each result self-describes its rubricId, so a not-found id never
  * poisons the rest and the agent correlates by id (not array position). The
  * generic read-tool `ref` and caller-natural `slug` spellings are accepted as
- * compatibility aliases for the single-rubric form.
+ * compatibility aliases for the single-rubric form. An optional `harness`
+ * compatibility hint is accepted but does not filter this workspace-wide read.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -23,7 +24,7 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
   guidance: {
     when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
@@ -60,6 +61,11 @@ export default defineTool({
         .min(1)
         .optional()
         .describe('Caller-natural compatibility alias for rubricRef; rubricRef wins, then ref, when multiple single-rubric keys are supplied.'),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Optional caller scope hint accepted for compatibility; rubric reads remain workspace/template scoped and are not filtered by harness.'),
     })
     .refine((a) => Boolean(a.rubricRef ?? a.ref ?? a.slug) || (a.rubricRefs?.length ?? 0) > 0, {
       message: 'pass `rubricRef`/`ref`/`slug` (one) or `rubricRefs` (many)',

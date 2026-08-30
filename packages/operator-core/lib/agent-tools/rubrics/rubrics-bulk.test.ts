@@ -107,6 +107,39 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 
+  it('accepts an optional harness hint without filtering the workspace-wide read', async () => {
+    getM.mockResolvedValue({ id: 'r-1', criteria: [] } as never);
+    const projected = lookupByMcpName('rubrics:get');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'rubrics:get',
+      { rubricRef: 'r-1', harness: 'papercusp' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'rubrics-get-harness-hint-test',
+        isSuperuser: true,
+        uiClientId: 'su-rubrics-get-harness-hint-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        contextTier: 'trimmed',
+        tx: {},
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{ results: Array<{ rubricId: string; ok: boolean }> }>(dispatched.result!);
+    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
+    expect(getM).toHaveBeenCalledWith('r-1');
+  });
+
   it('prefers canonical rubricRef when ref is also supplied', async () => {
     getM.mockImplementation(async (id: string) => ({ id } as never));
     const b = await body(getTool, { rubricRef: 'canonical', ref: 'alias', slug: 'slug-alias' });
