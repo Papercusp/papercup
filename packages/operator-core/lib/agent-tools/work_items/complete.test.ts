@@ -117,6 +117,7 @@ import {
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
   gatherFlatCompletion,
+  hoistMisplacedAssumptions,
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
@@ -3024,6 +3025,73 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const jsonString = JSON.stringify({ summary: 's', tests: '5 green' });
       const out = coerceCompletionShape(jsonString) as { __shapeCoercedFrom?: unknown };
       expect(out.__shapeCoercedFrom).toBeUndefined();
+    });
+  });
+
+  describe('hoistMisplacedAssumptions (unit, EI-21868028531788587)', () => {
+    it('hoists `assumptions` nested inside `completion` up to the top level (single-complete shorthand)', () => {
+      expect(
+        hoistMisplacedAssumptions({
+          id: 'WI-1',
+          state: 'done',
+          completion: { summary: 's', assumptions: ['my-fact-key'] },
+        }),
+      ).toEqual({
+        id: 'WI-1',
+        state: 'done',
+        completion: { summary: 's' },
+        assumptions: ['my-fact-key'],
+      });
+    });
+
+    it('hoists the "none" sentinel too', () => {
+      expect(
+        hoistMisplacedAssumptions({ id: 'WI-1', completion: { summary: 's', assumptions: 'none' } }),
+      ).toEqual({ id: 'WI-1', completion: { summary: 's' }, assumptions: 'none' });
+    });
+
+    it('hoists per-item in the bulk items:[…] form', () => {
+      expect(
+        hoistMisplacedAssumptions({
+          items: [
+            { id: 'WI-1', completion: { summary: 'a', assumptions: ['k1'] } },
+            { id: 'WI-2', completion: { summary: 'b' } },
+          ],
+        }),
+      ).toEqual({
+        items: [
+          { id: 'WI-1', completion: { summary: 'a' }, assumptions: ['k1'] },
+          { id: 'WI-2', completion: { summary: 'b' } },
+        ],
+      });
+    });
+
+    it('never overwrites an explicit top-level `assumptions` (leaves both — a real conflict, not a shape fumble)', () => {
+      const call = {
+        id: 'WI-1',
+        assumptions: 'none',
+        completion: { summary: 's', assumptions: ['other-key'] },
+      };
+      expect(hoistMisplacedAssumptions(call)).toEqual({
+        id: 'WI-1',
+        assumptions: 'none',
+        completion: { summary: 's', assumptions: ['other-key'] },
+      });
+    });
+
+    it('leaves a call with no misplaced `assumptions` unchanged (same reference)', () => {
+      const call = { id: 'WI-1', completion: { summary: 's' } };
+      expect(hoistMisplacedAssumptions(call)).toBe(call);
+    });
+
+    it('leaves a bare-string `completion` unchanged (nothing to hoist from a string)', () => {
+      const call = { id: 'WI-1', completion: 'prose completion' };
+      expect(hoistMisplacedAssumptions(call)).toBe(call);
+    });
+
+    it('leaves a bulk call with no misplaced assumptions unchanged (same reference)', () => {
+      const call = { items: [{ id: 'WI-1', completion: { summary: 's' } }] };
+      expect(hoistMisplacedAssumptions(call)).toBe(call);
     });
   });
 
