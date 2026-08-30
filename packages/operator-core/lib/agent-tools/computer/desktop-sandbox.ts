@@ -37,6 +37,7 @@
  * to pixels, turning P-008's measured 10.48x token win back into screenshot-every-step
  * while every test stays green.
  */
+import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -60,6 +61,58 @@ export async function desktopAppSandboxEnabled(): Promise<boolean> {
 
 /** The X socket directory. Every display's filesystem socket lives here. */
 export const X11_SOCKET_DIR = '/tmp/.X11-unix';
+
+/**
+ * Matches the NVIDIA proprietary driver's character devices in `/dev`:
+ * `nvidiactl`, `nvidia0`…`nvidiaN`, `nvidia-modeset`, `nvidia-uvm`, `nvidia-uvm-tools`.
+ */
+const NVIDIA_DEVICE_NODE = /^nvidia(ctl|-modeset|-uvm|-uvm-tools|\d+)$/;
+
+/**
+ * Vendor GPU device nodes present on this host, for the HARDWARE tier to bind back.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL, and why `/dev/dri` was never enough (WI-1105361, measured
+ * 2026-08-30). `/dev/dri` is the DRM/Mesa interface. The NVIDIA proprietary stack does not
+ * use it for rendering — it needs its OWN nodes, and `--dev /dev` builds a minimal `/dev`
+ * that contains neither until something binds them back. We bound only `/dev/dri`, so
+ * inside the sandbox NVIDIA's EGL could not initialise and libglvnd fell through to the
+ * Mesa ICD, which cannot drive an NVIDIA device:
+ *
+ *     libEGL warning: pci id for fd 4: 10de:2204, driver (null)
+ *     libEGL warning: egl: failed to create dri2 screen
+ *
+ * Measured with the byte-exact production argv, n=20 per arm, one variable:
+ *
+ *   | /dev/nvidia* bound | renderer reached inside the sandbox      |
+ *   |--------------------|------------------------------------------|
+ *   | no  (as shipped)   | llvmpipe (LLVM 20.1.2)   20/20 fallback  |
+ *   | yes                | NVIDIA GeForce RTX 3090  20/20, 0 fallback|
+ *
+ * THE FAILURE WAS SILENT, which is why it survived: llvmpipe is a working rasterizer, so
+ * pixels still appeared and every non-blank assertion still passed. The desktop merely
+ * rendered in SOFTWARE while `gl-strategy` recorded `tier: 'hardware'` — because
+ * `probeRenderer` runs OUTSIDE the sandbox, where NVIDIA works fine. The registry was
+ * describing a world the app never ran in. The only visible symptom was a ~1-in-6
+ * desktop-gl-live failure, which was llvmpipe missing the 30s paint deadline under load,
+ * not a GL fault.
+ *
+ * Discovery is by ENUMERATION rather than a fixed list so a multi-GPU host binds every
+ * `nvidiaN` it actually has. Each is bound with `--dev-bind-try`, so a host with no NVIDIA
+ * hardware — notably the GPU-less GCP workspace VM this plan's A-bar clause 6 targets —
+ * silently binds nothing and keeps its software path.
+ */
+export function discoverGpuDeviceNodes(): string[] {
+  try {
+    return readdirSync('/dev')
+      .filter((entry) => NVIDIA_DEVICE_NODE.test(entry))
+      .map((entry) => `/dev/${entry}`)
+      .sort();
+  } catch {
+    // A /dev we cannot read is not a reason to fail provisioning: bind nothing extra and
+    // let the app fall back exactly as it did before this function existed.
+    return [];
+  }
+}
 
 /**
  * Env keys a sandboxed desktop app needs that `scrubExecEnv`'s allowlist does NOT carry.
@@ -99,6 +152,13 @@ export interface DesktopSandboxOpts {
   enabled: boolean;
   /** Injectable for tests; defaults to the live cached probe. */
   bwrapWorks?: boolean;
+  /**
+   * Vendor GPU device nodes to bind for the `hardware` tier, injectable so this builder
+   * stays deterministic in tests; defaults to `discoverGpuDeviceNodes()` (see WI-1105361 —
+   * without these, NVIDIA EGL cannot init inside the sandbox and GL silently drops to
+   * llvmpipe while the registry still reports `hardware`). Ignored on other tiers.
+   */
+  gpuDeviceNodes?: readonly string[];
   /**
    * Add `--unshare-net`. OPT-IN per D-015 §3: a desktop exists to run real apps, and a
    * silently network-less browser is a worse failure than an un-isolated one. Safe in
@@ -208,7 +268,18 @@ export function buildDesktopSandboxCommand(
   // `--dev /dev` builds a MINIMAL /dev with no /dev/dri, which would silently drop a
   // hardware-GL desktop to software and undo P-002. Bind the render nodes back for the one
   // tier that needs them — and only that tier, so a software desktop gets no GPU handle.
-  if (input.glTier === 'hardware') argv.push('--dev-bind-try', '/dev/dri', '/dev/dri');
+  if (input.glTier === 'hardware') {
+    argv.push('--dev-bind-try', '/dev/dri', '/dev/dri');
+
+    // …and the vendor's OWN nodes beside it. `/dev/dri` alone is the Mesa interface; on an
+    // NVIDIA host it leaves the proprietary EGL stack with no device, so libglvnd falls
+    // through to Mesa and renders in software while claiming hardware (WI-1105361 — the
+    // measurement table is on `discoverGpuDeviceNodes`). `--dev-bind-try` means a host
+    // without these nodes binds nothing and is unchanged.
+    for (const node of opts.gpuDeviceNodes ?? discoverGpuDeviceNodes()) {
+      argv.push('--dev-bind-try', node, node);
+    }
+  }
 
   // ⛔ `--unshare-ipc` IS DELIBERATELY ABSENT — do not add it back (WI-1105361).
   //
