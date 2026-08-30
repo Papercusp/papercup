@@ -145,6 +145,23 @@ export interface Rubric {
   description: string;
   criteria: RubricCriterion[];
   ratingScale: string[];
+  /**
+   * Stable hash over the fields that actually GRADE (characteristic, criteria,
+   * ratingScale, methodRef, description) — the field to pin/compare to prove "the
+   * rubric's graded substance did not change under my grade" (EI-21917124475387201).
+   *
+   * `harness_plans.content_hash` / `plan_revisions.content_hash` CANNOT answer that:
+   * they hash only the plan's markdown prose body, and every rubric criterion lives in
+   * `template_data` jsonb, which that hash never touches — so two revisions whose
+   * criteria differ can share byte-identical content_hash (measured: seq 2/3/4 same
+   * hash while criteria md5 changed). Compare THIS field across reads instead; it is
+   * the same stableStringify+sha256 construction rubric-store.ts already uses for
+   * first-party seed-drift detection (seedContentHash), computed fresh from the live
+   * template_data on every read rather than a write-time-only stored value. Optional
+   * only for the rare degraded/mocked read that cannot compute it; every real
+   * planRowToRubric projection populates it.
+   */
+  criteriaHash?: string;
   /** agent-insights runbook slug holding the long-form METHOD (no prose duplication). */
   methodRef: string | null;
   /** This rubric GATES a release verdict (EI-12149) — the rubric-staleness watchdog
@@ -338,6 +355,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       ...(c.check ? { check: c.check } : {}),
     })),
     ratingScale: d.ratingScale,
+    criteriaHash: computeSeedContentHash(d),
     methodRef: d.methodRef ?? null,
     ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
     ...(d.stalenessWatched !== undefined ? { stalenessWatched: d.stalenessWatched } : {}),
