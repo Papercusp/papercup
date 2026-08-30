@@ -164,13 +164,16 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
   },
 
-  // ── Tab navigation (Linear-style 2-stroke `g i`) ────────
+  // ── Tab navigation (Linear-style 2-stroke `g b` / `g i`) ────────
   // The dashboard/summary/config/proposals bindings were removed with their
   // /adv tabs (settings-audit 2026-07-09) — their tab ids are long gone from
   // ADV_TAB_IDS, so the settings rows let a user rebind a dead key.
-  // `goto.brainstorm` (g>b) was removed 2026-07-13 with the /adv Brainstorm
-  // tab (quick-panel-saved-prompts P-010): the surface lives in the Quick
-  // Panel popup now, which has its own OS-level global shortcut.
+  {
+    id: 'goto.brainstorm',
+    description: 'Go to Brainstorm tab',
+    defaultCombo: 'g>b',
+    category: 'navigation',
+  },
   {
     id: 'goto.insights',
     description: 'Go to Insights tab',

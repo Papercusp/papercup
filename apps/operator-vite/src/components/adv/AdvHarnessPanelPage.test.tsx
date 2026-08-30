@@ -4,8 +4,8 @@
  * (psu-isolation-and-blueprint-aware-harness-ui-2026-06-09 P-008/P-009).
  *
  * This file is a thin ROUTER: scope=all → a per-pot empty hint; panel 'git' →
- * AdvGitWorkspace; the DIRECT registry panels (prs/insights/settings/
- * docs/testing) → their component, but only with a selected ?slug=. The heavy
+ * AdvGitWorkspace; the DIRECT registry panels (brainstorm/prs/insights/
+ * settings/docs/testing) → their component, but only with a selected ?slug=. The heavy
  * child panels + the lexicon/flag hooks are stubbed so we can assert the routing
  * + the BLUEPRINT_AWARE_SETTINGS flag swap on Settings without their trees.
  *
@@ -42,6 +42,7 @@ vi.mock('@/app/harness/BlueprintSettingsPanel', () => ({ default: ({ slug }: { s
 vi.mock('@/app/harness/insights/InsightsTab', () => ({ InsightsTab: () => <div data-testid="insights" /> }));
 vi.mock('@/app/adv/harnesses/AdvDocsTab', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="docs">{slug}</div> }));
 vi.mock('@/app/adv/harnesses/HarnessTestsView', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="testing">{slug}</div> }));
+vi.mock('@/app/harness/brainstorm/BrainstormFull', () => ({ BrainstormFull: ({ slug }: { slug: string }) => <div data-testid="brainstorm">{slug}</div> }));
 
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from './AdvHarnessPanelPage';
 
@@ -54,8 +55,8 @@ afterEach(() => cleanup());
 
 describe('ADV_HARNESS_PANEL_LABELS', () => {
   it('labels every routable harness panel', () => {
-    // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
     expect(ADV_HARNESS_PANEL_LABELS).toEqual({
+      brainstorm: 'Brainstorm',
       prs: 'PRs',
       insights: 'Insights',
       settings: 'Settings',
@@ -85,6 +86,12 @@ describe('<AdvHarnessPanelPage> routing', () => {
     nuqsState.slug = 'pot-prs';
     render(<AdvHarnessPanelPage panel="prs" />);
     expect(screen.getByTestId('prs').textContent).toBe('pot-prs');
+  });
+
+  it('Brainstorm renders the canonical BrainstormFull surface for the selected pot', () => {
+    nuqsState.slug = 'pot-ideas';
+    render(<AdvHarnessPanelPage panel="brainstorm" />);
+    expect(screen.getByTestId('brainstorm').textContent).toBe('pot-ideas');
   });
 
   it('a DIRECT panel with NO slug renders the "Select a Pot." prompt', () => {

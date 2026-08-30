@@ -77,9 +77,8 @@ describe('ADV_TABS', () => {
     // P-019); Conversations sits with the browse surfaces (Brief 25).
     expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
-      // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
       // HUD takes the first slot right of Overview (owner ask 2026-07-25).
-      'overview', 'hud', 'plans', 'workflows', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'history', 'insights',
+      'overview', 'hud', 'brainstorm', 'plans', 'workflows', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'history', 'insights',
       'conversations', 'learning', 'evals', 'settings',
     ]);
   });
@@ -199,8 +198,7 @@ describe('harness route panel → tab mapping contract', () => {
   // Mirror of the private PANEL_TO_TAB in harness/index.tsx.
   const EXPECTED_MAPPING: Record<string, AdvTabId> = {
     dashboard:  'harnesses',
-    // Brainstorm tab removed (P-010) — legacy brainstorm deep links land on overview.
-    brainstorm: 'overview',
+    brainstorm: 'brainstorm',
     prs:        'prs',
     insights:   'insights',
     // Config tab retired (config-tab-cleanup-2026-06-08) → legacy panel lands on Settings.
@@ -230,8 +228,7 @@ describe('harness route panel → tab mapping contract', () => {
   });
 
   it('named panels map to their own tabs', () => {
-    // brainstorm's tab left /adv for the Quick Panel popup (P-010) → overview.
-    expect(EXPECTED_MAPPING.brainstorm).toBe('overview');
+    expect(EXPECTED_MAPPING.brainstorm).toBe('brainstorm');
     expect(EXPECTED_MAPPING.insights).toBe('insights');
     // Config tab retired → its legacy panel now lands on Settings.
     expect(EXPECTED_MAPPING.config).toBe('settings');
@@ -265,6 +262,13 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
     const grouped = SECONDARY_TAB_GROUPS.flatMap((g) => g.tabIds);
     expect(new Set(grouped).size).toBe(grouped.length); // no id duplicated across groups
     expect([...grouped].sort()).toEqual([...nonPrimaryIds].sort());
+  });
+
+  it('keeps Brainstorm secondary and places it first in Create & Build before Plans', () => {
+    expect(PRIMARY_ADV_TAB_IDS.has('brainstorm')).toBe(false);
+    const group = SECONDARY_TAB_GROUPS.find((entry) => entry.id === 'build');
+    expect(group?.label).toBe('Create & Build');
+    expect(group?.tabIds.slice(0, 2)).toEqual(['brainstorm', 'plans']);
   });
 
   it('splits a tab list into primary (strip) and secondary (More menu)', () => {

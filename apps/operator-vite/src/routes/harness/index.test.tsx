@@ -54,6 +54,9 @@ describe('/harness beforeLoad → /adv redirect', () => {
   it('maps the config panel to settings (config tab retired)', () => {
     expect(redirectFor({ panel: 'config' }).search).toEqual({ tab: 'settings' });
   });
+  it('maps the legacy Brainstorm panel to the restored secondary /adv tab', () => {
+    expect(redirectFor({ panel: 'brainstorm', slug: 'alpha' }).search).toEqual({ tab: 'brainstorm', slug: 'alpha' });
+  });
   it('maps a no-tab panel (proposals) to the harnesses workspace', () => {
     expect(redirectFor({ panel: 'proposals' }).search).toEqual({ tab: 'harnesses' });
   });

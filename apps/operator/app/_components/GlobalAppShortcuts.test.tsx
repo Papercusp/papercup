@@ -3,7 +3,7 @@
  * GlobalAppShortcuts.test.tsx — render-tier coverage for the app-level
  * navigation shortcuts. The component renders nothing; it registers five
  * actions (settings.open / goto.inbox / harness.create /
- * goto.insights) against the shortcut bus via useShortcutAction. We mock that
+ * goto.brainstorm / goto.insights) against the shortcut bus via useShortcutAction. We mock that
  * hook to capture the handlers and the router-compat useRouter to spy on
  * push(), then invoke each handler and assert the navigation target.
  */
@@ -47,15 +47,16 @@ describe('GlobalAppShortcuts', () => {
     expect(handlerFor('harness.create')).toBeTruthy();
   });
 
-  // settings-audit 2026-07-09: goto.insights shipped in the shortcut registry
-  // with no handler in ANY component, so the /settings/shortcuts row let a user
-  // rebind a key that fired nothing. These lock in the root fallback.
-  // (goto.brainstorm removed 2026-07-13 with the /adv Brainstorm tab — the
-  // surface lives in the Quick Panel popup now; quick-panel-saved-prompts P-010.)
-  it('registers goto.insights and NOT the removed goto.brainstorm', () => {
+  it('registers root fallbacks for both per-pot navigation shortcuts', () => {
     render(<GlobalAppShortcuts />);
     expect(handlerFor('goto.insights')).toBeTruthy();
-    expect(handlerFor('goto.brainstorm')).toBeFalsy();
+    expect(handlerFor('goto.brainstorm')).toBeTruthy();
+  });
+
+  it('goto.brainstorm navigates to /adv?tab=brainstorm', () => {
+    render(<GlobalAppShortcuts />);
+    handlerFor('goto.brainstorm')!.run(new KeyboardEvent('keydown'));
+    expect(push).toHaveBeenCalledWith('/adv?tab=brainstorm');
   });
 
   it('goto.insights navigates to /adv?tab=insights', () => {

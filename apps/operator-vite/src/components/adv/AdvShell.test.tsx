@@ -330,7 +330,7 @@ describe('AdvShell — strip + header', () => {
     expect(moreTrigger.className).toContain('pc-advshell__more-trigger--active');
     fireEvent.click(moreTrigger);
     // 'docs' is both the just-mounted active tab (so it's already "Recent") AND
-    // a member of its permanent "Build" group — both listings are expected
+    // a member of its permanent "Create & Build" group — both listings are expected
     // (standard recent-item UX), so assert presence via findAllByText.
     expect((await screen.findAllByText('Docs')).length).toBeGreaterThan(0);
   });
@@ -354,10 +354,10 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
     // "Work" the group became "Activity" when the Work tab (harnesses) was
     // promoted to the strip — two things called "Work" in one nav is the thing
     // the relabel avoids (owner ask 2026-07-26).
-    expect(headings).toEqual(['Build', 'Activity', 'Insights', 'System']);
+    expect(headings).toEqual(['Create & Build', 'Activity', 'Insights', 'System']);
     const items = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.textContent?.trim());
     expect(items).toEqual(
-      expect.arrayContaining(['Create', 'Git', 'Stats', 'Tests', 'Docs', 'History', 'Conversations', 'Calendar', 'Insights', 'Evaluation', 'Health', 'Frames', 'Settings']),
+      expect.arrayContaining(['Brainstorm', 'Create', 'Git', 'Stats', 'Tests', 'Docs', 'History', 'Conversations', 'Calendar', 'Insights', 'Evaluation', 'Health', 'Frames', 'Settings']),
     );
     // Promoted tabs are strip tabs, NOT More-menu items.
     expect(items).not.toContain('Work');
@@ -497,15 +497,13 @@ describe('AdvShell — Discord-parity shortcuts', () => {
     await waitFor(() => expect(nuqsSetters.create).toHaveBeenCalledWith(true));
   });
 
-  // settings-audit 2026-07-09: `g i` was listed in the shortcut registry
-  // (and rebindable on /settings/shortcuts) but NO component ever registered a
-  // handler, so pressing it did nothing. Regression guard for the wire-up.
-  // (goto.brainstorm removed 2026-07-13 with the /adv Brainstorm tab; P-010.)
-  it('goto.insights jumps to its per-pot tab', async () => {
+  // Both two-stroke shortcuts have in-place handlers while /adv is mounted.
+  it('goto.brainstorm and goto.insights jump to their per-pot tabs', async () => {
     await renderShell();
+    act(() => shortcutHandlers.get('goto.brainstorm')!());
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('brainstorm'));
     act(() => shortcutHandlers.get('goto.insights')!());
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('insights'));
-    expect(shortcutHandlers.has('goto.brainstorm')).toBe(false);
   });
 });
 

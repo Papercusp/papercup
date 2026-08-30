@@ -84,7 +84,9 @@ const PROJECTS_LITE = {
 const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'hud', label: 'HUD' },
+  { id: 'brainstorm', label: 'Brainstorm' },
   { id: 'plans', label: 'Create' },
+  { id: 'workflows', label: 'Workflows' },
   { id: 'calendar', label: 'Calendar' },
   // Label renamed Harnesses → Progress → Working → Work (owner asks, 2026-06-10/11
   // and 2026-07-26); the tab ID stays 'harnesses' — it's URL-serialized
@@ -93,8 +95,10 @@ const TABS = [
   { id: 'health', label: 'Health' },
   { id: 'frames', label: 'Frames' },
   { id: 'git', label: 'Git' },
+  { id: 'stats', label: 'Stats' },
   { id: 'testing', label: 'Tests' },
   { id: 'docs', label: 'Docs' },
+  { id: 'history', label: 'History' },
   { id: 'insights', label: 'Insights' },
   { id: 'conversations', label: 'Conversations' },
   { id: 'learning', label: 'Learning' },
@@ -107,7 +111,7 @@ const TABS = [
  * `role=tab` strip entries. Order matches TABS/ADV_TABS declaration order —
  * `splitPrimarySecondary` preserves it, no separate ordering needed here.
  */
-const PRIMARY_TAB_IDS = new Set(['overview', 'hud', 'harnesses', 'learning']);
+const PRIMARY_TAB_IDS = new Set(['overview', 'hud', 'workflows', 'harnesses', 'learning']);
 const PRIMARY_TABS = TABS.filter((t) => PRIMARY_TAB_IDS.has(t.id));
 
 const SKIP_MSG =
@@ -335,17 +339,19 @@ test.describe('/adv shell tab navigation (P-011)', () => {
 
     await moreTrigger(page).click();
     // cmdk renders each secondary tab as a role=option item (cmdk's own
-    // "role":"option" on CommandItem) — Git lives in the "Build" group.
-    await page.getByRole('option', { name: 'Git', exact: true }).click();
+    // "role":"option" on CommandItem). Brainstorm leads the restored
+    // "Create & Build" group.
+    await expect(page.getByText('Create & Build', { exact: true })).toBeVisible();
+    await page.getByRole('option', { name: 'Brainstorm', exact: true }).click();
 
-    // Git never gets its own strip tab; the trigger reflects the selection.
-    await expectActiveSection(page, 'git');
+    // Brainstorm never gets its own strip tab; the trigger reflects the selection.
+    await expectActiveSection(page, 'brainstorm');
     // The popover closes on select (AdvShell's onSelect calls setMoreOpen(false)).
-    await expect(page.getByRole('option', { name: 'Git', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('option', { name: 'Brainstorm', exact: true })).toHaveCount(0);
 
     // Reload → the nuqs state round-trips even for a secondary tab.
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await expectActiveSection(page, 'git');
+    await expectActiveSection(page, 'brainstorm');
   });
 
   test('?scope=all still shows only the primary tabs, and pins a per-pot deep link instead of snapping to Overview', async ({ page }) => {

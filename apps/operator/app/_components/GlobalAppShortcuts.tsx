@@ -8,11 +8,8 @@
  *   - Mod+I        → /adv?opcv=inbox (the canonical Resolution Inbox face)
  *   - Mod+Shift+N  → /adv?create=true       (Discord: create/join server →
  *                                            our create-harness wizard)
+ *   - g then b     → /adv?tab=brainstorm    (Linear-style 2-stroke tab jump)
  *   - g then i     → /adv?tab=insights      (Linear-style 2-stroke tab jump)
- *
- * (g>b / goto.brainstorm removed 2026-07-13 with the /adv Brainstorm tab —
- * the surface lives in the Quick Panel popup now; quick-panel-saved-prompts
- * P-010.)
  *
  * These are the ROOT fallbacks. The Resolution Inbox now lives in the global
  * Papercup middle pane (`?opcv=inbox`), so its shortcut targets that canonical
@@ -41,6 +38,10 @@ export default function GlobalAppShortcuts() {
   // pick-a-pot empty-state until a pot is selected — same as any deep link to
   // a per-pot tab. This id had no handler at all before settings-audit
   // 2026-07-09.
+  useShortcutAction('goto.brainstorm', () => {
+    router.push('/adv?tab=brainstorm');
+  });
+
   useShortcutAction('goto.insights', () => {
     router.push('/adv?tab=insights');
   });

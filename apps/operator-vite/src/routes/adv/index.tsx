@@ -111,7 +111,7 @@ function renderAdvTab(tab: AdvTabId, potScope: AdvScope) {
       return <ScheduledCalendarTab />;
     case 'history':
       return <AdvHistoryTab />;
-    // ('brainstorm' removed — the surface lives in the Quick Panel popup now; P-010.)
+    case 'brainstorm':
     case 'prs':
     case 'insights':
     case 'settings':

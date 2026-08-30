@@ -23,6 +23,7 @@ import {
   HeartPulse,
   History as HistoryIcon,
   LayoutDashboard,
+  Lightbulb,
   ListChecks,
   MessageCircle,
   MonitorPlay,
@@ -57,10 +58,10 @@ import TasksRunningPill from './TasksRunningPill';
 // which never mounts this shell.
 import './adv-header-pills.css';
 
-// 'brainstorm' removed 2026-07-13 (quick-panel-saved-prompts P-010): the brainstorm
-// surface lives in the Quick Panel popup's Brainstorm tab now (owner ask). Old
-// ?tab=brainstorm deep links fall back to 'overview' via the enum parser.
-const ADV_TAB_IDS = ['overview', 'hud', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
+// Brainstorm was moved exclusively to Quick Panel on 2026-07-13, then restored
+// here on 2026-08-30 as a secondary per-pot tab. Both entry points intentionally
+// mount the same BrainstormFull surface.
+const ADV_TAB_IDS = ['overview', 'hud', 'brainstorm', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -87,7 +88,9 @@ export const ADV_TABS: ReadonlyArray<{
   // (indigo400) and Create (amber500); cyan/sky shades are brand-reserved
   // (design-primitives lint), so the original cyan400 pick was not usable.
   { id: 'hud', label: 'HUD', icon: Gauge, accent: CATEGORICAL.teal300.hex, accentRgb: CATEGORICAL.teal300.rgb },
-  // (Brainstorm tab removed — it lives in the Quick Panel popup now; P-010.)
+  // Secondary-only: normal in-app access lives under More, while Quick Panel
+  // remains the fast global doorway to this same per-pot workspace.
+  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: 'var(--accent)', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
   // Workflows — one workspace-wide identity and control surface for triggered
   // plans, AI routines, and deterministic system tasks. Replaces the fragmented
@@ -200,7 +203,7 @@ export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
  * otherwise silently vanish (no strip entry, no More-menu entry).
  */
 export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = [
-  { id: 'build', label: 'Build', tabIds: ['plans', 'git', 'stats', 'testing', 'docs', 'history'] },
+  { id: 'build', label: 'Create & Build', tabIds: ['brainstorm', 'plans', 'git', 'stats', 'testing', 'docs', 'history'] },
   // Was "Work" holding ['harnesses','conversations','calendar'] — 'harnesses'
   // IS the Work tab now (promoted to the strip 2026-07-26), so the group was
   // relabelled "Activity" to avoid two things called "Work" in the same nav.
@@ -642,14 +645,13 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   useShortcutAction('goto.inbox', () => void setActiveTab('conversations'));
   useShortcutAction('harness.create', () => void setCreateOpen(true));
 
-  // Two-stroke tab jump (`g i`). Shipped in the registry with NO handler
-  // anywhere, so the settings row let a user rebind a key that fired nothing
-  // (settings-audit 2026-07-09). Unlike goto.inbox this is a PER-POT tab, so
+  // Two-stroke tab jumps (`g b` / `g i`). Unlike goto.inbox these are PER-POT
+  // tabs, so
   // under "All Pots" it's absent from the base strip — the pin-the-active-tab
   // branch above appends + highlights the tab and its body renders the
   // pick-a-pot prompt (owner ask 2026-06-17). That is the designed
-  // empty-state, so no scope guard here. (goto.brainstorm removed with the
-  // Brainstorm tab — the surface lives in the Quick Panel popup now; P-010.)
+  // empty-state, so no scope guard here.
+  useShortcutAction('goto.brainstorm', () => void setActiveTab('brainstorm'));
   useShortcutAction('goto.insights', () => void setActiveTab('insights'));
 
   return (

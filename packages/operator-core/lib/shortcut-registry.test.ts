@@ -120,16 +120,14 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
   // component — the whole `feature.*` block (its FeatureList was deleted) and four
   // `goto.*` ids whose /adv tabs are long gone from ADV_TAB_IDS — so users could
   // rebind keys that fired nothing. Removed; `goto.insights` was instead WIRED
-  // (AdvShell + GlobalAppShortcuts). Pins both halves. (`goto.brainstorm` was
-  // wired then too, but left with the /adv Brainstorm tab 2026-07-13 —
-  // quick-panel-saved-prompts P-010.)
+  // (AdvShell + GlobalAppShortcuts). Pins both halves.
   describe('no dead rebindable rows', () => {
     it('drops the feature-list ids (their FeatureList no longer exists)', () => {
       expect(SHORTCUTS.filter((s) => s.id.startsWith('feature.'))).toEqual([]);
     });
 
     it('drops goto.* ids whose /adv tabs were removed', () => {
-      for (const id of ['goto.dashboard', 'goto.summary', 'goto.config', 'goto.proposals', 'goto.brainstorm']) {
+      for (const id of ['goto.dashboard', 'goto.summary', 'goto.config', 'goto.proposals']) {
         expect(getShortcutDef(id), id).toBeUndefined();
       }
     });
@@ -138,7 +136,8 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
       expect(getShortcutDef('find.open')?.category).toBe('navigation');
     });
 
-    it('keeps the goto.* id that was wired up instead of deleted', () => {
+    it('keeps the goto.* ids that have live /adv surfaces and handlers', () => {
+      expect(getShortcutDef('goto.brainstorm')?.defaultCombo).toBe('g>b');
       expect(getShortcutDef('goto.insights')?.defaultCombo).toBe('g>i');
     });
   });

@@ -12,11 +12,12 @@ import { FLAGS } from '@papercusp/flags';
 import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/InsightsTab';
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 import HarnessTestsView from '@/app/adv/harnesses/HarnessTestsView';
+import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 
-// ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
-type AdvHarnessPanel = Extract<AdvTabId, 'prs' | 'insights' | 'settings' | 'docs' | 'git' | 'testing'>;
+type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'settings' | 'docs' | 'git' | 'testing'>;
 
 export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
+  brainstorm: 'Brainstorm',
   prs: 'PRs',
   insights: 'Insights',
   settings: 'Settings',
@@ -117,6 +118,7 @@ function SettingsTab({ slug }: { slug: string }) {
  * docs renders the plugin's docs tab via AdvDocsTab.)
  */
 const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
+  brainstorm: (slug) => <BrainstormFull slug={slug} />,
   prs: (slug) => <PrsTab harnessSlug={slug} />,
   settings: (slug) => <SettingsTab slug={slug} />,
   insights: (slug) => <AdvInsightsTab slug={slug} />,

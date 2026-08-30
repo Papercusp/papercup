@@ -39,7 +39,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
-    'overview', 'hud', 'workflows', 'conversations', 'learning', 'harnesses', 'health', 'frames',
+    'overview', 'hud', 'brainstorm', 'workflows', 'conversations', 'learning', 'harnesses', 'health', 'frames',
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings', 'history',
     'docs', 'git', 'stats', 'testing',
   ].map((id) => ({ id })),
@@ -134,8 +134,7 @@ describe('/adv tab router', () => {
     expect(potBar()!.getAttribute('data-with-status')).toBe(pills ? '1' : '0');
   });
 
-  // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
-  const PANELS = ['prs', 'insights', 'git', 'testing'] as const;
+  const PANELS = ['brainstorm', 'prs', 'insights', 'git', 'testing'] as const;
 
   it.each(PANELS)('routes the %s tab to the harness panel page, with a pot bar (it is a per-pot panel)', (tab) => {
     renderAdv(`?tab=${tab}`);
