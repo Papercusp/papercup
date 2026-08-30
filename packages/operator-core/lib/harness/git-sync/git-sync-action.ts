@@ -2595,7 +2595,21 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // maps these superproject-root-relative paths into each submodule before add.
     let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
     try {
-      liveLockHoldingRows = await guarded('read-live-file-locks', () => liveLockHoldingsStrict());
+      // EI-21876778499591361: ride out a TRANSIENT pg contention timeout on this read instead of
+      // skipping the tick. Failing CLOSED below is right for an UNREADABLE lock plane — staging a
+      // peer's transiently-truncated file is the harm it prevents — but a 57014/55P03 is not that:
+      // it is this idempotent SELECT losing a lock race under load, and it self-clears. Skipping on
+      // it stalls commits FLEET-WIDE at exactly the load where they matter most (observed
+      // 2026-08-30: missed_intervals=3, no successful sync for >10min, 34 files stuck in the tree).
+      //
+      // Same class + same primitive as the acquire sites above, which this file already wraps —
+      // contention-retry's own docstring names "call sites that SKIP the tick ... stall git-sync"
+      // (EI-1720); this read was simply never wrapped. The retry sits INSIDE `guarded` so it sees
+      // the RAW error, before the liveness wrapper. Non-contention faults still fail closed on the
+      // first attempt, unchanged. ~6s of backoff against a 600s (LOCK_TTL_SEC) idle deadline.
+      liveLockHoldingRows = await guarded('read-live-file-locks', () =>
+        acquireWithContentionRetry(() => liveLockHoldingsStrict()),
+      );
     } catch (error) {
       if (liveness.timedOut) throw liveness.timeoutError;
       // This read is a safety gate: treating an unreadable lock plane as [] lets
