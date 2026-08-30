@@ -1,11 +1,18 @@
 /**
- * acceptance-grader-select.test.ts — D-009 grader-discovery semantics (P-011).
+ * acceptance-grader-select.test.ts — grader-discovery semantics.
  *
- * The contract under test: exclusions apply EVEN ABOVE-FLOOR (independence
- * outranks familiarity), the floor asymmetry (below-floor → fresh, never a
- * stalled gate), and the liveness refinement (an unreachable top candidate is
- * skipped; all-dead → fresh). Route + sql are stubbed; the router itself is
- * covered by relevance-router.integration.test.ts.
+ * The contract under test: exclusions apply EVEN ABOVE-FLOOR (D-009 —
+ * independence outranks familiarity); the menu is bounded by the SHARED
+ * ACCEPTANCE_GRADING_POLICY (min 1 / max 2) rather than by a number written in
+ * the module; below-floor MINIMUM-FILLS instead of minting a fresh session
+ * (unified-responder-selection-critique-and-grading-2026-08-30 D-002 [owner],
+ * which SUPERSEDES D-009's floor asymmetry — the reversal is asserted here
+ * explicitly, so re-introducing the old behaviour fails a test that names it);
+ * and the liveness gate applies to floor picks AND fills alike, so an all-dead
+ * pool yields an empty menu rather than an unwakeable grader.
+ *
+ * Route + sql are stubbed; the router itself is covered by
+ * relevance-router.integration.test.ts.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
@@ -83,7 +90,8 @@ describe('selectAcceptanceGrader (D-009)', () => {
       },
     );
     expect(out.verdict).toBe('assigned');
-    expect(out.grader?.ownerId).toBe('su-expert');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-expert']);
+    expect(out.graders[0].via).toBe('floor');
     expect(out.eligibility).toEqual({ eligibleCount: 1, qualifiedCount: 1, measured: true });
     expect(out.escalation).toBeUndefined();
     // The router received the FULL exclusion set: computed + extras, no nulls.
@@ -97,7 +105,59 @@ describe('selectAcceptanceGrader (D-009)', () => {
     expect(out.excluded).toEqual(expect.arrayContaining(['su-implementer', 'su-author', 'su-shipper']));
   });
 
-  it('below floor / all-excluded → fresh (the floor asymmetry: the gate never stalls)', async () => {
+  it('selects up to the policy MAX (2), best first, all via floor', async () => {
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-a': 'reviewer', 'su-b': 'reviewer', 'su-c': 'reviewer' }),
+      route: async () =>
+        routed([candidate('su-a', 'live', 0.9), candidate('su-b', 'live', 0.8), candidate('su-c', 'live', 0.7)]),
+    });
+    expect(out.verdict).toBe('assigned');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-a', 'su-b']);
+    expect(out.graders.every((g) => g.via === 'floor')).toBe(true);
+    // The bound is the REGISTERED policy, not a number in this module: the menu
+    // is capped at 2 with a third qualified candidate available.
+    expect(out.routing?.selection).toMatchObject({ min: 1, max: 2 });
+  });
+
+  it('D-002 REVERSAL: a below-floor pool MINIMUM-FILLS instead of minting fresh', async () => {
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-below-floor': 'reviewer' }),
+      route: async () => unqualified([candidate('su-below-floor', 'live')]),
+    });
+    // Pre-D-002 this asserted verdict:'fresh' / no_qualified_non_excluded.
+    expect(out.verdict).toBe('assigned');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-below-floor']);
+    expect(out.graders[0].via).toBe('minimum');
+    expect(out.eligibility).toMatchObject({ eligibleCount: 1, qualifiedCount: 0, measured: true });
+    expect(out.escalation).toBeUndefined();
+  });
+
+  it('fills to MIN (1), never to MAX — a cap must not become a quota', async () => {
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-x': 'reviewer', 'su-y': 'reviewer' }),
+      route: async () => unqualified([candidate('su-x', 'live', 0.4), candidate('su-y', 'live', 0.3)]),
+    });
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-x']);
+  });
+
+  it('a qualified pick plus a below-floor fill is impossible — the fill only runs below MIN', async () => {
+    // One qualified candidate already satisfies min:1, so the below-floor
+    // candidate is NOT pulled in to reach max:2. Filling to max would convert a
+    // cap into a quota and silently seat an unqualified second grader.
+    const qualified = candidate('su-good', 'live', 0.9);
+    const below = candidate('su-weak', 'live', 0.3);
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-good': 'reviewer', 'su-weak': 'reviewer' }),
+      route: async () => ({ ...routed([qualified]), snapshot: { ...routed([qualified]).snapshot, candidates: [qualified, below] } }),
+    });
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-good']);
+  });
+
+  it('zero eligible actors → fresh with no_eligible_non_excluded + escalation', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
       getCandidateRoles: roleLookup({}),
@@ -105,25 +165,12 @@ describe('selectAcceptanceGrader (D-009)', () => {
     });
     expect(out).toMatchObject({
       verdict: 'fresh',
-      freshReason: 'no_qualified_non_excluded',
+      graders: [],
+      freshReason: 'no_eligible_non_excluded',
       eligibility: { eligibleCount: 0, qualifiedCount: 0, measured: true, reason: 'zero_eligible' },
       escalation: { code: 'zero_eligible' },
     });
-  });
-
-  it('keeps a populated but below-floor pool distinct from zero eligible actors', async () => {
-    const out = await selectAcceptanceGrader(params, {
-      getSql: () => fakeSql([]),
-      getCandidateRoles: roleLookup({ 'su-below-floor': 'reviewer' }),
-      route: async () => unqualified([candidate('su-below-floor', 'live')]),
-    });
-    expect(out).toMatchObject({
-      verdict: 'fresh',
-      freshReason: 'no_qualified_non_excluded',
-      eligibility: { eligibleCount: 1, qualifiedCount: 0, measured: true },
-    });
-    expect(out.eligibility.reason).toBeUndefined();
-    expect(out.escalation).toBeUndefined();
+    expect(out.routing).toBeUndefined();
   });
 
   it('skips a dead top candidate toward the next reachable one', async () => {
@@ -133,16 +180,19 @@ describe('selectAcceptanceGrader (D-009)', () => {
       route: async () => routed([candidate('su-dead', 'ended', 0.9), candidate('su-live', 'live', 0.6)]),
     });
     expect(out.verdict).toBe('assigned');
-    expect(out.grader?.ownerId).toBe('su-live');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-live']);
   });
 
-  it('ALL qualified dead → fresh with all_qualified_dead', async () => {
+  it('ALL eligible dead → fresh; the liveness gate blocks the minimum-fill too', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
       getCandidateRoles: roleLookup({ 'su-dead': 'reviewer', 'su-rec': 'reviewer' }),
       route: async () => routed([candidate('su-dead', 'ended'), candidate('su-rec', 'recorded')]),
     });
-    expect(out).toMatchObject({ verdict: 'fresh', freshReason: 'all_qualified_dead' });
+    // A populated-but-unreachable pool is NOT the same as an empty one, and it
+    // must not be rescued by the fill: an unwakeable grader stalls the gate
+    // exactly like no grader.
+    expect(out).toMatchObject({ verdict: 'fresh', graders: [], freshReason: 'all_eligible_unselectable' });
   });
 
   it('degraded embedder → fresh with degraded (cannot measure ≠ measured nothing)', async () => {
@@ -167,8 +217,12 @@ describe('selectAcceptanceGrader (D-009)', () => {
     });
 
     expect(out.verdict).toBe('assigned');
-    expect(out.grader?.ownerId).toBe('su-reviewer');
+    expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-reviewer']);
     expect(out.eligibility).toEqual({ eligibleCount: 1, qualifiedCount: 1, measured: true });
+    // The PERSISTED pool is the coord-capable one too. cascade-core's refill leg
+    // extends an exhausted menu from `candidates`, so persisting the router's
+    // unfiltered list would let a refill wake the judge this test just refused.
+    expect(out.routing?.candidates.map((c) => c.ownerId)).toEqual(['su-reviewer']);
   });
 });
 

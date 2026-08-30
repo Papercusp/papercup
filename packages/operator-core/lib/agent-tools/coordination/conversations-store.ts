@@ -57,6 +57,12 @@ export type ConversationProducer =
   | 'consult:get_feedback'
   | 'scout:goal-consult'
   | 'cross-hive-boundary'
+  /** The acceptance gate's grading cascade — a real consult thread whose
+   * responders are graders (unified-responder-selection-critique-and-grading-
+   * 2026-08-30 D-003/D-005). Distinct from 'consult:get_feedback' so a grading
+   * thread is attributable at a glance; the ROW is deliberately the same shape,
+   * because that is what lets the shared cascade advance it. */
+  | 'acceptance-gate:grading-cascade'
   | 'test';
 
 const CONVERSATION_PRODUCERS: ReadonlySet<string> = new Set<ConversationProducer>([
@@ -68,6 +74,7 @@ const CONVERSATION_PRODUCERS: ReadonlySet<string> = new Set<ConversationProducer
   'conversations:supersede',
   'consult:get_feedback',
   'scout:goal-consult',
+  'acceptance-gate:grading-cascade',
   'cross-hive-boundary',
   'test',
 ]);

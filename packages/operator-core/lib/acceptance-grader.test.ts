@@ -438,28 +438,40 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       data: { deduped: false, launch: { tasks: [{ taskId: 'task-x' }] } },
     }));
 
-  it('ASSIGNS the discovered grader, notifies them, and never launches a fresh judge', async () => {
+  it('ASSIGNS the discovered grader MENU, opens ONE cascade, and never launches a fresh judge', async () => {
     const launch = freshLaunch();
-    const notifyAssigned = vi.fn(async () => ({ woke: 1 }));
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 }));
+    const graders = [
+      { ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const },
+      { ownerId: 'su-second', score: 0.62, liveness: 'parked', via: 'floor' as const },
+    ];
     const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
       ...deps(launch),
       discover: vi.fn(async () => ({
         verdict: 'assigned' as const,
-        grader: { ownerId: 'su-independent', score: 0.71, liveness: 'live' },
+        graders,
+        routing: { selection: { min: 1, max: 2, selected: [] } },
         excluded: ['su-implementer'],
       })),
-      notifyAssigned: notifyAssigned as never,
+      openCascade: openCascade as never,
     });
     expect(result.state).toBe('assigned');
-    expect(result.grader?.ownerId).toBe('su-independent');
+    expect(result.graders?.map((g) => g.ownerId)).toEqual(['su-independent', 'su-second']);
+    expect(result.conversationId).toBe('conv-1');
     expect(result.excluded).toEqual(['su-implementer']);
     expect(result.notified).toEqual({ woke: 1 });
     expect(launch).not.toHaveBeenCalled();
-    expect(notifyAssigned).toHaveBeenCalledWith(
-      'ship-the-thing',
-      'papercusp',
-      'acceptance-ship-the-thing',
-      'su-independent',
+    // The WHOLE menu is handed to the cascade, but only ONE open call is made:
+    // grader 2 is the cascade's to wake after grader 1 replies/declines/expires
+    // (D-003), never a parallel second wake here.
+    expect(openCascade).toHaveBeenCalledTimes(1);
+    expect(openCascade).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planSlug: 'ship-the-thing',
+        harnessSlug: 'papercusp',
+        rubricId: 'acceptance-ship-the-thing',
+        graders,
+      }),
       ctx,
     );
   });
@@ -470,12 +482,13 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       ...deps(launch),
       discover: vi.fn(async () => ({
         verdict: 'fresh' as const,
+        graders: [],
         excluded: ['su-implementer'],
-        freshReason: 'all_qualified_dead' as const,
+        freshReason: 'all_eligible_unselectable' as const,
       })),
     });
     expect(result.state).toBe('launched');
-    expect(result.freshReason).toBe('all_qualified_dead');
+    expect(result.freshReason).toBe('all_eligible_unselectable');
     expect(result.excluded).toEqual(['su-implementer']);
     expect(launch).toHaveBeenCalledTimes(1);
   });
@@ -486,14 +499,15 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       ...deps(launch),
       discover: vi.fn(async () => ({
         verdict: 'fresh' as const,
+        graders: [],
         excluded: ['su-implementer'],
         eligibility: { eligibleCount: 0, qualifiedCount: 0, measured: true, reason: 'zero_eligible' as const },
         escalation: { code: 'zero_eligible' as const },
-        freshReason: 'no_qualified_non_excluded' as const,
+        freshReason: 'no_eligible_non_excluded' as const,
       })),
     });
     expect(result.state).toBe('launched');
-    expect(result.freshReason).toBe('no_qualified_non_excluded');
+    expect(result.freshReason).toBe('no_eligible_non_excluded');
     expect(result.eligibility).toEqual({
       eligibleCount: 0,
       qualifiedCount: 0,
@@ -517,21 +531,25 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(launch).toHaveBeenCalledTimes(1);
   });
 
-  it('a notify failure does not demote the assignment (durable subscribe carries it)', async () => {
+  it('a cascade-open failure does not demote the assignment, and reports no conversation', async () => {
     const launch = freshLaunch();
     const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
       ...deps(launch),
       discover: vi.fn(async () => ({
         verdict: 'assigned' as const,
-        grader: { ownerId: 'su-independent', score: 0.7, liveness: 'parked' },
+        graders: [{ ownerId: 'su-independent', score: 0.7, liveness: 'parked', via: 'floor' as const }],
+        routing: {},
         excluded: [],
       })),
-      notifyAssigned: vi.fn(async () => {
+      openCascade: vi.fn(async () => {
         throw new Error('coord down');
       }) as never,
     });
     expect(result.state).toBe('assigned');
     expect(result.notified).toEqual({ woke: 0 });
+    // No conversationId: a failed open must not read as a delivered assignment
+    // with a thread that does not exist.
+    expect(result.conversationId).toBeUndefined();
     expect(launch).not.toHaveBeenCalled();
   });
 });

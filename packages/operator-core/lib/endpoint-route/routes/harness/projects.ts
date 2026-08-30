@@ -13,6 +13,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   loadHarnessRegistry,
   mutateHarnessRegistry,
@@ -52,17 +53,15 @@ interface ProjectsCacheEntry {
   inflight: Promise<unknown[]> | null;
   value: unknown[] | null;
 }
-const __projectsCacheKey = Symbol.for('papercusp.harnessProjectsCache');
-type ProjectsCacheGlobals = typeof globalThis & {
-  [__projectsCacheKey]?: ProjectsCacheEntry;
-};
-const __projectsCache: ProjectsCacheEntry = (() => {
-  const g = globalThis as ProjectsCacheGlobals;
-  if (!g[__projectsCacheKey]) {
-    g[__projectsCacheKey] = { sig: '', expires: 0, inflight: null, value: null };
-  }
-  return g[__projectsCacheKey]!;
-})();
+// Realm-pinned rather than hand-rolled on globalThis. This cache exists so that
+// concurrent callers SHARE one registry walk (see the ~700-connections note above),
+// and that sharing is only real if every caller reaches the SAME entry: a split
+// module record would give each copy its own `inflight`, silently restoring the
+// connection stampede this was written to prevent. Key string unchanged.
+const __projectsCache: ProjectsCacheEntry = pinModuleState<ProjectsCacheEntry>(
+  'papercusp.harnessProjectsCache',
+  () => ({ sig: '', expires: 0, inflight: null, value: null }),
+);
 
 export interface EnrichedProject extends ProjectEntry {
   hasState: boolean;

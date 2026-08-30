@@ -128,6 +128,7 @@ import { FrontierPanel } from "./FrontierPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
 import LearningLoopControl from "./LearningLoopControl";
+import LearningPotRail from "./LearningPotRail";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
@@ -884,6 +885,13 @@ export default function LearningTab() {
         </Tabs.Root>
         <LearningLoopControl />
       </div>
+
+      {/* learning-pot-scope-gate P-006: which pots are actually learning, and
+          what each of their lanes has armed. It sits between the stepper (the
+          loop's STAGES) and the view controls (this stage's VIEWS) because it
+          answers a third question — the loop's SCOPE — that belongs to neither.
+          Renders nothing until a pot has a gym row or a governor lane. */}
+      <LearningPotRail />
 
       <div className="pc-learning__controls">
         {/* The per-tab pot picker that lived here is GONE (owner directive

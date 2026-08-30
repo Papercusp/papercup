@@ -194,14 +194,33 @@ const EXPECTED_POLICY_IMPORTERS = [
   'packages/operator-core/lib/gym/boot-spec.ts',
   'packages/operator-core/lib/gym/judge-scoring.ts',
   'packages/operator-core/lib/harness/routines/improvement-actions.ts',
+  'packages/operator-core/lib/harness/routines/work-item-admission-bulk-dedup-action.ts',
+  'packages/operator-core/lib/harness/routines/work-item-admission-daily-digest-action.ts',
+  'packages/operator-core/lib/harness/routines/work-item-admission-delta-sweep-action.ts',
+  'packages/operator-core/lib/harness/routines/work-item-admission-promoter-action.ts',
   'packages/operator-core/lib/iq-battery/beekeeper-gen0-runner.ts',
   'packages/operator-core/lib/replay/battery.ts',
   'packages/operator-core/lib/replay/regret/replay-adapter.ts',
   'packages/operator-core/lib/scout/models.ts',
   'packages/operator-core/lib/scout/register-scout-action.ts',
   'packages/operator-core/lib/transfer/live-deps.ts',
+  'packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
+  'packages/operator-core/lib/work-items-admission-daily-digest.ts',
+  'packages/operator-core/lib/work-items-admission-delta-sweep.ts',
+  'packages/operator-core/lib/work-items-admission-promoter.ts',
 ] as const;
 
+/**
+ * The scope the noncanonical-provider-literal test POLICES. This one stays
+ * curated on purpose: it is a whitelist of code that may not name a provider
+ * model directly, and 70 files elsewhere in the package legitimately do.
+ *
+ * `harness/routines` earns its place because the scheduled admission actions
+ * live there and drive real model calls; it carries zero provider-model
+ * literals today (measured 2026-08-27..30), so it costs nothing to police. Its
+ * addition also absorbs the one-file `improvement-actions.ts` special case that
+ * used to be bolted onto the walk beside this list.
+ */
 const SCOPED_SOURCE_DIRS = [
   'packages/operator-core/lib/learning',
   'packages/operator-core/lib/scout',
@@ -210,7 +229,24 @@ const SCOPED_SOURCE_DIRS = [
   'packages/operator-core/lib/transfer',
   'packages/operator-core/lib/replay',
   'packages/operator-core/lib/ablation',
+  'packages/operator-core/lib/harness/routines',
 ] as const;
+
+/**
+ * The scope the IMPORTER INVENTORY scans — deliberately NOT curated.
+ *
+ * A hand-curated directory list is the defect this guard exists to catch, and
+ * it caught nothing for exactly that reason: the three scheduled admission
+ * actions imported the policy for weeks from `harness/routines`, outside every
+ * SCOPED_SOURCE_DIRS entry, and one of them shipped with an inline
+ * `LEARNING_MODEL_SPEC` at its llmCall and both ledger writes. Widening the
+ * list one directory at a time only ever closes the instance you already found.
+ *
+ * `packages/operator-core/lib` is the COMPLETE population: no file under
+ * `apps/`, `libs/`, `scripts/`, or any other package imports learning/model-policy
+ * (measured 2026-08-30). Scanning all of it costs ~370ms.
+ */
+const POLICY_IMPORTER_SCAN_ROOT = 'packages/operator-core/lib';
 
 const LEGACY_GYM_LAUNCHER_MODELS = new Map<string, ReadonlySet<string>>([
   ['packages/operator-core/lib/gym/ab-run.ts', new Set(['claude-sonnet-4-6'])],
@@ -235,10 +271,34 @@ function productionTypeScriptFiles(dir: string): string[] {
 }
 
 function scopedProductionSources(): string[] {
-  const directoryFiles = SCOPED_SOURCE_DIRS.flatMap((path) => productionTypeScriptFiles(resolve(ROOT, path)));
-  const improvementWorker = resolve(ROOT, 'packages/operator-core/lib/harness/routines/improvement-actions.ts');
-  return [...new Set([...directoryFiles, improvementWorker])].sort();
+  return [...new Set(SCOPED_SOURCE_DIRS.flatMap((path) => productionTypeScriptFiles(resolve(ROOT, path))))].sort();
 }
+
+function policyImporterScanFiles(): string[] {
+  return productionTypeScriptFiles(resolve(ROOT, POLICY_IMPORTER_SCAN_ROOT)).sort();
+}
+
+const POLICY_IMPORT = /from ['"][^'"]*learning\/model-policy['"]/;
+
+/**
+ * Extracted so non-vacuity is proven against synthetic file sets rather than by
+ * mutating the shared tree — the same control shape the admission guards below
+ * use. Returns violations in BOTH directions: an importer nobody declared, and
+ * a declared path that no longer imports the policy (a stale inventory entry
+ * silently widens the guard's blind spot just as an undeclared importer does).
+ */
+const importerInventoryViolations = (
+  scannedRelativePaths: readonly string[],
+  sourceOf: (relativePath: string) => string,
+  expected: readonly string[],
+): string[] => {
+  const declared = new Set(expected);
+  const found = new Set(scannedRelativePaths.filter((path) => POLICY_IMPORT.test(sourceOf(path))));
+  return [
+    ...[...found].filter((path) => !declared.has(path)).map((path) => `undeclared policy importer: ${path}`),
+    ...[...declared].filter((path) => !found.has(path)).map((path) => `inventory names a non-importer: ${path}`),
+  ].sort();
+};
 
 const PROVIDER_MODEL_ID = /\b(?:gpt-\d+(?:\.\d+)*(?:-[a-z0-9]+)*(?::[a-z]+)?|claude-(?:opus|sonnet|haiku)-[a-z0-9.-]+)\b/g;
 
@@ -284,11 +344,63 @@ describe('canonical learning model policy', () => {
   });
 
   it('forces every new direct policy importer into the audited inventory', () => {
-    const importers = scopedProductionSources()
-      .filter((path) => /from ['"][^'"]*learning\/model-policy['"]/.test(readFileSync(path, 'utf8')))
-      .map((path) => relative(ROOT, path))
-      .sort();
-    expect(importers).toEqual([...EXPECTED_POLICY_IMPORTERS].sort());
+    const scanned = policyImporterScanFiles().map((absolute) => relative(ROOT, absolute));
+    const violations = importerInventoryViolations(
+      scanned,
+      (path) => readFileSync(resolve(ROOT, path), 'utf8'),
+      EXPECTED_POLICY_IMPORTERS,
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it('control: the inventory guard CATCHES an importer hiding outside every curated directory', () => {
+    // Non-vacuity, run against a synthetic file set so nothing in the shared
+    // tree is mutated. The synthetic importer sits at a path under NO
+    // SCOPED_SOURCE_DIRS entry — the exact shape that survived undetected.
+    const hidden = 'packages/operator-core/lib/some-new-scheduled-runner.ts';
+    expect(SCOPED_SOURCE_DIRS.some((dir) => hidden.startsWith(`${dir}/`))).toBe(false);
+
+    const sources = new Map([
+      ['packages/operator-core/lib/scout/models.ts', "import { LEARNING_MODEL_SPEC } from '../learning/model-policy';"],
+      [hidden, "import { LEARNING_MODEL_SPEC } from './learning/model-policy';"],
+      ['packages/operator-core/lib/unrelated.ts', "import { x } from './x';"],
+    ]);
+    const scanned = [...sources.keys()];
+    const sourceOf = (path: string): string => sources.get(path) ?? '';
+
+    expect(importerInventoryViolations(scanned, sourceOf, ['packages/operator-core/lib/scout/models.ts'])).toEqual([
+      `undeclared policy importer: ${hidden}`,
+    ]);
+    // …declared, it passes — so the guard is not simply always-red.
+    expect(
+      importerInventoryViolations(scanned, sourceOf, ['packages/operator-core/lib/scout/models.ts', hidden]),
+    ).toEqual([]);
+    // …and a stale inventory entry is caught in the other direction.
+    expect(
+      importerInventoryViolations(scanned, sourceOf, [
+        'packages/operator-core/lib/scout/models.ts',
+        hidden,
+        'packages/operator-core/lib/unrelated.ts',
+      ]),
+    ).toEqual(['inventory names a non-importer: packages/operator-core/lib/unrelated.ts']);
+  });
+
+  it('control: the importer scan reaches files no curated directory scope covers', () => {
+    // The calibration the synthetic control above cannot give: that the REAL
+    // scan root is genuinely wider than SCOPED_SOURCE_DIRS. The four admission
+    // runners sit at the package root, under no curated entry; if a future edit
+    // narrows the scan back to a curated list they drop out and this fails.
+    const outsideCuratedScope = [
+      'packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
+      'packages/operator-core/lib/work-items-admission-daily-digest.ts',
+      'packages/operator-core/lib/work-items-admission-delta-sweep.ts',
+      'packages/operator-core/lib/work-items-admission-promoter.ts',
+    ];
+    expect(outsideCuratedScope.filter((path) => SCOPED_SOURCE_DIRS.some((dir) => path.startsWith(`${dir}/`)))).toEqual(
+      [],
+    );
+    const scanned = new Set(policyImporterScanFiles().map((absolute) => relative(ROOT, absolute)));
+    expect(outsideCuratedScope.filter((path) => !scanned.has(path))).toEqual([]);
   });
 
   it('keeps explicitly deterministic learning operations model-free', () => {
@@ -378,13 +490,19 @@ describe('scheduled admission paths resolve their model identically', () => {
    * model whose account was rejecting it, and it is the SCHEDULED component
    * whose failures produce the queue's fail-open share.
    *
-   * These files sit outside SCOPED_SOURCE_DIRS, so the importer inventory
-   * above cannot see them — which is precisely why the omission survived.
+   * These files USED to sit outside every scanned scope, which is precisely why
+   * the omission survived. That gap is closed: the importer inventory above now
+   * scans POLICY_IMPORTER_SCAN_ROOT (the whole package) rather than a curated
+   * directory list, and `harness/routines` was added to SCOPED_SOURCE_DIRS. The
+   * widened scan immediately surfaced a FOURTH scheduled admission path,
+   * delta-sweep, carrying the identical pre-fix shape — fixed here with the
+   * others.
    */
   const ADMISSION_ACTIONS = [
     ['promoter', 'packages/operator-core/lib/harness/routines/work-item-admission-promoter-action.ts', 'admission promoter'],
     ['bulk-dedup', 'packages/operator-core/lib/harness/routines/work-item-admission-bulk-dedup-action.ts', 'bulk dedup'],
     ['daily-digest', 'packages/operator-core/lib/harness/routines/work-item-admission-daily-digest-action.ts', 'daily digest'],
+    ['delta-sweep', 'packages/operator-core/lib/harness/routines/work-item-admission-delta-sweep-action.ts', 'delta sweep'],
   ] as const;
 
   it('routes every scheduled admission action payload through the shared helper', () => {
@@ -415,6 +533,13 @@ describe('scheduled admission paths resolve their model identically', () => {
     for (const seam of ['model: LEARNING_MODEL_SPEC', 'modelId: LEARNING_MODEL_SPEC']) {
       if (source.includes(seam)) violations.push(`${label} still binds the constant directly at "${seam}"`);
     }
+    // A runner that writes its ledger row in raw SQL binds the constant in an
+    // interpolation, not an object property — delta-sweep did exactly that
+    // (`model_id = ${modelCalled ? LEARNING_MODEL_SPEC : null}`) and both
+    // property-shaped checks above walked straight past it.
+    if (/model_id\s*=\s*\$\{[^}]*LEARNING_MODEL_SPEC/.test(source)) {
+      violations.push(`${label} still binds the constant directly at the SQL ledger write`);
+    }
     return violations;
   };
 
@@ -423,6 +548,7 @@ describe('scheduled admission paths resolve their model identically', () => {
       'packages/operator-core/lib/work-items-admission-promoter.ts',
       'packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
       'packages/operator-core/lib/work-items-admission-daily-digest.ts',
+      'packages/operator-core/lib/work-items-admission-delta-sweep.ts',
     ];
     expect(runners.flatMap((path) => resolveOnceViolations(path, sourceAt(path)))).toEqual([]);
   });
@@ -450,6 +576,34 @@ describe('scheduled admission paths resolve their model identically', () => {
     expect(caught).toContain('synthetic still binds the constant directly at "model: LEARNING_MODEL_SPEC"');
     expect(caught).toContain('synthetic still binds the constant directly at "modelId: LEARNING_MODEL_SPEC"');
     // …and does not fire on the shape we actually shipped.
+    expect(resolveOnceViolations('synthetic', postFix)).toEqual([]);
+  });
+
+  it('control: the guard CATCHES a raw-SQL ledger write bound to the constant', () => {
+    // delta-sweep's real pre-fix shape. It passed BOTH property-shaped seam
+    // checks while writing the constant into admission_runs.model_id, so this
+    // control is what stops the SQL check from silently rotting away.
+    const preFix = [
+      'const response = await opts.llmCall({',
+      '  model: LEARNING_MODEL_SPEC,',
+      '});',
+      'await sql`UPDATE harness_shared.admission_runs',
+      '   SET model_id = ${modelCalled ? LEARNING_MODEL_SPEC : null}',
+      ' WHERE id = ${runId}`;',
+    ].join('\n');
+    const postFix = [
+      'const model = opts.model?.trim() || LEARNING_MODEL_SPEC;',
+      'const response = await opts.llmCall({',
+      '  model,',
+      '});',
+      'await sql`UPDATE harness_shared.admission_runs',
+      '   SET model_id = ${modelCalled ? model : null}',
+      ' WHERE id = ${runId}`;',
+    ].join('\n');
+
+    expect(resolveOnceViolations('synthetic', preFix)).toContain(
+      'synthetic still binds the constant directly at the SQL ledger write',
+    );
     expect(resolveOnceViolations('synthetic', postFix)).toEqual([]);
   });
 });

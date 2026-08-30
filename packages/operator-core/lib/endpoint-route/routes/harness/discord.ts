@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { loadProjectFiles, saveProjectFiles } from '../../../harness-project-files';
 import { defineTool } from '@papercusp/agent-mcp';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 const HARNESS_SHARED_JSON = '.papercusp/shared.json';
 const WIDGET_TTL_MS = 5 * 60 * 1000;
@@ -24,14 +25,17 @@ interface WidgetCacheEntry {
   name: string | null;
 }
 
-const __widgetCacheKey = Symbol.for('papercusp.discordWidgetCache');
-type WidgetGlobals = typeof globalThis & {
-  [__widgetCacheKey]?: Map<string, WidgetCacheEntry>;
-};
+// Realm-pinned rather than hand-rolled on globalThis: a split module record would
+// give each copy its OWN cache, so the TTL would keep working while quietly halving
+// its hit rate — a performance regression with no error and nothing to grep for.
+// Key string unchanged; pinModuleState also makes such a split reportable via
+// listModuleDuplications() instead of invisible.
+const widgetCacheState = pinModuleState<{ cache: Map<string, WidgetCacheEntry> }>(
+  'papercusp.discordWidgetCache',
+  () => ({ cache: new Map<string, WidgetCacheEntry>() }),
+);
 function getWidgetCache(): Map<string, WidgetCacheEntry> {
-  const g = globalThis as WidgetGlobals;
-  if (!g[__widgetCacheKey]) g[__widgetCacheKey] = new Map();
-  return g[__widgetCacheKey]!;
+  return widgetCacheState.cache;
 }
 
 async function fetchWidget(

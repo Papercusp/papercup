@@ -7,3 +7,9 @@
  */
 import './configure';
 export * from '@papercusp/desktop-ipc';
+export {
+  classifyOriginSchedulerFetch,
+  installOriginSchedulerFetch,
+  isIdempotentReadMethod,
+} from './origin-scheduler-fetch';
+export type { OriginSchedulerFetchDecision } from './origin-scheduler-fetch';

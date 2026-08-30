@@ -9,6 +9,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { runWorkItemAdmissionDeltaSweep } = await import('./work-items-admission-delta-sweep');
+const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
 
 const WS = 'default';
 const HARNESS = 'papercusp';
@@ -245,6 +246,87 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
     expect(llmCall).toHaveBeenCalledTimes(1);
     expect(fileUmbrella).toHaveBeenCalledTimes(1);
     expect(linkUmbrella).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  /**
+   * D-035 model identity, delta-sweep half. The runner used to bind
+   * `model: LEARNING_MODEL_SPEC` inline at its llmCall AND write the same
+   * constant into `admission_runs.model_id`, so it could not be steered off a
+   * model whose account was rejecting it, and the column named a constant
+   * rather than the model the run actually called. bulk-dedup already pins this
+   * from both ends; delta-sweep had NO model coverage at all, which is how it
+   * kept the pre-fix shape after its three siblings were fixed.
+   *
+   * Both ends matter: what `llmCall` RECEIVED, and what landed in the COLUMN.
+   * Asserting only the column would pass if the run called one model and
+   * recorded another — the exact drift the resolve-once seam exists to stop.
+   */
+  const seedOneRecentItem = async (): Promise<void> => {
+    await seedItem({
+      id: 'WI-model',
+      title: 'Model identity probe',
+      summary: 'One recent admitted item, enough to spend exactly one model call.',
+      admittedAt: '2026-08-26T11:30:00Z',
+    });
+  };
+
+  // The `input` parameter is declared so vi.fn records a typed call tuple —
+  // without it mock.calls[0] is `[]` and the model assertions cannot index it.
+  const noUmbrellas = async (input: { model: string }) => ({
+    text: '',
+    json: { umbrellas: [] },
+    inputTokens: 10,
+    outputTokens: 5,
+    echoedModel: input.model,
+  });
+
+  it('defaults to the canonical learning model and records THAT model in the ledger', async () => {
+    await seedOneRecentItem();
+    const llmCall = vi.fn(noUmbrellas);
+    const result = await runWorkItemAdmissionDeltaSweep({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'delta-model-default',
+      sql: db.sql,
+      now: () => NOW,
+      llmCall,
+      fileUmbrella: vi.fn(),
+      linkUmbrella: vi.fn(),
+    });
+
+    expect(result.modelCalled).toBe(true);
+    expect(llmCall).toHaveBeenCalledTimes(1);
+    expect(llmCall.mock.calls[0]![0]).toMatchObject({ model: LEARNING_MODEL_SPEC });
+
+    const ledger = await db.sql<Array<{ model_id: string | null }>>`
+      SELECT model_id FROM harness_shared.admission_runs WHERE id = 'delta-model-default'`;
+    expect(ledger).toEqual([{ model_id: LEARNING_MODEL_SPEC }]);
+  }, 60_000);
+
+  it('drives one run onto an override model and records the OVERRIDE, not the policy constant', async () => {
+    await seedOneRecentItem();
+    const override = 'claude-opus-5:xhigh';
+    // Guard the guard: if the override ever equals the policy constant this
+    // test proves nothing, because both assertions would pass either way.
+    expect(override).not.toBe(LEARNING_MODEL_SPEC);
+
+    const llmCall = vi.fn(noUmbrellas);
+    await runWorkItemAdmissionDeltaSweep({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'delta-model-override',
+      sql: db.sql,
+      now: () => NOW,
+      model: override,
+      llmCall,
+      fileUmbrella: vi.fn(),
+      linkUmbrella: vi.fn(),
+    });
+
+    expect(llmCall.mock.calls[0]![0]).toMatchObject({ model: override });
+    const ledger = await db.sql<Array<{ model_id: string | null }>>`
+      SELECT model_id FROM harness_shared.admission_runs WHERE id = 'delta-model-override'`;
+    expect(ledger).toEqual([{ model_id: override }]);
   }, 60_000);
 
   it('records an empty hourly tick without spending a model call', async () => {

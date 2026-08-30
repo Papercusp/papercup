@@ -5,6 +5,7 @@ import { HarnessSyncProvider } from '../../providers/HarnessSyncProvider';
 import { installDesktopIpcPolyfills } from '@papercusp/operator-core/lib/transport-adapters/desktop-bootstrap';
 import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
 import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/transport-adapters/workspace-eventsource';
+import { installOriginSchedulerFetch } from '@papercusp/operator-core/lib/transport-adapters/origin-scheduler-fetch';
 import { installCallToolResolver } from '@papercusp/operator-core/lib/call-tool-resolver';
 import { installIpcInspector } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
 import UpdateMismatchNotifier from './UpdateMismatchNotifier';
@@ -41,6 +42,11 @@ if (typeof window !== 'undefined') {
   installIpcInspector();
   installDesktopIpcPolyfills();
   installWorkspaceHeaderFetch();
+  // P-019: route every finite operator API fetch through the one process-pinned
+  // per-origin scheduler. This wraps the already-installed IPC/workspace layer,
+  // so desktop routing and per-window workspace headers remain transparent;
+  // sync-owned rest-query and long-lived streams are explicitly skipped.
+  installOriginSchedulerFetch();
   installWorkspaceParamEventSource();
   // Register the callTool seam's transport resolver (tool name → canonical route
   // + Phase-E eligibility). No runtime change yet — nothing calls callTool until

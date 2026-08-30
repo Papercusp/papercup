@@ -13,6 +13,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   resolvePhasedProject, safeRead, parseFeatures,
   aggregateCostFromLogDir, countPulsesFromRunLog, isHarnessDriverCmdline,
@@ -45,12 +46,16 @@ interface PhaseInfo {
  * the /phases endpoint's app-code time on busy hosts.
  */
 type ScanCacheEntry = { ts: number; value: Array<{ pid: string; cwd: string }> };
-const __scanCacheKey = '__papercuspRunShScanCache';
-type ScanCacheGlobals = { [__scanCacheKey]?: ScanCacheEntry | null };
+// Realm-pinned rather than hand-rolled on globalThis: a split module record would
+// give each copy its own 5s cache, silently restoring the per-phase × per-page /proc
+// walk this exists to collapse. Key string unchanged.
+const scanCacheState = pinModuleState<{ entry: ScanCacheEntry | null }>(
+  '__papercuspRunShScanCache',
+  () => ({ entry: null }),
+);
 function scanRunShProcesses(): Array<{ pid: string; cwd: string }> {
-  const g = globalThis as ScanCacheGlobals;
   const now = Date.now();
-  const cached = g[__scanCacheKey];
+  const cached = scanCacheState.entry;
   if (cached && now - cached.ts < 5000) return cached.value;
 
   const out: Array<{ pid: string; cwd: string }> = [];
@@ -65,7 +70,7 @@ function scanRunShProcesses(): Array<{ pid: string; cwd: string }> {
       } catch { /* proc went away or unreadable — skip */ }
     }
   } catch {}
-  g[__scanCacheKey] = { ts: now, value: out };
+  scanCacheState.entry = { ts: now, value: out };
   return out;
 }
 
