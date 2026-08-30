@@ -435,6 +435,64 @@ describe('codex bearer kernel adapter', () => {
     expect(written).toEqual(['data: 1\n\n', 'data: 2\n\n']);
   });
 
+  /**
+   * FALSIFIABILITY CONTROL (CLAUDE.md § "Proving a guard is falsifiable", the
+   * "a MODULE you import" tier). A deliberately-wrong adapter kept permanently
+   * in the test file, so the suite above is demonstrably capable of failing
+   * rather than merely never having failed.
+   *
+   * The wrong implementation is precisely `rotateCodex`'s weaker guard: it
+   * compares the rotation target against the CURRENT account only, never
+   * against the tried set. Under the kernel that is not a silent a->b->a
+   * re-try as it was in `proxyOpenAi` — it is a hard `route-cycle` throw. This
+   * control both proves the real adapter's `triedRouteKeys` check is
+   * load-bearing and pins the behaviour difference P-003 must carry.
+   */
+  it('CONTROL: an adapter using rotateCodex\'s current-account-only guard trips route-cycle', async () => {
+    const a = account('codex-a');
+    const b = account('codex-b');
+    const pool = makePool([a, b], [b, a]);
+    const { options } = harness(pool, async () => upstream(429, {}, sseBody('{"error":"rate"}')));
+
+    // Downgrade ONLY the tried-set check, leaving everything else real.
+    const real = options.adapter;
+    options.adapter = {
+      ...real,
+      selectFailover(context) {
+        const current = context.currentRoute?.value.account.accountId;
+        if (!current) return null;
+        const next = pool.onExhausted(current, 0);
+        if (!next || next.accountId === current) return null;
+        return { key: `bearer:${next.accountId}`, accountId: next.accountId, transport: 'bearer-http', value: { account: next } };
+      },
+    };
+
+    await expect(executeGatewayRequestKernel(options)).rejects.toThrow(/already-tried route/);
+  });
+
+  it('CONTROL: an adapter that omits retryable on a 429 never rotates', async () => {
+    const a = account('codex-a');
+    const b = account('codex-b');
+    const pool = makePool([a, b], [b]);
+    const { options, started } = harness(pool, async () => upstream(429, {}, sseBody('{"error":"rate"}')));
+
+    const real = options.adapter;
+    options.adapter = {
+      ...real,
+      async executeAttempt(prepared, context) {
+        const response = await real.executeAttempt(prepared, context);
+        return { ...response, retryable: false };
+      },
+    };
+
+    const result = await executeGatewayRequestKernel(options);
+
+    // Proves the rotate-on-429 tests above are actually driven by the
+    // adapter's `retryable` normalization, not by kernel defaults.
+    expect(result.failovers).toBe(0);
+    expect(started[0]?.metadata.accountId).toBe('codex-a');
+  });
+
   it('surfaces a typed unavailability error when no bearer account resolves', async () => {
     const pool: AccountPool = {
       active: () => {
