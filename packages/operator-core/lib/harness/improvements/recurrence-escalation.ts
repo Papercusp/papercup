@@ -92,17 +92,48 @@ export interface RecurringSignatureSlate {
 }
 
 /**
- * Pure phase-1: which signatures clear the recurrence threshold, richest first.
- * `signatureRecurrence` already sorts by `count desc, lastSeenMs desc`, so the cap
- * keeps the strongest evidence rather than an arbitrary slice.
+ * Pure phase-1: which signatures clear the recurrence threshold — ACTIONABLE first,
+ * then richest.
+ *
+ * EI-21889809467644493: this used to be a bare `.slice(0, CAP)` over
+ * `signatureRecurrence`'s `count desc` ordering, justified as "keeps the strongest
+ * evidence rather than an arbitrary slice". Count-desc IS strongest-evidence-first,
+ * and that is precisely what turned the cap into a permanent ranking FLOOR: the
+ * highest-count signatures are machine-authored templated filings that recur in the
+ * hundreds ("Hive papercusp: fleet saturated with work still queued" ×357), so a
+ * human- or agent-authored friction recurring 3–14× was outranked forever. Measured
+ * on the live topic corpus: 414 signatures cleared the ≥3 threshold, the 50th-ranked
+ * had 15 members, and 364 of 414 (87.9%) could therefore never be hydrated at all.
+ * The DOCUMENTED threshold was 3; the EFFECTIVE one was ~15 and drifted upward as
+ * the machine-authored clusters grew.
+ *
+ * The cap is not the whole story: 41 of those 50 slots were held by signatures whose
+ * members are ALL terminal. Such a signature can never produce an `escalate-severity`
+ * or `route-gym` action (both need `newestOpenUnclaimed`), yet it still emits a
+ * `suggest-promotion` every tick — see the EI-9170 note on the capture below, which
+ * records that the planner "has no memory of 'already suggested'". Those re-emissions
+ * are deduped away at capture time, so the run spends its `maxActions` budget
+ * producing nothing while real work waits below the cut.
+ *
+ * So: partition by actionability BEFORE the cap, preserving `count desc` inside each
+ * group (a stable partition, not a re-sort). Measured effect on the topic corpus —
+ * all 49 signatures with an open member become reachable and the effective threshold
+ * returns to the documented 3.
+ *
+ * Fully-resolved signatures are DEPRIORITISED, not dropped: they still take any slots
+ * the actionable ones leave. Where actionable signatures alone exceed the cap they
+ * lose their slot, which costs only the re-emitted `suggest-promotion` that capture
+ * dedup was discarding anyway.
  */
 export function selectRecurringSignatures(
   all: ImprovementCandidate[],
   opts: PlanEscalationOpts = {},
 ): RecurringSignatureSlate[] {
   const threshold = opts.threshold ?? RECURRENCE_ESCALATION_THRESHOLD;
-  return signatureRecurrence(all)
-    .filter((s) => s.count >= threshold)
+  const clearing = signatureRecurrence(all).filter((s) => s.count >= threshold);
+  const actionable = clearing.filter((s) => s.openCount > 0);
+  const exhausted = clearing.filter((s) => s.openCount === 0);
+  return [...actionable, ...exhausted]
     .slice(0, RECURRING_SIGNATURE_SCAN_CAP)
     .map((s) => ({ signature: s.signature, count: s.count, memberIds: [...s.ids] }));
 }
