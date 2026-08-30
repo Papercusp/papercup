@@ -429,7 +429,28 @@ export async function applyPendingMigrationsNow(
   const coolingDown = new Map(coolingDownEntries);
   const skipFile = coolingDown.size > 0 ? (f: string) => defaultSkipFile(f) || coolingDown.has(f) : undefined;
   try {
+    // WI-1194246 — this rendezvous must be UNBOUNDED IN BOTH DIMENSIONS.
+    //
+    // `lock_timeout = 0` alone is not enough. `statement_timeout` also cancels a
+    // `pg_advisory_lock` wait (verified empirically 2026-08-30: with
+    // statement_timeout=1s against a held advisory lock, the acquisition aborts with
+    // "canceling statement due to statement timeout"). Today harness_admin carries no
+    // role-level statement_timeout, so this SET is inert — but WI-1194246 proposes
+    // `ALTER ROLE harness_admin SET statement_timeout` to bound bare pool checkouts,
+    // and a role default reaches THIS statement too.
+    //
+    // Measured on the live box: this rendezvous legitimately waits 253.7s and 118.4s
+    // (sampled `pg_advisory_lock` / `pg_advisory_xact_lock` on the backup-migration
+    // key), far beyond any plausible cap. Without the line below, introducing that role
+    // default would turn a valid in-flight snapshot into a failed safety rail — the
+    // exact outcome the sibling comment in backup/configure.ts says this code exists to
+    // prevent, reintroduced through the other timeout.
+    //
+    // Deliberately NOT reset after acquisition: the migration application that follows
+    // is itself long-running and must not inherit a future role-level cap. `lock_timeout`
+    // IS restored below, because lock WAITS during migration should stay bounded.
     await client`SET lock_timeout = 0`;
+    await client`SET statement_timeout = 0`;
     await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
     backupMigrationLockHeld = true;
     await client`SET lock_timeout = '15s'`;
