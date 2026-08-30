@@ -10,6 +10,7 @@ import {
   RECURRING_MEMBER_HYDRATION_CAP,
   planRecurrenceEscalation,
   runRecurrenceEscalation,
+  selectRecurringSignatures,
   type EscalationDeps,
 } from './recurrence-escalation';
 import type { StageCandidateInput } from '../../knowledge-packs/candidates';
@@ -270,5 +271,59 @@ describe('runRecurrenceEscalation — glue', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('selectRecurringSignatures — actionable-first slicing (EI-21889809467644493)', () => {
+  /** N same-signature members under one distinct title; `open` of them still open. */
+  const group = (key: string, size: number, open: number): ImprovementCandidate[] =>
+    Array.from({ length: size }, (_, i) =>
+      cand({
+        id: `${key}-${i}`,
+        title: `${key} friction recurring repeatedly here`,
+        state: i < open ? 'open' : 'resolved',
+      }),
+    );
+
+  it('a small ACTIONABLE signature outranks a huge fully-resolved one', () => {
+    // The regression this guards: `count desc` alone put the 200-member exhausted
+    // signature first, so with a cap of 1 the actionable trio was never hydrated.
+    const all = [...group('zzz', 200, 0), ...group('aaa', 3, 1)];
+    const slate = selectRecurringSignatures(all);
+    expect(slate[0].count).toBe(3);
+    expect(slate[0].memberIds).toContain('aaa-0');
+  });
+
+  it('does not DROP exhausted signatures — they follow the actionable ones', () => {
+    const all = [...group('zzz', 200, 0), ...group('aaa', 3, 1)];
+    const slate = selectRecurringSignatures(all);
+    expect(slate).toHaveLength(2);
+    expect(slate[1].count).toBe(200);
+  });
+
+  it('preserves count-desc ordering WITHIN the actionable group (stable partition)', () => {
+    const all = [...group('small', 3, 1), ...group('big', 9, 2), ...group('mid', 5, 1)];
+    expect(selectRecurringSignatures(all).map((s) => s.count)).toEqual([9, 5, 3]);
+  });
+
+  it('still applies the ≥threshold filter and the scan cap', () => {
+    const all = [...group('below', 2, 2), ...group('at', 3, 1)];
+    expect(selectRecurringSignatures(all).map((s) => s.count)).toEqual([3]);
+    expect(
+      selectRecurringSignatures(
+        Array.from({ length: RECURRING_SIGNATURE_SCAN_CAP + 10 }, (_, i) => group(`s${i}`, 3, 1)).flat(),
+      ),
+    ).toHaveLength(RECURRING_SIGNATURE_SCAN_CAP);
+  });
+
+  it('fills the cap with exhausted signatures when actionable ones do not fill it', () => {
+    const actionable = Array.from({ length: 2 }, (_, i) => group(`open${i}`, 4, 1)).flat();
+    const exhausted = Array.from({ length: RECURRING_SIGNATURE_SCAN_CAP }, (_, i) =>
+      group(`done${i}`, 3, 0),
+    ).flat();
+    const slate = selectRecurringSignatures([...exhausted, ...actionable]);
+    expect(slate).toHaveLength(RECURRING_SIGNATURE_SCAN_CAP);
+    // the two actionable ones lead, the remainder of the cap is exhausted ones
+    expect(slate.slice(0, 2).every((s) => s.count === 4)).toBe(true);
   });
 });
