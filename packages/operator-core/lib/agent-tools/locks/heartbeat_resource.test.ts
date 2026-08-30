@@ -24,7 +24,9 @@ vi.mock('./coordination-domain', () => ({
 }));
 
 import { tryHeartbeatResource } from './su-lock-store';
+import { inWorkspaceTxn } from './in-workspace-txn';
 const hbM = vi.mocked(tryHeartbeatResource);
+const txnM = vi.mocked(inWorkspaceTxn);
 const tool = (await import('./heartbeat_resource')).default;
 
 type Out = { data?: any; content?: { text: string }[] };
@@ -122,5 +124,63 @@ describe('locks:heartbeat_resource handler', () => {
     expect(b.results[0]).toMatchObject({ ok: false, extended: false, expires_ts: null });
     // every candidate domain was tried, in order, before giving up.
     expect(hbM.mock.calls.map((c) => c[1])).toEqual(['dom', 'ws-scoped-domain', 'papercusp-host-global']);
+  });
+
+  it('retries a transient workspace contention before reporting the heartbeat result', async () => {
+    vi.useFakeTimers();
+    try {
+      const contended = Object.assign(new Error('workspace contended'), {
+        name: 'WorkspaceContendedError',
+        pgCode: '57014',
+      });
+      txnM.mockRejectedValueOnce(contended);
+      txnM.mockImplementation(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({}));
+      hbM.mockResolvedValue({ extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
+
+      const pending = call();
+      await vi.runAllTimersAsync();
+      const b = body(await pending);
+
+      expect(b).toMatchObject({
+        ok: true,
+        counts: { ok: 1, failed: 0 },
+        results: [{ ok: true, extended: true }],
+      });
+      expect(txnM).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a persistent workspace contention as a keyed failure after retries', async () => {
+    vi.useFakeTimers();
+    try {
+      const contended = Object.assign(new Error('workspace contended'), {
+        name: 'WorkspaceContendedError',
+        pgCode: '57014',
+      });
+      txnM.mockRejectedValue(contended);
+
+      const pending = call();
+      await vi.runAllTimersAsync();
+      const b = body(await pending);
+
+      expect(b).toMatchObject({
+        ok: true,
+        counts: { ok: 0, failed: 1 },
+        results: [
+          {
+            ok: false,
+            lock_id: '33333333-3333-3333-3333-333333333333',
+            error: 'workspace contended',
+          },
+        ],
+      });
+      // One initial attempt plus the three contention backoffs; do not probe
+      // other domains after the caller-domain transaction never serialized.
+      expect(txnM).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

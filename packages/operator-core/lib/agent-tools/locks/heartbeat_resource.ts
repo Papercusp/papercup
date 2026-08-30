@@ -13,6 +13,7 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryHeartbeatResource } from './su-lock-store';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { candidateResourceLockDomains } from './coordination-domain';
+import { acquireWithContentionRetry } from './contention-retry';
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
 /**
@@ -36,7 +37,14 @@ async function heartbeatAcrossDomains(
   const domains = [callerDomain, ...candidateResourceLockDomains().filter((d) => d !== callerDomain)];
   let last: Awaited<ReturnType<typeof tryHeartbeatResource>> | null = null;
   for (const domain of domains) {
-    const r = await inWorkspaceTxn(domain, ownerId, (tx) => tryHeartbeatResource(tx, domain, ownerId, lockId, ttlSec));
+    // A heartbeat is a best-effort lease renewal, but a transient workspace
+    // advisory-lock timeout must not turn a healthy lease into an avoidable
+    // expiry. Retry the whole transaction so each attempt gets a fresh
+    // connection/transaction after the contention dip; non-contention errors
+    // still propagate to the keyed bulk result unchanged.
+    const r = await acquireWithContentionRetry(() =>
+      inWorkspaceTxn(domain, ownerId, (tx) => tryHeartbeatResource(tx, domain, ownerId, lockId, ttlSec)),
+    );
     if (r.extended) return r;
     last = r;
   }

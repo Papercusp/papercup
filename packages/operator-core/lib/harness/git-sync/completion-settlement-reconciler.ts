@@ -1,5 +1,10 @@
 import { getOrgPg } from '@papercusp/db-org';
-import { CompletionSettlementManifestSchema, TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
+import {
+  CompletionSettlementManifestSchema,
+  TERMINAL_COMPLETION_EVIDENCE_KEY,
+  type CompletionSettlementManifest,
+  type CompletionTreeStamp,
+} from '../../coord-lifecycle/records';
 import { completionHeadBlobMap } from '../../agent-tools/work_items/completion-freshness';
 import { emitAwaitedEvent } from '../../events/await/engine';
 
@@ -37,6 +42,43 @@ export function residualPathsForCommit(
 }
 
 type CandidateRow = { feature_id: string; payload: unknown };
+
+/**
+ * WI-1053550: the treeStamp this reconciler's authority upgrade needs to SURVIVE
+ * migration 972's `completion_authority_floor_trg`. That trigger polices ONLY
+ * `_completionEvidence.treeStamp.contentIdentity` (mirroring
+ * `completionTreeContentIdentityMatches()`) — a surface this reconciler never
+ * wrote before this fix. It refreshed `settlementManifest` only, so an upgrade
+ * to `committed` was downgraded straight back by the trigger on the very same
+ * write: the trigger re-read the ORIGINAL close-time treeStamp (captured before
+ * git-sync had landed the commit, so headBlobSha routinely didn't match yet)
+ * and found it still unproven, no matter how conclusively the manifest's own
+ * exact-commit lookup had just settled the row.
+ *
+ * `residualPaths.length === 0` is exactly the proof this needs: every declared
+ * path's close-time `workingTreeBlobSha` was found, byte-for-byte, at `commitSha`
+ * (see `residualPathsForCommit`). That makes `workingTreeBlobSha` and the NOW-true
+ * `headBlobSha` identical by construction — precisely what
+ * `completion_content_identity_proven` / `completionTreeContentIdentityMatches`
+ * require. Filtered to `normalizedPaths` (the exact set the proof covers) with a
+ * defensive non-null guard; per the manifest's construction this never drops an
+ * entry when residualPaths is empty.
+ */
+function confirmedTreeStampForSettlement(
+  manifest: CompletionSettlementManifest,
+  commitSha: string,
+): CompletionTreeStamp | undefined {
+  const normalized = new Set(manifest.normalizedPaths);
+  const contentIdentity = manifest.contentIdentity
+    .filter((entry) => normalized.has(entry.path) && entry.workingTreeBlobSha !== null)
+    .map((entry) => ({
+      path: entry.path,
+      workingTreeBlobSha: entry.workingTreeBlobSha,
+      headBlobSha: entry.workingTreeBlobSha,
+    }));
+  if (contentIdentity.length === 0) return undefined;
+  return { repositoryRoot: manifest.repositoryRoot, headSha: commitSha, contentIdentity };
+}
 
 export interface CompletionSettlementReconcilerDeps {
   /** Exact-tree lookup seam used by focused reconciliation tests. */

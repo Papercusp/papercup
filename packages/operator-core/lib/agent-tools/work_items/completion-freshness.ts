@@ -469,7 +469,27 @@ export function completionTreeStampForEvidence(
       };
     }
 
-    const absolutePath = nodePath.resolve(root, declaredPath);
+    let absolutePath = nodePath.resolve(root, declaredPath);
+    if (absolutePath === root || absolutePath.startsWith(root + nodePath.sep)) {
+      return {
+        absolutePath,
+        relativePath: nodePath.relative(root, absolutePath).split(nodePath.sep).join('/'),
+      };
+    }
+
+    // EI-21850619651553189: a cross-repo completion naturally writes the conventional
+    // `<repoName>/packages/...` prefix (matching how the file is named in prose, plan
+    // titles, and everywhere else) rather than a path already relative to that repo's
+    // own root. Only tried when the unprefixed form escapes `root` above, so every
+    // existing single-repo resolution is byte-for-byte unchanged; and only for the ONE
+    // root whose own basename matches the prefix, so it can never redirect a path into
+    // an unrelated checkout.
+    const rootName = nodePath.basename(root);
+    const prefix = `${rootName}/`;
+    if (!declaredPath.startsWith(prefix)) return undefined;
+    const stripped = declaredPath.slice(prefix.length);
+    if (!stripped) return undefined;
+    absolutePath = nodePath.resolve(root, stripped);
     if (absolutePath !== root && !absolutePath.startsWith(root + nodePath.sep)) return undefined;
     return {
       absolutePath,
