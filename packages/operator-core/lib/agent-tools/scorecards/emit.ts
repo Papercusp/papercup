@@ -76,6 +76,10 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records'
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
+// TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
+// which mirrors rebind-identity.ts's own dynamic-import discipline for the
+// same oracle so this write-path module never carries it on its static graph.
+import type { SessionState } from '../coordination/presence-wakeability';
 
 /**
  * A tests-backed scorecard is intentionally a long-running write: it shells one
@@ -349,6 +353,69 @@ async function resolveDeterministicCheckRoot(
   return resolveAgentWorkspaceRoot({ projectDir: targetPaths.projectDir });
 }
 
+/**
+ * EI-21917534129987791: resolve the recorded author's live/parked/ended
+ * verdict for the acceptance-author refusal's recovery hint (see
+ * {@link authorRebindHint}). Dynamic-imported, mirroring rebind-identity.ts's
+ * own liveness probe: the oracle statically pulls presence.ts / adv-sessions /
+ * psu-pty-discovery, which this write-path module has no reason to carry on
+ * its static graph for a best-effort error-message hint. Never throws — a
+ * probe fault degrades to "no hint", never to a blocked or altered refusal.
+ */
+async function defaultResolveAuthorSessionState(
+  ownerId: string,
+  _opts: { workspaceId?: string } = {},
+): Promise<SessionState | null> {
+  try {
+    const { resolveSessionStates } = await import('../coordination/liveness-oracle');
+    const verdicts = await resolveSessionStates([{ ownerId }], { nowMs: Date.now(), hydratePerId: true });
+    return verdicts.get(ownerId)?.sessionState ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * EI-21917534129987791: an acceptance rubric's recorded author's session can
+ * genuinely end (die, get replaced by a carry-respawn under a fresh sid, …).
+ * `isAcceptanceAuthorIdentity` already has a recovery path for exactly this —
+ * it walks the audited `coord:rebind-identity` trail (acceptance-author-
+ * identity.ts's header names rebind as "the canonical recovery operation" for
+ * this precise case) — but the bare "not the author" refusal below never told
+ * a caller that path exists, which is what turned a recoverable situation into
+ * an apparent permanent dead-end (a filed bug, not a hypothetical).
+ *
+ * Surface the hint ONLY when the author's session is confirmed non-live
+ * (not in `REBIND_BLOCKING_SESSION_STATES`): hinting rebind at a genuinely
+ * live/parked/draining/recorded author would be actively wrong advice —
+ * `coord:rebind-identity` itself refuses a live from-id (a caller reaching for
+ * `force:true` to push through that refusal would be stealing a live peer's
+ * identity, which is the exact hazard that guard exists to prevent). An
+ * unknown verdict (probe fault, no signal) also omits the hint — silence is
+ * safer than a confidently wrong one here.
+ */
+async function authorRebindHint(
+  authorId: string | null,
+  resolveState: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>,
+  opts: { workspaceId?: string },
+): Promise<string> {
+  if (!authorId) return '';
+  let state: SessionState | null;
+  try {
+    state = await resolveState(authorId, opts);
+  } catch {
+    return '';
+  }
+  if (state == null) return '';
+  const { REBIND_BLOCKING_SESSION_STATES } = await import('../coordination/rebind-identity');
+  if ((REBIND_BLOCKING_SESSION_STATES as readonly string[]).includes(state)) return '';
+  return (
+    ` — the recorded author's session appears to have ended (sessionState: '${state}'); ` +
+    `a legitimate successor may run coord:rebind-identity { from: '${authorId}' } to become the ` +
+    'recognized author (the audited rebind trail is what this guard walks), then emit the acceptance verdict'
+  );
+}
+
 export async function emitScorecard(
   args: z.infer<typeof scorecardEmitArgs>,
   input: {
@@ -370,6 +437,12 @@ export async function emitScorecard(
     sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
     /** Spawn/rebind ancestry resolver for independent-grader enforcement. */
     lineageRelated?: typeof areAcceptanceLineageRelated;
+    /** EI-21917534129987791: liveness probe backing the author-rebind recovery
+     *  hint on the "acceptance must be recorded by the author" refusal. */
+    resolveAuthorSessionState?: (
+      ownerId: string,
+      opts: { workspaceId?: string },
+    ) => Promise<SessionState | null>;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -540,11 +613,15 @@ export async function emitScorecard(
         }
       }
       if (!callerIsImplementer && acceptance) {
+        const resolveAuthorSessionState = deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState;
+        const rebindHint = await authorRebindHint(implementer, resolveAuthorSessionState, {
+          workspaceId: identityWorkspace,
+        });
         return {
           ok: false as const,
           error:
             `acceptance must be recorded by the acceptance-rubric author ('${implementer ?? 'unknown'}'), ` +
-            `not grader '${input.createdBy}' — independent graders emit ratings without acceptance`,
+            `not grader '${input.createdBy}' — independent graders emit ratings without acceptance${rebindHint}`,
         };
       }
       if (callerIsImplementer && !acceptance) {
