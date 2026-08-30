@@ -188,6 +188,14 @@ describe("work_items:list — cache wiring", () => {
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
   });
 
+  it("assignedBy participates in the cache key (no delegator-filter leak)", async () => {
+    await list({ assignedBy: "owner-a" });
+    await list({ assignedBy: "owner-b" });
+    expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    await list({ assignedBy: "owner-a" }); // cached
+    expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+  });
+
   it("different workspaces do NOT share an entry", async () => {
     await list({}, "ws-A");
     await list({}, "ws-B");

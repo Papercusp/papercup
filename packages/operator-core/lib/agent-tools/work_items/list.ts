@@ -298,6 +298,13 @@ export default defineTool({
       .describe(
         "Filter to items assigned to this agent (feature → taken_by; issue → assignee). The literal \"self\" resolves to YOU (as it does in work_items:claim / claim_next / create's assign_to); `mine: true` is the same request.",
       ),
+    assignedBy: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "Filter issue-family items by the owner who delegated them (the durable `assigned_by` field). This filter is ignored for feature-family rows, which have no delegator column.",
+      ),
     mine: z
       .boolean()
       .optional()
@@ -432,6 +439,7 @@ export default defineTool({
           updatedSince: args.updatedSince ?? null,
           sourcePlanSlug: args.sourcePlanSlug ?? null,
           assignee: assignee ?? null,
+          assignedBy: args.assignedBy ?? null,
           parent: args.parent ?? null,
           includeChildren: args.includeChildren === true,
           admissibleOnly: args.admissibleOnly === true,
@@ -465,6 +473,7 @@ export default defineTool({
           updatedSince: args.updatedSince,
           sourcePlanSlug: args.sourcePlanSlug,
           assignee,
+          assignedBy: args.assignedBy,
           parent: args.parent,
           includeChildren: args.includeChildren,
           admissibleOnly: args.admissibleOnly,

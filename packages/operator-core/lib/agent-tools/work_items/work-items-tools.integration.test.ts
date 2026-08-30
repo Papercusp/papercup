@@ -385,6 +385,36 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(none).toEqual([]);
   });
 
+  // EI-21679594288519383: the underlying unified read has always supported the
+  // durable issue-family delegator filter, but the agent-facing list schema did
+  // not expose it. Keep the schema, cache key, and handler forwarding aligned so
+  // the guidance `work_items:list { assignedBy, kind:'task' }` is executable.
+  it('assignedBy filters issue-family items by their durable delegator', async () => {
+    expect(listTool.args.safeParse({ assignedBy: 'su-tester' }).success).toBe(true);
+    expect(listTool.args.safeParse({ assignedBy: 'x'.repeat(121) }).success).toBe(false);
+
+    const delegated = await createOne({
+      kind: 'task',
+      title: 'delegated task',
+      harness: 'papercup',
+      assign_to: 'bee-3',
+    });
+    const delegatedId = (delegated.workItem as Record<string, unknown>).id as string;
+    const unassigned = await createOne({
+      kind: 'task',
+      title: 'unassigned task',
+      harness: 'papercup',
+    });
+    const unassignedId = (unassigned.workItem as Record<string, unknown>).id as string;
+
+    const byDelegator = await listData({ harness: 'papercup', kind: 'task', assignedBy: 'su-tester' });
+    expect(byDelegator.map((w) => w.id)).toEqual([delegatedId]);
+    expect(byDelegator.map((w) => w.id)).not.toContain(unassignedId);
+
+    const unknownDelegator = await listData({ harness: 'papercup', kind: 'task', assignedBy: 'nobody-home' });
+    expect(unknownDelegator).toEqual([]);
+  });
+
   // EI-18821495781915490: the literal `'self'` means the CALLER — the same token
   // work_items:claim, claim_next and create's `assign_to` all resolve (EI-9274).
   // `list` alone passed it through verbatim, so the query asked for an ownerId of
