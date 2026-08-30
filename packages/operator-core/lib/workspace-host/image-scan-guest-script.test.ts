@@ -221,3 +221,57 @@ describe('image scan guest script', () => {
     expect(unread).toEqual([]);
   });
 });
+
+/**
+ * THE CATALOGER MUST ACTUALLY LOOK AT WHAT THE IMAGE SHIPS.
+ *
+ * syft selects its catalogers from the SOURCE TYPE. On a dir: source it enables
+ * javascript-lock-cataloger (tagged 'directory') but NOT javascript-package-cataloger
+ * (tagged 'image, installed'). The shipped bundle contains node_modules but no lock file,
+ * so before 2026-08-30 neither JS cataloger produced a package: the release gate reported
+ * npm:0 for 276 real npm dependencies it had never looked at, and grype cannot match what
+ * was never cataloged (D-200 / WI-1117135).
+ *
+ * Measured against the real shipped bundle with syft 1.51.1: a default dir: scan yields
+ * binary 5 / go-module 284 / opam 1 = 290 with npm 0; adding the flag yields 579 — the same
+ * 290 plus npm 289. What that blindness hid was 26 findings at or above HIGH in our own
+ * dependencies, every one with an upstream fix available, including a Critical in
+ * form-data 4.0.0.
+ *
+ * This is the same fail-open SHAPE as the dead gitleaks and the unmounted root: the scan
+ * succeeds, every parse check passes, and a confident low number is returned for a
+ * population that was never measured. So both halves are pinned here — the flag that makes
+ * the measurement happen, and the assertion that fails closed if it stops happening.
+ */
+describe('image scan guest script — ecosystem cataloger coverage', () => {
+  it('adds the javascript package cataloger ADDITIVELY, so npm is scanned without dropping the OS catalogers', () => {
+    const script = emitGuestScript();
+
+    const syftLine = script.split('\n').find((line) => line.includes('syft scan dir:/mnt/candidate'));
+    expect(syftLine, 'the syft invocation moved — extraction is stale, not the subject').toBeTruthy();
+
+    // The leading '+' is the whole point: without it the selection REPLACES the default set
+    // and the distro measurement — the 3938 findings the gate actually reports — silently
+    // disappears. A test asserting only "mentions the cataloger" would pass on that
+    // catastrophic variant, so the '+' is asserted explicitly.
+    expect(syftLine).toContain('--select-catalogers +javascript-package-cataloger');
+    expect(syftLine).not.toContain('--override-default-catalogers');
+  });
+
+  it('fails CLOSED when node_modules manifests are present but the SBOM cataloged no npm package', () => {
+    const script = emitGuestScript();
+
+    // The guard must key on the SBOM, not on grype's output: a cataloger that produces
+    // nothing yields an empty match set that every downstream parse check accepts.
+    expect(script).toContain('sbom-npm-coverage-zero');
+    expect(script).toMatch(/select\(\.type == "npm"\)/);
+
+    // And it must be a hard exit, not a warning. Locate the guard's own block rather than
+    // asserting against the whole script, so an `exit 1` belonging to another step cannot
+    // make this pass vacuously.
+    const guard = script.slice(script.indexOf('npm_manifests='));
+    const block = guard.slice(0, guard.indexOf('grype sbom:'));
+    expect(block, 'the npm coverage guard no longer precedes grype').toContain('exit 1');
+    expect(block).toContain('sbom-npm-parse-failed');
+  });
+});

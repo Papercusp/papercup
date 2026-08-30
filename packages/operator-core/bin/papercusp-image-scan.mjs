@@ -159,7 +159,58 @@ done
 if [ -z "\$candidate_root" ]; then detail="candidate-root-not-mounted"; exit 1; fi
 echo "[papercusp] candidate root proven at \$candidate_root"
 
-syft scan dir:/mnt/candidate -o syft-json=/tmp/sbom.json >/dev/null 2>&1 || { detail="syft-failed"; exit 1; }
+# --select-catalogers +javascript-package-cataloger is LOAD-BEARING, not a tuning knob.
+#
+# ⚠ Do NOT put backticks in these comments. This whole script is a JS template literal, so a
+# backtick terminates it and the file stops parsing. Caught twice now by 'node --check'.
+#
+# syft picks its cataloger set from the SOURCE TYPE. On a dir: source it enables
+# javascript-lock-cataloger (tagged 'directory') but NOT javascript-package-cataloger
+# (tagged 'image, installed' — no 'directory'). The lock cataloger's only input is a lock
+# file, and the shipped release bundle contains none. So without this flag NEITHER JavaScript
+# cataloger produces a package, grype has nothing to match, and the gate reports npm:0 for a
+# population it never looked at.
+#
+# That is not hypothetical: it is what this scanner did until 2026-08-30, measured against the
+# real shipped bundle (syft 1.51.1). The bundle carries 276 REAL npm packages (name+version
+# both present; a further 15 are sub-path stubs). A default dir: scan cataloged
+# binary 5 / go-module 284 / opam 1 = 290, npm 0. Adding this one flag yields 579 — the same
+# 290 PLUS npm 289. Note that '--select-catalogers javascript' does NOT work: tag selection is
+# intersected with the source-type default set, so it also returns 0. The leading '+' is what
+# makes the selection ADDITIVE rather than a replacement, which is what keeps the OS
+# catalogers (and therefore the entire distro measurement) intact.
+#
+# What the blindness was hiding, measured the same day: 26 findings at or above HIGH in our
+# OWN dependencies, every one with an upstream fix available — a Critical in form-data 4.0.0,
+# 13 High in axios 1.7.7, plus brace-expansion, minimatch, sharp and adm-zip. The gate was
+# blocked on 1813 inherited findings it can do nothing about while silently passing over
+# these, which are ours to fix by bumping a version.
+#
+# The comment ~45 lines below has said "~291 npm packages under /opt/papercusp" since
+# WI-1088331, while the field it introduces reported npm:0. Nothing reconciled the two.
+# Recorded as D-200 / WI-1117135.
+syft scan dir:/mnt/candidate --select-catalogers +javascript-package-cataloger \\
+  -o syft-json=/tmp/sbom.json >/dev/null 2>&1 || { detail="syft-failed"; exit 1; }
+
+# ECOSYSTEM COVERAGE PROOF — the SBOM must contain the ecosystems the image demonstrably ships.
+#
+# The mount coverage proof above answers "did we read the userland?". It cannot answer "did the
+# CATALOGER read what the userland contains", and those fail identically: both end in a
+# confident low number that the release policy ACCEPTS. A cataloger that silently produces no
+# packages for a whole ecosystem is the same fail-open shape as the dead gitleaks (whose
+# install URL never existed) and the unmounted root — the scan succeeds, every parse check
+# passes, and trusted:true is returned for something that was never measured.
+#
+# So assert the property directly and fail CLOSED: if the mounted image contains node_modules
+# package manifests, the SBOM must contain at least one npm package. The find is bounded
+# because only existence matters, not the count.
+npm_manifests=\$(find /mnt/candidate -path '*/node_modules/*' -name package.json 2>/dev/null | head -1 | wc -l)
+npm_cataloged=\$(jq '[.artifacts[]? | select(.type == "npm")] | length' /tmp/sbom.json 2>/dev/null || echo "null")
+if [ "\$npm_cataloged" = "null" ]; then detail="sbom-npm-parse-failed"; exit 1; fi
+if [ "\$npm_manifests" -gt 0 ] && [ "\$npm_cataloged" -eq 0 ]; then
+  detail="sbom-npm-coverage-zero"; exit 1
+fi
+
 grype sbom:/tmp/sbom.json -o json > /tmp/vuln.json 2>/dev/null || { detail="grype-failed"; exit 1; }
 
 secret_count=0
