@@ -23,11 +23,13 @@
  * extraction actually produced the real script, so a broken extraction fails loudly instead
  * of vacuously passing.
  */
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 /**
  * The scanner source under test. Overridable ONLY so falsifiability can be proven against
@@ -694,5 +696,200 @@ describe('image scan guest script — conditional fail-closed guards carry a jus
     expect(() => failClosedExits('#!/bin/bash\nif [ -z "$x" ]; then exit 1; fi\n')).toThrow(
       /sets no detail= code/,
     );
+  });
+});
+
+/**
+ * THE BUNDLED POPULATION MUST BE ENUMERABLE BY FILE, OR IT CANNOT BE TRIAGED.
+ *
+ * `secretsByScope` says HOW MANY findings are in content we ship. `secretsByArea` says which
+ * top-level directory they sit under. Neither says WHICH FILE — and judging whether a finding is
+ * a real baked-in credential means opening the file it is in. The only per-file field was
+ * `secretSample`, `.[0:50]` over the UNSCOPED set in gitleaks' own emission order.
+ *
+ * Measured on the 0.0.18 candidate: 275 findings, 31 of them papercusp-bundled. The 50-row
+ * unscoped sample resolved 2 of those 31 to a file. The other 29 were unresolvable from any
+ * emitted field, so the release gate was red on a population nobody could inspect without paying
+ * for a second scan of a 32GB image. (The 2 that WERE named turned out to be an upstream
+ * @excalidraw public Firebase client key vendored under our bundle path — a verdict reachable
+ * only because the sample happened to name the file.)
+ *
+ * These tests EXECUTE the guest's real jq programs, extracted from the emitted script, against
+ * synthetic reports. A structural assertion could confirm the field is spelled correctly while
+ * the filter selected the wrong population; running it cannot.
+ */
+describe('image scan guest script — bundled secret findings are enumerable', () => {
+  const workdir = mkdtempSync(join(tmpdir(), 'p046-bundled-sample-'));
+  afterAll(() => rmSync(workdir, { recursive: true, force: true }));
+
+  /** jq is a hard dependency of the guest script itself, so a missing one is a real failure. */
+  const jqAvailable = (() => {
+    try {
+      execFileSync('jq', ['--version'], { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  /**
+   * Pull the single-quoted jq program out of a `name=$(jq ... '<program>' file)` assignment in
+   * the EMITTED script (so shell escapes and the interpolated bundle path are already resolved).
+   */
+  function jqProgramOf(assignment: string): string {
+    const line = emitGuestScript()
+      .split('\n')
+      .find((candidate) => candidate.startsWith(`${assignment}=`));
+    if (!line) throw new Error(`no ${assignment}= assignment in the emitted script`);
+    const open = line.indexOf("'");
+    const close = line.indexOf("'", open + 1);
+    if (open < 0 || close < 0) throw new Error(`no quoted jq program in ${assignment}=`);
+    const program = line.slice(open + 1, close);
+    // Self-check, same spirit as emitGuestScript's: an extraction that silently produced a
+    // trivial program would make every assertion below pass against nothing.
+    if (program.length < 20 || !program.includes('.[]?')) {
+      throw new Error(`extraction produced something that is not a jq program: ${program}`);
+    }
+    return program;
+  }
+
+  /** The cap the guest actually passes, read off the script rather than restated here. */
+  function declaredCap(): number {
+    const line = emitGuestScript()
+      .split('\n')
+      .find((candidate) => candidate.startsWith('secrets_bundled_sample='));
+    const match = line?.match(/--argjson cap (\d+)/);
+    if (!match) throw new Error('secrets_bundled_sample= passes no --argjson cap');
+    return Number(match[1]);
+  }
+
+  function runJq(program: string, report: unknown, cap: number): unknown {
+    const path = join(workdir, `report-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(path, JSON.stringify(report), 'utf8');
+    const out = execFileSync('jq', ['-c', '--argjson', 'cap', String(cap), program, path], {
+      encoding: 'utf8',
+    });
+    return JSON.parse(out);
+  }
+
+  const bundledFinding = (n: number) => ({
+    RuleID: 'generic-api-key',
+    File: `/mnt/candidate/sda1/opt/papercusp/releases/0.0.18/spa/chunk-${n}.js`,
+    StartLine: n,
+    Secret: `FAKE-BUNDLED-VALUE-${n}`,
+  });
+  const inheritedFinding = (n: number) => ({
+    RuleID: 'private-key',
+    File: `/mnt/candidate/sda1/usr/share/doc/thing-${n}/key.pem`,
+    StartLine: n,
+    Secret: `FAKE-INHERITED-VALUE-${n}`,
+  });
+
+  it.runIf(jqAvailable)('returns EVERY bundled finding and ONLY bundled findings', () => {
+    const report = [
+      inheritedFinding(1),
+      bundledFinding(2),
+      inheritedFinding(3),
+      bundledFinding(4),
+      bundledFinding(5),
+    ];
+    const rows = runJq(jqProgramOf('secrets_bundled_sample'), report, declaredCap()) as {
+      rule: string;
+      file: string;
+      line: number;
+    }[];
+
+    expect(rows.map((row) => row.line).sort()).toEqual([2, 4, 5]);
+    expect(rows.every((row) => row.file.includes('/opt/papercusp/'))).toBe(true);
+    // rule/file/line and nothing else — the projection is the non-disclosure boundary.
+    expect([...new Set(rows.flatMap((row) => Object.keys(row)))].sort()).toEqual([
+      'file',
+      'line',
+      'rule',
+    ]);
+  });
+
+  it.runIf(jqAvailable)('never carries a matched secret value out of the report', () => {
+    const report = [bundledFinding(1), inheritedFinding(2)];
+    const serialised = JSON.stringify(
+      runJq(jqProgramOf('secrets_bundled_sample'), report, declaredCap()),
+    );
+    expect(serialised).not.toContain('FAKE-BUNDLED-VALUE');
+    expect(serialised).not.toContain('FAKE-INHERITED-VALUE');
+    expect(serialised).not.toContain('Secret');
+  });
+
+  it.runIf(jqAvailable)(
+    'THE DEFECT THIS CLOSES: the unscoped 50-row sample resolves none of them',
+    () => {
+      // The 0.0.18 shape, reproduced: enough inherited findings to fill the unscoped sample
+      // before a single bundled one is reached. This is not a hypothetical ordering — gitleaks
+      // walks /usr and /var long before /opt, which is exactly why 29 of 31 were invisible.
+      const report = [
+        ...Array.from({ length: 60 }, (_unused, index) => inheritedFinding(index + 1)),
+        ...Array.from({ length: 3 }, (_unused, index) => bundledFinding(index + 100)),
+      ];
+
+      const unscoped = runJq(jqProgramOf('secrets_sample'), report, declaredCap()) as {
+        file: string;
+      }[];
+      const bundledInUnscoped = unscoped.filter((row) => row.file.includes('/opt/papercusp/'));
+      expect(unscoped).toHaveLength(50);
+      expect(bundledInUnscoped).toEqual([]); // the blind spot, pinned
+
+      const scoped = runJq(jqProgramOf('secrets_bundled_sample'), report, declaredCap()) as {
+        file: string;
+      }[];
+      expect(scoped).toHaveLength(3); // every one of them, from the same report
+    },
+  );
+
+  it.runIf(jqAvailable)('reports completeness honestly in BOTH directions', () => {
+    const report = Array.from({ length: 4 }, (_unused, index) => bundledFinding(index + 1));
+    const completeProgram = jqProgramOf('secrets_bundled_complete');
+    const sampleProgram = jqProgramOf('secrets_bundled_sample');
+
+    // Under the cap: the array is the whole population and says so.
+    expect(runJq(completeProgram, report, 500)).toBe(true);
+    expect(runJq(sampleProgram, report, 500)).toHaveLength(4);
+
+    // Over the cap: the array is cut, and the flag is what makes that visible. A truncated list
+    // that cannot announce itself is indistinguishable from a complete one, and reading one as
+    // the other is how a real finding gets triaged away.
+    expect(runJq(completeProgram, report, 2)).toBe(false);
+    expect(runJq(sampleProgram, report, 2)).toHaveLength(2);
+  });
+
+  it.runIf(jqAvailable)(
+    'counts completeness over the BUNDLED population, not the whole report',
+    () => {
+      // A flag computed over all findings would read `false` on an image whose bundled set is
+      // tiny but whose inherited set is huge — the common case — permanently reporting the
+      // complete list as truncated and re-opening the "we need another scan" hole.
+      const report = [
+        ...Array.from({ length: 40 }, (_unused, index) => inheritedFinding(index + 1)),
+        bundledFinding(99),
+      ];
+      expect(runJq(jqProgramOf('secrets_bundled_complete'), report, 10)).toBe(true);
+    },
+  );
+
+  it('emits the bundled sample and its completeness flag into the result document', () => {
+    const script = emitGuestScript();
+    for (const field of ['secretBundledSample', 'secretBundledSampleComplete']) {
+      expect(script).toContain(field);
+    }
+    // Both fail closed, like every other measurement step: a parse failure must red the run
+    // rather than report an empty bundled list, which the gate would read as a clean image.
+    expect(script).toContain('secret-bundled-sample-parse-failed');
+    expect(script).toContain('secret-bundled-complete-parse-failed');
+  });
+
+  it('scopes the bundled sample on the bundle path with both delimiters', () => {
+    // `/opt/papercusp` without the trailing slash also matches `/opt/papercusp-old`; without
+    // the leading one it matches a `.../vendor/opt/papercusp` path. Same rule the scope split
+    // above is already pinned to.
+    expect(jqProgramOf('secrets_bundled_sample')).toContain('contains("/opt/papercusp/")');
+    expect(jqProgramOf('secrets_bundled_complete')).toContain('contains("/opt/papercusp/")');
   });
 });

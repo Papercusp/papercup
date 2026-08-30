@@ -78,6 +78,19 @@ const DONE_PATH = '/var/log/papercusp-image-scan.done';
 const PAPERCUSP_BUNDLE_PATH = '/opt/papercusp';
 
 /**
+ * Safety rail on `secretBundledSample`, NOT a sampling rate.
+ *
+ * The bundled population is bounded by construction: the release gate requires it to reach
+ * zero, so a shippable image carries few of these and a green one carries none. The cap only
+ * stops a mis-built image — one that baked a whole credential store under the bundle path —
+ * from returning a multi-megabyte array. Whether it bound is REPORTED alongside the array
+ * (`secretBundledSampleComplete`), because a truncated list that cannot say it was truncated
+ * is indistinguishable from a complete one, and reading a capped list as the whole population
+ * is exactly how a real finding gets triaged away.
+ */
+const SECRET_BUNDLED_SAMPLE_CAP = 500;
+
+/**
  * gitleaks, pinned by version AND digest.
  *
  * Unlike syft and grype, gitleaks publishes NO install script — it distributes release
@@ -410,6 +423,28 @@ if [ "\$secrets_by_area" = "null" ]; then detail="secret-area-parse-failed"; exi
 # value, under the same non-disclosure rule as the sample and area projections above.
 secrets_by_scope=\$(jq -c '[.[]? | (if ((.File // "") | contains("${PAPERCUSP_BUNDLE_PATH}/")) then "papercusp-bundled" else "inherited-base-image" end)] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/secrets.json 2>/dev/null || echo "null")
 if [ "\$secrets_by_scope" = "null" ]; then detail="secret-scope-parse-failed"; exit 1; fi
+# EVERY papercusp-bundled secret finding, enumerated BY FILE — the field that makes the bundled
+# population triageable at all.
+#
+# secretSample above is '.[0:50]' over the UNSCOPED set, in gitleaks' own emission order. On the
+# 0.0.18 candidate that carried 2 of the 31 bundled findings; the other 29 could not be resolved
+# to a file from any emitted field, so deciding whether they were real credentials needed a
+# second billable scan. secretsByArea does not close that gap either: it answers "how many, under
+# which top-level directory", and triage needs "which file", because the only way to judge a
+# finding is to open the file it is in. (The two that WERE resolvable turned out to be an upstream
+# @excalidraw public Firebase client key, vendored under our bundle path — a verdict reachable
+# only because the sample happened to name the file.)
+#
+# Unlike the unscoped sample this does not need to sample, because the bundled set is small by
+# construction (see SECRET_BUNDLED_SAMPLE_CAP). Location only, never a matched value — the same
+# non-disclosure rule as secretSample, secretsByArea and secretsByScope.
+secrets_bundled_sample=\$(jq -c --argjson cap ${SECRET_BUNDLED_SAMPLE_CAP} '[.[]? | select((.File // "") | contains("${PAPERCUSP_BUNDLE_PATH}/")) | {rule:.RuleID, file:.File, line:.StartLine}] | .[0:\$cap]' /tmp/secrets.json 2>/dev/null || echo "null")
+if [ "\$secrets_bundled_sample" = "null" ]; then detail="secret-bundled-sample-parse-failed"; exit 1; fi
+# Whether the array above holds the WHOLE bundled population or was cut by the cap. Emitted as its
+# own boolean rather than left to a length comparison, so a reader never has to reconstruct the
+# cap to know what they are holding.
+secrets_bundled_complete=\$(jq -c --argjson cap ${SECRET_BUNDLED_SAMPLE_CAP} '([.[]? | select((.File // "") | contains("${PAPERCUSP_BUNDLE_PATH}/"))] | length) <= \$cap' /tmp/secrets.json 2>/dev/null || echo "null")
+if [ "\$secrets_bundled_complete" = "null" ]; then detail="secret-bundled-complete-parse-failed"; exit 1; fi
 
 sbom_sha=\$(sha256sum /tmp/sbom.json | cut -d' ' -f1)
 
@@ -436,7 +471,9 @@ jq -n \\
   --argjson secretsByRule "\$secrets_by_rule" \\
   --argjson secretsByScope "\$secrets_by_scope" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, vulnerabilityCriticalHighByArtifact:\$vulnerabilityCriticalHighByArtifact, vulnerabilityCriticalHighDistinctArtifacts:\$vulnerabilityCriticalHighDistinctArtifacts, vulnerabilityByScope:\$vulnerabilityByScope, vulnerabilityCriticalHighByScope:\$vulnerabilityCriticalHighByScope, bundleCatalogedArtifacts:\$bundleCatalogedArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretsByScope:\$secretsByScope, secretSample:\$secretSample}' \\
+  --argjson secretBundledSample "\$secrets_bundled_sample" \\
+  --argjson secretBundledSampleComplete "\$secrets_bundled_complete" \\
+  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, vulnerabilityCriticalHighByArtifact:\$vulnerabilityCriticalHighByArtifact, vulnerabilityCriticalHighDistinctArtifacts:\$vulnerabilityCriticalHighDistinctArtifacts, vulnerabilityByScope:\$vulnerabilityByScope, vulnerabilityCriticalHighByScope:\$vulnerabilityCriticalHighByScope, bundleCatalogedArtifacts:\$bundleCatalogedArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretsByScope:\$secretsByScope, secretSample:\$secretSample, secretBundledSample:\$secretBundledSample, secretBundledSampleComplete:\$secretBundledSampleComplete}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -720,6 +757,16 @@ async function scan(input) {
     // rule/file/line only — the scanner never emits the matched value, and neither do we.
     ...(Array.isArray(measurement.secretSample)
       ? { secretSample: measurement.secretSample }
+      : {}),
+    // Every papercusp-bundled finding by file. secretSample is capped at 50 across the UNSCOPED
+    // set, so it resolved only 2 of the 0.0.18 candidate's 31 bundled findings to a file; this
+    // is the field that makes the population triageable without a second billable scan.
+    ...(Array.isArray(measurement.secretBundledSample)
+      ? { secretBundledSample: measurement.secretBundledSample }
+      : {}),
+    // Carried BESIDE the array so a capped list can never be read as the whole population.
+    ...(typeof measurement.secretBundledSampleComplete === 'boolean'
+      ? { secretBundledSampleComplete: measurement.secretBundledSampleComplete }
       : {}),
   };
 

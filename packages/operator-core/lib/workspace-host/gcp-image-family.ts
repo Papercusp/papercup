@@ -130,6 +130,25 @@ export interface GcpImageScanEvidence {
   secretsByScope?: Readonly<Record<string, number>>;
   /** rule/file/line only — the scanner never emits the matched value, and neither do we. */
   secretSample?: readonly unknown[];
+  /**
+   * EVERY papercusp-bundled secret finding, enumerated by file.
+   *
+   * `secretSample` is capped at 50 across the UNSCOPED set in the scanner's own emission order,
+   * so on the 0.0.18 candidate it named 2 of the 31 bundled findings and left the other 29
+   * unresolvable to a file. `secretsByArea` cannot close that gap either — it answers "how many,
+   * under which top-level directory", and triage needs "which file", because judging a finding
+   * means opening the file it sits in. This is that field.
+   *
+   * Small by construction: the release gate requires this population to reach zero, so it is
+   * short on a shippable image and empty on a green one. Location only, never a matched value.
+   */
+  secretBundledSample?: readonly unknown[];
+  /**
+   * Whether `secretBundledSample` holds the whole bundled population or was cut by the scanner's
+   * safety cap. Carried beside the array because a truncated list that cannot say so is
+   * indistinguishable from a complete one.
+   */
+  secretBundledSampleComplete?: boolean;
   evidenceRef: string;
 }
 

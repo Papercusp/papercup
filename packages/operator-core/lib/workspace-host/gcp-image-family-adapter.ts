@@ -698,6 +698,14 @@ function scanEvidence(
     ...(Array.isArray(result.secretSample)
       ? { secretSample: result.secretSample as readonly unknown[] }
       : {}),
+    // Every bundled finding by file — what makes the scoped population triageable. Carried with
+    // its completeness flag so a capped list is never read as the whole population.
+    ...(Array.isArray(result.secretBundledSample)
+      ? { secretBundledSample: result.secretBundledSample as readonly unknown[] }
+      : {}),
+    ...(typeof result.secretBundledSampleComplete === 'boolean'
+      ? { secretBundledSampleComplete: result.secretBundledSampleComplete }
+      : {}),
     evidenceRef: text(result.evidenceRef, 'scan.evidenceRef'),
   };
   if (
