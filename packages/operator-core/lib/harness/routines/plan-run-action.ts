@@ -27,7 +27,7 @@ import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
 import { FEATURE_FAMILY_KINDS, type FeatureFamilyKind } from '../../work-items';
-import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
+import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
@@ -65,30 +65,64 @@ function nextManualToken(): number {
   return t;
 }
 
-export interface ScheduledPlanFireResult {
+export type ScheduledPlanFireRefusalReason = 'template-missing' | 'not-startable' | 'concurrency-skip';
+
+type FailedPlanStartReadiness = Extract<PlanStartReadiness, { ready: false }>;
+
+interface ScheduledPlanFireResultBase {
   instanceSlug: string;
   runId: number;
   runSeq: number;
-  /** Work items newly minted by canonical promotion during this invocation. */
   minted: number;
-  /** Every open plan item's canonical execution record for this run. */
   workItemIds: string[];
-  /** The dependency-safe frontier eligible for assignment right now. */
   actionableWorkItemIds: string[];
-  /** Full canonical promotion evidence, absent only for concurrency skips. */
-  promotion?: PromotePlanResult;
-  /** true when this fire was a replay no-op (instance already existed). */
   replayed: boolean;
-  /** true when this fire was skipped because a prior run of the same template was
-   *  still 'running' and the schedule's concurrency policy is 'skip' (EI-1386). */
   skippedForConcurrency?: boolean;
-  /** Normalized stable-agent execution contract, when this is an agentic run. */
   execution?: AgenticPlanExecutionTarget;
+}
+
+export interface ScheduledPlanFireStartedResult extends ScheduledPlanFireResultBase {
+  /**
+   * The success discriminator keeps started and refused fires type-safe at every
+   * caller. Injected seams should return `started: true` for successful fires.
+   */
+  started: true;
+  /** Full canonical promotion evidence for a started run. */
+  promotion?: PromotePlanResult;
   /** Structured assignment + required-wake result for the initial frontier. */
   dispatch?: ActionableWorkItemDispatchResult;
 }
 
+/** A deliberate, non-exceptional reason why a plan fire did not start a run. */
+export interface ScheduledPlanFireRefusal extends ScheduledPlanFireResultBase {
+  started: false;
+  /** The plan was not started; these sentinel fields keep the result shape inspectable. */
+  instanceSlug: '';
+  runId: -1;
+  runSeq: -1;
+  minted: 0;
+  workItemIds: [];
+  actionableWorkItemIds: [];
+  replayed: false;
+  reason: ScheduledPlanFireRefusalReason;
+  /** Human-readable detail computed at the refusal site. */
+  detail: string;
+  /**
+   * Whether the trigger outbox should retry this refusal. Missing required inputs
+   * can become startable after the stored plan data is repaired; schema/data
+   * mismatches and policy skips are terminal for this event.
+   */
+  retryable: boolean;
+  /** Full start-gate evidence for a not-startable refusal. */
+  readiness?: FailedPlanStartReadiness;
+  /** The already-running plan run that caused a concurrency skip. */
+  priorRunId?: number;
+}
+
+export type ScheduledPlanFireResult = ScheduledPlanFireStartedResult | ScheduledPlanFireRefusal;
+
 interface PreparedPlanRun {
+  started: true;
   instanceSlug: string;
   runId: number;
   runSeq: number;
@@ -99,6 +133,8 @@ interface PreparedPlanRun {
   appHarnessSlug: string;
   execution: AgenticPlanExecutionTarget | null;
 }
+
+type PreparedPlanRunOutcome = PreparedPlanRun | ScheduledPlanFireRefusal;
 
 export interface ScheduledPlanFireOptions {
   installSlug: string;
@@ -120,14 +156,15 @@ export interface ScheduledPlanFireDeps {
 
 /**
  * Mint one run of a scheduled plan. `sql` is an explicit seam (admin pool in prod,
- * the testcontainers client in tests). Returns null when the template is missing or
- * has no templateSlug; never throws (the durable-step contract is enforced by the
- * handler wrapper).
+ * the testcontainers client in tests). Returns a typed refusal when the template is
+ * missing, the start gate refuses, or concurrency policy deliberately skips the fire;
+ * never throws for those expected outcomes (the durable-step contract is enforced by
+ * the handler wrapper for unexpected failures).
  */
 async function runScheduledPlanFireTx(
   sql: Sql | TransactionSql,
   opts: ScheduledPlanFireOptions,
-): Promise<PreparedPlanRun | null> {
+): Promise<PreparedPlanRunOutcome> {
   const { installSlug, workspaceId, templateSlug, trigger = 'scheduled' } = opts;
 
   // WI-6978 — `harness_plans` IS re-homed, `plan_runs` is NOT. Two relations, two
@@ -171,8 +208,21 @@ async function runScheduledPlanFireTx(
        AND plan_slug = ${templateSlug}
   `;
   if (!tpl[0]) {
-    console.warn(`[plan-run] template '${templateSlug}' not found in ${installSlug} — skip`);
-    return null;
+    const detail = `template '${templateSlug}' not found in ${installSlug}`;
+    console.warn(`[plan-run] ${detail} — skip`);
+    return {
+      started: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+      reason: 'template-missing',
+      detail,
+      retryable: false,
+    };
   }
   const template = tpl[0];
   const execution = parseAgenticPlanExecutionTarget(
@@ -186,19 +236,38 @@ async function runScheduledPlanFireTx(
   // whose required inputs were unset, but that verdict can go stale: the schema or the
   // values can change while the schedule stays armed. Re-checking here costs nothing
   // and is the difference between a refused fire and a run that executes with no
-  // arguments. Refusing returns null — the same "did not mint" contract the missing-
-  // template case above uses, so the routine wrapper needs no new failure mode.
+  // arguments. Refusing returns a typed non-started result so callers can preserve
+  // the start-gate diagnosis instead of reconstructing it from the plan later.
   const runInputs = opts.inputs !== undefined ? opts.inputs : (template.template_data ?? null);
   const readiness = evaluatePlanStartReadiness(
     { template: template.template, inputSchema: template.input_schema },
     runInputs,
   );
   if (!readiness.ready) {
+    const retryable = readiness.code === 'missing_required';
+    const detail =
+      readiness.issues.length > 0
+        ? `${readiness.hint} Issues: ${readiness.issues.join('; ')}`
+        : readiness.hint;
     console.warn(
       `[plan-run] template '${templateSlug}' in ${installSlug} is not startable ` +
         `(${readiness.code}${readiness.missing.length > 0 ? `: missing ${readiness.missing.join(', ')}` : ''}) — skip. ${readiness.hint}`,
     );
-    return null;
+    return {
+      started: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+      reason: 'not-startable',
+      detail,
+      retryable,
+      readiness,
+      ...(execution ? { execution } : {}),
+    };
   }
   // Executor kind (D-006/P-009): authored on schedule.executorKind; validated against
   // the feature-family kinds (feature|chunk). An invalid or removed kind (e.g. the
@@ -264,6 +333,7 @@ async function runScheduledPlanFireTx(
     }
     console.log(`[plan-run] ${instanceSlug} already seeded (replay) — repair promotion`);
     return {
+      started: true,
       instanceSlug,
       runId: Number(existing[0].run_id),
       runSeq: existing[0].run_seq ?? -1,
@@ -300,15 +370,22 @@ async function runScheduledPlanFireTx(
           `${inFlight[0].id} still 'running' (concurrency='skip')`,
       );
       return {
-        instanceSlug,
+        started: false,
+        instanceSlug: '',
         runId: -1,
         runSeq: -1,
+        minted: 0,
+        workItemIds: [],
+        actionableWorkItemIds: [],
         replayed: false,
         skippedForConcurrency: true,
-        itemKind,
-        runInputs,
-        appHarnessSlug,
-        execution,
+        reason: 'concurrency-skip',
+        detail:
+          `prior plan run ${inFlight[0].id} of '${templateSlug}' is still running ` +
+          `(concurrency='skip')`,
+        retryable: false,
+        priorRunId: Number(inFlight[0].id),
+        ...(execution ? { execution } : {}),
       };
     }
   }
@@ -404,7 +481,7 @@ async function runScheduledPlanFireTx(
   // transaction commits, runScheduledPlanFire invokes promotePlanItems with
   // the run context. That one implementation owns identity, provenance,
   // blocker edges, lane gating, idempotency, and replay repair.
-  return { instanceSlug, runId, runSeq, replayed: false, itemKind, runInputs, appHarnessSlug, execution };
+  return { started: true, instanceSlug, runId, runSeq, replayed: false, itemKind, runInputs, appHarnessSlug, execution };
 }
 
 /**
@@ -416,22 +493,9 @@ export async function runScheduledPlanFire(
   sql: Sql,
   opts: ScheduledPlanFireOptions,
   deps: ScheduledPlanFireDeps = {},
-): Promise<ScheduledPlanFireResult | null> {
+): Promise<ScheduledPlanFireResult> {
   const prepared = await sql.begin((tx) => runScheduledPlanFireTx(tx, opts));
-  if (!prepared) return null;
-  if (prepared.skippedForConcurrency) {
-    return {
-      instanceSlug: prepared.instanceSlug,
-      runId: prepared.runId,
-      runSeq: prepared.runSeq,
-      minted: 0,
-      workItemIds: [],
-      actionableWorkItemIds: [],
-      replayed: prepared.replayed,
-      skippedForConcurrency: true,
-      ...(prepared.execution ? { execution: prepared.execution } : {}),
-    };
-  }
+  if (prepared.started === false) return prepared;
 
   const planRun: PlanRunPromotionContext = {
     runId: prepared.runId,
@@ -492,6 +556,7 @@ export async function runScheduledPlanFire(
       `${actionableWorkItemIds.length} actionable)`,
   );
   return {
+    started: true,
     instanceSlug: prepared.instanceSlug,
     runId: prepared.runId,
     runSeq: prepared.runSeq,
@@ -525,7 +590,7 @@ export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
       workspaceId: ctx.workspaceId,
       templateSlug,
     });
-    if (fired?.dispatch && !fired.dispatch.ok) {
+    if (fired.started === true && fired.dispatch && !fired.dispatch.ok) {
       throw new Error(`plan_run_agentic_dispatch_failed:${fired.dispatch.failure?.code ?? 'assignment_failed'}`);
     }
   } catch (e) {
