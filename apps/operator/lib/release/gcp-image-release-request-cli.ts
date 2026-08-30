@@ -72,6 +72,7 @@ import {
   type WorkspaceHostImageArtifact,
 } from "@papercusp/deployment-driver";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import { isSupportedGcpImageFamilyCredentialRef } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family-production";
 
 /** Immutable GCP image reference. Family aliases are deliberately not accepted anywhere here. */
 const IMMUTABLE_IMAGE_ID = /^projects\/([a-z][a-z0-9-]{4,28}[a-z0-9])\/global\/images\/([a-z]([-a-z0-9]{0,61}[a-z0-9])?)$/;
@@ -86,6 +87,17 @@ export interface GcpImageReleaseRequestCliArgs {
   sourceRoot?: string;
   cleanRoomReportFile?: string;
   emit: "artifact" | "clean-room-input" | "request";
+  /**
+   * Which credential chain the emitted connection names. Defaults to the gcloud active user.
+   *
+   * This is EXPLICIT on purpose. The composition seam strips GOOGLE_APPLICATION_CREDENTIALS,
+   * GOOGLE_OAUTH_ACCESS_TOKEN and CLOUDSDK_AUTH_ACCESS_TOKEN from every child environment so a
+   * release cannot quietly fall back to ambient ADC, and an automatic fallback here would hand
+   * that property straight back: the emitted request would no longer say which identity performed
+   * the release. So the caller names the chain, or gets the default — never a silent substitution
+   * when the default's token happens to be unavailable.
+   */
+  credentialRef: string;
 }
 
 function fail(message: string): never {
@@ -168,7 +180,14 @@ export function parseGcpImageReleaseRequestCliArgs(argv: readonly string[]): Gcp
     const token = argv[index]!;
     if (!token.startsWith("--")) fail(`unexpected argument ${token}`);
     const key = token.slice(2);
-    const allowed = new Set(["input-file", "repo-root", "source-root", "clean-room-report", "emit"]);
+    const allowed = new Set([
+      "input-file",
+      "repo-root",
+      "source-root",
+      "clean-room-report",
+      "emit",
+      "credential-ref",
+    ]);
     if (!allowed.has(key)) fail(`unknown flag --${key}`);
     const next = argv[index + 1];
     if (next === undefined || next.startsWith("--")) fail(`--${key} requires a value`);
@@ -183,12 +202,23 @@ export function parseGcpImageReleaseRequestCliArgs(argv: readonly string[]): Gcp
   if (emit === "request" && !values["clean-room-report"]) {
     fail("--emit request requires --clean-room-report (the gate ratifies a report, never an assertion)");
   }
+  const credentialRef = (values["credential-ref"] ?? GCLOUD_ACTIVE_USER_CREDENTIAL_REF).trim();
+  // Refuse an unusable chain HERE rather than letting the release reach the composition seam and
+  // die at `connectionCredentialRef`. The accepted set is imported, never restated, so this edge
+  // cannot drift away from the seam that ultimately enforces it.
+  if (!isSupportedGcpImageFamilyCredentialRef(credentialRef)) {
+    fail(
+      `--credential-ref must be ${GCLOUD_ACTIVE_USER_CREDENTIAL_REF} or adc://<safe-chain>; ` +
+        "hosted references require an explicit resolver and are not accepted by the release composition seam",
+    );
+  }
   return {
     inputFile: values["input-file"]!,
     repoRoot: values["repo-root"] ?? process.cwd(),
     ...(values["source-root"] ? { sourceRoot: values["source-root"] } : {}),
     ...(values["clean-room-report"] ? { cleanRoomReportFile: values["clean-room-report"] } : {}),
     emit,
+    credentialRef,
   };
 }
 
@@ -487,7 +517,7 @@ export async function composeRequest(args: GcpImageReleaseRequestCliArgs): Promi
       // A TYPED reference into the host's resolver, not a bare string: the composition seam reads
       // `cloudCredentialRef.ref`, so a plain string reads as absent and the release dies at the
       // connection parse before it does anything billable.
-      cloudCredentialRef: { kind: "cloud", ref: GCLOUD_ACTIVE_USER_CREDENTIAL_REF },
+      cloudCredentialRef: { kind: "cloud", ref: args.credentialRef },
       scope: { kind: "project", id: built.projectId },
       provider: { projectId: built.projectId },
     },

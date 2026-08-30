@@ -39,6 +39,20 @@ const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const SAFE_CREDENTIAL_REF = /^adc:\/\/[^\s]+$/;
 const SAFE_EXECUTABLE = /^[A-Za-z0-9_./:+-]+$/;
 
+/**
+ * The ONE definition of which credential references this composition seam will accept.
+ *
+ * Producers that build a connection (the image-release request CLI, for one) have to reject an
+ * unusable reference at their own edge, or the release dies here — after the operator has already
+ * paid for whatever came before the connection parse. They must not carry a second copy of the
+ * rule: a divergent copy either refuses a reference this seam would have taken, or waves through
+ * one it will not, and both read as a bug in the wrong file. Import this instead.
+ */
+export function isSupportedGcpImageFamilyCredentialRef(ref: string): boolean {
+  const trimmed = ref.trim();
+  return trimmed === GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF || SAFE_CREDENTIAL_REF.test(trimmed);
+}
+
 /** Executable defaults owned by the image release protocol. */
 export const GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES = {
   packer: 'packer',
@@ -113,7 +127,7 @@ function connectionCredentialRef(connection: WorkspaceHostProviderConnection): s
   // Local image release is intentionally restricted to the same short-lived Google chains as
   // workspace-host provisioning. Hosted/encrypted references need a hosted resolver and are not
   // silently interpreted as process-global ADC here.
-  if (ref !== GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF && !SAFE_CREDENTIAL_REF.test(ref)) {
+  if (!isSupportedGcpImageFamilyCredentialRef(ref)) {
     throw new Error(
       'GCP image-family credentialRef must use adc://<safe-chain> or gcloud://active-user; hosted references require an explicit resolver',
     );
