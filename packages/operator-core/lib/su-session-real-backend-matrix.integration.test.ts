@@ -443,6 +443,11 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       ).toBe(true);
       launchArgv = row!.launchArgv!;
       expect(launchArgv[0]).toMatch(/psu/);
+      expect(
+        launchArgv,
+        `deferred ${backend} row ${advSessionId} omitted --account=default; ` +
+          'bootstrap-su may reinterpret the PUI launch through the inference gateway',
+      ).toContain('--account=default');
     }, 120_000);
 
     it('SPAWN + READY: claiming the row then running the pane argv materialises a native session on the SAME row', async () => {
