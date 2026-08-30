@@ -42,6 +42,7 @@
 
 import type { CardResponse, CardSpec } from '@papercusp/agent-mcp';
 import type { ZodTypeAny } from 'zod';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 export interface OpenLocalCard<TSchema extends ZodTypeAny = ZodTypeAny> {
   id: string;
@@ -52,7 +53,6 @@ export interface OpenLocalCard<TSchema extends ZodTypeAny = ZodTypeAny> {
 type QueueListener = (queue: readonly OpenLocalCard[]) => void;
 type ElectionListener = () => void;
 
-const __SYM = Symbol.for('papercusp.askUserLocalRegistry');
 type Registry = {
   queue: OpenLocalCard[];
   listeners: Set<QueueListener>;
@@ -60,14 +60,21 @@ type Registry = {
   hostOrder: string[];
   electionListeners: Set<ElectionListener>;
 };
-type RegistryGlobals = typeof globalThis & { [__SYM]?: Registry };
+
+// Pinned at module scope ONCE, not inside registry(). pinModuleState counts
+// every call as an evaluation and listModuleDuplications() reports
+// `evaluations > 1` as a split, so pinning inside the accessor — which runs on
+// every notify — would manufacture a false duplication report in the very
+// surface this pin exists to make honest.
+const REGISTRY = pinModuleState<Registry>('@papercusp/web.ask-user-local-registry', () => ({
+  queue: [],
+  listeners: new Set(),
+  hostOrder: [],
+  electionListeners: new Set(),
+}));
 
 function registry(): Registry {
-  const g = globalThis as RegistryGlobals;
-  if (!g[__SYM]) {
-    g[__SYM] = { queue: [], listeners: new Set(), hostOrder: [], electionListeners: new Set() };
-  }
-  return g[__SYM]!;
+  return REGISTRY;
 }
 
 function notifyQueue(): void {

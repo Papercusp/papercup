@@ -83,8 +83,6 @@ const SKIP_DIR = new Set([
 const ALLOW = new Set([
   'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
   'apps/operator/app/adv/harnesses/AdvDocsTab.tsx',
-  'apps/operator/bin/host-bootstrap.ts',
-  'apps/operator/lib/chat-cards/ask-user-local.ts',
   'libs/generic/sse/src/server/channel.ts',
   'libs/generic/tooldef/src/tool-projection.ts',
   'packages/operator-core/lib/commands/leader-bridge.ts',
