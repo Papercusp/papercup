@@ -264,6 +264,8 @@ export interface ScorecardRow {
   rubricRevision?: number;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
+  /** Deterministic instrument snapshots persisted alongside the ratings, when supplied. */
+  instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
   /** The acceptance-rubric author's post-independent-grading verdict, when recorded. */
   acceptance?: ScorecardAcceptance;
   /** How many criteria this scorecard rated (`Object.keys(ratings).length`). */
@@ -976,6 +978,14 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
       ratings,
+      ...(observation.instrumentSnapshots
+        ? {
+            // scorecards:emit validates this shape before persistence; the read-side
+            // observation parser intentionally keeps historical snapshot payloads
+            // opaque so they remain auditable.
+            instrumentSnapshots: observation.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot>,
+          }
+        : {}),
       ...(observation.acceptance ? { acceptance: observation.acceptance } : {}),
       nKeys: ratedKeys.size,
       missingKeys,

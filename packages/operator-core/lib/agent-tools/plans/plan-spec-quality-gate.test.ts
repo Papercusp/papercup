@@ -60,6 +60,33 @@ function matchingCard(clauses: SpecClauseRevision[]): ScorecardRow {
   };
 }
 
+function matchingCardWithInstrumentSnapshots(clauses: SpecClauseRevision[]): ScorecardRow {
+  const evaluation = evaluatePlanSpecQuality({
+    planSlug: 'quality-plan',
+    harnessSlug: 'papercusp',
+    planItemIds: ['P-001'],
+    clauses,
+    classRef: 'plan-class-feature-ship',
+  });
+  const instrumentSnapshots = {
+    'spec-quality.proof': {
+      verdict: 'pass' as const,
+      measuredAt: '2026-08-20T00:01:30.000Z',
+      value: { checked: 1 },
+      evidenceRef: 'test:spec-quality-proof',
+    },
+  };
+  return {
+    ...matchingCard(clauses),
+    instrumentSnapshots,
+    evidenceFingerprint: scorecardEvidenceFingerprint({
+      rubricRef: SPEC_QUALITY_RUBRIC_REF,
+      ratings: evaluation.ratings,
+      instrumentSnapshots,
+    }),
+  };
+}
+
 describe('evaluatePlanSpecQualityGate', () => {
   it('keeps legacy/no-clause plans report-only', async () => {
     const result = await evaluatePlanSpecQualityGate(
@@ -113,6 +140,24 @@ describe('evaluatePlanSpecQualityGate', () => {
       applicable: true,
       mode: 'enforced',
       classRef: 'plan-class-feature-ship',
+      scorecardId: 'EI-quality-card',
+      wouldBlock: [],
+    });
+  });
+
+  it('accepts an instrumented scorecard using the persisted snapshot-aware fingerprint', async () => {
+    const clauses = [clause()];
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      {
+        listClauses: vi.fn(async () => clauses),
+        listCards: vi.fn(async () => [matchingCardWithInstrumentSnapshots(clauses)]),
+      },
+    );
+
+    expect(result).toMatchObject({
+      satisfied: true,
+      applicable: true,
       scorecardId: 'EI-quality-card',
       wouldBlock: [],
     });
