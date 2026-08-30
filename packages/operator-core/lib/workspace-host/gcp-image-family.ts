@@ -50,6 +50,44 @@ export interface GcpImageScanEvidence {
    */
   vulnerabilityBySeverity: Readonly<Record<string, number>>;
   secretFindings: number;
+  /**
+   * What the scan actually COVERED. The guest fails closed at zero, but a count >= 1 is
+   * satisfied by any single partition, so this is evidence to be read alongside
+   * `candidateRootProof` — not a coverage guarantee on its own (WI-1092039).
+   */
+  mountedFilesystems?: number;
+  /**
+   * Proof the mounted tree was the CANDIDATE's root rather than some other partition that
+   * happened to mount. This is the field that distinguishes "scanned clean" from
+   * "scanned the wrong filesystem and found nothing" (WI-1092039).
+   */
+  candidateRootProof?: string;
+  /**
+   * Diagnostics below are measured by the guest on every run at no extra cost. They are
+   * carried so a RED release gate arrives WITH its diagnosis instead of forcing a second
+   * billable image build to re-derive it (WI-1088331). Optional because the guest emits
+   * each one conditionally; absent means "not measured", never "zero".
+   */
+  vulnerabilityFixable?: number;
+  /** Answers "how many of the blocking findings can we actually act on" without a re-scan. */
+  vulnerabilityFixableBySeverity?: Readonly<Record<string, number>>;
+  /**
+   * Which ecosystem each match belongs to — the field that decides whether a given
+   * remediation can even reach the findings. This image carries an Ubuntu userland AND
+   * npm packages AND python dist-packages, and apt reaches exactly one of the three.
+   */
+  vulnerabilityByEcosystem?: Readonly<Record<string, number>>;
+  vulnerabilityFixableByEcosystem?: Readonly<Record<string, number>>;
+  secretsByRule?: Readonly<Record<string, number>>;
+  /**
+   * Census of every secret finding by rule x top-level directory. Bounded by distinct
+   * (rule, /dir) pairs, so it stays small however many findings there are — unlike
+   * `secretSample`, which is capped and classifies only a fraction of them.
+   * Location only, never a matched value.
+   */
+  secretsByArea?: Readonly<Record<string, number>>;
+  /** rule/file/line only — the scanner never emits the matched value, and neither do we. */
+  secretSample?: readonly unknown[];
   evidenceRef: string;
 }
 
