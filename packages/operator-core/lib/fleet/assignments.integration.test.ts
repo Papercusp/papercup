@@ -299,6 +299,48 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     expect(reclaimed?.stalled).toBe(false);
   });
 
+  it('EI-21830607512202892: resource-governor receipts do not surface as fleet work claims', async () => {
+    const owner = 'su-resource-governor';
+    const realWorkItem = 'FA-TEST-REAL-CLAIM';
+    const receipt = 'FA-TEST-GOVERNOR-RECEIPT';
+    await seedPresence(owner, { ageSeconds: 0, intent: 'working real fleet item' });
+    await admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, taken_by, taken_at, payload)
+      VALUES
+        (${WS}, 'demo', ${realWorkItem}, 'real fleet work', 'open', 'task', ${owner}, now(), NULL),
+        (${WS}, '', ${receipt}, 'Queued inference admission', 'open', 'task', ${owner}, now(),
+         ${admin.json({
+           resource_governor: {
+             schemaVersion: 1,
+             namespace: 'inference',
+             idempotencyKey: 'fleet-assignment-regression',
+             state: 'queued',
+           },
+         } as never)})
+    `;
+
+    // FALSIFIER FIRST: both rows must exist in the source table, with the receipt
+    // still actively assigned. Otherwise a missing-row fixture would make the
+    // exclusion assertion pass without exercising migration 1033.
+    const sourceRows = await admin<Array<{ feature_id: string; taken_by: string | null; has_receipt: boolean }>>`
+      SELECT feature_id, taken_by, jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor') AS has_receipt
+        FROM harness_shared.work_items
+       WHERE feature_id IN (${realWorkItem}, ${receipt})
+       ORDER BY feature_id
+    `;
+    expect(sourceRows).toEqual([
+      { feature_id: receipt, taken_by: owner, has_receipt: true },
+      { feature_id: realWorkItem, taken_by: owner, has_receipt: false },
+    ]);
+
+    const rows = await listFleetAssignments({ workspaceId: WS, agent: owner });
+    const workClaims = rows.filter((r) => r.source === 'work_item_claim');
+    expect(workClaims.map((r) => r.workItemId)).toEqual([realWorkItem]);
+    expect(rows.some((r) => r.workItemId === receipt)).toBe(false);
+    expect(rows.some((r) => r.workItemId === realWorkItem)).toBe(true);
+  });
+
   it('filters: by plan ("who\'s on P"), by agent ("what is X doing"), by workspace', async () => {
     await seedPresence('su-a', { planSlug: 'plan-x' });
     await seedPlanClaim('su-a', { plan: 'plan-x', item: 'P-001' });

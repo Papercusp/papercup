@@ -2319,6 +2319,62 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
     expect(admission).toMatchObject({ allowed: true, scoped: true });
   });
 
+  it('admits a by-id self-filed bug even when the fleet has no authored claim spec', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({ ...scope.record, source: 'default' });
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+    admissionMocks.getWorkItem.mockResolvedValue(falloutBug);
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: falloutBug.id,
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('keeps atomic create+assign atomic for a self-filed bug when the fleet has no authored claim spec', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({ ...scope.record, source: 'default' });
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-member',
+      subject: { ...base, kind: 'bug', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('keeps atomic no-spec peer bugs refused instead of widening the self-filed exception', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({ ...scope.record, source: 'default' });
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-other-member',
+      subject: { ...base, kind: 'bug', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_missing' });
+  });
+
+  it('keeps atomic no-spec self-filed non-bugs refused instead of widening by provenance alone', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({ ...scope.record, source: 'default' });
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-member',
+      subject: { ...base, kind: 'change', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_missing' });
+  });
+
   it('admits a by-id claim for an item durably dispatched by the current fleet leader', async () => {
     admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
     admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
@@ -2421,11 +2477,11 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
     expect(admission).toMatchObject({ allowed: false, code: 'fleet_winding_down' });
   });
 
-  it('ORDERING CONTROL — a member with no explicit spec still gets fleet_scope_missing, not a self-filed pass', async () => {
+  it('keeps no-spec peer bugs refused instead of widening the lane beyond self-filed fallout', async () => {
     admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
     admissionMocks.getClaimSpecRecord.mockResolvedValue({ ...scope.record, source: 'default' });
     admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
-    admissionMocks.getWorkItem.mockResolvedValue(falloutBug);
+    admissionMocks.getWorkItem.mockResolvedValue(aWorkItem({ createdBy: 'su-other-member' }));
 
     const admission = await admitWorkItemForFleetTarget({
       target: 'su-member',

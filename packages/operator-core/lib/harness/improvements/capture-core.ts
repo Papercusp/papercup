@@ -513,7 +513,11 @@ export interface CaptureDeps {
       confirmShrink?: boolean;
     },
   ) => Promise<EngineerIssue | null>;
-  mergeIssuePayload?: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
+  mergeIssuePayload?: (
+    id: string,
+    patch: Record<string, unknown>,
+    opts?: { unset?: readonly string[] },
+  ) => Promise<EngineerIssue | null>;
   tagIssue?: (id: string, topic: string, by?: string) => Promise<void>;
   untagIssue?: (id: string, topic: string) => Promise<void>;
   /** P-004 append-only evidence seam. Optional so pure callers can inject a
@@ -848,7 +852,6 @@ async function promoteToolFailureProbation(
   if (!updated) return null;
   const promotedAt = new Date().toISOString();
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, {
-    lane: null,
     // The probation row may have been keyed by its first report while the
     // direct-evidence promotion carries a newer message fingerprint. Keep the
     // canonical top-level identity in sync with the promoted payload so the
@@ -867,7 +870,7 @@ async function promoteToolFailureProbation(
       promotedBy: input.createdBy ?? 'system:improvement-watchdog',
     },
     ideaLifecycle: initializeIdeaLifecycle(),
-  }).catch(() => null);
+  }, { unset: ['lane'] }).catch(() => null);
   if (!merged) return null;
   await (deps.tagIssue ?? tagIssue)(prior.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
   await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});

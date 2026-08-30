@@ -395,16 +395,21 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       severity: 'nit',
       payload: { lane: 'observation', watchdogKey: key, toolFailureProbation: probation('su-a') },
     });
-    const mergedPatches: Record<string, unknown>[] = [];
+    const mergeCalls: Array<{
+      patch: Record<string, unknown>;
+      opts: { unset?: readonly string[] } | undefined;
+    }> = [];
     const tags: string[] = [];
     const untags: string[] = [];
     const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
       ...deps(),
       findIssuesByWatchdogKeys: async () => [prior],
       updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
-      mergeIssuePayload: async (_id, patch) => {
-        mergedPatches.push(patch);
-        return existing({ ...prior, kind: 'change', severity: 'minor', payload: { ...(prior.payload as object), ...patch } });
+      mergeIssuePayload: async (_id, patch, opts) => {
+        mergeCalls.push({ patch, opts });
+        const payload = { ...(prior.payload as Record<string, unknown>), ...patch };
+        for (const key of opts?.unset ?? []) delete payload[key];
+        return existing({ ...prior, kind: 'change', severity: 'minor', payload });
       },
       tagIssue: async (_id, topic) => { tags.push(topic); },
       untagIssue: async (_id, topic) => { untags.push(topic); },
@@ -423,10 +428,13 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     );
     expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-PROBATION' } });
     expect(d.created).toHaveLength(0);
-    expect(mergedPatches[0]).toMatchObject({
-      lane: null,
+    expect(mergeCalls[0]?.patch).not.toHaveProperty('lane');
+    expect(mergeCalls[0]).toMatchObject({
+      opts: { unset: ['lane'] },
+      patch: {
       paths: ['packages/operator-core/lib/agent-tools/coordination/tools/send.ts'],
       toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
+      },
     });
     expect(tags).toEqual([IMPROVEMENT_TOPIC]);
     expect(untags).toEqual([OBSERVATION_TOPIC]);
@@ -494,14 +502,19 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         },
       },
     });
-    const mergedPatches: Record<string, unknown>[] = [];
+    const mergeCalls: Array<{
+      patch: Record<string, unknown>;
+      opts: { unset?: readonly string[] } | undefined;
+    }> = [];
     const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
       ...deps({ found: [prior] }),
       findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
       updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
-      mergeIssuePayload: async (_id, patch) => {
-        mergedPatches.push(patch);
-        return existing({ ...prior, kind: 'bug', severity: 'major', payload: { ...(prior.payload as object), ...patch } });
+      mergeIssuePayload: async (_id, patch, opts) => {
+        mergeCalls.push({ patch, opts });
+        const payload = { ...(prior.payload as Record<string, unknown>), ...patch };
+        for (const key of opts?.unset ?? []) delete payload[key];
+        return existing({ ...prior, kind: 'bug', severity: 'major', payload });
       },
       tagIssue: async () => {},
       untagIssue: async () => {},
@@ -537,10 +550,16 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         reportKind: 'promoted',
       }),
     ]);
-    expect(mergedPatches[0]).toMatchObject({
-      watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
-      lane: null,
-      toolFailureProbation: { state: 'promoted', watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape' },
+    expect(mergeCalls[0]?.patch).not.toHaveProperty('lane');
+    expect(mergeCalls[0]).toMatchObject({
+      opts: { unset: ['lane'] },
+      patch: {
+        watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+        toolFailureProbation: {
+          state: 'promoted',
+          watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+        },
+      },
     });
   });
 });
