@@ -185,12 +185,12 @@ export type GoalHolderLike = GoalHolderRow;
 /**
  * Why a goal is being reported.
  *
- * `unheld` (no goal-mode row at all) and `abandoned` (rows exist but no holder is
- * alive) are kept apart because they call for different remedies — the first was
- * never picked up, the second was dropped mid-flight — and because collapsing
- * them would hide which one is happening.
+ * `overlap` is the P-002 effective-holder health failure: multiple live rows
+ * remain after the elected successor's explicit handoff window (or were never
+ * named by one). It shares the existing escalation/dedup surface rather than
+ * creating a parallel monitor.
  */
-export type GoalLivenessReason = 'unheld' | 'abandoned';
+export type GoalLivenessReason = 'unheld' | 'abandoned' | 'overlap';
 
 export interface GoalLivenessAlert {
   goalId: string;
@@ -237,7 +237,24 @@ export function classifyGoalLiveness(
     goal.workspaceId,
     holders,
     verdicts,
+    nowMs,
   );
+  if (resolved.overlap.status === 'violation') {
+    const overlapSince =
+      resolved.overlap.expiresAtMs ?? resolved.elected?.setAtMs ?? goal.updatedAtMs;
+    return {
+      goalId: goal.goalId,
+      workspaceId: goal.workspaceId,
+      title: goal.title,
+      reason: 'overlap',
+      lastEvidenceMs: overlapSince,
+      darkMs: Math.max(0, nowMs - overlapSince),
+      holders: resolved.allLive.map((holder) => ({
+        ownerId: holder.ownerId,
+        sessionState: holder.sessionState ?? 'unknown',
+      })),
+    };
+  }
   // 'held' → someone is on it. 'unknown' → at least one holder is unresolvable,
   // which is not evidence of death. Only 'unheld' / 'lost' are reportable.
   if (resolved.liveness === 'held' || resolved.liveness === 'unknown') return null;
@@ -618,6 +635,32 @@ function makeReadReadiness(sql: Sql): GoalLivenessSweepDeps['readReadiness'] {
 
 async function defaultEscalate(alert: GoalLivenessAlert): Promise<void> {
   const dark = formatDark(alert.darkMs);
+  if (alert.reason === 'overlap') {
+    await openEscalation(WATCHDOG_IDENTITY, {
+      severity: 'major',
+      summary:
+        `Goal '${alert.goalId}' has multiple live GOAL holders beyond its elected handoff ` +
+        `— overlap ${dark}`,
+      body:
+        `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) has one ` +
+        `elected effective-holder lease, but these historical/current GOAL rows are still live ` +
+        `outside the successor's explicit bounded handoff: ` +
+        `${alert.holders.map((holder) => `${holder.ownerId} [${holder.sessionState}]`).join(', ')}.\n\n` +
+        `Only the elected lease is sovereign. Stop or exit GOAL mode on the non-elected ` +
+        `session(s); do not mint another holder. The goal-holder respawner is bound to the ` +
+        `elected lease and will recover it if that owner is lost.`,
+      meta: {
+        dedupKind: 'goal-holder-overlap',
+        subjectSignature: `${alert.workspaceId}:${alert.goalId}:overlap`,
+        goalId: alert.goalId,
+        goalWorkspaceId: alert.workspaceId,
+        reason: alert.reason,
+        overlapMs: alert.darkMs,
+        holders: alert.holders,
+      },
+    });
+    return;
+  }
   const holderNote =
     alert.holders.length === 0
       ? 'No goal-mode holder row exists for it at all — it was never picked up.'
