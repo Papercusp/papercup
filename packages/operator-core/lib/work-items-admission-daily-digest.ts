@@ -701,6 +701,36 @@ async function readDigestContext(
   };
 }
 
+/**
+ * Restore a recorded clamp block from a ledger row (D-033); null when absent or
+ * malformed.
+ *
+ * A pre-D-033 row genuinely has no clamp record, and `null` says exactly that.
+ * Do NOT default this to a zeroed block: that would render "this run was never
+ * measured for clamping" as "this run clamped nothing", which is the same
+ * absence-read-as-a-zero error the rubric's own positive-control rule exists to
+ * prevent — and it would silently poison any future re-derivation of the field
+ * ceilings from `maxOverageChars`.
+ */
+function parseClamps(value: unknown): DailyDigestClamps | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const overage = (v.maxOverageChars ?? {}) as Record<string, unknown>;
+  return {
+    umbrellasReturned: Number(v.umbrellasReturned ?? 0),
+    umbrellasDropped: Number(v.umbrellasDropped ?? 0),
+    titlesClamped: Number(v.titlesClamped ?? 0),
+    bodiesClamped: Number(v.bodiesClamped ?? 0),
+    reasonsClamped: Number(v.reasonsClamped ?? 0),
+    memberListsClamped: Number(v.memberListsClamped ?? 0),
+    maxOverageChars: {
+      title: Number(overage.title ?? 0),
+      body: Number(overage.body ?? 0),
+      reason: Number(overage.reason ?? 0),
+    },
+  };
+}
+
 /** Restore a recorded coverage block from a ledger row; null when absent or malformed. */
 function parseCoverage(value: unknown): DailyDigestCoverage | null {
   if (!value || typeof value !== 'object') return null;
@@ -751,6 +781,7 @@ async function readFinishedRun(sql: OrgSql, runId: string): Promise<DailyDigestR
             omitted: Number((detail.promptItems as Record<string, unknown>).omitted ?? 0),
           }
         : null,
+    clamps: parseClamps(detail.clamps),
     modelCalled: detail.modelCalled === true,
     tokensIn: Number(row.tokens_in ?? 0),
     tokensOut: Number(row.tokens_out ?? 0),

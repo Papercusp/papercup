@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   buildDailyDigestPrompt,
   dailyDigestWatchdogKey,
@@ -80,7 +81,7 @@ describe('work-item admission daily digest', () => {
       reason: 'Three independent consumers report the same lock boundary.',
       memberIds: ['WI-3', 'WI-1', 'WI-2'],
     };
-    expect(parseDailyDigestProposals({ umbrellas: [proposal] }, allowed)[0]?.memberIds).toEqual([
+    expect(parseDailyDigestProposals({ umbrellas: [proposal] }, allowed).proposals[0]?.memberIds).toEqual([
       'WI-1',
       'WI-2',
       'WI-3',
@@ -445,15 +446,109 @@ describe('daily digest output budget (D-031)', () => {
     expect(system).toContain(`memberIds <= ${DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA}`);
   });
 
-  it('rejects an answer that exceeds the derived umbrella cap', () => {
+  it('clamps an answer that exceeds the derived umbrella cap instead of discarding the run (D-033)', () => {
     const tooMany = {
-      umbrellas: Array.from({ length: MAX_DAILY_DIGEST_UMBRELLAS + 1 }, (_, i) => ({
+      umbrellas: Array.from({ length: MAX_DAILY_DIGEST_UMBRELLAS + 3 }, (_, i) => ({
         title: `t${i}`,
         body: 'b',
         reason: 'r',
-        memberIds: ['WI-1', 'WI-2', 'WI-3'],
+        memberIds: [`WI-${i}a`, `WI-${i}b`, `WI-${i}c`],
       })),
     };
-    expect(() => parseDailyDigestProposals(tooMany, new Set(['WI-1', 'WI-2', 'WI-3']))).toThrow();
+    const allowed = new Set(tooMany.umbrellas.flatMap((u) => u.memberIds));
+    const { proposals, clamps } = parseDailyDigestProposals(tooMany, allowed);
+    expect(proposals).toHaveLength(MAX_DAILY_DIGEST_UMBRELLAS);
+    expect(clamps.umbrellasReturned).toBe(MAX_DAILY_DIGEST_UMBRELLAS + 3);
+    expect(clamps.umbrellasDropped).toBe(3);
+    // Ranked most-significant-first, so the TAIL is what gets dropped.
+    expect(proposals[0]?.title).toBe('t0');
+  });
+
+  it('clamps over-long fields rather than rejecting the whole digest, and reports the overage (D-033)', () => {
+    const allowed = new Set(['WI-1', 'WI-2', 'WI-3']);
+    // Derive the expected overage from the ACTUAL fixture: the clamp measures the
+    // TRIMMED string, and 'word '.repeat(n) ends in a space, so a nominal constant
+    // here is off by one against the value the code really sees.
+    const longBody = 'word '.repeat(Math.ceil((DAILY_DIGEST_UMBRELLA_BODY_CHARS + 250) / 5)).trim();
+    const expectedBodyOverage = longBody.length - DAILY_DIGEST_UMBRELLA_BODY_CHARS;
+    const { proposals, clamps } = parseDailyDigestProposals(
+      {
+        umbrellas: [
+          {
+            title: 'x'.repeat(DAILY_DIGEST_UMBRELLA_TITLE_CHARS + 10),
+            body: longBody,
+            reason: 'y'.repeat(DAILY_DIGEST_UMBRELLA_REASON_CHARS + 30),
+            memberIds: ['WI-1', 'WI-2', 'WI-3'],
+          },
+        ],
+      },
+      allowed,
+    );
+    expect(proposals).toHaveLength(1);
+    const u = proposals[0]!;
+    expect(u.title.length).toBeLessThanOrEqual(DAILY_DIGEST_UMBRELLA_TITLE_CHARS);
+    expect(u.body.length).toBeLessThanOrEqual(DAILY_DIGEST_UMBRELLA_BODY_CHARS);
+    expect(u.reason.length).toBeLessThanOrEqual(DAILY_DIGEST_UMBRELLA_REASON_CHARS);
+    expect(clamps.titlesClamped).toBe(1);
+    expect(clamps.bodiesClamped).toBe(1);
+    expect(clamps.reasonsClamped).toBe(1);
+    // The overage is what a future tuning pass re-derives the ceilings from, so it
+    // must be the REAL distance past the ceiling, not merely a nonzero flag.
+    expect(clamps.maxOverageChars.body).toBe(expectedBodyOverage);
+    expect(clamps.maxOverageChars.reason).toBe(30);
+    expect(clamps.maxOverageChars.title).toBe(10);
+    // A word-boundary clamp must not hard-cut mid-word when a boundary is near.
+    expect(u.body.endsWith('…')).toBe(true);
+    expect(u.body).not.toMatch(/wor…$/);
+  });
+
+  it('leaves a compliant answer completely untouched and reports zero clamps (D-033)', () => {
+    const allowed = new Set(['WI-1', 'WI-2', 'WI-3']);
+    const body = 'A real umbrella body well inside its ceiling.';
+    const { proposals, clamps } = parseDailyDigestProposals(
+      { umbrellas: [{ title: 'Compliant', body, reason: 'Because.', memberIds: ['WI-1', 'WI-2', 'WI-3'] }] },
+      allowed,
+    );
+    expect(proposals[0]?.body).toBe(body);
+    expect(clamps.bodiesClamped).toBe(0);
+    expect(clamps.umbrellasDropped).toBe(0);
+    expect(clamps.maxOverageChars.body).toBe(0);
+  });
+
+  /**
+   * CONTROL — pins the D-033 regression, not merely the D-033 behaviour.
+   *
+   * This is the SHAPE that run wi882767-digest-d032-2 actually returned: a complete,
+   * well-formed, untruncated digest whose bodies ran past the ceiling. Under the
+   * pre-D-033 strict schema the entire ~5-minute run was discarded. If anyone
+   * reverts the clamp to a bare `.max()` reject, this fails.
+   */
+  it('CONTROL: the real d032-2 shape is rejected outright by a bare strict schema', () => {
+    const umbrellas = Array.from({ length: 14 }, (_, i) => ({
+      title: `Umbrella ${i}`,
+      body: 'z'.repeat(DAILY_DIGEST_UMBRELLA_BODY_CHARS + 120),
+      reason: 'r',
+      memberIds: [`WI-${i}a`, `WI-${i}b`, `WI-${i}c`],
+    }));
+    const strict = z.object({
+      umbrellas: z.array(
+        z.object({
+          title: z.string().max(DAILY_DIGEST_UMBRELLA_TITLE_CHARS),
+          body: z.string().max(DAILY_DIGEST_UMBRELLA_BODY_CHARS),
+          reason: z.string().max(DAILY_DIGEST_UMBRELLA_REASON_CHARS),
+          memberIds: z.array(z.string()),
+        }),
+      ),
+    });
+    expect(() => strict.parse({ umbrellas })).toThrow();
+
+    // The same payload now survives, trimmed and disclosed.
+    const { proposals, clamps } = parseDailyDigestProposals(
+      { umbrellas },
+      new Set(umbrellas.flatMap((u) => u.memberIds)),
+    );
+    expect(proposals).toHaveLength(14);
+    expect(clamps.bodiesClamped).toBe(14);
+    expect(clamps.maxOverageChars.body).toBe(120);
   });
 });
