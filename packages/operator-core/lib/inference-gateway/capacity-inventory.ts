@@ -1274,6 +1274,7 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'DEFAULT_FLOORS',
         'globalCap',
         'globalFloor',
+        'DEFAULT_AIMD_DECREASE_FACTOR',
         'RPM_AIMD_DECREASE',
         'RPM_AIMD_MIN_FACTOR',
         'RPM_AIMD_RECOVER_MS',
@@ -1282,6 +1283,13 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'governor-default-floors',
         'governor-global-cap',
         'governor-global-floor',
+        // `governor-global-aimd-decrease` (DEFAULT_AIMD_DECREASE_FACTOR) belongs here for the
+        // same reason `governor-global-floor` does: it is a baked constant of the GLOBAL
+        // concurrency gate, not of the per-provider RPM ladder that the `rpm-` writers cover.
+        // It was registered in the inventory without being added to any group, which left the
+        // matrix one row short of the inventory — the exact hole the length + group-contract
+        // assertions in capacity-compatibility.test.ts exist to catch.
+        'governor-global-aimd-decrease',
         'governor-rpm-aimd-decrease',
         'governor-rpm-aimd-min-factor',
         'governor-rpm-aimd-recovery',
