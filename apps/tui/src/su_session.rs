@@ -495,9 +495,34 @@ pub struct SuSessionCreateRequest {
     pub agent: SuSessionBackend,
     pub harness_slug: Option<String>,
     pub plan_slug: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account: Option<String>,
+    pub mode: Option<String>,
+    pub kickoff: Option<SuSessionKickoff>,
+    pub kickoff_prompt: Option<String>,
     pub carry: String,
     pub defer_spawn: bool,
     pub agent_chat_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuSessionKickoff {
+    pub kind: String,
+}
+
+/// PUI's client-side selection state for a fresh SU session. Every field maps
+/// onto the existing launch-su/agent-chat seams; this is not a second launcher.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SuSessionLaunchOptions {
+    pub plan_slug: Option<String>,
+    pub feature_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account: Option<String>,
+    pub mode: Option<String>,
+    pub kickoff: Option<SuSessionKickoff>,
+    pub kickoff_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -998,7 +1023,15 @@ mod tests {
         let create = serde_json::to_value(SuSessionCreateRequest {
             agent: SuSessionBackend::Omp,
             harness_slug: Some("papercup".into()),
-            plan_slug: None,
+            plan_slug: Some("plan-a".into()),
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("high".into()),
+            account: Some("auto".into()),
+            mode: Some("auto".into()),
+            kickoff: Some(SuSessionKickoff {
+                kind: "new-plan".into(),
+            }),
+            kickoff_prompt: Some("Start the selected plan.".into()),
             carry: "warm".into(),
             defer_spawn: true,
             agent_chat_id: "chat-1".into(),
@@ -1006,6 +1039,13 @@ mod tests {
         .unwrap();
         assert_eq!(create["agent"], "omp");
         assert_eq!(create["harness_slug"], "papercup");
+        assert_eq!(create["plan_slug"], "plan-a");
+        assert_eq!(create["model"], "gpt-5.6-sol");
+        assert_eq!(create["effort"], "high");
+        assert_eq!(create["account"], "auto");
+        assert_eq!(create["mode"], "auto");
+        assert_eq!(create["kickoff"]["kind"], "new-plan");
+        assert_eq!(create["kickoff_prompt"], "Start the selected plan.");
         assert_eq!(create["defer_spawn"], true);
         assert_eq!(create["agent_chat_id"], "chat-1");
         assert!(create.get("harnessSlug").is_none());

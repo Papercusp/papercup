@@ -1504,6 +1504,7 @@ async fn run<B: Backend>(
                     role,
                     backend,
                     carry,
+                    launch,
                     initial_turn,
                 } => {
                     tokio::spawn(open_su_session_task(
@@ -1511,6 +1512,7 @@ async fn run<B: Backend>(
                         role,
                         backend,
                         carry,
+                        launch,
                         initial_turn,
                         tx.clone(),
                     ));
@@ -3999,6 +4001,7 @@ async fn open_su_session_task(
     role: String,
     backend: crate::su_session::SuSessionBackend,
     carry: String,
+    launch: crate::su_session::SuSessionLaunchOptions,
     initial_turn: Option<String>,
     tx: UnboundedSender<Event>,
 ) {
@@ -4014,7 +4017,7 @@ async fn open_su_session_task(
             &harness,
             &crate::agent_chats::NewAgentChat {
                 role,
-                feature_id: None,
+                feature_id: launch.feature_id.clone(),
                 title: Some(format!("{} SU session", backend.label())),
             },
         )
@@ -4033,7 +4036,13 @@ async fn open_su_session_task(
         crate::su_session::SuSessionCreateRequest {
             agent: backend,
             harness_slug: Some(harness.clone()),
-            plan_slug: None,
+            plan_slug: launch.plan_slug,
+            model: launch.model,
+            effort: launch.effort,
+            account: launch.account,
+            mode: launch.mode,
+            kickoff: launch.kickoff,
+            kickoff_prompt: launch.kickoff_prompt,
             carry,
             defer_spawn: true,
             agent_chat_id: chat.id.clone(),
