@@ -114,7 +114,7 @@ describe('LearningPotRail', () => {
     expect(H.queries).toContain('automation.catalog');
   });
 
-  it('renders one chip per pot with a learning presence', () => {
+  it('renders one chip per pot that is actually learning', () => {
     const { container } = renderRail(
       arming({ gymPots: [gym('papercusp')], lanes: [lane('acme')], potScope: scope([]) }),
     );
@@ -150,10 +150,13 @@ describe('LearningPotRail', () => {
 
   it('distinguishes a gym that was never set up from one switched off', () => {
     const { container } = renderRail(
-      // papercusp has a lane but no gym row (absent); acme has a disarmed gym (off).
+      // papercusp has a lane but no gym row (absent); acme has a disarmed gym
+      // (off) PLUS an armed lane, which is what keeps it on the rail at all —
+      // a disarmed gym and nothing else would be dormant, and dormant chips do
+      // not render.
       arming({
         gymPots: [gym('acme', { enabled: false, spentUsd: 0 })],
-        lanes: [lane('papercusp')],
+        lanes: [lane('papercusp'), lane('acme')],
         potScope: scope([]),
       }),
     );
