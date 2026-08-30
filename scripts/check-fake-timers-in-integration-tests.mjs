@@ -161,13 +161,15 @@ const BASELINE = new Set();
  * the length-preservation property through it; there is deliberately no second
  * implementation here. See the header for why the private copy was removed.
  *
+ * Written as a ONE-LINE arrow on purpose. `guard-string-literal-blindness.test.ts` judges
+ * delegation on the definition's OWN line — deliberately conservative, so a multi-line
+ * wrapper that merely forwards still scores as a hand-roll. Keep the call on this line.
+ *
  * @param {string} text
- * @param {string} [fileName] the real path, so the parser picks the right ScriptKind.
+ * @param {string} [file] the real path, so the parser picks the right ScriptKind.
  * @returns {string}
  */
-export function maskCommentsAndStrings(text, fileName) {
-  return stripCommentsAndStrings(text, fileName);
-}
+export const maskCommentsAndStrings = (text, file) => stripCommentsAndStrings(text, file);
 
 /**
  * Every `useFakeTimers(...)` call in `text`, as `{ argText, line }`.
