@@ -7,21 +7,47 @@ import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems } from './work-items';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
+// Manual citation checks must use the same subject tree as the frozen audit, and
+// the fresh-judge prompt and the assigned-grader briefs must say so identically —
+// so the guidance is single-sourced beside the briefs, in grading-cascade.ts.
+import { ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE, GRADING_CASCADE_FLAVOR } from './consult/grading-cascade';
 import { listTasks } from './task-manager/store';
 import { killTask } from './task-manager/control';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
+/** One entry of the assigned grader MENU, with its selection provenance. */
+export type AssignedGrader = {
+  ownerId: string;
+  score: number;
+  liveness: string;
+  /** 'floor' = above the relevance floor; 'minimum' = best-available below it
+   * (D-002 [owner] minimum-fill). P-004 reads this to stop a 'minimum' card
+   * superseding a 'floor' one under the gate's latest-wins pick, so it has to
+   * survive out of selection and onto the lifecycle. */
+  via: 'floor' | 'minimum';
+};
+
 export type AcceptanceGraderLifecycle = {
-  /** 'assigned' (P-011/D-009): an existing above-floor, non-excluded, reachable
-   * agent was selected by the relevance router — no fresh judge was launched. */
+  /** 'assigned' (P-011/D-009): existing non-excluded, reachable agents were
+   * selected by the relevance router — no fresh judge was launched. */
   state: 'launched' | 'deduped' | 'failed' | 'assigned';
   idempotencyKey: string;
   label: string;
   launch?: unknown;
   error?: string;
-  /** D-009 discovery outcome (state 'assigned'): the selected grader. */
-  grader?: { ownerId: string; score: number; liveness: string };
+  /**
+   * Discovery outcome (state 'assigned'): the ordered grader MENU, head first.
+   * A MENU rather than one grader since
+   * unified-responder-selection-critique-and-grading-2026-08-30 D-001/D-003
+   * [owner] — min 1 / max 2 under the shared ACCEPTANCE_GRADING_POLICY, and the
+   * tail is NOT woken here: grader k+1 is woken by the cascade only after k
+   * replies, declines or expires, carrying k's card.
+   */
+  graders?: AssignedGrader[];
+  /** The grading cascade's conversation (state 'assigned') — the thread the
+   * graders reply into, and the row whose cursor the cascade advances. */
+  conversationId?: string;
   /** D-009 exclusion audit trail (implementers + heavy consult participants +
    * rubric author + shipper) — set whenever discovery ran. */
   excluded?: string[];
@@ -29,9 +55,11 @@ export type AcceptanceGraderLifecycle = {
   eligibility?: GraderEligibility;
   /** Explicit escalation when the measured post-exclusion pool is empty. */
   escalation?: GraderEscalation;
-  /** Why discovery fell through to the fresh launch (state launched/deduped). */
-  freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded' | 'discovery_error';
-  /** Wake delivery for an assigned grader ({ woke: 0 } = parked; they read the
+  /** Why discovery produced an EMPTY menu and fell through to the fresh launch
+   * (state launched/deduped). Below-floor is no longer among these reasons —
+   * D-002 replaced it with minimum-fill; see acceptance-grader-select.ts. */
+  freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded' | 'discovery_error';
+  /** Wake delivery for the HEAD grader ({ woke: 0 } = parked; they read the
    * grading request on their next turn — the subscribe is durable). */
   notified?: { woke: number };
   /** A stable launch receipt may outlive the judge mission it originally
@@ -79,15 +107,6 @@ const ACCEPTANCE_GRADER_FALLBACK = {
   effort: 'high' as const,
   account: 'default' as const,
 };
-
-/**
- * Manual citation checks must use the same subject tree as the frozen audit.
- * A superproject records a nested submodule as a gitlink, not as a tree of
- * blobs, so asking the superproject to resolve a file below that gitlink is an
- * expected miss rather than evidence that the audit fabricated the path.
- */
-const ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE =
-  "For manual citation spot-checks, first resolve the subject harness checkout (a fresh judge is launched in it; a cross-hive judge can use `harness:phase_path` for the subject staging path), then use `capability:read` on the cited repository-relative path there. Do not use the grader's checkout as a substitute. For a path below a git submodule (for example `libs/papercusp/...`), the superproject stores only a gitlink: `git rev-parse <superproject-ref>:<nested-path>` and `git show <superproject-ref>:<nested-path>` are expected to fail and are not evidence of a fabricated citation. Inspect the working-tree file or, when history is required, inspect the superproject gitlink and run `capability:git` with `cwd` set to the nested submodule and its pinned submodule SHA. Mark a citation unresolved only when the subject root or the relevant submodule cannot resolve it.";
 
 export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted' | 'startup_connection_stalled';
 
@@ -441,25 +460,32 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
  * D-009 (get-feedback-relevance-consults-2026-08-16, P-011) — discovery-FIRST
  * grader resolution: route the plan + acceptance rubric through the relevance
  * router with the independence exclusion set (implementers + heavy consult
- * participants + rubric author + shipper); the top non-excluded, reachable
- * candidate above the floor becomes the ASSIGNED grader (woken with the grading
- * request — no fresh judge spent). Below floor / all excluded / all dead /
- * embedder degraded → the pre-existing fresh-session launch (the floor
- * asymmetry: for grading, WRONG context disqualifies and a grader MUST exist,
- * so below-floor mints fresh — "a fresh session agent is better than an agent
- * with THE WRONG context"). Discovery is a service, never a new failure mode:
- * any discovery fault falls through to the fresh launch.
+ * participants + rubric author + shipper).
+ *
+ * SUPERSEDED IN ONE RESPECT by
+ * unified-responder-selection-critique-and-grading-2026-08-30 D-001/D-002/D-003
+ * [owner]: this no longer resolves ONE above-floor grader. It resolves a MENU of
+ * min 1 / max 2 under the shared ACCEPTANCE_GRADING_POLICY, below-floor
+ * MINIMUM-FILLS rather than minting a fresh session, and delivery is a cascade —
+ * only the head is woken here. Fresh-mint survives strictly for an EMPTY menu
+ * (nobody eligible, nobody reachable, or relevance unmeasurable). Discovery is
+ * still a service, never a new failure mode: any discovery fault falls through
+ * to the fresh launch.
  *
  * Same signature as launchAcceptanceGrader so the set-plan-status seam can use
  * either interchangeably (its tests inject their own).
  */
 type GraderDiscoveryResult = {
   verdict: 'assigned' | 'fresh';
-  grader?: { ownerId: string; score: number; liveness: string };
+  /** The ordered menu, head first. Empty exactly when verdict is 'fresh'. */
+  graders: AssignedGrader[];
+  /** The snapshot to persist on the cascade row (menu provenance + fill pool).
+   * Absent when the menu is empty — there is no cascade to open. */
+  routing?: unknown;
   excluded: string[];
   eligibility?: GraderEligibility;
   escalation?: GraderEscalation;
-  freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded';
+  freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded';
 };
 
 /** Prod discovery wiring: the P-002 router + embedder + liveness oracle behind
@@ -538,15 +564,13 @@ async function prodDiscoverGrader(
   );
   return {
     verdict: selection.verdict,
-    ...(selection.grader
-      ? {
-          grader: {
-            ownerId: selection.grader.ownerId,
-            score: selection.grader.score,
-            liveness: selection.grader.liveness,
-          },
-        }
-      : {}),
+    graders: selection.graders.map((selected) => ({
+      ownerId: selected.candidate.ownerId,
+      score: selected.candidate.score,
+      liveness: selected.candidate.liveness,
+      via: selected.via,
+    })),
+    ...(selection.routing ? { routing: selection.routing } : {}),
     excluded: selection.excluded,
     eligibility: selection.eligibility,
     ...(selection.escalation ? { escalation: selection.escalation } : {}),
@@ -554,52 +578,240 @@ async function prodDiscoverGrader(
   };
 }
 
-/** Prod wake for an assigned grader (subscribe + ping + wake). Injected as
- * `deps.notifyAssigned` in tests. */
-export function buildAssignedAcceptanceGraderBrief(
-  planSlug: string,
-  harnessSlug: string | null,
-  rubricId: string,
-): string {
-  const planRead = harnessSlug
-    ? `plans:get { slug:${JSON.stringify(planSlug)}, harness:${JSON.stringify(harnessSlug)} }`
-    : `plans:get { slug:${JSON.stringify(planSlug)} }`;
-  const targetHive = harnessSlug ? `, targetHive:${JSON.stringify(harnessSlug)}` : '';
-  return (
-    `The relevance router selected you to grade plan '${planSlug}' — your transcript history matched the ` +
-    `plan + rubric above the precision floor and you are outside its implementer/consult-participant ` +
-    `exclusion set (D-009 independence). Because your session may be in a different hive, keep the plan ` +
-    `harness explicit: read the plan (${planRead}) + the acceptance rubric '${rubricId}' + the completion ` +
-    `evidence, then emit ONE complete scorecard: ` +
-    `scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
-    `with concrete evidence per rating. The targetHive makes deterministic checks run against the subject ` +
-    `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} The verdict is YOURS — consult if you need to, but the grade ` +
-    `is not delegable.`
-  );
+// The grader briefs live in consult/grading-cascade.ts alongside the CASCADE
+// copy, so the first grader and the ones the cascade wakes cannot drift into
+// being told different things. Re-exported here because this module is where
+// every existing importer looks for them.
+export {
+  buildAssignedAcceptanceGraderBrief,
+  buildMinimumFillAcceptanceGraderBrief,
+} from './consult/grading-cascade';
+
+/** What opening the grading cascade has to be told, and what it reports back. */
+export interface OpenGradingCascadeParams {
+  /** The PLAN's workspace, not the shipper's ambient context: the cascade row is
+   * workspace-partitioned and every later trigger (the expiry sweep especially)
+   * finds it by that partition. */
+  workspaceId: string;
+  planSlug: string;
+  harnessSlug: string | null;
+  rubricId: string;
+  /** The ordered menu. Only the HEAD is woken; the tail is persisted for the
+   * cascade to reach when the head replies, declines or expires. */
+  graders: AssignedGrader[];
+  /** The routing snapshot to persist (menu provenance + the refill pool). */
+  routing: unknown;
+}
+export interface OpenGradingCascadeResult {
+  conversationId: string;
+  woke: number;
 }
 
-async function prodNotifyAssignedGrader(
-  planSlug: string,
-  harnessSlug: string | null,
-  rubricId: string,
-  graderOwnerId: string,
+/**
+ * Open the grading cascade (D-003 + D-005 [owner]). Injected as
+ * `deps.openCascade` in tests — this default reaches the org PG.
+ *
+ * The cascade is a REAL consult row, not a grading-shaped lookalike, and that is
+ * the whole point of D-005: `cascade-core`'s advance, the decline verb and the
+ * expiry sweep are all already CAS-guarded against exactly this row, so grading
+ * inherits every one of them instead of growing a second advance loop that would
+ * have to re-derive the same three-way concurrency guard. What makes the row a
+ * GRADING cascade is the `cascade` block on its routing snapshot, which is what
+ * every trigger reads to render grader-shaped wake copy.
+ *
+ * The head grader is woken with the brief matching HOW they were selected: an
+ * above-floor pick is told the router matched them; a minimum-fill pick is told
+ * plainly that it did not (D-002 — a below-floor grader who believes they were
+ * matched on expertise grades with unearned confidence).
+ */
+async function prodOpenGradingCascade(
+  params: OpenGradingCascadeParams,
   ctx: LaunchCtx,
-): Promise<{ woke: number }> {
-  const [{ notifyAgents }, { resolveAgentIdentity }] = await Promise.all([
-    import('./agent-tools/coordination/notify-agents'),
-    import('./agent-tools/coordination/identity'),
-  ]);
+): Promise<OpenGradingCascadeResult> {
+  const [{ getOrgPg }, { notifyAgents }, { resolveAgentIdentity }, conversations, { PROCEED_EXPIRY_MS }, briefs] =
+    await Promise.all([
+      import('@papercusp/db-org'),
+      import('./agent-tools/coordination/notify-agents'),
+      import('./agent-tools/coordination/identity'),
+      import('./agent-tools/coordination/conversations'),
+      import('./consult/get-feedback-core'),
+      import('./consult/grading-cascade'),
+    ]);
   const identity = resolveAgentIdentity(ctx as never);
+  const sql = getOrgPg().sql;
+
+  // IDEMPOTENT. `resolveAcceptanceGrader` is re-dispatched by the
+  // acceptance-grading sweep for any plan still waiting on a grade, and that was
+  // harmless while assignment was a single notification — re-notifying the same
+  // grader costs nothing. Opening a cascade is NOT harmless: a second row means
+  // two cursors over two menus, two independent expiry windows, and a card that
+  // advances one chain while the other silently waits. An already-open cascade
+  // for this rubric IS the live dispatch, and its own expiry sweep is what
+  // retries a silent grader — so re-dispatch reports it rather than duplicating
+  // it. (`woke: 0` is honest: nobody was woken by THIS call.)
+  const existing = (await sql`
+    SELECT conversation_id
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${params.workspaceId}
+       AND closed_at IS NULL
+       AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+       AND routing -> 'cascade' ->> 'rubricId' = ${params.rubricId}
+     LIMIT 1
+  `) as unknown as Array<{ conversation_id: string }>;
+  if (existing[0]) return { conversationId: existing[0].conversation_id, woke: 0 };
+
+  const head = params.graders[0]!;
+  const brief =
+    head.via === 'minimum'
+      ? briefs.buildMinimumFillAcceptanceGraderBrief(params.planSlug, params.harnessSlug, params.rubricId)
+      : briefs.buildAssignedAcceptanceGraderBrief(params.planSlug, params.harnessSlug, params.rubricId);
+
+  const opened = await conversations.openConversation(identity, {
+    kind: 'consult',
+    title: `Acceptance grading — ${params.planSlug} (${params.rubricId})`,
+    body: brief,
+    ...(params.harnessSlug ? { harness_slug: params.harnessSlug } : {}),
+    direct_to: [head.ownerId],
+    producer: 'acceptance-gate:grading-cascade',
+  });
+  const conversationId = opened.conversation.id;
+
+  // The persisted snapshot carries the flavour block, so a decline or an expiry
+  // — neither of which knows anything about grading — still wakes grader 2 with
+  // grading copy rather than consult copy.
+  const routing = {
+    ...(params.routing as Record<string, unknown>),
+    cascade: {
+      flavor: briefs.GRADING_CASCADE_FLAVOR,
+      planSlug: params.planSlug,
+      rubricId: params.rubricId,
+      harnessSlug: params.harnessSlug,
+    },
+  };
+  const expiresAt = new Date(Date.now() + PROCEED_EXPIRY_MS).toISOString();
+  await sql`
+    INSERT INTO harness_shared.consult_state
+      (workspace_id, conversation_id, requester_id, responder_id, state, question,
+       latency_contract, origin_task_ref, routing, expires_at, wakes_used, cascade_cursor)
+    VALUES
+      (${params.workspaceId}, ${conversationId}, ${identity.ownerId}, ${head.ownerId},
+       ${'awaiting_responder'}, ${brief}, ${'proceed'}, ${params.planSlug},
+       ${sql.json(routing as never)}, ${expiresAt}::timestamptz, 1, 0)
+  `;
+
   const res = await notifyAgents(identity, {
-    addressees: [graderOwnerId],
-    objectRef: { kind: 'plan', ref: planSlug },
-    summary: `You are the ASSIGNED acceptance grader for plan ${planSlug} (rubric ${rubricId})`,
-    body: buildAssignedAcceptanceGraderBrief(planSlug, harnessSlug, rubricId),
-    planSlug,
-    ...(harnessSlug ? { harnessSlug } : {}),
+    addressees: [head.ownerId],
+    objectRef: { kind: 'conversation', ref: conversationId },
+    summary: `⚖️ acceptance grading (grader 1/${params.graders.length}): plan ${params.planSlug}`,
+    body: brief,
+    planSlug: params.planSlug,
+    ...(params.harnessSlug ? { harnessSlug: params.harnessSlug } : {}),
     wake: true,
   });
-  return { woke: res.woke };
+  return { conversationId, woke: res.woke };
+}
+
+/**
+ * A FILED grading card advances the grading cascade (D-003 [owner]: grader k+1
+ * is woken holding grader k's card).
+ *
+ * WHY THE CARD, AND NOT ONLY A CONSULT REPLY. The cascade already advances on
+ * reply, decline and expiry, and a grader who replies gets that for free. But
+ * the ACT that discharges a grading is `scorecards:emit`, not a consult reply —
+ * a grader who files their card and forgets to reply would otherwise leave the
+ * chain parked until the 4h expiry, and grader 2 would then be woken with an
+ * EMPTY digest, silently losing the carry that makes latest-wins coherent. So
+ * the card itself is a fourth trigger into the SAME advance (D-005 — the
+ * mechanism is not duplicated, only entered from one more place).
+ *
+ * IDEMPOTENT BY CONSTRUCTION, TWICE OVER: it advances only when the emitter is
+ * the row's CURRENT responder (the rubric author's later acceptance re-emit, and
+ * a card from a grader the cursor has already moved past, both no-op), and
+ * `advanceCascade`'s CAS then makes a race with the reply verb or the expiry
+ * sweep a clean `raced` no-op rather than a double wake.
+ *
+ * FAIL-SOFT: the card is the durable truth. Any fault here is swallowed — a
+ * missed advance costs the carry and delays grader 2 to the expiry sweep; a
+ * throw would fail a scorecard write that already succeeded.
+ */
+export async function advanceGradingCascadeOnCard(input: {
+  workspaceId: string;
+  rubricRef: string;
+  graderOwnerId: string;
+  /** What grader k concluded — carried verbatim (bounded) to grader k+1. */
+  cardSummary: string;
+}): Promise<{ advanced: boolean; next?: string; reason?: string }> {
+  try {
+    const [{ getOrgPg }, { advanceCascade, makeDigestEntry }, { notifyAgents }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('./consult/cascade-core'),
+      import('./agent-tools/coordination/notify-agents'),
+    ]);
+    const sql = getOrgPg().sql;
+    const rows = (await sql`
+      SELECT conversation_id, requester_id, responder_id, question, latency_contract,
+             routing, cascade_cursor, cascade_digest
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${input.workspaceId}
+         AND closed_at IS NULL
+         AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+         AND routing -> 'cascade' ->> 'rubricId' = ${input.rubricRef}
+       ORDER BY created_at DESC
+       LIMIT 1
+    `) as unknown as Array<{
+      conversation_id: string;
+      requester_id: string;
+      responder_id: string | null;
+      question: string;
+      latency_contract: string;
+      routing: unknown;
+      cascade_cursor: number;
+      cascade_digest: unknown;
+    }>;
+    const row = rows[0];
+    if (!row) return { advanced: false, reason: 'no_open_grading_cascade' };
+    if (row.responder_id !== input.graderOwnerId) {
+      return { advanced: false, reason: 'not_current_grader' };
+    }
+    const nowIso = new Date().toISOString();
+    const result = await advanceCascade(
+      {
+        workspaceId: input.workspaceId,
+        conversationId: row.conversation_id,
+        question: row.question,
+        latencyContract: row.latency_contract,
+        requesterId: row.requester_id,
+        routing: row.routing,
+        cascadeCursor: row.cascade_cursor,
+        digest: row.cascade_digest,
+        event: makeDigestEntry(input.graderOwnerId, 'answer', nowIso, input.cardSummary),
+        // A grader engaged, so the row stays 'active' exactly as a reply leaves it.
+        stateOnAdvance: 'active',
+        nowIso,
+      },
+      sql,
+      async (opts) => {
+        const res = await notifyAgents(
+          { ownerId: row.requester_id } as never,
+          {
+            addressees: [opts.responder],
+            objectRef: { kind: 'conversation', ref: opts.conversationId },
+            summary: opts.summary,
+            body: opts.body,
+            wake: true,
+          },
+        );
+        return { woke: res.woke };
+      },
+    );
+    return {
+      advanced: result.advanced,
+      ...(result.next ? { next: result.next.ownerId } : {}),
+      ...(result.raced ? { reason: 'raced' } : result.exhausted ? { reason: 'menu_exhausted' } : {}),
+    };
+  } catch (err) {
+    return { advanced: false, reason: `error: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 export async function resolveAcceptanceGrader(
@@ -607,7 +819,7 @@ export async function resolveAcceptanceGrader(
   ctx: LaunchCtx,
   deps: Parameters<typeof launchAcceptanceGrader>[2] & {
     discover?: typeof prodDiscoverGrader;
-    notifyAssigned?: typeof prodNotifyAssignedGrader;
+    openCascade?: typeof prodOpenGradingCascade;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   let discovery:
@@ -626,33 +838,43 @@ export async function resolveAcceptanceGrader(
     const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug) : null;
     if (plan && rubric) {
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
-      if (selection.verdict === 'assigned' && selection.grader) {
+      if (selection.verdict === 'assigned' && selection.graders.length > 0) {
         const rubricId = String((rubric as unknown as { rubricId: string }).rubricId);
-        const notified = await (deps.notifyAssigned ?? prodNotifyAssignedGrader)(
-          planSlug,
-          plan.row.harnessSlug ?? null,
-          rubricId,
-          selection.grader.ownerId,
+        // Opening the cascade is BEST-EFFORT in exactly the way the single wake
+        // it replaces was: a failure here must not turn a resolvable grading
+        // into a failed ship. The difference is that a failure now costs the
+        // cascade, not just a notification — so it is reported as woke:0 with no
+        // conversation rather than silently looking like a delivered assignment.
+        const opened = await (deps.openCascade ?? prodOpenGradingCascade)(
+          {
+            workspaceId: plan.row.workspaceId,
+            planSlug,
+            harnessSlug: plan.row.harnessSlug ?? null,
+            rubricId,
+            graders: selection.graders,
+            routing: selection.routing,
+          },
           ctx,
-        ).catch(() => ({ woke: 0 }));
+        ).catch(() => null);
         // { woke: 0 } is fine: the subscribe is durable — a parked grader reads
         // the grading request on its next turn.
         return {
           state: 'assigned',
           idempotencyKey: '',
           label: '',
-          grader: selection.grader,
+          graders: selection.graders,
+          ...(opened ? { conversationId: opened.conversationId } : {}),
           excluded: selection.excluded,
           eligibility: selection.eligibility,
           ...(selection.escalation ? { escalation: selection.escalation } : {}),
-          notified,
+          notified: { woke: opened?.woke ?? 0 },
         };
       }
       discovery = {
         excluded: selection.excluded,
         eligibility: selection.eligibility,
         ...(selection.escalation ? { escalation: selection.escalation } : {}),
-        freshReason: selection.freshReason ?? 'no_qualified_non_excluded',
+        freshReason: selection.freshReason ?? 'no_eligible_non_excluded',
       };
     }
   } catch {
