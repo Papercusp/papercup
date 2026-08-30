@@ -46,6 +46,21 @@ vi.mock('../../events/await/store', () => ({
   // consumer reads it as `backlog?.… ?? 0`, so null is an already-handled path.
   deliveryBacklogSummary: vi.fn(async () => null),
   wakeMeter: vi.fn(),
+  // EI-19362106022997577: await.ts imports these too. They were absent while no test
+  // here walked their branches — a latent stale-mock failure waiting for an unrelated
+  // future edit to surface it as an opaque "No <x> export is defined on the mock".
+  // Defaults match await.test.ts's factory so they are faithful, not merely present.
+  hasLiveExactAwaitForSubscriberKey: vi.fn(async () => false),
+  cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+  FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
+  probeKeyFireEvidence: vi.fn(async (eventKey: string) => ({
+    prefix: eventKey.split(':').slice(0, 2).join(':'),
+    exact: false,
+    distinctKeys: 0,
+    fires: 0,
+    lastFiredAt: null,
+  })),
+  probePatternMatchScope: vi.fn(async () => ({ prefix: '', matchedKeys: [], truncated: false })),
 }));
 vi.mock('../../events/await/compose', () => ({ registerComposedAwait: vi.fn() }));
 vi.mock('../../events/await/compose-store', () => ({
@@ -58,6 +73,10 @@ import awaitTool from './await';
 import cancel from './cancel';
 import status from './status';
 import { registerAwait, listActiveAwaits, listRecentDeliveries } from '../../events/await/store';
+// Namespace view of the SAME mocked module — the coverage guard at the bottom of this
+// file checks its key set against production's import list.
+import * as storeMock from '../../events/await/store';
+import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { registerComposedAwait } from '../../events/await/compose';
 import { cancelComposedTree, listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -213,5 +232,20 @@ describe('events:status composed render', () => {
     const out = await callStatus({});
     expect('composed_awaits' in out).toBe(false);
     expect(out.active_awaits.map((a: any) => a.await_id)).toEqual([11]);
+  });
+});
+
+// This suite DRIVES the real await.ts handler through a PARTIAL mock of
+// events/await/store, so its factory stands in for that module's whole used surface
+// and must track production's import list. It was missing five of them when this guard
+// was added. See testing/mock-import-coverage.ts for why the promise silently rots.
+describe('events/await/store mock coverage', () => {
+  it('mocks every store export the handler under test imports', () => {
+    assertMockCoversImports(storeMock, {
+      importerUrl: import.meta.url,
+      sources: ['./await.ts'],
+      moduleSpecifier: 'events/await/store',
+      expectNames: ['probePatternMatchScope'],
+    });
   });
 });
