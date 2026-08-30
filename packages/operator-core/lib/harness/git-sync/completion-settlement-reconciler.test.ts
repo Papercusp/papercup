@@ -138,6 +138,60 @@ function settlementEmitMock() {
   }));
 }
 
+describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh', () => {
+  const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+  const matchingLookup = () => new Map([
+    ['a.ts', resolved('d'.repeat(40))],
+    ['nested/b.ts', resolved('e'.repeat(40))],
+  ]);
+
+  it('refreshes treeStamp.contentIdentity so the upgrade proves under the migration-972 floor', async () => {
+    const emit = settlementEmitMock();
+    const sql = settlementSql({ updateHits: [true] });
+
+    await reconcileProposedCompletionsAtCommit(SHA, scope, { sql, lookup: matchingLookup, emit });
+
+    const updateCall = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
+    const nextPayload = updateCall?.[1] as unknown as Record<string, unknown>;
+    const evidence = nextPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
+      treeStamp?: { headSha: string; repositoryRoot: string; contentIdentity: Array<{
+        path: string; workingTreeBlobSha: string | null; headBlobSha: string | null;
+      }> };
+    };
+
+    // This is the exact predicate migration 972's completion_authority_floor_trg
+    // (and its TS mirror completionTreeContentIdentityMatches) requires — proving
+    // it here is proving the upgrade this reconciler just wrote SURVIVES the trigger
+    // instead of being downgraded straight back to 'proposed' on the same write.
+    expect(evidence.treeStamp).toBeDefined();
+    expect(evidence.treeStamp!.headSha).toBe(SHA);
+    expect(evidence.treeStamp!.repositoryRoot).toBe(manifest.repositoryRoot);
+    expect(evidence.treeStamp!.contentIdentity).toHaveLength(2);
+    for (const entry of evidence.treeStamp!.contentIdentity) {
+      expect(entry.workingTreeBlobSha).not.toBeNull();
+      expect(entry.headBlobSha).toBe(entry.workingTreeBlobSha);
+    }
+  });
+
+  it('does NOT write a treeStamp for a partial/residual reconciliation (nothing to prove yet)', async () => {
+    const emit = settlementEmitMock();
+    const sql = settlementSql({ updateHits: [true] });
+
+    await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: () => new Map([['a.ts', resolved('f'.repeat(40))]]),
+      emit,
+    });
+
+    const updateCall = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
+    const nextPayload = updateCall?.[1] as unknown as Record<string, unknown>;
+    const evidence = nextPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+    expect(evidence.treeStamp).toBeUndefined();
+  });
+});
+
 describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
   const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
   const matchingLookup = () => new Map([

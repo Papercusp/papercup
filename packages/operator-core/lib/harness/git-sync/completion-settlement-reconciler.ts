@@ -128,9 +128,20 @@ export async function reconcileProposedCompletionsAtCommit(
     if (!residualPaths) continue;
     residualCount += residualPaths.length;
     const nextManifest = { ...parsed.data, residualPaths };
+    // WI-1053550: only when settlement is COMPLETE (about to set authority='committed'
+    // below) does the trigger's floor apply to this write — refresh treeStamp so the
+    // upgrade survives it instead of being downgraded straight back. See
+    // confirmedTreeStampForSettlement's doc for why this is a sound proof, not a bypass.
+    const confirmedTreeStamp = residualPaths.length === 0
+      ? confirmedTreeStampForSettlement(parsed.data, commitSha)
+      : undefined;
     const nextPayload = {
       ...payload,
-      [TERMINAL_COMPLETION_EVIDENCE_KEY]: { ...evidence, settlementManifest: nextManifest },
+      [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+        ...evidence,
+        settlementManifest: nextManifest,
+        ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
+      },
     };
     const result = await sql<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
