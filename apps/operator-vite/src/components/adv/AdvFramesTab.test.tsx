@@ -385,6 +385,24 @@ describe('AdvFramesTab — local desktops (P-004)', () => {
     expect(view.getAttribute('data-display')).toBe('110');
   });
 
+  it('a local selection in WATCH (not drive) mode skips the screen-track wait and mounts VNC directly', async () => {
+    // Regression control for EI-21881516933069798: a local Xvfb desktop is not
+    // a deployed frame and can never publish the holepunch screen track
+    // FrameScreenTrackView waits on, so trying it first only pays its 8s
+    // FIRST_FRAME_TIMEOUT_MS for a guaranteed fallback. VNC must mount
+    // immediately in plain watch mode (drive=false), and the screen-track view
+    // must never appear at all.
+    nuqsState.frame = 'local:alpha:110';
+    nuqsState.live = true;
+    nuqsState.drive = false;
+    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
+    render(<AdvFramesTab />);
+    const view = await screen.findByTestId('vnc-view');
+    expect(view.getAttribute('data-target')).toBe('local');
+    expect(view.getAttribute('data-drive')).toBe('false');
+    expect(screen.queryByTestId('screentrack-view')).toBeNull();
+  });
+
   it('a FRAME selection is unaffected — negative control for the prefix parsing', async () => {
     nuqsState.frame = 'alpha:2';
     nuqsState.live = true;

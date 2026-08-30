@@ -465,8 +465,12 @@ export default function AdvFramesTab() {
             </button>
           </div>
           {live ? (
-            drive || trackFallback !== null ? (
-              // VNC: the input path (takeover) and the watch fallback (P-013).
+            drive || trackFallback !== null || selection.target === 'local' ? (
+              // VNC: the input path (takeover), the watch fallback (P-013), and a
+              // LOCAL desktop — which is not a deployed frame and can never publish
+              // the holepunch screen track FrameScreenTrackView waits on, so trying
+              // it first only pays its FIRST_FRAME_TIMEOUT_MS (8s) for a guaranteed
+              // fallback. Route straight to VNC instead (EI-21881516933069798).
               <FrameVncView
                 slug={selection.slug}
                 display={selection.display}

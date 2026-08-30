@@ -30226,7 +30226,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
+      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` (or `detail:'full'`) remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
       "capabilities": [
         "work_items:read"
       ],

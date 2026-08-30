@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
-import { hiveDesktop, releaseHiveDesktop } from './desktop-lease';
+import { releaseHiveDesktop } from './desktop-lease';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -37,8 +37,13 @@ export default defineTool({
     })
     .strict(),
   async handler(args) {
-    const had = !!hiveDesktop(args.pot);
-    await releaseHiveDesktop(args.pot);
-    return text({ ok: true, pot: args.pot, released: had, note: had ? 'desktop torn down.' : 'no desktop was leased (no-op).' });
+    const result = await releaseHiveDesktop(args.pot);
+    const note =
+      result.via === 'local'
+        ? 'desktop torn down.'
+        : result.via === 'registry'
+          ? 'desktop torn down (it was provisioned by a sibling operator process — released via the cross-process registry handle).'
+          : 'no desktop was leased (no-op).';
+    return text({ ok: true, pot: args.pot, released: result.released, note });
   },
 });
