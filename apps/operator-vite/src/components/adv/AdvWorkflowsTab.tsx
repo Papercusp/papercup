@@ -22,7 +22,7 @@
  * agents this surface exists to collaborate with.
  */
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useSyncQuery } from '@papercusp/sync';
@@ -103,6 +103,7 @@ const SORTS: ReadonlyArray<{ id: LedgerSort; label: string }> = [
 
 type CreateTriggerKind = 'schedule' | 'external';
 type CreatePlanMode = 'existing' | 'new';
+type CreateTargetKind = 'plan' | 'goal' | 'email-work-item';
 type SchedulePreset = 'every-15-minutes' | 'hourly' | 'daily' | 'weekly';
 
 interface CreatePlanRef {
@@ -113,7 +114,9 @@ interface CreatePlanRef {
 
 interface PendingArm {
   kind: CreateTriggerKind;
-  plan: CreatePlanRef;
+  target: CreateTargetKind;
+  plan: CreatePlanRef | null;
+  targetLabel: string;
   sourceLabel: string;
   bindingId?: string;
 }
@@ -157,6 +160,135 @@ function uniqueDatedPlanSlug(title: string, plans: readonly AutomationPlanRow[])
     suffix += 1;
   }
   return candidate;
+}
+
+/** Search the already-loaded workspace-wide plan directory without changing plan identity. */
+export function filterWorkflowPlans(
+  plans: readonly AutomationPlanRow[],
+  query: string,
+): AutomationPlanRow[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return [...plans];
+  return plans.filter((plan) => [plan.title, plan.slug, plan.harness]
+    .filter((value): value is string => Boolean(value))
+    .some((value) => value.toLocaleLowerCase().includes(needle)));
+}
+
+function planDisplayLabel(plan: Pick<AutomationPlanRow, 'title' | 'slug' | 'harness'>): string {
+  return `${plan.title ?? plan.slug} · ${plan.harness}`;
+}
+
+/**
+ * A compact, keyboard-accessible plan combobox. Native Select is intentionally not used:
+ * this list is workspace-wide and can contain hundreds of plans, while the selected value
+ * remains the canonical harness/slug key used by the binding writer.
+ */
+function SearchablePlanPicker({
+  plans,
+  value,
+  onChange,
+  disabled,
+}: {
+  plans: readonly AutomationPlanRow[];
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const listboxId = useId();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const selected = plans.find((plan) => planRefKey(plan) === value) ?? null;
+  const filtered = useMemo(() => filterWorkflowPlans(plans, query), [plans, query]);
+
+  useEffect(() => {
+    setHighlightedIndex((current) => Math.min(current, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+
+  const choose = (plan: AutomationPlanRow) => {
+    onChange(planRefKey(plan));
+    setQuery('');
+    setOpen(false);
+    setHighlightedIndex(0);
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setOpen(true);
+      setHighlightedIndex((current) => Math.min(current + 1, Math.max(0, filtered.length - 1)));
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setOpen(true);
+      setHighlightedIndex((current) => Math.max(0, current - 1));
+    } else if (event.key === 'Enter' && open && filtered[highlightedIndex]) {
+      event.preventDefault();
+      choose(filtered[highlightedIndex]);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+      setQuery('');
+    }
+  };
+
+  return (
+    <div className="pc-workflows-create__plan-picker">
+      <div className="pc-workflows-create__plan-search-wrap">
+        <Search size={15} aria-hidden />
+        <input
+          role="combobox"
+          aria-label="Plan to run"
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-activedescendant={open && filtered[highlightedIndex] ? `${listboxId}-${planRefKey(filtered[highlightedIndex])}` : undefined}
+          disabled={disabled}
+          value={open ? query : ''}
+          onFocus={() => { if (!disabled) setOpen(true); }}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+            setHighlightedIndex(0);
+          }}
+          onKeyDown={onKeyDown}
+          placeholder="Search plans by name, slug, or harness…"
+        />
+      </div>
+      {selected ? (
+        <div className="pc-workflows-create__plan-selected" role="status">
+          <span>Selected</span>
+          <strong>{planDisplayLabel(selected)}</strong>
+        </div>
+      ) : null}
+      {open ? (
+        <div className="pc-workflows-create__plan-options" id={listboxId} role="listbox" aria-label="Matching plans">
+          {filtered.length > 0 ? filtered.map((plan, index) => (
+            <button
+              type="button"
+              role="option"
+              id={`${listboxId}-${planRefKey(plan)}`}
+              aria-selected={planRefKey(plan) === value}
+              data-highlighted={index === highlightedIndex || undefined}
+              key={planRefKey(plan)}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setHighlightedIndex(index)}
+              onClick={() => choose(plan)}
+            >
+              <span className="pc-workflows-create__plan-option-inner">
+                <strong>{plan.title ?? plan.slug}</strong>
+                <small>{plan.slug} · {plan.harness}</small>
+              </span>
+            </button>
+          )) : (
+            <p className="pc-workflows-create__plan-empty" role="status">No plans match “{query}”.</p>
+          )}
+        </div>
+      ) : null}
+      {!disabled && plans.length === 0 ? (
+        <p className="pc-workflows-create__plan-empty" role="status">No plans are available in this workspace.</p>
+      ) : null}
+    </div>
+  );
 }
 
 function inlinePlanContent(outcome: string, triggerLabel: string): string {
