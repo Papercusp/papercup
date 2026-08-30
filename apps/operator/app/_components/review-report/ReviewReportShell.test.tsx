@@ -381,6 +381,12 @@ describe("rendering", () => {
     expect(screen.queryByTestId("review-row-detail-f2")).toBeNull();
   });
 
+  it("wraps long evidence tokens inside the expanded detail boundary", () => {
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__detail-evidence li\s*\{[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+  });
+
   it("never auto-opens from hover or focus", () => {
     renderShell();
     const rowF1 = screen.getByTestId("review-row-f1");

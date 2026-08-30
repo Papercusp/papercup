@@ -520,6 +520,10 @@
   padding-left: 18px;
 }
 
+.review-report__detail-evidence li {
+  overflow-wrap: anywhere;
+}
+
 .review-report__detail-evidence li + li {
   margin-top: 3px;
 }
