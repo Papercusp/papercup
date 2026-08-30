@@ -88,7 +88,12 @@
 # USAGE
 #   scripts/verify-tauri-headless.sh -- <assertion-command...>
 #     Boots the instance, runs <assertion-command...> with
-#     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_DISPLAY exported,
+#     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_DEV_URL /
+#     VERIFY_TAURI_DISPLAY exported (VERIFY_TAURI_DEV_URL is the plain
+#     http://127.0.0.1:$VERIFY_TAURI_PORT origin — use it instead of
+#     reconstructing the URL or parsing `tauri-agent-tools eval
+#     "location.origin"`, which can return an empty string against a live,
+#     healthy bridge; EI-21918804482820617),
 #     tears down (even on a failing assertion), and exits with the assertion
 #     command's own exit code. Example:
 #       scripts/verify-tauri-headless.sh -- bash -c "
@@ -1291,6 +1296,7 @@ write_boot_only_env_script() {
     {
       printf 'VERIFY_TAURI_PID=%q\n' "$VERIFY_TAURI_PID"
       printf 'VERIFY_TAURI_PORT=%q\n' "$VERIFY_TAURI_PORT"
+      printf 'VERIFY_TAURI_DEV_URL=%q\n' "http://127.0.0.1:$VERIFY_TAURI_PORT"
       printf 'VERIFY_TAURI_DISPLAY=%q\n' "$VERIFY_TAURI_DISPLAY"
       printf 'VERIFY_TAURI_OWNER_SID=%q\n' "$VERIFY_TAURI_OWNER_SID"
       printf 'VERIFY_TAURI_LAUNCH_PROVENANCE=%q\n' "$VERIFY_TAURI_LAUNCH_PROVENANCE"
@@ -1368,7 +1374,7 @@ case ":${PATH:-}:" in
 esac
 export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 export VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
-export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DISPLAY
+export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DEV_URL VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
 export VERIFY_TAURI_SPA_DIST VERIFY_TAURI_LIVENESS_CHECK
@@ -2300,6 +2306,7 @@ log "bridge provenance verified: owner=$TAURI_LAUNCH_PROVENANCE pid=$BRIDGE_PID 
 
 export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"
+export VERIFY_TAURI_DEV_URL="http://127.0.0.1:$DEV_PORT"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export VERIFY_TAURI_OWNER_SID="$TAURI_OWNER_SID"
 export VERIFY_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
