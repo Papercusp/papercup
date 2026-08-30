@@ -41,6 +41,10 @@ vi.mock('../../events/await/store', () => ({
   ackDelivery: vi.fn(),
   listActiveAwaits: vi.fn(async () => []),
   listRecentDeliveries: vi.fn(async () => []),
+  // `null` is the faithful "no backlog" value, not a convenience stub: status.ts
+  // itself passes Promise.resolve(null) on its exactEvent branch, and every
+  // consumer reads it as `backlog?.… ?? 0`, so null is an already-handled path.
+  deliveryBacklogSummary: vi.fn(async () => null),
   wakeMeter: vi.fn(),
 }));
 vi.mock('../../events/await/compose', () => ({ registerComposedAwait: vi.fn() }));
