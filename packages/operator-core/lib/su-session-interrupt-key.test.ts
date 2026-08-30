@@ -107,7 +107,7 @@ afterEach(() => {
  * permanently beside a calibration case, never an in-tree mutation the git-sync
  * sweep could commit.
  */
-function assertCodexInterruptKey(calls: readonly (readonly [string, ('sigint' | 'esc') | undefined])[]): void {
+function assertCodexInterruptKey(calls: readonly (readonly [string, ('sigint' | 'esc')?])[]): void {
   expect(calls).toHaveLength(1);
   const [ownerId, key] = calls[0]!;
   expect(ownerId).toBe(OWNER_ID);
