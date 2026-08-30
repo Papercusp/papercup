@@ -1354,6 +1354,37 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     expect(checked, 'no registered guard was recognised as strand-family — parse is stale').toBeGreaterThan(0);
   });
 
+  it('the RUNNER actually honours notCheckedIsNonGating — the not-checked branch must not touch the gating counter', () => {
+    // The declaration test above asserts every strand-family guard IS registered
+    // notCheckedIsNonGating, and its own failure message states the reason: registered without
+    // it, "that answer reds the gate on every candidate". That belief was FALSE for as long as
+    // the consumer ignored the flag. classifyTaskExit correctly separated 'not-checked' from
+    // 'undetermined', and then BOTH branches did `undeterminedTasks++` — the one counter that
+    // decides the verdict (`hasFailures: Boolean(failed || undeterminedTasks)`). So a guard that
+    // had declared it has no opinion red-pinned every candidate anyway, and the declaration test
+    // stayed green throughout because it only ever read the REGISTRATION side.
+    //
+    // Measured on candidate 57483d0491 (2026-08-30): the gate's own log read
+    //   "lint:required-field-strands:typecheck NOT CHECKED (exit 2) — verdict is UNDETERMINED;
+    //    not retrying and keeping the affected-tests run non-green."
+    // This test pins the CONSUMER half so the pair cannot drift apart again.
+    const src = readFileSync(REGISTRY_FILE, 'utf8');
+    const branch = /exitClass === "not-checked"\)\s*\{([\s\S]*?)\}\s*else if/.exec(src)?.[1];
+    expect(branch, 'the not-checked branch is no longer recognisable in affected-tests.mjs — parse is stale').toBeDefined();
+    expect(
+      /undeterminedTasks\+\+/.test(branch as string),
+      'the not-checked branch increments undeterminedTasks, which is what the verdict gates on. ' +
+        'A guard registered notCheckedIsNonGating declared that "I could not look" is its EXPECTED ' +
+        'answer here (a gate checkout has an empty working diff by construction), so gating on it ' +
+        'reds EVERY candidate unconditionally.',
+    ).toBe(false);
+    expect(
+      /notCheckedNonGating\+\+/.test(branch as string),
+      'the not-checked branch must still COUNT the skipped guard on a non-gating counter, so the ' +
+        'coverage gap stays visible rather than being silently swallowed',
+    ).toBe(true);
+  });
+
   it("the router's mirrored EXIT_NOT_CHECKED equals the real one", () => {
     const src = readFileSync(REGISTRY_FILE, 'utf8');
     const mirrored = /const EXIT_NOT_CHECKED = (\d+);/.exec(src)?.[1];
