@@ -13,9 +13,34 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 
 const countMock = vi.fn();
+const listAnnouncementsMock = vi.fn();
 vi.mock('../../events/await/store', () => ({
   countActiveAwaitsByPrefixes: (...args: unknown[]) => countMock(...args),
+  listActiveAnnouncements: (...args: unknown[]) => listAnnouncementsMock(...args),
 }));
+
+// EI-21907772459508454: announcementVisibleTo is deliberately NOT mocked — these tests
+// exercise the real scope predicate; only its INPUTS (presence) are controlled.
+const presenceMock = vi.fn();
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-test-reader' }),
+}));
+vi.mock('../coordination/presence', () => ({
+  getPresence: (...args: unknown[]) => presenceMock(...args),
+}));
+
+const ann = (over: Record<string, unknown> = {}) => ({
+  eventKey: 'plan:some-plan:p002-green',
+  logicalGateKey: null,
+  note: 'green gate',
+  scopeKind: 'plan',
+  scopeRef: 'some-plan',
+  subscriberId: 'su-leader',
+  firedAt: null,
+  firedReason: null,
+  expiresTs: null,
+  ...over,
+});
 
 import catalog from './catalog';
 import { familyKeyPrefix, EVENT_CATALOG } from '../../events/await/catalog';
@@ -29,6 +54,85 @@ const call = async (args: Record<string, unknown> = {}) => {
 beforeEach(() => {
   vi.clearAllMocks();
   countMock.mockResolvedValue(new Map());
+  listAnnouncementsMock.mockResolvedValue([]);
+  presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
+});
+
+// EI-21907772459508454 — an announced gate that EXISTS but is out of the reader's scope
+// used to be indistinguishable from one that was never declared. A fleet member followed
+// the playbook ("verify the key against the catalog"), read the silence as "my leader
+// never declared it", and escalated wrongly. These pin the distinction.
+describe('events:catalog — announced gates: withheld must not read as absent', () => {
+  it('reports a scope-hidden gate in announced_visibility instead of silently dropping it', async () => {
+    listAnnouncementsMock.mockResolvedValue([ann()]);
+    presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    // The gate is correctly WITHHELD (the reader is not on that plan)...
+    expect(out.announced).toBeUndefined();
+    // ...but the omission is now SAYABLE, which is the whole fix.
+    expect(out.announced_visibility).toMatchObject({
+      total_active: 1,
+      returned: 0,
+      hidden_by_scope: 1,
+      reader_scope: { fleet: null, plan: null, harness: null },
+      reader_resolved: true,
+    });
+    expect(out.announced_visibility.note).toMatch(/NOT proof they were never declared/i);
+    expect(out.announced_visibility.note).toMatch(/events:await/i);
+  });
+
+  it('SHOWS the same gate once presence puts the reader on that plan (the other direction)', async () => {
+    listAnnouncementsMock.mockResolvedValue([ann()]);
+    presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: 'some-plan' });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced).toHaveLength(1);
+    expect(out.announced[0]).toMatchObject({ event: 'plan:some-plan:p002-green', scope: 'plan:some-plan' });
+    expect(out.announced_visibility).toMatchObject({ hidden_by_scope: 0, returned: 1 });
+    expect(out.announced_visibility.note).toBeUndefined();
+  });
+
+  it('flags an UNRESOLVED reader rather than passing global-only off as the whole truth', async () => {
+    listAnnouncementsMock.mockResolvedValue([ann(), ann({ scopeKind: null, eventKey: 'global-gate' })]);
+    presenceMock.mockRejectedValue(new Error('presence unavailable'));
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(out.announced_visibility.reader_resolved).toBe(false);
+    expect(out.announced_visibility.note).toMatch(/READER SCOPE UNRESOLVED/i);
+    expect(out.announced_visibility.note).toMatch(/UNMEASURED, not absent/i);
+    // the global gate still comes through
+    expect(out.announced).toHaveLength(1);
+  });
+
+  it('emits announced_visibility even when NOTHING is announced (empty != withheld)', async () => {
+    listAnnouncementsMock.mockResolvedValue([]);
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+    expect(out.announced).toBeUndefined();
+    expect(out.announced_visibility).toMatchObject({ total_active: 0, hidden_by_scope: 0 });
+    expect(out.announced_visibility.note).toMatch(/No announced gates are active/i);
+  });
+
+  it('counts rows cut by the fixed 25-row cap, which the `limit` arg does not govern', async () => {
+    listAnnouncementsMock.mockResolvedValue(
+      Array.from({ length: 30 }, (_, i) => ann({ scopeKind: null, eventKey: `global-gate-${i}` })),
+    );
+    const out = await call({ announced: true, installed: false, liveAwaiters: false, limit: 200 });
+    expect(out.announced).toHaveLength(25);
+    expect(out.announced_visibility).toMatchObject({ total_active: 30, returned: 25, hidden_by_cap: 5 });
+    expect(out.announced_visibility.note).toMatch(/cut by the fixed 25-row announced cap/i);
+  });
+
+  it('says the section was UNREADABLE rather than reporting no gates when the store throws', async () => {
+    listAnnouncementsMock.mockRejectedValue(new Error('db down'));
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+    expect(out.announced).toBeUndefined();
+    expect(out.announced_visibility).toBeUndefined();
+    expect(out.announced_unavailable).toMatch(/NOT evidence that no gate was declared/i);
+  });
 });
 
 describe('events:catalog — live_awaiters', () => {
