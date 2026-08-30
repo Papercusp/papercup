@@ -150,7 +150,7 @@ beforeAll(async () => {
   // WI-3649: the by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
 }, 90_000);
-afterAll(async () => { await db.cleanup(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`
     TRUNCATE harness_shared.work_items,
