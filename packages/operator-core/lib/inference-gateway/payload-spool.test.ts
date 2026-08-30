@@ -188,6 +188,11 @@ describe('gateway payload spool — D-003 persistence failure never yields a fal
   });
 });
 
+// This double-only describe is deliberately NOT the whole sweep/GC contract: the
+// production PgGatewayPayloadStore adapter has a materially different sweep policy
+// (expiry-gated, not immediate-on-ref-zero) and is exercised against a REAL Postgres
+// in payload-spool.integration.test.ts (EI-21858853737380027) — read that file
+// before assuming this block alone proves the production sweep works.
 describe('gateway payload spool — refcounted retention', () => {
   it('does not sweep a payload a live receipt still names', async () => {
     const spool = memoryGatewayPayloadSpool();
