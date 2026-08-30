@@ -480,15 +480,16 @@ export default defineTool({
       .optional()
       .describe(
         `WI-6381: widen the per-attempt SQL lock_timeout beyond the ${DEFAULT_LOCK_TIMEOUT_SEC}s default ` +
-          `(max ${MAX_LOCK_TIMEOUT_SQL_SEC}s) for a migration repeatedly failing with ` +
-          'lock_timeout_retries_exhausted:true against a KNOWN long-lived NON-operator holder — confirmed via ' +
-          'pg_locks/pg_stat_activity, e.g. the host pg_dump backup process, which can hold AccessShareLock on an ' +
-          'otherwise-idle table for several minutes while it dumps a large one elsewhere in the same transaction ' +
-          '(the whole DB is dumped with no per-table exclusions). Setting this drops the retry-attempt count to ' +
-          `${CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS} — a wide per-attempt wait is meant to ride out the contention in ` +
-          'ONE try (mirroring the sanctioned manual `SET LOCAL lock_timeout` workaround), not to be multiplied by ' +
-          `the default's 5 short attempts. Omit for ordinary hot-table contention (EI-9417's 5×10s default is the ` +
-          'right shape there — most lock timeouts clear in seconds).',
+          `(max ${MAX_LOCK_TIMEOUT_SQL_SEC}s) ONLY for a migration repeatedly failing with ` +
+          'lock_timeout_retries_exhausted:true against a KNOWN long-lived NON-operator holder confirmed via ' +
+          'pg_locks/pg_stat_activity — e.g. the host pg_dump, which can hold AccessShareLock on an ' +
+          'otherwise-idle table for minutes while dumping a large one in the same transaction. ' +
+          'Setting this drops the retry count to ' +
+          `${CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS}: a wide wait rides out contention in ` +
+          'ONE try (the sanctioned manual `SET LOCAL lock_timeout`), not multiplied by ' +
+          "the default's 5. OTHERWISE IT IS THE WRONG LEVER — a longer wait on ACCESS EXCLUSIVE queues the whole " +
+          'fleet behind you (FIFO), and if the file also re-declares a view over that table it converts the ' +
+          'timeout into a DEADLOCK; fix the lock ORDER instead (EI-19320370563025481).',
       ),
   }),
   async handler(args, ctx) {
