@@ -139,6 +139,10 @@ accepts only `path`, `sha`, `work_item`, and `after_generation`; do **not** pass
 `harness` in its JSON arguments. It reads shared release truth, so the outer
 `--harness` ptool scope does not become a payload field.
 
+`rubrics:list` is also workspace-global, not harness-scoped. Its live schema
+accepts only `status`, `characteristic`, `kind`, and `limit`; do **not** pass
+`harness` to it. It lists the shared rubric library for this workspace.
+
 ## The tool surface
 
 `papercusp-su` exposes the **full catalog** at admin tier. It evolves fast —

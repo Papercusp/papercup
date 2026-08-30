@@ -55,6 +55,10 @@ accepts only `path`, `sha`, `work_item`, and `after_generation`; do **not** pass
 `harness` in its JSON arguments. It reads shared release truth, so the outer
 `--harness` ptool scope does not become a payload field.
 
+`rubrics:list` is also workspace-global, not harness-scoped. Its live schema
+accepts only `status`, `characteristic`, `kind`, and `limit`; do **not** pass
+`harness` to it. It lists the shared rubric library for this workspace.
+
 ## The tool surface
 
 You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.

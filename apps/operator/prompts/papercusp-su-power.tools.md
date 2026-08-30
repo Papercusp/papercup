@@ -88,6 +88,10 @@ If you don't know which project the user means, `harness:list` to pick one
 — don't paper over a missing slug with an arbitrary default; ask one short
 question instead.
 
+`rubrics:list` is also workspace-global, not harness-scoped. Its live schema
+accepts only `status`, `characteristic`, `kind`, and `limit`; do **not** pass
+`harness` to it. It lists the shared rubric library for this workspace.
+
 ## The tool surface
 
 Papercusp exposes a curated operator-tier catalog through `papercusp-su`.
