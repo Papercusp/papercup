@@ -40,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   errorSpy.mockRestore();
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -84,6 +85,14 @@ describe('publishPreemptReadyMarker — clean publication', () => {
   });
 
   it('returns null (publishing nothing) when no marker path is configured', () => {
+    // The `undefined` case falls through to the default parameter, which reads
+    // PC_HEAVY_PREEMPT_READY_FILE — and pc-heavy SETS that variable for every run
+    // that opts into the after-ready barrier, which includes the gate. Left
+    // ambient, this assertion passes under `testing:run` and fails under a real
+    // barrier-enabled invocation, where the fallback publishes a marker instead
+    // of returning null. Stub it so the test is about "no path configured"
+    // rather than about whichever environment happened to run it.
+    vi.stubEnv('PC_HEAVY_PREEMPT_READY_FILE', '');
     expect(publishPreemptReadyMarker('')).toBeNull();
     expect(publishPreemptReadyMarker('   ')).toBeNull();
     expect(publishPreemptReadyMarker(undefined)).toBeNull();
