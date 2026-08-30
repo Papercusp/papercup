@@ -94,6 +94,64 @@ vi.mock('../watermarks', async (importOriginal) => ({
 // don't pay the fold's real timeout budget. Default: no announcements.
 const listActiveAnnouncementsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
+// EI-21833804434126804: handler-level aggregate-timeout coverage must drive the
+// real defineTool handler without re-dispatching live tools or opening PG.
+const inProcessCallMock = vi.hoisted(() => vi.fn());
+const getModesMock = vi.hoisted(() => vi.fn(async () => null as unknown));
+const readOwnerPresenceMock = vi.hoisted(() =>
+  vi.fn(async () => ({ present: false, lastSeenAgoMs: null, activeSessions: 0 })),
+);
+const getFlagMock = vi.hoisted(() => vi.fn(async () => false));
+const resolvePresenceFleetMock = vi.hoisted(() =>
+  vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
+);
+const fetchOrientPipelineMock = vi.hoisted(() => vi.fn(async () => null as unknown));
+const buildCompactionRecoveryMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    selfRecall: "sessions:search { session: 'self' }",
+    coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+  })),
+);
+const readGovernorStateSnapshotMock = vi.hoisted(() => vi.fn(async () => null as unknown));
+const recordOrientDisclosuresMock = vi.hoisted(() => vi.fn(async () => 'unchanged' as const));
+
+vi.mock('../../_compound-dispatch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../_compound-dispatch')>()),
+  inProcessCall: inProcessCallMock,
+}));
+vi.mock('../../../modes/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../modes/store')>()),
+  getModes: getModesMock,
+}));
+vi.mock('../../../power-user-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../power-user-sessions')>()),
+  readOwnerPresence: readOwnerPresenceMock,
+}));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+  getFlag: getFlagMock,
+}));
+vi.mock('../presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../presence-fleet')>()),
+  resolvePresenceFleet: resolvePresenceFleetMock,
+}));
+vi.mock('../pipeline-health', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pipeline-health')>()),
+  fetchOrientPipeline: fetchOrientPipelineMock,
+}));
+vi.mock('../compaction-recovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../compaction-recovery')>()),
+  buildCompactionRecovery: buildCompactionRecoveryMock,
+}));
+vi.mock('../../../resource-governor/state-snapshot', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../resource-governor/state-snapshot')>()),
+  readGovernorStateSnapshot: readGovernorStateSnapshotMock,
+}));
+vi.mock('../../../agent-orient-disclosures', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-orient-disclosures')>()),
+  recordOrientDisclosures: recordOrientDisclosuresMock,
+}));
+
 describe('executable continuity output assembly', () => {
   it('folds bounded probe verdicts additively ahead of supplementary orient legs', () => {
     const continuityProbes = {
@@ -247,6 +305,119 @@ describe('coord:orient args', () => {
         partial: true,
       });
     } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('handler returns the afterCompaction partial snapshot when a later fold exceeds the aggregate deadline', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ownerId = 'su-orient-handler-test';
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+    // This is the late handler-owned fold that used to leave aggregate recovery
+    // without a handler-level regression. The compose progress callback must have
+    // already copied the useful afterCompaction snapshot into the stable fallback.
+    // Signal from the mock itself instead of guessing how many microtasks/dynamic
+    // imports the real handler needs before reaching this late fold.
+    let disclosuresStartedResolve!: () => void;
+    const disclosuresStarted = new Promise<void>((resolve) => {
+      disclosuresStartedResolve = resolve;
+    });
+    recordOrientDisclosuresMock.mockImplementation(() => {
+      disclosuresStartedResolve();
+      return new Promise(() => {});
+    });
+
+    const resultPromise = orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    );
+
+    try {
+      await disclosuresStarted;
+      expect(recordOrientDisclosuresMock).toHaveBeenCalledWith(
+        ownerId,
+        'ws-test',
+        expect.any(Object),
+      );
+
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      const result = (await resultPromise) as { data: Record<string, unknown> };
+
+      expect(result.data).toMatchObject({
+        ok: true,
+        status: 'unknown',
+        degraded: true,
+        degradedReason: 'aggregate_timeout',
+        partial: true,
+        recovery,
+        me: {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        },
+        claimable: [],
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+    } finally {
+      recordOrientDisclosuresMock.mockReset();
+      recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+      inProcessCallMock.mockReset();
+      getModesMock.mockReset();
+      getModesMock.mockResolvedValue(null);
+      readOwnerPresenceMock.mockReset();
+      readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+      getFlagMock.mockReset();
+      getFlagMock.mockResolvedValue(false);
+      resolvePresenceFleetMock.mockReset();
+      resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+      fetchOrientPipelineMock.mockReset();
+      fetchOrientPipelineMock.mockResolvedValue(null);
+      buildCompactionRecoveryMock.mockReset();
+      buildCompactionRecoveryMock.mockResolvedValue(recovery);
+      readGovernorStateSnapshotMock.mockReset();
+      readGovernorStateSnapshotMock.mockResolvedValue(null);
       warnSpy.mockRestore();
       vi.useRealTimers();
     }
