@@ -51,7 +51,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
-DUMP=/mnt/data/Backup/db-dumps
+# PAPERCUSP_HOST_PG_DUMP_DIR is shared with the per-workspace pre-snapshot hook
+# (packages/backup/src/host-dump-coverage.ts), which reads STATUS.json from this
+# same directory to decide whether its own dump would be redundant. The two
+# defaults are pinned together by host-dump-coverage-defaults.test.ts — if they
+# drift, the hook simply never finds a receipt and keeps dumping, so the failure
+# is a silent return of the redundancy rather than a broken backup.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
 BACKUP_USER="${USER:-$(id -un)}"
@@ -396,6 +402,15 @@ json_arr() {
   [ "$#" -eq 0 ] && return 0
   printf '"%s",' "$@" | sed 's/,$//'
 }
+
+# Cluster identity of what we just dumped, so a consumer can prove a database it
+# is looking at is THE SAME SERVER rather than a same-named database elsewhere.
+# The per-workspace hook uses this to stand down (host-dump-coverage.ts); it
+# connects over TCP while we use the unix socket, so host:port can never match
+# textually and a name-only comparison would wrongly suppress a workspace's
+# EMBEDDED Postgres dump. `tr -dc` guarantees the field is digits-or-empty, and
+# empty reads as "no identity" ⇒ the hook keeps dumping.
+SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | tr -dc '0-9' || true)
 {
   printf '{\n'
   printf '  "ok": %s,\n' "$OK"
@@ -406,6 +421,7 @@ json_arr() {
   printf '  "elapsedSec": %s,\n' "$ELAPSED"
   printf '  "dumped": [%s],\n' "$(json_arr ${DUMPED[@]+"${DUMPED[@]}"})"
   printf '  "failed": [%s],\n' "$(json_arr ${FAILED[@]+"${FAILED[@]}"})"
+  printf '  "systemIdentifier": "%s",\n' "$SYSID"
   # WI-39502: the oddsmith embedded PG (5544) reports SEPARATELY from the system
   # cluster above — see the leg's comment for why coupling them would be a bug.
   # healthcheck.sh asserts oddsmithLastSuccessEpoch on its own threshold.

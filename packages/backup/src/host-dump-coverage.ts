@@ -1,0 +1,227 @@
+/**
+ * Host-dump coverage — refuse to re-dump a database the host backup already dumped.
+ *
+ * `runPreSnapshotHook` resolves its target with `backupHost().getHarnessAdminUrl()`,
+ * a ZERO-ARGUMENT host-level function. It takes no workspace parameter, so it
+ * cannot return a per-workspace database: on a deployment where every workspace
+ * resolves to the same host cluster, the hook dumps that ONE database once per
+ * workspace per interval while the hourly systemd job (`papercusp-db-backup.sh`)
+ * dumps it again. Measured 2026-08-30 (EI-21874492117996483): three ~2.5 GB
+ * dumps/hour of a single database, whose overlap with the host job drove pg_dump
+ * to ~161 KB/s and produced three 900 s watchdog timeouts, while the same dump
+ * clear of the host job ran at ~9.4 MB/s — a ~58x difference against an unchanged
+ * budget. The contention was not two legitimate jobs colliding; it was one
+ * database being backed up twice, concurrently, by two mechanisms.
+ *
+ * This restores the boundary the hook's own docblock already states ("The hook
+ * only handles per-workspace state. Host PG (:5432) ... are the systemd kopia
+ * job's concern, not this one") — but PROVES coverage rather than assuming it.
+ *
+ * FAIL-SAFE IN EVERY DIRECTION. The skip requires positive evidence that this
+ * EXACT cluster was dumped successfully and recently. A missing receipt, an
+ * unparseable one, a stale one, a failed run, a missing or mismatched cluster
+ * identity, or a database absent from the receipt's `dumped` list all fall
+ * through to dumping as before. A deployment with no host job — the desktop ship
+ * target — therefore never skips, because it never produces a receipt.
+ *
+ * Cluster identity is `pg_control_system().system_identifier`, a 64-bit value
+ * generated at initdb. It is deliberately NOT a host:port or database-name
+ * comparison, because both are unsafe here:
+ *   - the host job connects over the unix socket while the hook connects over
+ *     TCP, so their endpoints never match textually even when they are the same
+ *     server; and
+ *   - a workspace's EMBEDDED Postgres routinely holds a database *named*
+ *     `papercusp` on a DIFFERENT cluster, which a name-only test would wrongly
+ *     report as covered — silently disabling that workspace's only real dump.
+ * Nor is the resolver's `source` label usable: it reads `env` both on this box
+ * (host PG via HARNESS_ADMIN_DATABASE_URL) and in the desktop app (embedded PG
+ * injected by Tauri main), so it cannot separate the two cases.
+ */
+
+import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+/**
+ * Directory holding the host backup's `STATUS.json` receipt.
+ *
+ * `papercusp-db-backup.sh` honors the same environment variable with the same
+ * default, and `host-dump-coverage-defaults.test.ts` pins the two together so
+ * the pair cannot drift into a silent no-skip.
+ */
+export const HOST_PG_DUMP_DIR_ENV = 'PAPERCUSP_HOST_PG_DUMP_DIR';
+export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/data/Backup/db-dumps';
+
+/**
+ * How recent the host dump must be for the hook to stand down.
+ *
+ * The host timer is `OnCalendar=hourly` with `Persistent=true`. Three hours
+ * tolerates one missed run plus a long dump without ever letting a wedged host
+ * job silently suppress workspace dumps indefinitely: once the receipt ages out,
+ * every workspace resumes dumping on its own.
+ */
+export const HOST_DUMP_MAX_AGE_SEC = 3 * 60 * 60;
+
+/** The subset of `STATUS.json` this decision consumes. Fields are `unknown` because the file is written by a shell script and parsed defensively. */
+export interface HostDumpStatus {
+  ok?: unknown;
+  lastSuccessEpoch?: unknown;
+  dumped?: unknown;
+  systemIdentifier?: unknown;
+}
+
+export interface HostDumpCoverage {
+  /** True ⇒ the host job demonstrably dumped this exact database on this exact cluster, recently. */
+  covered: boolean;
+  /** Human-readable justification, logged verbatim to the workspace hook.log. */
+  reason: string;
+}
+
+/** Absolute path to the host backup receipt. */
+export function hostDumpStatusPath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env[HOST_PG_DUMP_DIR_ENV]?.trim() || DEFAULT_HOST_PG_DUMP_DIR;
+  return join(dir, 'STATUS.json');
+}
+
+/** Read + parse the host receipt. Any failure ⇒ null ⇒ the caller dumps. */
+export async function readHostDumpStatus(path: string): Promise<HostDumpStatus | null> {
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as HostDumpStatus;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decide whether the host backup already covers this database on this cluster.
+ *
+ * Pure and total: every branch returns a reason, and every uncertain branch
+ * returns `covered: false`.
+ */
+export function evaluateHostDumpCoverage(input: {
+  database: string;
+  /** `system_identifier` of the cluster the hook is about to dump; null when unprobeable. */
+  targetSystemIdentifier: string | null;
+  status: HostDumpStatus | null;
+  nowEpoch: number;
+  maxAgeSec?: number;
+}): HostDumpCoverage {
+  const { database, targetSystemIdentifier, status, nowEpoch } = input;
+  const maxAgeSec = input.maxAgeSec ?? HOST_DUMP_MAX_AGE_SEC;
+
+  if (!status) return { covered: false, reason: 'no host-dump receipt' };
+  if (status.ok !== true) return { covered: false, reason: 'host dump last reported not-ok' };
+
+  // Identity must be present on BOTH sides and equal. A receipt written before
+  // the identity field existed yields `undefined` here, so an old receipt
+  // degrades to "dump as before" rather than to an unproven skip.
+  const hostId = typeof status.systemIdentifier === 'string' ? status.systemIdentifier.trim() : '';
+  if (!hostId) return { covered: false, reason: 'host-dump receipt has no cluster identity' };
+  if (!targetSystemIdentifier) return { covered: false, reason: 'could not probe target cluster identity' };
+  if (hostId !== targetSystemIdentifier) {
+    return {
+      covered: false,
+      reason: `different cluster (target ${targetSystemIdentifier} != host-dump ${hostId})`,
+    };
+  }
+
+  const dumped = Array.isArray(status.dumped)
+    ? status.dumped.filter((d): d is string => typeof d === 'string')
+    : [];
+  if (!dumped.includes(database)) {
+    return { covered: false, reason: `database ${database} not in host-dump receipt` };
+  }
+
+  const lastSuccess =
+    typeof status.lastSuccessEpoch === 'number' && Number.isFinite(status.lastSuccessEpoch)
+      ? status.lastSuccessEpoch
+      : 0;
+  if (lastSuccess <= 0) return { covered: false, reason: 'host-dump receipt has no success timestamp' };
+
+  const ageSec = nowEpoch - lastSuccess;
+  // A receipt from the future is a clock fault, not evidence of coverage.
+  if (ageSec < 0) return { covered: false, reason: 'host-dump receipt timestamp is in the future' };
+  if (ageSec > maxAgeSec) {
+    return { covered: false, reason: `host dump is stale (${ageSec}s > ${maxAgeSec}s)` };
+  }
+
+  return {
+    covered: true,
+    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, dumped ${ageSec}s ago)`,
+  };
+}
+
+/**
+ * Probe `system_identifier` of the cluster the hook is about to dump, reusing the
+ * dump's own connection parameters so the answer describes the same server
+ * pg_dump would reach.
+ *
+ * Never throws and never rejects: a missing `psql`, an auth failure, a timeout,
+ * or unparseable output all resolve to null, which the decision above treats as
+ * "not proven ⇒ dump".
+ */
+export function probeSystemIdentifier(opts: {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  timeoutMs?: number;
+}): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+
+    let child: ReturnType<typeof spawn>;
+    const timer = setTimeout(() => {
+      try {
+        child?.kill('SIGKILL');
+      } catch {
+        /* the probe is advisory; a kill failure must not surface */
+      }
+      done(null);
+    }, opts.timeoutMs ?? 10_000);
+
+    try {
+      child = spawn(
+        'psql',
+        [
+          '-h', opts.host,
+          '-p', String(opts.port),
+          '-U', opts.user,
+          '-w',
+          '-d', opts.database,
+          '-tAc', 'SELECT system_identifier FROM pg_control_system()',
+        ],
+        {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          env: { ...process.env, PGPASSWORD: opts.password, PGCONNECT_TIMEOUT: '5' },
+        },
+      );
+    } catch {
+      done(null);
+      return;
+    }
+
+    let out = '';
+    child.stdout?.on('data', (c: Buffer) => {
+      // Bound the buffer: this reads one integer, and an unexpected torrent
+      // (a wrong -c, a chatty wrapper) must not accumulate unboundedly.
+      if (out.length < 4096) out += c.toString();
+    });
+    child.on('error', () => done(null));
+    child.on('close', (code) => {
+      if (code !== 0) return done(null);
+      const id = out.trim().split(/\s+/)[0] ?? '';
+      done(/^\d+$/.test(id) ? id : null);
+    });
+  });
+}

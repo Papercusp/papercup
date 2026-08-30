@@ -41,6 +41,12 @@ interface HookContext {
 // Use the discovery helper instead of a hardcoded port.
 import { backupHost } from './config';
 import { WORKSPACE_BACKUP_APPLICATION_NAME } from './application-names';
+import {
+  evaluateHostDumpCoverage,
+  hostDumpStatusPath,
+  probeSystemIdentifier,
+  readHostDumpStatus,
+} from './host-dump-coverage';
 
 // Keep the hot-state dump bounded and restorable. A full database dump on the
 // standing dev box includes multi-GB telemetry/audit streams and plugin schemas
@@ -124,6 +130,19 @@ export interface PreSnapshotHookResult {
   ok: boolean;
   bytes?: number;
   error?: string;
+  /**
+   * Set when the dump was deliberately and provably UNNECESSARY rather than
+   * attempted — today, only when the host backup already dumped this exact
+   * cluster's copy of this database (see host-dump-coverage.ts).
+   *
+   * Such a skip reports `ok: true`, because the leg did its job: the database
+   * is captured, by the mechanism that owns it. Reporting `ok: false` would
+   * drive `dbDumpOk` false on every snapshot forever (workspace-backup.ts),
+   * turning a correct delegation into a permanent false degradation — and this
+   * field exists so that "no dump was written" stays visible in the
+   * `hook_pg_dump` event instead of being flattened into a silent success.
+   */
+  skipped?: string;
 }
 
 /**
@@ -331,12 +350,40 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
   const { url, source } = backupHost().getHarnessAdminUrl();
   await log(`embedded-pg URL source: ${source}`);
   const parsed = new URL(url);
-  const result = await dumpPg({
+  const target = {
     host: parsed.hostname,
     port: Number(parsed.port) || 5432,
     user: parsed.username || 'postgres',
     password: decodeURIComponent(parsed.password || 'postgres'),
     database: decodeURIComponent(parsed.pathname.replace(/^\//, '')) || 'papercusp',
+  };
+
+  // `getHarnessAdminUrl` is host-level and takes no workspace argument, so where
+  // every workspace resolves to the same host cluster this dump duplicates the
+  // hourly systemd job — one database dumped N+1 times per hour, whose overlap
+  // is what drives the 900 s watchdog timeouts (EI-21874492117996483). Stand
+  // down ONLY on proof that this cluster's copy of this database was dumped
+  // successfully and recently; every uncertain branch falls through and dumps.
+  //
+  // The identity probe is deliberately gated behind a receipt being present, so
+  // a deployment with no host job (the desktop ship target) never pays for a
+  // psql spawn it can never act on.
+  const hostStatus = await readHostDumpStatus(hostDumpStatusPath());
+  const coverage = evaluateHostDumpCoverage({
+    database: target.database,
+    targetSystemIdentifier: hostStatus ? await probeSystemIdentifier(target) : null,
+    status: hostStatus,
+    nowEpoch: Math.floor(Date.now() / 1000),
+  });
+  if (coverage.covered) {
+    await log(`pg SKIP: ${coverage.reason}`);
+    await log('hook done (skipped: host-covered)');
+    return { ok: true, skipped: coverage.reason };
+  }
+  if (hostStatus) await log(`host-dump coverage not established: ${coverage.reason}`);
+
+  const result = await dumpPg({
+    ...target,
     outPath,
     log,
   });
