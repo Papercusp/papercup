@@ -126,6 +126,7 @@ describe('snapshot() step decomposition', () => {
       kopiaSnapshotId: 'kopia-xyz',
       bytesAdded: 11,
       durationMs: 5,
+      dbDumpOk: null,
     });
   });
 });
