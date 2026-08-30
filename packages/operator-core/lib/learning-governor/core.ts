@@ -64,6 +64,13 @@ export type GovernorRefusal =
   | 'unregistered'
   /** Registration exists but enabled=false. */
   | 'disabled'
+  /**
+   * The POT this loop learns for is switched off (harness_shared.learning_pot_scope,
+   * plan learning-pot-scope-gate-2026-08-30 D-001). Outranks 'disabled': it is the
+   * master switch ABOVE the lane's own arming, and the lane's arming is deliberately
+   * left untouched so switching the pot back on restores exactly what was armed.
+   */
+  | 'pot-disabled'
   /** budget_usd is NULL — an explicit cap is required for the unattended path. */
   | 'unbudgeted'
   /** Lifetime budget spent down to (or past) the floor. */
@@ -91,12 +98,26 @@ export function remainingLoopBudgetUsd(
  * The generalized gym rule: unregistered / disabled / unbudgeted ⇒ refuse;
  * a lifetime budget must have remaining strictly above the floor; a per-cycle
  * budget allows (the loop bounds each run at its cap — checkScoutBudget-style).
+ *
+ * `potEnabled` is the per-pot master switch (D-001). It is a PARAMETER rather
+ * than a field on the registration because the pot gate lives in its own
+ * relation and must stay readable — and overridable in tests — without a
+ * registration row to hang it on. Pass `undefined` (the default) where the
+ * caller has not resolved a pot: an UNRESOLVED pot is not a disabled pot, so
+ * omitting it leaves the verdict exactly as it was before the gate existed.
  */
 export function checkLoopVerdict(
   reg: LearningLoopRegistration | null | undefined,
   floorUsd: number = LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
+  potEnabled?: boolean,
 ): GovernorVerdict {
   if (!reg) return { allow: false, reason: 'unregistered', remainingUsd: null };
+  // Checked BEFORE the lane's own arming: when a pot is switched off, every
+  // lane under it must report the pot as the cause, not its own `disabled`
+  // flag — which is not even set (the gate deliberately never writes it).
+  if (potEnabled === false) {
+    return { allow: false, reason: 'pot-disabled', remainingUsd: remainingLoopBudgetUsd(reg) };
+  }
   if (!reg.enabled) return { allow: false, reason: 'disabled', remainingUsd: remainingLoopBudgetUsd(reg) };
   if (reg.budgetUsd === null) return { allow: false, reason: 'unbudgeted', remainingUsd: null };
   const remaining = remainingLoopBudgetUsd(reg)!;

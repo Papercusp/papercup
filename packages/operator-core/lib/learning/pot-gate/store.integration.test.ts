@@ -1,0 +1,182 @@
+/**
+ * store.integration.test.ts — learning-pot-scope SQL over migration 1039
+ * (plan learning-pot-scope-gate-2026-08-30, P-001 / D-001).
+ *
+ * Provisions a throwaway DB with the full live schema (provisionGymDatabase
+ * applies 000-baseline + every pending migration, so 1039's
+ * harness_shared.learning_pot_scope exists), then round-trips the gate:
+ * the empty-table default, the batched write in both directions, the audit
+ * stamp, the exact-inverse clear, and the two batch read shapes.
+ *
+ * The load-bearing case is `does not touch any lane's own config`: the whole
+ * reason D-001 chose a stored gate over a remembered bulk write is that a pot
+ * switched off and back on restores EXACTLY the lanes that were armed before.
+ * That property is only true while this store leaves gym_autoloop_config and
+ * learning_governor_loops alone, so it is asserted against real rows rather
+ * than trusted to code review.
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import postgres from 'postgres';
+import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { provisionGymDatabase } from '../../gym/gym-db-init';
+import {
+  clearPotLearningScope,
+  disabledPotSlugs,
+  getPotLearningScope,
+  listPotLearningScope,
+  potLearningEnabled,
+  potScopeResolver,
+  setPotLearningScope,
+} from './store';
+
+let sql: postgres.Sql;
+let containerUri: string;
+const dbName = `lpotscope_${randomBytes(5).toString('hex')}`;
+const WS = 'ws-pot-scope-test';
+const OTHER_WS = 'ws-pot-scope-other';
+
+beforeAll(async () => {
+  containerUri = await getTestPg();
+  const { databaseUri } = await provisionGymDatabase({ maintenanceUri: containerUri, dbName });
+  sql = postgres(databaseUri, { max: 2, onnotice: () => {}, prepare: false });
+}, 180_000);
+
+afterAll(async () => {
+  if (sql) await sql.end({ timeout: 5 });
+  const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
+  try {
+    await maint.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+  } catch {
+    /* best-effort */
+  } finally {
+    await maint.end({ timeout: 5 });
+  }
+  // Best-effort: the reused test container is shared across vitest processes
+  // on the dev box — a concurrent suite's teardown can stop it first (404).
+  if (!process.env.KEEP_TEST_PG) await teardownTestPg().catch(() => {});
+});
+
+describe('learning-pot-scope store', () => {
+  it('an empty table means every pot is enabled', async () => {
+    // R-5, against the real relation: this is the state migration 1039 ships in,
+    // so a regression here stops the whole fleet's learning the moment it applies.
+    expect(await getPotLearningScope(sql, { workspaceId: WS, potSlug: 'never-flipped' })).toBeNull();
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: 'never-flipped' })).toBe(true);
+    expect(await disabledPotSlugs(sql, { workspaceId: WS })).toEqual([]);
+  });
+
+  it('switches many pots off in ONE write, and reads back as gated', async () => {
+    const written = await setPotLearningScope(sql, {
+      workspaceId: WS,
+      potSlugs: ['alpha', 'beta', 'gamma'],
+      enabled: false,
+      setBy: 'su-test',
+    });
+    expect(written.map((r) => r.potSlug).sort()).toEqual(['alpha', 'beta', 'gamma']);
+    expect(written.every((r) => r.enabled === false)).toBe(true);
+
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: 'alpha' })).toBe(false);
+    expect(await disabledPotSlugs(sql, { workspaceId: WS })).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('stamps the audit trail on every row it writes', async () => {
+    const before = Date.now();
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: ['delta'], enabled: false, setBy: 'su-auditor' });
+    const row = await getPotLearningScope(sql, { workspaceId: WS, potSlug: 'delta' });
+    expect(row?.setBy).toBe('su-auditor');
+    // Allow generous clock slack — the assertion is that set_at is stamped at
+    // write time, not that the test and PG agree to the millisecond.
+    expect(row!.setAt).toBeGreaterThan(before - 60_000);
+  });
+
+  it('re-enabling writes a row rather than deleting one, and reads identically to absent', async () => {
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: ['beta'], enabled: true, setBy: 'su-restorer' });
+    const row = await getPotLearningScope(sql, { workspaceId: WS, potSlug: 'beta' });
+    expect(row).not.toBeNull(); // the audit stamp survives the re-enable
+    expect(row?.setBy).toBe('su-restorer');
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: 'beta' })).toBe(true);
+    expect(await disabledPotSlugs(sql, { workspaceId: WS })).not.toContain('beta');
+  });
+
+  it('is idempotent — the same flip twice leaves one row', async () => {
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: ['alpha', 'alpha'], enabled: false, setBy: 'su-test' });
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: ['alpha'], enabled: false, setBy: 'su-test' });
+    const rows = (await sql`
+      SELECT count(*)::int AS n FROM harness_shared.learning_pot_scope
+       WHERE workspace_id = ${WS} AND pot_slug = 'alpha'`) as Array<{ n: number }>;
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('ignores an empty selection instead of writing every pot', async () => {
+    // A bulk footer with nothing selected must be a no-op, never a fleet-wide flip.
+    expect(await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [], enabled: false, setBy: 'su-test' })).toEqual([]);
+    expect(await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [''], enabled: false, setBy: 'su-test' })).toEqual([]);
+  });
+
+  it('scopes to its workspace — another tenant\'s flip is invisible', async () => {
+    await setPotLearningScope(sql, { workspaceId: OTHER_WS, potSlugs: ['alpha'], enabled: false, setBy: 'su-other' });
+    // 'alpha' is disabled in BOTH workspaces now; prove the reads are keyed by
+    // workspace by flipping it back on in one and re-reading the other.
+    await setPotLearningScope(sql, { workspaceId: OTHER_WS, potSlugs: ['alpha'], enabled: true, setBy: 'su-other' });
+    expect(await potLearningEnabled(sql, { workspaceId: OTHER_WS, potSlug: 'alpha' })).toBe(true);
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: 'alpha' })).toBe(false);
+  });
+
+  it('resolves a whole batch from one query, with unknown slugs enabled', async () => {
+    const resolve = await potScopeResolver(sql, { workspaceId: WS });
+    expect(resolve('alpha')).toBe(false);
+    expect(resolve('beta')).toBe(true);
+    expect(resolve('a-pot-with-no-row-at-all')).toBe(true);
+  });
+
+  it('clear removes rows entirely — the exact inverse of a write', async () => {
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: ['epsilon'], enabled: false, setBy: 'su-test' });
+    const { deleted } = await clearPotLearningScope(sql, { workspaceId: WS, potSlugs: ['epsilon'] });
+    expect(deleted).toBe(1);
+    expect(await getPotLearningScope(sql, { workspaceId: WS, potSlug: 'epsilon' })).toBeNull();
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: 'epsilon' })).toBe(true);
+    // Clearing a pot that has no row is a no-op, not an error.
+    expect((await clearPotLearningScope(sql, { workspaceId: WS, potSlugs: ['epsilon'] })).deleted).toBe(0);
+  });
+
+  it('lists every stored row for the picker', async () => {
+    const rows = await listPotLearningScope(sql, { workspaceId: WS });
+    expect(rows.map((r) => r.potSlug).sort()).toEqual(['alpha', 'beta', 'delta', 'gamma']);
+  });
+
+  it('NEVER touches a lane\'s own config — the property that makes the restore lossless', async () => {
+    // D-001. Arm two lanes for a pot the way their own tools would, flip the pot
+    // off and back on through the gate, and assert both lane rows are byte-identical.
+    // If this ever fails, switching a pot back on has started reviving or parking
+    // lanes on its own and the gate has become the remembered-bulk-write design
+    // the owner rejected.
+    const POT = 'lane-owner';
+    await sql`
+      INSERT INTO harness_shared.gym_autoloop_config
+        (workspace_id, harness_slug, enabled, budget_usd, spent_usd, status, updated_at)
+      VALUES (${WS}, ${POT}, true, 12.5, 3.25, 'running', ${Date.now()})`;
+    await sql`
+      INSERT INTO harness_shared.learning_governor_loops
+        (workspace_id, loop_id, pot_slug, display_name, budget_kind, budget_usd, enabled, enforcement)
+      VALUES (${WS}, ${'gym:' + POT}, ${POT}, 'gym lane', 'usd', 40, true, 'native')`;
+
+    const laneSnapshot = async () => ({
+      gym: (await sql`
+        SELECT * FROM harness_shared.gym_autoloop_config
+         WHERE workspace_id = ${WS} AND harness_slug = ${POT}`) as unknown[],
+      governor: (await sql`
+        SELECT * FROM harness_shared.learning_governor_loops
+         WHERE workspace_id = ${WS} AND loop_id = ${'gym:' + POT}`) as unknown[],
+    });
+
+    const before = await laneSnapshot();
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [POT], enabled: false, setBy: 'su-test' });
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: POT })).toBe(false);
+    expect(await laneSnapshot()).toEqual(before); // still armed, just gated
+
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [POT], enabled: true, setBy: 'su-test' });
+    expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: POT })).toBe(true);
+    expect(await laneSnapshot()).toEqual(before); // restored to EXACTLY what was armed
+  });
+});

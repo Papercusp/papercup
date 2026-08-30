@@ -302,23 +302,28 @@ describe('collectScheduleInventory', () => {
  *     violates the host-setInterval guard. If the manifest and the allowlist drift apart, this fails.
  */
 describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', () => {
-  it('the no-raw-setInterval BASELINE holds only the known-grandfathered site and cannot grow', () => {
-    // The shrink-to-empty grandfather set. A NEW bare setInterval is a hard guard failure, never a
-    // BASELINE addition — that is the whole "every host timer is in schedule:inventory" ratchet.
+  it('the no-raw-setInterval BASELINE is EMPTY — no host timer is runtime-invisible', () => {
+    // The shrink-to-empty grandfather set, now EMPTY. A NEW bare setInterval is a hard guard
+    // failure, never a BASELINE addition — that is the whole "every host timer is in
+    // schedule:inventory" ratchet.
     //
-    // WI-6730 (2026-08-01): this asserted `size === 0` and passed — VACUOUSLY. BASELINE is derived
-    // from what the guard can SEE, and the guard enumerated with a bare `git ls-files`, which does
-    // not recurse into submodules. All 39 of them (incl. libs/papercusp) were therefore never
-    // scanned, so "no host timer is runtime-invisible" was a statement about the visible subtree
-    // only — precisely the silent gap this reconcile exists to catch. Switching the guard to the
-    // recursing enumerator did not add a timer; it revealed one that had been invisible since P-007.
+    // WI-6730 (2026-08-01): an earlier `size === 0` assertion here passed — VACUOUSLY. BASELINE is
+    // derived from what the guard can SEE, and the guard enumerated with a bare `git ls-files`,
+    // which does not recurse into submodules. All 39 of them (incl. libs/papercusp) were therefore
+    // never scanned, so "no host timer is runtime-invisible" was a statement about the visible
+    // subtree only — precisely the silent gap this reconcile exists to catch.
     //
-    // Pinned EXACTLY (not `<= 1`) so the ratchet still bites in both directions: a new offender
-    // cannot be parked here, and migrating this one must update this test rather than silently
-    // loosen it.
-    expect([...BASELINE].sort()).toEqual([
-      'libs/papercusp/packages/locks/src/workspace-listener.ts',
-    ]);
+    // READ THIS BEFORE TRUSTING THE LINE BELOW: emptiness is meaningful again ONLY because the
+    // guard now uses the RECURSING enumerator, which makes this a claim about the whole tree,
+    // submodules included. The enumerator is the load-bearing part, not this assertion — if it
+    // ever regresses to a non-recursing scan, this passes vacuously again while reading green.
+    //
+    // WI-6732 (2026-08-30): the final entry — libs/papercusp/packages/locks/src/workspace-listener.ts,
+    // startBackgroundJanitor() — was migrated to managedSetInterval('su-locks:background-janitor',
+    // …, { category: 'global-sweep', classification: 'timeout-reaper' }), emptying the set. Pinned
+    // EXACTLY (not `<= N`) so the ratchet bites in both directions: a new offender cannot be parked
+    // here, and any future grandfathering must update this test rather than silently loosen it.
+    expect([...BASELINE].sort()).toEqual([]);
   });
 
   it('every external-process timer source is allow-listed in the host guard (audits agree, no gap)', () => {

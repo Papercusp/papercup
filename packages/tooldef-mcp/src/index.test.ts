@@ -58,4 +58,42 @@ describe('dispatchProjectedToolToMcp', () => {
     expect(r.isError).toBe(true);
     expect((r.content[0] as { text: string }).text).toMatch(/^role_not_allowed: /);
   });
+
+  // EI-21903050648079438: a code:run script's unwrapToolResult prefers
+  // structuredContent over the text body, so a dispatch-level failure with no
+  // structuredContent handed the script a raw STRING while a success handed it
+  // an OBJECT — an asymmetry that makes `result.ok` read as undefined on the
+  // exact path a script most needs to detect failure on.
+  it('carries structuredContent:{ok:false,error} on a gate denial when codeMode is set', async () => {
+    const r = await dispatchProjectedToolToMcp(
+      tool({ agentRoles: ['architect'] }),
+      'fix.tool',
+      {},
+      ctx({ role: 'worker', codeMode: true }),
+      {},
+    );
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toEqual({
+      ok: false,
+      error: { code: 'role_not_allowed', message: expect.any(String) },
+    });
+  });
+
+  it('omits structuredContent on a gate denial when codeMode is not set (no extra wire cost)', async () => {
+    const r = await dispatchProjectedToolToMcp(tool({ agentRoles: ['architect'] }), 'fix.tool', {}, ctx({ role: 'worker' }), {});
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toBeUndefined();
+  });
+
+  it('still prefers the target-supplied structuredContent on success (unchanged)', async () => {
+    const r = await dispatchProjectedToolToMcp(
+      tool({ fn: async () => ({ content: [{ type: 'text', text: 'ok' }], structuredContent: { ok: true, n: 1 } }) }),
+      'fix.tool',
+      {},
+      ctx({ codeMode: true }),
+      {},
+    );
+    expect(r.isError).toBeUndefined();
+    expect(r.structuredContent).toEqual({ ok: true, n: 1 });
+  });
 });

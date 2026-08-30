@@ -614,11 +614,20 @@ export async function readMttshSamples(
 export function governorStarvationSignals(
   loops: readonly LearningLoopRegistration[],
   opts: LearningSloOptions = {},
+  /**
+   * Pots switched off at the master gate (learning-pot-scope-gate-2026-08-30
+   * D-001). Their loops are EXCLUDED: a starvation signal asks the owner to
+   * raise a budget, and asking that for a pot they deliberately switched off is
+   * a false alarm — the loop has not "silently stopped learning", it was
+   * stopped on purpose. Omitted ⇒ nothing excluded, the pre-gate behaviour.
+   */
+  disabledPots: ReadonlySet<string> = new Set(),
 ): WatchdogSignal[] {
   const floor = opts.governorStarvationFloorUsd ?? LEARNING_SLO_DEFAULTS.governorStarvationFloorUsd;
   const out: WatchdogSignal[] = [];
   for (const loop of loops) {
     if (!loop.enabled || loop.budgetUsd === null) continue;
+    if (loop.potSlug && disabledPots.has(loop.potSlug)) continue;
     const verdict = checkLoopVerdict(loop, floor);
     if (verdict.reason !== 'exhausted') continue;
     out.push({
@@ -646,7 +655,9 @@ export async function collectGovernorStarvationSignals(
   opts: LearningSloOptions = {},
 ): Promise<WatchdogSignal[]> {
   const loops = await listLearningLoops(sql, { workspaceId });
-  return governorStarvationSignals(loops, opts);
+  const { disabledPotSlugs } = await import('../../learning/pot-gate/store');
+  const disabled = new Set(await disabledPotSlugs(sql, { workspaceId }));
+  return governorStarvationSignals(loops, opts, disabled);
 }
 
 // ── memory recall zero-hit spike ─────────────────────────────────────────────

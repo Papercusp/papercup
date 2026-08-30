@@ -101,10 +101,24 @@ export async function dispatchProjectedToolToMcp(
 ): Promise<McpToolCallResult> {
   const r = await dispatchProjectedTool(tool, toolName, args, ctx, deps);
   if (!r.ok) {
-    return {
+    const failure: McpToolCallResult = {
       isError: true,
       content: [{ type: 'text', text: `${r.error?.code}: ${r.error?.message}` }],
     };
+    // EI-21903050648079438: a dispatch-level failure (a gate/schema rejection —
+    // the target handler never ran) previously carried NO `structuredContent`,
+    // so a code:run script's `unwrapToolResult` fell through to the plain-text
+    // body and handed the script a raw STRING. The success path below always
+    // threads `structuredContent` when the target set one, so a caller checking
+    // `result.ok` saw `undefined` on failure but a real boolean on success —
+    // the exact asymmetry `raw-text-result-shape.test.ts` pins for a handler's
+    // OWN unstructured output, here at the dispatcher's uniform failure shape
+    // instead. Gated on `ctx.codeMode` to match that same handler convention:
+    // a non-code-mode (MCP model) caller pays nothing extra on the wire.
+    if (ctx.codeMode) {
+      failure.structuredContent = { ok: false, error: { code: r.error?.code, message: r.error?.message } };
+    }
+    return failure;
   }
   const out: McpToolCallResult = { content: r.result!.content };
   // EI-19386035445533031 (follow-on): `ok:true` here means the HANDLER did not

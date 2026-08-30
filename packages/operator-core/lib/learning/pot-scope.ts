@@ -1,6 +1,12 @@
 /**
  * pot-scope.ts — the ONE way a learning writer resolves the pot its row belongs to.
  *
+ * ⚠ ATTRIBUTION, not permission. "May learning RUN for this pot at all" is a
+ * different question with a different store — see ./pot-gate/ (the per-pot
+ * learning gate over harness_shared.learning_pot_scope, plan
+ * learning-pot-scope-gate-2026-08-30 D-001). A lane typically uses both:
+ * resolve the pot here, then ask the gate whether that pot is switched on.
+ *
  * Plan `pot-scope-all-learnings-2026-07-26`, P-002.
  * [owner 2026-07-25 interactive, verbatim] "THERE SHOULD BE NO WORKSPACE
  * SCOPED LEARNINGS. FIX THAT. ALL LEARNINGS SHOULD BE SCOPED TO A POT."

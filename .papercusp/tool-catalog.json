@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 836,
+  "count": 837,
   "tools": [
     {
       "name": "ablation:report",
@@ -263,7 +263,7 @@
           "POST"
         ]
       },
-      "description": "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
+      "description": "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Optionally pass `model:'gpt-reserve'` to measure Luna's base-model-inference reserve bucket instead of the default Sol/generic bucket. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
       "capabilities": [
         "harness:write"
       ],
@@ -286,7 +286,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex.",
+        "when": "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex, and `model:'gpt-reserve'` when checking Luna reserve capacity.",
         "notWhen": "Clearing local pauses (`accounts:reset-rate`) or gateway exclusions (POST `/admin/readmit`).",
         "chaining": "`accounts:probe-capacity { provider:'codex' }` → `fleet:capacity { provider:'codex' }`; leave confirmed walls walled."
       }
@@ -6237,7 +6237,7 @@
           "POST"
         ]
       },
-      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, escalation, escalation_resolved, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, escalation, escalation_resolved, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`). Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
       "capabilities": [
         "coord:read"
       ],
@@ -15167,6 +15167,37 @@
         "when": "knowledge_packs:list shows updateAvailable for an installed pack.",
         "notWhen": "First-time install — knowledge_packs:install.",
         "chaining": "The response reports installedVersions vs availableVersion + the adoptable-new-items review."
+      }
+    },
+    {
+      "name": "learning:set-pot-scope",
+      "http": {
+        "path": "/api/agent-tools/learning/set-pot-scope",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Switch learning ON or OFF for one or many POTS at once (harness_shared.learning_pot_scope) — the master gate ANDed with every learning lane's own arming, so it covers the frontier loops, dream, gym and Scout together. Switching a pot off leaves every lane's own config untouched, so switching it back on restores exactly the lanes that were armed before and revives nothing that was deliberately parked. An absent row means ENABLED, so a pot that has never been flipped is learning. Audited + one-call-revertible; refuses an unknown pot slug (a typo would otherwise gate nothing while reading as a successful switch-off).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Stop or resume ALL learning for a pot — an experiment pot you do not want spending, a customer pot that should never learn, or re-enabling one you had switched off. Also the write behind the Learning tab's pot rail and per-pot drawer.",
+        "notWhen": "To arm/disarm ONE lane use gym:arm (gym) or governor:arm (a governor lane); to pause a lane's SCHEDULE use routines:set; for the workspace-wide Scout ceiling use learning:set-scout-budget. This tool is the pot-level switch ABOVE all of those and changes none of them.",
+        "chaining": "Read the current scope first (dev:pg_query on harness_shared.learning_pot_scope, or the automation.catalog arming block) — pots with no row are enabled. Pass the whole selection in ONE call rather than looping."
       }
     },
     {

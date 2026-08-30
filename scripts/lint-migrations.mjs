@@ -47,6 +47,15 @@
  *      and converted 721's timeout into a deadlock. Fix is two LOCK TABLE lines
  *      in reader order. Enforced from VIEW_LOCK_ORDER_ENFORCED_FROM;
  *      `-- lint-migrations: allow-view-lock-order <reason>` opts out.
+ *
+ *   4c. VIEW DROP WITHOUT A DEPENDENT ACCOUNT — `DROP VIEW <v>` (bare OR
+ *      CASCADE, static or via `EXECUTE format(...)`) with no stated reason why
+ *      `<v>`'s dependents are safe. A bare drop of a depended-on view ERRORS at
+ *      apply (678 crash-looped a real operator's boot); a CASCADE drop SILENTLY
+ *      destroys the dependents and, because migrations run once, destroys them
+ *      PERMANENTLY (374 removed harness_shared.fleet_assignment fleet-wide;
+ *      375 restored it by hand). Enforced from VIEW_DROP_ENFORCED_FROM;
+ *      `-- lint-migrations: allow-view-drop <reason>` opts out.
  *   5. UNRESERVED NUMBER — every NNN ≥ ENFORCED_FROM must have a row in
  *      harness_shared.migration_reservations (i.e. was allocated via
  *      db:next-migration, not `ls | tail`). Skipped with a notice when PG is
@@ -63,6 +72,7 @@ import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveScriptPgUrl } from "./lib/pg-url.mjs";
 import { selectExplicitBasenames } from "./lib/explicit-files.mjs";
 import {
+  isLiveCodeAt,
   stripSqlComments,
   stripSqlCommentsAndStrings,
 } from "./lib/strip-comments-and-strings.mjs";
@@ -714,6 +724,152 @@ export function findViewLockOrderInversion(sqlText) {
   return [...hits.values()];
 }
 
+/**
+ * Enforcement boundary for the VIEW-DROP DEPENDENCY check (below).
+ *
+ * Its OWN boundary, same reason as the two above: 21 already-applied files
+ * carry a DROP VIEW (24 statements — measured over every file in the live dir,
+ * drafts included, not estimated), and they are applied+ledgered, so editing
+ * one now would break its recorded sha256 without re-running it. The highest
+ * number present is 1039; enforcement starts at the next. This stops the NEXT
+ * one.
+ *
+ * Bump this ONLY when deliberately re-grandfathering more applied history —
+ * NEVER to silence a genuinely new violation. Use the documented pragma for a
+ * drop that is actually safe (see findUnguardedViewDrop).
+ */
+export const VIEW_DROP_ENFORCED_FROM = 1040;
+
+/**
+ * Opt-out pragma, same shape and contract as `allow-view-lock-order`: it forces
+ * the author to STATE why the drop is safe here, not to prove it.
+ *
+ * THIS IS THE ONLY OPT-OUT, AND THAT IS DELIBERATE. The obvious second one —
+ * auto-exempting a file that mentions `pg_get_viewdef`, since capture/replay is
+ * the sanctioned safe form — is a trap this repo has already measured once:
+ * a marker-based lint can be disabled by "helpfully" seeding its own marker
+ * (EI-19462877357083817, where `-- FORWARD-COMPAT: TODO` satisfied the ack
+ * regex as fully as a real reason). A bare `pg_get_viewdef` token anywhere in
+ * the file would silence every drop in it, including one the author never
+ * considered. Capture/replay is instead a REASON to write in the pragma, where
+ * it is attributable.
+ */
+export const VIEW_DROP_ACK =
+  /^[ \t]*--[ \t]*lint-migrations:[ \t]*allow-view-drop[ \t]+\S/im;
+
+/**
+ * The migration-678 / migration-374 class (EI-18748424931934157): a file that
+ * drops a view without having accounted for what depends on it.
+ *
+ * TWO INCIDENTS, FAILING IN OPPOSITE DIRECTIONS — which is why both spellings
+ * are flagged rather than just CASCADE:
+ *
+ *   - BARE DROP fails LOUDLY. 678 shipped `DROP VIEW harness_shared.
+ *     harness_features_consolidated`, which every per-harness `harness_features`
+ *     view depends on. Postgres refuses to drop a view that has dependents, so
+ *     the migration errored at a real operator's boot — "cannot drop view …
+ *     because other objects depend on it" — and crash-looped it.
+ *   - CASCADE fails SILENTLY, which is worse. 374 ran `DROP VIEW
+ *     harness_shared.work_items CASCADE` to promote a table, and the CASCADE
+ *     took every dependent with it — including harness_shared.fleet_assignment,
+ *     whose canonical body lives in migration 358. Migrations run ONCE, so 358
+ *     never re-created it: on every DB that applied 374 the view was gone
+ *     PERMANENTLY, blinding fleet:assignments, scheduler:running, the reclaim
+ *     sweep and the UI fleet view until 375 restored it by hand.
+ *
+ * WHY A LINT AND NOT A REVIEW CONVENTION. 678's author DID write a safety note;
+ * it reasoned the change was safe because "677 shipped minutes ago and nothing
+ * has been built on the column". That was TRUE about the column and IRRELEVANT
+ * to the view — the dependency is on the view itself. A reviewer would very
+ * plausibly wave that through, which is precisely why the guard has to be
+ * mechanical.
+ *
+ * WHAT THIS CHECK CAN AND CANNOT KNOW. It is pure text: it has no database, so
+ * it CANNOT tell whether a given view actually has dependents. It therefore does
+ * not try to. It asks a weaker question it can answer honestly — "was the
+ * dependent question answered at all?" — and the pragma is where the answer
+ * goes. That is the whole value: it converts a silent assumption into a written
+ * claim, at authoring time, on the exact statement class that produced both
+ * incidents. The stronger guard is the per-harness dependent view seeded in
+ * libs/test-config/src/baseline-schema-global-setup.ts, which tests the real
+ * property; this is the cheap belt that also covers a FRESH container, where
+ * that probe cannot be seeded until after the first replay.
+ *
+ * MASKING — AND WHY NEITHER MASK ALONE WORKS HERE. The statement appears in
+ * three textual positions in the live corpus, and they want opposite treatment:
+ *
+ *   1. top-level code      `DROP VIEW IF EXISTS harness_shared.work_items;`
+ *   2. inside a DO body    `DROP VIEW harness_shared.work_items CASCADE;` (374)
+ *   3. dynamic, in a STRING literal
+ *                          `EXECUTE format('DROP VIEW %I.%I', s, 'x')`
+ *
+ * Masking strings kills (3); not masking them lets PROSE fire — and 375's own
+ * header quotes `DROP VIEW harness_shared.work_items CASCADE;` while explaining
+ * the incident, so a raw scan would flag the file written to document the
+ * hazard. This is exactly the case `isLiveCodeAt` exists for: match on RAW text,
+ * then ask whether the match's ANCHOR is live program text. Form (1)/(2) anchor
+ * on `DROP`; form (3) anchors on the string's OPENING QUOTE, which is live code
+ * even though its contents are blanked. Inside a comment BOTH anchors are
+ * blanked, so prose reads clean in both directions. Bodies stay live
+ * (`maskLiveBodies`) because 374's drop really executes.
+ *
+ * @param {string} sqlText raw migration text
+ * @returns {{ view: string, dynamic: boolean, cascade: boolean }[]}
+ */
+export function findUnguardedViewDrop(sqlText) {
+  // The ack is a COMMENT, so it is tested against the RAW text — masking would
+  // erase the very line being looked for.
+  if (VIEW_DROP_ACK.test(sqlText)) return [];
+  const masked = maskLiveBodies(sqlText);
+  // `%` so the dynamic `format('DROP VIEW %I.%I', …)` placeholders parse as an
+  // identifier rather than terminating the match.
+  const IDENT = '(?:"?[\\w$%]+"?\\.)?"?[\\w$%]+"?';
+  const hits = new Map();
+
+  // Forms (1) and (2): the statement is program text. Anchor on DROP.
+  //
+  // The CASCADE tail is a zero-width LOOKAHEAD, not a consumed group, and that is
+  // load-bearing. Consuming `[^;]*` makes the match run to the next semicolon —
+  // so a PHANTOM (a comment mentioning the statement) swallows a REAL drop that
+  // follows it before the next `;`, `lastIndex` advances past both, and the real
+  // hit is never offered to the oracle. That is a false NEGATIVE manufactured by
+  // a guard aimed at false positives; the regression test "scans past a phantom
+  // to a real drop later in the file" pins it.
+  const codeRe = new RegExp(
+    `\\bDROP\\s+(?:MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})(?=([^;]*))`,
+    "gi",
+  );
+  let m;
+  while ((m = codeRe.exec(sqlText)) !== null) {
+    if (!isLiveCodeAt(sqlText, masked, m.index)) continue;
+    const view = bareName(m[1]);
+    hits.set(`code:${view}`, {
+      view,
+      dynamic: false,
+      cascade: /\bCASCADE\b/i.test(m[2] ?? ""),
+    });
+  }
+
+  // Form (3): the statement is string CONTENT, so its own characters are
+  // blanked. Anchor on the opening quote, which is program text.
+  const dynRe = new RegExp(
+    `(['"])\\s*DROP\\s+(?:MATERIALIZED\\s+)?VIEW\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})(?=([^'"]*))`,
+    "gi",
+  );
+  let d;
+  while ((d = dynRe.exec(sqlText)) !== null) {
+    if (!isLiveCodeAt(sqlText, masked, d.index)) continue;
+    const view = bareName(d[2]);
+    hits.set(`dyn:${view}`, {
+      view,
+      dynamic: true,
+      cascade: /\bCASCADE\b/i.test(d[3] ?? ""),
+    });
+  }
+
+  return [...hits.values()];
+}
+
 /** Bare relation/index name: drop quotes and any schema qualifier. */
 function bareName(ident) {
   const s = String(ident).replace(/"/g, "");
@@ -1131,6 +1287,34 @@ async function main() {
     );
   }
 
+  // 6d. view drop without a dependent account (the 678 / 374 class —
+  //     EI-18748424931934157, WI-6219)
+  //
+  // Its own boundary (VIEW_DROP_ENFORCED_FROM), not ENFORCED_FROM: 21
+  // applied+ledgered files already carry a DROP VIEW, the highest at 1039.
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
+    if (num < VIEW_DROP_ENFORCED_FROM) continue;
+    const hits = findUnguardedViewDrop(readFileSync(join(SQL_DIR, f), "utf8"));
+    if (!hits.length) continue;
+    failed = true;
+    const cascading = hits.filter((h) => h.cascade);
+    console.error(
+      `✗ ${f}: ${hits
+        .map(
+          (h) =>
+            `DROP VIEW ${h.view}${h.cascade ? " CASCADE" : ""}${h.dynamic ? " (dynamic, via EXECUTE format)" : ""}`,
+        )
+        .join(
+          " · ",
+        )} — nothing in this file states what depends on ${hits.length === 1 ? "it" : "them"}, and dropping a view is only safe once that is known.${
+        cascading.length
+          ? ` ${cascading.map((h) => h.view).join(", ")} uses CASCADE, which is the SILENT direction: it drops every dependent without naming one, and because migrations run ONCE the dependent's own CREATE never runs again — migration 374 dropped harness_shared.work_items CASCADE and took harness_shared.fleet_assignment with it (canonical body in 358), blinding fleet:assignments, scheduler:running, the reclaim sweep and the UI fleet view on every DB that applied it, until 375 restored it by hand.`
+          : ` A BARE drop of a depended-on view does not silently succeed — Postgres refuses it ("cannot drop view … because other objects depend on it"), so this fails at APPLY time, and migrations auto-apply at boot: that is how 678 crash-looped a real operator.`
+      } PREFER \`CREATE OR REPLACE VIEW\`, which keeps dependents intact and is enough whenever the column list is unchanged. If the shape really must change, capture the dependents with pg_get_viewdef, drop CASCADE, then replay them in the same transaction. Note the reasoning trap this check exists for: 678's author DID write a safety note, but it reasoned about the COLUMN ("nothing has been built on it") when the dependency was on the VIEW. State why the DEPENDENTS are safe — not the column — with "-- lint-migrations: allow-view-drop <reason>".`,
+    );
+  }
+
   // 6c. view lock-order inversion (the 721 class — EI-19320370563025481)
   //
   // Its own boundary (VIEW_LOCK_ORDER_ENFORCED_FROM), not ENFORCED_FROM: 11
@@ -1214,7 +1398,7 @@ async function main() {
 
   if (failed) process.exit(1);
   console.log(
-    `✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, view lock-order≥${VIEW_LOCK_ORDER_ENFORCED_FROM}, reservation number+filename≥${ENFORCED_FROM})`,
+    `✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, view lock-order≥${VIEW_LOCK_ORDER_ENFORCED_FROM}, view drop≥${VIEW_DROP_ENFORCED_FROM}, reservation number+filename≥${ENFORCED_FROM})`,
   );
 }
 

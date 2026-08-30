@@ -255,6 +255,15 @@
     "packages/operator-core/lib/su-model-menu.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
+    // Registered for this list's FIRST reason: it is imported directly by
+    // artifact-url-delivery-guard.test.ts, which pulls six named exports off it
+    // (harvestLedgerIds, isArtifactTool, isDurableWriteTool, lastAssistantText,
+    // normalizeToolName, stripQuotedForScanning). Unregistered that import is a
+    // TS7016 absorbed into the test file's permanent tsc baseline — caught exactly
+    // that way by the check-unenrolled-mjs-imports ratchet at the green gate.
+    // Enrolled rather than `@ts-ignore`-d because the detector surface is the thing
+    // the test asserts on, so a generated declaration is worth more than a suppression.
+    "apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs",
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
     // it because the module is a shared exit-safety helper with full JSDoc, so the
     // emit is genuinely typed rather than a suppression.

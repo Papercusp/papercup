@@ -226,6 +226,70 @@ export function findViewLockOrderInversion(sqlText: string): {
     hot: boolean;
 }[];
 /**
+ * The migration-678 / migration-374 class (EI-18748424931934157): a file that
+ * drops a view without having accounted for what depends on it.
+ *
+ * TWO INCIDENTS, FAILING IN OPPOSITE DIRECTIONS — which is why both spellings
+ * are flagged rather than just CASCADE:
+ *
+ *   - BARE DROP fails LOUDLY. 678 shipped `DROP VIEW harness_shared.
+ *     harness_features_consolidated`, which every per-harness `harness_features`
+ *     view depends on. Postgres refuses to drop a view that has dependents, so
+ *     the migration errored at a real operator's boot — "cannot drop view …
+ *     because other objects depend on it" — and crash-looped it.
+ *   - CASCADE fails SILENTLY, which is worse. 374 ran `DROP VIEW
+ *     harness_shared.work_items CASCADE` to promote a table, and the CASCADE
+ *     took every dependent with it — including harness_shared.fleet_assignment,
+ *     whose canonical body lives in migration 358. Migrations run ONCE, so 358
+ *     never re-created it: on every DB that applied 374 the view was gone
+ *     PERMANENTLY, blinding fleet:assignments, scheduler:running, the reclaim
+ *     sweep and the UI fleet view until 375 restored it by hand.
+ *
+ * WHY A LINT AND NOT A REVIEW CONVENTION. 678's author DID write a safety note;
+ * it reasoned the change was safe because "677 shipped minutes ago and nothing
+ * has been built on the column". That was TRUE about the column and IRRELEVANT
+ * to the view — the dependency is on the view itself. A reviewer would very
+ * plausibly wave that through, which is precisely why the guard has to be
+ * mechanical.
+ *
+ * WHAT THIS CHECK CAN AND CANNOT KNOW. It is pure text: it has no database, so
+ * it CANNOT tell whether a given view actually has dependents. It therefore does
+ * not try to. It asks a weaker question it can answer honestly — "was the
+ * dependent question answered at all?" — and the pragma is where the answer
+ * goes. That is the whole value: it converts a silent assumption into a written
+ * claim, at authoring time, on the exact statement class that produced both
+ * incidents. The stronger guard is the per-harness dependent view seeded in
+ * libs/test-config/src/baseline-schema-global-setup.ts, which tests the real
+ * property; this is the cheap belt that also covers a FRESH container, where
+ * that probe cannot be seeded until after the first replay.
+ *
+ * MASKING — AND WHY NEITHER MASK ALONE WORKS HERE. The statement appears in
+ * three textual positions in the live corpus, and they want opposite treatment:
+ *
+ *   1. top-level code      `DROP VIEW IF EXISTS harness_shared.work_items;`
+ *   2. inside a DO body    `DROP VIEW harness_shared.work_items CASCADE;` (374)
+ *   3. dynamic, in a STRING literal
+ *                          `EXECUTE format('DROP VIEW %I.%I', s, 'x')`
+ *
+ * Masking strings kills (3); not masking them lets PROSE fire — and 375's own
+ * header quotes `DROP VIEW harness_shared.work_items CASCADE;` while explaining
+ * the incident, so a raw scan would flag the file written to document the
+ * hazard. This is exactly the case `isLiveCodeAt` exists for: match on RAW text,
+ * then ask whether the match's ANCHOR is live program text. Form (1)/(2) anchor
+ * on `DROP`; form (3) anchors on the string's OPENING QUOTE, which is live code
+ * even though its contents are blanked. Inside a comment BOTH anchors are
+ * blanked, so prose reads clean in both directions. Bodies stay live
+ * (`maskLiveBodies`) because 374's drop really executes.
+ *
+ * @param {string} sqlText raw migration text
+ * @returns {{ view: string, dynamic: boolean, cascade: boolean }[]}
+ */
+export function findUnguardedViewDrop(sqlText: string): {
+    view: string;
+    dynamic: boolean;
+    cascade: boolean;
+}[];
+/**
  * The migration-461/689 class: DROPPING a table's unique index in the SAME
  * migration that creates its replacement.
  *
@@ -436,3 +500,33 @@ export const VIEW_LOCK_ORDER_ENFORCED_FROM: 678;
  * author to STATE why the inversion is safe here, not to prove it.
  */
 export const VIEW_LOCK_ORDER_ACK: RegExp;
+/**
+ * Enforcement boundary for the VIEW-DROP DEPENDENCY check (below).
+ *
+ * Its OWN boundary, same reason as the two above: 21 already-applied files
+ * carry a DROP VIEW (24 statements — measured over every file in the live dir,
+ * drafts included, not estimated), and they are applied+ledgered, so editing
+ * one now would break its recorded sha256 without re-running it. The highest
+ * number present is 1039; enforcement starts at the next. This stops the NEXT
+ * one.
+ *
+ * Bump this ONLY when deliberately re-grandfathering more applied history —
+ * NEVER to silence a genuinely new violation. Use the documented pragma for a
+ * drop that is actually safe (see findUnguardedViewDrop).
+ */
+export const VIEW_DROP_ENFORCED_FROM: 1040;
+/**
+ * Opt-out pragma, same shape and contract as `allow-view-lock-order`: it forces
+ * the author to STATE why the drop is safe here, not to prove it.
+ *
+ * THIS IS THE ONLY OPT-OUT, AND THAT IS DELIBERATE. The obvious second one —
+ * auto-exempting a file that mentions `pg_get_viewdef`, since capture/replay is
+ * the sanctioned safe form — is a trap this repo has already measured once:
+ * a marker-based lint can be disabled by "helpfully" seeding its own marker
+ * (EI-19462877357083817, where `-- FORWARD-COMPAT: TODO` satisfied the ack
+ * regex as fully as a real reason). A bare `pg_get_viewdef` token anywhere in
+ * the file would silence every drop in it, including one the author never
+ * considered. Capture/replay is instead a REASON to write in the pragma, where
+ * it is attributable.
+ */
+export const VIEW_DROP_ACK: RegExp;

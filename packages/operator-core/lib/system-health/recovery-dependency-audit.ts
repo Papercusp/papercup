@@ -286,6 +286,27 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: "The primary SIGKILLs a worker silent past the threshold; cluster-fork respawns it. The primary's loop is independent of the wedged worker's — the reference design for this whole table.",
   },
   {
+    name: 'primary-managed-timers-broadcast',
+    file: 'packages/operator-core/lib/cluster-managed-timers-sync.ts',
+    executor: 'cluster-primary-timer',
+    // Empty, and deliberately so: this mechanism targets NO failure, so there is no
+    // component whose failure IS the failure it addresses. Filling `recovers` with
+    // "things this is about" (cluster IPC, the managed-timer registry) is exactly the
+    // misuse the module header warns turns the audit into noise — it would invent a
+    // fate-sharing verdict for a mechanism that recovers nothing.
+    recovers: [],
+    note:
+      "NOT a sentinel — a VISIBILITY broadcast, declared here only because it registers category:'watchdog'. " +
+      "The cluster primary periodically pushes its OWN managed-timer + DBOS-schedule registries to workers over " +
+      'node:cluster IPC (EI-19454206016477347), because SO_REUSEPORT means /api/internal/managed-timers is always ' +
+      "answered by a worker, so the primary's own timers are otherwise invisible to the route that reports them. " +
+      'It watches nothing and recovers nothing, so it has no fate-sharing to analyse. ' +
+      "⚠ Its category is a poor fit for the registry's stated watchdog contract (\"out-of-band sentinel, MUST " +
+      'SURVIVE WHAT IT WATCHES\") — it runs on, and reports, the same process, so it structurally cannot. The ' +
+      'category was most plausibly chosen for shed-exemption rather than sentinel semantics. Re-categorising is a ' +
+      'live behaviour change to that subsystem and is tracked on EI-20842109125283348 rather than done here.',
+  },
+  {
     name: 'memory-watchdog',
     file: 'packages/operator-core/lib/memory-watchdog.ts',
     executor: 'operator-in-process-timer',

@@ -26,6 +26,7 @@ import {
   type LearningEnforcement,
   type LearningLoopRegistration,
 } from './core';
+import { potLearningEnabled } from '../learning/pot-gate/store';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => String(v);
@@ -177,13 +178,28 @@ export async function deleteLearningLoop(
  * THE unattended-refusal check (D-004): look up the registration and apply the
  * generalized gym rule. Frontier loops call the flag-aware wrapper
  * (registrants.ts learningGovernorPreflight) — this is the PG-level core.
+ *
+ * Also applies the per-pot master switch (learning-pot-scope-gate-2026-08-30
+ * D-001). The registration row already CARRIES `pot_slug`, so the pot is
+ * resolved here rather than threaded through every call site — no caller
+ * changes, and a loop with no pot (`pot_slug` null) is unaffected.
+ *
+ * That costs ONE extra indexed PK lookup, and only when a registration exists.
+ * It is deliberately a second query rather than a LEFT JOIN onto the
+ * registration read: the join would make every governor check fail hard on a
+ * substrate that has not applied migration 1039, whereas the pot store's own
+ * undefined_table fail-open keeps the gate inert there — which is the whole
+ * posture of R-5.
  */
 export async function governorCheck(
   sql: Sql,
   q: { workspaceId: string; loopId: string; floorUsd?: number },
 ): Promise<GovernorVerdict> {
   const reg = await getLearningLoop(sql, { workspaceId: q.workspaceId, loopId: q.loopId });
-  return checkLoopVerdict(reg, q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD);
+  const potEnabled = reg?.potSlug
+    ? await potLearningEnabled(sql, { workspaceId: q.workspaceId, potSlug: reg.potSlug })
+    : undefined;
+  return checkLoopVerdict(reg, q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD, potEnabled);
 }
 
 // ---------------------------------------------------------------------------

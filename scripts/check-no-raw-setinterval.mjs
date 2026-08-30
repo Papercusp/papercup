@@ -164,7 +164,7 @@ export const ALLOWLIST = new Set([
  *   architectural change, not a drive-by rewrite, so it is tracked separately rather
  *   than bundled into the enumerator fix.
  */
-export const BASELINE = new Set(['libs/papercusp/packages/locks/src/workspace-listener.ts']);
+export const BASELINE = new Set([]);
 
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
