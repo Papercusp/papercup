@@ -891,8 +891,8 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
           expires_ts: new Date(),
         },
       ],
-    } as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 6060, secondsSinceStart: 600 } as never);
+    });
+    probeM.mockResolvedValue({ ok: true, mainPid: 6060, secondsSinceStart: 600 });
     freshnessM.mockResolvedValue({
       bundleMtimeMs: 10_000,
       newestSourceMtimeMs: 10_001,
@@ -937,8 +937,8 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
           expires_ts: new Date(),
         },
       ],
-    } as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 6061, secondsSinceStart: 12 } as never);
+    });
+    probeM.mockResolvedValue({ ok: true, mainPid: 6061, secondsSinceStart: 12 });
     freshnessM.mockResolvedValue({
       bundleMtimeMs: 10_001,
       newestSourceMtimeMs: 10_000,
