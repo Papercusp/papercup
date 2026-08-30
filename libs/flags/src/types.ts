@@ -423,6 +423,20 @@ export const FLAGS = {
   // a terminated wake-armed session is safe because the wake-executor --resumes
   // it. OFF ⇒ a pure no-op (the kill-switch if this ever misfires).
   IDLE_SESSION_REAPER_TERMINATE: "papercusp-idle-session-reaper-terminate",
+  // dead-target-routine-reaper-2026-08-30 (EI-19278517916030043): the DEAD-TARGET
+  // reaper — the sibling of the session reaper above, one level down. It probes each
+  // install's TREE directly and, only on a permanent verdict (root missing / git
+  // object store corrupt) confirmed across two spaced sweeps, parks that install's
+  // durable routines with the evidence stamped on the row. `ei669-repro-su-b621d`
+  // burned ~2,400 doomed git-sync attempts over 5 days (646 consecutive error ticks,
+  // fleet deploy panel crit for 32h) before a human paused it by hand. DEFAULT ON
+  // (derived FLAG_DEFAULTS — not in DARK_FLAGS): it is fail-closed at every step
+  // (home harness excluded before probing, `unknown` never parks, two spaced
+  // sightings required) and parks nothing on today's fleet. This is the PRIMARY,
+  // runtime-flippable gate; `PAPERCUSP_DEAD_TARGET_REAPER=0` remains a process-level
+  // emergency override for a host that cannot reach the flag store, and a read
+  // failure here is itself treated as OFF. OFF ⇒ a pure no-op, nothing is probed.
+  DEAD_TARGET_REAPER: "papercusp-dead-target-reaper",
   // session-db-archive-retire-dirs-2026-07-10 P-004: the end-of-session
   // archive-then-delete fast path. When ON, markAdvSessionEnded schedules
   // archiveAndDeleteSession for the ended session: its irreplaceable files
