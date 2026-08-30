@@ -628,6 +628,30 @@ function scanEvidence(
           >,
         }
       : {}),
+    // The cross-tab. The severity and ecosystem marginals beside it are independent totals,
+    // so neither can say how many of the DENIED findings sit in an ecosystem no userland
+    // remediation reaches. That number decides between "patch the image" and "the scan is
+    // measuring the wrong surface and must be scoped" — and the threshold is not the lever,
+    // so an unreachable population has to be proven rather than assumed (WI-1182614).
+    ...(isRecord(result.vulnerabilityBySeverityAndEcosystem)
+      ? {
+          vulnerabilityBySeverityAndEcosystem:
+            result.vulnerabilityBySeverityAndEcosystem as Readonly<Record<string, number>>,
+        }
+      : {}),
+    // Ranked top-25, carried ONLY as a pair with the distinct-artifact total below: the list
+    // is a floor, and a floor read as a total is how a bounded measurement becomes a
+    // confident wrong number. If one ever has to be dropped, drop both.
+    ...(isRecord(result.vulnerabilityByArtifact)
+      ? {
+          vulnerabilityByArtifact: result.vulnerabilityByArtifact as Readonly<
+            Record<string, number>
+          >,
+        }
+      : {}),
+    ...(typeof result.vulnerabilityDistinctArtifacts === 'number'
+      ? { vulnerabilityDistinctArtifacts: result.vulnerabilityDistinctArtifacts }
+      : {}),
     ...(isRecord(result.secretsByRule)
       ? { secretsByRule: result.secretsByRule as Readonly<Record<string, number>> }
       : {}),
