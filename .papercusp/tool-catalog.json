@@ -6414,7 +6414,7 @@
           "POST"
         ]
       },
-      "description": "List the live coordination roster and who can take work. Read summary.wakeable plus row sessionState/wakeable; ended rows require targeting. Default scope is your Hive; use scope/pot for explicit scope. `owner` is singular; ownerId is its compatibility alias, while owners targets a bounded set. In a hive-scoped SU session, scope:'workspace'/all returns hive_forbidden; use targeted owner for a workspace peer. An unscoped/admin session is required for workspace-wide browsing. Broad census: coord:roster { view:'live', project:'ids' }. Plan-scoped claims: coord:roster { view:'claims', plan } or fleet:assignments { plan }. Legacy harness, ownerIds, plan, includeStale, and include_stale keys are invalid. Use since:<etag> for cheap unchanged reads.",
+      "description": "List the live coordination roster and who can take work. Read summary.wakeable plus row sessionState/wakeable; ended rows require targeting. Default scope is your Hive; use scope/pot for explicit scope. `owner` is singular; ownerId is its compatibility alias, while owners targets a bounded set (ownerIds is its compatibility alias). In a hive-scoped SU session, scope:'workspace'/all returns hive_forbidden; use targeted owner for a workspace peer. An unscoped/admin session is required for workspace-wide browsing. Broad census: coord:roster { view:'live', project:'ids' }. Plan-scoped claims: coord:roster { view:'claims', plan } or fleet:assignments { plan }. Legacy harness, plan, includeStale, and include_stale keys are invalid. Use since:<etag> for cheap unchanged reads.",
       "capabilities": [
         "coord:read"
       ],
