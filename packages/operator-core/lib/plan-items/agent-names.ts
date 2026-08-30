@@ -66,7 +66,9 @@ export async function registerAgentName(
   const rows = await sql<AgentNameDbRow[]>`
     INSERT INTO harness_shared.agent_names (workspace_id, agent_name, owner_user)
     VALUES (${workspaceId}, ${agentName}, ${ownerUser})
-    ON CONFLICT (workspace_id, agent_name) DO UPDATE SET updated_at = now()
+    ON CONFLICT (workspace_id, agent_name) DO UPDATE SET
+      owner_user = EXCLUDED.owner_user,
+      updated_at = now()
     RETURNING workspace_id, agent_name, owner_user, created_at, updated_at
   `;
   return nameFromDb(rows[0]!);
