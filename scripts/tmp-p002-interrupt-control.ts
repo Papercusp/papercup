@@ -14,7 +14,7 @@ import { readFileSync, existsSync } from 'node:fs';
 
 process.env.PAPERCUSP_OPERATOR_BASE ||= 'http://127.0.0.1:3170';
 
-const ARM = (process.env.ARM ?? 'interrupt') as 'interrupt' | 'idle';
+const ARM = (process.env.ARM ?? 'interrupt') as 'interrupt' | 'idle' | 'esc';
 const WATCH_MS = Number(process.env.WATCH_MS ?? 120_000);
 const READY_TIMEOUT_MS = Number(process.env.READY_TIMEOUT_MS ?? 90_000);
 
@@ -106,10 +106,14 @@ async function main() {
   log('before: endedAt', (rowBefore as { endedAt?: unknown } | null)?.endedAt ?? null);
 
   let injectedAt: number | null = null;
-  if (ARM === 'interrupt') {
-    const ok = await interruptViaPty(ownerId, 'sigint');
+  if (ARM === 'interrupt' || ARM === 'esc') {
+    // ARM=esc is the DISCRIMINATOR: same host, same injectIntoHost call, same
+    // mode:'raw' — a different payload (\x1b). If esc survives and \x03 kills,
+    // the Ctrl-C payload is the cause; if both kill, the injection path is.
+    const key = ARM === 'esc' ? 'esc' : 'sigint';
+    const ok = await interruptViaPty(ownerId, key);
     injectedAt = Date.now();
-    log('INTERRUPT injected (single \\x03):', ok);
+    log(`INJECTED via interruptViaPty key=${key} (${key === 'esc' ? '\\x1b' : '\\x03'}):`, ok);
   } else {
     log('IDLE arm — nothing sent');
   }
