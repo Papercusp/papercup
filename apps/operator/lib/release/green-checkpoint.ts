@@ -11739,6 +11739,25 @@ interface PostSuiteLegs {
   records: PostSuiteLegRecord[];
 }
 
+/** Render the targeted re-verdict's post-suite result from the per-leg evidence.
+ *
+ * `PostSuiteLegs.ran` is the phase-level boolean (measured vs not measured), not the
+ * list of commands that ran. The ordered `records` array is the authoritative source
+ * for that detail, and skipped records must not be reported as executed. */
+export function summarizeTargetedPostSuiteLegs(legs: {
+  ok: boolean;
+  records: readonly Pick<PostSuiteLegRecord, "id" | "status">[];
+  failingSignatures: readonly string[];
+}): string {
+  if (!legs.ok) {
+    return `targeted post-suite gates failed (${legs.failingSignatures.join(", ")})`;
+  }
+  const executed = legs.records
+    .filter((record) => record.status !== "skipped")
+    .map((record) => record.id);
+  return `targeted post-suite gates passed (${executed.join(", ") || "none"})`;
+}
+
 /** The legs' state when the suite is NOT (yet) considered passing: every one skipped,
  *  with the reason recorded. `ok` is true because nothing failed — but every individual
  *  status is `skipped`, so no consumer can mistake this for five passes. */
@@ -14955,9 +14974,7 @@ export function realCheckpointDeps(
       );
       return {
         pass: legs.ok,
-        summary: legs.ok
-          ? `targeted post-suite gates passed (${legs.ran.join(", ") || "none"})`
-          : `targeted post-suite gates failed (${legs.failingSignatures.join(", ")})`,
+        summary: summarizeTargetedPostSuiteLegs(legs),
       };
     },
     // EI-18759362119598634: the LINT/TYPECHECK sibling of runTestsAtRef above — re-run

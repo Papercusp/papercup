@@ -70,6 +70,7 @@ import {
   GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB,
   GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY,
   runPostSuiteLegs,
+  summarizeTargetedPostSuiteLegs,
   checkpointFailureSignature,
   historicalFlakeAnnotations,
   summarizeSuiteOutput,
@@ -11662,6 +11663,22 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("targeted post-suite summary", () => {
+  it("names executed leg records and excludes skipped legs", () => {
+    expect(
+      summarizeTargetedPostSuiteLegs({
+        ok: true,
+        records: [
+          { id: "lint:tsc", status: "passed" },
+          { id: "lint:migrations", status: "passed" },
+          { id: "spa-build", status: "skipped" },
+        ],
+        failingSignatures: [],
+      }),
+    ).toBe("targeted post-suite gates passed (lint:tsc, lint:migrations)");
   });
 });
 
