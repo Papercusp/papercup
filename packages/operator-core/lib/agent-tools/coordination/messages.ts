@@ -817,8 +817,23 @@ export async function readInboxWindow(
       rowsScanned: paged.raw.length,
       pages: paged.pages,
     };
-  } catch {
-    // Any query error falls back to the authoritative full read.
+  } catch (err) {
+    // Any query error falls back to the authoritative full read. WI-1338374: that
+    // fallback is `readInbox(ownerId, opts)` — a 2-ARG call, so it hits the SAME
+    // no-since_ts `LIMIT 25000` unbounded fast-path query this window form exists
+    // to avoid (messages.ts's top-level readInbox, coord_event_log queryid
+    // 6351213335932394379 — the query WI-1338374 measured at 32k calls/10 days).
+    // Under load, a page failing partway through pageCoordEventLogDesc's own
+    // up-to-25-sequential-round-trip loop is plausible, and the fallback then
+    // amplifies the load with the single MOST expensive query in this file — a
+    // vicious-cycle candidate. Log it so a future occurrence is ATTRIBUTABLE
+    // (grep for this tag) instead of requiring the same code trace again.
+    console.warn(
+      `[readInboxWindow] pageCoordEventLogDesc threw for owner=${ownerId} ` +
+        `since_ts=${opts.since_ts ?? '(none)'} pagesCompleted=${pages} — falling back to the ` +
+        `UNBOUNDED readInbox fast path (no since_ts, LIMIT ${INBOX_FAST_PATH_ROW_CAP}). ` +
+        `error=${err instanceof Error ? err.message : String(err)}`,
+    );
     const entries = await readInbox(ownerId, opts);
     return { entries, exhausted: true, rowsScanned: entries.length, pages };
   }
