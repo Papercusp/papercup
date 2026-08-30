@@ -762,6 +762,8 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     flagEnabled: async () => true,
     launch: async (g) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }),
     attach: async () => {},
+    neutralize: async () => {},
+    notifyHandoff: async () => {},
     refreshControlAnchor: vi.fn().mockResolvedValue(null),
     escalateGiveUp: async () => {},
     now: () => NOW,
@@ -843,6 +845,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       respawned: 1,
       launchFailed: 0,
       attachFailed: 0,
+      neutralizeFailed: 0,
       gaveUp: 0,
       skipped: false,
     });
@@ -905,7 +908,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
 
     expect(result).toMatchObject({ scanned: 1, eligible: 1, attempted: 1, respawned: 1 });
     expect(launch).toHaveBeenCalledWith(target);
-    expect(attach).toHaveBeenCalledWith(target, 'su-replacement');
+    expect(attach).toHaveBeenCalledWith(target, 'su-replacement', null);
   });
 
   it('never attaches a phantom holder when launch fails', async () => {
@@ -943,6 +946,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
     const b = respawnGoal({ goalId: 'goal-b' });
     const attached: string[] = [];
     const states: GoalHolderRespawnDeps['states'] = new Map();
+    const neutralize = vi.fn(async () => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await runGoalHolderRespawnOnce(
@@ -959,11 +963,17 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
             attached.push(g.goalId);
             if (g.goalId === a.goalId) throw new Error('mode store unavailable');
           },
+          neutralize,
         }),
       );
 
       expect(attached).toEqual(['goal-a', 'goal-b']);
       expect(result).toMatchObject({ attempted: 2, respawned: 1, attachFailed: 1 });
+      expect(neutralize).toHaveBeenCalledWith(
+        a,
+        `replacement-${a.goalId}`,
+        expect.stringContaining('mode store unavailable'),
+      );
       expect(warn.mock.calls[0]?.[0]).toContain('attach failed for goal-a');
       expect(states.get(goalHolderRespawnKey(a))?.restarts).toEqual([]);
       expect(states.get(goalHolderRespawnKey(a))?.lastRestartAt).toBeNull();

@@ -40,6 +40,18 @@ const h = vi.hoisted(() => ({
       // typechecked — an `as never` would silence exactly the check that catches
       // this shape going stale (lint:mock-cast-escape).
       implied?: { mode: string; status: string; by?: string; error?: string }[];
+      goalElection?: {
+        ownerId: string;
+        goalId: string;
+        epoch: number;
+        predecessorOwnerId: string | null;
+        handoffExpiresAt: string | null;
+      };
+      goalElectionConflict?: {
+        goalId: string;
+        electedOwnerId: string;
+        electedEpoch: number | null;
+      };
     }> => ({
       ok: true,
       mode: { id: 'auto' },
@@ -83,6 +95,16 @@ const h = vi.hoisted(() => ({
         error: string | null;
       },
   ),
+  notifyGoalHolderHandoff: vi.fn(async (..._args: unknown[]) => ({
+    predecessorOwnerId: 'su-old',
+    successorOwnerId: 'su-new',
+    goalId: 'goal-1',
+    epoch: 2,
+    handoffExpiresAt: null,
+    loopDeactivated: true,
+    woken: 1,
+    staged: 0,
+  })),
 }));
 
 vi.mock('../../modes/store', () => ({ setMode: h.setMode, getModeSubject: h.getModeSubject }));
@@ -115,6 +137,9 @@ vi.mock('../coordination/control-anchor', () => ({
   refreshControlAnchorAfterMutation: h.refreshControlAnchorAfterMutation,
 }));
 vi.mock('../coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));
+vi.mock('../../goals/holder-handoff', () => ({
+  notifyGoalHolderHandoff: h.notifyGoalHolderHandoff,
+}));
 
 let currentIdentity: AgentIdentity = {
   ownerId: 'su-me',
@@ -216,6 +241,27 @@ describe('mode:set — a subject-requiring mode must resolve a subject', () => {
     expect(res.ok).toBe(true);
     expect(h.setMode).toHaveBeenCalledTimes(1);
     expect(h.setMode.mock.calls[0][0]).toMatchObject({ modeId: 'goal', subject: 'goal-abc' });
+  });
+
+  it('delivers the elected-holder stand-down transition to the predecessor', async () => {
+    h.setMode.mockResolvedValueOnce({
+      ok: true,
+      mode: { id: 'goal' },
+      goalElection: {
+        ownerId: ME,
+        goalId: 'goal-declared',
+        epoch: 2,
+        predecessorOwnerId: PEER,
+        handoffExpiresAt: '2026-08-30T08:00:00.000Z',
+      },
+    });
+    const res = parse(await run({ mode: 'goal', reason: 'take over', subject: 'goal-declared' }));
+
+    expect(h.notifyGoalHolderHandoff).toHaveBeenCalledWith(
+      'default',
+      expect.objectContaining({ predecessorOwnerId: PEER, ownerId: ME, epoch: 2 }),
+    );
+    expect(res.goalHandoffNotice).toMatchObject({ loopDeactivated: true, woken: 1 });
   });
 
   it('ACCEPTS a reason-only re-registration when a subject is already incumbent, and PRESERVES it', async () => {

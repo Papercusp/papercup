@@ -34,6 +34,24 @@ export interface GoalModeElectionReceipt {
   handoffExpiresAt: string | null;
 }
 
+/**
+ * A recovery caller's compare-and-set proof. Ordinary first acquisition needs
+ * no proof; a current elected holder can hand off because its `setBy` identity
+ * is checked under the same advisory lock; verified owner authority may also
+ * replace the current lease. Every other replacement must carry this exact
+ * elected lease identity so a stale recovery read cannot steal a newer lease.
+ */
+export interface GoalModeElectionExpectation {
+  ownerId: string;
+  epoch: number | null;
+}
+
+export interface GoalModeElectionConflict {
+  goalId: string;
+  electedOwnerId: string;
+  electedEpoch: number | null;
+}
+
 export interface ModeRow {
   workspaceId: string;
   ownerId: string;
@@ -53,7 +71,7 @@ export interface ModeRow {
    * stamp", never to a failed write.
    */
   subject: string | null;
-  /** GOAL-only effective-holder election fields (migration 1031). */
+  /** GOAL-only effective-holder election fields (migration 1032). */
   goalLeaseEpoch?: number | null;
   goalHandoffFromOwnerId?: string | null;
   goalHandoffExpiresAt?: string | null;
@@ -92,6 +110,8 @@ export interface SetModeOpts {
    * the subject cannot outlive the mode it parameterises.
    */
   subject?: string | null;
+  /** Internal recovery CAS proof; never exposed as a client-supplied tool arg. */
+  goalElectionExpectation?: GoalModeElectionExpectation;
   sql?: Sql;
 }
 
@@ -136,6 +156,8 @@ export interface SetModeResult {
   implied?: ImpliedModeOutcome[];
   /** Present only when this write elected a new effective GOAL holder. */
   goalElection?: GoalModeElectionReceipt;
+  /** Present when a GOAL election was refused without writing or allocating an epoch. */
+  goalElectionConflict?: GoalModeElectionConflict;
   error?: string;
 }
 
@@ -449,8 +471,13 @@ async function writeModeRow(
     ownerDirected: boolean;
     subject: string | null;
     electGoal: boolean;
+    callerIsOwnerAuthority: boolean;
+    goalElectionExpectation?: GoalModeElectionExpectation;
   },
-): Promise<GoalModeElectionReceipt | null> {
+): Promise<{
+  election: GoalModeElectionReceipt | null;
+  conflict: GoalModeElectionConflict | null;
+}> {
   if (!o.electGoal || !o.subject) {
     await sql`
       INSERT INTO harness_shared.agent_modes
@@ -461,18 +488,29 @@ async function writeModeRow(
         mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
         owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
         subject = EXCLUDED.subject`;
-    return null;
+    return { election: null, conflict: null };
   }
 
-  const [row] = await sql<
-    Array<{
+  type ElectionRow = {
+      applied: boolean;
       owner_id: string;
       subject: string;
-      goal_lease_epoch: string | number;
+      goal_lease_epoch: string | number | null;
       goal_handoff_from_owner_id: string | null;
       goal_handoff_expires_at: Date | string | null;
-    }>
-  >`
+      elected_owner_id: string | null;
+      elected_epoch: string | number | null;
+    };
+  const elect = async (tx: Sql): Promise<ElectionRow | undefined> => {
+    // Separate command inside one transaction is load-bearing. An advisory
+    // lock embedded in the election statement would wait with the statement's
+    // OLD READ-COMMITTED snapshot, so two simultaneous first entrants could
+    // both miss the winner that committed while the second waited.
+    await tx`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${`${o.workspaceId}\u001f${o.subject}`}, 0)
+      )`;
+    const [electionRow] = await tx<Array<ElectionRow>>`
     WITH input AS MATERIALIZED (
       SELECT ${o.workspaceId}::text AS workspace_id,
              ${o.ownerId}::text AS owner_id,
@@ -482,48 +520,56 @@ async function writeModeRow(
              ${o.setBy}::text AS set_by,
              ${o.ownerDirected}::boolean AS owner_directed,
              ${o.subject}::text AS subject,
+             ${o.callerIsOwnerAuthority}::boolean AS caller_is_owner_authority,
+             ${o.goalElectionExpectation?.ownerId ?? null}::text AS expected_owner_id,
+             ${o.goalElectionExpectation?.epoch ?? null}::bigint AS expected_epoch,
              ${GOAL_HOLDER_HANDOFF_SECONDS}::integer AS handoff_seconds
     ),
-    goal_lock AS MATERIALIZED (
-      SELECT pg_advisory_xact_lock(
-               hashtextextended(input.workspace_id || chr(31) || input.subject, 0)
-             ) AS acquired
-        FROM input
-    ),
     predecessor AS MATERIALIZED (
-      SELECT am.owner_id
+      SELECT am.owner_id, am.goal_lease_epoch
         FROM harness_shared.agent_modes am
         CROSS JOIN input
-        CROSS JOIN goal_lock
        WHERE am.workspace_id = input.workspace_id
          AND am.mode = ${GOAL_MODE}
          AND am.subject = input.subject
-         AND am.owner_id <> input.owner_id
-         AND am.goal_lease_epoch IS NOT NULL
-       ORDER BY am.goal_lease_epoch DESC, am.set_at DESC, am.owner_id ASC
+       ORDER BY am.goal_lease_epoch DESC NULLS LAST, am.set_at DESC, am.owner_id ASC
        LIMIT 1
+    ),
+    election_auth AS MATERIALIZED (
+      SELECT predecessor.owner_id AS elected_owner_id,
+             predecessor.goal_lease_epoch AS elected_epoch,
+             predecessor.owner_id IS NULL
+             OR input.caller_is_owner_authority
+             OR predecessor.owner_id = input.set_by
+             OR (
+               input.expected_owner_id IS NOT NULL
+               AND predecessor.owner_id = input.expected_owner_id
+               AND predecessor.goal_lease_epoch IS NOT DISTINCT FROM input.expected_epoch
+             ) AS authorized
+        FROM input
+        LEFT JOIN predecessor ON true
     ),
     next_epoch AS MATERIALIZED (
       SELECT COALESCE(MAX(am.goal_lease_epoch), 0) + 1 AS epoch
         FROM harness_shared.agent_modes am
         CROSS JOIN input
-        CROSS JOIN goal_lock
        WHERE am.workspace_id = input.workspace_id
          AND am.mode = ${GOAL_MODE}
          AND am.subject = input.subject
-    )
+    ),
+    inserted AS (
     INSERT INTO harness_shared.agent_modes
       (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject,
        goal_lease_epoch, goal_handoff_from_owner_id, goal_handoff_expires_at)
     SELECT input.workspace_id, input.owner_id, input.axis_key, input.mode, input.reason,
            input.set_by, input.owner_directed, now(), input.subject,
-           next_epoch.epoch, predecessor.owner_id,
-           CASE WHEN predecessor.owner_id IS NULL THEN NULL
+           next_epoch.epoch, election_auth.elected_owner_id,
+           CASE WHEN election_auth.elected_owner_id IS NULL THEN NULL
                 ELSE now() + make_interval(secs => input.handoff_seconds) END
       FROM input
-      CROSS JOIN goal_lock
       CROSS JOIN next_epoch
-      LEFT JOIN predecessor ON true
+      CROSS JOIN election_auth
+     WHERE election_auth.authorized
     ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
       mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
       owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
@@ -531,20 +577,62 @@ async function writeModeRow(
       goal_handoff_from_owner_id = EXCLUDED.goal_handoff_from_owner_id,
       goal_handoff_expires_at = EXCLUDED.goal_handoff_expires_at
     RETURNING owner_id, subject, goal_lease_epoch,
-              goal_handoff_from_owner_id, goal_handoff_expires_at`;
+              goal_handoff_from_owner_id, goal_handoff_expires_at
+    )
+    SELECT true AS applied, inserted.owner_id, inserted.subject,
+           inserted.goal_lease_epoch, inserted.goal_handoff_from_owner_id,
+           inserted.goal_handoff_expires_at,
+           NULL::text AS elected_owner_id, NULL::bigint AS elected_epoch
+      FROM inserted
+    UNION ALL
+    SELECT false AS applied, input.owner_id, input.subject,
+           NULL::bigint AS goal_lease_epoch, NULL::text AS goal_handoff_from_owner_id,
+           NULL::timestamptz AS goal_handoff_expires_at,
+           election_auth.elected_owner_id, election_auth.elected_epoch
+      FROM input
+      CROSS JOIN election_auth
+     WHERE NOT election_auth.authorized
+    LIMIT 1`;
+    return electionRow;
+  };
+
+  type BeginCapableSql = {
+    begin: <T>(callback: (tx: Sql) => Promise<T>) => Promise<T>;
+  };
+  const beginSql = sql as unknown as Partial<BeginCapableSql>;
+  const row =
+    typeof beginSql.begin === 'function'
+      ? await beginSql.begin(async (tx) => await elect(tx))
+      : await elect(sql);
 
   if (!row) throw new Error(`GOAL holder election wrote no row for ${o.workspaceId}:${o.subject}`);
+  if (!row.applied) {
+    if (!row.elected_owner_id) {
+      throw new Error(`GOAL holder election refusal omitted elected owner for ${o.workspaceId}:${o.subject}`);
+    }
+    return {
+      election: null,
+      conflict: {
+        goalId: row.subject,
+        electedOwnerId: row.elected_owner_id,
+        electedEpoch: row.elected_epoch == null ? null : Number(row.elected_epoch),
+      },
+    };
+  }
   return {
-    ownerId: row.owner_id,
-    goalId: row.subject,
-    epoch: Number(row.goal_lease_epoch),
-    predecessorOwnerId: row.goal_handoff_from_owner_id,
-    handoffExpiresAt:
-      row.goal_handoff_expires_at == null
-        ? null
-        : row.goal_handoff_expires_at instanceof Date
-          ? row.goal_handoff_expires_at.toISOString()
-          : String(row.goal_handoff_expires_at),
+    election: {
+      ownerId: row.owner_id,
+      goalId: row.subject,
+      epoch: Number(row.goal_lease_epoch),
+      predecessorOwnerId: row.goal_handoff_from_owner_id,
+      handoffExpiresAt:
+        row.goal_handoff_expires_at == null
+          ? null
+          : row.goal_handoff_expires_at instanceof Date
+            ? row.goal_handoff_expires_at.toISOString()
+            : String(row.goal_handoff_expires_at),
+    },
+    conflict: null,
   };
 }
 
@@ -631,7 +719,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     }
   }
 
-  const goalElection = await writeModeRow(sql, {
+  const goalWrite = await writeModeRow(sql, {
     workspaceId: opts.workspaceId,
     ownerId: opts.ownerId,
     axisKey,
@@ -647,7 +735,22 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
       def.id === GOAL_MODE &&
       Boolean(nextSubject) &&
       !(incumbent?.mode === GOAL_MODE && incumbent.subject === nextSubject),
+    callerIsOwnerAuthority: Boolean(opts.callerIsOwnerAuthority),
+    ...(opts.goalElectionExpectation
+      ? { goalElectionExpectation: opts.goalElectionExpectation }
+      : {}),
   });
+  if (goalWrite.conflict) {
+    return {
+      ok: false,
+      mode: def,
+      goalElectionConflict: goalWrite.conflict,
+      error:
+        `goal '${goalWrite.conflict.goalId}' is already elected to ` +
+        `${goalWrite.conflict.electedOwnerId} at epoch ${goalWrite.conflict.electedEpoch ?? 'legacy'}; ` +
+        'this transition carried neither current-holder/owner authority nor a matching recovery lease',
+    };
+  }
   await audit(sql, {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
     oldMode: incumbent?.mode ?? null, newMode: def.id, reason: opts.reason, setBy: opts.setBy, ownerDirected,
@@ -669,6 +772,6 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     mode: def,
     switchedFrom,
     ...(implied.length ? { implied } : {}),
-    ...(goalElection ? { goalElection } : {}),
+    ...(goalWrite.election ? { goalElection: goalWrite.election } : {}),
   };
 }

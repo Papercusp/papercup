@@ -89,8 +89,16 @@ import {
 } from '../goal-launch-settings';
 import { resolveGoalHolderPolicy } from '../goal-launch-settings-shared';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
-import { launchGoalHolderSession } from '../harness/routines/goal-holder-launch-action';
-import { setMode } from '../modes/store';
+import {
+  launchGoalHolderSession,
+  neutralizeGoalHolderSession,
+} from '../harness/routines/goal-holder-launch-action';
+import {
+  setMode,
+  type GoalModeElectionExpectation,
+  type GoalModeElectionReceipt,
+} from '../modes/store';
+import { notifyGoalHolderHandoff } from '../goals/holder-handoff';
 import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 import {
   confirmFlapRestart,
@@ -637,7 +645,7 @@ async function defaultEscalate(alert: GoalLivenessAlert): Promise<void> {
   const dark = formatDark(alert.darkMs);
   if (alert.reason === 'overlap') {
     await openEscalation(WATCHDOG_IDENTITY, {
-      severity: 'major',
+      severity: 'blocker',
       summary:
         `Goal '${alert.goalId}' has multiple live GOAL holders beyond its elected handoff ` +
         `— overlap ${dark}`,
@@ -1068,6 +1076,7 @@ export interface GoalHolderRespawnSummary {
   respawned: number;
   launchFailed: number;
   attachFailed: number;
+  neutralizeFailed: number;
   gaveUp: number;
   skipped: boolean;
 }
@@ -1077,7 +1086,13 @@ export interface GoalHolderRespawnDeps {
   resolveLiveness: GoalLivenessSweepDeps['resolveLiveness'];
   flagEnabled: () => Promise<boolean>;
   launch: (goal: GoalRowLike) => Promise<{ ownerId: string; warnings: string[] }>;
-  attach: (goal: GoalRowLike, ownerId: string) => Promise<void>;
+  attach: (
+    goal: GoalRowLike,
+    ownerId: string,
+    expectedLease: GoalModeElectionExpectation | null,
+  ) => Promise<GoalModeElectionReceipt | null | void>;
+  neutralize: (goal: GoalRowLike, ownerId: string, reason: string) => Promise<void>;
+  notifyHandoff: (workspaceId: string, election: GoalModeElectionReceipt) => Promise<unknown>;
   /** Refreshes control context after the direct respawn GOAL-mode write. */
   refreshControlAnchor?: typeof refreshControlAnchorAfterMutation;
   escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
@@ -1160,7 +1175,7 @@ function holderRespawnDeps(
         goalId: goal.goalId,
         harnessSlug: goal.installSlug ?? '',
       }),
-    attach: async (goal, ownerId) => {
+    attach: async (goal, ownerId, expectedLease) => {
       const result = await setMode({
         workspaceId: goal.workspaceId,
         ownerId,
@@ -1170,6 +1185,7 @@ function holderRespawnDeps(
         setBy: HOLDER_RESPAWNER_IDENTITY.ownerId,
         ownerDirected: false,
         subject: goal.goalId,
+        ...(expectedLease ? { goalElectionExpectation: expectedLease } : {}),
         sql,
       });
       if (!result.ok) {
@@ -1179,7 +1195,17 @@ function holderRespawnDeps(
             : `mode store refused GOAL attachment for ${ownerId}`,
         );
       }
+      return result.goalElection ?? null;
     },
+    neutralize: async (goal, ownerId, reason) => {
+      await neutralizeGoalHolderSession({
+        workspaceId: goal.workspaceId,
+        goalId: goal.goalId,
+        ownerId,
+        reason,
+      });
+    },
+    notifyHandoff: notifyGoalHolderHandoff,
     escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
     now: Date.now,
     states: goalHolderRespawnStates,
@@ -1204,6 +1230,7 @@ export async function runGoalHolderRespawnOnce(
     respawned: 0,
     launchFailed: 0,
     attachFailed: 0,
+    neutralizeFailed: 0,
     gaveUp: 0,
     skipped: false,
   };
@@ -1305,8 +1332,25 @@ export async function runGoalHolderRespawnOnce(
     try {
       // Launch FIRST, attach only the pre-pinned identity returned by a successful
       // launch. A failed launch can therefore never leave a phantom holder row.
-      await deps.attach(goal, launched.ownerId);
+      const expectedLease = fold.elected
+        ? {
+            ownerId: fold.elected.ownerId,
+            epoch: fold.elected.goalLeaseEpoch ?? null,
+          }
+        : null;
+      const election = await deps.attach(goal, launched.ownerId, expectedLease);
       summary.respawned += 1;
+      if (election?.predecessorOwnerId) {
+        try {
+          await deps.notifyHandoff(goal.workspaceId, election);
+        } catch (error) {
+          console.warn(
+            `[goal-holder-respawner] handoff notice failed for ${goal.goalId} ` +
+              `${election.predecessorOwnerId} -> ${election.ownerId} (holder committed): ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       // A replacement counts toward the give-up budget only after the holder attachment
       // succeeds. The decision already paced this attempt via `lastAttemptAt`; failed launch or
       // attach operations must not masquerade as confirmed restarts.
@@ -1331,6 +1375,18 @@ export async function runGoalHolderRespawnOnce(
       }
     } catch (error) {
       summary.attachFailed += 1;
+      const reason =
+        `GOAL attachment refused for ${goal.goalId} after launch: ` +
+        `${error instanceof Error ? error.message : String(error)}`;
+      try {
+        await deps.neutralize(goal, launched.ownerId, reason);
+      } catch (neutralizeError) {
+        summary.neutralizeFailed += 1;
+        console.warn(
+          `[goal-holder-respawner] neutralize failed for ${goal.goalId} owner ${launched.ownerId}: ` +
+            `${neutralizeError instanceof Error ? neutralizeError.message : String(neutralizeError)}`,
+        );
+      }
       console.warn(
         `[goal-holder-respawner] attach failed for ${goal.goalId} owner ${launched.ownerId} (non-fatal, damped): ${error instanceof Error ? error.message : String(error)}`,
       );

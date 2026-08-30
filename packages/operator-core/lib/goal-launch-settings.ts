@@ -70,7 +70,10 @@ import {
   GOAL_HOLDER_DEFAULTS,
   type GoalHolderOnLoss,
 } from './goal-launch-settings-shared';
-import { resolveGoalContext } from './modes/goal-context';
+import {
+  isGoalHolderAuthorityError,
+  resolveGoalContext,
+} from './modes/goal-context';
 // The fleet-shape vocabulary is owned by the fleet store; `fleetType` below
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
@@ -1520,6 +1523,7 @@ export async function readGoalLaunchSettingsForLauncher(args: {
   try {
     goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
   } catch (e) {
+    if (isGoalHolderAuthorityError(e)) throw e;
     degradedReasons.push(`goal context unresolved: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!goalId) {
@@ -1802,6 +1806,7 @@ export async function resolveGoalLaunch(args: {
   try {
     goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
   } catch (e) {
+    if (isGoalHolderAuthorityError(e)) throw e;
     // resolveGoalContext is itself fail-soft, so reaching here means something
     // below it broke hard. No goal context = no ceiling and no profile, which is
     // exactly the pre-P-004 behaviour — but say so.

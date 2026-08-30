@@ -17,6 +17,7 @@ import {
   setInheritedGoalContext,
   stampPlanGoalProvenance,
 } from './goal-context';
+import { readGoalHolderAuthority } from '../goals/holder';
 import { goalIdFromModes, isGoalSessionModes, GOAL_MODE } from './goal-session';
 import { modeById, axisKeyFor } from './registry';
 
@@ -26,6 +27,10 @@ interface ModeRow {
   axis_key: string;
   mode: string;
   subject: string | null;
+  goal_lease_epoch?: number | null;
+  goal_handoff_from_owner_id?: string | null;
+  goal_handoff_expires_at?: string | null;
+  set_at?: string;
 }
 
 /**
@@ -63,6 +68,31 @@ function mockSql(opts: { modes?: ModeRow[]; briefs?: Array<{ owner_id: string; w
       }
       return Promise.resolve([]);
     }
+    if (text.includes('WITH mine AS MATERIALIZED') && text.includes('elected_owner_id')) {
+      const [ws, owner] = vals as string[];
+      const mine = modes.find(
+        (m) => m.workspace_id === ws && m.owner_id === owner && m.mode === GOAL_MODE && m.subject,
+      );
+      if (!mine?.subject) return Promise.resolve([]);
+      const elected = modes
+        .filter((m) => m.workspace_id === ws && m.mode === GOAL_MODE && m.subject === mine.subject)
+        .sort(
+          (a, b) =>
+            (b.goal_lease_epoch ?? -1) - (a.goal_lease_epoch ?? -1) ||
+            String(b.set_at ?? '').localeCompare(String(a.set_at ?? '')) ||
+            a.owner_id.localeCompare(b.owner_id),
+        )[0];
+      if (!elected) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          subject: mine.subject,
+          elected_owner_id: elected.owner_id,
+          elected_epoch: elected.goal_lease_epoch ?? null,
+          predecessor_owner_id: elected.goal_handoff_from_owner_id ?? null,
+          handoff_expires_at: elected.goal_handoff_expires_at ?? null,
+        },
+      ]);
+    }
     if (text.includes('SELECT subject FROM harness_shared.agent_modes')) {
       const [ws, owner, axis, mode] = vals as string[];
       const row = modes.find(
@@ -96,8 +126,21 @@ const WS = 'ws-1';
 // unhooking these tests.
 const GOAL_AXIS = axisKeyFor(modeById(GOAL_MODE)!);
 
-function goalMode(ownerId: string, subject: string | null): ModeRow {
-  return { workspace_id: WS, owner_id: ownerId, axis_key: GOAL_AXIS, mode: GOAL_MODE, subject };
+function goalMode(
+  ownerId: string,
+  subject: string | null,
+  overrides: Partial<ModeRow> = {},
+): ModeRow {
+  return {
+    workspace_id: WS,
+    owner_id: ownerId,
+    axis_key: GOAL_AXIS,
+    mode: GOAL_MODE,
+    subject,
+    goal_lease_epoch: 1,
+    set_at: '2026-08-30T00:00:00.000Z',
+    ...overrides,
+  };
 }
 
 describe('resolveGoalContext', () => {
@@ -126,6 +169,46 @@ describe('resolveGoalContext', () => {
       briefs: [{ owner_id: 'sub-manager', workspace_id: WS, goal_id: 'goal-parent' }],
     });
     expect(await resolveGoalContext(WS, 'sub-manager', sql)).toBe('goal-child');
+  });
+
+  it('allows the elected successor and refuses an expired predecessor with an elected-holder diagnosis', async () => {
+    const predecessor = goalMode('holder-old', 'goal-42', { goal_lease_epoch: 1 });
+    const successor = goalMode('holder-new', 'goal-42', {
+      goal_lease_epoch: 2,
+      goal_handoff_from_owner_id: 'holder-old',
+      goal_handoff_expires_at: '2020-01-01T00:00:00.000Z',
+    });
+    const { sql } = mockSql({ modes: [predecessor, successor] });
+
+    expect(await resolveGoalContext(WS, 'holder-new', sql)).toBe('goal-42');
+    await expect(resolveGoalContext(WS, 'holder-old', sql)).rejects.toMatchObject({
+      name: 'GoalHolderAuthorityError',
+      authority: { electedOwnerId: 'holder-new', electedEpoch: 2 },
+    });
+  });
+
+  it('permits only the named predecessor during the explicit handoff window', async () => {
+    const predecessor = goalMode('holder-old', 'goal-42', { goal_lease_epoch: 1 });
+    const successor = goalMode('holder-new', 'goal-42', {
+      goal_lease_epoch: 2,
+      goal_handoff_from_owner_id: 'holder-old',
+      goal_handoff_expires_at: '2999-01-01T00:00:00.000Z',
+    });
+    const { sql } = mockSql({ modes: [predecessor, successor] });
+
+    expect(await readGoalHolderAuthority(sql, WS, 'holder-old')).toMatchObject({
+      status: 'handoff',
+      electedOwnerId: 'holder-new',
+    });
+    expect(await resolveGoalContext(WS, 'holder-old', sql)).toBe('goal-42');
+  });
+
+  it('does not fence an ordinary descendant that only inherited goal context', async () => {
+    const { sql } = mockSql({
+      modes: [goalMode('holder-new', 'goal-42', { goal_lease_epoch: 2 })],
+      briefs: [{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-42' }],
+    });
+    await expect(resolveGoalContext(WS, 'member-1', sql)).resolves.toBe('goal-42');
   });
 
   it('treats a goal-mode row with no subject as no goal, falling through to inherited', async () => {

@@ -28,11 +28,31 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { getModeSubject } from './store';
-import { GOAL_MODE } from './goal-session';
+import {
+  readGoalHolderAuthority,
+  type GoalHolderAuthority,
+} from '../goals/holder';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
+}
+
+/** A typed refusal so launch/write boundaries can fail closed rather than degrade. */
+export class GoalHolderAuthorityError extends Error {
+  readonly code = 'goal_holder_superseded';
+
+  constructor(readonly authority: GoalHolderAuthority, readonly ownerId: string) {
+    super(
+      `GOAL holder ${ownerId} is superseded for '${authority.goalId ?? 'unknown'}'; ` +
+        `elected holder is ${authority.electedOwnerId ?? 'unknown'} at epoch ` +
+        `${authority.electedEpoch ?? 'legacy'}`,
+    );
+    this.name = 'GoalHolderAuthorityError';
+  }
+}
+
+export function isGoalHolderAuthorityError(error: unknown): error is GoalHolderAuthorityError {
+  return error instanceof GoalHolderAuthorityError;
 }
 
 /**
@@ -124,11 +144,17 @@ export async function resolveGoalContext(
 ): Promise<string | null> {
   if (!workspaceId || workspaceId === '*' || !ownerId) return null;
   try {
-    const own = await getModeSubject(workspaceId, ownerId, GOAL_MODE, sql);
-    if (own) return own;
-  } catch {
-    /* fall through to the inherited leg — a mode-store failure must not cost
-       provenance an agent legitimately inherited. */
+    const authority = await readGoalHolderAuthority(pg(sql), workspaceId, ownerId);
+    if (authority.status === 'elected' || authority.status === 'handoff') {
+      return authority.goalId;
+    }
+    if (authority.status === 'superseded') {
+      throw new GoalHolderAuthorityError(authority, ownerId);
+    }
+  } catch (error) {
+    if (isGoalHolderAuthorityError(error)) throw error;
+    /* A storage/read failure still preserves inherited child provenance. It
+       does not authorize a GOAL holder because that leg produced no verdict. */
   }
   return getInheritedGoalContext(workspaceId, ownerId, sql);
 }

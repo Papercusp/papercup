@@ -184,7 +184,7 @@ function startDeps(capture: { launched: string[] }): StartGoalByIdDeps {
     resolveHolders: resolveGoalHolders,
     buildBrief: buildGoalKickoffBrief,
     readReadiness: async () => ({ actionable: true, premiseInvalidated: false, blockers: [] }),
-    attach: async ({ sql, workspaceId, goalId, ownerId, setBy }) => {
+    attach: async ({ sql, workspaceId, goalId, ownerId, setBy, expectedLease }) => {
       const res = await setMode({
         workspaceId,
         ownerId,
@@ -193,10 +193,17 @@ function startDeps(capture: { launched: string[] }): StartGoalByIdDeps {
         reason: `test attach for ${goalId}`,
         setBy,
         subject: goalId,
+        ...(expectedLease ? { goalElectionExpectation: expectedLease } : {}),
         sql: sql as postgres.Sql,
       });
-      return { ok: res.ok, error: res.ok ? null : 'mode store refused' };
+      return {
+        ok: res.ok,
+        error: res.ok ? null : 'mode store refused',
+        ...(res.goalElection ? { goalElection: res.goalElection } : {}),
+      };
     },
+    neutralize: async () => {},
+    notifyHandoff: async () => {},
     stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
       await sql`
         UPDATE harness_shared.goals

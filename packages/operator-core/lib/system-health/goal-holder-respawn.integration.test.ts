@@ -36,7 +36,7 @@
  * EI-21270668928342264): adding a column that `makeReadGoals` / `setMode` reads means
  * auditing this block by hand.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -198,6 +198,8 @@ function drillDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): {
       return { ownerId: `su-replacement-${launches.length}`, warnings: [] };
     },
     // attach stays the DEFAULT: the real setMode against the fixture sql.
+    neutralize: async () => {},
+    notifyHandoff: async () => {},
     escalateGiveUp: async () => {},
     states: new Map(),
     ...overrides,
@@ -309,18 +311,18 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
         sql: rootSql,
       });
     const [a, b] = await Promise.all([enter('su-election-a'), enter('su-election-b')]);
-    expect(a.ok).toBe(true);
-    expect(b.ok).toBe(true);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    const refused = a.ok ? b : a;
+    expect(refused).toMatchObject({
+      goalElectionConflict: { goalId, electedEpoch: 1 },
+    });
 
     const rows = await goalModeRows(goalId);
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => Number(row.goal_lease_epoch)).sort((x, y) => x - y)).toEqual([1, 2]);
-    const elected = rows.find((row) => Number(row.goal_lease_epoch) === 2)!;
-    const predecessor = rows.find((row) => Number(row.goal_lease_epoch) === 1)!;
-    expect(elected.goal_handoff_from_owner_id).toBe(predecessor.owner_id);
-    expect(elected.goal_handoff_expires_at).toBeInstanceOf(Date);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.goal_lease_epoch)).toBe(1);
+    expect(rows[0]?.goal_handoff_from_owner_id).toBeNull();
 
-    sessions.set(predecessor.owner_id, liveSignals());
+    const elected = rows[0]!;
     sessions.set(elected.owner_id, liveSignals());
     const holderRows = await readGoalHolderRows(rootSql, { workspaceId: WS, goalIds: [goalId] });
     const verdicts = await resolveLiveness(holderRows.map((holder) => holder.ownerId));
@@ -332,7 +334,7 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     );
     expect(fold.elected?.ownerId).toBe(elected.owner_id);
     expect(fold.live.map((holder) => holder.ownerId)).toEqual([elected.owner_id]);
-    expect(fold.overlap.status).toBe('handoff');
+    expect(fold.overlap.status).toBe('none');
   }, 60_000);
 
   it('kill its session → the respawner brings it back → stable, no double launch, no human', async () => {
@@ -439,7 +441,7 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     const goalId = 'goal-elected-lost-historical-live';
     await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
     await attachHolder('su-historical-live', goalId);
-    await attachHolder('su-elected-dead', goalId);
+    await attachHolder('su-elected-dead', goalId, 'su-historical-live');
     sessions.set('su-historical-live', liveSignals());
     sessions.set('su-elected-dead', killedSignals());
 
@@ -458,6 +460,56 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     const replacement = rows.find((row) => row.owner_id === 'su-replacement-1')!;
     expect(Number(replacement.goal_lease_epoch)).toBe(3);
     expect(replacement.goal_handoff_from_owner_id).toBe('su-elected-dead');
+  }, 60_000);
+
+  it('refuses and neutralizes a stale respawn attach after a concurrent legitimate takeover', async () => {
+    const goalId = 'goal-respawn-cas-race';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder(INITIAL_HOLDER, goalId);
+    sessions.set(INITIAL_HOLDER, killedSignals());
+
+    let releaseLaunch!: () => void;
+    let launchReached!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      launchReached = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+    const neutralize = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { deps } = drillDeps({
+      launch: async () => {
+        launchReached();
+        await release;
+        return { ownerId: 'su-stale-respawn', warnings: [] };
+      },
+      neutralize,
+    });
+
+    const tickPromise = runGoalHolderRespawnOnce(rootSql, deps);
+    await reached;
+    await attachHolder('su-legitimate-takeover', goalId, INITIAL_HOLDER);
+    sessions.set('su-legitimate-takeover', liveSignals());
+    releaseLaunch();
+
+    const tick = await tickPromise;
+    expect(tick).toMatchObject({ attempted: 1, respawned: 0, attachFailed: 1 });
+    expect(neutralize).toHaveBeenCalledWith(
+      expect.objectContaining({ goalId }),
+      'su-stale-respawn',
+      expect.stringContaining('already elected to su-legitimate-takeover at epoch 2'),
+    );
+    const rows = await goalModeRows(goalId);
+    expect(rows.map((row) => row.owner_id).sort()).toEqual(
+      [INITIAL_HOLDER, 'su-legitimate-takeover'].sort(),
+    );
+    expect(rows.find((row) => row.owner_id === 'su-legitimate-takeover')?.goal_lease_epoch).toBe('2');
+    expect(rows.some((row) => row.owner_id === 'su-stale-respawn')).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('already elected to su-legitimate-takeover at epoch 2'),
+    );
+    warn.mockRestore();
   }, 60_000);
 
   it('a goal on the DEFAULT holder policy (onLoss=deactivate) loses its holder without respawn', async () => {

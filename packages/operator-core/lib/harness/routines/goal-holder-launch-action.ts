@@ -19,6 +19,12 @@ import {
 import { buildGoalKickoffBrief } from '../../agent-tools/goals/start';
 import { launchAgent, type LaunchAgentResult } from '../../launch-agent';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { setMode } from '../../modes/store';
+import { deactivateLoop } from './loop';
+import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
+import { sendMessage } from '../../agent-tools/coordination/messages';
+import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 
 export interface GoalHolderLaunchInput {
   workspaceId: string;
@@ -49,6 +55,76 @@ export interface GoalHolderLaunchDeps {
     requested: Record<string, never>;
   }) => Promise<GoalLaunchResolution>;
   launch: (opts: Parameters<typeof launchAgent>[0]) => Promise<LaunchAgentResult>;
+}
+
+const GOAL_HOLDER_NEUTRALIZER: AgentIdentity = {
+  ownerId: 'goal-holder-neutralizer',
+  ownerLabel: 'system · goal holder neutralizer',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+export interface GoalHolderNeutralizeDeps {
+  deactivate: (ownerId: string, reason: string) => Promise<boolean>;
+  clearAuto: (workspaceId: string, ownerId: string, reason: string) => Promise<boolean>;
+  notifyOrders: (ownerId: string) => Promise<void>;
+  message: (ownerId: string, summary: string, body: string) => Promise<void>;
+  wake: (ownerId: string, summary: string, workspaceId: string) => Promise<{ woken: number; staged: number }>;
+}
+
+const DEFAULT_NEUTRALIZE_DEPS: GoalHolderNeutralizeDeps = {
+  deactivate: async (ownerId, reason) =>
+    await deactivateLoop(ownerId, { actor: GOAL_HOLDER_NEUTRALIZER.ownerId, reason }),
+  clearAuto: async (workspaceId, ownerId, reason) => {
+    const result = await setMode({
+      workspaceId,
+      ownerId,
+      modeId: 'auto',
+      enabled: false,
+      reason,
+      setBy: GOAL_HOLDER_NEUTRALIZER.ownerId,
+    });
+    return result.ok;
+  },
+  notifyOrders: notifyAgentOrdersChanged,
+  message: async (ownerId, summary, body) => {
+    await sendMessage(GOAL_HOLDER_NEUTRALIZER, { to: [ownerId], summary, body });
+  },
+  wake: async (ownerId, summary, workspaceId) => {
+    const result = await wakeRecipients([ownerId], {
+      summary,
+      payload: { action: 'stand-down', reason: 'goal-holder-election-cas-lost' },
+      source: GOAL_HOLDER_NEUTRALIZER.ownerId,
+      workspaceId,
+    });
+    return { woken: result.woken, staged: result.staged };
+  },
+};
+
+/**
+ * Quiesce a process launched between a stale liveness read and a losing attach
+ * CAS. It remains an auditable session, but has neither AUTO recurrence nor an
+ * armed loop and is woken with an explicit stand-down order.
+ */
+export async function neutralizeGoalHolderSession(
+  input: { workspaceId: string; goalId: string; ownerId: string; reason: string },
+  deps: GoalHolderNeutralizeDeps = DEFAULT_NEUTRALIZE_DEPS,
+): Promise<{ loopDeactivated: boolean; autoCleared: boolean; woken: number; staged: number }> {
+  const summary =
+    `GOAL launch neutralized: '${input.goalId}' elected another holder before ${input.ownerId} attached`;
+  const loopDeactivated = await deps.deactivate(input.ownerId, input.reason);
+  const autoCleared = await deps.clearAuto(input.workspaceId, input.ownerId, input.reason);
+  await deps.notifyOrders(input.ownerId);
+  await deps.message(
+    input.ownerId,
+    summary,
+    `Your process launched for '${input.goalId}', but the holder attachment compare-and-set lost ` +
+      `to a newer elected lease. AUTO and the recurring loop were disabled. Do not act on the kickoff, ` +
+      `do not retry GOAL acquisition, and end this session after recording any diagnostic evidence.`,
+  );
+  const wake = await deps.wake(input.ownerId, summary, input.workspaceId);
+  return { loopDeactivated, autoCleared, woken: wake.woken, staged: wake.staged };
 }
 
 const DEFAULT_DEPS: GoalHolderLaunchDeps = {

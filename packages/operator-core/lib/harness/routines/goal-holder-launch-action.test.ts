@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from '../../goal-launch-settings';
 import {
   launchGoalHolderSession,
+  neutralizeGoalHolderSession,
   runGoalHolderLaunchAction,
   type GoalHolderLaunchDeps,
 } from './goal-holder-launch-action';
@@ -239,5 +240,41 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
         deps(),
       ),
     ).rejects.toThrow('goal-holder-launch requires goalId');
+  });
+
+  it('neutralizes a launched replacement whose holder attach CAS loses', async () => {
+    const deactivate = vi.fn(async () => true);
+    const clearAuto = vi.fn(async () => true);
+    const notifyOrders = vi.fn(async () => {});
+    const message = vi.fn(async () => {});
+    const wake = vi.fn(async () => ({ woken: 1, staged: 0 }));
+
+    const result = await neutralizeGoalHolderSession(
+      {
+        workspaceId: 'workspace-1',
+        goalId: 'goal-1',
+        ownerId: 'su-stale-replacement',
+        reason: 'expected epoch 3, found epoch 4',
+      },
+      { deactivate, clearAuto, notifyOrders, message, wake },
+    );
+
+    expect(deactivate).toHaveBeenCalledWith('su-stale-replacement', expect.stringContaining('epoch 4'));
+    expect(clearAuto).toHaveBeenCalledWith(
+      'workspace-1',
+      'su-stale-replacement',
+      expect.stringContaining('epoch 4'),
+    );
+    expect(message).toHaveBeenCalledWith(
+      'su-stale-replacement',
+      expect.any(String),
+      expect.stringContaining('AUTO and the recurring loop were disabled'),
+    );
+    expect(wake).toHaveBeenCalledWith(
+      'su-stale-replacement',
+      expect.any(String),
+      'workspace-1',
+    );
+    expect(result).toEqual({ loopDeactivated: true, autoCleared: true, woken: 1, staged: 0 });
   });
 });

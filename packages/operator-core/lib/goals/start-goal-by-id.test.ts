@@ -75,11 +75,22 @@ function holdersFixture(
   liveness: GoalHolders['liveness'],
   rows: ResolvedGoalHolder[] = [],
 ): GoalHolders {
+  const elected = rows[0] ?? null;
+  const allLive = rows.filter((r) => r.live === true);
   return {
     goalId: GOAL,
     workspaceId: WS,
     holders: rows,
-    live: rows.filter((r) => r.live === true),
+    elected,
+    live: elected?.live === true ? [elected] : [],
+    allLive,
+    overlap: {
+      status: 'none',
+      liveOwnerIds: allLive.map((row) => row.ownerId),
+      predecessorOwnerId: null,
+      successorOwnerId: elected?.ownerId ?? null,
+      expiresAtMs: null,
+    },
     liveness,
   };
 }
@@ -92,15 +103,21 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
   launch: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   refreshControlAnchor: ReturnType<typeof vi.fn>;
+  neutralize: ReturnType<typeof vi.fn>;
+  notifyHandoff: ReturnType<typeof vi.fn>;
 } {
   const launch = vi.fn().mockResolvedValue({ ownerId: 'su-new-holder', warnings: ['w1'] });
   const attach = vi.fn().mockResolvedValue({ ok: true, error: null });
   const refreshControlAnchor = vi.fn().mockResolvedValue(null);
+  const neutralize = vi.fn().mockResolvedValue(undefined);
+  const notifyHandoff = vi.fn().mockResolvedValue(undefined);
   const stampAgentOwner = vi.fn().mockResolvedValue(undefined);
   const deps: StartGoalByIdDeps = {
     launch,
     attach,
     refreshControlAnchor,
+    neutralize,
+    notifyHandoff,
     stampAgentOwner,
     resolveHolders: vi.fn().mockResolvedValue(holdersFixture('unheld')),
     readReadiness: vi.fn().mockResolvedValue(READY),
@@ -112,7 +129,7 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
     ) as unknown as StartGoalByIdDeps['buildBrief'],
     ...overrides,
   };
-  return { deps, launch, attach, refreshControlAnchor };
+  return { deps, launch, attach, refreshControlAnchor, neutralize, notifyHandoff };
 }
 
 function run(
@@ -275,11 +292,17 @@ describe('startGoalById — launch then attach', () => {
     expect(deps.stampAgentOwner).not.toHaveBeenCalled();
   });
 
-  it('an attach failure throws, NAMING the orphan identity', async () => {
-    const { deps } = makeDeps({
+  it('an attach failure neutralizes the launched identity before throwing', async () => {
+    const { deps, neutralize } = makeDeps({
       attach: vi.fn().mockResolvedValue({ ok: false, error: 'mode store down' }),
     });
     await expect(run(deps)).rejects.toThrow(/su-new-holder.*mode store down/s);
+    expect(neutralize).toHaveBeenCalledWith({
+      workspaceId: WS,
+      goalId: GOAL,
+      ownerId: 'su-new-holder',
+      reason: 'GOAL attachment failed after launch: mode store down',
+    });
     expect(deps.stampAgentOwner).not.toHaveBeenCalled();
   });
 

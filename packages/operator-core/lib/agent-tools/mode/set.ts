@@ -30,6 +30,7 @@ import { goalHolderPolicyProblem, readGoalLaunchSettings } from '../../goal-laun
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { deactivateLoopForGoal, getLoopStatus } from '../../harness/routines/loop';
+import { notifyGoalHolderHandoff } from '../../goals/holder-handoff';
 
 const MODE_IDS = MODES.map((m) => m.id);
 
@@ -424,6 +425,20 @@ export default defineTool({
       ...(supplied ? { subject: supplied } : {}),
     });
 
+    let goalHandoffNotice: Awaited<ReturnType<typeof notifyGoalHolderHandoff>> | null = null;
+    let goalHandoffNoticeError: string | null = null;
+    if (res.ok && res.goalElection?.predecessorOwnerId) {
+      try {
+        goalHandoffNotice = await notifyGoalHolderHandoff(workspaceId, res.goalElection);
+      } catch (error) {
+        goalHandoffNoticeError = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[mode:set] GOAL handoff notice failed for ${res.goalElection.goalId} ` +
+            `${res.goalElection.predecessorOwnerId} -> ${res.goalElection.ownerId}: ${goalHandoffNoticeError}`,
+        );
+      }
+    }
+
     // EI-21123319355080521: clearing GOAL authority must also stop the matching
     // armed loop. Do this only after the mode clear commits, and match on the
     // structured loop goal so an unrelated AUTO loop for the same owner survives.
@@ -668,6 +683,10 @@ export default defineTool({
       ...(goalLoopDeactivated !== null ? { goalLoopDeactivated } : {}),
       switchedFrom: res.switchedFrom ?? null,
       stickyConflict: res.stickyConflict ?? false,
+      ...(res.goalElection ? { goalElection: res.goalElection } : {}),
+      ...(res.goalElectionConflict ? { goalElectionConflict: res.goalElectionConflict } : {}),
+      ...(goalHandoffNotice ? { goalHandoffNotice } : {}),
+      ...(goalHandoffNoticeError ? { goalHandoffNoticeError } : {}),
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
       ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
       /* D-003 — the cascade is reported, never inferred. `impliedNote` is the

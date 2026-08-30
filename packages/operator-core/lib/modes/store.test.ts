@@ -38,14 +38,30 @@ function mockSql() {
     // sql(array) — the IN (...) helper — receives a plain array.
     if (!Array.isArray(first) || !('raw' in (first as object))) return { __in: first };
     const text = (first as string[]).join('¤').replace(/\s+/g, ' ');
+    if (text.includes('pg_advisory_xact_lock')) return Promise.resolve([]);
     if (text.includes('INSERT INTO harness_shared.agent_mode_changes')) {
       const [ws, owner, axis, oldMode, newMode, reason, setBy, ownerDirected] = vals;
       changes.push({ ws, owner, axis, oldMode, newMode, reason, setBy, ownerDirected });
       return Promise.resolve([]);
     }
     if (text.includes('INSERT INTO harness_shared.agent_modes')) {
-      const [ws, owner, axis, mode, reason, setBy, ownerDirected, subject] = vals as string[];
-      const k = key(ws, owner, axis);
+      const [
+        ws,
+        owner,
+        axis,
+        mode,
+        reason,
+        setBy,
+        ownerDirected,
+        subject,
+        callerIsOwnerAuthority,
+        expectedOwnerId,
+        expectedEpoch,
+      ] = vals as Array<string | number | boolean | null>;
+      const wsText = String(ws);
+      const ownerText = String(owner);
+      const axisText = String(axis);
+      const k = key(wsText, ownerText, axisText);
       const existingRow = modes.get(k) ?? null;
       /* TWO different inserts hit this branch and they must NOT be modelled the
          same way (D-003). The primary write is ON CONFLICT DO UPDATE — an upsert
@@ -65,7 +81,7 @@ function mockSql() {
         ? [...modes.values()]
             .filter(
               (r) =>
-                r.workspace_id === ws &&
+                r.workspace_id === wsText &&
                 r.mode === 'goal' &&
                 r.subject === subject &&
                 r.owner_id !== owner &&
@@ -81,21 +97,42 @@ function mockSql() {
         ? Math.max(
             0,
             ...[...modes.values()]
-              .filter((r) => r.workspace_id === ws && r.mode === 'goal' && r.subject === subject)
+            .filter((r) => r.workspace_id === wsText && r.mode === 'goal' && r.subject === subject)
               .map((r) => r.goal_lease_epoch ?? 0),
           ) + 1
         : null;
+      const authorized =
+        !prior ||
+        Boolean(callerIsOwnerAuthority) ||
+        prior.owner_id === setBy ||
+        (expectedOwnerId != null &&
+          prior.owner_id === expectedOwnerId &&
+          prior.goal_lease_epoch === expectedEpoch);
+      if (isGoalElection && !authorized) {
+        return Promise.resolve([
+          {
+            applied: false,
+            owner_id: owner,
+            subject,
+            goal_lease_epoch: null,
+            goal_handoff_from_owner_id: null,
+            goal_handoff_expires_at: null,
+            elected_owner_id: prior?.owner_id ?? null,
+            elected_epoch: prior?.goal_lease_epoch ?? null,
+          },
+        ]);
+      }
       const handoffExpiresAt = prior ? '2026-07-05T00:02:00.000Z' : null;
       modes.set(k, {
-        workspace_id: ws,
-        owner_id: owner,
-        axis_key: axis,
-        mode,
-        reason,
-        set_by: setBy,
+        workspace_id: wsText,
+        owner_id: ownerText,
+        axis_key: axisText,
+        mode: String(mode),
+        reason: String(reason),
+        set_by: String(setBy),
         owner_directed: Boolean(ownerDirected),
         set_at: '2026-07-05T00:00:00Z',
-        subject: subject ?? null,
+        subject: subject == null ? null : String(subject),
         goal_lease_epoch: isGoalElection ? nextEpoch : (existingRow?.goal_lease_epoch ?? null),
         goal_handoff_from_owner_id: isGoalElection
           ? (prior?.owner_id ?? null)
@@ -107,11 +144,14 @@ function mockSql() {
       if (isGoalElection) {
         return Promise.resolve([
           {
+            applied: true,
             owner_id: owner,
             subject,
             goal_lease_epoch: nextEpoch,
             goal_handoff_from_owner_id: prior?.owner_id ?? null,
             goal_handoff_expires_at: handoffExpiresAt,
+            elected_owner_id: null,
+            elected_epoch: null,
           },
         ]);
       }
@@ -144,7 +184,13 @@ function mockSql() {
     }
     throw new Error(`mockSql: unrecognized query: ${text.slice(0, 80)}`);
   };
-  return { sql: fn as unknown as Sql, modes, changes };
+  const sql = fn as unknown as Sql;
+  (
+    sql as unknown as {
+      begin: <T>(callback: (tx: Sql) => Promise<T>) => Promise<T>;
+    }
+  ).begin = async <T>(callback: (tx: Sql) => Promise<T>) => await callback(sql);
+  return { sql, modes, changes };
 }
 
 const WS = 'test-ws';
@@ -598,13 +644,35 @@ describe('implication cascade (D-003)', () => {
       handoffExpiresAt: null,
     });
 
-    const second = await setMode({
+    const unrelated = await setMode({
       workspaceId: WS,
       ownerId: PEER,
       modeId: 'goal',
       enabled: true,
       reason: 'bounded takeover',
       setBy: PEER,
+      subject: 'g-1',
+      sql: m.sql,
+    });
+    expect(unrelated).toMatchObject({
+      ok: false,
+      goalElectionConflict: {
+        goalId: 'g-1',
+        electedOwnerId: ME,
+        electedEpoch: 1,
+      },
+    });
+    expect((await getModes(WS, PEER, m.sql)).find((row) => row.mode === 'goal')).toBeUndefined();
+
+    // The current elected holder explicitly hands off to the peer. `setBy` is
+    // checked against the elected row while the goal advisory lock is held.
+    const second = await setMode({
+      workspaceId: WS,
+      ownerId: PEER,
+      modeId: 'goal',
+      enabled: true,
+      reason: 'bounded takeover',
+      setBy: ME,
       subject: 'g-1',
       sql: m.sql,
     });
@@ -629,6 +697,54 @@ describe('implication cascade (D-003)', () => {
     expect(reasserted.goalElection).toBeUndefined();
     const predecessor = (await getModes(WS, ME, m.sql)).find((row) => row.mode === 'goal')!;
     expect(predecessor.goalLeaseEpoch).toBe(1);
+  });
+
+  it('recovery CAS refuses a stale elected lease and never allocates another epoch', async () => {
+    await enterGoal();
+    await setMode({
+      workspaceId: WS,
+      ownerId: PEER,
+      modeId: 'goal',
+      enabled: true,
+      reason: 'current holder handoff',
+      setBy: ME,
+      subject: 'g-1',
+      sql: m.sql,
+    });
+
+    const stale = await setMode({
+      workspaceId: WS,
+      ownerId: 'su-stale-replacement',
+      modeId: 'goal',
+      enabled: true,
+      reason: 'stale recovery',
+      setBy: 'goal-holder-respawner',
+      subject: 'g-1',
+      goalElectionExpectation: { ownerId: ME, epoch: 1 },
+      sql: m.sql,
+    });
+    expect(stale).toMatchObject({
+      ok: false,
+      goalElectionConflict: { electedOwnerId: PEER, electedEpoch: 2 },
+    });
+    expect((await getModes(WS, 'su-stale-replacement', m.sql))).toEqual([]);
+
+    const recovered = await setMode({
+      workspaceId: WS,
+      ownerId: 'su-current-replacement',
+      modeId: 'goal',
+      enabled: true,
+      reason: 'lease-bound recovery',
+      setBy: 'goal-holder-respawner',
+      subject: 'g-1',
+      goalElectionExpectation: { ownerId: PEER, epoch: 2 },
+      sql: m.sql,
+    });
+    expect(recovered.goalElection).toMatchObject({
+      ownerId: 'su-current-replacement',
+      epoch: 3,
+      predecessorOwnerId: PEER,
+    });
   });
 
   it('GRADE writes the AUTO row itself, so remediation never starts ask-first', async () => {
