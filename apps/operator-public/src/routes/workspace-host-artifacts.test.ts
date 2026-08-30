@@ -68,7 +68,7 @@ async function fixture(
       sizeBytes: bundle.byteLength,
     },
     baseImage: {
-      reference: 'ubuntu-2404-minimal',
+      reference: 'projects/papercusp-images-123/global/images/ubuntu-2404-minimal',
       architecture: 'x86_64',
       sha256: 'd'.repeat(64),
     },

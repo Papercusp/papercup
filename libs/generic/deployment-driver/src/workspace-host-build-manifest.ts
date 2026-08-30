@@ -100,6 +100,13 @@ const SHA256_HEX = /^[a-f0-9]{64}$/;
 const GIT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const SECRET_PARAMETER =
   /(?:^|[-_.])(credential|password|private[-_]?key|secret|token)(?:$|[-_.])/i;
+/**
+ * GCP image references are provider resources, not guest-local labels or paths. Keep this
+ * validator local to the provider-neutral manifest package so the release gate rejects a
+ * non-image value before a provider adapter (or a billable build) is reached.
+ */
+const GCP_IMMUTABLE_IMAGE_REFERENCE =
+  /^projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/global\/images\/[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/;
 
 /**
  * Material paths that name secret key material. The manifest is published beside the artifact it
@@ -249,6 +256,22 @@ function normalizeTargets(
   );
 }
 
+function normalizeBaseImageReference(
+  reference: string,
+  targets: readonly WorkspaceHostBuildTarget[],
+): string {
+  const normalized = requireText(reference, "baseImage.reference");
+  if (
+    targets.some((target) => target.provider === "gcp") &&
+    !GCP_IMMUTABLE_IMAGE_REFERENCE.test(normalized)
+  ) {
+    throw new WorkspaceHostBuildManifestError(
+      "baseImage.reference must be an immutable projects/{project}/global/images/{name} reference when a gcp target is present; family aliases are forbidden",
+    );
+  }
+  return normalized;
+}
+
 export function normalizeWorkspaceHostBuildManifestInput(
   input: WorkspaceHostBuildManifestInput,
 ): WorkspaceHostBuildManifestPayload {
@@ -277,6 +300,7 @@ export function normalizeWorkspaceHostBuildManifestInput(
       `builder must select a shared canonical producer (${WORKSPACE_HOST_BUILDER_KINDS.join(", ")})`,
     );
   }
+  const normalizedTargets = normalizeTargets(input.targets);
 
   return {
     schemaVersion: WORKSPACE_HOST_BUILD_MANIFEST_SCHEMA_VERSION,
@@ -302,7 +326,10 @@ export function normalizeWorkspaceHostBuildManifestInput(
       ),
     },
     baseImage: {
-      reference: requireText(input.baseImage.reference, "baseImage.reference"),
+      reference: normalizeBaseImageReference(
+        input.baseImage.reference,
+        normalizedTargets,
+      ),
       architecture: requireText(
         input.baseImage.architecture,
         "baseImage.architecture",
@@ -324,7 +351,7 @@ export function normalizeWorkspaceHostBuildManifestInput(
     },
     materials: normalizeMaterials(input.materials),
     parameters: normalizeParameters(input.parameters),
-    targets: normalizeTargets(input.targets),
+    targets: normalizedTargets,
   };
 }
 
@@ -407,6 +434,30 @@ export function verifyWorkspaceHostBuildManifest(
 /** Bundle-relative path of the remote initializer executable inside the extracted release. */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT =
   "bin/papercusp-remote-initializer";
+
+/** Bundle-relative PUI generation installed and attested as one immutable release unit. */
+export const WORKSPACE_HOST_PUI_ENTRYPOINT = "bin/pui";
+export const WORKSPACE_HOST_PUI_COMPANION_PATH = "pui-companion.wasm";
+export const WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH = "pui-install.json";
+
+export interface WorkspaceHostRequiredReleaseMaterial {
+  readonly path: string;
+  readonly executable?: true;
+}
+
+/**
+ * Runtime materials without which a signed bundle can install successfully but cannot actually
+ * initialize a remote workspace or prove that its PUI binary and companion came from one build.
+ * Keep this as the single release-gate contract; producers and fixtures consume these exported
+ * paths rather than maintaining parallel required-material lists.
+ */
+export const WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS: readonly WorkspaceHostRequiredReleaseMaterial[] =
+  [
+    { path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT, executable: true },
+    { path: WORKSPACE_HOST_PUI_ENTRYPOINT, executable: true },
+    { path: WORKSPACE_HOST_PUI_COMPANION_PATH },
+    { path: WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH },
+  ];
 
 /**
  * Path segments naming a MUTABLE release channel. A URL ending in one of these can serve
@@ -665,17 +716,19 @@ export function verifyWorkspaceHostReleaseProvenance(
     }),
   );
 
-  const initializer = manifest.materials.find(
-    (material) => material.path === WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-  );
-  if (!initializer)
-    errors.push(
-      `materials must include the remote initializer at ${WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT}; the bundle cannot initialize a workspace without it`,
+  for (const required of WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS) {
+    const material = manifest.materials.find(
+      (candidate) => candidate.path === required.path,
     );
-  else if (initializer.executable !== true)
-    errors.push(
-      `${WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT} must be marked executable`,
-    );
+    if (!material) {
+      errors.push(`materials must include required release material ${required.path}`);
+      continue;
+    }
+    if (material.sizeBytes === 0)
+      errors.push(`${required.path} must be non-empty`);
+    if (required.executable === true && material.executable !== true)
+      errors.push(`${required.path} must be marked executable`);
+  }
 
   return { ok: errors.length === 0, errors };
 }

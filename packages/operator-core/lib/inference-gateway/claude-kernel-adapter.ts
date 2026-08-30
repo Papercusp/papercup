@@ -155,6 +155,18 @@ export interface ClaudeResponseMetadata {
    * body is peeked exactly once per attempt.
    */
   classification: ClaudeResponseClassification | null;
+  /**
+   * The peeked body prefix, UTF-8 decoded — the live `peekedHead`. Null when
+   * nothing was peeked.
+   *
+   * The caller needs the BYTES, not just the classification, for one path: when
+   * it decides to absorb a throttle and the re-acquire then times out, the live
+   * handler has already destroyed the remainder and forwards the peeked head
+   * alone (gateway.ts:4824-4827 then :5014-5016). Without this the caller would
+   * have to choose between re-reading a body the kernel already discarded and
+   * inventing a response the client has never seen.
+   */
+  peekedBody: string | null;
 }
 
 export interface ClaudePreparedAttempt {
@@ -224,6 +236,26 @@ export interface ClaudeAdapterOptions {
    */
   canRotate?(): boolean;
   /**
+   * The caller's WEDGE-PREVENTION deadline, as a question (D-014): has this
+   * request's wall-clock retry budget run out?
+   *
+   * `proxy` carries a `retryDeadlineAt` — the instant past which it must stop
+   * retrying, shed, and free its admission slot, strictly ahead of the 75s
+   * self-heal valve and the 120s watchdog. It gates the sibling-egress
+   * re-attempt (gateway.ts:4213) and the transport-failure rotate (:4266), and
+   * at :4780 it sheds rather than retrying at all.
+   *
+   * It lives with the CALLER, not here, because only the caller knows when the
+   * budget RESETS — the absorb re-acquire and the opus→sonnet downgrade each
+   * hand the request a fresh one (:4321, :4870, :4906). The adapter only asks.
+   *
+   * Returning true declines BOTH selection hooks, which is how an adapter says
+   * "stop retrying" without the kernel needing a wall-clock concept. Note that
+   * an attempt COUNT is not a substitute: `maxAttempts` bounds how MANY calls
+   * this ladder makes, never how LONG it holds the slot.
+   */
+  retryBudgetExhausted?(): boolean;
+  /**
    * Classifies a peeked NON-2xx body (D-013). Absent ⇒ no body is ever peeked and
    * the adapter falls back to status-only retryability, which is what the pure
    * transport tests drive.
@@ -236,6 +268,16 @@ export interface ClaudeAdapterOptions {
   classifyResponse?(input: ClaudeClassifyInput): ClaudeResponseClassification;
   /** Bytes of a non-2xx body to peek for classification (live `USAGE_LIMIT_PEEK_BYTES`). */
   peekBytes?: number;
+  /**
+   * Which statuses are worth a classification peek. Defaults to every non-2xx,
+   * but the live handler peeks a NARROWER set — only 429, 529 and 403 have a
+   * body-derived branch (gateway.ts:4431, :4611). A 401 or a 500 is forwarded
+   * on status alone, so peeking one would add an upstream read the live path
+   * never makes: harmless in content (the peek is bounded and replayed
+   * byte-exactly) but not in TIMING, since a stalled error body would then be
+   * waited on for `peekTimeoutMs` before being forwarded.
+   */
+  shouldPeek?(status: number): boolean;
   /**
    * Bound on the classification peek. The live handler wraps `peekBody` in a
    * `withDeadline` because the peek reader is NOT wired to the attempt abort, so an
@@ -379,6 +421,11 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
     selectReattempt(context) {
       const currentRoute = context.currentRoute;
       if (!currentRoute) return null;
+      // D-014: the wedge-prevention deadline outranks every branch below,
+      // including the 529 backoff — the live handler gates its sibling-egress
+      // re-attempt on `Date.now() < retryDeadlineAt` (gateway.ts:4213) and
+      // sheds outright at :4780 regardless of remaining rotation budget.
+      if (opts.retryBudgetExhausted?.()) return null;
       const { account, egress } = currentRoute.value;
       const status = context.lastResponse?.status ?? null;
       const kind = context.lastResponse?.metadata?.classification?.kind ?? null;
@@ -415,6 +462,11 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // the adapter, and D-011 did not change that suppression.
       const currentRoute = context.currentRoute;
       if (!currentRoute) return null;
+      // D-014, as above — and checked BEFORE the pool is consulted, for the same
+      // reason `canRotate` is: `onExhausted` both PARKS the current account and
+      // returns the next, so asking it and then discarding the answer would park
+      // an account for a rotation that never happens (gateway.ts:4266).
+      if (opts.retryBudgetExhausted?.()) return null;
 
       // A 529 is server overload, never an account signal: the live handler backs
       // off on the same account and never rotates. Decline rather than park a
@@ -445,11 +497,29 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // Per attempt, not per request: a rotation must present the NEW account's
       // credential, which is why the live handler resolves the token inside its
       // loop body rather than once above it (gateway.ts:~4053).
-      const token = await withTokenDeadline(
-        account.token(),
-        opts.tokenTimeoutMs,
-        `token refresh '${account.accountId}'`,
-      );
+      let token: string;
+      try {
+        token = await withTokenDeadline(
+          account.token(),
+          opts.tokenTimeoutMs,
+          `token refresh '${account.accountId}'`,
+        );
+      } catch (error) {
+        // STATUS 503 is the caller's discriminator between a token failure and a
+        // transport failure (502), exactly as the codex-oauth lane uses it — the
+        // caller's `observeAttempt` needs it to split `gov.penalize` (transport
+        // vs. real) and to send the live 503 the bee's CLI retries.
+        //
+        // retryable:FALSE, unlike the codex-oauth adapter. The live Claude
+        // handler does not rotate off a token failure: it penalizes the account
+        // and RETURNS (gateway.ts:4054-4100), leaving the per-request selector to
+        // route the bee's own retry to a healthy account. Marking it retryable
+        // would invent a rotation this lane has never done.
+        throw new GatewayRequestKernelError(
+          `inference-gateway: claude token unavailable for '${account.accountId}': ${(error as Error).message}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 503, retryable: false, cause: error },
+        );
+      }
       const dispatcher = await opts.dispatcherFor(account, egress.entry);
       return {
         url: opts.upstreamUrl,
@@ -491,8 +561,9 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // path keeps zero added latency and no false-positive risk, matching the
       // live handler's own note (gateway.ts:4377-4378).
       let classification: ClaudeResponseClassification | null = null;
+      let peekedBody: string | null = null;
       let body = response.body;
-      if (opts.classifyResponse && response.status >= 300) {
+      if (opts.classifyResponse && (opts.shouldPeek ?? ((status) => status >= 300))(response.status)) {
         let head = Buffer.alloc(0) as Uint8Array;
         if (body) {
           try {
@@ -516,11 +587,8 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
             body = null;
           }
         }
-        classification = opts.classifyResponse({
-          status: response.status,
-          headers,
-          body: Buffer.from(head).toString('utf8'),
-        });
+        peekedBody = Buffer.from(head).toString('utf8');
+        classification = opts.classifyResponse({ status: response.status, headers, body: peekedBody });
       }
 
       return {
@@ -537,6 +605,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
           headers,
           egressKey: context.route.value.egress.key,
           classification,
+          peekedBody,
         },
         body,
         // Drives whether the kernel consults selectReattempt/selectFailover at all

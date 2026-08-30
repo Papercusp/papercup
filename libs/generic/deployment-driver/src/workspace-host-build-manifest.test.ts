@@ -16,6 +16,12 @@ import {
   type WorkspaceHostBuildManifestInput,
   type WorkspaceHostReleasePins,
 } from "./index";
+import {
+  WORKSPACE_HOST_PUI_COMPANION_PATH,
+  WORKSPACE_HOST_PUI_ENTRYPOINT,
+  WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+  WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS,
+} from "./workspace-host-build-manifest";
 
 const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
@@ -34,7 +40,8 @@ function input(): WorkspaceHostBuildManifestInput {
       sizeBytes: 42,
     },
     baseImage: {
-      reference: "ubuntu-24.04-amd64",
+      reference:
+        "projects/papercusp-images-123/global/images/ubuntu-2404-amd64",
       architecture: "x86_64",
       sha256: SHA_B,
     },
@@ -158,6 +165,31 @@ describe("workspace-host build manifest", () => {
     ).toThrow(WorkspaceHostBuildManifestError);
   });
 
+  it.each([
+    "ubuntu-24.04-amd64",
+    "ubuntu-24.04.4-host-default-linux-x64:/etc/os-release",
+    "projects/papercusp-images-123/global/images/family/ubuntu-base",
+  ])("refuses a non-immutable GCP base-image reference: %s", (reference) => {
+    expect(() =>
+      buildWorkspaceHostBuildManifest({
+        ...input(),
+        baseImage: { ...input().baseImage, reference },
+      }),
+    ).toThrow(
+      "baseImage.reference must be an immutable projects/{project}/global/images/{name} reference",
+    );
+  });
+
+  it("preserves provider-neutral base-image references for non-GCP targets", () => {
+    const manifest = buildWorkspaceHostBuildManifest({
+      ...input(),
+      baseImage: { ...input().baseImage, reference: "ubuntu-24.04-amd64" },
+      targets: [{ provider: "aws", locations: ["us-east-1"] }],
+    });
+
+    expect(manifest.baseImage.reference).toBe("ubuntu-24.04-amd64");
+  });
+
   it("refuses a material path that is secret-shaped", () => {
     // Secret material must never be enumerated into a manifest that is published alongside the
     // artifact it describes. The parameter guard already covers values; this covers paths.
@@ -220,7 +252,7 @@ describe("workspace-host build manifest", () => {
 describe("workspace-host release provenance", () => {
   const BASE = "https://releases.papercusp.example-host.net/server/1.2.3.tgz";
 
-  /** A manifest whose materials DO carry the initializer, as a shippable release must. */
+  /** A manifest whose materials carry the complete remote/PUI runtime generation. */
   function shippable(): WorkspaceHostBuildManifestInput {
     const base = input();
     return {
@@ -232,6 +264,22 @@ describe("workspace-host release provenance", () => {
           sha256: SHA_C,
           sizeBytes: 512,
           executable: true,
+        },
+        {
+          path: WORKSPACE_HOST_PUI_ENTRYPOINT,
+          sha256: SHA_D,
+          sizeBytes: 1_024,
+          executable: true,
+        },
+        {
+          path: WORKSPACE_HOST_PUI_COMPANION_PATH,
+          sha256: SHA_B,
+          sizeBytes: 2_048,
+        },
+        {
+          path: WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
+          sha256: SHA_A,
+          sizeBytes: 256,
         },
       ],
     };
@@ -251,7 +299,7 @@ describe("workspace-host release provenance", () => {
 
   // POSITIVE CONTROL. Without it, every refusal below could be passing because the fixture is
   // malformed for some unrelated reason rather than because the guard under test fired.
-  it("accepts an immutable, digest-pinned release that carries the initializer", () => {
+  it("accepts an immutable, digest-pinned release with every required runtime material", () => {
     const verdict = verifyWorkspaceHostReleaseProvenance(
       buildWorkspaceHostBuildManifest(shippable()),
       pins(),
@@ -361,38 +409,65 @@ describe("workspace-host release provenance", () => {
     expect(verdict.errors.join("\n")).toContain("embed the release version");
   });
 
-  it("refuses a bundle whose materials omit the remote initializer", () => {
-    // The regression this exists to prevent: a bundle that installs, reports healthy, and then
-    // fails every initialization at the far end because the executable was never packaged.
-    const verdict = verifyWorkspaceHostReleaseProvenance(
-      buildWorkspaceHostBuildManifest(input()),
-      pins(),
-    );
-    expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join("\n")).toContain(
-      WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-    );
-  });
+  it.each(WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS)(
+    "refuses a bundle whose materials omit $path",
+    (required) => {
+      const complete = shippable();
+      const verdict = verifyWorkspaceHostReleaseProvenance(
+        buildWorkspaceHostBuildManifest({
+          ...complete,
+          materials: complete.materials.filter(
+            (material) => material.path !== required.path,
+          ),
+        }),
+        pins(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors.join("\n")).toContain(required.path);
+    },
+  );
 
-  it("refuses an initializer that is packaged without the executable bit", () => {
-    const base = input();
+  it.each(WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS)(
+    "refuses an empty required release material at $path",
+    (required) => {
+      const complete = shippable();
+      const verdict = verifyWorkspaceHostReleaseProvenance(
+        buildWorkspaceHostBuildManifest({
+          ...complete,
+          materials: complete.materials.map((material) =>
+            material.path === required.path
+              ? { ...material, sizeBytes: 0 }
+              : material,
+          ),
+        }),
+        pins(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors.join("\n")).toContain(`${required.path} must be non-empty`);
+    },
+  );
+
+  it.each(
+    WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS.filter(
+      (required) => required.executable === true,
+    ),
+  )("refuses a non-executable required entrypoint at $path", (required) => {
+    const complete = shippable();
     const verdict = verifyWorkspaceHostReleaseProvenance(
       buildWorkspaceHostBuildManifest({
-        ...base,
-        materials: [
-          ...base.materials,
-          {
-            path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-            sha256: SHA_C,
-            sizeBytes: 512,
-            executable: false,
-          },
-        ],
+        ...complete,
+        materials: complete.materials.map((material) =>
+          material.path === required.path
+            ? { ...material, executable: false }
+            : material,
+        ),
       }),
       pins(),
     );
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join("\n")).toContain("must be marked executable");
+    expect(verdict.errors.join("\n")).toContain(
+      `${required.path} must be marked executable`,
+    );
   });
 
   // The point of deriving URLs from the digest is that the pin they produce must SATISFY the

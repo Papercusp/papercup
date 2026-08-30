@@ -16922,7 +16922,8 @@ var backupSnapshotsInHarnessShared = harnessShared.table("backup_snapshots", {
   // You can use { mode: "bigint" } if numbers are exceeding js number limitations
   bytesTotal: bigint("bytes_total", { mode: "number" }),
   sourcesJson: jsonb("sources_json").default([]).notNull(),
-  errorText: text("error_text")
+  errorText: text("error_text"),
+  dbDumpOk: boolean("db_dump_ok")
 }, (table) => [
   index("backup_snapshots_workspace_idx").using("btree", table.workspaceId.asc().nullsLast().op("text_ops"), table.startedAt.desc().nullsFirst().op("timestamptz_ops")),
   pgPolicy("backup_snapshots_workspace_isolation", { as: "permissive", for: "all", to: ["public"], using: sql`(workspace_id = current_setting('app.workspace_id'::text, true))`, withCheck: sql`(workspace_id = current_setting('app.workspace_id'::text, true))` })
@@ -45090,6 +45091,10 @@ var WorkItemAdmissionQueueDriver = class {
       receipt: queueReceipt(stored)
     };
   }
+  /** Reconcile stale protected receipts in this namespace without selecting new work. */
+  reconcileExpired() {
+    return this.store.reconcileExpired?.(this.namespace, this.now()) ?? Promise.resolve({ requeued: 0, expired: 0, total: 0 });
+  }
   async status(idempotencyKey) {
     const stored = await this.store.find(this.namespace, idempotencyKey);
     if (!stored) return { idempotencyKey, state: "unknown" };
@@ -45242,6 +45247,67 @@ var PgWorkItemAdmissionQueueStore = class {
        LIMIT 1`;
     return rows[0] ?? null;
   }
+  async reconcileExpiredRows(tx, namespace, nowMs) {
+    const namespacePredicate = namespace === null ? tx`` : tx`AND payload->'resource_governor'->>'namespace' = ${namespace}`;
+    const requeued = await tx`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               payload,
+               ARRAY['resource_governor']::text[],
+               ((payload->'resource_governor') - 'lease') || jsonb_build_object(
+                 'state', 'queued',
+                 'updatedAtMs', ${nowMs}::bigint,
+                 'decision', jsonb_build_object(
+                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'atMs', ${nowMs}::bigint,
+                   'reason', 'lease-expired',
+                   'evidence', '{}'::jsonb
+                 )
+               ),
+               true
+             ),
+             status = 'open', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+       WHERE workspace_id = ${this.workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         ${namespacePredicate}
+         AND payload->'resource_governor'->>'state' IN ('leased', 'running')
+         AND jsonb_typeof(payload->'resource_governor'->'lease'->'expiresAtMs') = 'number'
+         AND (payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision <= ${nowMs}
+       RETURNING feature_id, payload, status, taken_by, created_ts`;
+    const expired = await tx`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               payload,
+               ARRAY['resource_governor']::text[],
+               ((payload->'resource_governor') - 'lease') || jsonb_build_object(
+                 'state', 'expired',
+                 'updatedAtMs', ${nowMs}::bigint,
+                 'decision', jsonb_build_object(
+                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'atMs', ${nowMs}::bigint,
+                   'reason', 'deadline-expired',
+                   'evidence', '{}'::jsonb
+                 )
+               ),
+               true
+             ),
+             status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+       WHERE workspace_id = ${this.workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         ${namespacePredicate}
+         AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
+         AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
+         AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}
+       RETURNING feature_id, payload, status, taken_by, created_ts`;
+    return { requeued: requeued.length, expired: expired.length, total: requeued.length + expired.length };
+  }
+  async reconcileExpired(namespace, nowMs) {
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, namespace, nowMs));
+  }
+  /** Reconcile every governor namespace for the periodic maintenance workflow. */
+  async reconcileExpiredAll(nowMs = Date.now()) {
+    return this.transaction((tx) => this.reconcileExpiredRows(tx, null, nowMs));
+  }
   async writeRecord(sql2, receiptId, record2, assignee) {
     const rows = await sql2`
       UPDATE harness_shared.work_items
@@ -45354,53 +45420,7 @@ var PgWorkItemAdmissionQueueStore = class {
   }
   async leaseNext(namespace, owner, leaseId, ttlMs, nowMs, selection) {
     return this.transaction(async (tx) => {
-      await tx`
-        UPDATE harness_shared.work_items
-           SET payload = jsonb_set(
-                 payload,
-                 ARRAY['resource_governor']::text[],
-                 ((payload->'resource_governor') - 'lease') || jsonb_build_object(
-                   'state', 'queued',
-                   'updatedAtMs', ${nowMs}::bigint,
-                   'decision', jsonb_build_object(
-                     'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
-                     'atMs', ${nowMs}::bigint,
-                     'reason', 'lease-expired',
-                     'evidence', '{}'::jsonb
-                   )
-                 ),
-                 true
-               ),
-               status = 'open', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-         WHERE workspace_id = ${this.workspaceId}
-           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-           AND payload->'resource_governor'->>'namespace' = ${namespace}
-           AND payload->'resource_governor'->>'state' IN ('leased', 'running')
-           AND (payload->'resource_governor'->'lease'->>'expiresAtMs')::double precision <= ${nowMs}`;
-      await tx`
-        UPDATE harness_shared.work_items
-           SET payload = jsonb_set(
-                 payload,
-                 ARRAY['resource_governor']::text[],
-                 ((payload->'resource_governor') - 'lease') || jsonb_build_object(
-                   'state', 'expired',
-                   'updatedAtMs', ${nowMs}::bigint,
-                   'decision', jsonb_build_object(
-                     'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
-                     'atMs', ${nowMs}::bigint,
-                     'reason', 'deadline-expired',
-                     'evidence', '{}'::jsonb
-                   )
-                 ),
-                 true
-               ),
-               status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
-         WHERE workspace_id = ${this.workspaceId}
-           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-           AND payload->'resource_governor'->>'namespace' = ${namespace}
-           AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
-           AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
-           AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}`;
+      await this.reconcileExpiredRows(tx, namespace, nowMs);
       let rows;
       if (!selection) {
         rows = await tx`
@@ -45532,6 +45552,7 @@ var PgWorkItemAdmissionQueueStore = class {
   }
   async leaseReceipt(namespace, receiptId, owner, leaseId, ttlMs, nowMs) {
     return this.transaction(async (tx) => {
+      await this.reconcileExpiredRows(tx, namespace, nowMs);
       const row = await this.findReceiptRow(tx, receiptId, true);
       if (!row) return null;
       const stored = storedFromRow(row);
@@ -45652,25 +45673,81 @@ var GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 6e4;
 var GOVERNED_EXECUTION_SHORT_LEASE_MAX_MS = 30 * 6e4;
 var GOVERNED_EXECUTION_PROCESS_LEASE_TTL_MS = 5 * 6e4;
 async function withGovernedExecution(request, input, deps, run) {
-  const execution = await beginGovernedExecution(
-    request,
-    { owner: input.owner, leaseTtlMs: input.leaseTtlMs },
-    deps
-  );
+  const signal = input.signal;
+  const abortReason = () => signal?.reason ?? Object.assign(new Error("governed execution aborted"), { name: "AbortError" });
+  const abortMessage = () => {
+    const reason = signal?.reason;
+    return `governed execution aborted: ${reason instanceof Error ? reason.message : String(reason ?? "request aborted")}`;
+  };
+  if (signal?.aborted) throw abortReason();
+  let execution = null;
+  let preBeginCancellation = null;
+  let executionCancellation = null;
+  const cancelForAbort = () => {
+    if (execution) {
+      if (!executionCancellation) {
+        let current;
+        current = execution.cancel(abortMessage()).finally(() => {
+          if (executionCancellation === current) executionCancellation = null;
+        });
+        executionCancellation = current;
+      }
+      return executionCancellation;
+    }
+    if (!preBeginCancellation) {
+      preBeginCancellation = deps.governor.cancel(request.idempotencyKey, abortMessage()).then(
+        (result) => result.cancelled,
+        () => false
+      );
+    }
+    return preBeginCancellation;
+  };
+  const onAbort = () => {
+    void cancelForAbort().catch(() => void 0);
+  };
+  if (signal) {
+    if (signal.aborted) {
+      throw abortReason();
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
   try {
+    execution = await beginGovernedExecution(
+      request,
+      { owner: input.owner, leaseTtlMs: input.leaseTtlMs },
+      deps
+    );
+    if (signal?.aborted) {
+      await cancelForAbort();
+      throw abortReason();
+    }
     const result = await run(execution.context);
+    if (signal?.aborted) {
+      await cancelForAbort();
+      throw abortReason();
+    }
     const settlement = input.settle ? await input.settle(result, execution.context) : {
       kind: "release",
       actualDemand: input.measureActualDemand ? await input.measureActualDemand() : void 0
     };
+    if (signal?.aborted) {
+      await cancelForAbort();
+      throw abortReason();
+    }
     if (settlement.kind === "cancel") await execution.cancel(settlement.reason);
     else await execution.finish(settlement.actualDemand);
     return result;
   } catch (error51) {
-    await execution.cancel(
-      `governed execution failed: ${error51 instanceof Error ? error51.message : String(error51)}`
-    ).catch(() => void 0);
+    if (signal?.aborted) {
+      if (execution) await cancelForAbort();
+      throw abortReason();
+    }
+    if (execution) {
+      await execution.cancel(`governed execution failed: ${error51 instanceof Error ? error51.message : String(error51)}`).catch(() => void 0);
+    }
     throw error51;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 function runGovernedOperation(input, run) {
@@ -45687,6 +45764,7 @@ function runGovernedOperation(input, run) {
   const executionInput = {
     owner: input.owner,
     leaseTtlMs: input.leaseTtlMs,
+    ...input.signal ? { signal: input.signal } : {},
     ...input.settle ? { settle: input.settle } : {},
     ...input.measureActualDemand ? { measureActualDemand: input.measureActualDemand } : {}
   };
@@ -45848,6 +45926,7 @@ function admissionContextFromEnvironment(value) {
 // ../../packages/operator-core/lib/memory/embed-sidecar-server.ts
 var EMBED_SIDECAR_DEFAULT_PORT = 3384;
 var EMBED_SIDECAR_PORT_ENV = "PAPERCUSP_EMBED_SIDECAR_PORT";
+var EMBED_SIDECAR_CONCURRENCY_ENV = "PAPERCUSP_EMBED_SIDECAR_CONCURRENCY";
 var EMBED_SIDECAR_WARM_ENV = "PAPERCUSP_EMBED_SIDECAR_WARM";
 var EMBED_SIDECAR_READY_LINE = "PAPERCUSP_EMBED_SIDECAR_READY";
 var MAX_TEXTS_PER_CALL = 256;
@@ -45859,6 +45938,13 @@ var EMBED_SIDECAR_RUNTIME = "node-onnx-worker";
 var EMBED_SIDECAR_CAP_HEALTHZ = "GET /healthz";
 var EMBED_SIDECAR_CAP_EMBED = "POST /embed";
 var EMBED_SIDECAR_CAP_RERANK = "POST /rerank";
+function resolveEmbedSidecarConcurrency(env = process.env) {
+  const raw = env[EMBED_SIDECAR_CONCURRENCY_ENV]?.trim();
+  if (!raw) return void 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return void 0;
+  return Math.max(1, Math.floor(parsed));
+}
 var MODEL_REVS = {
   gemma: GEMMA_MODEL,
   local: LOCAL_EMBEDDER_MODEL,
@@ -46084,13 +46170,14 @@ function createEmbedSidecarServer(opts = {}) {
     return p;
   };
   const localScheduler = opts.concurrency !== void 0;
-  const concurrency = localScheduler ? Math.max(1, Math.floor(opts.concurrency)) : Number.POSITIVE_INFINITY;
+  const configuredConcurrency = opts.concurrency ?? resolveEmbedSidecarConcurrency();
+  const concurrency = configuredConcurrency === void 0 ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(configuredConcurrency));
   const workspaceId = opts.workspaceId?.trim() || (localScheduler ? void 0 : activeWorkspaceId());
   const governed = opts.governedOperation ?? runGovernedOperation;
   const parentAdmission = admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT);
   const operationOwner = `embed-sidecar:${process.pid}`;
   const runSidecarUnit = (input) => {
-    if (localScheduler) return input.run();
+    if (localScheduler) return input.run(input.signal);
     const operationInput = {
       workspaceId,
       namespace: "embed-sidecar",
@@ -46099,6 +46186,7 @@ function createEmbedSidecarServer(opts = {}) {
       demand: input.demand,
       payloadRef: `embed-sidecar:${input.operation}:${input.model}`,
       ...parentAdmission ? { parent: parentAdmission } : {},
+      ...input.signal ? { signal: input.signal } : {},
       metadata: {
         operation: input.operation,
         model: input.model,
@@ -46107,7 +46195,7 @@ function createEmbedSidecarServer(opts = {}) {
         unit: "single-text"
       }
     };
-    return governed(operationInput, () => input.run());
+    return governed(operationInput, () => input.run(input.signal));
   };
   let active = 0;
   const waiting = [];
@@ -46138,6 +46226,7 @@ function createEmbedSidecarServer(opts = {}) {
   const enqueue = (work, batch = createQueueBatch()) => {
     let resolveTask;
     let rejectTask;
+    const controller = new AbortController();
     const promise2 = new Promise((resolve3, reject) => {
       resolveTask = resolve3;
       rejectTask = reject;
@@ -46150,7 +46239,7 @@ function createEmbedSidecarServer(opts = {}) {
         entry.started = true;
         active++;
         batch.running++;
-        Promise.resolve().then(work).then(resolveTask, rejectTask).finally(() => {
+        Promise.resolve().then(() => work(controller.signal)).then(resolveTask, rejectTask).finally(() => {
           active--;
           batch.running--;
           queueBatch(batch);
@@ -46176,7 +46265,14 @@ function createEmbedSidecarServer(opts = {}) {
       if (batch.running === 0) queueBatch(batch);
       drainQueue();
     }
-    return { promise: promise2, cancel: entry.cancel };
+    return {
+      promise: promise2,
+      signal: controller.signal,
+      abort: (reason) => {
+        if (!controller.signal.aborted) controller.abort(reason);
+      },
+      cancel: entry.cancel
+    };
   };
   const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
   const vecCache = /* @__PURE__ */ new Map();
@@ -46233,8 +46329,12 @@ function createEmbedSidecarServer(opts = {}) {
       if (released) return;
       released = true;
       owned.consumers--;
-      if (owned.consumers === 0 && owned.task.cancel() && inflight.get(key) === owned) {
-        inflight.delete(key);
+      if (owned.consumers === 0) {
+        owned.task.abort(new SidecarRequestAbortedError());
+        owned.task.cancel();
+        if (inflight.get(key) === owned) {
+          inflight.delete(key);
+        }
       }
     };
     return new Promise((resolve3, reject) => {
@@ -46264,7 +46364,7 @@ function createEmbedSidecarServer(opts = {}) {
   };
   const embedOneCached = (model, kind, text2, signal, batch) => computeCached(
     `${model}:${kind}\0${text2}`,
-    () => runSidecarUnit({
+    (taskSignal) => runSidecarUnit({
       admissionClass: "embedding",
       operation: "embed",
       model,
@@ -46274,9 +46374,10 @@ function createEmbedSidecarServer(opts = {}) {
         cpuWeight: 1,
         memoryBytes: Buffer.byteLength(text2, "utf8")
       },
-      run: async () => {
+      signal: taskSignal,
+      run: async (runSignal) => {
         const embed = await getEmbedder(model, kind);
-        return embed(text2);
+        return embed(text2, runSignal);
       }
     }),
     signal,
@@ -46284,7 +46385,7 @@ function createEmbedSidecarServer(opts = {}) {
   );
   const rerankOneCached = (model, query, text2, signal, batch) => computeCached(
     `${model}\0${query}\0${text2}`,
-    () => runSidecarUnit({
+    (taskSignal) => runSidecarUnit({
       admissionClass: "inference",
       operation: "rerank",
       model,
@@ -46293,6 +46394,7 @@ function createEmbedSidecarServer(opts = {}) {
         cpuWeight: 1,
         memoryBytes: Buffer.byteLength(query, "utf8") + Buffer.byteLength(text2, "utf8")
       },
+      signal: taskSignal,
       run: async () => {
         const rerankFn = await getReranker(model);
         const scores = await rerankFn(query, [text2]);
@@ -46414,9 +46516,10 @@ function createEmbedSidecarServer(opts = {}) {
           reranker: workerStates.reranker()
         },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
-        // `null` means no local capacity ceiling: production units are admitted
-        // independently by the durable governor. A finite value is present
-        // only when a test explicitly supplied the local scheduler seam.
+        // `null` means no local capacity ceiling. A finite value comes from the
+        // explicit PG-free test seam or the production environment window; in
+        // the latter case durable governor admission still wraps every started
+        // unit.
         concurrency: Number.isFinite(concurrency) ? concurrency : null,
         admission: {
           mode: localScheduler ? "local-test-scheduler" : "durable-governor",

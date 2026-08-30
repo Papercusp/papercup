@@ -677,8 +677,33 @@ function signalServiceUnit(scopeUnit: string | null | undefined, sig: NodeJS.Sig
   }
 }
 
+/**
+ * WI-1064487 — for a CONFINED job the payload is NOT in the client's process
+ * group (see signalServiceUnit's note directly above), so killing that group
+ * kills the systemd-run CLIENT while the payload's own TERM trap is still
+ * running. The client runs `systemd-run --pipe --wait`, so it exits on its own
+ * once the unit terminates, carrying the payload's real exit status. Signalling
+ * the UNIT ALONE therefore preserves the causal order the whole
+ * SIGTERM-before-SIGKILL design depends on: cleanup runs, THEN the job is
+ * observed to end.
+ *
+ * Killing the client too is what made `endedAt` mean "the client is gone"
+ * rather than "the job finished and its cleanup ran" — so a waiter released on
+ * endedAt could read the job's side effects before its trap had written them —
+ * and what pinned `job.exitCode` at null for every confined job, which in turn
+ * made the escalation's `exitCode === null` guard below fire unconditionally
+ * instead of distinguishing the two cases it was written to distinguish.
+ *
+ * SIGKILL is the deliberate exception: it is the escalation of last resort and
+ * must still reach both, precisely so that a unit signal which never lands
+ * cannot leave the job running forever.
+ */
 function killJobProcessTree(job: BashJob, sig: NodeJS.Signals): void {
   signalServiceUnit(job.scopeUnit, sig);
+  // Only a `.service` unit is separately signalable (signalServiceUnit ignores
+  // anything else), so only that case may skip the process-group kill — a
+  // `.scope` or unconfined job still needs it or nothing would stop it.
+  if (sig !== 'SIGKILL' && job.scopeUnit?.endsWith('.service')) return;
   killProcessTree(job.child, sig);
 }
 

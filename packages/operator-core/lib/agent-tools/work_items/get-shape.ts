@@ -401,20 +401,22 @@ function projectWorkItem(
  * 66-character recovery sentence on every stub. At the supported maximum of 100 ids,
  * those rows alone exceeded the entire MCP result door. The human-readable explanation
  * now lives once in `_shapeNote.stubbed`; a row the caller must re-read needs only the id
- * that makes that recovery possible.
+ * that makes that recovery possible. Completion presence is hoisted alongside the
+ * stub summary so the authoritative bit does not repeat 100 times on a floor read.
  */
-function stubRow(r: Row, dropped: Set<string>): Row {
+function stubRow(r: Row, dropped: Set<string>, completionEvidenceIds: unknown[]): Row {
   const w = (r.workItem ?? {}) as Row;
+  const id = r.id ?? w.id ?? null;
   const rawCompletion = r.completion !== undefined ? r.completion : w.terminalCompletionEvidence;
   const hasEvidence = hasCompletionEvidence(rawCompletion);
   if (hasEvidence) {
+    completionEvidenceIds.push(id);
     dropped.add("completion");
     dropped.add("workItem.terminalCompletionEvidence");
   }
   return {
-    id: r.id ?? w.id ?? null,
+    id,
     _stub: true,
-    ...(hasEvidence ? { hasCompletionEvidence: true } : {}),
   };
 }
 
@@ -931,15 +933,22 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
       lifecycleShare >= LIFECYCLE_USEFUL_MIN_CHARS ? lifecycleShare : 0;
 
     const singleItemFloor = rows.length === 1 && fullRows === 0;
+    const stubCompletionEvidenceIds: unknown[] = [];
     const projected = rows.map((r, i) =>
       i < fullRows
         ? projectRow(r, caps, checkpointChars, summaryChars, lifecycleChars, dropped)
         : singleItemFloor
           ? compactSingleRow(r, caps, tier, dropped)
-          : stubRow(r, dropped),
+          : stubRow(r, dropped, stubCompletionEvidenceIds),
     );
     const stubbedCount = singleItemFloor ? 0 : Math.max(0, rows.length - fullRows);
     if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);
+    const stubCompletionEvidence =
+      stubCompletionEvidenceIds.length === 0
+        ? undefined
+        : stubCompletionEvidenceIds.length === stubbedCount
+          ? { all: true as const }
+          : { ids: stubCompletionEvidenceIds };
 
     out = {
       ...d,
@@ -961,6 +970,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                     stubbed: {
                       count: stubbedCount,
                       note: "stub rows preserve only id + _stub; re-read an id alone for detail",
+                      ...(stubCompletionEvidence ? { completionEvidence: stubCompletionEvidence } : {}),
                     },
                   }
                 : {}),
@@ -986,8 +996,8 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                     field.startsWith("completion.") ||
                     field === "workItem.terminalCompletionEvidence" ||
                     field.startsWith("workItem.terminalCompletionEvidence."),
-                )
-                  ? "⚠ COMPLETION EVIDENCE EXISTS but its body was clipped or reduced at this tier; `hasCompletionEvidence` remains authoritative. Re-read with payloadTier:'full' before treating the item as evidence-free. "
+                  )
+                  ? "⚠ COMPLETION EVIDENCE EXISTS but its body was clipped or reduced at this tier; `hasCompletionEvidence` (or `_shapeNote.stubbed.completionEvidence` for stub rows) remains authoritative. Re-read with payloadTier:'full' before treating the item as evidence-free. "
                   : ""
               }Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
             },

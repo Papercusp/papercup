@@ -187,3 +187,26 @@ export async function releaseAllHiveDesktops(): Promise<void> {
 export function hiveDesktopSessionId(potSlug: string): string | undefined {
   return sessionIds.get(potSlug);
 }
+
+/**
+ * The LIVE desktop behind a registry session id, or undefined.
+ *
+ * The inverse of `hiveDesktopSessionId`, and the seam the hosted relay's desktop
+ * backend resolves through (P-013 / WI-1064431). It reads `leases` on purpose:
+ * this module's header records that `leases` is the AUTHORITY for liveness and the
+ * PG row is a best-effort mirror, and a viewer needs the two things only the live
+ * handle has — the loopback `endpoint` and this session's KasmVNC `credentials`.
+ * Both are per-process values that were never persisted (the credential file holds
+ * hashes, not secrets), so a registry read cannot answer this and re-minting would
+ * rotate the secrets out from under an already-connected viewer.
+ *
+ * Linear over `sessionIds` deliberately: a host holds one desktop per hive, so this
+ * is a handful of entries, and a second reverse index would be one more thing that
+ * can disagree with the map it indexes.
+ */
+export function leasedDesktopBySessionId(desktopSessionId: string): SandboxDesktop | undefined {
+  for (const [potSlug, sessionId] of sessionIds) {
+    if (sessionId === desktopSessionId) return leases.get(potSlug);
+  }
+  return undefined;
+}

@@ -1,6 +1,7 @@
 import { createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 /**
  * Reserved fields carried inside the existing systemd credential payload. They
@@ -137,6 +138,16 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   const mirrorOut = bestEffortMirror(process.stdout);
   const mirrorErr = bestEffortMirror(process.stderr);
   const redactor = createStreamingSecretRedactor(redactions);
+  // WI-972553: keep ONE decoder per stream across `data` events. Decoding each
+  // chunk in isolation (`chunk.toString('utf8')`) turns any multi-byte code
+  // point that straddles a chunk boundary into U+FFFD — the same defect
+  // WI-910499 fixed on the operator's own pipe reader, which never reached this
+  // second decode boundary. Corruption committed here reaches BOTH sinks (the
+  // authoritative file-backed log and the mirrored pipe), so the operator's
+  // downstream decoder cannot recover it. Every `run_in_background` job on a
+  // systemd host takes this path.
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let settled = false;
 
   const emit = (raw, mirror) => {
@@ -148,6 +159,13 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   const finish = (exitCode, diagnostic = '') => {
     if (settled) return;
     settled = true;
+    // Flush each stream's decoder BEFORE the redactor's tail: a code point left
+    // incomplete when the child closed must be reported exactly once here
+    // rather than dropped, and its replacement still has to pass redaction.
+    const stdoutTail = stdoutDecoder.end();
+    if (stdoutTail) emit(stdoutTail, mirrorOut);
+    const stderrTail = stderrDecoder.end();
+    if (stderrTail) emit(stderrTail, mirrorErr);
     if (diagnostic) emit(diagnostic, mirrorErr);
     const tail = redactor?.flush() ?? '';
     if (tail) {
@@ -161,8 +179,8 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   };
 
   const child = spawn(command, args, { env: environment, stdio: ['inherit', 'pipe', 'pipe'] });
-  child.stdout?.on('data', (chunk) => emit(chunk.toString('utf8'), mirrorOut));
-  child.stderr?.on('data', (chunk) => emit(chunk.toString('utf8'), mirrorErr));
+  child.stdout?.on('data', (chunk) => emit(stdoutDecoder.write(chunk), mirrorOut));
+  child.stderr?.on('data', (chunk) => emit(stderrDecoder.write(chunk), mirrorErr));
   child.once('error', (error) => {
     finish(1, `[systemd-scope-env-runner] payload spawn failed: ${error.message}\n`);
   });

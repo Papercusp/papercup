@@ -40,6 +40,9 @@ export interface GatewayKernelRoute<T> {
  *
  * The resolver is called ONCE, after the bounded body read and before the
  * first attempt, so it costs nothing per retry and cannot change mid-request.
+ * That is deliberate — a resolver may parse a body of tens of megabytes — and
+ * it is why a deadline that must SHRINK across attempts belongs in the separate
+ * per-attempt `ttfbCapMs` (D-014) rather than here.
  */
 export type GatewayKernelTtfbResolver = (context: {
   body: Buffer;
@@ -52,6 +55,28 @@ export interface GatewayKernelPolicy {
   requestCeilingMs: number;
   /** A scalar deadline, or a resolver reading the parsed request body. */
   ttfbTimeoutMs: number | GatewayKernelTtfbResolver;
+  /**
+   * D-014 — an OPTIONAL per-attempt CAP on the TTFB deadline, read from the
+   * caller's remaining wall-clock retry budget. Deliberately separate from
+   * `ttfbTimeoutMs`, which is a body-derived deadline that is CONSTANT for the
+   * request; this is a BUDGET that shrinks as the request ages, so the two
+   * cannot share a field without hiding one of them.
+   *
+   * The effective deadline for each attempt is
+   * `Math.max(1, Math.min(ttfbTimeoutMs, cap()))` — the `max(1, …)` floor is
+   * load-bearing: a retry started at the deadline gets a brief attempt rather
+   * than a 0ms abort (gateway.ts:4144).
+   *
+   * WHY THE KERNEL NEEDS THIS AT ALL. A lane can carry a wedge-prevention
+   * deadline — an instant past which the request must stop retrying and free
+   * its admission slot, ahead of a self-heal valve or watchdog reclaiming it.
+   * An attempt COUNT is not a substitute for that wall-clock bound: with
+   * `maxAttempts` 6 and a 300s headers deadline, a once-resolved TTFB lets one
+   * request stall 6× its intended budget under a storm. Lanes that pass no cap
+   * are unaffected, and a non-finite return is ignored rather than arming a
+   * timer that never fires.
+   */
+  ttfbCapMs?: () => number;
   bodyIdleTimeoutMs: number;
   downstreamIdleTimeoutMs: number;
   maxAttempts: number;
@@ -334,7 +359,10 @@ function assertPositiveTtfb(value: number): number {
 function validatePolicy(policy: GatewayKernelPolicy): void {
   // `ttfbTimeoutMs` is excluded here because it may be a resolver; a scalar is
   // checked below, and a resolver's result is checked after the body read.
-  const positive: Array<Exclude<keyof GatewayKernelPolicy, 'ttfbTimeoutMs'>> = [
+  // `ttfbCapMs` (D-014) is always a callback and is evaluated per attempt, so
+  // its VALUE cannot be validated here either — a non-finite return is ignored
+  // at the call site rather than failing a request that has a usable deadline.
+  const positive: Array<Exclude<keyof GatewayKernelPolicy, 'ttfbTimeoutMs' | 'ttfbCapMs'>> = [
     'maxBodyBytes',
     'bodyReadTimeoutMs',
     'requestCeilingMs',
@@ -892,14 +920,23 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
 
           span.recordAttempt();
           span.beginStage('upstreamTtfb');
+          // D-014: the body-derived deadline above is constant for the request;
+          // a lane's wedge-prevention BUDGET is not, so re-read the cap here —
+          // inside the loop — and give this attempt only what is left of it.
+          // A cap that is absent or non-finite leaves the deadline untouched.
+          const cap = opts.policy.ttfbCapMs?.();
+          const attemptTtfbMs =
+            typeof cap === 'number' && Number.isFinite(cap)
+              ? Math.max(1, Math.min(ttfbTimeoutMs, Math.floor(cap)))
+              : ttfbTimeoutMs;
           let response!: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
           let attemptFailure: GatewayRequestKernelError | null = null;
           try {
             response = await withDeadline({
               parent: requestController.signal,
-              timeoutMs: ttfbTimeoutMs,
+              timeoutMs: attemptTtfbMs,
               error: () =>
-                new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${ttfbTimeoutMs}ms`, {
+                new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${attemptTtfbMs}ms`, {
                   code: 'ttfb-timeout',
                   outcome: 'upstream-error',
                   status: 504,

@@ -106,6 +106,7 @@ import {
   stampMessageFields,
   toSections,
   sectionsToText,
+  SECTION_ONLY_FIELDS,
   type MessageSection,
   type MessageWhy,
 } from '../message-fields';
@@ -123,6 +124,20 @@ import { senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
  *  the wake doesn't race the abort and land woken:0. Env-tunable. */
 const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
+
+/**
+ * D-064 keeps authored section fields out of the message envelope. When a
+ * caller puts one of them at the top level, the closed schema correctly
+ * rejects it; the rejection must also say where the field belongs. Keep this
+ * map derived from the authored field list so a newly-added section field
+ * cannot regress to the bare "accepts ONLY" dead end.
+ */
+const sectionOnlyArgRedirects = Object.fromEntries(
+  SECTION_ONLY_FIELDS.map((field) => [
+    field,
+    `body[].${field} — put it inside a section: body: [{ text: "...", ${field}: ... }]`,
+  ]),
+);
 
 /**
  * The inject-only idle-recipient probe is diagnostic enrichment after the message
@@ -1962,6 +1977,7 @@ export default defineTool({
     'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
   guidance: {
     when: 'Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES often got wrong: `premises` is an array of ref strings, not objects — `premises: ["WI-1234#completion"]`; `youMayNotKnow` takes `{ ref, provenance }` and `couldNotDetermine` takes `{ what, note? }` — `youMayNotKnow: [{ ref: "WI-1", provenance: "authored" }]`, `couldNotDetermine: [{ what: "the gap" }]`, not a string or array of strings. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
+    argRedirects: sectionOnlyArgRedirects,
     returns:
       'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. When a body exceeds the default inbox cap, top-level `bodyDeliveryWarning` calls out that persistence succeeded but the recipient view is incomplete; read the per-message body diagnostics and `bodyReadRef`.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff.',

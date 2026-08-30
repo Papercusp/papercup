@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
 import readTool, { capabilityReadSeeAlso } from './read';
-import writeTool, { emptyWriteWouldDestroy } from './write';
+import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
 import { writeScratchReference } from '../../scratch-reference';
@@ -690,6 +690,86 @@ describe('capability:write', () => {
     it('leaves every non-empty write untouched', async () => {
       expect(emptyWriteWouldDestroy('x', 10)).toBe(false);
       expect(emptyWriteWouldDestroy('', 10)).toBe(true);
+    });
+  });
+
+  /**
+   * EI-21824594852517420, the corruption that was actually MEASURED: the default
+   * capability:read view is display-formatted, and writing it back grew a
+   * 33,955-byte source into a 38,626-byte destination while reporting ok:true.
+   *
+   * These cases drive the real read tool rather than a hand-written imitation of
+   * its output, so the detector is pinned to read.ts's actual rendering — if that
+   * rendering changes, this fails instead of silently ceasing to match.
+   */
+  describe('display-formatted content', () => {
+    const SOURCE = 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\nexport const d = 4;\n';
+
+    function seedSource(name: string): string {
+      const src = join(DIR, `roundtrip/${name}.ts`);
+      mkdirSync(dirname(src), { recursive: true });
+      writeFileSync(src, SOURCE, 'utf8');
+      return src;
+    }
+
+    async function readText(file: string, raw?: boolean): Promise<string> {
+      const r = (await readTool.handler!({ file_path: file, ...(raw ? { raw: true } : {}) }, ctx)) as {
+        content: Array<{ text: string }>;
+      };
+      return r.content[0].text;
+    }
+
+    it('refuses real capability:read display output, leaving the destination intact', async () => {
+      const src = seedSource('display-src');
+      const dest = join(DIR, 'roundtrip/display-dest.ts');
+      writeFileSync(dest, 'placeholder\n', 'utf8');
+
+      const displayText = await readText(src);
+      // Guard the premise: this really is the decorated view, not raw text.
+      expect(displayText).toContain('(4 lines)');
+      expect(displayText).toMatch(/\d+\texport const a/);
+
+      const w = (await writeTool.handler!({ file_path: dest, content: displayText }, ctx)) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+      expect(w.isError).toBe(true);
+      expect(parse(w)).toMatchObject({ ok: false, reason: 'display_formatted_content' });
+      expect(parse(w).message).toContain('raw: true');
+      expect(readFileSync(dest, 'utf8')).toBe('placeholder\n');
+    });
+
+    it('lets the CORRECT raw:true route round-trip byte-identically', async () => {
+      const src = seedSource('raw-src');
+      const dest = join(DIR, 'roundtrip/raw-dest.ts');
+
+      const rawText = await readText(src, true);
+      const w = (await writeTool.handler!({ file_path: dest, content: rawText }, ctx)) as {
+        content: Array<{ text: string }>;
+      };
+      expect(parse(w).ok).toBe(true);
+      // The whole point of the guard: the correct route is not merely permitted, it is exact.
+      expect(readFileSync(dest, 'utf8')).toBe(readFileSync(src, 'utf8'));
+    });
+
+    it('permits a captured read transcript when the caller says so', async () => {
+      const src = seedSource('opt-in-src');
+      const dest = join(DIR, 'roundtrip/transcript.txt');
+      const displayText = await readText(src);
+
+      const w = (await writeTool.handler!(
+        { file_path: dest, content: displayText, allow_display_formatted_content: true },
+        ctx,
+      )) as { content: Array<{ text: string }> };
+      expect(parse(w).ok).toBe(true);
+      expect(readFileSync(dest, 'utf8')).toBe(displayText);
+    });
+
+    it('does not refuse ordinary source that merely mentions a line count', () => {
+      // Needs BOTH signals; a parenthesised count alone must not trip it.
+      expect(looksLikeDisplayFormattedRead('report.txt (12 lines)\nplain\nbody\ntext\n')).toBe(false);
+      expect(looksLikeDisplayFormattedRead(SOURCE)).toBe(false);
+      expect(looksLikeDisplayFormattedRead('')).toBe(false);
     });
   });
 });

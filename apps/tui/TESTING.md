@@ -9,7 +9,7 @@ the canonical home for Rust per the repo's four-framework convention.
 cd apps/tui
 cargo test            # all unit/integration tests (fast, offline) — the default
 cargo clippy          # lint; the bar is 0 warnings
-cargo test -- --ignored --nocapture   # live smokes (need a running operator)
+cargo test -- --ignored --nocapture   # live operator smokes; audio stays opt-in
 ```
 
 ## Install/update contract
@@ -27,7 +27,7 @@ panes and prints a pane/session-scoped relaunch instruction. The old plugin-only
 `apps/pui-zellij-plugin/scripts/build-install.sh` path delegates to this script.
 
 `cargo test` is fully offline (no operator, no network) and is what CI/`test:affected`
-should run. The `#[ignore]`d live smokes require the operator running (an
+should run. The non-audio `#[ignore]`d live smokes require the operator running (an
 `~/.papercusp/endpoint-ipc.json` socket present) and exercise the real wire.
 
 ## What's covered
@@ -88,6 +88,12 @@ should run. The `#[ignore]`d live smokes require the operator running (an
 
 ## Live smokes (`-- --ignored`, need a running operator)
 
+`cargo test -- --ignored` runs the non-audio operator/IPC smokes, but the three
+`voice.rs` device smokes require an explicit `PUI_LIVE_AUDIO=1` opt-in. This keeps
+the ignored suite green on headless development and CI hosts instead of treating
+missing audio hardware as a product failure. When the opt-in is absent, the voice
+tests print `SKIP` and return without opening an audio device.
+
 - `ipc::live_ipc_smoke` — `sys:http` GET over the real socket returns plans.
 - `ipc::live_sse_subscription_smoke` — raw `invoke_stream` of the SSE route.
 - `ui::live_client_subscribe_sse` — the transport-agnostic `subscribe_sse` gets a
@@ -107,6 +113,13 @@ out defaults untouched:
 ```bash
 scripts/audio-loopback-smoke.sh   # loads a null-sink, runs the 3 smokes, unloads it
 ```
+
+The wrapper sets `PUI_LIVE_AUDIO=1` and routes both cpal and rodio through the
+temporary null-sink. It exits 0 when PipeWire/PulseAudio or the null-sink module
+is unavailable (an environmental skip), and always unloads its temporary module.
+To invoke the tests directly, export `PUI_LIVE_AUDIO=1` yourself and set
+`PUI_VOICE_INPUT` / `PUI_VOICE_OUTPUT` to the cpal device-name substrings you
+intend to exercise.
 
 This is the device-level complement to the deterministic, no-hardware **synthetic-voice**
 bus E2Es at `packages/operator-core/lib/voice-node/operator-voice-{multiclient,synthetic-audio}.test.ts`

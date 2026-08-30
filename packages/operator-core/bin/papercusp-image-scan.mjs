@@ -6,7 +6,7 @@
  * Invoked by CommandGcpImageFamilyScanRunner as:
  *     papercusp-image-scan --json-stdin        (payload on stdin)
  *
- * INPUT  { projectId, imageId, buildManifestIdentity, releaseSha256 }
+ * INPUT  { projectId, subnetwork, imageId, buildManifestIdentity, releaseSha256 }
  * OUTPUT { imageId, buildManifestIdentity, releaseSha256, trusted, sbomSha256,
  *          vulnerabilityFindings, secretFindings, evidenceRef }
  *
@@ -45,6 +45,8 @@ import {
   run,
   runOrThrow,
 } from './gcp-ephemeral.mjs';
+import { assertCleanRoomIapReachable } from './gcp-private-vm-session.mjs';
+import { buildImageScannerInstanceCreateArgs } from './gcp-image-scan-args.mjs';
 
 const CONTRACT_VERSION = 'papercusp-gcp-image-family-release-v1';
 const SCAN_ZONE = process.env.PAPERCUSP_SCAN_ZONE?.trim() || 'us-central1-a';
@@ -267,6 +269,7 @@ async function awaitScanCompletion(projectId, instance, zone, budgetMs) {
 async function scan(input) {
   const requested = parseImmutableImageId(input.imageId, 'imageId');
   const projectId = requireText(input.projectId, 'projectId');
+  const subnetwork = requireText(input.subnetwork, 'subnetwork');
   if (projectId !== requested.projectId) {
     fail('projectId does not match the project embedded in imageId');
   }
@@ -286,6 +289,10 @@ async function scan(input) {
   let startupScriptPath;
 
   try {
+    // The scanner reaches the guest only through IAP. Refuse before creating even the
+    // temporary disk when the supplied subnet has no matching IAP SSH firewall rule.
+    await assertCleanRoomIapReachable(projectId, subnetwork, SCAN_ZONE);
+
     // 2. Materialise the candidate as a disk we can read offline.
     await runOrThrow('gcloud', [
       'compute',
@@ -309,23 +316,17 @@ async function scan(input) {
 
     await runOrThrow(
       'gcloud',
-      [
-        'compute',
-        'instances',
-        'create',
+      buildImageScannerInstanceCreateArgs({
         instanceName,
-        `--project=${projectId}`,
-        `--zone=${SCAN_ZONE}`,
-        `--machine-type=${SCANNER_MACHINE_TYPE}`,
-        `--image-family=${SCANNER_BASE_IMAGE_FAMILY}`,
-        `--image-project=${SCANNER_BASE_IMAGE_PROJECT}`,
-        `--disk=name=${diskName},device-name=candidate,mode=ro,auto-delete=no`,
-        '--no-service-account',
-        '--no-scopes',
-        `--metadata-from-file=startup-script=${startupScriptPath}`,
-        '--labels=papercusp-artifact=workspace-host,papercusp-role=image-scanner',
-        '--quiet',
-      ],
+        projectId,
+        zone: SCAN_ZONE,
+        machineType: SCANNER_MACHINE_TYPE,
+        imageFamily: SCANNER_BASE_IMAGE_FAMILY,
+        imageProject: SCANNER_BASE_IMAGE_PROJECT,
+        subnetwork,
+        diskName,
+        startupScriptPath,
+      }),
       { timeoutMs: 8 * 60 * 1000 },
     );
     ledger.track('instance', instanceName, SCAN_ZONE);

@@ -24,7 +24,11 @@ type Envelope = {
     checkpointCharsPerRow: number;
     summaryCharsPerRow: number;
     next: string;
-    stubbed?: { count: number; note: string };
+    stubbed?: {
+      count: number;
+      note: string;
+      completionEvidence?: { all?: boolean; ids?: unknown[] };
+    };
     singleItemFloor?: string;
   };
 };
@@ -386,8 +390,40 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     const stub = out.results.find((result) => result._stub) as Record<string, unknown> | undefined;
 
     expect(stub).toBeDefined();
-    expect(stub?.hasCompletionEvidence).toBe(true);
+    expect(stub?.hasCompletionEvidence).toBeUndefined();
+    expect(out._shapeNote?.stubbed?.completionEvidence).toEqual({ all: true });
     expect(out._shapeNote?.next).toMatch(/COMPLETION EVIDENCE EXISTS/);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
+
+  it("hoists mixed completion presence by id when only some stub rows carry evidence", () => {
+    const evidence = {
+      summary: "completed",
+      testsRun: "npm test",
+      testResult: "passed",
+      verifiedHow: "unit",
+      filesChanged: ["get.ts"],
+    };
+    const evidenceIds = ["WI-completion-3", "WI-completion-77"];
+    const rows = Array.from({ length: 100 }, (_, i) => {
+      const id = `WI-completion-${i}`;
+      return row({
+        id,
+        workItem: {
+          id,
+          kind: "bug",
+          state: "done",
+          title: `completed ${i}`,
+          ...(evidenceIds.includes(id) ? { terminalCompletionEvidence: evidence } : {}),
+        },
+        checkpoint: null,
+      });
+    });
+
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+
+    expect(out.results.every((result) => result.hasCompletionEvidence === undefined)).toBe(true);
+    expect(out._shapeNote?.stubbed?.completionEvidence).toEqual({ ids: evidenceIds });
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
   });
 

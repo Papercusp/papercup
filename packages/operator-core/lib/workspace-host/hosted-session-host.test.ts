@@ -330,6 +330,9 @@ function desktopHarness(
   overrides: {
     endpoint?: { host: string; port: number } | null;
     dialError?: Error;
+    roster?: Array<{ desktopSessionId: string; state: string }>;
+    rosterError?: Error;
+    thumbnail?: Buffer | null;
   } = {},
 ) {
   const sent: HostedHostOutboundEnvelope[] = [];
@@ -353,6 +356,11 @@ function desktopHarness(
       return socket;
     },
     heartbeat: (desktopSessionId) => beats.push(desktopSessionId),
+    roster: async () => {
+      if (overrides.rosterError) throw overrides.rosterError;
+      return overrides.roster ?? [{ desktopSessionId: 'desktop-1', state: 'ready' }];
+    },
+    thumbnail: async () => (overrides.thumbnail === undefined ? Buffer.from('jpeg-bytes') : overrides.thumbnail),
   };
   const adapter = new HostedWorkspaceHostSessionAdapter({
     binding,
@@ -362,10 +370,13 @@ function desktopHarness(
     createPty: () => new FakePty(),
     desktop: backend,
   });
+  // `null` means OMIT the field. Passing `undefined` would silently re-trigger the
+  // default parameter, which is exactly how the missing-id case can look like it
+  // passes while actually testing the happy path.
   const openDesktop = (
     channelId: string,
     role: 'controller' | 'observer' = 'observer',
-    desktopSessionId: string | undefined = 'desktop-1',
+    desktopSessionId: string | null = 'desktop-1',
   ) =>
     adapter.accept({
       type: 'relay.open',
@@ -375,7 +386,7 @@ function desktopHarness(
       audience: 'workspace-operator',
       role,
       kind: 'desktop',
-      desktopSessionId,
+      ...(desktopSessionId === null ? {} : { desktopSessionId }),
     });
   const relay = (channelId: string, payload: unknown) => adapter.accept({ type: 'relay', channelId, payload });
   const payloads = (channelId: string) =>
@@ -443,7 +454,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () =>
     });
 
     const bare = desktopHarness();
-    await bare.openDesktop('channel-3', 'observer', undefined);
+    await bare.openDesktop('channel-3', 'observer', null);
     expect(bare.sent).toContainEqual({
       type: 'relay.close',
       channelId: 'channel-3',
@@ -572,5 +583,178 @@ describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () =>
     await openDesktop('channel-2', 'controller');
     adapter.close('connector_closed');
     expect(sockets.map((socket) => socket.closed)).toEqual([true, true]);
+  });
+});
+
+/**
+ * P-013 tranche 3 — roster + thumbnails over the relay, NOT over SSH.
+ *
+ * The local lane pulls the capture loop's JPEGs over the SSH channel (D-003). A
+ * hosted workspace host is outbound-only and has no such channel, so the same
+ * artifacts must ride the authenticated relay. These pin that they are served,
+ * bounded, and audited.
+ */
+describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P-013)', () => {
+  it('serves the roster on a PTY channel, so a viewer can discover a desktop before opening one', async () => {
+    const root = await projectRoot();
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const audit = vi.fn();
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: root,
+      send: (message) => sent.push(message),
+      onAudit: audit,
+      createPty: () => new FakePty(),
+      desktop: {
+        lookup: async () => null,
+        dial: async () => {
+          throw new Error('not dialled in this test');
+        },
+        heartbeat: () => {},
+        roster: async () => [
+          { desktopSessionId: 'desktop-1', state: 'ready', displayNumber: 99 },
+          { desktopSessionId: 'desktop-2', state: 'frozen' },
+        ],
+        thumbnail: async () => null,
+      },
+    });
+    await adapter.accept({
+      type: 'relay.open',
+      channelId: 'term-1',
+      userId: 'user-1',
+      hostedSessionId: 'session-1',
+      audience: 'workspace-operator',
+      role: 'controller',
+    });
+    await adapter.accept({
+      type: 'relay',
+      channelId: 'term-1',
+      payload: { type: 'desktop.roster', requestId: 'req-1' },
+    });
+
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'term-1',
+      payload: {
+        type: 'desktop.roster.result',
+        requestId: 'req-1',
+        desktops: [
+          { desktopSessionId: 'desktop-1', state: 'ready', displayNumber: 99 },
+          { desktopSessionId: 'desktop-2', state: 'frozen' },
+        ],
+      },
+    });
+    expect(audit.mock.calls.map((call) => (call[0] as { action: string }).action)).toContain('desktop_roster');
+  });
+
+  it('serves a thumbnail as bytes over the relay and audits the screen access', async () => {
+    const { openDesktop, relay, payloads, auditActions } = desktopHarness({ thumbnail: Buffer.from('jpeg-bytes') });
+    await openDesktop('channel-1', 'observer');
+    await relay('channel-1', { type: 'desktop.thumbnail', requestId: 'req-1', desktopSessionId: 'desktop-1' });
+
+    expect(payloads('channel-1')).toContainEqual({
+      type: 'desktop.thumbnail.result',
+      requestId: 'req-1',
+      desktopSessionId: 'desktop-1',
+      data: Buffer.from('jpeg-bytes').toString('base64'),
+      bytes: 10,
+    });
+    // A picture of somebody's screen leaves a record, unlike a stream frame.
+    expect(auditActions()).toContain('desktop_thumbnail');
+  });
+
+  it('reports a desktop with no fresh capture as an empty result, not an error', async () => {
+    const { openDesktop, relay, payloads } = desktopHarness({ thumbnail: null });
+    await openDesktop('channel-1', 'observer');
+    await relay('channel-1', { type: 'desktop.thumbnail', requestId: 'req-1', desktopSessionId: 'desktop-1' });
+
+    // The capture loop skips a display with no active client on purpose, so the
+    // picker must render "no recent frame" rather than a dead one or an error.
+    expect(payloads('channel-1')).toContainEqual({
+      type: 'desktop.thumbnail.result',
+      requestId: 'req-1',
+      desktopSessionId: 'desktop-1',
+      data: null,
+    });
+  });
+
+  it('refuses an oversized thumbnail rather than streaming it', async () => {
+    const { openDesktop, relay, payloads, auditActions } = desktopHarness({
+      thumbnail: Buffer.alloc(600 * 1024, 1),
+    });
+    await openDesktop('channel-1', 'observer');
+    await relay('channel-1', { type: 'desktop.thumbnail', requestId: 'req-1', desktopSessionId: 'desktop-1' });
+
+    expect(payloads('channel-1')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-1',
+      operation: 'desktop.thumbnail',
+      code: 'thumbnail_too_large',
+    });
+    expect(auditActions()).toContain('operation_denied');
+  });
+
+  it('bounds the roster and requires a requestId and a desktopSessionId', async () => {
+    const many = Array.from({ length: 100 }, (_, index) => ({
+      desktopSessionId: `desktop-${index}`,
+      state: 'ready',
+    }));
+    const big = desktopHarness({ roster: many });
+    await big.openDesktop('channel-1', 'observer');
+    await big.relay('channel-1', { type: 'desktop.roster', requestId: 'req-1' });
+    const result = big
+      .payloads('channel-1')
+      .find(
+        (payload): payload is { desktops: unknown[] } =>
+          typeof payload === 'object' &&
+          payload !== null &&
+          (payload as { type?: unknown }).type === 'desktop.roster.result',
+      );
+    expect(result?.desktops).toHaveLength(64);
+
+    const bare = desktopHarness();
+    await bare.openDesktop('channel-2', 'observer');
+    await bare.relay('channel-2', { type: 'desktop.roster' });
+    expect(bare.payloads('channel-2')).toContainEqual({
+      type: 'operation.error',
+      operation: 'desktop.roster',
+      code: 'request_id_required',
+    });
+    await bare.relay('channel-2', { type: 'desktop.thumbnail', requestId: 'req-9' });
+    expect(bare.payloads('channel-2')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-9',
+      operation: 'desktop.thumbnail',
+      code: 'desktop_session_required',
+    });
+  });
+
+  it('turns a backend failure into a typed error instead of a dropped request', async () => {
+    const { openDesktop, relay, payloads } = desktopHarness({ rosterError: new Error('registry unavailable') });
+    await openDesktop('channel-1', 'observer');
+    await relay('channel-1', { type: 'desktop.roster', requestId: 'req-1' });
+
+    expect(payloads('channel-1')).toContainEqual({
+      type: 'operation.error',
+      requestId: 'req-1',
+      operation: 'desktop.roster',
+      code: 'desktop_query_failed',
+    });
+  });
+
+  it('reports desktop_unsupported on a host with no desktop backend', async () => {
+    const root = await projectRoot();
+    const { adapter, sent, open } = harness(root);
+    await open('term-1');
+    await adapter.accept({
+      type: 'relay',
+      channelId: 'term-1',
+      payload: { type: 'desktop.roster', requestId: 'req-1' },
+    });
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'term-1',
+      payload: { type: 'operation.error', requestId: 'req-1', operation: 'desktop.roster', code: 'desktop_unsupported' },
+    });
   });
 });

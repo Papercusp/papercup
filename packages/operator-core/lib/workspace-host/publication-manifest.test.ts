@@ -59,7 +59,7 @@ function artifact(): WorkspaceHostImageArtifact {
       sizeBytes: BUNDLE_BYTES,
     },
     baseImage: {
-      reference: 'ubuntu-2404-minimal',
+      reference: 'projects/papercusp-images-123/global/images/ubuntu-2404-minimal',
       architecture: 'x86_64',
       sha256: 'c'.repeat(64),
     },
@@ -502,7 +502,7 @@ describe('workspace-host publication manifest', () => {
         sizeBytes: BUNDLE_BYTES,
       },
       baseImage: {
-        reference: 'ubuntu-2404-minimal',
+        reference: 'projects/papercusp-images-123/global/images/ubuntu-2404-minimal',
         architecture: 'x86_64',
         sha256: 'c'.repeat(64),
       },

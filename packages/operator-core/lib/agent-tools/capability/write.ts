@@ -52,6 +52,31 @@ export function emptyWriteWouldDestroy(content: string, existingBytes: number | 
   return content === '' && existingBytes !== null && existingBytes > 0;
 }
 
+/**
+ * Does `content` look like capability:read's DISPLAY view rather than file text?
+ *
+ * The default read view is `<abs path> (N lines)` followed by a right-aligned
+ * line number and a TAB before every source line. Writing that back is the
+ * corruption THIS item was actually filed for: the destination grows by the
+ * width of each line-number prefix and stops being valid source, while the
+ * write reports ok:true (measured: a 33,955-byte source produced a 38,626-byte
+ * destination, caught only by a manual byte-compare). `capability:read
+ * { raw: true }` is the correct source for text destined for a write.
+ *
+ * Requires BOTH signals — the header AND several numbered body lines — so a
+ * file that merely opens with a parenthesised line count is not refused.
+ */
+export function looksLikeDisplayFormattedRead(content: string): boolean {
+  const lines = content.split('\n');
+  if (lines.length < 4) return false;
+  if (!/^\S.*\s\(\d+ lines(?:, showing \d+–\d+)?\)$/.test(lines[0])) return false;
+  let numbered = 0;
+  for (let i = 1; i < Math.min(lines.length, 21); i += 1) {
+    if (/^\s{0,6}\d+\t/.test(lines[i])) numbered += 1;
+  }
+  return numbered >= 3;
+}
+
 /** Size of an existing regular file, or null when absent / not a regular file. */
 function existingFileByteLength(abs: string): number | null {
   try {
@@ -85,6 +110,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Permit empty content to replace an existing non-empty file (deliberate truncation). Without it that one case is refused.'),
+    allow_display_formatted_content: z
+      .boolean()
+      .optional()
+      .describe('Permit content that looks like capability:read\'s line-numbered display view (normally a sign the text should have come from raw:true).'),
   }),
   async handler(args, ctx) {
     const globMetacharacter = findWritePathGlobMetacharacter(args.file_path);
@@ -105,6 +134,9 @@ export default defineTool({
       const existingBytes = existingFileByteLength(abs);
       if (!args.allow_empty_overwrite && emptyWriteWouldDestroy(args.content, existingBytes)) {
         return emptyOverwriteRefused(abs, existingBytes ?? 0);
+      }
+      if (!args.allow_display_formatted_content && looksLikeDisplayFormattedRead(args.content)) {
+        return displayFormattedRefused(abs);
       }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, args.content, 'utf8');
@@ -140,6 +172,30 @@ function emptyOverwriteRefused(abs: string, existingBytes: number) {
           'destined for a write — the default line view is display-formatted (path header + line-number ' +
           'prefixes) and writing it back corrupts the file. ' +
           'If you really mean to truncate, pass allow_empty_overwrite: true.',
+      }),
+    }],
+    isError: true,
+  };
+}
+
+/** Refuse writing capability:read's display view back to disk, and name the correct source. */
+function displayFormattedRefused(abs: string) {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ok: false,
+        reason: 'display_formatted_content',
+        path: abs,
+        message:
+          `refusing to write ${abs}: the content looks like capability:read's DISPLAY view — a ` +
+          '`<path> (N lines)` header followed by right-aligned line numbers and a TAB before each ' +
+          'line — rather than file text. Writing it back corrupts the file (it grows by the width ' +
+          'of every line-number prefix) while still reporting ok:true. ' +
+          'Re-read the source with capability:read { raw: true }, which returns the exact ' +
+          'undecorated text, and write that. ' +
+          'If this content is genuinely meant to be a captured read transcript, pass ' +
+          'allow_display_formatted_content: true.',
       }),
     }],
     isError: true,

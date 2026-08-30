@@ -137,6 +137,8 @@ interface Overrides {
   pickEgress?: ClaudeAdapterOptions['pickEgress'];
   canRotate?: ClaudeAdapterOptions['canRotate'];
   classifyResponse?: ClaudeAdapterOptions['classifyResponse'];
+  retryBudgetExhausted?: ClaudeAdapterOptions['retryBudgetExhausted'];
+  policy?: Partial<GatewayKernelPolicy>;
 }
 
 function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides = {}) {
@@ -145,6 +147,7 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
   const routeKeys: string[] = [];
   const forwarded: Buffer[] = [];
   const observedClassifications: (ClaudeResponseClassification | null)[] = [];
+  const observedErrors: string[] = [];
   const accounts = overrides.accounts ?? [acct('A')];
   let egressSeq = 0;
 
@@ -170,6 +173,7 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     rateReset: () => ({ resetAt: null, retryAfterMs: null }),
     canRotate: overrides.canRotate,
     classifyResponse: overrides.classifyResponse,
+    retryBudgetExhausted: overrides.retryBudgetExhausted,
     peekBytes: 4096,
     peekTimeoutMs: 1_000,
   });
@@ -201,7 +205,7 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
       correlationId: 'claude-adapter-test',
       pin: overrides.pin ?? null,
     },
-    policy: POLICY,
+    policy: { ...POLICY, ...overrides.policy },
     telemetry,
     admission: {
       async run(_context, task) {
@@ -210,8 +214,9 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
       // The caller's real side-effect seam (D-012 constraint 1). Recording what it
       // SEES is how we prove the body-derived classification actually reaches the
       // hook that fires gov.penalize / cooldowns / alerts.
-      observeAttempt: ({ response }) => {
+      observeAttempt: ({ response, error }) => {
         observedClassifications.push(response?.metadata?.classification ?? null);
+        if (error) observedErrors.push(error.message);
       },
     },
     adapter: observed,
@@ -232,6 +237,10 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     /** Bytes actually relayed downstream — proves a peeked body is replayed whole. */
     forwardedBody: () => Buffer.concat(forwarded).toString('utf8'),
     observedClassifications,
+    /** Per-attempt failure messages, as `observeAttempt` saw them. The kernel's
+     *  TTFB error NAMES the deadline it armed, which is how the per-attempt cap
+     *  below is observed without reaching into kernel internals. */
+    observedErrors,
   };
 }
 
@@ -511,6 +520,99 @@ describe('claude kernel adapter', () => {
     expect(observedClassifications[0]).toEqual({ kind: 'usage-cap', resetAt: CAP_RESET_AT });
     // A 2xx is never peeked, so the success attempt classifies as nothing at all.
     expect(observedClassifications[1], 'the hot path must stay unpeeked').toBeNull();
+  });
+
+  // ── D-014: the wedge-prevention retry DEADLINE ────────────────────────────
+  // `proxy` stops retrying at `retryDeadlineAt` and sheds, so the slot frees
+  // before the 75s self-heal valve / 120s watchdog reclaims it. An attempt COUNT
+  // is not a substitute for that wall-clock bound, so it is expressed twice: as
+  // a gate on the adapter's selection hooks, and as a per-attempt TTFB cap.
+
+  it('D-014: an exhausted retry budget blocks the sibling-egress re-attempt (gateway.ts:4213)', async () => {
+    const { pool, calls } = makePool([acct('B')]);
+    let n = 0;
+    // IDENTICAL to the passing bare-429 sibling-retry test above in every respect
+    // — same status, same available sibling — except the budget. So the retry
+    // this suppresses is one that demonstrably WOULD have happened.
+    const { options, prepared } = harness(async () => (++n === 1 ? res(429) : res(200)), {
+      accounts: [acct('A')],
+      pool,
+      siblingEgressAvailable: () => true,
+      retryBudgetExhausted: () => true,
+    });
+    await executeGatewayRequestKernel(options);
+    expect(prepared.map((p) => p.accountId), 'the 429 is shed, not retried').toEqual(['A']);
+    expect(n).toBe(1);
+    expect(calls, 'and the deadline must not park an account on the way out').toHaveLength(0);
+  });
+
+  it('D-014: an exhausted retry budget blocks the rotate WITHOUT consulting the pool (gateway.ts:4266)', async () => {
+    const { pool, calls } = makePool([acct('B')]);
+    let n = 0;
+    const { options, prepared } = harness(async () => (++n === 1 ? res(429) : res(200)), {
+      accounts: [acct('A')],
+      pool,
+      siblingEgressAvailable: () => false,
+      retryBudgetExhausted: () => true,
+    });
+    await executeGatewayRequestKernel(options);
+    expect(prepared.map((p) => p.accountId)).toEqual(['A']);
+    // The load-bearing half: `onExhausted` both PARKS and returns, so a budget
+    // check placed AFTER it would park an account for a rotation that never
+    // happens — accounts going mysteriously cold under exactly the storm the
+    // deadline exists for.
+    expect(calls, 'onExhausted must not be reached once the budget is spent').toHaveLength(0);
+  });
+
+  it('D-014: the TTFB cap is applied PER ATTEMPT, so a stall storm cannot multiply the slot-hold budget', async () => {
+    // The regression this pins: `ttfbTimeoutMs` resolves ONCE before the attempt
+    // loop, so without a per-attempt cap every one of maxAttempts gets the FULL
+    // deadline — 6 × 300s where the live handler bounds the whole ladder to 60s.
+    const budgetMs = 200;
+    const deadlineAt = Date.now() + budgetMs;
+    const { pool } = makePool([]);
+    const { options, observedErrors } = harness(
+      // Never resolves; the kernel's own TTFB deadline is what ends each attempt.
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+      {
+        accounts: [acct('A')],
+        pool,
+        // A TTFB timeout is a transport failure, which is sibling-eligible — so
+        // the kernel really does take a second attempt to measure.
+        siblingEgressAvailable: () => true,
+        policy: { ttfbTimeoutMs: 60_000, ttfbCapMs: () => deadlineAt - Date.now(), maxAttempts: 2 },
+      },
+    );
+    await expect(executeGatewayRequestKernel(options)).rejects.toThrow(/TTFB exceeded/);
+
+    // The kernel's error names the deadline it actually armed.
+    const armed = observedErrors.map((m) => Number(/TTFB exceeded (\d+)ms/.exec(m)?.[1]));
+    expect(armed).toHaveLength(2);
+    // Never the raw 60s deadline: the budget is what binds.
+    expect(armed[0]).toBeLessThanOrEqual(budgetMs);
+    // THE ASSERTION: attempt 2 gets only what the budget has LEFT. Under the
+    // once-resolved behaviour both attempts arm the identical value, so this
+    // comparison is what fails against it.
+    expect(armed[1]).toBeLessThan(armed[0]!);
+    // And the floor holds — an at-deadline retry gets a brief attempt, never a
+    // 0ms abort (the `Math.max(1, …)` at gateway.ts:4144).
+    expect(armed[1]).toBeGreaterThanOrEqual(1);
+  });
+
+  it('D-014: a lane that passes NO cap is unaffected — the deadline stays the resolved one', async () => {
+    const { pool } = makePool([]);
+    const { options, observedErrors } = harness(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+      { accounts: [acct('A')], pool, policy: { ttfbTimeoutMs: 40, maxAttempts: 1 } },
+    );
+    await expect(executeGatewayRequestKernel(options)).rejects.toThrow(/TTFB exceeded 40ms/);
+    expect(observedErrors[0]).toContain('TTFB exceeded 40ms');
   });
 
   it('never peeks or classifies a 2xx — the hot path pays nothing for this machinery', async () => {

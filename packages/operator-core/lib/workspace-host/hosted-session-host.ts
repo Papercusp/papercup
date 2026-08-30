@@ -48,6 +48,18 @@ export const HOSTED_HOST_SESSION_IDLE_MS = 15 * 60_000;
  * viewer cannot use the desktop plane to push megabyte envelopes at the sandbox.
  */
 export const HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES = 256 * 1024;
+/**
+ * Cap on ONE thumbnail served over the relay.
+ *
+ * The capture loop writes a single JPEG per display at the desktop's own
+ * geometry (`deployment/desktop-capture.ts`), so this bounds a roster tile, not
+ * a video stream. An image above this is a misconfigured capture, not a big
+ * screen — it is REFUSED rather than chunked, because silently streaming
+ * megabytes per tile per poll is the failure mode this cap exists to prevent.
+ */
+export const HOSTED_HOST_MAX_THUMBNAIL_BYTES = 512 * 1024;
+/** Roster entries served in one reply — a host serving more is misconfigured. */
+export const HOSTED_HOST_MAX_ROSTER_ENTRIES = 64;
 
 const OUTPUT_CHUNK_BYTES = 48 * 1024;
 const MAX_DIRECTORY_ENTRIES = 2_000;
@@ -168,6 +180,15 @@ export interface HostedDesktopDialInput {
  * sessions are stored, and the composition root is where a registry read becomes
  * one of these. That keeps the workspace host free of control-plane schema.
  */
+/** One desktop this host can serve, as the picker renders it. */
+export interface HostedDesktopRosterEntry {
+  desktopSessionId: string;
+  state: string;
+  displayNumber?: number;
+  geometry?: string;
+  lastActiveAt?: string;
+}
+
 export interface HostedDesktopBackend {
   /** Resolve a desktop session id; null when unknown, ended, or not this host's. */
   lookup(desktopSessionId: string): Promise<HostedDesktopSessionRecord | null>;
@@ -175,6 +196,26 @@ export interface HostedDesktopBackend {
   dial(input: HostedDesktopDialInput): Promise<HostedDesktopSocket>;
   /** Touch `last_active_at` on the registry row while a viewer is attached (D-008 rule 4). */
   heartbeat(desktopSessionId: string): void;
+  /**
+   * The desktops this host serves. Empty is a valid answer (no desktop pack, or
+   * none running) and must not be confused with a failure.
+   *
+   * NOT filtered by caller: the connector binding already scopes this adapter to
+   * ONE organization + customer workspace, and that binding IS the authorization
+   * boundary. A per-user filter here would imply a second, weaker one.
+   */
+  roster(): Promise<HostedDesktopRosterEntry[]>;
+  /**
+   * The latest capture JPEG for one desktop, or null when none is fresh.
+   *
+   * Reads the SAME artifact the frame capture loop already writes
+   * (`deployment/desktop-capture.ts` → `/run/papercusp/desktop/display-<n>.jpg`).
+   * The hosted lane differs from the local one only in TRANSPORT: D-003 has the
+   * operator pull those files over SSH, and a hosted workspace host has no SSH
+   * channel — it is outbound-only — so the same bytes ride the relay instead.
+   * That is what P-013's "no JPEG-over-SSH" clause asks for.
+   */
+  thumbnail(desktopSessionId: string): Promise<Buffer | null>;
 }
 
 export interface HostedWorkspaceHostOptions {
@@ -736,6 +777,17 @@ export class HostedWorkspaceHostSessionAdapter {
     const type = string(payload.type, 64);
     if (!type) return;
 
+    // HOST-level operations, answered on ANY authenticated channel.
+    //
+    // Deliberately not a third channel kind: a roster is how a viewer DISCOVERS
+    // which desktop to open, so requiring a desktop channel to ask for it is
+    // circular. The channel's only role here is to prove the caller is the
+    // already-authenticated principal — which `open()` established.
+    if (type === 'desktop.roster' || type === 'desktop.thumbnail') {
+      await this.relayHostDesktop(channelId, type, payload, this.channelIdentity(channelId, channel));
+      return;
+    }
+
     if (channel.kind === 'desktop') {
       this.relayDesktop(channelId, type, payload);
       return;
@@ -827,6 +879,90 @@ export class HostedWorkspaceHostSessionAdapter {
         code,
       });
       this.audit('operation_denied', session, channelId, code);
+    }
+  }
+
+  /**
+   * The identity a channel proves, whichever plane it belongs to.
+   *
+   * Keyed by `channelId` for BOTH maps — `desktopChannels` is indexed by channel,
+   * not by desktop, because two channels can watch one desktop.
+   */
+  private channelIdentity(channelId: string, channel: Channel): { userId: string; hostedSessionId: string } {
+    if (channel.kind === 'desktop') {
+      const desktop = this.desktopChannels.get(channelId);
+      if (desktop) return { userId: desktop.userId, hostedSessionId: desktop.hostedSessionId };
+    } else {
+      const session = this.sessions.get(channel.sessionKey);
+      if (session) return { userId: session.userId, hostedSessionId: session.hostedSessionId };
+    }
+    return { userId: 'unknown', hostedSessionId: 'unknown' };
+  }
+
+  /**
+   * Serve the desktop roster and thumbnail tiles over the relay.
+   *
+   * Both are AUDITED, unlike streamed frames. The distinction is rate and
+   * discreteness: a frame is one tick of a stream the viewer already opened and
+   * was audited for, whereas each of these is a discrete request — and a
+   * thumbnail is a picture of somebody's screen, which is exactly the kind of
+   * access that should leave a record.
+   */
+  private async relayHostDesktop(
+    channelId: string,
+    type: 'desktop.roster' | 'desktop.thumbnail',
+    payload: Record<string, unknown>,
+    identity: { userId: string; hostedSessionId: string },
+  ): Promise<void> {
+    const backend = this.options.desktop;
+    const requestId = string(payload.requestId, 256);
+    if (!requestId) {
+      this.send(channelId, { type: 'operation.error', operation: type, code: 'request_id_required' });
+      return;
+    }
+    if (!backend) {
+      this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'desktop_unsupported' });
+      return;
+    }
+
+    try {
+      if (type === 'desktop.roster') {
+        const desktops = (await backend.roster()).slice(0, HOSTED_HOST_MAX_ROSTER_ENTRIES);
+        this.send(channelId, { type: 'desktop.roster.result', requestId, desktops });
+        this.audit('desktop_roster', identity, channelId, `count=${desktops.length}`);
+        return;
+      }
+      const desktopSessionId = string(payload.desktopSessionId);
+      if (!desktopSessionId) {
+        this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'desktop_session_required' });
+        return;
+      }
+      const image = await backend.thumbnail(desktopSessionId);
+      // A desktop with no fresh capture is a NORMAL answer, not an error: the
+      // capture loop skips a display with no active client on purpose, so the
+      // picker must be able to render "no recent frame" rather than a dead one.
+      if (!image) {
+        this.send(channelId, { type: 'desktop.thumbnail.result', requestId, desktopSessionId, data: null });
+        this.audit('desktop_thumbnail', identity, channelId, `desktop=${desktopSessionId} empty`);
+        return;
+      }
+      if (image.byteLength > HOSTED_HOST_MAX_THUMBNAIL_BYTES) {
+        this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'thumbnail_too_large' });
+        this.audit('operation_denied', identity, channelId, 'thumbnail_too_large');
+        return;
+      }
+      this.send(channelId, {
+        type: 'desktop.thumbnail.result',
+        requestId,
+        desktopSessionId,
+        data: image.toString('base64'),
+        bytes: image.byteLength,
+      });
+      this.audit('desktop_thumbnail', identity, channelId, `desktop=${desktopSessionId} bytes=${image.byteLength}`);
+    } catch (error) {
+      const code = error instanceof SafeRootFileError ? error.code : 'desktop_query_failed';
+      this.send(channelId, { type: 'operation.error', requestId, operation: type, code });
+      this.audit('operation_denied', identity, channelId, code);
     }
   }
 

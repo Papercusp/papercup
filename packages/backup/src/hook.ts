@@ -79,6 +79,12 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.agent_usage_samples',
   'harness_shared.telemetry_reports_archive',
   'harness_shared.audit_log',
+  // Gateway request bodies are a durable-admission spool, not workspace
+  // state. Receipts retain these rows only until execution settles, and the
+  // live table can still grow by tens of GiB between hourly sweeps. Keeping
+  // the schema but omitting its bytea data prevents a transient request-body
+  // backlog from making the per-workspace restore dump exceed its watchdog.
+  'harness_shared.gateway_payload_blobs',
   // Session-transcript archive blobs (~3 GB TOAST) + their parent metadata rows
   // (excluded together so a restore sees a clean absence, not dangling refs).
   // This pair dominated the dump — one 279s-mean COPY per snapshot, ~65% of the

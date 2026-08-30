@@ -30,10 +30,12 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/coordination/tools/send-arg-shape.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
+import { SECTION_ONLY_FIELDS } from '../message-fields';
 
 describe('EI-20223353810864057 — primary coord:send guidance names required summary', () => {
   it('describes summary as the required inbox headline on both guidance surfaces', () => {
@@ -78,6 +80,74 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
       expect(text).toMatch(/note\?/);
     }
     expect(whyDescription).toMatch(/not prose/i);
+  });
+});
+
+describe('EI-21335862819188804 — section-only fields name their body home', () => {
+  it('full dispatch turns a misplaced couldNotDetermine into an actionable correction', async () => {
+    const projected = lookupByMcpName('coord:send');
+    expect(projected).toBeTruthy();
+
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'coord:send',
+      {
+        to: ['peer'],
+        summary: 'status',
+        expects: 'none',
+        couldNotDetermine: [{ what: 'whether the next candidate carries the fix' }],
+      },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'papercusp-workspace',
+        runId: 'coord-send-section-only-redirect-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+      },
+      {},
+    );
+
+    expect(dispatched.ok).toBe(false);
+    expect(dispatched.error?.code).toBe('invalid_input');
+    expect(dispatched.error?.message).toContain('Unrecognized key: "couldNotDetermine"');
+    expect(dispatched.error?.message).toContain('body[].couldNotDetermine');
+    expect(dispatched.error?.meta?.invalidInput).toEqual(
+      expect.objectContaining({
+        corrections: [
+          expect.objectContaining({
+            rejectedArg: 'couldNotDetermine',
+            kind: 'authored-redirect',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('redirects every section-only field to body[] instead of leaving a bare key list', () => {
+    const redirects = sendTool.guidance?.argRedirects ?? {};
+
+    for (const field of SECTION_ONLY_FIELDS) {
+      expect(redirects[field], `argRedirects.${field}`).toMatch(
+        new RegExp(`body\\[\\]\\.${field}`),
+      );
+      expect(redirects[field]).toMatch(/inside a section: body: \[\{ text:/);
+    }
+  });
+
+  it('keeps section-only fields undeclared on the envelope', () => {
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: Record<string, unknown>;
+    };
+
+    for (const field of SECTION_ONLY_FIELDS) {
+      expect(schema.properties, `envelope must not declare \`${field}\``).not.toHaveProperty(field);
+    }
   });
 });
 

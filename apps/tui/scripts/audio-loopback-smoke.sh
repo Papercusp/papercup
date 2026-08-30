@@ -16,7 +16,8 @@
 #
 #   apps/tui/scripts/audio-loopback-smoke.sh
 #
-# Exits 0 on pass, non-zero on failure; always unloads the null-sink.
+# Exits 0 on pass or an unavailable local audio stack (environmental skip),
+# non-zero on a smoke failure; always unloads the null-sink.
 set -uo pipefail
 
 SINK="pui_voice_test_$$"
@@ -30,19 +31,22 @@ cleanup() {
 trap cleanup EXIT
 
 command -v pactl >/dev/null 2>&1 || { echo "[audio-smoke] SKIP: pactl not found (needs PipeWire/PulseAudio)"; exit 0; }
+pactl info >/dev/null 2>&1 || { echo "[audio-smoke] SKIP: no reachable PipeWire/PulseAudio server"; exit 0; }
 
 echo "[audio-smoke] loading isolated null-sink '$SINK' (real Brio/HDMI defaults untouched)…"
 MODID=$(pactl load-module module-null-sink "sink_name=$SINK" "sink_properties=device.description=$SINK") || {
-  echo "[audio-smoke] FAIL: could not load module-null-sink"; exit 1;
+  echo "[audio-smoke] SKIP: could not load module-null-sink"; exit 0;
 }
 echo "[audio-smoke] module $MODID → sink=$SINK  monitor=$SINK.monitor"
 
 cd "$(dirname "$0")/.."  # apps/tui
+export PUI_LIVE_AUDIO=1
 
 # Route the test process at the null-sink: cpal's ALSA host exposes a `pulse`
 # device (in + out) that honors PULSE_SINK/PULSE_SOURCE per-process. Playback →
 # the null-sink; capture ← its monitor → a real loopback with zero audible sound.
-PULSE_SINK="$SINK" PULSE_SOURCE="$SINK.monitor" PUI_VOICE_INPUT=pulse PUI_VOICE_OUTPUT=pulse \
+PULSE_SINK="$SINK" PULSE_SOURCE="$SINK.monitor" \
+PUI_VOICE_INPUT=pulse PUI_VOICE_OUTPUT=pulse \
   cargo test --bin pui -- --ignored --test-threads=1 \
     smoke_record_yields_16k_wav smoke_play_tone smoke_loopback_tone_roundtrip \
   2>&1 | grep -vE "jack|JackShm|ALSA lib|Cannot (connect|open)|snd_pcm_jack"

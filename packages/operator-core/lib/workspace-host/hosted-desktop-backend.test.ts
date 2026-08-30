@@ -1,0 +1,342 @@
+import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, writeFile, utimes } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  basicAuthHeader,
+  createHostedDesktopBackend,
+  desktopRecordForLease,
+  dialDesktopSocket,
+  displayNumber,
+  HOSTED_THUMBNAIL_MAX_AGE_MS,
+  KASMVNC_WEBSOCKET_PATH,
+  rosterEntryForSession,
+  type HostedDesktopWireSocket,
+} from './hosted-desktop-backend';
+import type { SandboxDesktop } from '../agent-tools/computer/desktop-provisioner';
+import type { DesktopSessionRecord } from '../desktop/desktop-session-registry';
+
+class FakeWire implements HostedDesktopWireSocket {
+  readonly OPEN = 1;
+  readyState = 0;
+  readonly sent: Buffer[] = [];
+  closedWith: { code?: number; reason?: string } | null = null;
+  private readonly listeners: Record<string, Array<(...args: never[]) => void>> = {};
+
+  constructor(readonly url: string, readonly headers: Record<string, string>) {}
+
+  send(data: Buffer): void {
+    this.sent.push(data);
+  }
+  close(code?: number, reason?: string): void {
+    this.closedWith = { ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) };
+  }
+  on(event: string, listener: (...args: never[]) => void): unknown {
+    (this.listeners[event] ??= []).push(listener);
+    return this;
+  }
+  private emit(event: string, ...args: unknown[]): void {
+    for (const fn of this.listeners[event] ?? []) (fn as (...a: unknown[]) => void)(...args);
+  }
+  emitOpen(): void {
+    this.readyState = this.OPEN;
+    this.emit('open');
+  }
+  emitMessage(data: unknown, isBinary = true): void {
+    this.emit('message', data, isBinary);
+  }
+  emitClose(code = 1006): void {
+    this.readyState = 3;
+    this.emit('close', code, '');
+  }
+  emitError(error: unknown): void {
+    this.emit('error', error);
+  }
+}
+
+function lease(overrides: Partial<SandboxDesktop> = {}): SandboxDesktop {
+  return {
+    display: ':110',
+    width: 1024,
+    height: 768,
+    xServer: 'kasmvnc',
+    endpoint: { host: '127.0.0.1', port: 6910 },
+    credentials: {
+      passwordFile: '/run/papercusp/desktop/kasmvnc-110.passwd',
+      view: { user: 'papercusp-view', secret: 'view-secret' },
+      control: { user: 'papercusp-control', secret: 'control-secret' },
+      destroy: () => {},
+    },
+    release: async () => {},
+    ...overrides,
+  } as unknown as SandboxDesktop;
+}
+
+function session(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
+  return {
+    id: 'ds_1',
+    display: ':110',
+    state: 'ready',
+    displayGeometry: { width: 1024, height: 768, depth: 24 },
+    lastActiveAt: new Date('2026-08-30T05:00:00.000Z'),
+    ...overrides,
+  } as unknown as DesktopSessionRecord;
+}
+
+describe('displayNumber', () => {
+  it('parses an X display string and refuses anything else', () => {
+    expect(displayNumber(':110')).toBe(110);
+    expect(displayNumber(':0')).toBe(0);
+    // A traversal-shaped or malformed value must never reach a capture path.
+    expect(displayNumber('110')).toBeNull();
+    expect(displayNumber(':../../etc/passwd')).toBeNull();
+    expect(displayNumber(':1x')).toBeNull();
+    expect(displayNumber(null)).toBeNull();
+  });
+});
+
+describe('basicAuthHeader', () => {
+  it('encodes the grant as HTTP Basic — the one line the privilege boundary rides on', () => {
+    expect(basicAuthHeader('papercusp-view', 'sekrit')).toBe(
+      `Basic ${Buffer.from('papercusp-view:sekrit').toString('base64')}`,
+    );
+  });
+});
+
+describe('desktopRecordForLease', () => {
+  it('passes the endpoint through when this process holds both endpoint and secrets', () => {
+    expect(desktopRecordForLease(lease())).toEqual({
+      endpoint: { host: '127.0.0.1', port: 6910 },
+      credentials: {
+        view: { user: 'papercusp-view', secret: 'view-secret' },
+        control: { user: 'papercusp-control', secret: 'control-secret' },
+      },
+    });
+  });
+
+  it('refuses an endpoint whose secrets this process does NOT hold', () => {
+    // Reachable, not hypothetical: desktop-provisioner sets credentials = null when
+    // the caller supplied its own kasmvncPasswordFile. Passing the endpoint through
+    // with an empty secret would attempt an UNAUTHENTICATED dial — the one outcome
+    // D-020's per-session credential exists to make impossible.
+    const record = desktopRecordForLease(lease({ credentials: undefined }));
+    expect(record.endpoint).toBeNull();
+    expect(record.credentials.control.secret).toBe('');
+  });
+
+  it('reports an xvfb desktop as having no endpoint', () => {
+    const record = desktopRecordForLease(lease({ endpoint: undefined, credentials: undefined }));
+    expect(record.endpoint).toBeNull();
+  });
+});
+
+describe('rosterEntryForSession', () => {
+  it('projects a registry row onto what the picker renders', () => {
+    expect(rosterEntryForSession(session())).toEqual({
+      desktopSessionId: 'ds_1',
+      state: 'ready',
+      displayNumber: 110,
+      geometry: '1024x768',
+      lastActiveAt: '2026-08-30T05:00:00.000Z',
+    });
+  });
+
+  it('omits a display number it cannot parse rather than emitting a wrong one', () => {
+    expect(rosterEntryForSession(session({ display: 'guest' }))).not.toHaveProperty('displayNumber');
+  });
+});
+
+describe('dialDesktopSocket', () => {
+  const dialInput = {
+    desktopSessionId: 'ds_1',
+    endpoint: { host: '127.0.0.1', port: 6910 },
+    grant: {
+      action: 'watch' as const,
+      user: 'papercusp-view',
+      secret: 'view-secret',
+      inputAllowed: false,
+      auditAction: 'desktop_watch_started' as const,
+    },
+  };
+
+  it('dials the loopback websockify path with the grant as BasicAuth', async () => {
+    let wire: FakeWire | undefined;
+    const dial = dialDesktopSocket(dialInput, {
+      createSocket: (url, headers) => {
+        wire = new FakeWire(url, headers);
+        queueMicrotask(() => wire!.emitOpen());
+        return wire;
+      },
+    });
+    await dial;
+    expect(wire!.url).toBe(`ws://127.0.0.1:6910${KASMVNC_WEBSOCKET_PATH}`);
+    expect(wire!.headers.Authorization).toBe(basicAuthHeader('papercusp-view', 'view-secret'));
+  });
+
+  it('does NOT resolve until the socket is open', async () => {
+    // The adapter treats the returned value as live immediately, so resolving a
+    // still-connecting socket would drop the viewer's first writes and report a
+    // dial success for an endpoint that may still refuse the credential.
+    const wire = new FakeWire('ws://x', {});
+    let resolved = false;
+    void dialDesktopSocket(dialInput, { createSocket: () => wire }).then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    wire.emitOpen();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolved).toBe(true);
+  });
+
+  it('rejects when the upgrade closes before opening — how a refused BasicAuth surfaces', async () => {
+    const wire = new FakeWire('ws://x', {});
+    const dial = dialDesktopSocket(dialInput, {
+      createSocket: () => {
+        queueMicrotask(() => wire.emitClose(1006));
+        return wire;
+      },
+    });
+    await expect(dial).rejects.toMatchObject({ code: 'desktop_dial_failed' });
+  });
+
+  it('rejects on a socket error', async () => {
+    const wire = new FakeWire('ws://x', {});
+    const dial = dialDesktopSocket(dialInput, {
+      createSocket: () => {
+        queueMicrotask(() => wire.emitError(new Error('ECONNREFUSED')));
+        return wire;
+      },
+    });
+    await expect(dial).rejects.toMatchObject({ code: 'desktop_dial_failed' });
+  });
+
+  it('pumps sandbox→viewer bytes and viewer→sandbox writes', async () => {
+    const wire = new FakeWire('ws://x', {});
+    const socket = await dialDesktopSocket(dialInput, {
+      createSocket: () => {
+        queueMicrotask(() => wire.emitOpen());
+        return wire;
+      },
+    });
+    const seen: Buffer[] = [];
+    socket.onData((data) => seen.push(data));
+    wire.emitMessage(Buffer.from([1, 2, 3]));
+    // An empty frame is not data — forwarding it would make the viewer repaint for nothing.
+    wire.emitMessage(Buffer.from([]));
+    expect(seen).toEqual([Buffer.from([1, 2, 3])]);
+    expect(socket.send(Buffer.from([9]))).toBe(true);
+    expect(wire.sent).toEqual([Buffer.from([9])]);
+  });
+
+  it('reports send failure once the pipe is gone, so the adapter can close the channel', async () => {
+    const wire = new FakeWire('ws://x', {});
+    const socket = await dialDesktopSocket(dialInput, {
+      createSocket: () => {
+        queueMicrotask(() => wire.emitOpen());
+        return wire;
+      },
+    });
+    const reasons: string[] = [];
+    socket.onClose((reason) => reasons.push(reason));
+    wire.emitClose(1006);
+    expect(reasons).toEqual(['desktop_socket_closed_1006']);
+    expect(socket.send(Buffer.from([1]))).toBe(false);
+    // The close is fired exactly once even if the peer closes again.
+    wire.emitClose(1006);
+    expect(reasons).toHaveLength(1);
+  });
+
+  it('brackets an IPv6 loopback literal so the url parses', async () => {
+    let url = '';
+    await dialDesktopSocket(
+      { ...dialInput, endpoint: { host: '::1', port: 6910 } },
+      {
+        createSocket: (value) => {
+          url = value;
+          const wire = new FakeWire(value, {});
+          queueMicrotask(() => wire.emitOpen());
+          return wire;
+        },
+      },
+    );
+    expect(url).toBe(`ws://[::1]:6910${KASMVNC_WEBSOCKET_PATH}`);
+  });
+});
+
+describe('createHostedDesktopBackend', () => {
+  function backend(overrides: Partial<Parameters<typeof createHostedDesktopBackend>[0]> = {}) {
+    return createHostedDesktopBackend({
+      leasedDesktop: (id) => (id === 'ds_1' ? lease() : undefined),
+      listSessions: async () => [session()],
+      touchSession: async () => {},
+      ...overrides,
+    });
+  }
+
+  it('resolves a live lease and refuses an unknown id', async () => {
+    expect(await backend().lookup('ds_1')).toMatchObject({ endpoint: { port: 6910 } });
+    expect(await backend().lookup('ds_missing')).toBeNull();
+  });
+
+  it('lists the registry, not the leases — a roster must show desktops this process did not provision', async () => {
+    const entries = await backend({
+      leasedDesktop: () => undefined,
+      listSessions: async () => [session(), session({ id: 'ds_2', display: ':111' })],
+    }).roster();
+    expect(entries.map((e) => e.desktopSessionId)).toEqual(['ds_1', 'ds_2']);
+  });
+
+  it('an empty roster is a valid answer, not a failure', async () => {
+    expect(await backend({ listSessions: async () => [] }).roster()).toEqual([]);
+  });
+
+  it('heartbeats without awaiting, and survives a failing touch', async () => {
+    const warnings: string[] = [];
+    const touchSession = vi.fn(async () => {
+      throw new Error('pg down');
+    });
+    backend({ touchSession, onWarning: (m) => warnings.push(m) }).heartbeat('ds_1');
+    expect(touchSession).toHaveBeenCalledWith('ds_1');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('serves a fresh capture jpeg and returns null for a stale one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    await writeFile(join(dir, 'display-110.jpg'), Buffer.from([0xff, 0xd8, 0xff]));
+    const fresh = await backend({ captureDir: dir }).thumbnail('ds_1');
+    expect(fresh).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
+
+    // A stale-but-present file means the capture LOOP stopped — the loop deletes
+    // the jpeg for an inactive display on purpose, so serving this as live is the
+    // exact "dead screen shown as live" failure that delete-on-skip prevents.
+    const old = new Date(Date.now() - HOSTED_THUMBNAIL_MAX_AGE_MS - 60_000);
+    await utimes(join(dir, 'display-110.jpg'), old, old);
+    expect(await backend({ captureDir: dir }).thumbnail('ds_1')).toBeNull();
+  });
+
+  it('returns null — never an error — when no capture exists', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    expect(await backend({ captureDir: dir }).thumbnail('ds_1')).toBeNull();
+  });
+
+  it('falls back to the registry display for a desktop this process did not lease', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    await writeFile(join(dir, 'display-111.jpg'), Buffer.from([1]));
+    const image = await backend({
+      captureDir: dir,
+      leasedDesktop: () => undefined,
+      listSessions: async () => [session({ id: 'ds_2', display: ':111' })],
+    }).thumbnail('ds_2');
+    expect(image).toEqual(Buffer.from([1]));
+  });
+
+  it('returns null for a desktop whose display it cannot resolve', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hosted-thumb-'));
+    expect(
+      await backend({ captureDir: dir, leasedDesktop: () => undefined, listSessions: async () => [] }).thumbnail('ds_9'),
+    ).toBeNull();
+  });
+});

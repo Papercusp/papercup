@@ -37,6 +37,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
+import { recordDesktopAudit } from '../desktop/desktop-audit';
 import { buildSshStreamArgs } from './remote-exec';
 import { sshTargetForFrame } from './frame-installer';
 import { loadDeployedFrame } from './deployed-frame';
@@ -138,31 +139,20 @@ export function _resetFrameVncForTests(): void {
 
 const now = () => (depsOverride.now ?? Date.now)();
 
-/** Default audit sink: the workspace audit_log (same table audit:list reads). */
+/**
+ * Default audit sink: the workspace audit_log (same table audit:list reads).
+ *
+ * Delegates to `desktop/desktop-audit.ts` so this lane and the hosted one write
+ * through ONE function. The namespace comment at the mint site below explains why
+ * a second namespace would silently answer for half the population; sharing the
+ * writer is what makes that true by construction rather than by convention.
+ */
 function defaultAudit(ev: { action: string; actor: string; subject: string; details: Record<string, unknown> }): void {
-  void (async () => {
-    try {
-      const { activeWorkspaceId } = await import('../workspace-registry');
-      const { withWorkspace, generated } = await import('@papercusp/db-org');
-      const { drizzle } = await import('drizzle-orm/postgres-js');
-      const al = generated.auditLogInHarnessShared;
-      const workspaceId = activeWorkspaceId();
-      await withWorkspace(workspaceId, async (tx) => {
-        const txDb = drizzle(tx as never);
-        await txDb.insert(al).values({
-          id: `vnc-${now().toString(36)}-${randomBytes(4).toString('hex')}`,
-          ts: now(),
-          actor: ev.actor,
-          action: ev.action,
-          subject: ev.subject,
-          details: ev.details as never,
-          workspaceId,
-        });
-      });
-    } catch (err) {
-      console.warn('[frame-vnc] audit write failed:', err);
-    }
-  })();
+  recordDesktopAudit(ev, {
+    idPrefix: 'vnc',
+    now,
+    onError: (err) => console.warn('[frame-vnc] audit write failed:', err),
+  });
 }
 
 const audit = (ev: { action: string; actor: string; subject: string; details: Record<string, unknown> }) =>
