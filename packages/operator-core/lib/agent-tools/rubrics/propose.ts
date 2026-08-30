@@ -37,7 +37,9 @@ const criterion = z.object({
   driftMarkers: z
     .string()
     .optional()
-    .describe('what degraded / broken looks like. REQUIRED for standard kind; optional on acceptance-kind criteria'),
+    .describe(
+      'what degraded / broken looks like — the concrete falsifier. REQUIRED for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
+    ),
   replication: z
     .string()
     .min(1)
@@ -176,6 +178,8 @@ export default defineTool({
     when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
     chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → an independent reviewer calls rubrics:ratify. The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only, bind-placeholder noise split out) — fill/fix the gaps first.',
+    returns:
+      "{ ok, rubric, completeness, replicationSqlCheck, statusOverride }. statusOverride is non-null ONLY for kind:'acceptance' when the requested activation was silently discarded because that rubricRef is already retired against its shipped plan — content still lands (ok:true, statusOverride.contentApplied:true) but the rubric stays retired; your submitted criteria/description/title DID overwrite the retired document (recoverable via plans:revision-diff, not rubrics:get) — propose a NEW rubricRef naming the same subjectPlan/subjectGoal instead of re-proposing this one if you did not intend that overwrite.",
     seeAlso: [
       'rubrics:search (dedup before proposing)',
       'rubrics:get (fetch before revising — propose REPLACES the stored doc)',
@@ -217,6 +221,38 @@ export default defineTool({
     // EI-10514: schema-validate embedded replication-drill SQL against live PG
     // (non-blocking — see rubrics-replication-sql.ts for why this warns, never rejects).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+    // EI-21909559308315843 / EI-21909563388028590: an acceptance rubric always activates
+    // on propose — the ONE case it doesn't is the deliberate EI-21296891484659125 guard
+    // (rubrics.ts) refusing to resurrect an already-retired acceptance rubric via
+    // whole-document upsert. That guard is correct; what it lacked was any signal to the
+    // caller that their requested activation was silently discarded (the content upsert
+    // still lands and returns ok:true). Surface it as a discriminated, non-blocking
+    // advisory — never a refusal, so a deliberate content-only edit of a retired rubric
+    // still succeeds.
+    //
+    // `contentApplied` is deliberately always `true` on this branch, not a diff-derived
+    // value: proposeRubric() (rubrics.ts) writes `newBody`/`templateData` unconditionally
+    // inside its withPlanLock transaction — the retired-status guard only freezes the
+    // STATUS field, never the content write, and any earlier refusal (loss-guard,
+    // citation-path check, dangling link) throws before this handler ever reaches
+    // `rubric.status === 'retired'`. So reaching this branch at all already proves the
+    // content write landed; EI-21909563388028590 confirmed this live (a scratch acceptance
+    // rubric's title changed on re-propose while its status stayed 'retired'). Without this
+    // flag a caller reading only `reason`/`remedy` can reasonably conclude nothing happened
+    // beyond the refused reactivation, when in fact their submitted criteria/description/
+    // title just overwrote the terminal historical record (recoverable only via
+    // plans:revision-diff on the rubricRef, never via rubrics:get).
+    const statusOverride =
+      args.kind === 'acceptance' && rubric.status === 'retired'
+        ? {
+            requested: 'active' as const,
+            applied: 'retired' as const,
+            contentApplied: true as const,
+            reason: 'stored-acceptance-retired',
+            remedy:
+              'this acceptance rubric is retired and cannot be reactivated by re-proposing the same rubricRef — your submitted content WAS written over the retired document anyway (contentApplied:true; recoverable via plans:revision-diff, not rubrics:get) — propose a NEW rubricRef naming the same subjectPlan/subjectGoal instead if you did not intend to overwrite it',
+          }
+        : null;
     // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
     void trackDetached(import('../../sync-sse'))
       .then((m) => {
@@ -226,7 +262,10 @@ export default defineTool({
       .catch(() => {});
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck, statusOverride }),
+        },
       ],
     };
   },
