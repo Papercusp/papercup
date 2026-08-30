@@ -107,7 +107,7 @@ export interface GoalHolderRow {
   setAtMs: number;
   /** Who set it (agent_modes.set_by), when the column is read. */
   setBy?: string | null;
-  /** GOAL effective-holder election epoch (migration 1031). */
+  /** GOAL effective-holder election epoch (migration 1032). */
   goalLeaseEpoch?: number | null;
   /** The one predecessor explicitly allowed to overlap this successor. */
   goalHandoffFromOwnerId?: string | null;

@@ -594,6 +594,12 @@ describe("rendering", () => {
   it("renders an applied row as done — status mark, no checkbox", () => {
     renderShell();
     expect(screen.getByTestId("review-row-mark-o1").textContent).toBe("✓");
+    expect(screen.getByTestId("review-row-status-o1").textContent).toBe(
+      "Applied",
+    );
+    expect(screen.getByTestId("review-row-status-o1").className).toContain(
+      "pc-sr-only",
+    );
     expect(screen.queryByTestId("review-row-check-o1")).toBeNull();
   });
 
@@ -620,6 +626,9 @@ describe("rendering", () => {
     expect(screen.getByTestId("review-row-m1")).toBeTruthy();
     expect(screen.queryByTestId("review-row-check-m1")).toBeNull();
     expect(screen.getByTestId("review-row-mark-m1").textContent).toBe("↗");
+    expect(screen.getByTestId("review-row-status-m1").textContent).toBe(
+      "Manual review required",
+    );
     expect(applyBtn().disabled).toBe(true);
     expect(
       screen.getByText("Writes use the same hand-edit verbs."),

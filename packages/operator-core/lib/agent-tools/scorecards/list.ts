@@ -21,13 +21,15 @@ export default defineTool({
   name: 'scorecards:list',
   profile: 'engineer',
   description:
-    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + subjectRef + since; newest-first. `subjectRef` is the scalar observation.subject.ref filter (for example a WI-/EI- id), unlike scorecards:emit\'s structured subject:{kind,ref}. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.',
+    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + subjectRef + since; newest-first. `subjectRef` is the scalar observation.subject.ref filter (for example a WI-/EI- id), unlike scorecards:emit\'s structured subject:{kind,ref}. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused).',
   guidance: {
     when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did the Kettle emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit\'s structured `subject:{kind,ref}` object.',
     notWhen:
       'You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — scorecards:emit.',
     chaining:
-      'scorecards:list { rubricRef: "pot-coordination-health", subjectRef: "EI-123", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions. `subjectRef` is a string filter; `scorecards:emit` is the separate tool that accepts `subject:{kind,ref}`.',
+      'scorecards:list { rubricRef: "pot-coordination-health", subjectRef: "EI-123", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions.',
+    returns:
+      'Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.',
     seeAlso: [
       'scorecards:freshness (staleness / partial-emit summary)',
       'scorecards:evaluate (typed grading skeleton + evidence delta)',

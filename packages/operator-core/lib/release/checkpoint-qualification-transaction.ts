@@ -7,6 +7,7 @@
  * authorities. This record makes the logical attempt, retry policy, current
  * physical runner, blockers, and evidence machine-readable across processes.
  */
+import { execFileSync } from 'node:child_process';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
@@ -23,6 +24,59 @@ export const CHECKPOINT_QUALIFICATION_METADATA_KEY = 'qualificationTransaction';
 export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
 /** Transported into a detached checkpoint so its verdict settles the exact logical attempt. */
 export const CHECKPOINT_QUALIFICATION_ATTEMPT_ENV = 'PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID';
+
+/**
+ * What a caller has PROVED about a runner's process. 'unknown' is not a soft 'dead': every
+ * reclaim path below treats it exactly as the pre-liveness code did, so a probe that breaks
+ * degrades to the old lease-only behaviour instead of handing one candidate to two runners.
+ */
+export type RunnerLiveness = 'live' | 'dead' | 'unknown';
+export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => RunnerLiveness;
+
+/**
+ * How long an attempt with NO physical runner may sit untouched before it is treated as abandoned.
+ *
+ * Deliberately derived, not tuned: a runner cannot outlive the detached suite's own systemd
+ * ceiling (`CHECKPOINT_MAX_RUNTIME_SEC`, 3h — duplicated here rather than imported to keep this
+ * coordination record free of a dependency on the launcher). So a record untouched for longer than
+ * that ceiling cannot still have a living owner, whatever it claims.
+ */
+export const QUALIFICATION_OWNER_ABANDONED_MS = 3 * 60 * 60 * 1_000;
+
+const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
+  const unit = runner.unit?.trim();
+  // Rows written before `unit` existed cannot be falsified — say so rather than guessing.
+  if (!unit) return 'unknown';
+  const read = (value: unknown): RunnerLiveness | null => {
+    const state = String(value ?? '').trim();
+    if (state === 'active' || state === 'activating') return 'live';
+    // `is-active` prints `inactive` for a unit systemd has never heard of, which is precisely the
+    // case we care about: a transient unit that has already been collected.
+    if (state === 'inactive' || state === 'failed' || state === 'deactivating') return 'dead';
+    return null;
+  };
+  try {
+    return read(execFileSync('systemctl', ['--user', 'is-active', unit], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    })) ?? 'unknown';
+  } catch (error) {
+    // A non-active unit makes `is-active` exit non-zero WITH the state on stdout, so the throw is
+    // the normal path for a dead unit, not an error.
+    return read((error as { stdout?: unknown } | null)?.stdout) ?? 'unknown';
+  }
+};
+
+let runnerLivenessProber: RunnerLivenessProber = systemdRunnerLiveness;
+
+/** Host seam — tests install a deterministic prober instead of shelling out to systemd. */
+export function configureRunnerLivenessProber(prober: RunnerLivenessProber | null): void {
+  runnerLivenessProber = prober ?? systemdRunnerLiveness;
+}
+
+export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined): RunnerLiveness {
+  return runner ? runnerLivenessProber(runner) : 'unknown';
+}
 
 export const PRE_SUITE_NO_VERDICT_REASONS = [
   'authority-unreadable',
@@ -41,6 +95,10 @@ export const PRE_SUITE_NO_VERDICT_REASONS = [
   'skipped-locked',
   'cancelled',
   'deadline-exceeded',
+  // The reserving process PROVED the incumbent runner's unit was gone and took the lease from it.
+  // Distinct from 'deadline-exceeded' (a runner that overran) and from 'cancelled' (a deliberate
+  // stop): this one means nobody was ever going to advance that attempt.
+  'runner-vanished',
   'disk-headroom',
   'infra-inconclusive',
   'target-readers',
@@ -71,6 +129,13 @@ export interface QualificationPhysicalRunner {
   reservedAtMs: number;
   leaseExpiresAtMs?: number;
   evidenceRefs: string[];
+  /**
+   * The systemd unit that IS this runner, when the reserver knows it — the only field here that
+   * can FALSIFY the lease. Everything else is a timestamp, and a timestamp cannot tell a working
+   * runner from a dead one; see `reserveQualificationRunner`. Optional because rows written before
+   * this field existed have none, and those must keep their pre-existing (lease-only) behaviour.
+   */
+  unit?: string | null;
 }
 
 export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
@@ -139,6 +204,8 @@ export interface BeginQualificationInput {
   declaredPaths?: readonly string[];
   candidate?: string | null;
   evidenceRefs?: readonly string[];
+  /** What the caller proved about the INCUMBENT attempt's runner. Default 'unknown' = old behaviour. */
+  incumbentLiveness?: RunnerLiveness;
   nowMs?: number;
 }
 
@@ -162,6 +229,30 @@ function isRetryableUnownedWait(
       current.outcome.reason === 'wait-for-eligibility-unavailable' &&
       current.currentPhysicalRunner === null,
   );
+}
+
+/**
+ * Has the attempt's owner GONE, leaving the singleton held by nobody?
+ *
+ * The exclusivity above is correct only while "its real owner advances it" holds. Nothing enforced
+ * that: an owner that died mid-attempt kept the transaction non-terminal AND non-retryable
+ * forever, so `beginQualificationTransaction` returned `conflict` to every later attempt — the
+ * scheduled routine included. The gate then renders no verdict at all while looking merely red,
+ * and no amount of fixing tests moves it. Two provable ways an owner is gone:
+ *
+ *  - a physical runner whose unit the caller probed and found absent; or
+ *  - no runner at all, and no write for longer than a runner could legally live.
+ *
+ * Both require evidence. An owner we cannot prove dead keeps its claim.
+ */
+function isAbandonedQualification(
+  current: CheckpointQualificationTransaction | null,
+  incumbentLiveness: RunnerLiveness | undefined,
+  nowMs: number,
+): boolean {
+  if (!current || isTerminalQualificationOutcome(current.outcome)) return false;
+  if (current.currentPhysicalRunner) return incumbentLiveness === 'dead';
+  return nowMs - current.updatedAtMs > QUALIFICATION_OWNER_ABANDONED_MS;
 }
 
 const uniqueStrings = (values: readonly string[], cap = 64): string[] =>
@@ -433,6 +524,7 @@ export function beginQualificationTransaction(
 ): QualificationTransition {
   const nowMs = input.nowMs ?? Date.now();
   const retryableUnownedWait = isRetryableUnownedWait(current);
+  const abandoned = isAbandonedQualification(current, input.incumbentLiveness, nowMs);
   if (current?.attemptId === input.attemptId) {
     if (retryableUnownedWait) {
       return {
@@ -456,7 +548,7 @@ export function beginQualificationTransaction(
       transaction: current,
     };
   }
-  if (current && !isTerminalQualificationOutcome(current.outcome) && !retryableUnownedWait) {
+  if (current && !isTerminalQualificationOutcome(current.outcome) && !retryableUnownedWait && !abandoned) {
     return { status: 'conflict', transaction: current };
   }
   const transaction: CheckpointQualificationTransaction = {
@@ -577,22 +669,45 @@ export function reserveQualificationRunner(
     candidate?: string | null;
     evidenceRefs?: readonly string[];
     leaseDurationMs: number;
+    unit?: string | null;
+    /**
+     * What the caller PROVED about the incumbent runner's process. Default 'unknown' keeps the
+     * historical lease-only behaviour, so this can never loosen the lock on its own.
+     */
+    incumbentLiveness?: RunnerLiveness;
     nowMs?: number;
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
+  /**
+   * A lease is evidence of INTENT, never of life. Until this carried a liveness term, a runner that
+   * died without settling (crash, OOM, `systemd` stop, an aborted pre-suite phase) kept the whole
+   * gate wedged for the remainder of its 3h lease, and every scheduled fire in that window returned
+   * `conflict` and was skipped — which surfaces as `writer-starved`, i.e. a gate that looks red but
+   * has in fact rendered no verdict at all. Only a PROVEN-dead incumbent is reclaimed; 'unknown'
+   * (no unit recorded, or an unreadable probe) still waits the lease out, so the failure mode of a
+   * broken probe is the old behaviour rather than two runners on one candidate.
+   */
   const liveRunner =
     current.currentPhysicalRunner &&
-    nowMs < (current.currentPhysicalRunner.leaseExpiresAtMs ?? current.currentPhysicalRunner.reservedAtMs);
+    nowMs < (current.currentPhysicalRunner.leaseExpiresAtMs ?? current.currentPhysicalRunner.reservedAtMs) &&
+    input.incumbentLiveness !== 'dead';
   if (liveRunner && current.currentPhysicalRunner!.id !== input.runnerId) {
     return { status: 'conflict', transaction: current };
   }
   if (liveRunner && current.currentPhysicalRunner?.id === input.runnerId) return { status: 'idempotent', transaction: current };
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
+  // Keep the two displacement causes distinct in the history: a lease that ran out is a runner that
+  // overran, a reclaimed one is a runner that DIED. Collapsing them would hide exactly the signal
+  // that makes a recurring vanish diagnosable.
+  const displacedOutcome: QualificationOutcome = {
+    kind: 'pre-suite-no-verdict',
+    reason: input.incumbentLiveness === 'dead' ? 'runner-vanished' : 'deadline-exceeded',
+  };
   const expiredRuns = current.currentPhysicalRunner
-    ? consumedRunner(current, { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' }, nowMs)
+    ? consumedRunner(current, displacedOutcome, nowMs)
     : current.consumedPhysicalRuns ?? [];
   return {
     status: 'updated',
@@ -614,6 +729,7 @@ export function reserveQualificationRunner(
         reservedAtMs: nowMs,
         leaseExpiresAtMs: nowMs + Math.max(1, input.leaseDurationMs),
         evidenceRefs,
+        unit: input.unit?.trim() || null,
       },
       consumedPhysicalRuns: expiredRuns,
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...evidenceRefs]),
@@ -849,7 +965,14 @@ export function beginStoredQualification(
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(
     target,
-    (current) => beginQualificationTransaction(current, input),
+    // Probe INSIDE the mutation so the liveness verdict is taken against the same `current` the
+    // transition decides on. Probing outside would race: the incumbent can die, or a fresh runner
+    // can take the lease, between the read and the write.
+    (current) =>
+      beginQualificationTransaction(current, {
+        ...input,
+        incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner),
+      }),
     options.reconcileTerminalRepairQueueForSuccessor ? { successorInput: input } : {},
   );
 }
@@ -867,7 +990,12 @@ export function reserveStoredQualificationRunner(
   input: Parameters<typeof reserveQualificationRunner>[1],
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) =>
-    current ? reserveQualificationRunner(current, input) : { status: 'unreadable', error: 'missing attempt' });
+    current
+      ? reserveQualificationRunner(current, {
+          ...input,
+          incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
+        })
+      : { status: 'unreadable', error: 'missing attempt' });
 }
 
 export function recordStoredQualificationEligibility(

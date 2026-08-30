@@ -124,6 +124,12 @@ function rowStatus(row: ReviewReportRow): ReviewRowStatus {
   return row.status ?? "pending";
 }
 
+function nonSelectableStatusLabel(status: ReviewRowStatus): string {
+  if (status === "applied") return "Applied";
+  if (status === "dismissed") return "Dismissed";
+  return "Manual review required";
+}
+
 function rowSelectable(row: ReviewReportRow): boolean {
   return rowStatus(row) === "pending" && row.selectable !== false;
 }
@@ -343,14 +349,22 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
             onChange={() => onToggleRow(row.id)}
           />
         ) : (
-          <span
-            className="review-report__row-status-mark"
-            data-testid={`review-row-mark-${row.id}`}
-            title={status === "pending" ? "manual review required" : status}
-            aria-hidden
-          >
-            {status === "applied" ? "✓" : status === "pending" ? "↗" : "—"}
-          </span>
+          <>
+            <span
+              className="review-report__row-status-mark"
+              data-testid={`review-row-mark-${row.id}`}
+              title={status === "pending" ? "manual review required" : status}
+              aria-hidden
+            >
+              {status === "applied" ? "✓" : status === "pending" ? "↗" : "—"}
+            </span>
+            <span
+              className="pc-sr-only"
+              data-testid={`review-row-status-${row.id}`}
+            >
+              {nonSelectableStatusLabel(status)}
+            </span>
+          </>
         )}
       </span>
       <span className="review-report__row-identity">

@@ -440,6 +440,13 @@ export default defineTool({
                     'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
                     'boolean flag to set.',
                 ).optional(),
+                ok: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    'Compatibility alias for boolean check results: `{ ok: true|false }` is normalized to the `verified` evidence slot before storage. ' +
+                      'A bare true or false remains PREDICTED; pair true with `evidence` to render VERIFIED. Prefer the canonical `verified` evidence string.',
+                  ),
                 contested: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.contested,
                   'Evidence that was supplied as verification but contradicts the claim (for example, a green claim ' +

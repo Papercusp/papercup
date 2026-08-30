@@ -736,6 +736,36 @@ Preserve this plan body.
     expect(got?.ratingScale).toEqual(sixValueScale);
   });
 
+  it('re-propose preserves the stored ratingScale when the whole-document input omits it', async () => {
+    const storedScale = ['pass', 'partial', 'fail', 'not-measured'];
+    await rubrics.proposeRubric({
+      rubricId: 'preserve-omitted-scale',
+      characteristic: 'c',
+      title: 'Scale v1',
+      criteria: sampleCriteria,
+      ratingScale: storedScale,
+      status: 'active',
+      by: 'author-a',
+    });
+
+    const revised = await rubrics.proposeRubric({
+      rubricId: 'preserve-omitted-scale',
+      characteristic: 'c',
+      title: 'Scale v2',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'reviewer-b',
+    });
+
+    expect(revised.ratingScale).toEqual(storedScale);
+    const [row] = await db.adminSql<{ template_data: { ratingScale: string[] } }[]>`
+      SELECT template_data
+        FROM harness_shared.harness_plans
+       WHERE plan_slug = 'preserve-omitted-scale'
+         AND template = 'rubric'`;
+    expect(row.template_data.ratingScale).toEqual(storedScale);
+  });
+
   it('a malformed propose is rejected fail-loud, never persisting a half-state', async () => {
     await expect(
       rubrics.proposeRubric({ rubricId: 'bad', characteristic: '', title: 'Bad', criteria: [], by: 'x' }),

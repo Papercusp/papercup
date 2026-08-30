@@ -557,7 +557,7 @@ const CARRY_ID_ALIASES = ['key'] as const;
  *
  * Handles the common wrong shapes agents reach for: `{label/name/text/body/summary,
  * status, evidence}` or `{claim, recheck, status, evidence}` instead of `{claim,
- * recheck, verified}`, the structured verification `{kind, command, result}`
+ * recheck, verified}`, the boolean check-result alias `{claim, ok}`, the structured verification `{kind, command, result}`
  * shape (mapped to `{claim, recheck, verified}`), the documented-looking
  * `{claim, probe, verified}` alias where `probe` is intended to mean `recheck`,
  * `key` for `id`, and a row that carries an identity + evidence but no claim text
@@ -612,6 +612,11 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   // canonical OBJECT at the same key, so only the legacy string remains an
   // alias; a typed object must pass through untouched to the row schema.
   const hasProbe = typeof r.probe === 'string';
+  // EI-21828094173087688: callers commonly use the boolean result vocabulary
+  // `{ claim, ok }`. `ok` is a compatibility alias for the boolean form of
+  // `verified`; it must be removed before the strict row schema sees the value.
+  // Non-boolean values remain invalid so a typo cannot be silently accepted.
+  const booleanOk = isChecksRow && typeof r.ok === 'boolean' ? r.ok : undefined;
   // A row with an identity but no claim text is repairable too (see the
   // claim-from-id fallback below), so it must not short-circuit out here.
   const claimlessWithIdentity = !('claim' in r) && ('id' in r || idAliases.length > 0);
@@ -625,7 +630,8 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     !hasCommand &&
     !hasResult &&
     !claimlessWithIdentity &&
-    typeof r.verified !== 'boolean'
+    typeof r.verified !== 'boolean' &&
+    booleanOk === undefined
   ) {
     return row;
   }
@@ -720,6 +726,25 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
       detail:
         'the documented `probe` key is accepted as an alias for `recheck`; ' +
         (hadRecheck ? 'the canonical recheck value was kept' : 'the probe value was mapped to recheck'),
+    });
+  }
+
+  if (booleanOk !== undefined) {
+    // Canonical `verified` wins when both vocabularies are supplied. Otherwise
+    // feed the boolean through the existing verified compatibility path below,
+    // which preserves accompanying evidence only for `true` and keeps
+    // evidence-free/false rows PREDICTED.
+    const hadCanonicalVerified = 'verified' in r;
+    delete r.ok;
+    if (!hadCanonicalVerified) r.verified = booleanOk;
+    repairs.push({
+      field: `${path}.ok`,
+      kind: 'renamed',
+      detail:
+        `boolean \`ok:${booleanOk}\` is accepted as a compatibility alias for \`verified\`; ` +
+        (hadCanonicalVerified
+          ? 'the canonical verified value was kept'
+          : 'the value was normalized through the verified evidence semantics'),
     });
   }
 

@@ -2334,21 +2334,21 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       '    setsidPath: null,',
       '    progressIntervalMs: 10,',
       '    onAllFilesComplete: () => publishPreemptFinalizationMarker(),',
+      // This fixture is already inside the pc-heavy process under test. Bypass the
+      // resource-governor admission bridge for the nested run so readiness measures
+      // the finalization handoff, not a second live admission that can wait behind
+      // unrelated fleet work and hold PgBouncer sockets open after the child exits.
+      '    governedProcessImpl: async (options, run) => run(null, options.env, { inherited: true }),',
       '  },',
       ');',
       'process.stdout.write(JSON.stringify({ status: result.status, signal: result.signal, timedOut: result.timedOut }) + \'\\n\');',
       // Exit deterministically rather than falling off the end with `process.exitCode`.
-      // A TOP-LEVEL runCapturedTestProcess call — one with no inherited
-      // PAPERCUSP_ADMISSION_CONTEXT, which is exactly this fixture — admits through the
-      // resource governor and leaves 2 PgBouncer sockets open on 127.0.0.1:6432, so the
-      // event loop never drains and this driver would hang forever AFTER writing its
-      // result (measured via process._getActiveHandles(): ["Socket","Socket"] +
-      // stdout/stderr). pc-heavy then correctly freezes the never-ending run and reports
-      // exit 75, which is indistinguishable from the protection defect this test guards.
-      // The real `test:file` CLI does not take that path (it inherits an admission
-      // context and skips admission) and scripts/affected-tests.mjs already exits
-      // explicitly for the same reason. The governor leak is tracked separately as
-      // WI-638180; this fixture must not depend on it either way.
+      // Before the explicit governedProcessImpl seam above, this top-level fixture
+      // performed a SECOND live resource-governor admission. That admission can wait
+      // behind unrelated fleet work before the child exists, so the marker wait timed
+      // out without exercising pc-heavy at all. It also left PgBouncer sockets open after
+      // the child result. The real `test:file` CLI inherits an admission context and
+      // skips that second admission; this fixture now models that production boundary.
       'process.exit(result.error || result.status !== 0 ? 1 : 0);',
     ].join('\n'));
     const env = baseEnv({
@@ -2448,6 +2448,10 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       '    setsidPath: null,',
       '    progressIntervalMs: 10,',
       '    onAllFilesComplete: () => publishPreemptFinalizationMarker(),',
+      // Keep this companion fixture hermetic for the same reason as the protected
+      // handoff case above: it exercises pc-heavy's bounded freeze path, not a
+      // second resource-governor admission.
+      '    governedProcessImpl: async (options, run) => run(null, options.env, { inherited: true }),',
       '  },',
       ');',
       'process.stdout.write(JSON.stringify({ status: result.status, signal: result.signal, timedOut: result.timedOut }) + \'\\n\');',

@@ -37,9 +37,11 @@ vi.mock('./cross-domain-conflict', () => ({
 import { tryAcquireResource, type ResourceAcquireResult } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { findCrossDomainResourceConflicts } from './cross-domain-conflict';
+import { inWorkspaceTxn } from './in-workspace-txn';
 const sharedM = vi.mocked(tryAcquireResource);
 const exclM = vi.mocked(acquireResourceExclusiveWithWait);
 const crossM = vi.mocked(findCrossDomainResourceConflicts);
+const txnM = vi.mocked(inWorkspaceTxn);
 const tool = (await import('./acquire_resource')).default;
 
 type Out = { content: { text: string }[] };
@@ -75,6 +77,27 @@ describe('locks:acquire_resource shared', () => {
     expect(b).toMatchObject({ ok: false, reason: 'held_exclusive' });
     expect(b.holders[0]).toMatchObject({ owner: 'o2', mode: 'shared', expires_ts: '2026-01-01T00:00:00.000Z' });
   });
+
+  it('maps transient workspace contention to an explicit retryable result', async () => {
+    txnM.mockRejectedValueOnce(
+      Object.assign(new Error('workspace contended'), {
+        name: 'WorkspaceContendedError',
+        pgCode: '57014',
+      }),
+    );
+    const b = body(await callShared());
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'workspace_contended',
+      transient: true,
+      retryable: true,
+      holder: 'unknown',
+      holders: [],
+      pg_code: '57014',
+    });
+    expect(String(b.advice)).toMatch(/retry/i);
+    expect(String(b.advice)).toMatch(/unknown/i);
+  });
 });
 
 describe('locks:acquire_resource exclusive', () => {
@@ -101,6 +124,26 @@ describe('locks:acquire_resource exclusive', () => {
     exclM.mockResolvedValue({ ok: false, reason: 'unknown_resource' } as never);
     const b = body(await callExcl());
     expect(b).toMatchObject({ ok: false, reason: 'unknown_resource', holders: [] });
+  });
+
+  it('maps transient workspace contention from the exclusive wait to an explicit retryable result', async () => {
+    exclM.mockRejectedValueOnce(
+      Object.assign(new Error('workspace contended'), {
+        name: 'WorkspaceContendedError',
+        pgCode: '55P03',
+      }),
+    );
+    const b = body(await callExcl());
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'workspace_contended',
+      transient: true,
+      retryable: true,
+      holder: 'unknown',
+      holders: [],
+      pg_code: '55P03',
+    });
+    expect(String(b.advice)).toMatch(/retry/i);
   });
 });
 

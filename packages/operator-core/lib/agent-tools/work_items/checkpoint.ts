@@ -580,6 +580,13 @@ function checksSpec() {
                 'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
                 'telling a successor to run `recheck` before relying on the claim.',
             ).optional(),
+            ok: z
+              .boolean()
+              .optional()
+              .describe(
+                'Compatibility alias for boolean check results: `{ ok: true|false }` is normalized to the `verified` evidence slot before storage. ' +
+                  'A bare true or false remains PREDICTED; pair true with `evidence` to render VERIFIED. Prefer the canonical `verified` evidence string.',
+              ),
             // EI-21234745917984459 — the SAME class as the `id` gap above, one field over.
             // `contested` was already supported end to end: CARRY_ROW_SOFT_CAPS.contested
             // exists, normalizeCheckEntries (imported from ../../carry-note, the SAME

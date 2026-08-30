@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { isWorkspaceContended } from './contention-retry';
 import { resourceLockDomain } from './coordination-domain';
 import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
 import {
@@ -41,6 +42,31 @@ function holderJson(h: ResourceHolder) {
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
+
+/** EI-218338: interactive named-resource acquires fail fast on same-workspace
+ * contention, but must not leak the raw PG handler error. There is no holder
+ * snapshot when the advisory workspace gate timed out, so make that uncertainty
+ * explicit instead of fabricating either a foreign holder or a free resource. */
+function workspaceContended(error: unknown) {
+  const source = error as { pgCode?: unknown; code?: unknown };
+  const pgCode =
+    typeof source?.pgCode === 'string'
+      ? source.pgCode
+      : typeof source?.code === 'string'
+        ? source.code
+        : undefined;
+  return json({
+    ok: false,
+    reason: 'workspace_contended',
+    transient: true,
+    retryable: true,
+    holder: 'unknown',
+    holders: [],
+    ...(pgCode ? { pg_code: pgCode } : {}),
+    advice:
+      'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested resource is unheld. Retry the operation or inspect locks:list; do not treat this as a confirmed holder conflict.',
+  });
+}
 
 export default defineTool({
   name: 'locks:acquire_resource',
@@ -121,17 +147,23 @@ export default defineTool({
     }
 
     if (args.mode === 'shared') {
-      const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-        tryAcquireResource(tx, {
-          coordinationDomain,
-          resource: args.resource,
-          mode: 'shared',
-          owner: ownerId,
-          ownerLabel,
-          reason,
-          ttlSec,
-        }),
-      );
+      let r: Awaited<ReturnType<typeof tryAcquireResource>>;
+      try {
+        r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+          tryAcquireResource(tx, {
+            coordinationDomain,
+            resource: args.resource,
+            mode: 'shared',
+            owner: ownerId,
+            ownerLabel,
+            reason,
+            ttlSec,
+          }),
+        );
+      } catch (error) {
+        if (isWorkspaceContended(error)) return workspaceContended(error);
+        throw error;
+      }
       if (!r.ok) return json({ ok: false, reason: r.reason, holders: r.holders.map(holderJson) });
       return json({
         ok: true,
@@ -146,18 +178,24 @@ export default defineTool({
     // exclusive
     const maxWaitSec = args.wait?.max_drain_sec ?? 0;
     const coordId = resolveAgentIdentity(ctx);
-    const r = await acquireResourceExclusiveWithWait({
-      coordinationDomain,
-      owner: ownerId,
-      ownerLabel,
-      resource: args.resource,
-      reason,
-      ttlSec,
-      maxWaitSec,
-      // P-009: tell the shared holders to release when the drain begins.
-      onDrainStart: (holders) =>
-        broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
-    });
+    let r: Awaited<ReturnType<typeof acquireResourceExclusiveWithWait>>;
+    try {
+      r = await acquireResourceExclusiveWithWait({
+        coordinationDomain,
+        owner: ownerId,
+        ownerLabel,
+        resource: args.resource,
+        reason,
+        ttlSec,
+        maxWaitSec,
+        // P-009: tell the shared holders to release when the drain begins.
+        onDrainStart: (holders) =>
+          broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
+      });
+    } catch (error) {
+      if (isWorkspaceContended(error)) return workspaceContended(error);
+      throw error;
+    }
 
     if (r.ok && r.status === 'held') {
       return json({
