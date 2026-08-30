@@ -21,6 +21,224 @@ export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
 
+/**
+ * Shared libraries supplied by Ubuntu 24.04's glibc runtime.
+ *
+ * These are deliberately an explicit, small baseline rather than an
+ * "ignore anything that looks system-provided" heuristic. A new SONAME must
+ * either be shipped inside the signed bundle or acquire an explicit apt
+ * provider below, otherwise publication fails closed.
+ */
+export const WORKSPACE_HOST_GLIBC_SONAMES = [
+  'ld-linux-aarch64.so.1',
+  'ld-linux-x86-64.so.2',
+  'libc.so.6',
+  'libdl.so.2',
+  'libm.so.6',
+  'libpthread.so.0',
+  'librt.so.1',
+  'libutil.so.1',
+  'libresolv.so.2',
+] as const;
+
+/**
+ * SONAME providers for external native-addon dependencies on Ubuntu 24.04.
+ *
+ * This is the one contract shared by the publication-time readelf check and
+ * the generated host bootstrap. Keeping the provider map beside the apt
+ * package list prevents a release guard from passing against a package that
+ * the clean-room image never installs.
+ */
+export const WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE = {
+  'libasound.so.2': 'libasound2t64',
+  'libatomic.so.1': 'libatomic1',
+  'libgcc_s.so.1': 'libgcc-s1',
+  'liblz4.so.1': 'liblz4-1',
+  'libssl.so.3': 'libssl3',
+  'libstdc++.so.6': 'libstdc++6',
+  'libz.so.1': 'zlib1g',
+  'libzstd.so.1': 'libzstd1',
+} as const;
+export type WorkspaceHostNativeSoname =
+  keyof typeof WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE;
+
+/** Host packages unrelated to native addon loading. */
+export const WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES = [
+  'acl',
+  'ca-certificates',
+  'curl',
+  'jq',
+  'minisign',
+  'openssh-server',
+  'ufw',
+  'unattended-upgrades',
+] as const;
+
+/** Packages required by the external SONAME providers above. */
+export const WORKSPACE_HOST_BOOTSTRAP_NATIVE_RUNTIME_APT_PACKAGES = [
+  'libasound2t64',
+  'libatomic1',
+  'libgcc-s1',
+  'liblz4-1',
+  'libssl3',
+  'libstdc++6',
+  'libzstd1',
+  'zlib1g',
+] as const;
+
+/**
+ * Complete apt contract for the generated Ubuntu 24.04 bootstrap.
+ *
+ * Publication checks should compare their derived provider set against this
+ * exact list; the bootstrap below renders this same value.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES = [
+  ...WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES,
+  ...WORKSPACE_HOST_BOOTSTRAP_NATIVE_RUNTIME_APT_PACKAGES,
+] as const;
+export type WorkspaceHostBootstrapAptPackage =
+  (typeof WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES)[number];
+
+export interface WorkspaceHostNativeDependencyProvider {
+  soname: string;
+  aptPackage: string;
+}
+
+export interface WorkspaceHostNativeDependencyCoverageInput {
+  /** The union of NEEDED SONAMEs read from every bundled `*.node`. */
+  neededSonames: Iterable<string>;
+  /** SONAMEs whose shared objects are shipped inside the release bundle. */
+  bundleInternalSonames?: Iterable<string>;
+  /** Defaults to WORKSPACE_HOST_GLIBC_SONAMES; override only for another image ABI. */
+  glibcSonames?: Iterable<string>;
+  /** Defaults to WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES. */
+  aptPackages?: Iterable<string>;
+}
+
+export interface WorkspaceHostNativeDependencyCoverage {
+  ok: boolean;
+  neededSonames: readonly string[];
+  bundleInternalSonames: readonly string[];
+  glibcSonames: readonly string[];
+  /** NEEDED SONAMEs not satisfied by the bundle or glibc baseline. */
+  externalSonames: readonly string[];
+  /** External SONAMEs without an explicit provider mapping. */
+  unknownSonames: readonly string[];
+  /** Unique apt packages required by mapped external SONAMEs. */
+  requiredAptPackages: readonly string[];
+  /** Required provider packages absent from the supplied apt contract. */
+  missingAptPackages: readonly string[];
+  providers: readonly WorkspaceHostNativeDependencyProvider[];
+}
+
+function normalizedSonames(values: Iterable<string>): string[] {
+  return [
+    ...new Set(
+      [...values]
+        .map((value) => normalizeWorkspaceHostSoname(value))
+        .filter((value) => value.length > 0),
+    ),
+  ].sort();
+}
+
+function normalizedAptPackages(values: Iterable<string>): string[] {
+  return [
+    ...new Set(
+      [...values]
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    ),
+  ].sort();
+}
+
+/**
+ * Normalize a SONAME copied from readelf or a hand-built test fixture.
+ *
+ * `readelf -d` emits `Shared library: [libfoo.so.1]`; accepting the bracketed
+ * form here keeps the parser and the evaluator on the same canonical keys.
+ */
+export function normalizeWorkspaceHostSoname(value: string): string {
+  const trimmed = value.trim();
+  const bracketed = /^\[([^\]]+)\]$/.exec(trimmed);
+  return (bracketed?.[1] ?? trimmed).trim();
+}
+
+/**
+ * Parse the NEEDED entries emitted by `readelf -d`.
+ *
+ * Other dynamic-section entries are intentionally ignored. Returning a sorted
+ * union makes publication manifests reproducible even when archive traversal
+ * order changes.
+ */
+export function parseWorkspaceHostReadelfNeeded(
+  readelfOutput: string,
+): readonly string[] {
+  const matches = readelfOutput.matchAll(
+    /Shared library:\s*\[([^\]]+)\]/g,
+  );
+  return normalizedSonames([...matches].map((match) => match[1] ?? ''));
+}
+
+/**
+ * Evaluate whether a bundle's native-addon NEEDED union is covered.
+ *
+ * The evaluator is deliberately pure so publication can run it over the
+ * archive's measured bytes, while bootstrap generation can consume the same
+ * apt contract without importing a shell/process adapter.
+ */
+export function evaluateWorkspaceHostNativeDependencyCoverage(
+  input: WorkspaceHostNativeDependencyCoverageInput,
+): WorkspaceHostNativeDependencyCoverage {
+  const neededSonames = normalizedSonames(input.neededSonames);
+  const bundleInternalSonames = normalizedSonames(
+    input.bundleInternalSonames ?? [],
+  );
+  const glibcSonames = normalizedSonames(
+    input.glibcSonames ?? WORKSPACE_HOST_GLIBC_SONAMES,
+  );
+  const ignored = new Set([...bundleInternalSonames, ...glibcSonames]);
+  const externalSonames = neededSonames.filter(
+    (soname) => !ignored.has(soname),
+  );
+  const providers = externalSonames.flatMap((soname) => {
+    const aptPackage =
+      WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE[
+        soname as WorkspaceHostNativeSoname
+      ];
+    return aptPackage ? [{ soname, aptPackage }] : [];
+  });
+  const unknownSonames = externalSonames.filter(
+    (soname) =>
+      !Object.prototype.hasOwnProperty.call(
+        WORKSPACE_HOST_NATIVE_SONAME_TO_APT_PACKAGE,
+        soname,
+      ),
+  );
+  const requiredAptPackages = normalizedAptPackages(
+    providers.map(({ aptPackage }) => aptPackage),
+  );
+  const suppliedAptPackages = new Set(
+    normalizedAptPackages(
+      input.aptPackages ?? WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
+    ),
+  );
+  const missingAptPackages = requiredAptPackages.filter(
+    (aptPackage) => !suppliedAptPackages.has(aptPackage),
+  );
+
+  return {
+    ok: unknownSonames.length === 0 && missingAptPackages.length === 0,
+    neededSonames,
+    bundleInternalSonames,
+    glibcSonames,
+    externalSonames,
+    unknownSonames,
+    requiredAptPackages,
+    missingAptPackages,
+    providers,
+  };
+}
+
 /** Ordered, observable phases of every generated install/upgrade/rollback. */
 export const WORKSPACE_HOST_BOOTSTRAP_PHASES = [
   'validate-host',
@@ -491,12 +709,11 @@ export function buildWorkspaceHostBootstrap(
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[1]}'`,
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -qq',
-    // libatomic1/libstdc++6 are RUNTIME dependencies of the bundled native addons, not build
-    // tooling. Measured (P-046, 2026-08-29): `readelf -d` over all ten bundled *.node files
-    // reports exactly one externally-provided library that a minimal Ubuntu cloud image does
-    // not carry — libatomic.so.1 (package libatomic1), needed by rocksdb-native. It is present
-    // on any box with a compiler installed, which is why this reproduced on no developer
-    // machine and on every clean guest.
+    // Native runtime packages are distinct from build tooling. The exported apt contract above
+    // is the source of truth for every mapped external SONAME; keep this rendered install line
+    // derived from it so publication and a clean Ubuntu host cannot drift. The initially
+    // measured defect was libatomic.so.1 (package libatomic1), which is present on boxes with a
+    // compiler installed and therefore reproduced on clean guests but not developer machines.
     //
     // The failure it produced was maximally misleading: require-addon catches the dlopen error
     // and CONTINUES (`catch (err) { cause = err; continue }`, require-addon/lib/node.js), then
@@ -504,7 +721,7 @@ export function buildWorkspaceHostBootstrap(
     // reported as a missing ADDON FILE — while the file is present, correctly sized, correctly
     // owned and readable by the service user. Do not remove these without re-running the readelf
     // union over the bundle's *.node files; --no-install-recommends means nothing pulls them in.
-    'apt-get install -y --no-install-recommends acl ca-certificates curl jq libatomic1 libstdc++6 minisign openssh-server ufw unattended-upgrades',
+    `apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(' ')}`,
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',
     'id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --gid "$SERVICE_GROUP" --home-dir "$STATE_ROOT" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"',
     'usermod --lock --shell /usr/sbin/nologin "$SERVICE_USER"',
