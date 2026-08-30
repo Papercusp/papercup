@@ -605,6 +605,20 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // The property-based prefilter therefore sees a guard-shaped exposure, but masking would
     // not affect any analyzed text. Keep the exposure declared rather than adding a no-op import.
     'check-host-bundle-builds.mjs',
+    // check-js-syntax.mjs does not text-match code tokens against source at all. Its offenders
+    // come from `node --check` EXIT CODES and an eslint scope graph — two real parsers — so no
+    // comment, string literal or prose can mint a phantom offender here. The property prefilter
+    // is fooled by three incidental shapes, each measured 2026-08-30 against its own masked
+    // source: SCANS_CODE_FILES matches `.mjs'` inside the `f.endsWith('.mjs')` SCOPE FILTER;
+    // TEXT_MATCHES matches `f.includes('/_retired/')`, which tests a FILE PATH, and the
+    // `text.match(...)` pair, which parses node's STDERR for `<path>:<line>` and `SyntaxError:`;
+    // READS_FILES matches the `readFileSync` that hands source to eslint's PARSER.
+    // It became visible here only when the load leg (EI-21892432987434951) introduced that read —
+    // before it the guard shelled out to `node --check` alone and matched no predicate. Masking
+    // would change nothing it analyses, so this is the "exposure considered" kind, not the
+    // "needs a stripper" kind. A no-op stripper import would score it `shared` while masking
+    // nothing, which is exactly the laundering this list exists to make visible. (WI-1309267)
+    'check-js-syntax.mjs',
     // check-migration-fixture-drift.mjs was REMOVED here on 2026-08-10 (WI-37717). It scans
     // TWO surfaces and both are now masked: migration .sql text via stripSqlComments (inside
     // extractIntroducedColumns — the input is definitionally SQL, so no extension dispatch is
