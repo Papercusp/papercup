@@ -2661,6 +2661,71 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           ]);
         });
 
+        /**
+         * EI-21859829224277390: an id-matched UPSERT is a CORRECTION of an existing
+         * row, not a new row — it must always land, even when several OTHER supplied
+         * rows in the SAME call are genuinely new and the note is already at the cap.
+         * Reported live: retracting a stale ✓ VERIFIED claim ('armf-is-decisive')
+         * alongside newly-observed facts landed the retraction in `checksNotRetained`
+         * while the stale VERIFIED row survived unchanged — the single write whose
+         * whole job is keeping the ledger honest silently no-opped. The retraction
+         * must never compete with new rows for the cap; only genuinely new identities
+         * may be evicted.
+         */
+        it('an id-matched retraction lands even when accompanying new rows overflow the cap', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) =>
+            i === 0
+              ? {
+                  id: 'armf-is-decisive',
+                  claim: 'ARM F REPRODUCED THE FLAKE — the ONLY faithful reproducer',
+                  recheck: 'probe arm f',
+                  verified: 'observed 2026-08-29',
+                }
+              : {
+                  id: `peer-${String(i + 1).padStart(2, '0')}`,
+                  claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+                  recheck: `probe ${i + 1}`,
+                  verified: `measured ${i + 1}`,
+                },
+          );
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'retraction landed',
+            append: true,
+            checks: [
+              {
+                id: 'armf-is-decisive',
+                claim: 'RETRACTED — arm F is NOT a reproducer',
+                contested: 'STILL RUNNING — re-checked 2026-08-30, does not reproduce',
+              },
+              { claim: 'NEW-A holds', verified: 'measured' },
+              { claim: 'NEW-B holds', verified: 'measured' },
+              { claim: 'NEW-C holds', verified: 'measured' },
+              { claim: 'NEW-D holds', verified: 'measured' },
+            ],
+          })) as {
+            ok: boolean;
+            checksNotRetained?: string[];
+            checksNotRetainedRows?: Array<{ id?: string; claim: string }>;
+          };
+
+          expect(r.ok).toBe(true);
+          const stored = readCurrent();
+          // The retraction landed — the id-matched row is UPDATED, not evicted.
+          expect(stored).toContain('RETRACTED — arm F is NOT a reproducer');
+          expect(stored).not.toContain('ARM F REPRODUCED THE FLAKE');
+          // Every carried peer row is intact.
+          for (const row of atCap.slice(1)) expect(stored).toContain(row.claim);
+          // Only the genuinely NEW rows compete for (and lose) the full cap — the
+          // retraction must never appear here.
+          expect(r.checksNotRetained).toEqual(['NEW-A holds', 'NEW-B holds', 'NEW-C holds', 'NEW-D holds']);
+        });
+
         it("accepts the advertised rowsMode:'merge' checks:[] recovery when a legacy prior exceeds the current cap", async () => {
           const prior = legacyPriorWithExtraRow();
           const readCurrent = installLegacyPrior(prior);
