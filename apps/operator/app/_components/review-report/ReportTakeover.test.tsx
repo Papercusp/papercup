@@ -38,6 +38,7 @@ vi.mock("nuqs", () => ({
 import {
   REPORT_TAKEOVER_OWNER_PARAM,
   ReportTakeoverLayer,
+  useReleaseMissingReportTakeover,
   useReportTakeoverParam,
   type ReportTakeoverParamKey,
 } from "./ReportTakeover";
@@ -75,6 +76,22 @@ function Probe({
       </button>
     </div>
   );
+}
+
+function AvailabilityProbe({
+  paramKey,
+  enabled = true,
+  loading = false,
+  available = false,
+}: {
+  paramKey: ReportTakeoverParamKey;
+  enabled?: boolean;
+  loading?: boolean;
+  available?: boolean;
+}) {
+  const report = useReportTakeoverParam(paramKey);
+  useReleaseMissingReportTakeover(report, { enabled, loading, available });
+  return null;
 }
 
 describe("useReportTakeoverParam", () => {
@@ -147,6 +164,41 @@ describe("useReportTakeoverParam", () => {
       opcln: null,
       [REPORT_TAKEOVER_OWNER_PARAM]: "opcbr",
     });
+  });
+
+  it("releases a settled missing owner to the ready sibling exactly once", async () => {
+    nuqs.opcln = "missing-run";
+    nuqs.opcbr = "ready-run";
+    nuqs[REPORT_TAKEOVER_OWNER_PARAM] = "opcln";
+    setQueryStates.mockImplementationOnce(async () => undefined);
+
+    const { rerender } = render(<AvailabilityProbe paramKey="opcln" />);
+    await waitFor(() =>
+      expect(setQueryStates).toHaveBeenCalledWith({
+        opcln: null,
+        [REPORT_TAKEOVER_OWNER_PARAM]: "opcbr",
+      }),
+    );
+
+    rerender(<AvailabilityProbe paramKey="opcln" />);
+    expect(setQueryStates).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps ownership while the run is loading, available, or backgrounded", () => {
+    nuqs.opcln = "run-7";
+    nuqs.opcbr = "run-8";
+    nuqs[REPORT_TAKEOVER_OWNER_PARAM] = "opcln";
+
+    const { rerender } = render(
+      <AvailabilityProbe paramKey="opcln" loading />,
+    );
+    expect(setQueryStates).not.toHaveBeenCalled();
+
+    rerender(<AvailabilityProbe paramKey="opcln" available />);
+    expect(setQueryStates).not.toHaveBeenCalled();
+
+    rerender(<AvailabilityProbe paramKey="opcbr" />);
+    expect(setQueryStates).not.toHaveBeenCalled();
   });
 });
 

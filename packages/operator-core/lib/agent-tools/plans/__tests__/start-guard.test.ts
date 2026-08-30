@@ -260,6 +260,14 @@ const expectNoOpStatusWrite = (): void => {
 };
 
 describe('plans:start terminal guard', () => {
+  it('opts into idempotent completion so a slow finished saga surfaces its outcome', () => {
+    // plans:start may commit approval, promotion, and/or the Promoted block
+    // before its 60s transport budget expires. The dispatcher must return the
+    // handler's structured outcome when the retry-safe saga finishes after the
+    // abort, rather than replacing it with an ambiguous timeout.
+    expect((tool as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+
   it('rejects a draft forward ref at activation before any gate, row write, or promotion', async () => {
     H.state.frontmatterStatus = 'draft';
     H.state.parsedItems = [

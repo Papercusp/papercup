@@ -53,14 +53,16 @@ import type { FilterLeaf, FilterNode } from './claim-spec';
 /**
  * Claim-spec filter fields that appear (under the SAME key) on the
  * `work-item:claimable` event payload (`{ id, kind, severity, harness, title,
- * state, reason, plan, tags }` — see emitWorkItemClaimableEvent). `severity`,
+ * state, reason, plan, tags, goal }` — see emitWorkItemClaimableEvent). `severity`,
  * `harness`, `state`, `reason` are payload-only (no claim-spec leaf references
  * them). `plan` is carried on the payload specifically so a plan-drain spec can
  * narrow here (EI-15185); `tags` likewise so a spec that EXCLUDES a whole tagged
  * category (p2p / rig-needed / etc — the class the title-glob workaround stood
- * in for when tags went unpopulated) can narrow here too (EI-14161).
+ * in for when tags went unpopulated) can narrow here too (EI-14161). `goal` is
+ * carried from `WorkItem.goalId` so a goal-drain spec can narrow here as well
+ * (EI-21834327391666056).
  */
-const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'plan', 'tags']);
+const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'plan', 'tags', 'goal']);
 
 /** Array-VALUED payload fields — mingo/DataCondition still does implicit
  *  per-element matching for these (verified: `equals`/`notEquals`/`in`/`matches`

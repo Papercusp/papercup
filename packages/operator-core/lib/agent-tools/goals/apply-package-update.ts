@@ -19,6 +19,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { planGoalPackageUpdate, applyGoalPackageUpdate } from '../../goals/package-update';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -64,6 +65,7 @@ export default defineTool({
       return text({ ok: true, dryRun: true, plan, hint: 'Re-call with confirm: true to apply.' });
     }
 
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, sql);
     const applied = await applyGoalPackageUpdate(sql, { workspaceId, goalId: args.goalId });
     if (!applied.ok) {
       const { ok: _ok, reason, ...rest } = applied;

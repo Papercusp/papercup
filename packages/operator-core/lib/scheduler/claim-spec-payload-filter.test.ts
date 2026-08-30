@@ -27,6 +27,7 @@ function payloadOf(p: {
   title?: string;
   plan?: string | null;
   tags?: string[];
+  goal?: string | null;
 }): Record<string, unknown> {
   return {
     id: p.id ?? 'X-1',
@@ -38,6 +39,7 @@ function payloadOf(p: {
     reason: 'created',
     plan: p.plan ?? null,
     tags: p.tags ?? [],
+    goal: p.goal ?? null,
   };
 }
 
@@ -48,6 +50,7 @@ function subjectOf(p: {
   title?: string;
   plan?: string | null;
   tags?: string[];
+  goal?: string | null;
 }): ClaimSpecSubject {
   return {
     id: p.id ?? 'X-1',
@@ -65,7 +68,7 @@ function subjectOf(p: {
     estCost: null,
     assignee: null,
     severity: null,
-    goal: null,
+    goal: p.goal ?? null,
   };
 }
 
@@ -82,6 +85,23 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
   it('plan `=` → { plan: { equals } }', () => {
     const f: FilterNode = { field: 'plan', op: '=', value: 'drain-plan' };
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ plan: { equals: 'drain-plan' } });
+  });
+
+  it('goal `=` → { goal: { equals } }', () => {
+    const f: FilterNode = { field: 'goal', op: '=', value: 'goal-drain' };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ goal: { equals: 'goal-drain' } });
+  });
+
+  it('ANY(goal, id) keeps both payload-visible arms instead of collapsing to undefined', () => {
+    const f: FilterNode = {
+      any: [
+        { field: 'goal', op: '=', value: 'goal-drain' },
+        { field: 'id', op: 'in', value: ['WI-2183', 'EI-2183'] },
+      ],
+    };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({
+      any: [{ goal: { equals: 'goal-drain' } }, { id: { in: ['WI-2183', 'EI-2183'] } }],
+    });
   });
 
   it('NOT title glob → { not: { title: { matches } } } mirroring the spec globRegex', () => {
@@ -272,6 +292,7 @@ describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', 
     { not: { field: 'title', op: 'glob', value: '*p2p*' } },
     { field: 'title', op: 'contains', value: 'p2p' },
     { field: 'plan', op: '=', value: 'A' },
+    { field: 'goal', op: '=', value: 'goal-a' },
     // EI-14161: tags leaves — exact membership (`contains`/`=`), `in`, `!=`, and both
     // sides of a `not` must agree exactly with matchesClaimSpecFilter's array branch.
     { field: 'tags', op: 'contains', value: 'p2p' },
@@ -297,17 +318,23 @@ describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', 
         { field: 'plan', op: '=', value: 'A' },
       ],
     },
+    {
+      any: [
+        { field: 'goal', op: '=', value: 'goal-a' },
+        { field: 'id', op: '=', value: 'EI-128' },
+      ],
+    },
   ];
 
-  const items: Array<{ id?: string; kind?: string; title?: string; plan?: string | null; tags?: string[] }> = [
-    { id: 'F-1', kind: 'feature', title: 'sheets clone', plan: 'A' },
-    { id: 'F-2', kind: 'feature', title: 'p2p sync fix', plan: 'B' },
-    { id: 'C-1', kind: 'chunk', title: 'grid render', plan: 'A' },
-    { id: 'EI-128', kind: 'bug', title: 'p2p-perf regression', plan: null, tags: ['p2p'] },
-    { id: 'EI-421', kind: 'feature', title: 'federation rig soak', plan: null, tags: ['rig'] },
-    { id: 'WI-5013', kind: 'change', title: 'rollout tracking', plan: 'B' },
-    { id: 'T-1', kind: 'task', title: 'no plan here', plan: null },
-    { id: 'F-10', kind: 'feature', title: 'unrelated work', plan: null, tags: ['p2p-adjacent'] },
+  const items: Array<{ id?: string; kind?: string; title?: string; plan?: string | null; tags?: string[]; goal?: string | null }> = [
+    { id: 'F-1', kind: 'feature', title: 'sheets clone', plan: 'A', goal: 'goal-a' },
+    { id: 'F-2', kind: 'feature', title: 'p2p sync fix', plan: 'B', goal: 'goal-b' },
+    { id: 'C-1', kind: 'chunk', title: 'grid render', plan: 'A', goal: null },
+    { id: 'EI-128', kind: 'bug', title: 'p2p-perf regression', plan: null, tags: ['p2p'], goal: null },
+    { id: 'EI-421', kind: 'feature', title: 'federation rig soak', plan: null, tags: ['rig'], goal: 'goal-rig' },
+    { id: 'WI-5013', kind: 'change', title: 'rollout tracking', plan: 'B', goal: null },
+    { id: 'T-1', kind: 'task', title: 'no plan here', plan: null, goal: null },
+    { id: 'F-10', kind: 'feature', title: 'unrelated work', plan: null, tags: ['p2p-adjacent'], goal: null },
   ];
 
   for (const filter of payloadOnlyFilters) {

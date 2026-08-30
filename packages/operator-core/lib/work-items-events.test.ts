@@ -106,6 +106,7 @@ describe('helpers', () => {
       state: 'open',
       assignee: null,
       harness: 'papercusp',
+      goalId: 'goal-1',
       payload: { tags: ['byoc'] },
     });
     expect(workItemClaimableEventPayload(item, 'released')).toMatchObject({
@@ -114,6 +115,7 @@ describe('helpers', () => {
       harness: 'papercusp',
       state: 'open',
       reason: 'released',
+      goal: 'goal-1',
       tags: ['byoc'],
     });
     expect(workItemClaimableEventPayload(item)).not.toHaveProperty('reason');

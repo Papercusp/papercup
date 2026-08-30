@@ -9,6 +9,7 @@ import { useFlag } from "@/lib/flag-hooks";
 import { encodeScopedRef } from "../chat/chat-ref-popup-params";
 import {
   ReportTakeoverLayer,
+  useReleaseMissingReportTakeover,
   useReportTakeoverParam,
 } from "../review-report/ReportTakeover";
 import { WORK_ITEM_DISCUSSION_PARAM } from "../work-items/WorkItemDiscussion";
@@ -23,6 +24,11 @@ export default function InboxBulkReportHost() {
   const report = useReportTakeoverParam(INBOX_BULK_RUN_PARAM);
   const bulk = useInboxBulkRun(report.value, {
     enabled: enabled && report.foreground,
+  });
+  useReleaseMissingReportTakeover(report, {
+    enabled,
+    loading: bulk.loading,
+    available: bulk.run !== null,
   });
   const reviewing =
     enabled &&

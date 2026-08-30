@@ -102,6 +102,43 @@ export interface ReportTakeoverParam {
   close: () => void;
 }
 
+export interface ReportTakeoverAvailability {
+  /** False while the consumer's feature is disabled. */
+  enabled: boolean;
+  /** True until the explicit run lookup has settled. */
+  loading: boolean;
+  /** True once the selected run exists, regardless of its current phase. */
+  available: boolean;
+}
+
+/**
+ * Release a URL-marked foreground owner only after its explicit run lookup has
+ * settled missing. A pending/running run is still available and keeps
+ * ownership; a disabled or background consumer never mutates the URL.
+ *
+ * The ref prevents repeated close writes while nuqs is applying the atomic
+ * run-param + owner-marker handoff. Once this consumer leaves foreground it is
+ * reset, so revisiting the same now-missing deep link can recover again.
+ */
+export function useReleaseMissingReportTakeover(
+  report: Pick<ReportTakeoverParam, "value" | "foreground" | "close">,
+  availability: ReportTakeoverAvailability,
+): void {
+  const releasedValueRef = useRef<string | null>(null);
+  const { value, foreground, close } = report;
+  const { enabled, loading, available } = availability;
+
+  useEffect(() => {
+    if (!enabled || !foreground || !value) {
+      releasedValueRef.current = null;
+      return;
+    }
+    if (loading || available || releasedValueRef.current === value) return;
+    releasedValueRef.current = value;
+    close();
+  }, [available, close, enabled, foreground, loading, value]);
+}
+
 /** nuqs wiring for a report-takeover param. URL-owned on purpose: the takeover
  *  open/closed state is user-meaningful (deep-linkable, agent-visible via
  *  ui:get_state), unlike the in-review checkbox drafts which stay useState. */

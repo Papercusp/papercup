@@ -105,6 +105,15 @@ export default defineTool({
     ],
   },
   capability: 'plans:write',
+  // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007;
+  // EI-21832071416959895): plans:start is a multi-step approval/promotion
+  // saga, but every leg is retry-safe — draft→ready is conditional, plan-item
+  // promotion is condition-keyed, the generated Promoted block is an upsert,
+  // and exact-plan admission is an idempotent binding. If the handler finishes
+  // just after the transport deadline, surface its structured partial outcome
+  // instead of a false timeout that hides what landed and invites a duplicate
+  // retry. Inert except in the dispatch abort-race branch.
+  idempotent: true,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],

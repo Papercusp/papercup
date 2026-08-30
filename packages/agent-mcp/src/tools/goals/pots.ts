@@ -20,6 +20,7 @@ import { goalSpend, goalsForPot, linkPot, potsForGoal, unlinkPot } from '@paperc
 import type { Sql } from 'postgres';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { resolveGoalWorkspace as resolveWorkspace } from './_workspace';
+import { assertGoalWriteAuthorityForCaller } from '@papercusp/operator-core/lib/goals/write-authority';
 
 /**
  * Built fresh per call rather than shared as a frozen constant: `as const`
@@ -73,6 +74,7 @@ export const attachPot = defineTool({
   async handler(args, ctx) {
     const workspaceId = await resolveWorkspace(ctx as never);
     if (!workspaceId) return noWorkspace();
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as Sql);
     const link = await linkPot(ctx.tx as Sql, {
       workspaceId,
       goalId: args.goalId,
@@ -118,6 +120,7 @@ export const detachPot = defineTool({
   async handler(args, ctx) {
     const workspaceId = await resolveWorkspace(ctx as never);
     if (!workspaceId) return noWorkspace();
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as Sql);
     const removed = await unlinkPot(ctx.tx as Sql, {
       workspaceId,
       goalId: args.goalId,

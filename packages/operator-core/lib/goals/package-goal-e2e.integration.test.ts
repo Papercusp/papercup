@@ -46,6 +46,7 @@ import {
   type StartGoalFromPackageDeps,
 } from './start-from-package';
 import { startGoalById } from './start-goal-by-id';
+import { resolveGoalHoldersFromRows } from './holder';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { resolveLocalGoalPackage } from '../cupboard/goal-package-store';
 import { STANDING_GOAL_KILL_POLARITY } from './kill-criterion';
@@ -90,13 +91,8 @@ function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }):
           capture.kickoffPrompt = launchInput.kickoffPrompt ?? null;
           return { ownerId: HOLDER, warnings: [] };
         },
-        resolveHolders: async (_sql, { workspaceId, goalId }) => ({
-          goalId,
-          workspaceId,
-          holders: [],
-          live: [],
-          liveness: 'unheld',
-        }),
+        resolveHolders: async (_sql, { workspaceId, goalId }) =>
+          resolveGoalHoldersFromRows(goalId, workspaceId, [], new Map()),
         // REAL builder (EI-21566842357792802): this e2e asserts the PACKAGE
         // brief survives to the launch door, so the default must be the genuine
         // one — a stub here could mask the package brief being dropped in favour

@@ -32,6 +32,7 @@ import { isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug'
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 import { applyGoalBlockedBy } from './goal-deps';
+import { assertGoalWriteAuthorityForCaller } from '@papercusp/operator-core/lib/goals/write-authority';
 
 // The id minter, the status vocabulary, the tripwire schema and the row write
 // live in `./_core` so `goals:start` (operator-core — it also SPAWNS the
@@ -152,6 +153,7 @@ export default defineTool({
         ],
       };
     }
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as never);
     // EI-21563406996333542: the line above deliberately rejects the wildcard for
     // workspaceId; this one used to take `ctx.harnessSlug` RAW, so a session in
     // workspace-global scope wrote `install_slug = '*'`. That was accepted here and

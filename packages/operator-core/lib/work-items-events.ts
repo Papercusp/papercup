@@ -229,6 +229,10 @@ export function workItemClaimableEventPayload(
     harness: wi.harness,
     title: wi.title,
     state: wi.state,
+    // WI-21834327391666056: carry goal provenance so goal-scoped claim specs
+    // can narrow the canonical claimable await without falling back to a
+    // hive-wide wake.
+    goal: wi.goalId,
     ...(reason ? { reason } : {}),
     // EI-15185: carry the item's plan slug so a fleet member's derived
     // `payload_filter` (scheduler:get_next windDown → claim-spec-payload-filter)

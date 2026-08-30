@@ -15,6 +15,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { startGoalFromPackage } from '../../goals/start-from-package';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
@@ -73,6 +74,7 @@ export default defineTool({
     if (!workspaceId) {
       return err('No concrete workspace in scope — a goal cannot be started workspace-less.');
     }
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as unknown as Sql);
     let callerOwnerId: string | null = null;
     try {
       callerOwnerId = resolveAgentIdentity(ctx).ownerId;

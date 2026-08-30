@@ -13,11 +13,19 @@ const H = vi.hoisted(() => ({
   },
   attentionReads: { value: 0 },
   queryOptions: { value: null as null | { enabled: boolean } },
+  releaseAvailability: {
+    value: null as null | {
+      enabled: boolean;
+      loading: boolean;
+      available: boolean;
+    },
+  },
   reportProps: { value: null as Record<string, unknown> | null },
   state: {
     value: {
       run: null as null | { runId: string; phase: string },
       items: [] as unknown[],
+      loading: true as boolean | undefined,
     },
   },
 }));
@@ -31,6 +39,16 @@ vi.mock("../review-report/ReportTakeover", () => ({
     show: vi.fn(),
     close: H.param.close,
   }),
+  useReleaseMissingReportTakeover: (
+    _report: unknown,
+    availability: {
+      enabled: boolean;
+      loading: boolean;
+      available: boolean;
+    },
+  ) => {
+    H.releaseAvailability.value = availability;
+  },
   ReportTakeoverLayer: ({
     children,
     testId,
@@ -77,18 +95,38 @@ afterEach(() => {
   H.enabled.value = true;
   H.param.value = "run-8";
   H.param.foreground = true;
-  H.state.value = { run: null, items: [] };
+  H.state.value = { run: null, items: [], loading: true };
   H.attentionReads.value = 0;
   H.queryOptions.value = null;
+  H.releaseAvailability.value = null;
   H.reportProps.value = null;
   H.param.close.mockClear();
 });
 
 describe("InboxBulkReportHost", () => {
   it("does not take over while the deep-linked run is still running", () => {
-    H.state.value = { run: { runId: "run-8", phase: "running" }, items: [] };
+    H.state.value = {
+      run: { runId: "run-8", phase: "running" },
+      items: [],
+      loading: false,
+    };
     render(<InboxBulkReportHost />);
     expect(screen.queryByTestId("inbox-bulk-report-takeover")).toBeNull();
+    expect(H.releaseAvailability.value).toEqual({
+      enabled: true,
+      loading: false,
+      available: true,
+    });
+  });
+
+  it("reports a settled missing run to the shared owner-release hook", () => {
+    H.state.value = { run: null, items: [], loading: false };
+    render(<InboxBulkReportHost />);
+    expect(H.releaseAvailability.value).toEqual({
+      enabled: true,
+      loading: false,
+      available: false,
+    });
   });
 
   it("mounts one foreground takeover without a full attention read for 200 persisted rows", () => {

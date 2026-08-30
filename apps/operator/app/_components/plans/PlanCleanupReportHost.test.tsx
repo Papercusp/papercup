@@ -18,10 +18,18 @@ const H = vi.hoisted(() => ({
   },
   setDashboardPlan: vi.fn(),
   queryOptions: { value: null as null | { enabled: boolean } },
+  releaseAvailability: {
+    value: null as null | {
+      enabled: boolean;
+      loading: boolean;
+      available: boolean;
+    },
+  },
   state: {
     value: {
       run: null as null | { runId: string; phase: string },
       findings: [] as unknown[],
+      loading: true as boolean | undefined,
     },
   },
 }));
@@ -40,6 +48,16 @@ vi.mock("../review-report/ReportTakeover", () => ({
     show: vi.fn(),
     close: H.param.close,
   }),
+  useReleaseMissingReportTakeover: (
+    _report: unknown,
+    availability: {
+      enabled: boolean;
+      loading: boolean;
+      available: boolean;
+    },
+  ) => {
+    H.releaseAvailability.value = availability;
+  },
   ReportTakeoverLayer: ({
     children,
     testId,
@@ -84,17 +102,37 @@ afterEach(() => {
   H.enabled.value = true;
   H.param.value = "run-7";
   H.param.foreground = true;
-  H.state.value = { run: null, findings: [] };
+  H.state.value = { run: null, findings: [], loading: true };
   H.queryOptions.value = null;
+  H.releaseAvailability.value = null;
   H.param.close.mockClear();
   H.setDashboardPlan.mockClear();
 });
 
 describe("PlanCleanupReportHost", () => {
   it("does not take over while the deep-linked run is still running", () => {
-    H.state.value = { run: { runId: "run-7", phase: "running" }, findings: [] };
+    H.state.value = {
+      run: { runId: "run-7", phase: "running" },
+      findings: [],
+      loading: false,
+    };
     render(<PlanCleanupReportHost />);
     expect(screen.queryByTestId("plan-cleanup-report-takeover")).toBeNull();
+    expect(H.releaseAvailability.value).toEqual({
+      enabled: true,
+      loading: false,
+      available: true,
+    });
+  });
+
+  it("reports a settled missing run to the shared owner-release hook", () => {
+    H.state.value = { run: null, findings: [], loading: false };
+    render(<PlanCleanupReportHost />);
+    expect(H.releaseAvailability.value).toEqual({
+      enabled: true,
+      loading: false,
+      available: false,
+    });
   });
 
   it("mounts the app-pane takeover exactly when the persisted run reaches review", () => {

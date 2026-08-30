@@ -23,6 +23,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { isCompilableSchema, jsonSchemaRequiredKeys } from '../../json-schema-validation';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -74,6 +75,7 @@ export default defineTool({
         true,
       );
     }
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as never);
     const sql = ctx.tx as unknown as GoalSqlTag;
     const rows = await sql<Array<{ id: string }>>`
       UPDATE harness_shared.goals

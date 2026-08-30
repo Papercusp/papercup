@@ -92,6 +92,7 @@ describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () =
     expect(IDLE_PULL_MISS_ADVICE).toContain('events:await');
     expect(IDLE_PULL_MISS_ADVICE).toContain('AUTHORITATIVE');
     expect(IDLE_PULL_MISS_ADVICE).toContain('re-register');
+    expect(IDLE_PULL_MISS_ADVICE).toContain('goal');
     expect(IDLE_PULL_MISS_ADVICE).toMatch(/do NOT re-poll/i);
     expect(IDLE_PULL_MISS_ADVICE).toContain('END YOUR TURN');
   });

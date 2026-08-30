@@ -8,6 +8,7 @@ import { lazyWithRetry as lazy } from "@papercusp/operator-core/lib/lazy-with-re
 import { useFlag } from "@/lib/flag-hooks";
 import {
   ReportTakeoverLayer,
+  useReleaseMissingReportTakeover,
   useReportTakeoverParam,
 } from "../review-report/ReportTakeover";
 import {
@@ -26,6 +27,11 @@ export default function PlanCleanupReportHost() {
   const report = useReportTakeoverParam(PLAN_CLEANUP_RUN_PARAM);
   const cleanup = usePlanCleanupRun(report.value, {
     enabled: enabled && report.foreground,
+  });
+  useReleaseMissingReportTakeover(report, {
+    enabled,
+    loading: cleanup.loading,
+    available: cleanup.run !== null,
   });
   const [, setDashboardPlan] = useQueryState(
     PLAN_DASHBOARD_PARAM,

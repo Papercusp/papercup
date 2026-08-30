@@ -45,7 +45,7 @@
  * NOT IN THIS MODULE — `idle-with-claimable`, P-009's fifth transition, is ALREADY
  * served by the existing global `work-item:claimable` key, which is genuinely
  * payload-filtered (it carries `{id,kind,severity,harness,title,state,reason,plan,
- * tags}`). A leader parks on it with `payload_filter: { plan: { eq: '<slug>' } }`.
+ * tags,goal}`). A leader parks on it with `payload_filter: { plan: { eq: '<slug>' } }`.
  * Minting a fleet-scoped twin would duplicate an emission that already fires; the
  * catalog cross-references it instead.
  *

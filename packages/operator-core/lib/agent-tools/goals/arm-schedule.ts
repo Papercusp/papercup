@@ -20,6 +20,7 @@ import {
   armGoalSchedule,
   deactivateGoalSchedule,
 } from '../../harness/routines/materialize-goal-schedule';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -55,6 +56,7 @@ export default defineTool({
     if (!workspaceId) return errorOut('no_workspace', 'no concrete workspace in scope');
     const harnessSlug = scoped.harnessSlug !== '*' ? scoped.harnessSlug : null;
     if (!harnessSlug) return errorOut('no_harness', 'pass a CONCRETE `harness`');
+    await assertGoalWriteAuthorityForCaller(scoped, workspaceId, scoped.tx as never);
 
     if (args.disarm) {
       const paused = await deactivateGoalSchedule(harnessSlug, args.goalId);

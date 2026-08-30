@@ -20,6 +20,7 @@ import {
   deleteGoalSchedule,
   materializeGoalSchedule,
 } from '../../harness/routines/materialize-goal-schedule';
+import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 
 const scheduleSchema = z
   .object({
@@ -84,6 +85,7 @@ export default defineTool({
        WHERE workspace_id = ${workspaceId} AND id = ${args.goalId}
        LIMIT 1`;
     if (!goals[0]) return errorOut('goal_not_found', `goal '${args.goalId}' not found`);
+    await assertGoalWriteAuthorityForCaller(scoped, workspaceId, scoped.tx as never);
 
     if (sched == null) {
       // Clearing un-authors entirely: the routine row IS the storage.

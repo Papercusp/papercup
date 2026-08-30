@@ -250,13 +250,15 @@ describe('confined task exit recording (WI-37509)', () => {
   });
 
   it('closes a scope that drains during the handoff window without warning', async () => {
+    vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitter, scope } = await spawnConfined([3204532, 3204609, 3204726]);
 
     emitter.emit('exit', null, 'SIGTERM');
-    await new Promise((resolve) => setTimeout(resolve, SCOPE_HANDOFF_RECHECK_MS - 1));
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_RECHECK_MS - 1);
     scope.procs = [];
-    await flushAfterHandoff();
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
 
     expect(L.closed).toHaveLength(1);
     expect(L.closed[0]!.state).toBe('killed');
