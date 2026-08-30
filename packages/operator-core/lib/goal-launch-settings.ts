@@ -1513,6 +1513,27 @@ export interface GoalLaunchSettingsRead {
  * Fail-soft like every other read here: a goal that cannot be resolved yields no
  * settings and a degraded reason, never a thrown launch.
  */
+/**
+ * Is this an authority error that a FAIL-SOFT launch READ must still refuse?
+ *
+ * `GoalHolderAuthorityError` has covered two very different conditions since
+ * 02d9c38d1f: a `superseded` VERDICT — the authority store spoke, and said this
+ * owner is not the holder — and an `unreadable` STORE, which could not speak at
+ * all. Only the verdict is an authority violation.
+ *
+ * The read doors below are documented fail-soft ("never a thrown launch"), so
+ * rethrowing the storage failure there turns a transient DB blip into a hard
+ * launch failure — and, because `pg()` refuses a real connection under Vitest,
+ * it red-ed 94 launch-on-plan unit tests (WI-1195329).
+ *
+ * The MUTATION fence in `assertGoalHolderMutationAuthority` still refuses BOTH,
+ * which is correct and deliberately untouched: on a write path, absence of
+ * evidence must not become authority.
+ */
+function isFatalGoalHolderVerdict(e: unknown): boolean {
+  return isGoalHolderAuthorityError(e) && e.code === 'goal_holder_superseded';
+}
+
 export async function readGoalLaunchSettingsForLauncher(args: {
   workspaceId: string;
   launcherOwnerId: string;
@@ -1523,7 +1544,7 @@ export async function readGoalLaunchSettingsForLauncher(args: {
   try {
     goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
   } catch (e) {
-    if (isGoalHolderAuthorityError(e)) throw e;
+    if (isFatalGoalHolderVerdict(e)) throw e;
     degradedReasons.push(`goal context unresolved: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!goalId) {
@@ -1806,10 +1827,13 @@ export async function resolveGoalLaunch(args: {
   try {
     goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
   } catch (e) {
-    if (isGoalHolderAuthorityError(e)) throw e;
-    // resolveGoalContext is itself fail-soft, so reaching here means something
-    // below it broke hard. No goal context = no ceiling and no profile, which is
-    // exactly the pre-P-004 behaviour — but say so.
+    if (isFatalGoalHolderVerdict(e)) throw e;
+    // resolveGoalContext USED to be fail-soft, so reaching here used to mean
+    // something below it broke hard. Since 02d9c38d1f it also refuses when the
+    // authority store is merely unreadable, so this leg is now the normal path
+    // for a storage blip too (WI-1195329). Either way: no goal context = no
+    // ceiling and no profile, which is exactly the pre-P-004 behaviour — but
+    // say so, rather than failing the launch.
     degradedReasons.push(`goal context unresolved: ${e instanceof Error ? e.message : String(e)}`);
   }
   return resolveGoalLaunchForGoal({ ...args, goalId, priorDegraded: degradedReasons });
