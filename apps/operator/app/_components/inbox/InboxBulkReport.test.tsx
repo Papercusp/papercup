@@ -98,6 +98,7 @@ vi.mock("./InboxBulkRecommendation", () => ({
 import InboxBulkReport, {
   buildInboxBulkReviewGroups,
   bulkRunItemToAttentionSnapshot,
+  inboxBulkReviewConfidence,
 } from "./InboxBulkReport";
 
 function attention(
@@ -314,7 +315,7 @@ describe("buildInboxBulkReviewGroups", () => {
       status: "pending",
       selectable: true,
       accounting: "ready",
-      confidence: "recommended",
+      confidence: "high",
       sourceLabel: "Message",
       referenceLabel: "Acknowledge",
     });
@@ -322,7 +323,7 @@ describe("buildInboxBulkReviewGroups", () => {
       status: "applied",
       selectable: false,
       accounting: "handled",
-      confidence: "provable",
+      confidence: "high",
     });
     expect(
       groups.find((group) => group.title === "Skipped · Escalation")?.rows[0],
@@ -331,6 +332,59 @@ describe("buildInboxBulkReviewGroups", () => {
       selectable: false,
       accounting: "not-applied",
     });
+  });
+
+  it("preserves canonical confidence and fails closed when no assessment was recorded", () => {
+    for (const confidence of [
+      "high",
+      "medium",
+      "low",
+      "insufficient",
+    ] as const) {
+      expect(
+        inboxBulkReviewConfidence(
+          runItem({
+            recommendation: {
+              kind: "owner_action",
+              label: "Review",
+              rationale: "Recorded rationale",
+              evidenceBasis: ["recorded evidence"],
+              confidence,
+              responsibility: "owner",
+              actionId: null,
+            },
+            confidenceLevel: confidence === "low" ? "high" : null,
+          }),
+        ),
+      ).toBe(confidence);
+    }
+
+    expect(
+      inboxBulkReviewConfidence(
+        runItem({ recommendation: null, confidenceLevel: "medium" }),
+      ),
+    ).toBe("medium");
+    expect(
+      inboxBulkReviewConfidence(
+        runItem({
+          recommendation: null,
+          confidenceLevel: null,
+          confidence: "low",
+        }),
+      ),
+    ).toBe("low");
+    for (const outcome of ["pending", "failed"] as const) {
+      expect(
+        inboxBulkReviewConfidence(
+          runItem({
+            outcome,
+            recommendation: null,
+            confidenceLevel: null,
+            confidence: null,
+          }),
+        ),
+      ).toBe("insufficient");
+    }
   });
 
   it("keeps only a non-empty drafted Answer selectable among navigate actions", () => {

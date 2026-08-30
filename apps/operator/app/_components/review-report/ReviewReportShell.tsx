@@ -37,12 +37,15 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import type { BulkConfidence } from "@papercusp/operator-core/lib/attention/bulk-dispositions";
 import { Check, ChevronDown, ShieldCheck } from "lucide-react";
 import { Button } from "../../harness/Button";
 import { Checkbox } from "../../harness/Checkbox";
 import "./review-report.css";
 
-export type ReviewRowConfidence = "provable" | "recommended";
+/** Keep the report's owner-facing confidence vocabulary pinned to the
+ * resolver contract instead of collapsing it into presentation-only aliases. */
+export type ReviewRowConfidence = BulkConfidence;
 export type ReviewRowStatus = "pending" | "applied" | "dismissed";
 export type ReviewRowAccounting =
   | "ready"
@@ -194,8 +197,10 @@ function initialSelection(
 }
 
 const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
-  provable: "provable",
-  recommended: "recommended",
+  high: "high",
+  medium: "medium",
+  low: "low",
+  insufficient: "insufficient",
 };
 
 /**
@@ -305,7 +310,8 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
   const selectable = rowSelectable(row);
   const evidence =
     row.evidence.length > 0 ? row.evidence : ["No reason was recorded."];
-  const detailAction = `${detailOpen ? "Hide" : "Show"} details for ${row.title}`;
+  const confidenceLabel = CONFIDENCE_LABEL[row.confidence];
+  const detailAction = `${detailOpen ? "Hide" : "Show"} details for ${row.title} — ${confidenceLabel} confidence`;
 
   return (
     <li
@@ -391,6 +397,7 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
         type="button"
         className={`review-report__row-conf review-report__row-detail-toggle review-report__row-conf--${row.confidence}`}
         data-testid={`review-row-conf-${row.id}`}
+        data-confidence={row.confidence}
         aria-label={detailAction}
         aria-expanded={detailOpen}
         aria-controls={detailRegionId}
@@ -401,7 +408,7 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
         }}
       >
         <span className="review-report__row-detail-toggle-inner">
-          <span>{CONFIDENCE_LABEL[row.confidence]}</span>
+          <span>{confidenceLabel}</span>
           <ChevronDown
             size={11}
             className={`review-report__row-detail-chevron${detailOpen ? " review-report__row-detail-chevron--open" : ""}`}

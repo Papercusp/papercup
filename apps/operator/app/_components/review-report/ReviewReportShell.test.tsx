@@ -50,7 +50,7 @@ function groupsFixture(): ReviewReportGroup[] {
             "WI-100 done; completion recorded",
             "plan item linked by coverage",
           ],
-          confidence: "provable",
+          confidence: "high",
           accounting: "ready",
           detail: (
             <button type="button" data-testid="consumer-detail-f1">
@@ -62,7 +62,7 @@ function groupsFixture(): ReviewReportGroup[] {
           id: "f2",
           title: "my-plan#P-002 → done",
           evidence: ["WI-101 done; NO completion record"],
-          confidence: "recommended",
+          confidence: "medium",
           accounting: "ready",
         },
       ],
@@ -75,7 +75,7 @@ function groupsFixture(): ReviewReportGroup[] {
           id: "o1",
           title: "my-plan#P-003 claim released",
           evidence: ["lease lapsed 42min ago; holder dead"],
-          confidence: "provable",
+          confidence: "high",
           accounting: "handled",
           status: "applied",
         },
@@ -83,7 +83,7 @@ function groupsFixture(): ReviewReportGroup[] {
           id: "o2",
           title: "other-plan#P-004 claim released",
           evidence: ["lease lapsed 12min ago; holder dead"],
-          confidence: "provable",
+          confidence: "high",
           accounting: "ready",
         },
       ],
@@ -158,12 +158,8 @@ describe("rendering", () => {
     expect(
       responsiveRow.querySelector(".review-report__row-conf"),
     ).toBeTruthy();
-    expect(screen.getByTestId("review-row-conf-f1").textContent).toBe(
-      "provable",
-    );
-    expect(screen.getByTestId("review-row-conf-f2").textContent).toBe(
-      "recommended",
-    );
+    expect(screen.getByTestId("review-row-conf-f1").textContent).toBe("high");
+    expect(screen.getByTestId("review-row-conf-f2").textContent).toBe("medium");
     expect(
       screen
         .getByTestId("review-group-toggle-flip-to-done")
@@ -173,6 +169,38 @@ describe("rendering", () => {
     expect(
       screen.queryByTestId("review-group-columns-flip-to-done"),
     ).toBeNull();
+  });
+
+  it("renders every canonical confidence level as an explicit disclosure state", () => {
+    const levels = ["high", "medium", "low", "insufficient"] as const;
+    renderShell({
+      groups: [
+        {
+          id: "confidence",
+          title: "Confidence",
+          rows: levels.map((confidence) => ({
+            id: confidence,
+            title: `${confidence} recommendation`,
+            evidence: [],
+            confidence,
+            accounting: "manual" as const,
+            selectable: false,
+          })),
+        },
+      ],
+    });
+
+    for (const confidence of levels) {
+      const disclosure = screen.getByTestId(`review-row-conf-${confidence}`);
+      expect(disclosure.textContent).toBe(confidence);
+      expect(disclosure.getAttribute("data-confidence")).toBe(confidence);
+      expect(disclosure.className).toContain(
+        `review-report__row-conf--${confidence}`,
+      );
+      expect(disclosure.getAttribute("aria-label")).toContain(
+        `${confidence} confidence`,
+      );
+    }
   });
 
   it("renders the exhaustive summary while omitting rejected extra chrome", () => {
@@ -223,14 +251,14 @@ describe("rendering", () => {
             id: "ready-default",
             title: "Ready by default",
             evidence: [],
-            confidence: "recommended",
+            confidence: "medium",
             accounting: "ready",
           },
           {
             id: "ready-explicit",
             title: "Ready explicitly",
             evidence: [],
-            confidence: "recommended",
+            confidence: "medium",
             accounting: "ready",
             status: "pending",
             selectable: true,
@@ -239,7 +267,7 @@ describe("rendering", () => {
             id: "handled",
             title: "Handled",
             evidence: [],
-            confidence: "provable",
+            confidence: "high",
             accounting: "handled",
             status: "applied",
           },
@@ -247,7 +275,7 @@ describe("rendering", () => {
             id: "manual",
             title: "Manual",
             evidence: [],
-            confidence: "recommended",
+            confidence: "medium",
             accounting: "manual",
             status: "pending",
             selectable: false,
@@ -256,7 +284,7 @@ describe("rendering", () => {
             id: "not-applied",
             title: "Not applied",
             evidence: [],
-            confidence: "recommended",
+            confidence: "medium",
             accounting: "not-applied",
             status: "dismissed",
           },
@@ -310,7 +338,7 @@ describe("rendering", () => {
     expect(toggleF1.getAttribute("aria-expanded")).toBe("true");
     expect(toggleF1.getAttribute("aria-controls")).toBe(detail.id);
     expect(toggleF1.getAttribute("aria-label")).toBe(
-      "Hide details for Index the finished work",
+      "Hide details for Index the finished work — high confidence",
     );
 
     const rowF2 = screen.getByTestId("review-row-f2");
@@ -387,7 +415,7 @@ describe("rendering", () => {
       id: `stress-${index}`,
       title: `Stress row ${index}`,
       evidence: [`Evidence ${index}`],
-      confidence: "provable",
+      confidence: "high",
       accounting: "ready",
       detail: <span>Detail {index}</span>,
     }));
@@ -499,7 +527,7 @@ describe("rendering", () => {
               id: "m1",
               title: "rewrite Now",
               evidence: ["current Now is stale"],
-              confidence: "recommended",
+              confidence: "medium",
               accounting: "manual",
               selectable: false,
             },
@@ -528,7 +556,7 @@ describe("rendering", () => {
               id: "failed-row",
               title: "Retry this change",
               evidence: ["write attempted"],
-              confidence: "recommended",
+              confidence: "medium",
               accounting: "ready",
               detail: "Keep these decision controls available.",
               error: "The write was rejected; review the row and retry.",
@@ -785,7 +813,7 @@ describe("tri-state group checkbox", () => {
               id: "a1",
               title: "done already",
               evidence: [],
-              confidence: "provable",
+              confidence: "high",
               accounting: "handled",
               status: "applied",
             },

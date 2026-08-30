@@ -565,14 +565,24 @@
   transform: rotate(180deg);
 }
 
-.review-report__row-conf--provable {
+.review-report__row-conf--high {
   border-color: color-mix(in srgb, var(--good, var(--accent)) 55%, transparent);
   color: var(--good, var(--accent));
 }
 
-.review-report__row-conf--recommended {
+.review-report__row-conf--medium {
   color: var(--warn);
   border-color: color-mix(in oklab, var(--warn), transparent 52%);
+}
+
+.review-report__row-conf--low {
+  color: var(--bad);
+  border-color: color-mix(in oklab, var(--bad), transparent 52%);
+}
+
+.review-report__row-conf--insufficient {
+  color: var(--muted);
+  border-color: color-mix(in oklab, var(--muted), transparent 58%);
 }
 
 .review-report__footer {

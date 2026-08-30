@@ -63,6 +63,7 @@ vi.mock("./use-plan-cleanup-run", async (importOriginal) => {
 import PlanCleanupReport, {
   applyPlanCleanupFinding,
   buildPlanCleanupReviewGroups,
+  planCleanupReviewConfidence,
 } from "./PlanCleanupReport";
 import { partitionReviewRows } from "../review-report/ReviewReportShell";
 import type {
@@ -157,6 +158,70 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("buildPlanCleanupReviewGroups", () => {
+  it("preserves canonical confidence and fails closed for unassessed operational rows", () => {
+    for (const confidence of [
+      "high",
+      "medium",
+      "low",
+      "insufficient",
+    ] as const) {
+      expect(
+        planCleanupReviewConfidence(
+          finding({
+            recommendation: {
+              kind: "owner_action",
+              label: "Review",
+              rationale: "Recorded rationale",
+              evidenceBasis: ["recorded evidence"],
+              confidence,
+              responsibility: "owner",
+              actionId: null,
+            },
+            confidenceLevel: confidence === "low" ? "high" : null,
+          }),
+        ),
+      ).toBe(confidence);
+    }
+
+    expect(
+      planCleanupReviewConfidence(
+        finding({ recommendation: null, confidenceLevel: "medium" }),
+      ),
+    ).toBe("medium");
+    expect(
+      planCleanupReviewConfidence(
+        finding({
+          outcome: "accepted",
+          recommendation: null,
+          confidenceLevel: null,
+          confidence: "provable",
+        }),
+      ),
+    ).toBe("high");
+    expect(
+      planCleanupReviewConfidence(
+        finding({
+          outcome: "recommended",
+          recommendation: null,
+          confidenceLevel: null,
+          confidence: "recommended",
+        }),
+      ),
+    ).toBe("medium");
+    for (const outcome of ["pending", "failed"] as const) {
+      expect(
+        planCleanupReviewConfidence(
+          finding({
+            outcome,
+            recommendation: null,
+            confidenceLevel: null,
+            confidence: "recommended",
+          }),
+        ),
+      ).toBe("insufficient");
+    }
+  });
+
   it("groups the four review families and selects only concrete recommended hand edits", () => {
     const groups = buildPlanCleanupReviewGroups([
       finding({ findingId: "flip", kind: "flip-to-done" }),

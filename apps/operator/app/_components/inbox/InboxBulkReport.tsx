@@ -19,6 +19,7 @@ import { KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowConfidence,
   type ReviewRowAccounting,
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
@@ -186,6 +187,20 @@ function evidenceLines(runItem: BulkRunItem): string[] {
   return lines.length > 0 ? lines : [`run position · ${runItem.position + 1}`];
 }
 
+/** Typed recommendations and their persisted projection are authoritative.
+ * Legacy rows retain the old high/low value; rows never assessed by the
+ * resolver expose insufficient confidence instead of inventing certainty. */
+export function inboxBulkReviewConfidence(
+  runItem: BulkRunItem,
+): ReviewRowConfidence {
+  return (
+    runItem.recommendation?.confidence ??
+    runItem.confidenceLevel ??
+    runItem.confidence ??
+    "insufficient"
+  );
+}
+
 function fallbackDetail(runItem: BulkRunItem): ReactNode {
   if (runItem.recommendation) {
     return (
@@ -261,8 +276,7 @@ export function buildInboxBulkReviewGroups(
       sourceLabel: kindLabel(kind),
       referenceLabel: action,
       evidence: evidenceLines(runItem),
-      confidence:
-        runItem.outcome === "auto_resolved" ? "provable" : "recommended",
+      confidence: inboxBulkReviewConfidence(runItem),
       accounting: reviewAccounting(runItem, status, hasAction && Boolean(item)),
       status,
       selectable:

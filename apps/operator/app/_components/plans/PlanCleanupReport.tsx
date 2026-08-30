@@ -17,6 +17,7 @@ import {
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowConfidence,
   type ReviewRowAccounting,
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
@@ -125,18 +126,27 @@ function manualReason(finding: PlanCleanupFinding): string | null {
   return null;
 }
 
+/** Prefer the typed recommendation contract, then its persisted projection.
+ * Old deterministic findings retain their provable/recommended meaning, while
+ * an operational row with no recorded assessment fails closed. */
+export function planCleanupReviewConfidence(
+  finding: PlanCleanupFinding,
+): ReviewRowConfidence {
+  const canonical =
+    finding.recommendation?.confidence ?? finding.confidenceLevel;
+  if (canonical) return canonical;
+  if (finding.outcome === "pending" || finding.outcome === "failed") {
+    return "insufficient";
+  }
+  return finding.confidence === "provable" ? "high" : "medium";
+}
+
 function evidenceLines(finding: PlanCleanupFinding): string[] {
   const lines = finding.evidence.map((entry) =>
     [entry.kind, entry.ref, entry.note].filter(Boolean).join(" · "),
   );
   if (finding.error) lines.push(`error · ${finding.error}`);
-  if (finding.recommendation?.confidence) {
-    lines.push(`confidence · ${finding.recommendation.confidence}`);
-  } else if (finding.confidence) {
-    lines.push(
-      `confidence · ${finding.confidence === "provable" ? "high" : "medium"}`,
-    );
-  }
+  lines.push(`confidence · ${planCleanupReviewConfidence(finding)}`);
   if (finding.recommendation?.responsibility) {
     lines.push(`responsibility · ${finding.recommendation.responsibility}`);
   }
@@ -165,11 +175,7 @@ function reportRow(
         : (manualReason(finding) ?? undefined),
     error: localError,
     evidence: evidenceLines(finding),
-    confidence:
-      finding.recommendation?.confidence === "high" ||
-      finding.confidence === "provable"
-        ? "provable"
-        : "recommended",
+    confidence: planCleanupReviewConfidence(finding),
     accounting: reviewAccounting(finding, status),
     status,
     selectable:
