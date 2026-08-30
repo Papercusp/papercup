@@ -19,7 +19,7 @@
  * way back (undici already decoded the body) and forces `accept-encoding: identity` upstream.
  */
 import http from 'node:http';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
 import {
@@ -67,7 +67,17 @@ import {
   type GatewayLegacyEntryExecutorId,
   type GatewayLegacyExecutorId,
 } from './provider-adapters';
-import { executeGatewayLegacyLane, type GatewayKernelAdmissionController } from './request-kernel';
+import {
+  executeGatewayLegacyLane,
+  executeGatewayRequestKernel,
+  GatewayRequestKernelError,
+  type GatewayKernelAdmissionController,
+} from './request-kernel';
+import {
+  createCodexBearerKernelAdapter,
+  parseCodexRequestShape,
+  type CodexBearerFetchResponse,
+} from './codex-bearer-kernel-adapter';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -6008,54 +6018,293 @@ export function createInferenceGateway(deps: GatewayDeps) {
       (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
     stageSpan?.setTransport('bearer-http');
 
+    /*
+     * KERNEL ADOPTION — plan `gateway-kernel-adoption-2026-08-29`, P-003.
+     *
+     * Everything below this point used to be a hand-rolled ladder: a bounded body
+     * read, a single re-armed stall timer (headers TTFB → per-chunk body idle), a
+     * request ceiling, an attempt loop, and a rotate-don't-surface failover
+     * cascade. All five are SHARED request invariants, not Codex protocol, so they
+     * now live in `executeGatewayRequestKernel` and the bearer-specific half
+     * (account selection, token read, header construction, the upstream call,
+     * retryability normalization) lives in `createCodexBearerKernelAdapter`.
+     *
+     * What stays HERE is the part that is genuinely this gateway's: the legacy
+     * counters, the owner-outcome ledger, the routed/pin-yield response headers,
+     * and the Responses-API cache-usage probe. The kernel guarantees exactly ONE
+     * `observeAttempt` callback per attempt, which is what those counters hang off.
+     *
+     * The characterization goldens in `gateway-openai-proxy.test.ts` (P-001) pin
+     * the observable behaviour across this switch and must pass UNCHANGED.
+     */
+
     // Stable request abort for the Codex proxy. Scout times out its in-process
     // `/v1/responses` call at the caller, but the gateway must also stop the
     // upstream OpenAI request or the protected Codex admission slot stays occupied
-    // until the long non-streaming headers timeout. Install this BEFORE body read
-    // so a downstream disconnect cannot race past the per-attempt listener below.
+    // until the long non-streaming headers timeout. Installed BEFORE the body read
+    // so a downstream disconnect cannot race the kernel's own abort wiring; the
+    // kernel forwards this signal to every attempt and to the body pump.
     const reqAbort = new AbortController();
-    let currentAc: AbortController | undefined;
     const abortRequest = (reason: string) => {
-      const err = new Error(reason);
-      if (!reqAbort.signal.aborted) reqAbort.abort(err);
-      try {
-        currentAc?.abort(err);
-      } catch {
-        /* already settled */
-      }
+      if (!reqAbort.signal.aborted) reqAbort.abort(new Error(reason));
     };
     const onReqAborted = () => abortRequest('openai downstream request aborted');
     const onResClose = () => abortRequest('openai downstream response closed');
     req.once('aborted', onReqAborted);
     res.once('close', onResClose);
-    const ceilingTimer = setTimeout(() => {
-      log(
-        'error',
-        `inference-gateway: Codex request hit the ${requestCeilingMs}ms hard ceiling on '${active.accountId}' — force-terminating`,
-      );
-      abortRequest(`openai request ceiling: ${requestCeilingMs}ms`);
-      try {
-        req.destroy();
-      } catch {
-        /* already torn down */
-      }
-      try {
-        res.destroy();
-      } catch {
-        /* already torn down */
-      }
-    }, requestCeilingMs);
-    ceilingTimer.unref?.();
+
+    // Per-attempt bookkeeping the kernel deliberately does NOT own. `attemptsSeen`
+    // and `lastRouteKey` reconstruct what the old loop knew from its own counter:
+    // whether this request ever failed over (for the cache probe and `codexFailovers`).
+    let attemptsSeen = 0;
+    let lastRouteKey: string | null = null;
+    let lastAccountId = active.accountId;
+    // Responses-API cache-usage probe. The old path handed `observeOpenAiCacheUsage`
+    // the same Node stream it piped downstream; the kernel hands chunks to
+    // `downstream.write`, so they are tee'd into this PassThrough instead.
+    let cacheProbe: PassThrough | null = null;
+    const endCacheProbe = () => {
+      if (!cacheProbe) return;
+      cacheProbe.end();
+      cacheProbe = null;
+    };
+
+    /**
+     * A WHATWG response body as the adapter's transport-neutral view of it. The
+     * `cancel` seam is what the kernel calls to release a body it will not forward
+     * (the 429 rotate path), replacing the old `await up.body?.cancel()`.
+     */
+    const toKernelResponseBody = (web: Response['body']): CodexBearerFetchResponse['body'] => {
+      if (!web) return null;
+      const node = Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
+      const iterable = node as unknown as AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void };
+      iterable.cancel = () => {
+        node.destroy();
+      };
+      return iterable;
+    };
+
+    const kernelAdapter = createCodexBearerKernelAdapter({
+      // By here the `if (cli) { …; return }` above has served every CLI-bridge case,
+      // and the no-pool case 503'd, so both of these are resolved.
+      pool: adapter.pool!,
+      upstreamBase: adapter.upstreamBase!,
+      urlPath: url,
+      method: req.method ?? 'POST',
+      requestHeaders: req.headers,
+      stripRequestHeaders: STRIP_REQUEST,
+      tokenTimeoutMs,
+      failoverBackoffMs: bare429FailoverBackoffMs,
+      dispatcherFor: (account) => dispatcherFor(account),
+      rateResetAt: (headers) => parseRateReset(headers).resetAt ?? null,
+      // Prompt-cache policy (P-005/P-008), model-generation-aware: legacy models take
+      // prompt_cache_retention:'24h' (writes free there), gpt-5.6+ takes prompt_cache_options.ttl
+      // (writes cost 1.25×). The sharded prompt_cache_key steers same-variant sessions onto one
+      // cache shard while respecting OpenAI's ~15 req/min-per-key ceiling. Keyed by the pinned
+      // account id, which is this session's stable routing identity — but the owner header wins
+      // when present (a bee is pinned for its whole life). The adapter memoizes this to exactly
+      // one call per request, so the counters cannot double-count across a failover.
+      shapeRequestBody: (body, context) => {
+        if (!cachePolicyEnabled || !body.length) return body;
+        const shardSeed = wantOwner || context.accountId;
+        const cached = rewriteOpenAiCacheBody(body, {
+          cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
+        });
+        if (cached.stats) {
+          recordCachePolicy('codex', cached.stats);
+          stageSpan?.setCacheRouting('rewritten');
+        }
+        return cached.body;
+      },
+      // Fires ONCE, on the first attempt, immediately after the body is shaped and
+      // before the first token read — the exact point the old code counted the
+      // request at, so a body read that never completes still counts nothing.
+      onRequestShape: ({ model, streaming }) => {
+        stageSpan?.setModel(model);
+        stageSpan?.setStreaming(streaming);
+        totalRequests++;
+        codexRequests++;
+        recordOwnerOutcome(wantOwner, 'request');
+        res.setTimeout(downstreamIdleMs, () => res.destroy());
+      },
+      fetch: async (target, init) => {
+        const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
+        if (init.body) fetchInit.body = init.body;
+        if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
+        const upstream = await doFetch(target, fetchInit as RequestInit);
+        return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
+      },
+    });
 
     try {
-      // BOUNDED body read (2026-06-22 audit F1): a Codex bee that stalls mid-upload must not hold this admission
-      // slot forever — the Claude proxy's ceiling timer covers its readBody; the codex path had none, and
-      // proxyOpenAi never registers in inFlightReg so the self-heal valve can't reclaim it. Cap it + free the slot.
-      stageSpan?.beginStage('bodyRead');
-      let bodyBuf: Buffer;
-      try {
-        bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex readBody '${active.accountId}'`);
-      } catch {
+      await executeGatewayRequestKernel({
+        request: {
+          lane: adapter.lane,
+          // MUST go through readBody: it serves the admission spool's pre-read
+          // buffer (`preReadRequestBodies`). Iterating `req` directly here would
+          // send an EMPTY body on every request the spool already drained.
+          body: (async function* () {
+            yield await readBody(req);
+          })(),
+          ownerId: wantOwner ?? null,
+          pin: pinnedBearer ? { accountId: pinnedBearer.accountId, mode: hardPin ? 'hard' : 'soft' } : null,
+          signal: reqAbort.signal,
+        },
+        policy: {
+          // D-009: kernel adoption necessarily adds a request-body byte cap the
+          // hand-rolled path never had. Sized well above the admission spool's own
+          // 32MB cap so it is non-binding wherever the spool is enabled.
+          maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+          bodyReadTimeoutMs: requestCeilingMs,
+          requestCeilingMs,
+          // D-007: a stream:true request gets the SHORT TTFB headers deadline, a
+          // non-streaming one keeps the generous deadline. Derived from the REQUEST
+          // body by the SAME parser the adapter uses — two hand-written parsers here
+          // is precisely the drift D-007 was raised to correct.
+          ttfbTimeoutMs: ({ body }) =>
+            parseCodexRequestShape(body).streaming ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs,
+          bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
+          downstreamIdleTimeoutMs: downstreamIdleMs,
+          maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+        },
+        telemetry: requestStageTelemetry,
+        // D-008: adopt the span this HTTP request already opened. Without it the
+        // kernel would begin a SECOND span and double-count the request.
+        span: stageSpan,
+        admission: {
+          // PASS-THROUGH, deliberately. `proxyOpenAi` already runs inside
+          // `executeLegacyLaneTask`'s Governor.admit, so re-admitting here would
+          // deadlock against the slot this request already holds.
+          run: (_context, task) => task(),
+          observeAttempt: ({ context, response, error }) => {
+            attemptsSeen = context.attempt;
+            const account = context.route.accountId ?? lastAccountId;
+            lastAccountId = account;
+            if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
+            lastRouteKey = context.route.key;
+            if (error) {
+              // The STATUS is the only discriminator between the token-read throw
+              // (`prepareAttempt`, 503) and the transport throw (`executeAttempt`,
+              // 502); a TTFB timeout, the request ceiling and a downstream abort all
+              // surfaced through the old transport catch, so they classify the same
+              // way here. Do not "tidy" those statuses in the adapter.
+              const tokenResolve = error.status === 503;
+              codexUpstreamErrors++;
+              recordOwnerOutcome(wantOwner, 'upstream_error', {
+                account,
+                detail: tokenResolve ? 'bearer-token-resolve' : 'bearer-transport',
+              });
+              if (tokenResolve) {
+                log('error', `inference-gateway: Codex token read failed on '${account}': ${error.message}`);
+              }
+              return;
+            }
+            if (!response) return;
+            if (response.status === 429) {
+              // Counted here even when the kernel goes on to rotate: the old path
+              // recorded the throttle against the account that emitted it.
+              codexUpstream429++;
+              providerAdmission.recordThrottle('codex');
+              recordOwnerOutcome(wantOwner, 'upstream_429', { account, status: 429 });
+            } else if (response.status >= 200 && response.status < 300) {
+              providerAdmission.recordSuccess('codex');
+            }
+          },
+        },
+        adapter: kernelAdapter,
+        // The old handler never registered in `inFlightReg` (its own comment said
+        // so), and D-003 forbids folding a behaviour change into an extraction.
+        // Registering is a real improvement — it belongs in its own change.
+        inFlight: { register: () => ({ unregister: () => undefined }) },
+        downstream: {
+          start: ({ status, metadata }) => {
+            const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
+            for (const [key, value] of Object.entries(metadata.headers)) {
+              if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
+            }
+            if (metadata.pinYieldedFrom) {
+              outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
+              recordOwnerOutcome(wantOwner, 'pin_yield', {
+                account: metadata.accountId,
+                detail: outHeaders[PIN_YIELDED_HEADER],
+              });
+            }
+            recordRoute(wantOwner, metadata.accountId, 'codex');
+            recordOwnerOutcome(
+              wantOwner,
+              status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
+              { account: metadata.accountId, status },
+            );
+            res.writeHead(status, outHeaders);
+            cacheProbe = new PassThrough();
+            // Keep the tee in flowing mode for the stream's whole life: the observer
+            // detaches its own 'data' listener once it has read the usage record, and
+            // without a second listener the PassThrough would stop draining and buffer
+            // the rest of a long agent stream in memory.
+            cacheProbe.on('data', () => undefined);
+            cacheProbe.on('error', () => undefined);
+            observeOpenAiCacheUsage(
+              cacheProbe,
+              metadata.accountId,
+              attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
+            );
+          },
+          write: async (chunk) => {
+            cacheProbe?.write(chunk);
+            // Honour downstream backpressure exactly as the old `nodeStream.pipe(res)`
+            // did. The kernel wraps this call in the downstream-idle deadline, so a
+            // client that never drains is torn down by that guard rather than hanging.
+            if (!res.write(chunk)) {
+              await new Promise<void>((resolve) => {
+                const settle = () => {
+                  res.off('drain', settle);
+                  res.off('close', settle);
+                  res.off('error', settle);
+                  resolve();
+                };
+                res.once('drain', settle);
+                res.once('close', settle);
+                res.once('error', settle);
+              });
+            }
+          },
+          end: () => {
+            endCacheProbe();
+            res.end();
+          },
+        },
+      });
+    } catch (error) {
+      endCacheProbe();
+      const failure =
+        error instanceof GatewayRequestKernelError
+          ? error
+          : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+              code: 'gateway-error',
+              outcome: 'gateway-error',
+              status: 500,
+              cause: error,
+            });
+
+      if (failure.code === 'request-ceiling') {
+        log(
+          'error',
+          `inference-gateway: Codex request hit the ${requestCeilingMs}ms hard ceiling on '${lastAccountId}' — force-terminating`,
+        );
+        try {
+          req.destroy();
+        } catch {
+          /* already torn down */
+        }
+        try {
+          res.destroy();
+        } catch {
+          /* already torn down */
+        }
+        return;
+      }
+
+      if (failure.code === 'body-read-timeout' || failure.code === 'body-too-large') {
         try {
           req.destroy();
         } catch {
@@ -6072,276 +6321,54 @@ export function createInferenceGateway(deps: GatewayDeps) {
           });
         }
         return;
-      } finally {
-        stageSpan?.endStage('bodyRead');
       }
-      // Stream detection — PARITY with the Claude proxy (backlog #1 / 2026-06-22 audit follow-up): a stream:true
-      // request gets the SHORT TTFB headers deadline + a per-chunk body-idle guard; non-streaming keeps the
-      // generous headers deadline. Without this a stalled codex STREAM squatted its admission slot for the full
-      // GENEROUS upstreamHeadersTimeoutMs (no stream TTFB) and, once headers arrived, had NO body-idle guard —
-      // the same slot-squat / connection-leak class the Claude path was hardened against.
-      // Prompt-cache policy (P-005/P-008), model-generation-aware: legacy models take
-      // prompt_cache_retention:'24h' (writes free there), gpt-5.6+ takes prompt_cache_options.ttl
-      // (writes cost 1.25×). The sharded prompt_cache_key steers same-variant sessions onto one
-      // cache shard while respecting OpenAI's ~15 req/min-per-key ceiling. Keyed by the pinned
-      // account id, which is this session's stable routing identity.
-      if (cachePolicyEnabled && bodyBuf.length) {
-        const owner = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
-        // By here the `if (cli) { …; return }` above has already served every CLI-bridge case,
-        // so `cli` is null and `active` is the resolved bearer account — its id is this session's
-        // stable routing identity. Prefer the owner header (a bee is pinned for its whole life).
-        const shardSeed = owner || active.accountId;
-        const cached = rewriteOpenAiCacheBody(bodyBuf, {
-          cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
-        });
-        bodyBuf = cached.body;
-        if (cached.stats) {
-          recordCachePolicy('codex', cached.stats);
-          stageSpan?.setCacheRouting('rewritten');
-        }
-      }
-      let isStream = false;
-      let requestModel: string | null = null;
-      if (bodyBuf.length) {
-        try {
-          const parsed = JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean; model?: string };
-          if (parsed.stream === true) isStream = true;
-          if (typeof parsed.model === 'string') requestModel = parsed.model;
-        } catch {
-          /* non-JSON body — keep the generous (non-stream) deadline */
-        }
-      }
-      stageSpan?.setModel(requestModel);
-      stageSpan?.setStreaming(isStream);
-      const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
-      totalRequests++;
-      codexRequests++;
-      recordOwnerOutcome(wantOwner, 'request');
-      res.setTimeout(downstreamIdleMs, () => res.destroy());
 
-      // Single stall timer — the headers TTFB, then re-armed per body chunk as the body-idle deadline (mirrors
-      // the Claude proxy). unref'd so it never keeps the loop alive; cleared on every exit path.
-      let stallTimer: ReturnType<typeof setTimeout> | undefined;
-      const clearStall = () => {
-        if (stallTimer) {
-          clearTimeout(stallTimer);
-          stallTimer = undefined;
-        }
-      };
-
-      // RESILIENCE PARITY with the Claude path (2026-06-22 audit): rotate to another Codex account + retry on
-      // a 429, a transport failure, or a token-read failure — instead of FORWARDING the error to the bee (the
-      // same "route around, don't surface" bug-class the Claude path was hardened against). `codexPool.onExhausted`
-      // marks the failing account out of rotation + returns the next one. Bounded by INTERNAL_RETRY_MAX_ATTEMPTS;
-      // the body is buffered (bodyBuf) so each attempt re-sends cleanly. The retry only runs BEFORE headers are
-      // written; once we stream a response we commit to it.
-      const rotateCodex = (resetAt: number): boolean => {
-        if (hardPin) return false;
-        const next = adapter.pool!.onExhausted(active.accountId, resetAt);
-        if (next && next.accountId !== active.accountId) {
-          codexFailovers++;
-          stageSpan?.recordFailover();
-          active = next;
-          return true;
-        }
-        return false;
-      };
-      for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
-        const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1;
-        let token: string;
-        stageSpan?.beginStage('auth');
-        try {
-          token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
-        } catch (e) {
-          codexUpstreamErrors++;
-          recordOwnerOutcome(wantOwner, 'upstream_error', {
-            account: active.accountId,
-            detail: 'bearer-token-resolve',
-          });
-          log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
-          if (canRetry && rotateCodex(Date.now() + bare429FailoverBackoffMs)) continue;
-          if (!res.headersSent) {
-            sendJson(
-              res,
-              503,
-              {
-                type: 'error',
-                error: {
-                  type: 'overloaded_error',
-                  message: `inference-gateway: Codex token unavailable for '${active.accountId}'`,
-                },
-                gateway: true,
-              },
-              { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
-            );
-          }
-          return;
-        } finally {
-          stageSpan?.endStage('auth');
-        }
-
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(req.headers)) {
-          if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
-          headers[k] = Array.isArray(v) ? v.join(', ') : v;
-        }
-        headers.authorization = `Bearer ${token}`;
-        headers['accept-encoding'] = 'identity';
-
-        const ac = new AbortController();
-        currentAc = ac;
-        const abortAttempt = () =>
-          ac.abort(
-            reqAbort.signal.reason instanceof Error ? reqAbort.signal.reason : new Error('openai request aborted'),
-          );
-        if (reqAbort.signal.aborted) abortAttempt();
-        else reqAbort.signal.addEventListener('abort', abortAttempt, { once: true });
-        const detachDownstreamAbort = () => {
-          reqAbort.signal.removeEventListener('abort', abortAttempt);
-          if (currentAc === ac) currentAc = undefined;
-        };
-        // armStall(ms): abort THIS attempt's upstream call if it makes no progress for ms — first as the headers
-        // TTFB (short for streams), then re-armed per body chunk below as the body-idle deadline.
-        const armStall = (ms: number) => {
-          clearStall();
-          stallTimer = setTimeout(() => ac.abort(new Error(`openai upstream stall: no activity for ${ms}ms`)), ms);
-          stallTimer.unref?.();
-        };
-        let up: Response;
-        try {
-          const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
-          if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
-          const dispatcher = await dispatcherFor(active);
-          if (dispatcher) init.dispatcher = dispatcher;
-          armStall(headersStallMs); // SHORT TTFB for streams; generous otherwise
-          stageSpan?.recordAttempt();
-          stageSpan?.beginStage('upstreamTtfb');
-          up = await doFetch(`${adapter.upstreamBase}${url}`, init as RequestInit);
-          stageSpan?.endStage('upstreamTtfb');
-          armStall(upstreamBodyIdleTimeoutMs); // headers arrived → switch to the per-chunk body-idle deadline
-        } catch (e) {
-          stageSpan?.endStage('upstreamTtfb');
-          detachDownstreamAbort();
-          clearStall();
-          codexUpstreamErrors++;
-          recordOwnerOutcome(wantOwner, 'upstream_error', { account: active.accountId, detail: 'bearer-transport' });
-          active.invalidateToken?.();
-          // Transport failure (dead/hanging proxy or network) → route around to another Codex account + retry.
-          if (canRetry && rotateCodex(Date.now() + bare429FailoverBackoffMs)) continue;
-          if (!res.headersSent) {
-            sendJson(
-              res,
-              502,
-              {
-                type: 'error',
-                error: {
-                  type: 'api_error',
-                  message: `inference-gateway: Codex upstream failed: ${(e as Error).message}`,
-                },
-                gateway: true,
-              },
-              { [ROUTED_ACCOUNT_HEADER]: active.accountId },
-            );
-          } else {
-            res.destroy();
-          }
-          return;
-        }
-
-        // 429 → ROTATE + retry (route around) rather than forwarding the throttle to the bee.
-        if (up.status === 429) {
-          codexUpstream429++;
-          providerAdmission.recordThrottle('codex');
-          recordOwnerOutcome(wantOwner, 'upstream_429', { account: active.accountId, status: 429 });
-          if (canRetry) {
-            const reset = parseRateReset(headersToObject(up.headers));
-            if (rotateCodex(reset.resetAt ?? Date.now() + bare429FailoverBackoffMs)) {
-              detachDownstreamAbort();
-              clearStall();
-              try {
-                await up.body?.cancel();
-              } catch {
-                /* drain the throttle body before retrying */
-              }
-              continue;
-            }
-          }
-          // no rotate target / out of attempts → fall through and forward the 429 (the bee's CLI retries)
-        } else if (up.ok) {
-          providerAdmission.recordSuccess('codex');
-        }
-
-        const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: active.accountId };
-        up.headers.forEach((v, k) => {
-          if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
-        });
-        if (pinnedBearer && !hardPin && active.accountId !== pinnedBearer.accountId) {
-          outHeaders[PIN_YIELDED_HEADER] = `${pinnedBearer.accountId}->${active.accountId}`;
-          recordOwnerOutcome(wantOwner, 'pin_yield', {
-            account: active.accountId,
-            detail: outHeaders[PIN_YIELDED_HEADER],
-          });
-        }
-        recordRoute(wantOwner, active.accountId, 'codex');
-        recordOwnerOutcome(wantOwner, up.status < 400 ? 'ok' : up.status === 429 ? 'upstream_429' : 'upstream_error', {
-          account: active.accountId,
-          status: up.status,
-        });
-        res.writeHead(up.status, outHeaders);
-        if (!up.body) {
-          detachDownstreamAbort();
-          clearStall();
-          res.end();
-          return;
-        }
-        // Stream the body with a per-chunk body-idle guard (parity with the Claude proxy): reset the deadline on
-        // every chunk so a long stream is never clipped, but a genuine mid-stream stall (no bytes for
-        // upstreamBodyIdleTimeoutMs) aborts → the stream errors → we tear down both ends. Await completion so the
-        // admission slot is held for the stream's life (forwarded-concurrency parity) and released cleanly.
-        const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
-        if (isStream) stageSpan?.beginStage('stream');
-        observeOpenAiCacheUsage(
-          nodeStream,
-          active.accountId,
-          attempt > 0 || (!!pinnedBearer && pinnedBearer.accountId !== active.accountId),
-        );
-        nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
-        nodeStream.pipe(res);
-        await new Promise<void>((resolve) => {
-          res.on('finish', () => resolve());
-          res.on('close', () => resolve());
-          res.on('error', () => resolve());
-          nodeStream.on('error', () => {
-            res.destroy();
-            resolve();
-          });
-          // A body-idle (or ceiling) abort must force-tear-down both ends + resolve so the slot is actually freed
-          // — mirrors the Claude path's wedge-prevention onAbort (the 2026-06-21 stuck-stream slot leak).
-          const onAbort = () => {
-            try {
-              nodeStream.destroy();
-            } catch {
-              /* already torn down */
-            }
-            try {
-              res.destroy();
-            } catch {
-              /* already torn down */
-            }
-            resolve();
-          };
-          if (ac.signal.aborted) onAbort();
-          else ac.signal.addEventListener('abort', onAbort, { once: true });
-        });
-        detachDownstreamAbort();
-        clearStall();
+      if (res.headersSent) {
+        // Committed to a response already — the only honest signal left is a teardown.
+        res.destroy();
         return;
       }
+
+      if (failure.code === 'upstream-error' && failure.status === 503) {
+        // Token resolution never produced a usable bearer on any account.
+        sendJson(
+          res,
+          503,
+          { type: 'error', error: { type: 'overloaded_error', message: failure.message }, gateway: true },
+          { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+        );
+        return;
+      }
+      if (failure.code === 'invalid-route' || failure.code === 'invalid-pin') {
+        sendJson(
+          res,
+          failure.status ?? 503,
+          { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
+          { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+        );
+        return;
+      }
+      // Everything else — a dead socket, a TTFB stall, a mid-stream idle, a
+      // cancellation — surfaced through the old transport catch as this envelope.
+      sendJson(
+        res,
+        502,
+        {
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: failure.message.startsWith('inference-gateway:')
+              ? failure.message
+              : `inference-gateway: Codex upstream failed: ${failure.message}`,
+          },
+          gateway: true,
+        },
+        { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+      );
     } finally {
-      clearTimeout(ceilingTimer);
+      endCacheProbe();
       req.off('aborted', onReqAborted);
       res.off('close', onResClose);
-      currentAc = undefined;
     }
   }
 
