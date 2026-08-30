@@ -237,6 +237,19 @@ apps/operator/public/porcupine/
 # Stale duplicate docs backup trees under the served internal docs.
 apps/operator/public/internal/docs.old.*/
 
+# EI-19341904812190592: starlight-llms-txt's full/small dumps of the whole
+# engineering docs corpus (~11MB + ~8MB, regenerated wholesale by every
+# `docs:rebuild`). Committing them re-adds ~19MB of new incompressible blob
+# per docs rebuild and was measured throttling the p2p own-head publish leg
+# fleet-wide (500MB/tick byte cap → ~26 commits/tick while inside this region
+# of history). They are build output — postbuild-copy.sh regenerates them
+# from apps/operator-docs/dist on every docs:rebuild — so untrack instead of
+# deleting: `git rm --cached` them once, then this pattern keeps them out of
+# git-sync's `git add -A` going forward. llms.txt itself is a tiny (~600B)
+# index page and stays tracked.
+apps/operator/public/internal/docs/llms-full.txt
+apps/operator/public/internal/docs/llms-small.txt
+
 # WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
 apps/operator/dist-host/
 
