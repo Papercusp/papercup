@@ -91,10 +91,17 @@ const EMPTY_MARKER_DEBRIS_MS = 5_000;
  * refusing our own — a refusal costs one run, a theft breaks the peer's
  * protection and lets its cleanup remove a file it no longer owns.
  *
+ * `emptyDebrisMs` is a PARAMETER rather than the constant because the two
+ * callers judge different things and must not share a bound. The publisher is
+ * deciding about the ONE path it needs and can afford the tight 5s default; the
+ * directory sweep judges OTHER runs' files, where a false positive steals a live
+ * peer's barrier, so it passes a far more generous bound (EI-21883357870313468).
+ *
  * @param {string} marker
+ * @param {number} [emptyDebrisMs] how long a zero-length marker may sit before it is debris
  * @returns {boolean}
  */
-function preemptMarkerOwnerIsAlive(marker) {
+function preemptMarkerOwnerIsAlive(marker, emptyDebrisMs = EMPTY_MARKER_DEBRIS_MS) {
   let raw;
   try {
     raw = readFileSync(marker, 'utf8');
@@ -121,10 +128,101 @@ function preemptMarkerOwnerIsAlive(marker) {
   // here — there is nothing to check liveness against — so age is the only
   // available signal.
   try {
-    return Date.now() - statSync(marker).mtimeMs < EMPTY_MARKER_DEBRIS_MS;
+    return Date.now() - statSync(marker).mtimeMs < emptyDebrisMs;
   } catch {
     return false;
   }
+}
+
+/**
+ * Filenames this sweep is willing to consider. pc-heavy allocates both marker
+ * families itself with `mktemp "$dir/ready.XXXXXX"` and
+ * `mktemp "$dir/finalization.XXXXXX"` (scripts/pc-heavy.sh:2815-2820), so the
+ * shape is known exactly. Anything else in the directory belongs to something
+ * we know nothing about and is never touched.
+ */
+const PREEMPT_MARKER_NAME_RE = /^(?:ready|finalization)\.[A-Za-z0-9]{6}$/;
+
+/**
+ * Generous empty-marker bound for the SWEEP (the publisher keeps the tight 5s).
+ * The observed debris was up to 20 HOURS old, so an hour is still decisive while
+ * leaving enormous headroom over the microsecond open()/write() gap that creates
+ * these files.
+ */
+const SWEEP_EMPTY_DEBRIS_MS = 3_600_000;
+
+/**
+ * A floor under the whole sweep: nothing younger than this is removed no matter
+ * what its contents say. This is what makes the sweep unable to interfere with a
+ * run that is starting right now — including pc-heavy's own allocation window,
+ * where `mktemp` briefly leaves a zero-length file before deleting it.
+ */
+const SWEEP_MIN_AGE_MS = 120_000;
+
+/** Bound the work: this runs on the hot path of the repo's busiest test entrypoint. */
+const SWEEP_MAX_ENTRIES = 500;
+
+/**
+ * Remove abandoned pc-heavy markers from the directory we are publishing into.
+ *
+ * WHY THIS EXISTS. pc-heavy designates its monitor as the cleanup backstop for a
+ * child that dies before its own `exit` handler runs — but the monitor is itself
+ * killable, and under preemption the whole process group is torn down together,
+ * so the backstop shares a fate with the thing it is backing up. Markers then
+ * survive with no owner left to remove them (EI-21883357870313468: 7 of 10 files
+ * present were provably dead, one 20 hours old).
+ *
+ * This adds the missing fate-independent reclamation path: a LATER, unrelated,
+ * demonstrably-alive process cleans up, so debris cannot outlive the next run
+ * that publishes here. It is pure hygiene — every failure is swallowed, because
+ * failing to tidy must never fail a test run.
+ *
+ * @param {string} dir directory to sweep
+ * @param {{ self?: string, now?: number, minAgeMs?: number, emptyDebrisMs?: number, maxEntries?: number }} [options]
+ * @returns {string[]} names actually removed
+ */
+export function reapPreemptMarkerDebris(dir, options = {}) {
+  const {
+    self,
+    now = Date.now(),
+    minAgeMs = SWEEP_MIN_AGE_MS,
+    emptyDebrisMs = SWEEP_EMPTY_DEBRIS_MS,
+    maxEntries = SWEEP_MAX_ENTRIES,
+  } = options;
+
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  const removed = [];
+  let examined = 0;
+  for (const name of entries) {
+    if (examined >= maxEntries) break;
+    if (!PREEMPT_MARKER_NAME_RE.test(name)) continue;
+    examined += 1;
+
+    const path = join(dir, name);
+    // Never judge the marker this process owns.
+    if (self && path === self) continue;
+
+    try {
+      // The age floor is checked FIRST and independently of contents: a file
+      // young enough to belong to a starting run is never a candidate, so no
+      // contents-based rule can reach it.
+      if (now - statSync(path).mtimeMs < minAgeMs) continue;
+      if (preemptMarkerOwnerIsAlive(path, emptyDebrisMs)) continue;
+      unlinkSync(path);
+      removed.push(name);
+    } catch {
+      // Vanished, unreadable, or owned by another user — all mean "not ours to
+      // reclaim". Skip it; a sweep must never turn into a failure.
+    }
+  }
+
+  return removed;
 }
 
 function publishPreemptMarker(file, label) {
@@ -156,6 +254,19 @@ function publishPreemptMarker(file, label) {
     console.error(`${label} reclaimed-stale-marker pid=${process.pid}`);
   }
   console.error(`${label} pid=${process.pid}`);
+
+  // Our own marker is published and safe; only now sweep the neighbours. Doing
+  // it AFTER publication means a sweep that somehow misbehaves cannot cost this
+  // run its barrier, and the whole call is swallowed for the same reason.
+  try {
+    const reaped = reapPreemptMarkerDebris(dirname(marker), { self: marker });
+    if (reaped.length > 0) {
+      console.error(`${label} reaped-abandoned-markers count=${reaped.length}`);
+    }
+  } catch {
+    // Hygiene is never worth failing a run over.
+  }
+
   let cleaned = false;
   return () => {
     if (cleaned) return;
