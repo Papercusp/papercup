@@ -22,18 +22,33 @@
  * the host advertises a connector.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  Monitor,
   MoreHorizontal,
   Play,
+  RefreshCw,
   Server,
   Square,
 } from "lucide-react";
 import { Button } from "@/app/harness/Button";
-import { HostedWorkspaceSession } from "./HostedWorkspaceSession";
+import {
+  HostedDesktopViewer,
+  type HostedDesktopViewerState,
+} from "./HostedDesktopViewer";
+import {
+  HostedWorkspaceSession,
+  type HostedDesktopQueryState,
+  type HostedWorkspaceDesktopBridge,
+} from "./HostedWorkspaceSession";
+import type {
+  HostedDesktopRosterEntry,
+  HostedDesktopThumbnailResult,
+  HostedDesktopViewerMode,
+} from "./hosted-desktop-viewer-protocol";
 import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
 import {
   focusSafely,
@@ -56,7 +71,13 @@ import {
 } from "./workspace-view-model";
 import styles from "./cloud-workspaces.module.css";
 
-export const HOST_TABS = ["overview", "resources", "logs", "cost"] as const;
+export const HOST_TABS = [
+  "overview",
+  "resources",
+  "logs",
+  "cost",
+  "desktops",
+] as const;
 export type HostTab = (typeof HOST_TABS)[number];
 
 export function isHostTab(value: unknown): value is HostTab {
@@ -68,6 +89,7 @@ const TAB_LABELS: Record<HostTab, string> = {
   resources: "Resources",
   logs: "Logs",
   cost: "Cost",
+  desktops: "Desktops",
 };
 
 export function OperateStage({
@@ -230,6 +252,113 @@ function HostRow({
   const plan = lifecycleActionPlan(workspace);
   const hostedConnector = readHostedWorkspaceConnector(workspace.tunnel);
   const panelId = `host-panel-${workspace.id}`;
+  const [hostedWorkspaceId, setHostedWorkspaceId] = useState<string | null>(
+    null,
+  );
+  const [desktopBridge, setDesktopBridge] =
+    useState<HostedWorkspaceDesktopBridge | null>(null);
+  const [desktopRoster, setDesktopRoster] = useState<
+    HostedDesktopRosterEntry[]
+  >([]);
+  const [desktopRosterState, setDesktopRosterState] =
+    useState<HostedDesktopQueryState>("idle");
+  const [desktopRosterError, setDesktopRosterError] = useState<string | null>(
+    null,
+  );
+  const [desktopThumbnails, setDesktopThumbnails] = useState<
+    Readonly<Record<string, HostedDesktopThumbnailResult>>
+  >({});
+  const [selectedDesktop, setSelectedDesktop] = useState<{
+    desktopSessionId: string;
+    mode: HostedDesktopViewerMode;
+  } | null>(null);
+  const [desktopViewerState, setDesktopViewerState] =
+    useState<HostedDesktopViewerState | null>(null);
+  const requestedThumbnailIdsRef = useRef(new Set<string>());
+
+  const handleWorkspaceIdChange = useCallback((workspaceId: string) => {
+    setHostedWorkspaceId(workspaceId);
+  }, []);
+  const handleDesktopBridgeChange = useCallback(
+    (bridge: HostedWorkspaceDesktopBridge | null) => {
+      setDesktopBridge(bridge);
+      if (!bridge) {
+        requestedThumbnailIdsRef.current.clear();
+        setDesktopThumbnails({});
+      }
+    },
+    [],
+  );
+  const handleDesktopRosterChange = useCallback(
+    (desktops: HostedDesktopRosterEntry[]) => {
+      setDesktopRoster(desktops);
+      setDesktopRosterError(null);
+      setDesktopThumbnails({});
+      requestedThumbnailIdsRef.current.clear();
+      setSelectedDesktop((current) =>
+        current &&
+        desktops.some(
+          (entry) => entry.desktopSessionId === current.desktopSessionId,
+        )
+          ? current
+          : null,
+      );
+    },
+    [],
+  );
+  const handleDesktopThumbnailChange = useCallback(
+    (result: HostedDesktopThumbnailResult) => {
+      setDesktopThumbnails((current) => ({
+        ...current,
+        [result.desktopSessionId]: result,
+      }));
+    },
+    [],
+  );
+  const handleDesktopQueryStateChange = useCallback(
+    (
+      state: HostedDesktopQueryState,
+      operation?: "roster" | "thumbnail",
+      code?: string,
+    ) => {
+      if (
+        operation === "roster" ||
+        (operation === undefined && state === "idle")
+      ) {
+        setDesktopRosterState(state);
+      }
+      if (state === "error" && operation === "roster") {
+        setDesktopRosterError(code ?? "desktop_roster_failed");
+      } else if (state !== "error" && operation === "roster") {
+        setDesktopRosterError(null);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (hostedConnector) return;
+    setHostedWorkspaceId(null);
+    setDesktopBridge(null);
+    setDesktopRoster([]);
+    setDesktopRosterState("idle");
+    setDesktopRosterError(null);
+    setDesktopThumbnails({});
+    setSelectedDesktop(null);
+    setDesktopViewerState(null);
+    requestedThumbnailIdsRef.current.clear();
+  }, [hostedConnector?.routeLabel]);
+
+  useEffect(() => {
+    if (!desktopBridge || desktopRoster.length === 0) return;
+    for (const desktop of desktopRoster) {
+      if (requestedThumbnailIdsRef.current.has(desktop.desktopSessionId)) {
+        continue;
+      }
+      requestedThumbnailIdsRef.current.add(desktop.desktopSessionId);
+      desktopBridge.requestThumbnail(desktop.desktopSessionId);
+    }
+  }, [desktopBridge, desktopRoster]);
 
   const onTabKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
@@ -295,13 +424,16 @@ function HostRow({
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       const position = enabledIndices.indexOf(index);
       nextIndex =
-        enabledIndices[(position < 0 ? 0 : position + 1) % enabledIndices.length];
+        enabledIndices[
+          (position < 0 ? 0 : position + 1) % enabledIndices.length
+        ];
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
       const position = enabledIndices.indexOf(index);
       nextIndex =
         enabledIndices[
-          (position < 0 ? enabledIndices.length - 1 : position - 1 + enabledIndices.length) %
-            enabledIndices.length
+          (position < 0
+            ? enabledIndices.length - 1
+            : position - 1 + enabledIndices.length) % enabledIndices.length
         ];
     } else if (event.key === "Home") {
       nextIndex = enabledIndices[0];
@@ -526,6 +658,23 @@ function HostRow({
             ) : null}
             {activeTab === "logs" ? <LogsTab workspace={workspace} /> : null}
             {activeTab === "cost" ? <CostTab workspace={workspace} /> : null}
+            {activeTab === "desktops" ? (
+              <DesktopSurface
+                hostName={workspace.name}
+                workspaceId={hostedWorkspaceId}
+                hostId={workspace.id}
+                routeLabel={hostedConnector?.routeLabel ?? null}
+                bridge={desktopBridge}
+                roster={desktopRoster}
+                rosterState={desktopRosterState}
+                rosterError={desktopRosterError}
+                thumbnails={desktopThumbnails}
+                selectedDesktop={selectedDesktop}
+                viewerState={desktopViewerState}
+                onSelectDesktop={setSelectedDesktop}
+                onViewerStateChange={setDesktopViewerState}
+              />
+            ) : null}
           </div>
 
           <div className={styles.hostPanelFooter}>
@@ -544,11 +693,234 @@ function HostRow({
               hostId={workspace.id}
               routeLabel={hostedConnector.routeLabel}
               workspaceName={workspace.name}
+              onWorkspaceIdChange={handleWorkspaceIdChange}
+              onDesktopBridgeChange={handleDesktopBridgeChange}
+              onDesktopRosterChange={handleDesktopRosterChange}
+              onDesktopThumbnailChange={handleDesktopThumbnailChange}
+              onDesktopQueryStateChange={handleDesktopQueryStateChange}
             />
           ) : null}
         </div>
       ) : null}
     </li>
+  );
+}
+
+type DesktopSelection = {
+  desktopSessionId: string;
+  mode: HostedDesktopViewerMode;
+};
+
+function desktopDisplayLabel(entry: HostedDesktopRosterEntry): string {
+  return entry.displayNumber !== undefined
+    ? `Display ${entry.displayNumber}`
+    : entry.desktopSessionId;
+}
+
+function DesktopSurface({
+  hostName,
+  workspaceId,
+  hostId,
+  routeLabel,
+  bridge,
+  roster,
+  rosterState,
+  rosterError,
+  thumbnails,
+  selectedDesktop,
+  viewerState,
+  onSelectDesktop,
+  onViewerStateChange,
+}: {
+  hostName: string;
+  workspaceId: string | null;
+  hostId: string;
+  routeLabel: string | null;
+  bridge: HostedWorkspaceDesktopBridge | null;
+  roster: readonly HostedDesktopRosterEntry[];
+  rosterState: HostedDesktopQueryState;
+  rosterError: string | null;
+  thumbnails: Readonly<Record<string, HostedDesktopThumbnailResult>>;
+  selectedDesktop: DesktopSelection | null;
+  viewerState: HostedDesktopViewerState | null;
+  onSelectDesktop: (selection: DesktopSelection | null) => void;
+  onViewerStateChange: (state: HostedDesktopViewerState) => void;
+}) {
+  const selectedEntry = selectedDesktop
+    ? roster.find(
+        (entry) => entry.desktopSessionId === selectedDesktop.desktopSessionId,
+      )
+    : null;
+  const canOpenViewer = Boolean(workspaceId && routeLabel && bridge);
+
+  return (
+    <section
+      className={styles.desktopSurface}
+      aria-label={`Desktop picker for ${hostName}`}
+      data-roster-state={rosterState}
+    >
+      <div className={styles.desktopSurfaceHeader}>
+        <div>
+          <strong>
+            <Monitor size={14} aria-hidden="true" /> Desktops
+          </strong>
+          <small>
+            {routeLabel
+              ? "Roster and thumbnails use the authenticated PTY control channel."
+              : "This host has not advertised a browser desktop connector."}
+          </small>
+        </div>
+        <span>
+          {roster.length} {roster.length === 1 ? "desktop" : "desktops"}
+        </span>
+      </div>
+
+      <div className={styles.desktopRosterToolbar}>
+        <span aria-live="polite">
+          {rosterState === "loading"
+            ? "Refreshing desktop roster…"
+            : rosterState === "error"
+              ? "Desktop roster unavailable"
+              : bridge
+                ? "Control channel ready"
+                : "Connect the workspace session to discover desktops"}
+        </span>
+        <button
+          type="button"
+          onClick={() => bridge?.requestRoster()}
+          disabled={!bridge || rosterState === "loading"}
+          aria-label="Refresh desktop roster"
+        >
+          <RefreshCw size={12} aria-hidden="true" /> Refresh roster
+        </button>
+      </div>
+
+      {rosterError ? (
+        <p className={styles.desktopRosterError} role="alert">
+          Desktop roster failed: {rosterError}
+        </p>
+      ) : null}
+
+      {!routeLabel ? (
+        <p className={styles.desktopRosterEmpty}>
+          Browser streaming is unavailable until this host publishes a WebSocket
+          connector capability.
+        </p>
+      ) : !bridge ? (
+        <p className={styles.desktopRosterEmpty}>
+          Connect the Browser workspace session below to load the host-scoped
+          desktop roster. PTY and desktop streams reconnect independently.
+        </p>
+      ) : roster.length === 0 && rosterState === "loading" ? (
+        <p className={styles.desktopRosterEmpty}>Loading desktops…</p>
+      ) : roster.length === 0 ? (
+        <p className={styles.desktopRosterEmpty}>
+          No active desktops are advertised by this host.
+        </p>
+      ) : (
+        <ul className={styles.desktopRoster} aria-label="Available desktops">
+          {roster.map((entry) => {
+            const thumbnail = thumbnails[entry.desktopSessionId];
+            const label = desktopDisplayLabel(entry);
+            const selected =
+              selectedDesktop?.desktopSessionId === entry.desktopSessionId;
+            return (
+              <li
+                className={styles.desktopRosterCard}
+                key={entry.desktopSessionId}
+                data-selected={selected ? "true" : "false"}
+              >
+                <div className={styles.desktopThumbnail} aria-hidden="true">
+                  {thumbnail?.data ? (
+                    <img
+                      src={`data:image/jpeg;base64,${thumbnail.data}`}
+                      alt=""
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span>
+                      {thumbnail ? "No recent frame" : "Preview loading…"}
+                    </span>
+                  )}
+                </div>
+                <div className={styles.desktopRosterInfo}>
+                  <strong>{label}</strong>
+                  <span className={styles.desktopRosterMeta}>
+                    {entry.state}
+                    {entry.geometry ? ` · ${entry.geometry}` : ""}
+                    {entry.lastActiveAt
+                      ? ` · active ${entry.lastActiveAt}`
+                      : ""}
+                  </span>
+                  <div className={styles.desktopRosterActions}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onSelectDesktop({
+                          desktopSessionId: entry.desktopSessionId,
+                          mode: "watch",
+                        })
+                      }
+                      disabled={!canOpenViewer}
+                      aria-label={`Watch ${label}`}
+                    >
+                      Watch
+                    </button>
+                    <button
+                      type="button"
+                      data-destructive="true"
+                      onClick={() =>
+                        onSelectDesktop({
+                          desktopSessionId: entry.desktopSessionId,
+                          mode: "takeover",
+                        })
+                      }
+                      disabled={!canOpenViewer}
+                      aria-label={`Take over ${label}`}
+                    >
+                      Take over
+                    </button>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {selectedDesktop && selectedEntry && workspaceId && routeLabel ? (
+        <div className={styles.desktopViewerMount}>
+          <div className={styles.desktopRosterToolbar}>
+            <span>
+              {desktopDisplayLabel(selectedEntry)} ·{" "}
+              {selectedDesktop.mode === "takeover" ? "takeover" : "watch"}
+              {viewerState ? ` · ${viewerState}` : ""}
+            </span>
+            <button
+              type="button"
+              onClick={() => onSelectDesktop(null)}
+              aria-label="Close desktop viewer"
+            >
+              Close viewer
+            </button>
+          </div>
+          <HostedDesktopViewer
+            key={`${selectedDesktop.desktopSessionId}:${selectedDesktop.mode}`}
+            workspaceId={workspaceId}
+            hostId={hostId}
+            routeLabel={routeLabel}
+            desktopSessionId={selectedDesktop.desktopSessionId}
+            desktopLabel={desktopDisplayLabel(selectedEntry)}
+            mode={selectedDesktop.mode}
+            onStateChange={onViewerStateChange}
+          />
+        </div>
+      ) : selectedDesktop ? (
+        <p className={styles.desktopRosterError} role="alert">
+          The selected desktop is no longer in the authenticated roster.
+        </p>
+      ) : null}
+    </section>
   );
 }
 

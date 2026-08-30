@@ -513,4 +513,102 @@ describe("HostedWorkspaceSession", () => {
     );
     expect((pathInput as HTMLInputElement).value).toBe(".");
   });
+
+  it("uses the authenticated PTY channel for desktop roster and thumbnail discovery", async () => {
+    const onWorkspaceIdChange = vi.fn();
+    const onDesktopBridgeChange = vi.fn();
+    const onDesktopRosterChange = vi.fn();
+    const onDesktopThumbnailChange = vi.fn();
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+        onWorkspaceIdChange={onWorkspaceIdChange}
+        onDesktopBridgeChange={onDesktopBridgeChange}
+        onDesktopRosterChange={onDesktopRosterChange}
+        onDesktopThumbnailChange={onDesktopThumbnailChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const socket = M.sockets[0];
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "pty.ready",
+        role: "controller",
+        resumed: false,
+      }),
+    });
+
+    await waitFor(() =>
+      expect(onWorkspaceIdChange).toHaveBeenCalledWith("ws-1"),
+    );
+    await waitFor(() => {
+      const requests = socket.send.mock.calls.map((call) =>
+        JSON.parse(String(call[0])),
+      );
+      expect(
+        requests.some((request) => request.type === "desktop.roster"),
+      ).toBe(true);
+    });
+    expect(onDesktopBridgeChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestRoster: expect.any(Function),
+        requestThumbnail: expect.any(Function),
+      }),
+    );
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "desktop.roster.result",
+        requestId: "roster-1",
+        desktops: [
+          {
+            desktopSessionId: "desktop-1",
+            state: "ready",
+            displayNumber: 2,
+          },
+        ],
+      }),
+    });
+    await waitFor(() =>
+      expect(onDesktopRosterChange).toHaveBeenCalledWith([
+        {
+          desktopSessionId: "desktop-1",
+          state: "ready",
+          displayNumber: 2,
+        },
+      ]),
+    );
+
+    const bridge = onDesktopBridgeChange.mock.calls.at(-1)?.[0] as {
+      requestThumbnail: (desktopSessionId: string) => boolean;
+    };
+    expect(bridge.requestThumbnail("desktop-1")).toBe(true);
+    const thumbnailRequest = JSON.parse(
+      socket.send.mock.calls.at(-1)?.[0] as string,
+    ) as { requestId: string };
+    expect(thumbnailRequest).toMatchObject({
+      type: "desktop.thumbnail",
+      desktopSessionId: "desktop-1",
+    });
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "desktop.thumbnail.result",
+        requestId: thumbnailRequest.requestId,
+        desktopSessionId: "desktop-1",
+        data: "AQI=",
+        bytes: 2,
+      }),
+    });
+    await waitFor(() =>
+      expect(onDesktopThumbnailChange).toHaveBeenCalledWith({
+        desktopSessionId: "desktop-1",
+        data: "AQI=",
+        bytes: 2,
+      }),
+    );
+  });
 });

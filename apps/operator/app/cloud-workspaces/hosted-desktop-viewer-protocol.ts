@@ -7,12 +7,23 @@ import {
 
 export type HostedDesktopViewerMode = "watch" | "takeover";
 
+export interface HostedDesktopReadyEvent {
+  action: "watch" | "takeover";
+  inputAllowed: boolean;
+}
+
 export interface HostedDesktopRosterEntry {
   desktopSessionId: string;
   state: string;
   displayNumber?: number;
   geometry?: string;
   lastActiveAt?: string;
+}
+
+export interface HostedDesktopThumbnailResult {
+  desktopSessionId: string;
+  data: string | null;
+  bytes?: number;
 }
 
 export type HostedDesktopProtocolEvent =
@@ -45,7 +56,9 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 function safeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : null;
 }
 
 function roster(value: unknown): HostedDesktopRosterEntry[] {
@@ -78,9 +91,10 @@ export function buildHostedDesktopSocketUrl(
   desktopSessionId: string,
   mode: HostedDesktopViewerMode,
 ): string {
-  const url = new URL(
-    buildHostedWorkspaceSocketUrl(origin, ticket),
-  );
+  if (!desktopSessionId.trim()) {
+    throw new TypeError("desktop_session_required");
+  }
+  const url = new URL(buildHostedWorkspaceSocketUrl(origin, ticket));
   url.searchParams.set("kind", "desktop");
   url.searchParams.set("desktopSessionId", desktopSessionId);
   url.searchParams.set("desktopMode", mode);
@@ -95,6 +109,17 @@ export function buildDesktopRosterRequest(requestId: string): string {
   return JSON.stringify({
     type: "desktop.roster",
     requestId,
+  });
+}
+
+export function buildDesktopThumbnailRequest(
+  requestId: string,
+  desktopSessionId: string,
+): string {
+  return JSON.stringify({
+    type: "desktop.thumbnail",
+    requestId,
+    desktopSessionId,
   });
 }
 
@@ -113,7 +138,12 @@ export function parseHostedDesktopProtocolMessage(
   if (!payload || !type) return null;
 
   if (type === "desktop.ready") {
-    const action = payload.action === "takeover" ? "takeover" : payload.action === "watch" ? "watch" : null;
+    const action =
+      payload.action === "takeover"
+        ? "takeover"
+        : payload.action === "watch"
+          ? "watch"
+          : null;
     if (!action || typeof payload.inputAllowed !== "boolean") return null;
     return { kind: "ready", action, inputAllowed: payload.inputAllowed };
   }
@@ -140,6 +170,15 @@ export function parseHostedDesktopProtocolMessage(
     if (!requestId || !desktopSessionId) return null;
     const data = payload.data === null ? null : nonEmptyString(payload.data);
     if (payload.data !== null && data === null) return null;
+    if (data !== null) {
+      try {
+        // Validate the wire value before it reaches an image data URL. A
+        // malformed relay response should stay an explicit protocol miss.
+        base64ToBytes(data);
+      } catch {
+        return null;
+      }
+    }
     const bytes = safeInteger(payload.bytes);
     return {
       kind: "thumbnail",
@@ -174,9 +213,11 @@ export interface HostedDesktopRawChannel {
   binaryType: "arraybuffer";
   protocol: string;
   readyState: number;
+  inputAllowed: boolean;
   onerror: ((event: unknown) => void) | null;
   onmessage: ((event: { data: ArrayBuffer }) => void) | null;
   onopen: (() => void) | null;
+  onready: ((event: HostedDesktopReadyEvent) => void) | null;
   onclose: ((event: { code?: number; reason?: string }) => void) | null;
   send(data: ArrayBuffer | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
@@ -190,7 +231,11 @@ interface WebSocketLike {
   readyState: number;
   addEventListener(
     type: "open" | "close" | "error" | "message",
-    listener: (event: { data?: unknown; code?: number; reason?: string }) => void,
+    listener: (event: {
+      data?: unknown;
+      code?: number;
+      reason?: string;
+    }) => void,
   ): void;
   send(data: string): void;
   close(code?: number, reason?: string): void;
@@ -220,9 +265,11 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
   binaryType = "arraybuffer" as const;
   protocol = "";
   readyState = this.CONNECTING;
+  inputAllowed = false;
   onerror: ((event: unknown) => void) | null = null;
   onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
   onopen: (() => void) | null = null;
+  onready: ((event: HostedDesktopReadyEvent) => void) | null = null;
   onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
 
   constructor(private readonly socket: WebSocketLike) {
@@ -239,7 +286,9 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
       if (!parsed) return;
       if (parsed.kind === "ready") {
         if (this.readyState !== this.CONNECTING) return;
+        this.inputAllowed = parsed.inputAllowed;
         this.readyState = this.OPEN;
+        this.onready?.(parsed);
         this.onopen?.();
       } else if (parsed.kind === "data") {
         if (this.readyState !== this.OPEN) return;
@@ -255,12 +304,16 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
     socket.addEventListener("close", (event) => {
       if (this.readyState === this.CLOSED) return;
       this.readyState = this.CLOSED;
+      this.inputAllowed = false;
       this.onclose?.(event);
     });
   }
 
   send(data: ArrayBuffer | ArrayBufferView): void {
-    if (this.readyState !== this.OPEN || this.socket.readyState !== this.socket.OPEN) {
+    if (
+      this.readyState !== this.OPEN ||
+      this.socket.readyState !== this.socket.OPEN
+    ) {
       return;
     }
     this.socket.send(buildDesktopDataRelay(toUint8Array(data)));
@@ -272,4 +325,3 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
     this.socket.close(code, reason);
   }
 }
-

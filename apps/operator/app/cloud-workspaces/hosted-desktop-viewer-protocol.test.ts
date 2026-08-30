@@ -1,0 +1,210 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  HostedDesktopRelayChannel,
+  buildDesktopDataRelay,
+  buildDesktopRosterRequest,
+  buildDesktopThumbnailRequest,
+  buildHostedDesktopSocketUrl,
+  parseHostedDesktopProtocolMessage,
+} from "./hosted-desktop-viewer-protocol";
+
+const TICKET = `ht_${"a".repeat(43)}`;
+
+class FakeSocket {
+  static readonly OPEN = 1;
+  static readonly CLOSED = 3;
+  static readonly CONNECTING = 0;
+  static readonly CLOSING = 2;
+  readonly OPEN = FakeSocket.OPEN;
+  readonly CLOSED = FakeSocket.CLOSED;
+  readonly CONNECTING = FakeSocket.CONNECTING;
+  readonly CLOSING = FakeSocket.CLOSING;
+  readyState = FakeSocket.OPEN;
+  sent: string[] = [];
+  private readonly listeners = new Map<
+    string,
+    Array<(event: unknown) => void>
+  >();
+
+  addEventListener(type: string, listener: (event: unknown) => void): void {
+    const current = this.listeners.get(type) ?? [];
+    current.push(listener);
+    this.listeners.set(type, current);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.readyState = FakeSocket.CLOSED;
+    this.emit("close", { code, reason });
+  }
+
+  emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+}
+
+describe("hosted desktop browser protocol", () => {
+  it("builds a same-origin desktop attach URL and bounded discovery requests", () => {
+    expect(
+      buildHostedDesktopSocketUrl(
+        "https://app.papercusp.com/cloud-workspaces",
+        TICKET,
+        "desktop-1",
+        "watch",
+      ),
+    ).toBe(
+      `wss://app.papercusp.com/api/hosted/connectors/socket?ticket=${TICKET}&kind=desktop&desktopSessionId=desktop-1&desktopMode=watch`,
+    );
+    expect(buildDesktopRosterRequest("roster-1")).toBe(
+      JSON.stringify({ type: "desktop.roster", requestId: "roster-1" }),
+    );
+    expect(buildDesktopThumbnailRequest("thumb-1", "desktop-1")).toBe(
+      JSON.stringify({
+        type: "desktop.thumbnail",
+        requestId: "thumb-1",
+        desktopSessionId: "desktop-1",
+      }),
+    );
+    expect(() =>
+      buildHostedDesktopSocketUrl(
+        "https://app.papercusp.com",
+        TICKET,
+        " ",
+        "watch",
+      ),
+    ).toThrow("desktop_session_required");
+  });
+
+  it("parses ready, roster, thumbnail, and explicit operation errors", () => {
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.ready",
+        action: "takeover",
+        inputAllowed: true,
+      }),
+    ).toEqual({ kind: "ready", action: "takeover", inputAllowed: true });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.roster.result",
+        requestId: "roster-1",
+        desktops: [
+          {
+            desktopSessionId: "desktop-1",
+            state: "ready",
+            displayNumber: 2,
+            geometry: "1280x720",
+          },
+          { desktopSessionId: "", state: "bad" },
+        ],
+      }),
+    ).toEqual({
+      kind: "roster",
+      requestId: "roster-1",
+      desktops: [
+        {
+          desktopSessionId: "desktop-1",
+          state: "ready",
+          displayNumber: 2,
+          geometry: "1280x720",
+        },
+      ],
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.thumbnail.result",
+        requestId: "thumb-1",
+        desktopSessionId: "desktop-1",
+        data: "AQI=",
+        bytes: 2,
+      }),
+    ).toEqual({
+      kind: "thumbnail",
+      requestId: "thumb-1",
+      desktopSessionId: "desktop-1",
+      data: "AQI=",
+      bytes: 2,
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.thumbnail.result",
+        requestId: "thumb-2",
+        desktopSessionId: "desktop-1",
+        data: null,
+      }),
+    ).toEqual({
+      kind: "thumbnail",
+      requestId: "thumb-2",
+      desktopSessionId: "desktop-1",
+      data: null,
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.thumbnail.result",
+        requestId: "thumb-3",
+        desktopSessionId: "desktop-1",
+        data: "not base64!",
+      }),
+    ).toBeNull();
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "operation.error",
+        requestId: "roster-1",
+        operation: "desktop.roster",
+        code: "desktop_unsupported",
+      }),
+    ).toEqual({
+      kind: "error",
+      requestId: "roster-1",
+      operation: "desktop.roster",
+      code: "desktop_unsupported",
+    });
+  });
+
+  it("adapts JSON/base64 relay frames to noVNC's raw channel contract", () => {
+    const socket = new FakeSocket();
+    const channel = new HostedDesktopRelayChannel(socket);
+    const onReady = vi.fn();
+    const onOpen = vi.fn();
+    const onMessage = vi.fn();
+    const onClose = vi.fn();
+    channel.onready = onReady;
+    channel.onopen = onOpen;
+    channel.onmessage = onMessage;
+    channel.onclose = onClose;
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "desktop.ready",
+        action: "takeover",
+        inputAllowed: true,
+      }),
+    });
+    expect(channel.readyState).toBe(channel.OPEN);
+    expect(channel.inputAllowed).toBe(true);
+    expect(onReady).toHaveBeenCalledWith({
+      kind: "ready",
+      action: "takeover",
+      inputAllowed: true,
+    });
+    expect(onOpen).toHaveBeenCalledOnce();
+
+    socket.emit("message", {
+      data: JSON.stringify({ type: "desktop.data", data: "AQI=" }),
+    });
+    expect(onMessage).toHaveBeenCalledWith({
+      data: new Uint8Array([1, 2]).buffer,
+    });
+
+    channel.send(new Uint8Array([3, 4]));
+    expect(socket.sent).toContain(
+      buildDesktopDataRelay(new Uint8Array([3, 4])),
+    );
+    socket.close(1000, "done");
+    expect(channel.readyState).toBe(channel.CLOSED);
+    expect(channel.inputAllowed).toBe(false);
+    expect(onClose).toHaveBeenCalledWith({ code: 1000, reason: "done" });
+  });
+});

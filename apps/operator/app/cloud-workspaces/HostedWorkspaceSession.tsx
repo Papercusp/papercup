@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Clipboard,
   Download,
@@ -24,11 +24,38 @@ import {
   type HostedWorkspaceSessionStatus,
   type HostedWorkspaceTabRole,
 } from "./hosted-workspace-session-protocol";
+import {
+  parseHostedDesktopProtocolMessage,
+  type HostedDesktopRosterEntry,
+  type HostedDesktopThumbnailResult,
+} from "./hosted-desktop-viewer-protocol";
+
+export type HostedDesktopQueryState = "idle" | "loading" | "ready" | "error";
+
+/**
+ * The PTY/control channel is the authenticated discovery plane for desktops.
+ * The returned callbacks deliberately do not expose the raw socket: callers
+ * can request bounded roster/thumbnail reads, while the selected desktop's
+ * media channel remains a separate connection owned by HostedDesktopViewer.
+ */
+export interface HostedWorkspaceDesktopBridge {
+  requestRoster: () => boolean;
+  requestThumbnail: (desktopSessionId: string) => boolean;
+}
 
 export interface HostedWorkspaceSessionProps {
   hostId: string;
   routeLabel: string;
   workspaceName: string;
+  onWorkspaceIdChange?: (workspaceId: string) => void;
+  onDesktopBridgeChange?: (bridge: HostedWorkspaceDesktopBridge | null) => void;
+  onDesktopRosterChange?: (desktops: HostedDesktopRosterEntry[]) => void;
+  onDesktopThumbnailChange?: (result: HostedDesktopThumbnailResult) => void;
+  onDesktopQueryStateChange?: (
+    state: HostedDesktopQueryState,
+    operation?: "roster" | "thumbnail",
+    code?: string,
+  ) => void;
 }
 
 type SessionMeta = {
@@ -104,6 +131,11 @@ export function HostedWorkspaceSession({
   hostId,
   routeLabel,
   workspaceName,
+  onWorkspaceIdChange,
+  onDesktopBridgeChange,
+  onDesktopRosterChange,
+  onDesktopThumbnailChange,
+  onDesktopQueryStateChange,
 }: HostedWorkspaceSessionProps) {
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<import("@xterm/xterm").Terminal | null>(null);
@@ -125,8 +157,25 @@ export function HostedWorkspaceSession({
   const pathRef = useRef(".");
   const draftPathRef = useRef(".");
   const pendingListPathsRef = useRef(new Map<string, string>());
+  const pendingDesktopRequestsRef = useRef(
+    new Map<string, "roster" | "thumbnail">(),
+  );
   const connectEpochRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement | null>(null);
+  const callbackRefs = useRef({
+    onWorkspaceIdChange,
+    onDesktopBridgeChange,
+    onDesktopRosterChange,
+    onDesktopThumbnailChange,
+    onDesktopQueryStateChange,
+  });
+  callbackRefs.current = {
+    onWorkspaceIdChange,
+    onDesktopBridgeChange,
+    onDesktopRosterChange,
+    onDesktopThumbnailChange,
+    onDesktopQueryStateChange,
+  };
 
   const [status, setStatus] = useState<HostedWorkspaceSessionStatus>("idle");
   const [role, setRole] = useState<HostedWorkspaceTabRole | null>(null);
@@ -158,11 +207,63 @@ export function HostedWorkspaceSession({
     }
   }, []);
 
+  const requestDesktopRoster = useCallback(() => {
+    const requestIdValue = requestId("desktop-roster");
+    if (!send({ type: "desktop.roster", requestId: requestIdValue })) {
+      callbackRefs.current.onDesktopQueryStateChange?.(
+        "error",
+        "roster",
+        "relay_unavailable",
+      );
+      return false;
+    }
+    pendingDesktopRequestsRef.current.set(requestIdValue, "roster");
+    callbackRefs.current.onDesktopQueryStateChange?.("loading", "roster");
+    return true;
+  }, [send]);
+
+  const requestDesktopThumbnail = useCallback(
+    (desktopSessionId: string) => {
+      const normalized = desktopSessionId.trim();
+      if (!normalized) return false;
+      const requestIdValue = requestId("desktop-thumbnail");
+      if (
+        !send({
+          type: "desktop.thumbnail",
+          requestId: requestIdValue,
+          desktopSessionId: normalized,
+        })
+      ) {
+        callbackRefs.current.onDesktopQueryStateChange?.(
+          "error",
+          "thumbnail",
+          "relay_unavailable",
+        );
+        return false;
+      }
+      pendingDesktopRequestsRef.current.set(requestIdValue, "thumbnail");
+      callbackRefs.current.onDesktopQueryStateChange?.("loading", "thumbnail");
+      return true;
+    },
+    [send],
+  );
+
+  const desktopBridge = useMemo<HostedWorkspaceDesktopBridge>(
+    () => ({
+      requestRoster: requestDesktopRoster,
+      requestThumbnail: requestDesktopThumbnail,
+    }),
+    [requestDesktopRoster, requestDesktopThumbnail],
+  );
+
   const dispose = useCallback((notify = true) => {
     connectEpochRef.current += 1;
     const socket = socketRef.current;
     socketRef.current = null;
     pendingListPathsRef.current.clear();
+    pendingDesktopRequestsRef.current.clear();
+    callbackRefs.current.onDesktopBridgeChange?.(null);
+    callbackRefs.current.onDesktopQueryStateChange?.("idle");
     if (socket && notify && socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "session.detach" }));
@@ -260,6 +361,53 @@ export function HostedWorkspaceSession({
       } catch {
         return;
       }
+
+      /* Desktop discovery deliberately rides this already-authenticated PTY
+       * channel. Keep its responses out of the terminal/file state machine;
+       * the selected desktop's pixel stream is opened separately by the
+       * viewer, per D-017. */
+      const desktopEvent = parseHostedDesktopProtocolMessage(value);
+      if (desktopEvent?.kind === "roster") {
+        pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
+        callbackRefs.current.onDesktopRosterChange?.(desktopEvent.desktops);
+        callbackRefs.current.onDesktopQueryStateChange?.("ready", "roster");
+        return;
+      }
+      if (desktopEvent?.kind === "thumbnail") {
+        pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
+        callbackRefs.current.onDesktopThumbnailChange?.({
+          desktopSessionId: desktopEvent.desktopSessionId,
+          data: desktopEvent.data,
+          ...(desktopEvent.bytes !== undefined
+            ? { bytes: desktopEvent.bytes }
+            : {}),
+        });
+        callbackRefs.current.onDesktopQueryStateChange?.("ready", "thumbnail");
+        return;
+      }
+      if (
+        desktopEvent?.kind === "error" &&
+        (desktopEvent.operation.startsWith("desktop.") ||
+          (desktopEvent.requestId !== undefined &&
+            pendingDesktopRequestsRef.current.has(desktopEvent.requestId)))
+      ) {
+        if (desktopEvent.requestId) {
+          pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
+        }
+        const operation = desktopEvent.operation.startsWith("desktop.")
+          ? desktopEvent.operation.slice("desktop.".length)
+          : undefined;
+        callbackRefs.current.onDesktopQueryStateChange?.(
+          "error",
+          operation === "roster" || operation === "thumbnail"
+            ? operation
+            : undefined,
+          desktopEvent.code,
+        );
+        setNotice(`${desktopEvent.operation} failed: ${desktopEvent.code}`);
+        return;
+      }
+
       const event = parseHostedWorkspaceProtocolMessage(value);
       if (!event) return;
 
@@ -286,9 +434,14 @@ export function HostedWorkspaceSession({
         setRole(event.role);
         setMeta((current) => ({ ...current, resumed: event.resumed }));
         setStatus("live");
+        callbackRefs.current.onDesktopBridgeChange?.(desktopBridge);
         setNotice(
           event.resumed ? "Detached session resumed." : "New session ready.",
         );
+        /* Discovery is a control-plane read, so make the picker useful as soon
+         * as the authenticated PTY is ready. It never opens a second SSE or
+         * media socket. */
+        requestDesktopRoster();
         listFiles(".");
         return;
       }
@@ -300,6 +453,9 @@ export function HostedWorkspaceSession({
         terminalRef.current?.writeln(
           `\r\n\u001b[33m[process exited: ${event.code}, signal ${event.signal}]\u001b[0m`,
         );
+        pendingDesktopRequestsRef.current.clear();
+        callbackRefs.current.onDesktopBridgeChange?.(null);
+        callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setStatus("closed");
         setNotice("The remote PTY exited; reconnect to start a new session.");
         return;
@@ -312,7 +468,8 @@ export function HostedWorkspaceSession({
       }
       if (event.kind === "operation-error") {
         if (event.operation === "list") {
-          if (event.requestId) pendingListPathsRef.current.delete(event.requestId);
+          if (event.requestId)
+            pendingListPathsRef.current.delete(event.requestId);
           /* A failed list never confirms the editable path. Restore the last
              directory whose entries we actually received. */
           draftPathRef.current = pathRef.current;
@@ -357,7 +514,7 @@ export function HostedWorkspaceSession({
         }
       }
     },
-    [listFiles],
+    [desktopBridge, listFiles, requestDesktopRoster],
   );
 
   const connect = useCallback(async () => {
@@ -386,6 +543,7 @@ export function HostedWorkspaceSession({
           ),
         );
       }
+      callbackRefs.current.onWorkspaceIdChange?.(workspaceId);
 
       const ticketResponse = await fetch(
         `/api/hosted/workspaces/${encodeURIComponent(workspaceId)}/connectors/session-ticket`,
@@ -442,6 +600,9 @@ export function HostedWorkspaceSession({
         )
           return;
         socketRef.current = null;
+        pendingDesktopRequestsRef.current.clear();
+        callbackRefs.current.onDesktopBridgeChange?.(null);
+        callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setStatus((current) => (current === "error" ? current : "closed"));
         setNotice(
           event.reason
@@ -459,11 +620,16 @@ export function HostedWorkspaceSession({
           )
         )
           return;
+        pendingDesktopRequestsRef.current.clear();
+        callbackRefs.current.onDesktopBridgeChange?.(null);
+        callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setError("The workspace relay connection failed.");
         setStatus("error");
       });
     } catch (cause) {
       if (epoch !== connectEpochRef.current) return;
+      callbackRefs.current.onDesktopBridgeChange?.(null);
+      callbackRefs.current.onDesktopQueryStateChange?.("idle");
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus("error");
     }

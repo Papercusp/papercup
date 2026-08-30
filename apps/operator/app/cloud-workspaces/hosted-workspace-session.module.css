@@ -238,6 +238,283 @@
   display: none;
 }
 
+/* ── Desktop discovery + embedded viewer (P-010) ─────────────────────────── */
+
+.desktopSurface {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-deeper);
+}
+
+.desktopSurfaceHeader,
+.desktopRosterToolbar,
+.desktopRosterCard,
+.desktopHeader,
+.desktopFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.desktopSurfaceHeader,
+.desktopRosterToolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.desktopSurfaceHeader strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.desktopSurfaceHeader small,
+.desktopRosterToolbar span,
+.desktopRosterMeta,
+.desktopRosterEmpty,
+.desktopRosterError {
+  color: var(--fg-mute);
+  font-size: 10px;
+}
+
+.desktopRosterToolbar {
+  padding-top: 2px;
+}
+
+.desktopRosterToolbar button,
+.desktopRosterActions button {
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.desktopRosterToolbar button:disabled,
+.desktopRosterActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.desktopRoster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.desktopRosterCard {
+  align-items: stretch;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+
+.desktopRosterCard[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--accent), var(--border) 35%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent), transparent 65%);
+}
+
+.desktopThumbnail {
+  display: grid;
+  place-items: center;
+  flex: 0 0 88px;
+  min-height: 62px;
+  background: var(--bg-2);
+  color: var(--fg-mute);
+  font-size: 9px;
+  text-align: center;
+}
+
+.desktopThumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 62px;
+  object-fit: cover;
+}
+
+.desktopRosterInfo {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px;
+}
+
+.desktopRosterInfo strong {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktopRosterMeta {
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.desktopRosterActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.desktopRosterActions button[data-destructive="true"] {
+  border-color: color-mix(in srgb, var(--bad), var(--border) 55%);
+  color: var(--bad);
+}
+
+.desktopRosterEmpty,
+.desktopRosterError {
+  margin: 0;
+  padding: 8px 0 3px;
+}
+
+.desktopRosterError {
+  color: var(--bad);
+}
+
+.desktopViewerMount {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 4px;
+}
+
+.desktopPanel {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-deeper);
+}
+
+.desktopHeader {
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.desktopHeader > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.desktopHeader strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg);
+  font-size: 11px;
+}
+
+.desktopHeader span {
+  color: var(--fg-mute);
+  font-size: 9.5px;
+}
+
+.desktopActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.desktopStatus {
+  color: var(--fg-dim) !important;
+  font-family: var(--font-mono, monospace);
+  font-size: 9.5px !important;
+}
+
+.desktopStage {
+  position: relative;
+  display: flex;
+  min-height: 340px;
+  align-items: stretch;
+  justify-content: center;
+  overflow: hidden;
+  background: #101418;
+}
+
+.desktopStage :global(.noVNC_canvas),
+.desktopStage :global(canvas) {
+  display: block;
+  max-width: 100%;
+}
+
+.desktopPlaceholder {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  color: var(--fg-mute);
+  font-size: 11px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.desktopFooter {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-mute);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.desktopCapabilities {
+  display: flex;
+  min-width: min(100%, 360px);
+  flex: 1 1 360px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.desktopCapabilities span {
+  color: var(--fg-mute);
+  font-size: 9px;
+}
+
+.desktopCapabilities span[data-supported="true"] {
+  color: var(--good);
+}
+
+.desktopCapabilities span[data-supported="false"] {
+  color: var(--fg-mute);
+}
+
 @container (max-width: 760px) {
   .body {
     grid-template-columns: 1fr;
@@ -251,6 +528,10 @@
   .terminalPane,
   .filePane {
     min-height: 300px;
+  }
+
+  .desktopStage {
+    min-height: 280px;
   }
 }
 
@@ -268,4 +549,3 @@
     min-height: 220px;
   }
 }
-

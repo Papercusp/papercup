@@ -9,10 +9,7 @@ import {
   readHostedDesktopTicket,
   type HostedDesktopViewerMode,
 } from "./hosted-desktop-viewer-protocol";
-import {
-  readHostedWorkspaceTicket,
-  type HostedWorkspaceSessionStatus,
-} from "./hosted-workspace-session-protocol";
+import { readHostedWorkspaceTicket } from "./hosted-workspace-session-protocol";
 import styles from "./hosted-workspace-session.module.css";
 
 export type HostedDesktopViewerState =
@@ -23,18 +20,14 @@ export type HostedDesktopViewerState =
   | "closed"
   | "error";
 
-function requestId(prefix: string): string {
-  const suffix =
-    globalThis.crypto?.randomUUID?.() ??
-    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `${prefix}-${suffix}`;
-}
-
 function responseError(value: unknown, fallback: string): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return fallback;
   const payload = value as Record<string, unknown>;
   const nested =
-    payload.error && typeof payload.error === "object" && !Array.isArray(payload.error)
+    payload.error &&
+    typeof payload.error === "object" &&
+    !Array.isArray(payload.error)
       ? (payload.error as Record<string, unknown>)
       : null;
   const code =
@@ -70,6 +63,7 @@ export function HostedDesktopViewer({
   const channelRef = useRef<HostedDesktopRelayChannel | null>(null);
   const rfbRef = useRef<import("@novnc/novnc").default | null>(null);
   const epochRef = useRef(0);
+  const readyRejectedRef = useRef(false);
   const [state, setState] = useState<HostedDesktopViewerState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [inputAllowed, setInputAllowed] = useState(false);
@@ -85,6 +79,8 @@ export function HostedDesktopViewer({
 
   const disconnect = useCallback(() => {
     epochRef.current += 1;
+    readyRejectedRef.current = false;
+    setInputAllowed(false);
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     channelRef.current?.close(1000, "viewer_detached");
@@ -103,6 +99,7 @@ export function HostedDesktopViewer({
     const epoch = epochRef.current;
     setError(null);
     setInputAllowed(false);
+    readyRejectedRef.current = false;
     updateState("ticketing");
 
     try {
@@ -120,7 +117,8 @@ export function HostedDesktopViewer({
         },
       );
       const payload = await response.json().catch(() => null);
-      const ticket = readHostedDesktopTicket(payload) ?? readHostedWorkspaceTicket(payload);
+      const ticket =
+        readHostedDesktopTicket(payload) ?? readHostedWorkspaceTicket(payload);
       if (!response.ok || !ticket) {
         throw new Error(
           responseError(payload, "Could not mint a desktop viewer ticket"),
@@ -140,8 +138,24 @@ export function HostedDesktopViewer({
       socketRef.current = socket;
       const channel = new HostedDesktopRelayChannel(socket);
       channelRef.current = channel;
+      channel.onready = (event) => {
+        if (epoch !== epochRef.current) return;
+        /* The relay reports the credential actually granted. A mismatch is a
+         * fail-closed protocol error, never a reason to show takeover chrome
+         * for a watch credential (or vice versa). */
+        if (event.action !== mode) {
+          readyRejectedRef.current = true;
+          setInputAllowed(false);
+          setError("desktop_action_mismatch");
+          updateState("error");
+          channel.close(1008, "desktop_action_mismatch");
+          return;
+        }
+        setInputAllowed(mode === "takeover" && event.inputAllowed);
+      };
       channel.onopen = () => {
         if (epoch !== epochRef.current) return;
+        if (readyRejectedRef.current) return;
         updateState("connecting");
       };
       channel.onerror = (event) => {
@@ -155,33 +169,36 @@ export function HostedDesktopViewer({
       };
       channel.onclose = (event) => {
         if (epoch !== epochRef.current) return;
+        setInputAllowed(false);
         const reason = event.reason?.trim();
         setError(reason || null);
-        updateState("closed");
+        updateState(readyRejectedRef.current ? "error" : "closed");
       };
       const { default: RFB } = await import("@novnc/novnc");
       if (epoch !== epochRef.current || !stageRef.current) {
         channel.close(1000, "superseded");
         return;
       }
-      const rfb = new RFB(
-        stageRef.current,
-        channel as unknown as WebSocket,
-        { shared: true },
-      );
+      const rfb = new RFB(stageRef.current, channel as unknown as WebSocket, {
+        shared: true,
+      });
       rfb.viewOnly = mode === "watch";
       rfb.scaleViewport = true;
       rfb.clipViewport = true;
       rfb.resizeSession = false;
       rfb.focusOnClick = true;
       rfb.background =
-        getComputedStyle(document.documentElement).getPropertyValue("--bg-deeper").trim() ||
-        "#101418";
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--bg-deeper")
+          .trim() || "#101418";
       rfb.addEventListener("connect", () => {
         if (epoch === epochRef.current) updateState("connected");
       });
       rfb.addEventListener("disconnect", () => {
-        if (epoch === epochRef.current) updateState("closed");
+        if (epoch === epochRef.current) {
+          setInputAllowed(false);
+          updateState("closed");
+        }
       });
       rfbRef.current = rfb;
     } catch (cause) {
@@ -206,13 +223,17 @@ export function HostedDesktopViewer({
 
   useEffect(() => {
     const onFullscreenChange = () => {
-      setFullscreen(document.fullscreenElement === stageRef.current?.parentElement);
+      setFullscreen(
+        document.fullscreenElement === stageRef.current?.parentElement,
+      );
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
 
   const toggleFullscreen = useCallback(async () => {
+    if (typeof document === "undefined") return;
     const target = stageRef.current?.parentElement;
     if (!target || !document.fullscreenEnabled) return;
     try {
@@ -223,11 +244,16 @@ export function HostedDesktopViewer({
     }
   }, []);
 
+  const fullscreenSupported =
+    typeof document !== "undefined" && document.fullscreenEnabled === true;
+
   const statusLabel =
     state === "connected"
       ? inputAllowed
         ? "connected · takeover"
-        : "connected · watch-only"
+        : mode === "takeover"
+          ? "connected · takeover input unavailable"
+          : "connected · watch-only"
       : state === "error"
         ? `error${error ? ` · ${error}` : ""}`
         : state;
@@ -267,9 +293,9 @@ export function HostedDesktopViewer({
             variant="ghost"
             size="sm"
             onClick={() => void toggleFullscreen()}
-            disabled={!document.fullscreenEnabled}
+            disabled={!fullscreenSupported}
             title={
-              document.fullscreenEnabled
+              fullscreenSupported
                 ? "Toggle fullscreen desktop viewer"
                 : "Fullscreen is unavailable in this browser"
             }
@@ -298,11 +324,35 @@ export function HostedDesktopViewer({
         <span>
           {inputAllowed
             ? "Input is enabled by the takeover credential."
-            : "Watch-only mode keeps keyboard and pointer input disabled."}
+            : mode === "takeover"
+              ? "Takeover was requested, but the host did not grant input."
+              : "Watch-only mode keeps keyboard and pointer input disabled."}
         </span>
+        <div
+          className={styles.desktopCapabilities}
+          aria-label="Desktop capabilities"
+        >
+          <span
+            data-capability="keyboard-pointer"
+            data-supported={inputAllowed}
+          >
+            Keyboard/pointer: {inputAllowed ? "enabled" : "watch-only"}
+          </span>
+          <span data-capability="clipboard" data-supported="false">
+            Clipboard: unavailable in browser viewer
+          </span>
+          <span data-capability="audio" data-supported="false">
+            Audio: unavailable
+          </span>
+          <span data-capability="scaling" data-supported="true">
+            Scaling: viewport fit enabled
+          </span>
+          <span data-capability="file-transfer" data-supported="false">
+            File transfer: use the workspace file plane
+          </span>
+        </div>
         <span>PTY and desktop reconnect independently.</span>
       </div>
     </section>
   );
 }
-
