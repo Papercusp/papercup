@@ -18,12 +18,15 @@ import type { ScorecardRow } from '../../scorecards';
 
 vi.mock('../../scorecards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scorecards')>();
-  return { ...actual, listScorecards: vi.fn(async () => [] as ScorecardRow[]) };
+  return {
+    ...actual,
+    listScorecardPage: vi.fn(async () => ({ rows: [] as ScorecardRow[], hasMore: false })),
+  };
 });
 
-import { listScorecards } from '../../scorecards';
+import { listScorecardPage } from '../../scorecards';
 
-const listScorecardsM = vi.mocked(listScorecards);
+const listScorecardPageM = vi.mocked(listScorecardPage);
 const listTool = (await import('./list')).default;
 
 const makeDispatchContext = (): UnifiedToolContext => ({
@@ -85,7 +88,7 @@ describe('scorecards:list correctness payload', () => {
       score10: 7.9,
       linkedItems: [],
     } as unknown as ScorecardRow;
-    listScorecardsM.mockResolvedValue([scorecard]);
+    listScorecardPageM.mockResolvedValue({ rows: [scorecard], hasMore: true });
 
     const raw = (await listTool.handler(
       { rubricRef: 'acceptance-test-rubric' } as never,
