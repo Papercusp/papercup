@@ -15,7 +15,7 @@
  * reviewable in a diff, which is what makes "cite your sample" real.
  */
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +51,44 @@ export function loadPairFixtures<T extends SubstitutionPair>(
   pairs: T[],
 ): Array<{ pair: T; fixture: CorpusFixture }> {
   return pairs.map((pair) => ({ pair, fixture: loadFixture(pair.id) }));
+}
+
+/**
+ * The fixtures a hook's pre-filter guard must replay.
+ *
+ * BOTH hook suites run this same selection — the OMP guard in-process, the cc
+ * guard by spawning the real hook once per atom. D-005 duplicates the
+ * PRE-FILTER itself, once per hook path, because each hook must run it with no
+ * imports; that duplication is deliberate and confined to the HOOKS. Their
+ * TESTS may share code, and until EI-18699117901393768 they did not: this
+ * selection sat inline and byte-identical in both files, so adding a pair whose
+ * verdict changed what the guard covers required the same edit twice with
+ * nothing pointing at the second site. The failure mode was silent — fix one,
+ * ship a red gate you believe is green, and it surfaces later in someone else's
+ * run with no obvious link to the pair that caused it.
+ *
+ * `not-a-substitute` pairs are excluded because `matchCommandToSubstitutions`
+ * drops them unconditionally per D-007, so their atoms can never produce an
+ * advisory however the pre-filter behaves. The verdict is read off the pair,
+ * never inferred from a filename, so this cannot drift from what the matcher
+ * actually enforces.
+ *
+ * `expected` comes back alongside `files` so the caller asserts EXACT coverage
+ * rather than `> 0`. A selection that silently dropped fixtures would make both
+ * guards vacuously green — precisely the "passes while testing nothing" failure
+ * the scoping exists to prevent — so the count is part of the contract, not a
+ * convenience.
+ */
+export function selectEnforceableFixtures<T extends SubstitutionPair>(
+  pairs: readonly T[],
+): { files: string[]; expected: number } {
+  const enforceable = new Set(
+    pairs.filter((p) => p.expectedVerdict !== 'not-a-substitute').map((p) => `${p.id}.sample.json`),
+  );
+  const files = readdirSync(FIXTURE_DIR)
+    .filter((f) => f.endsWith('.sample.json') && enforceable.has(f))
+    .sort();
+  return { files, expected: enforceable.size };
 }
 
 /** A frozen fixture file: the sample plus the population it was drawn from. */

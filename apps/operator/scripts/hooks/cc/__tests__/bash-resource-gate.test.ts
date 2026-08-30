@@ -28,6 +28,10 @@ import { fileURLToPath } from 'node:url';
 // coverage. Widening this back to ALL_PAIRS reds the gate the moment any
 // non-bash corpus gains an enforceable pair.
 import { BASH_GATE_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
+import {
+  FIXTURE_DIR,
+  selectEnforceableFixtures,
+} from '@papercusp/operator-core/lib/bash-substitution/corpus';
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pretooluse-bash-resource-gate.sh');
 
@@ -5207,12 +5211,6 @@ describe('substitution pre-filter', () => {
   // equivalence verdict — the same frozen corpus those verdicts were computed
   // from — and asserts each still reaches the operator. Add a pair without
   // adding its verb and this goes red.
-  // __tests__ → cc → hooks → scripts → operator → apps → repo root (six).
-  const FIXTURE_DIR = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../../../../../packages/operator-core/lib/bash-substitution/fixtures',
-  );
-
   // Scoped to the ENFORCEABLE pairs, exactly as the OMP hook's mirror of this
   // guard is. A `not-a-substitute` pair (P-008's `ps`/`pgrep`) is dropped by
   // `matchCommandToSubstitutions` unconditionally per D-007, so its atoms can
@@ -5226,17 +5224,14 @@ describe('substitution pre-filter', () => {
   // fleet is busiest. 5× the measured worst keeps the guard exhaustive
   // without making it a load canary.
   it('every atom behind an ENFORCEABLE verdict passes the pre-filter', { timeout: 300_000 }, async () => {
-    const enforceable = new Set(
-      BASH_GATE_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
-        (p) => `${p.id}.sample.json`,
-      ),
-    );
-    const files = readdirSync(FIXTURE_DIR).filter(
-      (f) => f.endsWith('.sample.json') && enforceable.has(f),
-    );
+    // Selection is SHARED with the OMP hook's mirror of this guard
+    // (`selectEnforceableFixtures`) so the two cannot drift — see
+    // EI-18699117901393768. D-005 duplicates the pre-filter across the HOOKS;
+    // it does not require their tests to re-derive which fixtures to replay.
+    const { files, expected } = selectEnforceableFixtures(BASH_GATE_PAIRS);
     // Exact, not `> 0`: a filter that silently dropped fixtures would make this
     // guard vacuously green.
-    expect(files.length, 'a fixture is missing for some enforceable pair').toBe(enforceable.size);
+    expect(files.length, 'a fixture is missing for some enforceable pair').toBe(expected);
 
     // Flatten first, then sweep through a bounded pool. These probes are
     // independent and read-only (each reads only stderr), so the original

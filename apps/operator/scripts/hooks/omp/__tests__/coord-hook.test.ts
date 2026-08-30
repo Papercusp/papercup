@@ -9,7 +9,6 @@ import {
   promises as fs,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -18,7 +17,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ompSessionsLinkArgsSchema } from '@papercusp/operator-core/lib/agent-tools/omp/sessions';
-import { loadPairFixtures } from "@papercusp/operator-core/lib/bash-substitution/corpus";
+import {
+  FIXTURE_DIR as SUBSTITUTION_FIXTURE_DIR,
+  loadPairFixtures,
+  selectEnforceableFixtures,
+} from "@papercusp/operator-core/lib/bash-substitution/corpus";
 import { deriveSubstitutionPrefilterHeads } from "@papercusp/operator-core/lib/bash-substitution/routing-table";
 
 import {
@@ -5665,12 +5668,6 @@ const SHELL_HOOK_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../cc/pretooluse-bash-resource-gate.sh',
 );
-// __tests__ → omp → hooks → scripts → operator → apps → repo root (six).
-const SUBSTITUTION_FIXTURE_DIR = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../../../../packages/operator-core/lib/bash-substitution/fixtures',
-);
-
 describe("substitutionPrefilterHit (OMP pre-filter — decides who pays the round-trip)", () => {
   // A pre-filter MISS is the silent failure this whole describe exists for: no
   // error, no log, just an advisory that never fires for the commands its rule
@@ -5743,19 +5740,16 @@ describe("substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
   // the VERDICT off the pair rather than keying on a filename, so it cannot
   // drift from what the matcher actually enforces.
   it("every atom behind an ENFORCEABLE equivalence verdict passes the pre-filter", () => {
-    const enforceable = new Set(
-      BASH_GATE_PAIRS.filter(
-        (p) => p.expectedVerdict !== "not-a-substitute",
-      ).map((p) => `${p.id}.sample.json`),
-    );
-    const files = readdirSync(SUBSTITUTION_FIXTURE_DIR).filter(
-      (f) => f.endsWith(".sample.json") && enforceable.has(f),
-    );
+    // Selection is SHARED with the cc hook's mirror of this guard
+    // (`selectEnforceableFixtures`) so the two cannot drift — see
+    // EI-18699117901393768. D-005 duplicates the pre-filter across the HOOKS;
+    // it does not require their tests to re-derive which fixtures to replay.
+    const { files, expected } = selectEnforceableFixtures(BASH_GATE_PAIRS);
     // Exact, not `> 0`: a filter that silently dropped fixtures would make this
     // guard vacuously green — the same "passes while testing nothing" failure
     // the scoping itself is meant to avoid.
     expect(files.length, "a fixture is missing for some enforceable pair").toBe(
-      enforceable.size,
+      expected,
     );
 
     const missed: string[] = [];
