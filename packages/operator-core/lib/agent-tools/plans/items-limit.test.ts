@@ -127,13 +127,13 @@ describe("plans:items bounded limit", () => {
     expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", itemIds: [] }).success).toBe(false);
   });
 
-  it("rejects the unsupported singular item selector", () => {
-    const result = tool.args.safeParse({ harness: "papercup", slug: "plan-a", item: "P-007" });
-
-    expect(result.success).toBe(false);
-    expect(result.success ? "" : result.error.issues.map((issue) => issue.message).join(" ")).toContain(
-      'Unrecognized key: "item"',
-    );
+  it("EI-21588504660347963: accepts the singular `item` selector as a compatibility alias for itemIds", () => {
+    // plans:get-item already uses `item` for its single-read shorthand; two
+    // independent callers reached for the same convention here and hit
+    // invalid_args before this alias existed.
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", item: "P-007" }).success).toBe(true);
+    expect(tool.args.safeParse({ harness: "papercup", item: "P-007" }).success).toBe(false); // still requires slug
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", item: "P-07" }).success).toBe(false); // still P-NNN
   });
 
   it("filters exact itemIds from the requested plan only", async () => {
@@ -148,6 +148,18 @@ describe("plans:items bounded limit", () => {
     expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
     expect(M.getPlanRow).toHaveBeenCalledWith("plan-a", expect.anything());
     expect(M.listPlanRows).not.toHaveBeenCalled();
+  });
+
+  it("EI-21588504660347963: the singular `item` alias filters the same as one-element itemIds", async () => {
+    M.getPlanRow.mockResolvedValue(
+      plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
+    );
+
+    const result = (await run({ harness: "papercup", slug: "plan-a", item: "P-002" })) as {
+      data: { items: Array<{ plan: string; item: { id: string } }> };
+    };
+
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
   });
 
   it("keeps different itemIds selections in separate cache entries", async () => {
