@@ -751,7 +751,7 @@ export default function AdvWorkflowsTab() {
           onClose={closeDialog}
           onCreated={(plan) => {
             refreshAll();
-            void setSelectedId(`plan:${planRefKey(plan)}`);
+            if (plan) void setSelectedId(`plan:${planRefKey(plan)}`);
           }}
         />
       ) : null}
@@ -1081,7 +1081,7 @@ function CreateAutomationModal({
   /** Seed for the outcome field, handed over from the agent composer. */
   initialOutcome?: string;
   onClose: () => void;
-  onCreated: (plan: CreatePlanRef) => void;
+  onCreated: (plan: CreatePlanRef | null) => void;
 }) {
   const availablePlans = useMemo(
     () => plans
@@ -1094,8 +1094,13 @@ function CreateAutomationModal({
     [sources],
   );
   const [triggerKind, setTriggerKind] = useState<CreateTriggerKind>('schedule');
+  // The trigger engine has three real target contracts. Schedules can only launch
+  // plans; external events may additionally activate a goal or create the
+  // Gmail-specific bounded Email work item.
+  const [targetKind, setTargetKind] = useState<CreateTargetKind>('plan');
   const [planMode, setPlanMode] = useState<CreatePlanMode>(availablePlans.length > 0 ? 'existing' : 'new');
   const [selectedPlanKey, setSelectedPlanKey] = useState(availablePlans[0] ? planRefKey(availablePlans[0]) : '');
+  const [goalId, setGoalId] = useState('');
   const [schedulePreset, setSchedulePreset] = useState<SchedulePreset>('every-15-minutes');
   const [tzid, setTzid] = useState(browserTimeZone);
   const [sourceId, setSourceId] = useState(connectedSources[0]?.id ?? '');
@@ -1120,6 +1125,12 @@ function CreateAutomationModal({
       setEventPattern(`ext:${connectedSources[0].kind}:`);
     }
   }, [connectedSources, sourceId]);
+  useEffect(() => {
+    // A schedule is persisted by the plan schedule subsystem and has no goal or
+    // direct-work-item target column. Keep the form from ever constructing an
+    // impossible schedule payload when the trigger kind changes.
+    if (triggerKind === 'schedule' && targetKind !== 'plan') setTargetKind('plan');
+  }, [targetKind, triggerKind]);
 
   const selectedPlan = availablePlans.find((plan) => planRefKey(plan) === selectedPlanKey) ?? null;
   const selectedSource = connectedSources.find((source) => source.id === sourceId) ?? null;
@@ -1127,7 +1138,12 @@ function CreateAutomationModal({
   const newPlanReady = Boolean(createdPlan || (defaultHarness && planName.trim() && outcome.trim()));
   const planReady = planMode === 'existing' ? Boolean(selectedPlan) : newPlanReady;
   const triggerReady = triggerKind === 'schedule' || Boolean(selectedSource && eventPattern.trim());
-  const canSubmit = planReady && triggerReady && !pendingArm;
+  const targetReady = targetKind === 'plan'
+    ? planReady
+    : targetKind === 'goal'
+      ? Boolean(goalId.trim())
+      : triggerKind === 'external' && selectedSource?.kind === 'gmail';
+  const canSubmit = targetReady && triggerReady && !pendingArm;
 
   const finishArmed = (target: PendingArm) => {
     setPendingArm(null);
@@ -1141,8 +1157,8 @@ function CreateAutomationModal({
     setStep(target.kind === 'schedule' ? 'Arming schedule…' : 'Arming external event…');
     const armed = target.kind === 'schedule'
       ? await runScheduleTool('plans:arm-schedule', {
-          slug: target.plan.slug,
-          harness: target.plan.harness,
+          slug: target.plan?.slug,
+          harness: target.plan?.harness,
         })
       : target.bindingId
         ? await mutateExternalTrigger({
@@ -1154,8 +1170,8 @@ function CreateAutomationModal({
         : { ok: false, message: 'The created external binding did not return an id.' };
     if (!armed.ok) {
       setError(target.kind === 'schedule'
-        ? `Schedule saved for ${target.plan.title}, but it is not armed. ${armed.message ?? 'Arming failed.'}`
-        : `External binding attached to ${target.plan.title}, but it is not armed. ${armed.message ?? 'Arming failed.'}`);
+        ? `Schedule saved for ${target.targetLabel}, but it is not armed. ${armed.message ?? 'Arming failed.'}`
+        : `External trigger saved for ${target.targetLabel}, but it is not armed. ${armed.message ?? 'Arming failed.'}`);
       return false;
     }
     finishArmed(target);
@@ -1167,12 +1183,14 @@ function CreateAutomationModal({
     if (!canSubmit || submitting) return;
     setSubmitting(true);
     setError(null);
-    let plan: CreatePlanRef | null = planMode === 'existing' && selectedPlan
-      ? { slug: selectedPlan.slug, harness: selectedPlan.harness, title: selectedPlan.title ?? selectedPlan.slug }
-      : createdPlan;
+    let plan: CreatePlanRef | null = targetKind === 'plan'
+      ? planMode === 'existing' && selectedPlan
+        ? { slug: selectedPlan.slug, harness: selectedPlan.harness, title: selectedPlan.title ?? selectedPlan.slug }
+        : createdPlan
+      : null;
     let createdThisAttempt = false;
     try {
-      if (!plan && planMode === 'new') {
+      if (targetKind === 'plan' && !plan && planMode === 'new') {
         if (!defaultHarness) throw new Error('Select an owning pot before creating a plan in place.');
         const title = planName.trim();
         const delivery = outcome.trim();
@@ -1192,9 +1210,10 @@ function CreateAutomationModal({
         createdThisAttempt = true;
         setCreatedPlan(plan);
       }
-      if (!plan) throw new Error('Choose a plan to run.');
+      if (targetKind === 'plan' && !plan) throw new Error('Choose a plan to run.');
 
       if (triggerKind === 'schedule') {
+        if (!plan) throw new Error('Schedules can only launch a plan.');
         const preset = SCHEDULE_PRESETS[schedulePreset];
         setStep('Saving schedule…');
         const scheduled = await runScheduleTool('plans:set-schedule', {
@@ -1208,27 +1227,49 @@ function CreateAutomationModal({
         if (!scheduled.ok) {
           throw new Error(`${createdThisAttempt ? `Plan ${plan.title} was created, but ` : ''}the schedule was not saved. ${scheduled.message ?? 'Schedule authoring failed.'}`);
         }
-        await armTarget({ kind: 'schedule', plan, sourceLabel: `${preset.label} · ${tzid}` });
+        await armTarget({
+          kind: 'schedule',
+          target: 'plan',
+          plan,
+          targetLabel: plan.title,
+          sourceLabel: `${preset.label} · ${tzid}`,
+        });
       } else {
         if (!selectedSource) throw new Error('Choose a connected external source.');
+        const targetPayload = targetKind === 'plan'
+          ? plan
+            ? { planHarnessSlug: plan.harness, planSlug: plan.slug }
+            : null
+          : targetKind === 'goal'
+            ? { goalId: goalId.trim() }
+            : { workItemHarnessSlug: 'email', workItemKind: 'email-draft-proposal' };
+        if (!targetPayload) throw new Error('Choose a plan to run.');
+        if (targetKind === 'email-work-item' && selectedSource.kind !== 'gmail') {
+          throw new Error('Email direct work-item triggers require a connected Gmail source.');
+        }
         setStep('Attaching external event…');
         const attached = await mutateExternalTrigger({
           op: 'attach-external',
           sourceId: selectedSource.id,
-          planHarnessSlug: plan.harness,
-          planSlug: plan.slug,
+          ...targetPayload,
           eventPattern: eventPattern.trim(),
           eventFilter: {},
           maxRuns: null,
           windowSeconds: 60,
         });
         if (!attached.ok || !attached.bindingId) {
-          throw new Error(`${createdThisAttempt ? `Plan ${plan.title} was created, but ` : ''}the external binding was not attached. ${attached.message ?? 'The binding id was missing.'}`);
+          throw new Error(`${createdThisAttempt && plan ? `Plan ${plan.title} was created, but ` : ''}the external binding was not attached. ${attached.message ?? 'The binding id was missing.'}`);
         }
         await armTarget({
           kind: 'external',
+          target: targetKind,
           plan,
           bindingId: attached.bindingId,
+          targetLabel: targetKind === 'plan'
+            ? plan?.title ?? 'Selected plan'
+            : targetKind === 'goal'
+              ? `Goal ${goalId.trim()}`
+              : 'Email · email-draft-proposal',
           sourceLabel: `${selectedSource.kind} · ${eventPattern.trim()}`,
         });
       }
@@ -1281,9 +1322,9 @@ function CreateAutomationModal({
             <div className="pc-workflows-create__success-icon" aria-hidden>✓</div>
             <div>
               <h3>Workflow armed</h3>
-              <p><strong>{result.plan.title}</strong> is attached to {result.sourceLabel}.</p>
+              <p><strong>{result.targetLabel}</strong> is attached to {result.sourceLabel}.</p>
               <dl>
-                <div><dt>Plan</dt><dd>{result.plan.harness} · {result.plan.slug}</dd></div>
+                {result.plan ? <div><dt>Plan</dt><dd>{result.plan.harness} · {result.plan.slug}</dd></div> : <div><dt>Target</dt><dd>{result.targetLabel}</dd></div>}
                 <div><dt>State</dt><dd>Armed</dd></div>
               </dl>
               <button type="button" className="pc-workflows-create__primary" onClick={onClose}>Done</button>
@@ -1356,47 +1397,94 @@ function CreateAutomationModal({
                 )}
               </section>
 
-              <section aria-labelledby="create-automation-plan-label">
+              <section aria-labelledby="create-automation-target-label">
                 <div className="pc-workflows-create__step">2 · What runs?</div>
-                <div className="pc-workflows-create__plan-mode" role="group" aria-label="Plan choice" id="create-automation-plan-label">
-                  <button type="button" aria-pressed={planMode === 'existing'} disabled={availablePlans.length === 0} onClick={() => { setPlanMode('existing'); setError(null); }}>Use an existing plan</button>
-                  <button type="button" aria-pressed={planMode === 'new'} onClick={() => { setPlanMode('new'); setError(null); }}>Create the plan here</button>
+                <div className="pc-workflows-create__section-title" id="create-automation-target-label">
+                  <strong>Action and target</strong><span>Choose a supported trigger action.</span>
                 </div>
-                {planMode === 'existing' ? (
-                  <label className="pc-workflows-create__field is-full">
-                    <span>Plan to run</span>
-                    <Select
-                      value={selectedPlanKey}
-                      onChange={setSelectedPlanKey}
-                      ariaLabel="Plan to run"
-                      disabled={availablePlans.length === 0}
-                      placeholder="No plans available"
-                      triggerClassName="pc-workflows-create__select"
-                      options={availablePlans.map((plan) => ({
-                        value: planRefKey(plan),
-                        label: `${plan.title ?? plan.slug} · ${plan.harness}`,
-                      }))}
-                    />
-                  </label>
-                ) : createdPlan ? (
-                  <div className="pc-workflows-create__created-plan" role="status">
-                    <strong>Plan created</strong>
-                    <span>{createdPlan.title} · {createdPlan.harness}</span>
-                    <small>Retrying will reuse this plan rather than create a duplicate.</small>
+                <div className="pc-workflows-create__choice-grid pc-workflows-create__target-grid" role="group" aria-label="Workflow action">
+                  <button
+                    type="button"
+                    data-target-kind="plan"
+                    aria-pressed={targetKind === 'plan'}
+                    onClick={() => { setTargetKind('plan'); setError(null); }}
+                  >
+                    <span className="pc-workflows-create__choice-inner"><CalendarClock size={18} aria-hidden /><strong>Launch a plan</strong><span>Run an existing plan or create one here.</span><em>Action: launch-plan</em></span>
+                  </button>
+                  <button
+                    type="button"
+                    data-target-kind="goal"
+                    aria-pressed={targetKind === 'goal'}
+                    disabled={triggerKind === 'schedule'}
+                    onClick={() => { setTargetKind('goal'); setError(null); }}
+                  >
+                    <span className="pc-workflows-create__choice-inner"><Sparkles size={18} aria-hidden /><strong>Activate a goal</strong><span>Start the selected goal when an external event arrives.</span><em>Action: start-goal</em></span>
+                  </button>
+                  <button
+                    type="button"
+                    data-target-kind="email-work-item"
+                    aria-pressed={targetKind === 'email-work-item'}
+                    disabled={triggerKind === 'schedule' || selectedSource?.kind !== 'gmail'}
+                    onClick={() => { setTargetKind('email-work-item'); setError(null); }}
+                  >
+                    <span className="pc-workflows-create__choice-inner"><DatabaseZap size={18} aria-hidden /><strong>Create Email work</strong><span>Make the bounded Email draft proposal from Gmail.</span><em>Action: create-work-item</em></span>
+                  </button>
+                </div>
+                <p className="pc-workflows-create__boundary-note" role="note">
+                  Arbitrary tool-name dispatch is not available in the external-trigger engine yet. This popup exposes only the three actions the backend validates.
+                </p>
+
+                {targetKind === 'plan' ? (
+                  <>
+                    <div className="pc-workflows-create__plan-mode" role="group" aria-label="Plan choice" id="create-automation-plan-label">
+                      <button type="button" aria-pressed={planMode === 'existing'} disabled={availablePlans.length === 0} onClick={() => { setPlanMode('existing'); setError(null); }}>Use an existing plan</button>
+                      <button type="button" aria-pressed={planMode === 'new'} onClick={() => { setPlanMode('new'); setError(null); }}>Create the plan here</button>
+                    </div>
+                    {planMode === 'existing' ? (
+                      <label className="pc-workflows-create__field is-full">
+                        <span>Plan to run</span>
+                        <SearchablePlanPicker
+                          plans={availablePlans}
+                          value={selectedPlanKey}
+                          onChange={(value) => { setSelectedPlanKey(value); setError(null); }}
+                          disabled={availablePlans.length === 0}
+                        />
+                      </label>
+                    ) : createdPlan ? (
+                      <div className="pc-workflows-create__created-plan" role="status">
+                        <strong>Plan created</strong>
+                        <span>{createdPlan.title} · {createdPlan.harness}</span>
+                        <small>Retrying will reuse this plan rather than create a duplicate.</small>
+                      </div>
+                    ) : (
+                      <div className="pc-workflows-create__new-plan-grid">
+                        <label className="pc-workflows-create__field is-full">
+                          <span>Workflow name</span>
+                          <input aria-label="Workflow name" value={planName} maxLength={160} onChange={(event) => setPlanName(event.target.value)} placeholder="e.g. Summarize support escalations" required />
+                        </label>
+                        <label className="pc-workflows-create__field is-full">
+                          <span>What should the plan produce?</span>
+                          <input aria-label="What should the plan produce?" value={outcome} maxLength={500} onChange={(event) => setOutcome(event.target.value)} placeholder="Describe the concrete outcome" required />
+                        </label>
+                        <p className="pc-workflows-create__scope-note">
+                          {defaultHarness ? <>The plan will be created in <strong>{defaultHarness}</strong>.</> : <>Select a pot in the workspace before creating a plan here.</>}
+                        </p>
+                      </div>
+                    )}
+                  </>
+                ) : targetKind === 'goal' ? (
+                  <div className="pc-workflows-create__target-detail">
+                    <label className="pc-workflows-create__field is-full">
+                      <span>Goal ID</span>
+                      <input aria-label="Goal ID" value={goalId} maxLength={240} onChange={(event) => setGoalId(event.target.value)} placeholder="Paste the goal id to activate" required />
+                    </label>
+                    <p className="pc-workflows-create__scope-note">The external event will use <code>start-goal</code> to activate this existing goal. Schedules cannot target goals.</p>
                   </div>
                 ) : (
-                  <div className="pc-workflows-create__new-plan-grid">
-                    <label className="pc-workflows-create__field is-full">
-                      <span>Workflow name</span>
-                      <input aria-label="Workflow name" value={planName} maxLength={160} onChange={(event) => setPlanName(event.target.value)} placeholder="e.g. Summarize support escalations" required />
-                    </label>
-                    <label className="pc-workflows-create__field is-full">
-                      <span>What should the plan produce?</span>
-                      <input aria-label="What should the plan produce?" value={outcome} maxLength={500} onChange={(event) => setOutcome(event.target.value)} placeholder="Describe the concrete outcome" required />
-                    </label>
-                    <p className="pc-workflows-create__scope-note">
-                      {defaultHarness ? <>The plan will be created in <strong>{defaultHarness}</strong>.</> : <>Select a pot in the workspace before creating a plan here.</>}
-                    </p>
+                  <div className="pc-workflows-create__target-detail" role="status">
+                    <strong>Gmail → Email draft proposal</strong>
+                    <span>This creates the validated <code>email</code> / <code>email-draft-proposal</code> work item directly; no plan is required.</span>
+                    {selectedSource?.kind !== 'gmail' ? <small>Connect or select Gmail above to enable this target.</small> : null}
                   </div>
                 )}
               </section>

@@ -260,6 +260,51 @@ describe('external-trigger admin route pair', () => {
     expect(notify).toHaveBeenCalledWith('plans.list', undefined);
   });
 
+  it('accepts a goal target and forwards it without inventing plan columns', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'attach-external',
+      sourceId: '20000000-0000-4000-8000-000000000001',
+      goalId: 'goal-support-triage',
+      eventPattern: 'ext:gmail:message.received',
+      eventFilter: { label: 'support' },
+    });
+    expect(response.status).toBe(200);
+    expect(createBinding).toHaveBeenCalledWith(sql, 'ws-test', expect.objectContaining({ goalId: 'goal-support-triage' }));
+    const goalInput = createBinding.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(goalInput).not.toHaveProperty('planSlug');
+    expect(goalInput).not.toHaveProperty('planHarnessSlug');
+    expect(await response.json()).toMatchObject({ ok: true, binding: { armed: false } });
+  });
+
+  it('accepts the Gmail direct Email work-item target', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'attach-external',
+      sourceId: '20000000-0000-4000-8000-000000000001',
+      workItemHarnessSlug: 'email',
+      workItemKind: 'email-draft-proposal',
+      eventPattern: 'ext:gmail:message.received',
+    });
+    expect(response.status).toBe(200);
+    expect(createBinding).toHaveBeenCalledWith(sql, 'ws-test', expect.objectContaining({
+      workItemHarnessSlug: 'email',
+      workItemKind: 'email-draft-proposal',
+    }));
+    expect(await response.json()).toMatchObject({ ok: true, binding: { armed: false } });
+  });
+
+  it('rejects an attach payload that mixes target families at the HTTP boundary', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'attach-external',
+      sourceId: '20000000-0000-4000-8000-000000000001',
+      planHarnessSlug: 'papercusp',
+      planSlug: 'triage-mail',
+      goalId: 'goal-support-triage',
+      eventPattern: 'ext:gmail:message.received',
+    });
+    expect(response.status).toBe(400);
+    expect(createBinding).not.toHaveBeenCalled();
+  });
+
   it('requires confirmation, then soft-detaches without deleting history', async () => {
     const refused = await request(mutate, 'PATCH', { op: 'detach-external', id: BINDING_ID });
     expect(refused.status).toBe(409);

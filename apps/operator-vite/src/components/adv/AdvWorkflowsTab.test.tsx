@@ -25,6 +25,8 @@ const H = vi.hoisted(() => ({
   noRollup: false,
   /** Core inventory queries are unresolved — absence must render as loading, never zero. */
   loadingData: false,
+  /** Swap the connected-source fixture to Gmail for direct Email-target coverage. */
+  gmailSource: false,
 }));
 
 /** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
@@ -172,6 +174,7 @@ beforeEach(() => {
   H.manyPlans = false;
   H.noRollup = false;
   H.loadingData = false;
+  H.gmailSource = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
@@ -185,6 +188,20 @@ beforeEach(() => {
     }
     if (H.emptyData) {
       return new Response(JSON.stringify({ enabled: true, counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 }, sources: [], bindings: [], recentRuns: [] }), { status: 200 });
+    }
+    if (H.gmailSource) {
+      const gmail = {
+        ...external,
+        counts: { sources: 1, bindings: 0, armed: 0, recentFailures: 0 },
+        sources: [{
+          id: 'source-gmail', kind: 'gmail', status: 'connected', config: {}, credentialRef: null,
+          cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null,
+          bindingCount: 0, armedBindingCount: 0, failedDeliveries24h: 0, social: null,
+        }],
+        bindings: [],
+        recentRuns: [],
+      };
+      return new Response(JSON.stringify(gmail), { status: 200 });
     }
     if (H.manyPlans) {
       // 230 recent runs, so the Activity feed is over the render cap the ledger already has.
@@ -549,6 +566,82 @@ describe('<AdvWorkflowsTab> — composing and creating', () => {
     });
     expect(await within(dialog).findByText('Workflow armed')).toBeTruthy();
     expect(within(dialog).getByText('Armed')).toBeTruthy();
+  });
+
+  it('searches existing plans by title, slug, and harness, with keyboard selection', async () => {
+    renderTab();
+    const dialog = await openAdvancedWorkflowSetup();
+    const picker = within(dialog).getByRole('combobox', { name: 'Plan to run' });
+
+    fireEvent.focus(picker);
+    fireEvent.change(picker, { target: { value: 'rubric-ratification' } });
+    expect(within(dialog).getByRole('option', { name: /Rubric ratification/ })).toBeTruthy();
+    expect(within(dialog).queryByRole('option', { name: /Customer feedback digest/ })).toBeNull();
+
+    fireEvent.keyDown(picker, { key: 'Enter' });
+    expect(within(dialog).getByRole('status').textContent).toContain('Rubric ratification');
+
+    fireEvent.change(picker, { target: { value: 'no-plan-here' } });
+    expect(within(dialog).getByText('No plans match “no-plan-here”.')).toBeTruthy();
+  });
+
+  it('exposes the supported action boundary and sends a goal target without plan columns', async () => {
+    renderTab();
+    const dialog = await openAdvancedWorkflowSetup();
+    expect(within(dialog).getByText(/Arbitrary tool-name dispatch is not available/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: /External event/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /Activate a goal/ }));
+    fireEvent.change(within(dialog).getByLabelText('Goal ID'), { target: { value: 'goal-support-triage' } });
+    fireEvent.change(within(dialog).getByLabelText('Event pattern'), { target: { value: 'ext:slack:mention' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));
+
+    await waitFor(() => {
+      const attach = vi.mocked(fetch).mock.calls
+        .filter(([, init]) => init?.method === 'PATCH')
+        .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>)
+        .find((body) => body.op === 'attach-external');
+      expect(attach).toMatchObject({
+        op: 'attach-external',
+        goalId: 'goal-support-triage',
+        eventPattern: 'ext:slack:mention',
+      });
+      expect(attach).not.toHaveProperty('planSlug');
+      expect(attach).not.toHaveProperty('planHarnessSlug');
+    });
+    expect(await within(dialog).findByText('Workflow armed')).toBeTruthy();
+  });
+
+  it('sends the Gmail direct Email work-item target and keeps it unavailable for other sources', async () => {
+    renderTab();
+    const slackDialog = await openAdvancedWorkflowSetup();
+    expect((within(slackDialog).getByRole('button', { name: /Create Email work/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(slackDialog).getByRole('button', { name: 'Cancel' }));
+
+    cleanup();
+    H.gmailSource = true;
+    renderTab();
+    const dialog = await openAdvancedWorkflowSetup();
+    fireEvent.click(within(dialog).getByRole('button', { name: /External event/ }));
+    const emailTarget = within(dialog).getByRole('button', { name: /Create Email work/ });
+    expect((emailTarget as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(emailTarget);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));
+
+    await waitFor(() => {
+      const attach = vi.mocked(fetch).mock.calls
+        .filter(([, init]) => init?.method === 'PATCH')
+        .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>)
+        .find((body) => body.op === 'attach-external');
+      expect(attach).toMatchObject({
+        op: 'attach-external',
+        workItemHarnessSlug: 'email',
+        workItemKind: 'email-draft-proposal',
+        eventPattern: 'ext:gmail:',
+      });
+      expect(attach).not.toHaveProperty('planSlug');
+      expect(attach).not.toHaveProperty('goalId');
+    });
+    expect(await within(dialog).findByText('Workflow armed')).toBeTruthy();
   });
 
   it('creates a plan inline, attaches an external binding, and explicitly arms it', async () => {
