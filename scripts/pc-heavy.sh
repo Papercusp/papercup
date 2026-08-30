@@ -1058,10 +1058,14 @@ _pc_heavy_internal_preempt_run() {
   trap '_preempt_forward_signal INT 130' INT
   trap '_preempt_forward_signal HUP 129' HUP
 
-  # Keep a waitable supervisor and publish the actual new-session/group leader.
-  # The parent trap reaps that group on every catchable exit; the caller/test
-  # must TERM before KILL so the cleanup path gets a chance to run.
-  setsid --fork --wait bash -c '
+  # Bash launches this asynchronous external command in a child that is not
+  # already a process-group leader, so direct `setsid --wait` makes that child
+  # the new session/process-group leader and leaves it waitable in `_preempt_wait_pid`.
+  # Do not add `--fork`: util-linux's forced wait supervisor emits
+  # "child ... did not exit normally" after the monitor intentionally terminates
+  # this group, which is an expected preemption outcome rather than a workload
+  # diagnostic. The monitor itself remains the cleanup owner through its traps.
+  setsid --wait bash -c '
     trap - PIPE
     _notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
     case "$_notify_fd" in

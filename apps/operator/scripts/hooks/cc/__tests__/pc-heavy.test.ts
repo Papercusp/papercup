@@ -603,6 +603,9 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       expect(existsSync(terminatedFile)).toBe(true);
       expect(holderErr.text()).toContain('PREEMPTING ordinary holder for exclusive materialization');
       expect(holderErr.text()).toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+      expect(holderErr.text()).not.toMatch(
+        /^setsid: child \d+ did not exit normally: No such file or directory$/m,
+      );
       expect(barrierErr.text()).toContain('exclusive materialization barrier acquired');
       await waitFor('the preempted workload process group being fully reaped', () => {
         try { process.kill(-workloadPid, 0); return false; } catch { return true; }
