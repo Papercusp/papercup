@@ -53,11 +53,16 @@ import {
   parseGcpImageFamilyProvenance,
   type GcpImageFamilyCleanRoomRunInput,
   type GcpImageFamilyCommandResult,
+  type GcpImageFamilyCommandRunner,
   type GcpImageFamilyComputeApi,
   type GcpImageFamilyComputeImage,
   type GcpImageFamilyReleaseAdapterOptions,
   type GcpImageFamilyScanRunner,
 } from './gcp-image-family-adapter';
+import {
+  CredentialScopedGcpImageFamilyCommandRunner,
+  safeGcpImageFamilyCommandEnvironment,
+} from './gcp-image-family-production';
 
 const PROJECT = 'papercusp-images-123';
 const FAMILY = 'papercusp-workspace-host';
@@ -416,9 +421,120 @@ describe('GCP image-family production adapter', () => {
     // distinguishable from "the diagnostic was dropped" — the ambiguity that caused the bug.
     await expect(
       buildCandidate(async (_command, args) =>
-        args[0] === 'init' ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: '' },
+        args[0] === 'auth'
+          ? { exitCode: 0, stdout: 'ya29.test-adc-token', stderr: '' }
+          : args[0] === 'init'
+            ? { exitCode: 0, stdout: '', stderr: '' }
+            : { exitCode: 1, stdout: '', stderr: '' },
       ),
     ).rejects.toThrow(/produced no output on either stream/);
+  });
+
+  /**
+   * Recurrence guard for EI-21847008443626335 — the false-green credential preflight.
+   *
+   * The release resolves its own `cloudCredentialRef` (typically `gcloud://active-user`) and
+   * probed THAT before building. But `packer build` is a subprocess that authenticates with
+   * Application Default Credentials. Two different credentials; only the unused one was checked.
+   * So a healthy active-user credential produced a green preflight while ADC was reauth-dead,
+   * and the build died ~6s in reporting "All options for deriving the OSLogin user have been
+   * exhausted" — which reads as an OS Login/IAM misconfiguration and sends the next reader off
+   * to disable `use_os_login`, relaxing a deliberate hardening to work around an expired token.
+   *
+   * Both directions are asserted, and the SECOND is the one that matters. A probe that merely
+   * shells out to gcloud inherits GOOGLE_APPLICATION_CREDENTIALS from the ambient environment
+   * and answers from whatever service-account key that variable selects — reporting a healthy
+   * ADC while ADC is dead. That is not a hypothetical: it is exactly how the operator-facing
+   * re-check recorded on this bug reported ADC_OK, on the strength of which a Cloud NAT was
+   * created and a build launched. A guard that only covers the both-dead case would pass
+   * against that broken probe and prove nothing.
+   */
+  it('refuses to build when ADC cannot mint, and probes ADC through the credential-scoped environment', async () => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL));
+    const candidateArtifact = artifact(createHash('sha256').update(template).digest('hex'));
+    const context = {
+      ...CONTEXT,
+      artifact: candidateArtifact,
+      request: { ...CONTEXT.request, releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact } },
+    };
+    const build = async (commandRunner: GcpImageFamilyCommandRunner): Promise<unknown> => {
+      const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+        baseOptions(new ComputeFake(), { repositoryRoot: REPO_ROOT, commandRunner }),
+      );
+      await adapter.bindReleaseContext(context);
+      return adapter.buildCandidate({
+        projectId: PROJECT,
+        candidateImageName: CANDIDATE_NAME,
+        templatePath: 'infra/images/workspace-host.pkr.hcl',
+        buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+        releaseVersion: VERSION,
+        releaseSha256: RELEASE_SHA,
+        architecture: 'x86_64',
+        requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+      });
+    };
+
+    // 1. A dead ADC must stop the build BEFORE anything billable runs. `packer build` creates a
+    //    builder VM, so failing at init/validate/build instead of here still costs a VM.
+    const attempted: string[] = [];
+    await expect(
+      build({
+        run: async (_command, args) => {
+          const step = args?.[0];
+          attempted.push(String(step));
+          return step === 'auth'
+            ? { exitCode: 1, stdout: '', stderr: 'invalid_grant: reauth related error (invalid_rapt)' }
+            : { exitCode: 0, stdout: '', stderr: '' };
+        },
+      }),
+    ).rejects.toThrow(/Application Default Credentials cannot mint an access token/);
+    expect(attempted).toEqual(['auth']);
+
+    // 2. A credential that EXITS ZERO but mints nothing is still dead. gcloud can succeed while
+    //    printing no token, and an exit-code-only check reads that as healthy.
+    await expect(
+      build({ run: async () => ({ exitCode: 0, stdout: '   ', stderr: '' }) }),
+    ).rejects.toThrow(/Application Default Credentials cannot mint an access token/);
+
+    // 3. THE LOAD-BEARING ASSERTION. The probe must run under the same credential-scoped
+    //    environment as packer, so it cannot be answered by an ambient service-account key.
+    //    Here GOOGLE_APPLICATION_CREDENTIALS names a perfectly VALID key while the ADC chain is
+    //    unusable — the precise shape that produced the false green. If the probe were ever
+    //    re-routed around this runner (a bare exec, process.env, a separate gcloud call), the
+    //    variable would survive into the child and this assertion would fail.
+    const AMBIENT = {
+      GOOGLE_APPLICATION_CREDENTIALS: '/keys/omp-vertex-service-account.json',
+      GOOGLE_OAUTH_ACCESS_TOKEN: 'ya29.ambient-service-account-token',
+      CLOUDSDK_AUTH_ACCESS_TOKEN: 'ya29.ambient-service-account-token',
+      UNRELATED_BUILD_VAR: 'kept',
+    };
+    // CALIBRATION — without this the assertions below could pass vacuously, because a fixture
+    // that never sets the variable also yields `undefined`. This proves two things at once: the
+    // ambient environment really does carry a service-account key, and the sanitiser is the
+    // mechanism that removes it. Delete the stripping and this fails alongside the assertions,
+    // rather than leaving them quietly true for the wrong reason.
+    expect(AMBIENT.GOOGLE_APPLICATION_CREDENTIALS).toBe('/keys/omp-vertex-service-account.json');
+    expect(safeGcpImageFamilyCommandEnvironment(AMBIENT).GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+
+    const seen: Array<{ args: readonly string[]; env: Readonly<Record<string, string | undefined>> }> = [];
+    const scoped = new CredentialScopedGcpImageFamilyCommandRunner(
+      {
+        run: async (command, args, options) => {
+          seen.push({ args: args ?? [], env: (options?.env ?? {}) as Record<string, string | undefined> });
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      },
+      safeGcpImageFamilyCommandEnvironment(AMBIENT),
+    );
+    await expect(build(scoped)).rejects.toThrow(/Application Default Credentials cannot mint an access token/);
+    const probe = seen.find((call) => call.args[0] === 'auth');
+    expect(probe).toBeDefined();
+    expect(probe?.args).toEqual(['auth', 'application-default', 'print-access-token', '--quiet']);
+    expect(probe?.env.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    expect(probe?.env.GOOGLE_OAUTH_ACCESS_TOKEN).toBeUndefined();
+    expect(probe?.env.CLOUDSDK_AUTH_ACCESS_TOKEN).toBeUndefined();
+    // The scoping is surgical, not a blanket wipe: ordinary build variables still reach the child.
+    expect(probe?.env.UNRELATED_BUILD_VAR).toBe('kept');
   });
 
   /**
