@@ -37,6 +37,15 @@
  * bytes behind it stay opaque, so the relay needs no RFB parser and the view-only
  * restriction is enforced by KasmVNC against the authenticated user rather than by
  * a byte filter we would have to write and could get wrong.
+ *
+ * ⚠ THAT IS TRUE ONLY BECAUSE OF `-SecurityTypes None`, and it was aspirational
+ * until WI-1250866 measured it. Left to its default KasmVNC ALSO demands VncAuth
+ * inside the RFB stream, and `-KasmPasswordFile` does not populate a VncAuth
+ * password — so every viewer died at a second authentication this comment said did
+ * not exist, and no relay could have answered it. The property that keeps the model
+ * coherent now lives in `x-server-backend.ts` security property 5; if that flag is
+ * ever removed, this paragraph becomes false again and the hosted viewer stops
+ * working entirely. `hosted-desktop-kasmvnc-contract.test.ts` pins the pair.
  */
 import { readFile, stat } from 'node:fs/promises';
 import { WebSocket } from 'ws';
@@ -140,8 +149,48 @@ function toBuffer(data: unknown): Buffer | null {
   return null;
 }
 
+/**
+ * The websocket subprotocol KasmVNC requires on the upgrade. Not a preference: the
+ * server closes the connection outright without it.
+ */
+export const KASMVNC_WEBSOCKET_SUBPROTOCOL = 'binary';
+
+/**
+ * Everything KasmVNC demands on the upgrade BEYOND the credential.
+ *
+ * ⚠ Measured against a real KasmVNC, one variable at a time (WI-1250866), with a
+ * correct BasicAuth header throughout:
+ *
+ *   | Sec-WebSocket-Protocol | Origin  | result   |
+ *   |------------------------|---------|----------|
+ *   | absent                 | absent  | closed   |
+ *   | absent                 | present | closed   |
+ *   | present                | absent  | closed   |
+ *   | present                | present | HTTP 101 |
+ *
+ * BOTH are mandatory, and a missing one is not reported: the server closes with no
+ * HTTP response at all — not a 400, not a 426 — so nothing on the wire says which
+ * header was omitted. `ws` sends neither by default, so a plain
+ * `new WebSocket(url, { headers })` can never reach a KasmVNC desktop.
+ *
+ * The `Origin` value is not a real browser origin and is not checked as one; KasmVNC
+ * only requires the header to be PRESENT. It is set to the endpoint being dialled so
+ * a packet capture reads honestly rather than naming a page that does not exist.
+ */
+export function kasmvncUpgradeHeaders(input: {
+  endpoint: HostedDesktopEndpoint;
+  grant: { user: string; secret: string };
+}): Record<string, string> {
+  return {
+    Authorization: basicAuthHeader(input.grant.user, input.grant.secret),
+    Origin: `http://${endpointHost(input.endpoint)}:${input.endpoint.port}`,
+  };
+}
+
 function defaultCreateSocket(url: string, headers: Record<string, string>): HostedDesktopWireSocket {
-  return new WebSocket(url, { headers }) as unknown as HostedDesktopWireSocket;
+  return new WebSocket(url, [KASMVNC_WEBSOCKET_SUBPROTOCOL], {
+    headers,
+  }) as unknown as HostedDesktopWireSocket;
 }
 
 /**
@@ -199,7 +248,7 @@ export async function dialDesktopSocket(
   const create = deps.createSocket ?? defaultCreateSocket;
   const path = deps.websocketPath ?? KASMVNC_WEBSOCKET_PATH;
   const url = `ws://${endpointHost(input.endpoint)}:${input.endpoint.port}${path}`;
-  const socket = create(url, { Authorization: basicAuthHeader(input.grant.user, input.grant.secret) });
+  const socket = create(url, kasmvncUpgradeHeaders({ endpoint: input.endpoint, grant: input.grant }));
 
   const dataListeners = new Set<(data: Buffer) => void>();
   const closeListeners = new Set<(reason: string) => void>();
@@ -234,8 +283,14 @@ export async function dialDesktopSocket(
     socket.on('close', (code) => {
       if (settled) return;
       settled = true;
-      // A close BEFORE open is how a rejected BasicAuth surfaces on a websocket
-      // upgrade, so it must reject the dial rather than resolve a dead pipe.
+      // A close BEFORE open must reject the dial rather than resolve a dead pipe.
+      //
+      // ⚠ Do NOT read this as "the credential was rejected" — that reading cost real
+      // debugging time (WI-1250866). A rejected BasicAuth arrives as an HTTP 401,
+      // which `ws` surfaces as `unexpected-response`. A close with no response at all
+      // is KasmVNC refusing the UPGRADE SHAPE — a missing `binary` subprotocol or a
+      // missing `Origin` — and it looks identical for both. `kasmvncUpgradeHeaders`
+      // supplies them; if this fires, suspect the upgrade shape before the secret.
       reject(new HostedDesktopDialError('desktop_dial_failed', `closed_before_open_${code}`));
     });
   });
