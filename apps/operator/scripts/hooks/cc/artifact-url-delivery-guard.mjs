@@ -91,6 +91,74 @@ export function isArtifactTool(toolName) {
   return typeof toolName === 'string' && /(^|_)artifact$/i.test(toolName.replace(/^mcp__.*?__/, ''));
 }
 
+/**
+ * Collapse a tool name to a comparable key: drop any `mcp__<server>__` prefix and
+ * treat the colon and underscore spellings of a verb as the same tool, because a
+ * papercusp verb is written `work_items:checkpoint` in docs and arrives from the
+ * client mangled to `work_items_checkpoint`.
+ */
+export function normalizeToolName(toolName) {
+  if (typeof toolName !== 'string') return '';
+  return toolName
+    .replace(/^mcp__.*?__/, '')
+    .trim()
+    .toLowerCase()
+    .replace(/:/g, '_');
+}
+
+/**
+ * DURABLE SURFACES — where a cited URL stops being a sentence and becomes a fact
+ * a successor inherits without re-checking. This is the vector of the FIRST
+ * occurrence (EI-19944806095285549): the dead URL was written into a work-item
+ * CHECKPOINT, not into prose, and was then carried forward as settled truth.
+ *
+ * This is an explicit ALLOW-LIST, deliberately not a broad pattern. A broad
+ * matcher would also catch `Artifact { action:'read' }` and `WebFetch` — the very
+ * calls the block message tells the agent to make in order to verify a URL — and
+ * a guard that denies its own remedy is a trap with no exit rather than a guard.
+ * Under-coverage here is a miss (another surface goes unscanned); over-coverage
+ * would be a wedged agent. Extend by adding a verb, never by widening to a regex.
+ */
+export const DURABLE_WRITE_TOOLS = new Set([
+  'work_items_checkpoint',
+  'work_items_comment',
+  'work_items_complete',
+  'work_items_create',
+  'work_items_update',
+  'loop_checkpoint',
+  'facts_assert',
+  'memory_remember',
+  'coord_send',
+  'improvements_capture',
+  'plans_new',
+  'plans_edit',
+  'plans_add-item',
+  'plans_add-decision',
+  'plans_set-now',
+]);
+
+/** True when writing this tool's input persists text a successor will inherit. */
+export function isDurableWriteTool(toolName) {
+  if (isArtifactTool(toolName)) return false; // never deny the remedy
+  return DURABLE_WRITE_TOOLS.has(normalizeToolName(toolName));
+}
+
+/**
+ * Every string in a tool_input, depth- and count-bounded. Scanning the string
+ * VALUES rather than `JSON.stringify(input)` keeps real newlines intact, so the
+ * blockquote half of the quote-stripper still works on a markdown body.
+ */
+export function collectStrings(value, out = [], depth = 0) {
+  if (depth > 8 || out.length >= 500) return out;
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) {
+    for (const v of value) collectStrings(v, out, depth + 1);
+  } else if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) collectStrings(v, out, depth + 1);
+  }
+  return out;
+}
+
 /** True when the tool response reports failure (never harvest from these). */
 export function isErrorResponse(response) {
   if (!response) return false;
@@ -175,6 +243,40 @@ export function evaluateStop({ text, ledger, stopHookActive }) {
   const unverified = cited.filter((id) => !ledger.has(id));
   if (!unverified.length) return null;
   return { unverified, reason: formatBlockReason(unverified) };
+}
+
+export function formatDurableBlockReason(unverified, toolName) {
+  const list = unverified.map((id) => `  • ${id}`).join('\n');
+  return (
+    `⛔ artifact-url-delivery-guard (EI-21890940999877469): this \`${toolName}\` call ` +
+    `writes an artifact URL that NO Artifact call in this session ever returned:\n\n${list}\n\n` +
+    `This is a DURABLE surface. Unlike a sentence in a reply, what you write here is ` +
+    `re-injected into a successor's context and inherited as settled fact — nobody ` +
+    `re-checks it, because it arrives already stated. That is exactly how the FIRST ` +
+    `occurrence happened (EI-19944806095285549): a dead URL was written into a work-item ` +
+    `checkpoint and carried forward for hours as a delivered report that never existed.\n\n` +
+    `Do ONE of these:\n` +
+    `  1. VERIFY it — Artifact { action:'list' } (it should appear) or read it. Neither ` +
+    `call is blocked by this guard. Then re-issue this write; it will pass.\n` +
+    `  2. DROP THE URL — record the SOURCE FILE PATH instead. A path lets the next reader ` +
+    `republish; a bare dead URL is a dead end, which is the whole failure being prevented.\n` +
+    `  3. QUOTE IT — backticks or a code fence, if you are deliberately recording a ` +
+    `known-bad URL in a post-mortem. Only unquoted text is scanned.`
+  );
+}
+
+/**
+ * The PreToolUse decision for a durable-surface write. Returns null to allow, or
+ * { unverified, reason }. Pure, so both directions are unit-testable.
+ */
+export function evaluatePreToolUse({ toolName, toolInput, ledger }) {
+  if (!isDurableWriteTool(toolName)) return null;
+  const text = collectStrings(toolInput).join('\n');
+  const cited = extractArtifactIds(stripQuotedForScanning(text));
+  if (!cited.length) return null;
+  const unverified = cited.filter((id) => !ledger.has(id));
+  if (!unverified.length) return null;
+  return { unverified, reason: formatDurableBlockReason(unverified, toolName) };
 }
 
 /** Last assistant text blocks from a JSONL transcript tail. */
