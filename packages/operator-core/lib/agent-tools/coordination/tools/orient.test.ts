@@ -11,6 +11,8 @@ import {
   createOrientAggregateFallback,
   snapshotOrientAggregate,
   summarizeLaneClaim,
+  ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+  ORIENT_FLEET_HEALTH_SCHEMA_VERSION,
   ORIENT_MEMORY_NOTE,
   ORIENT_DEEP_WORK_NOTE,
   ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES,
@@ -1427,7 +1429,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'me',
     );
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 0, recent: [] });
-    expect(r.fleetHealth).toEqual({ bees: { running: 0, working: 0 }, wake: undefined, governor: undefined });
+    expect(r.fleetHealth).toEqual({
+      schemaVersion: ORIENT_FLEET_HEALTH_SCHEMA_VERSION,
+      status: 'available',
+      ref: 'coord:glance',
+    });
     expect(calls.some(({ name }) => name === 'coord:catch-up')).toBe(true);
     expect(calls.some(({ name }) => name === 'coord:glance')).toBe(true);
   });
@@ -1447,7 +1453,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.claimable).toHaveLength(2);
   });
 
-  // ── fold #1 (compaction-fold-audit-2026-07-06): a compact fleet-health glance ──
+  // ── fold #1 (D-002): a tiny fleet-health availability/reference ──
   const GLANCE = () => ({
     ok: true,
     bees: { running: 3, working: 2 },
@@ -1458,7 +1464,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     display: { title: 'human render' },
   });
 
-  it('folds a COMPACT fleet-health glance for a fleet caller (bees/wake/governor only)', async () => {
+  it('folds only fleet-health availability + ref for a fleet caller; rich state stays behind coord:glance', async () => {
     const { call, calls } = fakeCall({
       ...CORE,
       'coord:whoami': () => ({ fleetSlug: 'backend' }),
@@ -1466,11 +1472,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:glance': GLANCE,
     });
     const r = await composeOrient({}, call, 'me');
-    // COMPACT: only the health subset — no activity rows, tips, or display block.
     expect(r.fleetHealth).toEqual({
-      bees: { running: 3, working: 2 },
-      wake: { default: 'auto', stagedTotal: 1, stagedOwners: 1 },
-      governor: { anyPaused: false, paused: [] },
+      schemaVersion: ORIENT_FLEET_HEALTH_SCHEMA_VERSION,
+      status: 'available',
+      ref: 'coord:glance',
     });
     // called with the lean agent audience + no activity rows (skip the human render).
     expect(calls.find((c) => c.name === 'coord:glance')!.args).toMatchObject({ audience: 'su', activity_limit: 0 });
@@ -1498,7 +1503,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     }
   });
 
-  it('best-effort: a failing fleet-health glance degrades to null, not a thrown orient', async () => {
+  it('best-effort: a failing fleet-health glance is explicitly unavailable with a recovery ref', async () => {
     // WI-3818: the glance leg is now wrapped in withBoundedTimeout, which logs a
     // console.warn on a caught failure (visibility into a degraded leg) — expected
     // here since this test deliberately makes coord:glance throw.
@@ -1513,7 +1518,12 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     });
     const r = await composeOrient({}, call, 'me');
     expect(r.ok).toBe(true);
-    expect(r.fleetHealth).toBeNull();
+    expect(r.fleetHealth).toEqual({
+      schemaVersion: ORIENT_FLEET_HEALTH_SCHEMA_VERSION,
+      status: 'unavailable',
+      ref: 'coord:glance',
+      reason: 'coord:glance read failed or timed out',
+    });
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 0, recent: [] });
     expect(r.claimable).toHaveLength(2);
     expect(warnSpy).toHaveBeenCalled();
@@ -1729,7 +1739,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         ],
         walls: { ok: true, count: 0, walls: [] },
         announcedGates: [],
-        release: null,
+        release: {
+          status: 'unavailable',
+          reason: 'pipeline fold unavailable',
+          recoverVia: 'dev:pipeline_position { path }',
+        },
+        orientProjection: {
+          schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+          status: 'available',
+          kind: 'rich-fold',
+          recoverVia: "fleet:leader-brief { fleet: 'p2p-git' }",
+        },
       });
       const briefCall = calls.find((c) => c.name === 'fleet:leader-brief');
       expect(briefCall?.args).toMatchObject({ fleet: 'p2p-git' });
@@ -1775,14 +1795,82 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
     });
 
-    it('FULL mode never triggers the fold, even for a resolvable leader', async () => {
-      const { call, calls } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
+    it('ordinary FULL mode folds the bounded actionable summary for a registered leader', async () => {
+      const richBrief = {
+        ...LEADER_BRIEF_RESULT,
+        summary: {
+          fleet: 'p2p-git',
+          members: 14,
+          dead: 1,
+          stalled: 1,
+          idle_with_claimable: 2,
+          abandoned_unclaimed: 1,
+        },
+        members: [
+          ...Array.from({ length: 13 }, (_, i) => ({
+            agentId: `su-healthy-${i}`,
+            verdict: 'speaking',
+            sessionState: 'live',
+          })),
+          { agentId: 'su-dead', verdict: 'dead', sessionState: 'ended' },
+        ],
+        memberVerdicts: [
+          ...Array.from({ length: 13 }, (_, i) => ({ agentId: `su-healthy-${i}`, verdict: 'speaking' })),
+          { agentId: 'su-dead', verdict: 'dead' },
+        ],
+        abandonedUnclaimed: [
+          {
+            id: 'WI-abandoned',
+            title: 'resume the partially completed item',
+            status: 'open',
+            priority: 'high',
+          },
+        ],
+        delta: { roster: { available: true, from: 13, to: 14 } },
+        deltaSummary: 'members +1, dead +1',
+        fleetMetrics: {
+          ok: false,
+          schemaVersion: 'fleet-metrics-v1',
+          error: 'fleet_metrics_unavailable',
+          reason: 'bounded canonical read timed out',
+          recoverVia: "work_items:burn_down { fleet: 'p2p-git' }",
+          requested: {
+            fleet: 'p2p-git',
+            harness: 'papercusp',
+            flowMode: 'current-spec',
+            window: 'fleet-lifetime',
+          },
+        },
+      };
+      const { call, calls } = fakeCall({ ...CORE, 'fleet:leader-brief': () => richBrief });
       const r = await composeOrient({}, call, 'leader', undefined, undefined, undefined, undefined, undefined, {
         fleetSlug: 'p2p-git',
         fleetRole: 'leader',
       });
-      expect(r.leaderBrief).toBeUndefined();
-      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
+      const folded = r.leaderBrief as Record<string, unknown>;
+      expect(folded.orientProjection).toEqual({
+        schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+        status: 'available',
+        kind: 'bounded-summary',
+        recoverVia: "fleet:leader-brief { fleet: 'p2p-git' }",
+      });
+      expect(folded.summary).toMatchObject({ dead: 1, stalled: 1, idle_with_claimable: 2, abandoned_unclaimed: 1 });
+      expect(folded.abandonedUnclaimed).toEqual([
+        {
+          id: 'WI-abandoned',
+          title: 'resume the partially completed item',
+          status: 'open',
+          priority: 'high',
+        },
+      ]);
+      expect(folded.delta).toEqual(richBrief.delta);
+      expect(folded.deltaSummary).toBe(richBrief.deltaSummary);
+      expect(folded.fleetMetrics).toEqual(richBrief.fleetMetrics);
+      expect(folded.memberVerdicts).toContainEqual({ agentId: 'su-dead', verdict: 'dead' });
+      expect(folded.membersTruncated).toMatchObject({ total: 14, shown: 3 });
+      expect(folded.release).toMatchObject({ status: 'unavailable', recoverVia: 'dev:pipeline_position { path }' });
+      expect(JSON.stringify(folded).length).toBeLessThan(6_000);
+      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(true);
     });
 
     // EI-19282566865609166: the RECOVERY orient is the one full-mode call that must fold.
@@ -1830,7 +1918,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
     });
 
-    it('a failed leaderBrief fold degrades to null, never breaks orientation', async () => {
+    it('a failed leaderBrief fold is explicitly unavailable with version and recoverVia', async () => {
       const { call } = fakeCall({
         ...CORE,
         'fleet:leader-brief': () => {
@@ -1849,7 +1937,14 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         { fleetSlug: 'p2p-git', fleetRole: 'leader' },
       );
       expect(r.ok).toBe(true);
-      expect(r.leaderBrief).toBeNull();
+      expect(r.leaderBrief).toEqual({
+        orientProjection: {
+          schemaVersion: ORIENT_LEADER_BRIEF_SCHEMA_VERSION,
+          status: 'unavailable',
+          reason: 'fleet:leader-brief read failed',
+          recoverVia: "fleet:leader-brief { fleet: 'p2p-git' }",
+        },
+      });
     });
 
     describe('EI-203907 all-led fleetSummaries fold', () => {
@@ -2090,7 +2185,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         expect(presenceDriftCheck).not.toHaveBeenCalled();
       });
 
-      it('FULL mode never runs the drift check, even with no resolvable fleet', async () => {
+      it('FULL mode uses registry authority to recover a leader whose presence has no fleet', async () => {
         const { call } = fakeCall({ ...CORE });
         const presenceDriftCheck = vi.fn(async () => 'mail-retirement');
         const r = await composeOrient(
@@ -2107,8 +2202,9 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
           undefined,
           presenceDriftCheck,
         );
-        expect(presenceDriftCheck).not.toHaveBeenCalled();
-        expect(r.presenceDrift).toBeUndefined();
+        expect(presenceDriftCheck).toHaveBeenCalledTimes(1);
+        expect(r.presenceDrift).toMatchObject({ fleet: 'mail-retirement' });
+        expect(r.leaderBrief).toBeDefined();
       });
 
       it('a throwing presenceDriftCheck degrades silently — never breaks orientation, no leaderBrief', async () => {
@@ -3267,7 +3363,7 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       warnSpy.mockRestore();
     });
 
-    it('fleetHealth degrades to null (not a hang) when coord:glance never resolves', async () => {
+    it('fleetHealth becomes explicitly unavailable (not a hang) when coord:glance never resolves', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { call } = fakeCall({
         ...CORE,
@@ -3279,7 +3375,12 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       await vi.advanceTimersByTimeAsync(8_000);
       const r = await resultPromise;
       expect(r.ok).toBe(true);
-      expect(r.fleetHealth).toBeNull();
+      expect(r.fleetHealth).toEqual({
+        schemaVersion: ORIENT_FLEET_HEALTH_SCHEMA_VERSION,
+        status: 'unavailable',
+        ref: 'coord:glance',
+        reason: 'coord:glance read failed or timed out',
+      });
       expect(r.claimable).toHaveLength(2);
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
