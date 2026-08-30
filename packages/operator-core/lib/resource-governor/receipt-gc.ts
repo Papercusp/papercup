@@ -107,7 +107,7 @@ export async function gcGovernorReceipts(
   // placeholder, the same reason migrations 1025/1026 use the function form.
   const rows = await sql<Array<{ n: number }>>`
     WITH doomed AS (
-      SELECT harness_slug, feature_id
+      SELECT workspace_id, harness_slug, feature_id
         FROM harness_shared.work_items
        WHERE jsonb_exists(payload, 'resource_governor')
          AND payload->'resource_governor'->>'state' = ANY(${
@@ -119,7 +119,8 @@ export async function gcGovernorReceipts(
     ), d AS (
       DELETE FROM harness_shared.work_items w
        USING doomed
-       WHERE w.harness_slug = doomed.harness_slug
+       WHERE w.workspace_id = doomed.workspace_id
+         AND w.harness_slug = doomed.harness_slug
          AND w.feature_id  = doomed.feature_id
       RETURNING 1
     )

@@ -11,11 +11,12 @@
  *   - a NON-RECEIPT work-item survives      (the discriminator works at all)
  *   - an ACTIVE receipt survives            (live admission state is never aged out)
  *   - a RECENT terminal receipt survives    (the age cutoff is real)
+ *   - a same-key row in another workspace survives (workspace scope is real)
  * If a future edit breaks the predicate into "delete everything", at least one of
  * those fails. That is the difference between a test and a decoration.
  *
- * FIXTURE NOTE: this hand-rolls a minimal harness_shared.work_items (the four columns
- * the GC touches + its PK) rather than applying real migrations, matching
+ * FIXTURE NOTE: this hand-rolls a minimal harness_shared.work_items (the five columns
+ * the GC touches + its composite PK) rather than applying real migrations, matching
  * operator-turns-gc.integration.test.ts. That is deliberate but NOT free: a migration
  * adding a NOT NULL column to work_items will not strand this file (we insert an
  * explicit column list), but a migration that changes the RECEIPT DISCRIMINATOR or the
@@ -55,11 +56,12 @@ beforeAll(async () => {
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.work_items (
+      workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       feature_id   text NOT NULL,
       payload      jsonb,
       created_ts   bigint NOT NULL,
-      PRIMARY KEY (harness_slug, feature_id)
+      PRIMARY KEY (workspace_id, harness_slug, feature_id)
     )`);
   h.sql = rootSql;
 });
@@ -69,19 +71,24 @@ afterAll(async () => {
 });
 
 /** Insert a governor receipt in `state`, aged `ageHours` before NOW. */
-async function receipt(id: string, state: string, ageHours: number): Promise<void> {
+async function receipt(
+  id: string,
+  state: string,
+  ageHours: number,
+  workspaceId = 'workspace-a',
+): Promise<void> {
   await rootSql`
-    INSERT INTO harness_shared.work_items (harness_slug, feature_id, payload, created_ts)
-    VALUES ('papercusp', ${id},
+    INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, payload, created_ts)
+    VALUES (${workspaceId}, 'papercusp', ${id},
             ${rootSql.json({ resource_governor: { state, namespace: 'agent-process' } })},
             ${NOW - ageHours * HOUR})`;
 }
 
 /** Insert a NON-receipt work-item (no resource_governor key) aged `ageHours`. */
-async function realWorkItem(id: string, ageHours: number): Promise<void> {
+async function realWorkItem(id: string, ageHours: number, workspaceId = 'workspace-a'): Promise<void> {
   await rootSql`
-    INSERT INTO harness_shared.work_items (harness_slug, feature_id, payload, created_ts)
-    VALUES ('papercusp', ${id}, ${rootSql.json({ _ei: { severity: 'major' } })},
+    INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, payload, created_ts)
+    VALUES (${workspaceId}, 'papercusp', ${id}, ${rootSql.json({ _ei: { severity: 'major' } })},
             ${NOW - ageHours * HOUR})`;
 }
 
@@ -139,6 +146,20 @@ describe('gcGovernorReceipts', () => {
 
     expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(0);
     expect(await surviving()).toEqual(['WI-RUNNING-ANCIENT']);
+  });
+
+  it('does not delete a same-key row from another workspace', async () => {
+    await receipt('WI-COLLIDING-KEY', 'completed', 10, 'workspace-a');
+    await receipt('WI-COLLIDING-KEY', 'running', 10, 'workspace-b');
+
+    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(1);
+    const rows = await rootSql<Array<{ workspace_id: string; feature_id: string; state: string }>>`
+      SELECT workspace_id, feature_id, payload->'resource_governor'->>'state' AS state
+        FROM harness_shared.work_items
+       ORDER BY workspace_id`;
+    expect(rows).toEqual([
+      { workspace_id: 'workspace-b', feature_id: 'WI-COLLIDING-KEY', state: 'running' },
+    ]);
   });
 
   it('honours the retention window boundary', async () => {
