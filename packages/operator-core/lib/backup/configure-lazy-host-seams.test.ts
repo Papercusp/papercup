@@ -168,19 +168,24 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
         connection: { application_name: 'pcbackup-workspace' },
       }),
     );
-    expect(pg.client).toHaveBeenCalledTimes(2);
+    // WI-1194246: BOTH timeouts are reset before the acquisition. `statement_timeout`
+    // also cancels a `pg_advisory_lock` wait, so resetting only `lock_timeout` would
+    // leave this deliberately-unbounded rendezvous cancellable the moment a role-level
+    // statement_timeout exists. Order matters only in that both precede the acquire.
+    expect(pg.client).toHaveBeenCalledTimes(3);
     expect(String(pg.client.mock.calls[0]![0])).toContain('SET lock_timeout = 0');
-    expect(String(pg.client.mock.calls[1]![0])).toContain('pg_advisory_lock');
+    expect(String(pg.client.mock.calls[1]![0])).toContain('SET statement_timeout = 0');
+    expect(String(pg.client.mock.calls[2]![0])).toContain('pg_advisory_lock');
 
     await lock.release();
-    expect(pg.client).toHaveBeenCalledTimes(3);
-    expect(String(pg.client.mock.calls[2]![0])).toContain('pg_advisory_unlock');
+    expect(pg.client).toHaveBeenCalledTimes(4);
+    expect(String(pg.client.mock.calls[3]![0])).toContain('pg_advisory_unlock');
     expect(pg.client.end).toHaveBeenCalledTimes(1);
 
     // The release handle is idempotent, so a defensive double-finally cannot
     // issue an unlock against a session that has already been closed.
     await lock.release();
-    expect(pg.client).toHaveBeenCalledTimes(3);
+    expect(pg.client).toHaveBeenCalledTimes(4);
     expect(pg.client.end).toHaveBeenCalledTimes(1);
   });
 
