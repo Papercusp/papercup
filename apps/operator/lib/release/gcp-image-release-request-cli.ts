@@ -204,8 +204,12 @@ async function resolveMaterials(
   raw: unknown,
   sourceRoot: string | undefined,
 ): Promise<readonly WorkspaceHostBuildMaterial[]> {
-  if (raw === undefined) return [];
-  if (!Array.isArray(raw)) fail("materials must be an array");
+  if (!Array.isArray(raw) || raw.length === 0) {
+    // The manifest normalizer refuses an empty list, and rightly: a build manifest that names no
+    // inputs describes nothing. Refusing here names the input field instead of surfacing as a
+    // WorkspaceHostBuildManifestError from two layers down.
+    fail("materials must list at least one build input");
+  }
   const materials: WorkspaceHostBuildMaterial[] = [];
   for (const [index, entry] of raw.entries()) {
     const record = requiredRecord(entry, `materials[${index}]`);
