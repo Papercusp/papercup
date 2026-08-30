@@ -96,6 +96,23 @@ export interface GcpImageFamilyReleaseRequest {
   };
 }
 
+export type GcpImageFamilyReleaseResumePhase = 'scan' | 'publish';
+
+/**
+ * Controls a retry that starts with an already-built candidate.
+ *
+ * A resumed release still re-runs the read-only scan, candidate inspection, and clean-room
+ * canary before the irreversible family publication.  The phase is explicit so a caller cannot
+ * accidentally turn an image id into an implicit publish-only bypass.
+ */
+export interface GcpImageFamilyReleaseExecutionOptions {
+  candidateImageId?: string;
+  resumePhase?: GcpImageFamilyReleaseResumePhase;
+}
+
+/** Compatibility alias for callers that use the shorter options name. */
+export type GcpImageFamilyReleaseOptions = GcpImageFamilyReleaseExecutionOptions;
+
 /**
  * Full release context supplied to a production adapter before its first operation.
  *
@@ -117,6 +134,10 @@ export interface GcpImageFamilyReleaseAdapter {
   buildCandidate(input: {
     projectId: string;
     candidateImageName: string;
+    /** Optional immutable candidate to validate and reuse instead of invoking Packer. */
+    candidateImageId?: string;
+    /** Explicit post-build retry phase; scan/publish are both re-verified before publication. */
+    resumePhase?: GcpImageFamilyReleaseResumePhase;
     templatePath: string;
     buildManifestIdentity: string;
     releaseVersion: string;
@@ -384,6 +405,7 @@ function validateResolvedPin(
 export async function executeGcpImageFamilyRelease(
   request: GcpImageFamilyReleaseRequest,
   adapter: GcpImageFamilyReleaseAdapter,
+  execution: GcpImageFamilyReleaseExecutionOptions = {},
 ): Promise<GcpImageFamilyReleaseResult> {
   const gate = evaluateWorkspaceHostReleaseGate(request.releaseGate);
   if (!gate.accepted) {
@@ -427,9 +449,32 @@ export async function executeGcpImageFamilyRelease(
     fail('retireVersions cannot include the new active image or its immediate rollback target');
   }
 
+  const candidateImageId = execution.candidateImageId
+    ? assertGcpImmutableImageId(execution.candidateImageId, 'candidateImageId')
+    : undefined;
+  const resumePhase = execution.resumePhase;
+  if (resumePhase !== undefined && resumePhase !== 'scan' && resumePhase !== 'publish') {
+    fail('resumePhase must be scan or publish');
+  }
+  if (candidateImageId === undefined && resumePhase !== undefined) {
+    fail('resumePhase requires candidateImageId');
+  }
+  if (candidateImageId !== undefined && resumePhase === undefined) {
+    fail('candidateImageId requires an explicit resumePhase');
+  }
+  if (candidateImageId) {
+    const candidateCoordinates = parseGcpImmutableImageId(candidateImageId, 'candidateImageId');
+    const expectedCandidateName = candidateName(artifactImage.imageName);
+    if (candidateCoordinates.projectId !== projectId || candidateCoordinates.imageName !== expectedCandidateName) {
+      fail(`candidateImageId must be the immutable ${projectId}/${expectedCandidateName} candidate`);
+    }
+  }
+
   const built = await adapter.buildCandidate({
     projectId,
     candidateImageName: candidateName(artifactImage.imageName),
+    ...(candidateImageId ? { candidateImageId } : {}),
+    ...(resumePhase ? { resumePhase } : {}),
     templatePath: artifact.buildManifest.builder.templatePath,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,

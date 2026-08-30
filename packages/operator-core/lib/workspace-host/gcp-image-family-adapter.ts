@@ -29,6 +29,7 @@ import {
   type GcpImageFamilyPin,
   type GcpImageFamilyReleaseAdapter,
   type GcpImageFamilyReleaseContext,
+  type GcpImageFamilyReleaseResumePhase,
   type GcpImageInspection,
   type GcpImageScanEvidence,
 } from './gcp-image-family';
@@ -138,6 +139,7 @@ export interface GcpImageFamilyComputeOperation {
 export interface GcpImageFamilyScanRunner {
   run?(input: {
     projectId: string;
+    subnetwork: string;
     imageId: string;
     buildManifestIdentity: string;
     releaseSha256: string;
@@ -145,6 +147,7 @@ export interface GcpImageFamilyScanRunner {
   }): Promise<unknown>;
   scan?(input: {
     projectId: string;
+    subnetwork: string;
     imageId: string;
     buildManifestIdentity: string;
     releaseSha256: string;
@@ -152,6 +155,7 @@ export interface GcpImageFamilyScanRunner {
   }): Promise<unknown>;
   scanImage?(input: {
     projectId: string;
+    subnetwork: string;
     imageId: string;
     buildManifestIdentity: string;
     releaseSha256: string;
@@ -708,6 +712,7 @@ export class CommandGcpImageFamilyScanRunner implements GcpImageFamilyScanRunner
       cwd: this.cwd,
       stdin: jsonInput({
         projectId: input.projectId,
+        subnetwork: input.subnetwork,
         imageId: input.imageId,
         buildManifestIdentity: input.buildManifestIdentity,
         releaseSha256: input.releaseSha256,
@@ -1004,12 +1009,87 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
     return result;
   }
 
+  private async findImage(projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    const getter = this.compute.getImage ?? this.compute.getImageByName;
+    if (!getter) fail('GCP Compute adapter does not implement getImage');
+    return getter.call(this.compute, projectId, imageName);
+  }
+
+  private pinGuestToolVersions(): Readonly<Record<string, string>> {
+    const versions = this.options.guestToolVersions;
+    if (!versions || GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.some((name) => !versions[name]?.trim())) {
+      fail('guestToolVersions must pin every required GCP guest tool');
+    }
+    this.pinnedGuestToolVersions = Object.fromEntries(
+      GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, versions[name]!.trim()]),
+    );
+    return this.pinnedGuestToolVersions;
+  }
+
+  private async reuseCandidate(
+    input: Parameters<GcpImageFamilyReleaseAdapter['buildCandidate']>[0],
+    candidateId: string,
+    candidateName: string,
+    conflictHint: boolean,
+  ): Promise<{ imageId: string }> {
+    const candidate = parseGcpImmutableImageId(candidateId, 'candidateImageId');
+    if (candidate.projectId !== project(input.projectId, 'projectId')) {
+      fail('candidateImageId must belong to the publication project');
+    }
+    if (candidate.imageName !== candidateName) {
+      fail(`candidateImageId must name the deterministic candidate ${candidateName}`);
+    }
+    try {
+      const inspection = await this.inspectImage(candidate.projectId, candidate.imageId);
+      if (inspection.family) fail('candidate image must not be assigned to a production image family');
+      if (
+        inspection.buildManifestIdentity !== manifest(input.buildManifestIdentity, 'buildManifestIdentity') ||
+        inspection.releaseVersion !== ensureVersion(input.releaseVersion, 'releaseVersion') ||
+        inspection.releaseSha256 !== digest(input.releaseSha256, 'releaseSha256') ||
+        inspection.architecture !== architecture(input.architecture)
+      ) {
+        fail('candidate image provenance does not match the requested release');
+      }
+      return { imageId: candidate.imageId };
+    } catch (error) {
+      if (!conflictHint) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      fail(
+        `${message}; delete the conflicting candidate with ` +
+          `gcloud compute images delete ${candidateName} --project ${candidate.projectId} --quiet before retrying`,
+      );
+    }
+  }
+
   async buildCandidate(
     input: Parameters<GcpImageFamilyReleaseAdapter['buildCandidate']>[0],
   ): Promise<{ imageId: string }> {
     const context = this.context();
     inputMatchesContext(input, context);
+    const versions = this.pinGuestToolVersions();
     const candidateName = resource(input.candidateImageName, 'candidateImageName');
+    if (input.resumePhase !== undefined && input.resumePhase !== 'scan' && input.resumePhase !== 'publish') {
+      fail('resumePhase must be scan or publish');
+    }
+    if (input.resumePhase !== undefined && !input.candidateImageId) {
+      fail('resumePhase requires candidateImageId');
+    }
+    if (input.candidateImageId) {
+      return this.reuseCandidate(
+        input,
+        assertGcpImmutableImageId(input.candidateImageId, 'candidateImageId'),
+        candidateName,
+        false,
+      );
+    }
+    const existing = await this.findImage(project(input.projectId, 'projectId'), candidateName);
+    if (existing) {
+      const existingId = assertGcpImmutableImageId(
+        `projects/${project(input.projectId, 'projectId')}/global/images/${resource(existing.name, 'candidate.name')}`,
+        'candidateImageId',
+      );
+      return this.reuseCandidate(input, existingId, candidateName, true);
+    }
     const template = text(input.templatePath, 'templatePath');
     if (
       isAbsolute(template) ||
@@ -1028,13 +1108,6 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
         `template ${template} digest ${templateDigest} does not match pinned ${context.artifact.buildManifest.builder.templateSha256}`,
       );
     }
-    const versions = this.options.guestToolVersions;
-    if (!versions || GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.some((name) => !versions[name]?.trim())) {
-      fail('guestToolVersions must pin every required GCP guest tool');
-    }
-    this.pinnedGuestToolVersions = Object.fromEntries(
-      GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, versions[name]!.trim()]),
-    );
     const vars: Readonly<Record<string, string | number | boolean>> = {
       project_id: project(input.projectId, 'projectId'),
       zone: text(context.request.cleanRoom.zone, 'cleanRoom.zone'),

@@ -56,6 +56,9 @@ export interface CascadeSelectionEntry {
   liveness: string;
   /** WI-39852: selectee entered via a carry-respawn revival (provenance only). */
   revived?: boolean;
+  /** EI-21809454835305750: revival spawn is in flight; counts against the
+   * one-revival budget until it resolves. */
+  revivalPending?: boolean;
   /** WI-39861: selectee entered on the ONE post-exhaustion refill round. */
   refill?: boolean;
 }
