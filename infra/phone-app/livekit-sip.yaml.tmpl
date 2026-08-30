@@ -1,0 +1,26 @@
+# Phone app — LiveKit SIP gateway config (plan phone-app-2026-08-30, P-002/P-003)
+#
+# TEMPLATE. Rendered by infra/phone-app/deploy.sh into
+# ~/.config/papercusp-phone/livekit-sip.yaml. Never put a secret here.
+#
+# This is the PSTN ⇄ room bridge. It is reachable and healthy without a carrier
+# trunk; a trunk (P-003) is what gives it somewhere to send and receive calls.
+
+# Where our own LiveKit server is. Loopback: both run on this host.
+ws_url: ws://127.0.0.1:7890
+api_key: ${PHONE_LIVEKIT_API_KEY}
+api_secret: ${PHONE_LIVEKIT_API_SECRET}
+
+# Must match the server's redis db, this is how the two find each other.
+redis:
+  address: 127.0.0.1:6379
+  db: 3
+
+# 5060 is taken on this host by the ~/Restart project's SIP gateway.
+sip_port: 5070
+
+# RTP media range, clear of the other project's default 10000-20000.
+rtp_port: 40000-40200
+
+logging:
+  level: info

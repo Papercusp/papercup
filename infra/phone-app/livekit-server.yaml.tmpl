@@ -1,0 +1,53 @@
+# Phone app — LiveKit server config (plan phone-app-2026-08-30, P-002, D-002)
+#
+# TEMPLATE. Rendered by infra/phone-app/deploy.sh into
+# ~/.config/papercusp-phone/livekit-server.yaml, with each placeholder below
+# substituted. Never put a secret in this file — it is committed.
+#
+# Ports sit clear of the ~/Restart project's LiveKit (7880/7881/5060) on this host.
+
+port: 7890
+
+bind_addresses:
+  - ""   # all interfaces
+
+rtc:
+  tcp_port: 7891
+  # Single UDP mux port instead of a 10k range: one firewall rule, and it cannot
+  # collide with the other project's 50000-60000 range.
+  udp_port: 7892
+  use_external_ip: true
+  # Advertise loopback + LAN as well as the public IP so that co-located services
+  # (livekit-sip, the agent worker) pick 127.0.0.1 for ICE rather than hairpinning
+  # out through the public address — hairpin NAT drops WebRTC consent keepalives.
+  interfaces:
+    includes:
+      - lo
+      - ${PHONE_LAN_IFACE}
+
+# Coordination bus shared with livekit-sip. db 3 — db0/db1 are already in use on
+# this host by other services.
+redis:
+  address: 127.0.0.1:6379
+  db: 3
+
+turn:
+  enabled: true
+  udp_port: 7893
+  # TLS intentionally off: it needs a real cert for a real hostname. UDP TURN is
+  # enough for LAN + a public-IP host. Revisit before shipping to clients on
+  # restrictive corporate networks.
+  tls_port: 0
+
+keys:
+  ${PHONE_LIVEKIT_API_KEY}: ${PHONE_LIVEKIT_API_SECRET}
+
+room:
+  # A call is a room. Empty rooms should not linger.
+  empty_timeout: 60
+  departure_timeout: 20
+  max_participants: 10
+
+logging:
+  level: info
+  json: false

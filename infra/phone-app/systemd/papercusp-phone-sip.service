@@ -1,0 +1,18 @@
+# Papercusp Phone app — LiveKit SIP gateway (PSTN <-> room bridge).
+# Docs: infra/phone-app/README.md in the papercusp repo (plan phone-app-2026-08-30, P-002/P-003).
+# Paths use the %h specifier so this unit is not bound to one machine's home.
+[Unit]
+Description=Papercusp Phone app — LiveKit SIP gateway (plan phone-app-2026-08-30 P-002/P-003)
+After=network.target papercusp-phone-livekit.service
+Wants=papercusp-phone-livekit.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/livekit-sip --config %h/.config/papercusp-phone/livekit-sip.yaml
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=default.target
