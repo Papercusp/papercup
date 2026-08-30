@@ -430,6 +430,13 @@ describe('AdvConversationsTab — Create-style shell', () => {
     // (measured 522px at both 900px and 800px windows, against 800px-tall panes).
     // This shell does not collapse, so the cap must stay reset.
     expect(navRule).toContain('max-height: none');
+
+    // The SAME plans.css rule (plans.css:4217-4221) leaks TWO declarations onto this
+    // rail, not one: 'max-height: 58vh' above and 'border-bottom: 1px solid' here. Both
+    // resets are load-bearing across 800-980px, which is inside this shell's reachable
+    // range (tauri.conf.json minWidth 800). Guarding only the cap left a real 1px rule
+    // under the rail unprotected -- the gap EI-21905445364010877 found.
+    expect(navRule).toContain('border-bottom: none');
   }
 
   // The .pc-advconv__nav rule EXACTLY as it stood at 66d7970942 (2026-08-30T18:01:51Z),
@@ -485,6 +492,7 @@ describe('AdvConversationsTab — Create-style shell', () => {
       'z-index:',
       'background-color:',
       'max-height: none',
+      'border-bottom: none',
     ]) {
       const escaped = declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const mutant = navRule.replace(new RegExp(`^.*${escaped}.*\\n?`, 'm'), '');
