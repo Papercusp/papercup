@@ -2041,6 +2041,69 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.message).toContain('confirmRetire:true');
   });
 
+  // EI-21849813048365808: a routine merge refresh near the cap (e.g. a monitor loop
+  // re-stating its checks every wake) hit `checkpoint_merge_would_evict_rows` on every
+  // write once the carried set filled up, and the only advertised fix was a separate
+  // rowsMode:'replace' resend of the FULL current set first. confirmRetire:true gives
+  // the SAME one-call escape merge already offers replace: let the cap's own
+  // PREDICTED-before-VERIFIED eviction proceed instead of refusing.
+  it("honors confirmRetire:true under rowsMode:'merge' to let cap eviction proceed in one call", async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
+    );
+    const b = body(
+      await call({
+        did: 'progress',
+        checks: [{ claim: 'one row past the cap' }],
+        rowsMode: 'merge',
+        confirmRetire: true,
+      }),
+    );
+
+    expect(b.ok).toBe(true);
+    expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+    expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
+    expect(b.checksDroppedNote).toContain('confirmRetire:true');
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('one row past the cap');
+    expect(written).not.toContain(`carried ${CARRY_NOTE_MAX_CHECKS} `);
+  });
+
+  it("honors confirmRetire:true under rowsMode:'merge' to let a wall cap eviction proceed", async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(
+        [],
+        Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` })),
+      ),
+    );
+    const b = body(
+      await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge', confirmRetire: true }),
+    );
+
+    expect(b.ok).toBe(true);
+    expect(b.walls).toBe(CARRY_NOTE_MAX_WALLS);
+    expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
+    expect(b.wallsDroppedNote).toContain('confirmRetire:true');
+  });
+
+  it("still refuses an ordinary rowsMode:'merge' overflow when confirmRetire is false", async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
+    );
+    const b = body(
+      await call({
+        did: 'progress',
+        checks: [{ claim: 'one row past the cap' }],
+        rowsMode: 'merge',
+        confirmRetire: false,
+      }),
+    );
+
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('checkpoint_merge_would_evict_rows');
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
   it('normalizes a legacy over-cap carried check set once instead of refusing every additive write', async () => {
     const verifiedRows = Array.from({ length: 8 }, (_, i) => ({
       claim: `VERIFIED-${String(i + 1).padStart(2, '0')} holds`,
