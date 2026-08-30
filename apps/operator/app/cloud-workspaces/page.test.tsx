@@ -1368,9 +1368,7 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(compactStart).toBeGreaterThan(narrowStart);
 
     const medium = cloudPageCss.slice(mediumStart, narrowStart);
-    expect(medium).toContain(
-      "grid-template-columns: 74px minmax(0, 1fr)",
-    );
+    expect(medium).toContain("grid-template-columns: 74px minmax(0, 1fr)");
     expect(medium).toContain(".railStepBody,");
     expect(medium).toContain("display: none");
 
@@ -1381,7 +1379,9 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(narrow).toContain(".railStepBody {");
     expect(narrow).toContain("display: flex");
     expect(narrow).toContain(".railStats {");
-    expect(narrow).toContain("grid-template-columns: repeat(4, minmax(0, 1fr))");
+    expect(narrow).toContain(
+      "grid-template-columns: repeat(4, minmax(0, 1fr))",
+    );
     expect(narrow).toContain(".hostRow {");
     expect(narrow).toContain(".hostRowActions {");
   });
