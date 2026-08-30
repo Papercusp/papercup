@@ -304,7 +304,7 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner-live');

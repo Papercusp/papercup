@@ -348,7 +348,7 @@ describe('cup_claim_specs federation (real PG)', () => {
         for (const r of await outbox()) await applyOnB(r);
         expect(await dbB.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`).toHaveLength(0);
       } finally {
-        await dbB.cleanup();
+        await dbB?.cleanup();
       }
     }, 120_000);
   });

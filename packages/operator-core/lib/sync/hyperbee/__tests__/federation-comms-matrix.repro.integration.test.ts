@@ -386,11 +386,11 @@ async function bootCommsPair(cfg: {
 
   const orgDb = await createOrgTestDb(); // RECEIVER (env-routed) + the shared hive/registry source
   cleanups.push(async () => {
-    await orgDb.cleanup();
+    await orgDb?.cleanup();
   });
   const authorDb = await createOrgTestDb(); // AUTHOR's coord-origin DB (full real schema + capture)
   cleanups.push(async () => {
-    await authorDb.cleanup();
+    await authorDb?.cleanup();
   });
   installTraceAndEnv(orgDb);
 

@@ -387,7 +387,7 @@ describe('SIDECAR restart-durability federation (D-053/D-054) — member sidecar
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
@@ -767,7 +767,7 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
@@ -1058,7 +1058,7 @@ describe('MEMBER→OWNER content guard (WI-5481 scope-extension) — member-auth
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 199, 'kc-m2o-owner');
@@ -1320,7 +1320,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');

@@ -359,7 +359,7 @@ describe('SIDECAR offline-catchup / reconnect federation (D-053) — owner autho
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');

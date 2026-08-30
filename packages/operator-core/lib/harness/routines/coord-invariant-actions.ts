@@ -740,28 +740,43 @@ export interface Violation {
 }
 
 /**
- * EI-9506 / EI-9533: a backup / maintenance statement — a `pg_dump`-style
- * `COPY harness_shared.coord_event_log (...) TO stdout`, or an autovacuum/maintenance
- * `VACUUM [ANALYZE]` / `ANALYZE harness_shared.coord_event_log` — legitimately touches
- * the WHOLE table: that is what a backup / table maintenance is FOR, not an application
- * read pattern to bound. These are issued by the backup process (kopia/pg_dump) or the
- * autovacuum daemon / a maintenance job, never by the app, so the furnace detector must
+ * EI-9506 / EI-9533 / EI-21896608538525240: a backup / maintenance / ad-hoc-diagnostic
+ * statement — a `pg_dump`-style `COPY harness_shared.coord_event_log (...) TO stdout`,
+ * an autovacuum/maintenance `VACUUM [ANALYZE]` / `ANALYZE harness_shared.coord_event_log`,
+ * or a one-off `CREATE TABLE ... AS SELECT ... FROM harness_shared.coord_event_log`
+ * diagnostic materialization (e.g. an operator investigating this very detector via
+ * `dev:pg_query`/`dev:pg_mutate`, snapshotting rows into a scratch table such as
+ * `su_probe.cel`) — legitimately touches the WHOLE table: that is what a backup / table
+ * maintenance / one-time forensic snapshot is FOR, not a recurring application read
+ * pattern to bound. These are issued by the backup process (kopia/pg_dump), the
+ * autovacuum daemon / a maintenance job, or a human/agent's own manual `psql`/tool
+ * session — never by the app in its normal request path — so the furnace detector must
  * never treat them as furnaces. The rows/call leg would otherwise flag a full-table dump
  * (~100k rows/call) as an "unbounded scan", and the MEAN-exec leg flags a slow
  * `VACUUM ANALYZE` / `ANALYZE` (live-observed 2.4–3.4s on this table) — and, critically,
- * the EI-9420 min_exec suppression cannot rescue EITHER: it gates only the MEAN-exec leg
- * (so the rows/call leg stands alone for the dump), and a maintenance op has no fast path
- * (every call scans the whole table, so its min_exec is high too — nothing to suppress on).
- * VACUUM/ANALYZE escape flagging today ONLY incidentally (rows/call=0 keeps them below the
- * top-N-by-rows/call gather window), so this is the durable fix that classifies them
- * correctly by STATEMENT KIND rather than relying on that ranking accident (EI-9533: the
- * same maintenance-op class as EI-9506's COPY). Match on the leading keyword of the
- * (already length-clamped) query preview — anchored at start + a word boundary so a SELECT
- * that merely mentions COPY/VACUUM/ANALYZE in a string/column is never a false positive.
- * Exported for unit tests.
+ * the EI-9420 min_exec suppression cannot rescue any of these: it gates only the MEAN-exec
+ * leg (so the rows/call leg stands alone for the dump/snapshot), and none of these has a
+ * fast path (every call scans/materializes the whole matched set, so min_exec is high too
+ * — nothing to suppress on). Worse for the `CREATE TABLE ... AS SELECT` case specifically:
+ * because pg_stat_statements accumulates the statement's stats FOREVER (until a stats
+ * reset or Postgres restart), a single historical one-off snapshot query keeps getting
+ * re-observed with byte-identical calls/rows/exec-time on every later watchdog tick and
+ * re-files as a "new" furnace each time (observed live 2026-08-30: the exact same
+ * queryid, calls=3, rows/call=82647 was independently filed as EI-21896608538525240 at
+ * 16:37Z and again as EI-21900571774725690 at 17:40Z — no NEW activity occurred between
+ * the two ticks, only the same stale cumulative counter being re-read) — an unbounded,
+ * un-fixable stream of near-duplicate bug reports about an agent's own past forensic
+ * query, not a live app bug. VACUUM/ANALYZE escape flagging today ONLY incidentally
+ * (rows/call=0 keeps them below the top-N-by-rows/call gather window), so this is the
+ * durable fix that classifies all three by STATEMENT KIND rather than relying on that
+ * ranking accident. Match on the leading keyword of the (already length-clamped) query
+ * preview — anchored at start + a word boundary so a SELECT that merely mentions
+ * COPY/VACUUM/ANALYZE/CREATE in a string/column is never a false positive; the CREATE
+ * TABLE leg allows an optional TEMP(ORARY)/UNLOGGED modifier so any one-off scratch
+ * materialization is covered, not just a plain permanent table. Exported for unit tests.
  */
 export function isBackupOrMaintenanceStatement(queryPreview: string): boolean {
-  return /^\s*(?:COPY|VACUUM|ANALYZE)\b/i.test(queryPreview);
+  return /^\s*(?:COPY|VACUUM|ANALYZE|CREATE\s+(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)?TABLE)\b/i.test(queryPreview);
 }
 
 /** Pure: judge a snapshot against the thresholds. */

@@ -1018,7 +1018,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       // ── Identities up front — A's seeded pot_members row MUST match A's announce. ──
@@ -1294,7 +1294,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
@@ -1538,7 +1538,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idA = makeIdentityOverride('alice', 42, 'kc-alice');
@@ -1791,7 +1791,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       // Seed the hive row (pot_members FKs it; needs a valid raw-32 base64 Ed25519 pubkey).

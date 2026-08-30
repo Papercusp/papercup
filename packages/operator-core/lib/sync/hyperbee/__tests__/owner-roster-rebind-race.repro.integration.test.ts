@@ -312,7 +312,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
@@ -358,7 +358,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       //    (pot_members has an FK → hives). ──
       const authorDb: OrgTestDb = await createOrgTestDb();
       cleanups.push(async () => {
-        await authorDb.cleanup();
+        await authorDb?.cleanup();
       });
       await authorDb.adminSql`
         INSERT INTO harness_shared.pots
@@ -776,7 +776,7 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner-rrs');
@@ -808,7 +808,7 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
 
       const authorDb: OrgTestDb = await createOrgTestDb();
       cleanups.push(async () => {
-        await authorDb.cleanup();
+        await authorDb?.cleanup();
       });
       await authorDb.adminSql`
         INSERT INTO harness_shared.pots

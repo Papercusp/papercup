@@ -354,11 +354,11 @@ async function bootFedPair(cfg: {
 
   const orgDb = await createOrgTestDb(); // RECEIVER (env-routed) + the shared hive/registry source
   cleanups.push(async () => {
-    await orgDb.cleanup();
+    await orgDb?.cleanup();
   });
   const authorDb = await createOrgTestDb(); // AUTHOR's content-origin DB (full real schema + capture)
   cleanups.push(async () => {
-    await authorDb.cleanup();
+    await authorDb?.cleanup();
   });
   installTraceAndEnv(orgDb);
 
@@ -626,11 +626,11 @@ describe('federation ISSUES+ASSIGNMENTS matrix — engineer_issues + plan_item_a
 
       const orgDb = await createOrgTestDb();
       cleanups.push(async () => {
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
       const authorDb = await createOrgTestDb();
       cleanups.push(async () => {
-        await authorDb.cleanup();
+        await authorDb?.cleanup();
       });
       installTraceAndEnv(orgDb);
 

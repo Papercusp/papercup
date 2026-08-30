@@ -102,7 +102,7 @@ describe('joinHiveAsView (WI-971) — real-PG registry + rekey-ordering proof', 
         _resetUrlCacheForTests();
         _resetHarnessAdminUrlCacheForTests();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       // ── The rekey spy: on EVERY call, do a REAL loadHarnessRegistry read (the

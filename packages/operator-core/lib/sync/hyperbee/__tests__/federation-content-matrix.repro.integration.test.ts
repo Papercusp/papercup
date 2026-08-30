@@ -494,7 +494,7 @@ describe('federation content matrix — ALL shared content types federate BOTH d
 
       const orgDb: OrgTestDb = await createOrgTestDb();
       cleanups.push(async () => {
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
       installTraceAndEnv(orgDb);
 
@@ -685,7 +685,7 @@ describe('federation content matrix — ALL shared content types federate BOTH d
 
       const orgDb: OrgTestDb = await createOrgTestDb();
       cleanups.push(async () => {
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
       installTraceAndEnv(orgDb);
 

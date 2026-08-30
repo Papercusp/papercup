@@ -693,6 +693,56 @@ describe('evaluateInvariants', () => {
       expect(isBackupOrMaintenanceStatement("SELECT 'analyze this' FROM harness_shared.coord_event_log")).toBe(false);
     });
 
+    it('EI-21896608538525240/EI-21900571774725690: a CREATE TABLE ... AS SELECT diagnostic scratch snapshot is NOT judged a furnace', () => {
+      // Live-verified shape (2026-08-30): an ad-hoc forensic `CREATE TABLE su_probe.cel
+      // AS SELECT ... FROM harness_shared.coord_event_log WHERE workspace_id = $5 AND
+      // harness_slug = $6` — an operator/agent materializing a one-off scratch snapshot
+      // to investigate this very detector — trips the rows/call leg (82,647 > 50,000)
+      // exactly like the EI-9506 COPY dump, with no fast path to be rescued by EI-9420's
+      // min_exec suppression. Because pg_stat_statements never decays, the SAME byte-
+      // identical stats (queryid=-6648459463434723089, calls=3, rows/call=82647,
+      // meanExecMs=3136, minExecMs=983) were independently re-observed and re-filed as
+      // TWO separate open bugs 63 minutes apart (EI-21896608538525240 at 16:37Z,
+      // EI-21900571774725690 at 17:40Z) with zero new activity between the ticks — an
+      // unbounded stream of near-duplicate reports about a historical diagnostic query,
+      // not a live application furnace.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          {
+            queryid: '-6648459463434723089',
+            queryPreview:
+              'CREATE TABLE su_probe.cel AS SELECT id, workspace_id, harness_slug, surface, ' +
+              "CASE WHEN body -> $1 IS NOT NULL THEN jsonb_build_object($2, body -> $3) ELSE $4::jsonb END AS body " +
+              'FROM harness_shared.coord_event_log WHERE workspace_id = $5 AND harness_slug = $6',
+            calls: 3,
+            rowsPerCall: 82_647,
+            meanExecMs: 3136,
+            minExecMs: 983,
+          },
+        ],
+      };
+      expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    });
+
+    it('EI-21896608538525240: isBackupOrMaintenanceStatement matches CREATE [TEMP|UNLOGGED] TABLE but not a SELECT that mentions it', () => {
+      expect(isBackupOrMaintenanceStatement('CREATE TABLE su_probe.cel AS SELECT * FROM harness_shared.coord_event_log')).toBe(true);
+      expect(isBackupOrMaintenanceStatement('  create table su_probe.cel as select * from harness_shared.coord_event_log')).toBe(true);
+      expect(
+        isBackupOrMaintenanceStatement('CREATE TEMP TABLE scratch AS SELECT * FROM harness_shared.coord_event_log'),
+      ).toBe(true);
+      expect(
+        isBackupOrMaintenanceStatement('CREATE TEMPORARY TABLE scratch AS SELECT * FROM harness_shared.coord_event_log'),
+      ).toBe(true);
+      expect(
+        isBackupOrMaintenanceStatement('CREATE UNLOGGED TABLE scratch AS SELECT * FROM harness_shared.coord_event_log'),
+      ).toBe(true);
+      // Not a false-positive on a SELECT whose body merely mentions "create table".
+      expect(
+        isBackupOrMaintenanceStatement("SELECT body FROM harness_shared.coord_event_log WHERE body->>'op' = 'create table'"),
+      ).toBe(false);
+    });
+
     it('EI-9525/EI-9539/EI-9556/EI-9558: the exact 4-furnace snapshot those EIs filed no longer alarms under the CURRENT detector', () => {
       // Regression pin for EI-9525 (auto-filed 2026-07-11 01:38), its exact
       // duplicate EI-9539 (03:38), the third identical recurrence EI-9556

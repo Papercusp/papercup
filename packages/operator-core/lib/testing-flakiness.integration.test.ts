@@ -165,7 +165,7 @@ describe('computeFlakiness harness scoping (regression, WI-3925)', () => {
   });
 
   afterAll(async () => {
-    await hdb.cleanup();
+    await hdb?.cleanup();
   });
 
   it("includes NULL-harness_slug rows alongside this harness's own rows, excludes another harness's rows", async () => {

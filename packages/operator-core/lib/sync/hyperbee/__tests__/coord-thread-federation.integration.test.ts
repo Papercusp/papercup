@@ -157,7 +157,7 @@ describe('coord_threads + coord_thread_posts federation (real PG + real PgThread
       expect(postsOnB.map((p) => p.body)).toEqual(['reply one', 'reply two']);
       expect(postsOnB.every((p) => p.origin === 'remote')).toBe(true);
     } finally {
-      await dbB.cleanup();
+      await dbB?.cleanup();
     }
   });
 });

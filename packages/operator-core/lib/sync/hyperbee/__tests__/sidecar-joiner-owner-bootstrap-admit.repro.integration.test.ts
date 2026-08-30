@@ -360,7 +360,7 @@ async function runScenario(
     _resetHarnessAdminUrlCacheForTests();
     _clearHiveMemberDeviceSetCacheForTest();
     await resetDbOrgPools();
-    await orgDb.cleanup();
+    await orgDb?.cleanup();
   });
 
   const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');
@@ -639,7 +639,7 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
         _resetHarnessAdminUrlCacheForTests();
         _clearHiveMemberDeviceSetCacheForTest();
         await resetDbOrgPools();
-        await orgDb.cleanup();
+        await orgDb?.cleanup();
       });
 
       const idOwner = makeIdentityOverride('owner', 99, 'kc-owner');

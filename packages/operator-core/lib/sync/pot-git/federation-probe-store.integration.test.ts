@@ -151,7 +151,7 @@ describe('migration 917 captured-only contract schema', () => {
         { probe_key: 'legacy-timeout', status: 'acked' },
       ]);
     } finally {
-      await legacyDb.cleanup();
+      await legacyDb?.cleanup();
     }
   });
 });

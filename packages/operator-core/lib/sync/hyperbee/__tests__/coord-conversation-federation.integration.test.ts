@@ -421,7 +421,7 @@ describe('coord_conversations federation (real PG)', () => {
       const gone = await dbB.sql`SELECT 1 FROM harness_shared.coord_conversations WHERE id = 'conv-conv'`;
       expect(gone).toHaveLength(0);
     } finally {
-      await dbB.cleanup();
+      await dbB?.cleanup();
     }
   });
 });

@@ -86,7 +86,7 @@ afterAll(async () => {
       DELETE FROM harness_shared.users
        WHERE username IN (${`pv-import-owner-${RUN}`}, ${`pv-import-other-${RUN}`})
           OR username LIKE ${`pv-import-filler-${RUN}-%`}`.catch(() => undefined);
-    await org.cleanup();
+    await org?.cleanup();
   }
   if (sandbox) await rm(sandbox, { recursive: true, force: true });
   if (previousPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
