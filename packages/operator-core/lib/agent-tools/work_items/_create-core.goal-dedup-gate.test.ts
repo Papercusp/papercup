@@ -80,6 +80,22 @@ import { createWorkItem } from '../../work-items';
 const guardM = vi.mocked(findSemanticDupes);
 const fulltextM = vi.mocked(findFulltextLexicalDupes);
 const createM = vi.mocked(createWorkItem);
+// EI-21872682653374832 — createOneWorkItem stamps goal provenance (_create-core.ts:1198).
+// Unmocked, resolveGoalContext reaches the real authority read, which fails CLOSED with
+// `goal_holder_authority_unreadable` for ownerId 'me' (goal-context.ts:54). The stamp's catch
+// console.warns by design (EI-20075667133396690) and vitest-fail-on-console turns that warn
+// into a failure on every test whose create actually REACHES the stamp — which is why the
+// refusal cases here passed and the create-succeeds cases did not.
+//
+// Returning null is safe for THIS file specifically, and the reason matters: the dedup gate
+// under test is driven by the getFlag mock above, NOT by goal context. So neutralising the
+// goal makes no test take a different gate branch — it only stops the stamp from throwing.
+// If a future test here needs a real goal, give it the configurable mock that
+// create.goal-dedup-gate.test.ts uses rather than widening this one.
+vi.mock('../../modes/goal-context', () => ({
+  resolveGoalContext: vi.fn(async () => null),
+}));
+
 const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
 
 const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
