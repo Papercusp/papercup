@@ -25,11 +25,32 @@ export interface GatewayKernelRoute<T> {
   value: T;
 }
 
+/**
+ * Resolves the upstream TTFB deadline from the request body (D-007 of plan
+ * `gateway-kernel-adoption-2026-08-29`).
+ *
+ * Every cloud handler picks a SHORT time-to-first-byte deadline for a
+ * streaming request and a generous one otherwise, and it decides which by
+ * parsing `stream: true` out of the REQUEST body — which is not known until
+ * the kernel's own bounded body read has run. A scalar policy therefore
+ * cannot express the live behaviour, and the only alternative would be each
+ * adapter racing its own stall timer, re-creating the very per-handler ladder
+ * this kernel exists to delete.
+ *
+ * The resolver is called ONCE, after the bounded body read and before the
+ * first attempt, so it costs nothing per retry and cannot change mid-request.
+ */
+export type GatewayKernelTtfbResolver = (context: {
+  body: Buffer;
+  lane: GatewayLaneDescriptor;
+}) => number;
+
 export interface GatewayKernelPolicy {
   maxBodyBytes: number;
   bodyReadTimeoutMs: number;
   requestCeilingMs: number;
-  ttfbTimeoutMs: number;
+  /** A scalar deadline, or a resolver reading the parsed request body. */
+  ttfbTimeoutMs: number | GatewayKernelTtfbResolver;
   bodyIdleTimeoutMs: number;
   downstreamIdleTimeoutMs: number;
   maxAttempts: number;
@@ -250,12 +271,30 @@ function boundedCorrelationId(value: string | undefined, fallback: string): stri
   return bounded || fallback;
 }
 
+/**
+ * Validates a TTFB deadline. Applied to a scalar policy up front, and to a
+ * resolver's RETURN value after the body read — a resolver that computes a
+ * nonsense deadline must fail the same way a nonsense literal does, rather
+ * than arming a timer that never fires.
+ */
+function assertPositiveTtfb(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new GatewayRequestKernelError('gateway request kernel policy ttfbTimeoutMs must be positive', {
+      code: 'invalid-policy',
+      outcome: 'gateway-error',
+      status: 500,
+    });
+  }
+  return value;
+}
+
 function validatePolicy(policy: GatewayKernelPolicy): void {
-  const positive: Array<keyof GatewayKernelPolicy> = [
+  // `ttfbTimeoutMs` is excluded here because it may be a resolver; a scalar is
+  // checked below, and a resolver's result is checked after the body read.
+  const positive: Array<Exclude<keyof GatewayKernelPolicy, 'ttfbTimeoutMs'>> = [
     'maxBodyBytes',
     'bodyReadTimeoutMs',
     'requestCeilingMs',
-    'ttfbTimeoutMs',
     'bodyIdleTimeoutMs',
     'downstreamIdleTimeoutMs',
     'maxAttempts',
@@ -276,6 +315,7 @@ function validatePolicy(policy: GatewayKernelPolicy): void {
       status: 500,
     });
   }
+  if (typeof policy.ttfbTimeoutMs !== 'function') assertPositiveTtfb(policy.ttfbTimeoutMs);
 }
 
 function cancellationError(message = 'gateway request cancelled'): GatewayRequestKernelError {
@@ -680,6 +720,14 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         } finally {
           span.endStage('bodyRead');
         }
+
+        // D-007: resolve the TTFB deadline ONCE, now that the body is known,
+        // so a lane can pick its streaming deadline without its own timer.
+        const ttfbTimeoutMs = assertPositiveTtfb(
+          typeof opts.policy.ttfbTimeoutMs === 'function'
+            ? opts.policy.ttfbTimeoutMs({ body, lane: opts.request.lane })
+            : opts.policy.ttfbTimeoutMs,
+        );
 
         for (let attempt = 1; attempt <= opts.policy.maxAttempts; attempt++) {
           attempts = attempt;
