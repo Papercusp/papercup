@@ -100,6 +100,11 @@ import {
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
 
+// ChatGPT-backed Codex accounts reject the bare `gpt-5.6` model id. Keep the
+// omitted-model fallback on a family-suffixed id that the subscription backend
+// accepts; explicit caller/goal/member models still win below.
+const DEFAULT_CODEX_LAUNCH_MODEL = 'gpt-5.6-sol';
+
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
  *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
@@ -1063,7 +1068,10 @@ export default defineTool({
       // resolves with `goalRole:'goal'`. If a caller ever needs per-member slot
       // pinning here, add an explicit `goalRole` to MemberSpec — do NOT reinstate
       // the `--role` lookup.
-      return foldMemberSpec(flatBase, memberSpecs[i]);
+      const folded = foldMemberSpec(flatBase, memberSpecs[i]);
+      return folded.agent === 'codex' && !folded.model?.trim()
+        ? { ...folded, model: DEFAULT_CODEX_LAUNCH_MODEL }
+        : folded;
     });
     if (!isResume) {
       const roleFailure = unresolvedAgentRole({

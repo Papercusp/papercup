@@ -21,9 +21,13 @@ vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
 }));
 
+const goalContextSqlMock = vi.hoisted(() => vi.fn(async () => []));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: {} }),
+  // resolveGoalLaunch now reads the holder-authority fence before resolving
+  // inherited context. This suite has no goal rows, so return an empty result
+  // rather than allowing the PG-backed default to leak into the test.
+  getOrgPg: () => ({ sql: goalContextSqlMock }),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
@@ -568,6 +572,18 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(isError(res)).toBe(false);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(textOf(res)).toContain('proceeding fail-open');
+  });
+
+  it('uses a ChatGPT-compatible family-suffixed model when a fresh Codex launch omits one', async () => {
+    codexPreflightHomeMock.mockResolvedValue('/tmp/codex');
+    codexPreflightModelMock.mockResolvedValue({ verdict: 'ok', status: 200, detail: 'supported' });
+
+    const res = await launchAgent.handler({ agent: 'codex', brief: 'run the check' }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--agent=codex');
+    expect(spawnedCommand()).toContain('--model=gpt-5.6-sol');
+    expect(codexPreflightModelMock).toHaveBeenCalledWith('/tmp/codex', 'gpt-5.6-sol');
   });
 });
 
