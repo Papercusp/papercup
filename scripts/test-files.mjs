@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -72,10 +72,89 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * @param {string|null|undefined} file
  * @returns {(() => void)|null} cleanup callback when a marker was published
  */
+/**
+ * How long an EMPTY marker must have sat before it counts as debris rather than a
+ * peer caught mid-publish.
+ *
+ * `writeFileSync(..., {flag:'wx'})` is open(O_CREAT|O_EXCL) followed by write(2);
+ * a process killed between them leaves a zero-length file with NO pid recorded.
+ * That gap is microseconds, so seconds of slack is generous while still refusing
+ * to steal a marker from a peer that is genuinely publishing right now.
+ */
+const EMPTY_MARKER_DEBRIS_MS = 5_000;
+
+/**
+ * Is the marker at `marker` held by a LIVE owner?
+ *
+ * Deliberately biased toward TRUE: every ambiguous or unreadable case answers
+ * "live", because wrongly claiming a peer's barrier is far worse than wrongly
+ * refusing our own — a refusal costs one run, a theft breaks the peer's
+ * protection and lets its cleanup remove a file it no longer owns.
+ *
+ * @param {string} marker
+ * @returns {boolean}
+ */
+function preemptMarkerOwnerIsAlive(marker) {
+  let raw;
+  try {
+    raw = readFileSync(marker, 'utf8');
+  } catch (error) {
+    // Vanished between the failed create and this read ⇒ nothing holds it.
+    if (error?.code === 'ENOENT') return false;
+    return true;
+  }
+
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      // ESRCH ⇒ the recorded owner is gone. EPERM ⇒ it is alive but not ours,
+      // which is still alive. Anything else is unknown, so assume alive.
+      if (error?.code === 'ESRCH') return false;
+      return true;
+    }
+  }
+
+  // No pid recorded: an interrupted exclusive-create. Provenance cannot help
+  // here — there is nothing to check liveness against — so age is the only
+  // available signal.
+  try {
+    return Date.now() - statSync(marker).mtimeMs < EMPTY_MARKER_DEBRIS_MS;
+  } catch {
+    return false;
+  }
+}
+
 function publishPreemptMarker(file, label) {
   const marker = file?.trim();
   if (!marker) return null;
-  writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+  try {
+    writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+
+    // A marker collision says NOTHING about the caller's test set, but it used
+    // to abort the whole run as TEST_FILE_ROUTE_ERROR — which reads as "your
+    // paths were wrong" and, by this repo's triage rules, means zero files were
+    // measured. Observed on a shared box with markers left behind by killed
+    // runs: 4 of 5 present markers were dead or unattributable debris
+    // (EI-21882371330313535). Exclusivity is only protecting something when a
+    // LIVE owner holds the path, so refuse in exactly that case and reclaim
+    // otherwise.
+    if (preemptMarkerOwnerIsAlive(marker)) throw error;
+
+    try {
+      unlinkSync(marker);
+    } catch (unlinkError) {
+      if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+    }
+    // Re-create exclusively rather than truncating: if a peer claimed the path
+    // in this window it wins, and its EEXIST propagates as genuine contention.
+    writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+    console.error(`${label} reclaimed-stale-marker pid=${process.pid}`);
+  }
   console.error(`${label} pid=${process.pid}`);
   let cleaned = false;
   return () => {
