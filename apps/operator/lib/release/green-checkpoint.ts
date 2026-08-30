@@ -13021,9 +13021,18 @@ export async function runPostSuiteLegs(
       // is verified/deployed is unchanged — retained chunks are extra files, and on a fresh
       // checkout (the release build) there are none to retain, which is why the release path
       // is deliberately left alone.
+      // EI-20203883939710354: use the RESOLVED `spaWorkspace`, not a hardcoded name. The
+      // comment at the top of this block records that hardcoding it made
+      // `npm --workspace @papercusp/operator-vite run build` die with "No workspaces found"
+      // on every per-hive gate — but that fix was only half-applied: the SKIP branch above
+      // honours `spaWorkspace` (empty ⇒ nothing to build), while this branch still named the
+      // platform SPA. So a per-hive subject with a NON-EMPTY custom SPA workspace kept
+      // building a workspace it does not have — the very failure the comment says was cured,
+      // still live for every case except the empty one. The parameter was threaded in at the
+      // signature and read only by the emptiness guard.
       const b = await exec(
         "npm",
-        ["--workspace", "@papercusp/operator-vite", "run", "build"],
+        ["--workspace", spaWorkspace, "run", "build"],
         {
           cwd: treeDir,
           env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: "1" },
@@ -13034,7 +13043,7 @@ export async function runPostSuiteLegs(
       legs.build = { status: b.code === 0 ? "passed" : "failed" };
       if (b.code !== 0) {
         outputs.push(
-          "\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n" +
+          `\n\n=== SPA BUILD FAILED (${spaWorkspace}) — would fail the deploy swap ===\n` +
             b.stdout +
             b.stderr,
         );
@@ -14838,9 +14847,13 @@ export function realCheckpointDeps(
           fullOutput += legs.output;
           green = legs.ok;
           if (!legs.ok) {
+            // EI-20203883939710354: name the RESOLVED workspace, not a hardcoded one — this
+            // fallback narrates a per-hive subject's held gate too, and it is also the exact
+            // line an agent grepped out of a shared run log and nearly filed as the root
+            // cause of a fleet-blocking red.
             const failed =
               legs.failingSignatures.join(", ") ||
-              "@papercusp/operator-vite (SPA build)";
+              `${cfg.spaBuildWorkspace} (SPA build)`;
             log(
               `suite red was absorbed as a load-flake, but a post-suite leg FAILED — holding the gate: ${failed}`,
             );
