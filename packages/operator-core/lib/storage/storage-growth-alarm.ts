@@ -17,7 +17,7 @@
  * "unbounded" tables are mostly TOAST-heavy + low-row (activity-bounded, not
  * runaway), so this PREVENTS a future recurrence rather than reclaiming today.
  *
- * TWO INDEPENDENT LEGS (EI-7518). The category-ceiling leg above walks
+ * THREE INDEPENDENT LEGS (EI-7518, then WI-936229). The category-ceiling leg above walks
  * `computeStorageUsage()`, which iterates STORAGE_CATEGORIES — so it can only
  * ever see tables somebody REGISTERED. A table nobody registered produces no
  * row and therefore cannot breach at ANY size, which left this alarm unable to
@@ -27,6 +27,16 @@
  * over a floor that carry no recorded retention decision. Measured 2026-08-03,
  * five such tables held ~278 MB, the largest being `pot_throughput_ticks` at
  * 167 MB / 410,510 rows with zero DELETE sites anywhere in the tree.
+ *
+ * `detectExemptSubsetGrowth` is the THIRD leg, and it exists because the first
+ * two share an assumption: that a retention decision is a property of a TABLE.
+ * Leg 1 sees only registered categories; leg 2 skips any table carrying an
+ * exemption. A table that is BOTH unregistered AND exempt is therefore invisible
+ * to this alarm at any size — which is exactly what happened to `work_items`,
+ * where ~776k ephemeral resource-governor receipts accumulated in two days
+ * (measured 2026-08-29) inside a ledger correctly declared never-prunable. Leg 3
+ * asks the narrower question the exemption cannot answer: which rows in here are
+ * NOT the canonical population the exemption was granted for?
  *
  * Read-only + best-effort: it never throws (mirrors the other periodic monitors),
  * so it can never affect the system it watches.
@@ -40,6 +50,11 @@ import { computeStorageUsage, type StorageUsageRow } from './usage';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
+/** The marker phrase that makes "nothing prunes this" MACHINE-READABLE. The
+ *  unpruned-by-design set is derived from it rather than maintained beside the
+ *  map, so a new blanket exemption cannot slip past the subset guard below by
+ *  being worded differently. */
+export const NOT_AGE_PRUNABLE = 'not age-prunable by design';
 const STORAGE_GROWTH_ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const STORAGE_GROWTH_ESCALATION_TITLE = 'Storage growth critical';
 
@@ -73,6 +88,10 @@ export interface GrowthAlarmDeps {
    *  Feeds the UNDECLARED sweep below, which deliberately does NOT go through
    *  `computeStorageUsage` (that is category-derived — the blind spot). */
   listTableSizes?: () => Promise<TableSizeRow[]>;
+  /** Injectable for tests — defaults to one bounded COUNT per EXEMPT_SUBSET_PROBES
+   *  entry. Feeds the THIRD leg: growth inside a table the other two legs are
+   *  structurally forbidden to look at (WI-936229). */
+  countExemptSubsets?: () => Promise<ExemptSubsetCount[]>;
   /** Injectable for tests — defaults to the shared attention-notify rail. */
   escalate?: (t: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
@@ -124,15 +143,123 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
   operator_conversations: 'pruned by operator-turns-gc.ts',
   plan_revisions: 'pruned by agent-tools/plans/revisions-gc.ts',
   coord_thread_posts: 'pruned by agent-tools/coordination/message-log-gc.ts',
-  session_archive_files:
-    'permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; no age-prune by design',
+  session_archive_files: `permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; ${NOT_AGE_PRUNABLE}`,
   session_turns: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (RETENTION_DAYS=45)',
   session_turn_parts: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (PART_RETENTION_DAYS=14)',
   session_turn_chunks: 'derived cache — migration 749 ON DELETE CASCADE from session_turns; inherits parent retention',
-  work_items: 'canonical work ledger — not age-prunable by design',
-  memory_canonical: 'canonical memory store — not age-prunable by design',
-  memory_vec_harrier: 'canonical memory vectors — not age-prunable by design',
+  work_items: `canonical work ledger — ${NOT_AGE_PRUNABLE}`,
+  memory_canonical: `canonical memory store — ${NOT_AGE_PRUNABLE}`,
+  memory_vec_harrier: `canonical memory vectors — ${NOT_AGE_PRUNABLE}`,
 };
+
+/** Tables whose retention decision is "nothing prunes this, ever". Derived from
+ *  the map above rather than re-listed, so the two cannot drift apart. */
+export function unprunedByDesignTables(
+  map: Readonly<Record<string, string>> = RETENTION_COVERED_ELSEWHERE,
+): string[] {
+  return Object.keys(map)
+    .filter((t) => map[t].includes(NOT_AGE_PRUNABLE))
+    .sort();
+}
+
+/* ────────────────────────── THE THIRD LEG (WI-936229) ──────────────────────────
+ *
+ * A table-level exemption is a claim about EVERY ROW in the table, and that is
+ * a granularity the other two legs cannot question. `work_items` is exempt
+ * because a work ledger genuinely must not be age-pruned — but the resource
+ * governor writes EPHEMERAL ADMISSION RECEIPTS into it, one row per admission.
+ * Measured 2026-08-29: 912,883 rows, ~776k of them receipts accumulated in two
+ * days at ~429/min, and BOTH existing legs were structurally blind — leg 1
+ * because `work_items` is not a registered storage category, leg 2 because it
+ * carries an exemption. The alarm built for the EI-126 runaway could not see a
+ * runaway happening inside the one table it had been told never to look at.
+ *
+ * The fix is not to remove the exemption (it is correct for real work) but to
+ * narrow it: declare the SUBSET the exemption does not cover, and alarm on that
+ * subset alone. Receipts are not work.
+ */
+
+/** A population inside an exempt table that the exemption does NOT cover. */
+export interface ExemptSubsetProbe {
+  /** `harness_shared` table, which MUST carry an exemption — otherwise leg 2 already sees it. */
+  table: string;
+  /** Human name for the subset, used in the toast. */
+  subset: string;
+  /** Read-only SQL predicate selecting the subset. A CONSTANT from this module — never caller input. */
+  predicateSql: string;
+  /** Row count above which the subset is reported. */
+  rowCeiling: number;
+  /** Why the table's exemption does not extend to these rows. */
+  why: string;
+}
+
+export const EXEMPT_SUBSET_PROBES: readonly ExemptSubsetProbe[] = [
+  {
+    table: 'work_items',
+    subset: 'resource-governor admission receipts',
+    predicateSql: `payload ? 'resource_governor'`,
+    rowCeiling: 50_000,
+    why:
+      'The work_items exemption covers the canonical work ledger. The resource governor also writes one ' +
+      'ephemeral receipt row per admission into the same table (resource-governor/queue.ts), and those are ' +
+      'queue telemetry, not work — nothing reaps them, and every claimability census scans them.',
+  },
+];
+
+/** Exempt tables deliberately declared to host NO ephemeral subset, with the reason.
+ *  An unpruned-by-design table must appear either here or in EXEMPT_SUBSET_PROBES;
+ *  the guard test fails on one that appears in neither, so a new blanket exemption
+ *  cannot be added without answering "what ephemeral rows land in here?". */
+export const NO_EPHEMERAL_SUBSET: Readonly<Record<string, string>> = {
+  memory_canonical: 'every row is an owner-authored memory; no subsystem writes telemetry into it',
+  memory_vec_harrier: 'strictly derived vectors, 1:1 with memory_canonical rows — inherits that population',
+  session_archive_files: 'append-only archive of real sessions; the archive IS the product, not a by-product',
+};
+
+/** One probe's measured size. `rows: null` means the count FAILED — unknown, never zero. */
+export interface ExemptSubsetCount {
+  table: string;
+  subset: string;
+  rows: number | null;
+}
+
+/** A subset over its ceiling: unbounded growth inside a table nobody prunes. */
+export interface ExemptSubsetGrowth {
+  table: string;
+  subset: string;
+  rows: number;
+  rowCeiling: number;
+  why: string;
+}
+
+/**
+ * Pure: which declared subsets are over their ceiling.
+ *
+ * A probe whose count is null, or that has no matching count row at all, is
+ * reported as UNKNOWN — never silently omitted and never treated as zero. An
+ * unmeasured subset reads exactly like a healthy one otherwise, which is the
+ * failure mode this whole leg exists to end.
+ */
+export function detectExemptSubsetGrowth(
+  counts: readonly ExemptSubsetCount[],
+  probes: readonly ExemptSubsetProbe[] = EXEMPT_SUBSET_PROBES,
+): { over: ExemptSubsetGrowth[]; unknown: string[] } {
+  const over: ExemptSubsetGrowth[] = [];
+  const unknown: string[] = [];
+
+  for (const p of probes) {
+    const hit = counts.find((c) => c.table === p.table && c.subset === p.subset);
+    if (!hit || hit.rows === null || !Number.isFinite(hit.rows)) {
+      unknown.push(`${p.table}/${p.subset}`);
+      continue;
+    }
+    if (hit.rows > p.rowCeiling) {
+      over.push({ table: p.table, subset: p.subset, rows: hit.rows, rowCeiling: p.rowCeiling, why: p.why });
+    }
+  }
+
+  return { over: over.sort((a, b) => b.rows - a.rows), unknown: unknown.sort() };
+}
 
 /** `bak_*` pre-migration snapshots are frozen undo trails, never live growth —
  *  skipped STRUCTURALLY rather than listed, mirroring the same carve-out in
@@ -296,6 +423,72 @@ export function formatUndeclaredToast(
   };
 }
 
+/** Build ONE aggregated toast for the exempt-subset leg. Pure — unit-testable.
+ *  UNKNOWN subsets are named explicitly: a probe that could not be measured is
+ *  a hole in the guard, and a silent hole is what let 776k rows accumulate. */
+export function formatExemptSubsetToast(
+  over: readonly ExemptSubsetGrowth[],
+  unknown: readonly string[] = [],
+): { level: string; message: string; description: string } {
+  const lines = over
+    .map(
+      (o) =>
+        `• harness_shared.${o.table} — ${o.subset}: ${o.rows.toLocaleString()} rows ` +
+        `> ${o.rowCeiling.toLocaleString()} ceiling\n    ${o.why}`,
+    )
+    .join('\n');
+  const unmeasured =
+    unknown.length > 0
+      ? `\n\n⚠ ${unknown.length} declared subset(s) could NOT be measured this pass — treat as UNKNOWN, ` +
+        `not as healthy: ${unknown.join(', ')}.`
+      : '';
+  return {
+    level: 'warning',
+    message:
+      over.length === 0
+        ? `Exempt-table subset check incomplete — ${unknown.length} subset(s) unmeasured`
+        : `${over.length} ephemeral subset(s) growing unbounded inside a retention-EXEMPT table`,
+    description:
+      `These row populations live inside a table whose retention decision is "${NOT_AGE_PRUNABLE}" — so the ` +
+      `category-ceiling leg cannot see them (the table is not a registered category) and the undeclared leg ` +
+      `cannot either (the table carries an exemption). The exemption is correct for the table's canonical ` +
+      `rows; it does NOT extend to these:\n${lines}\n\n` +
+      `Fix by giving the subset a reaper and recording it, or by keeping the ephemeral rows out of the ` +
+      `canonical table entirely. Declared in EXEMPT_SUBSET_PROBES (storage/storage-growth-alarm.ts).${unmeasured}`,
+  };
+}
+
+/** Default exempt-subset counter. One bounded COUNT per declared probe; a probe
+ *  that throws yields `rows: null` (UNKNOWN) rather than 0, so a failed read can
+ *  never be mistaken for an empty subset. */
+async function defaultCountExemptSubsets(
+  probes: readonly ExemptSubsetProbe[] = EXEMPT_SUBSET_PROBES,
+): Promise<ExemptSubsetCount[]> {
+  const sqlClient = getOrgPg().sql as unknown as {
+    unsafe: (q: string) => Promise<Array<{ n: string | number }>>;
+  };
+  const out: ExemptSubsetCount[] = [];
+  for (const p of probes) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(p.table)) {
+      out.push({ table: p.table, subset: p.subset, rows: null });
+      continue;
+    }
+    try {
+      const rows = await sqlClient.unsafe(
+        `SELECT count(*)::bigint AS n FROM harness_shared.${p.table} WHERE ${p.predicateSql}`,
+      );
+      const n = Number(rows?.[0]?.n);
+      out.push({ table: p.table, subset: p.subset, rows: Number.isFinite(n) ? n : null });
+    } catch (err) {
+      console.warn(
+        `[storage-growth-alarm] subset probe ${p.table}/${p.subset} failed (reported UNKNOWN): ${(err as Error)?.message ?? String(err)}`,
+      );
+      out.push({ table: p.table, subset: p.subset, rows: null });
+    }
+  }
+  return out;
+}
+
 /** Default undeclared-table scan: the catalog, NOT the category list. */
 async function defaultListTableSizes(): Promise<TableSizeRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -320,7 +513,13 @@ async function defaultListTableSizes(): Promise<TableSizeRow[]> {
  *  throws — observability is best-effort, mirroring the other periodic monitors. */
 export async function runStorageGrowthAlarmOnce(
   deps: GrowthAlarmDeps = {},
-): Promise<{ checked: number; breaches: StorageBreach[]; undeclared: UndeclaredGrowth[] }> {
+): Promise<{
+  checked: number;
+  breaches: StorageBreach[];
+  undeclared: UndeclaredGrowth[];
+  exemptSubsets: ExemptSubsetGrowth[];
+  exemptUnknown: string[];
+}> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
   const listTableSizes = deps.listTableSizes ?? defaultListTableSizes;
@@ -372,5 +571,24 @@ export async function runStorageGrowthAlarmOnce(
     );
   }
 
-  return { checked: rows.length, breaches, undeclared };
+  // ── The exempt-subset sweep (the leg NEITHER of the two above can cover) ──
+  // Also independent: the two legs above are blind to this class by
+  // construction, so a failure in either must not suppress it.
+  let exemptSubsets: ExemptSubsetGrowth[] = [];
+  let exemptUnknown: string[] = [];
+  try {
+    const countExemptSubsets = deps.countExemptSubsets ?? (() => defaultCountExemptSubsets());
+    const result = detectExemptSubsetGrowth(await countExemptSubsets());
+    exemptSubsets = result.over;
+    exemptUnknown = result.unknown;
+    if (exemptSubsets.length > 0 || exemptUnknown.length > 0) {
+      await emitToast(formatExemptSubsetToast(exemptSubsets, exemptUnknown));
+    }
+  } catch (err) {
+    console.warn(
+      `[storage-growth-alarm] exempt-subset sweep skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`,
+    );
+  }
+
+  return { checked: rows.length, breaches, undeclared, exemptSubsets, exemptUnknown };
 }
