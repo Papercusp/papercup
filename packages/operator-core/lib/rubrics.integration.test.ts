@@ -480,7 +480,8 @@ Preserve this plan body.
     expect(after.content).toContain('Preserve P-003 evidence.');
     expect(after.content).toContain('### D-001 — Keep the acceptance context');
     expect(after.created).toBe(before.created);
-    expect(after.content).toMatch(/status:\s*proposed/);
+    // Plan frontmatter uses `draft` for the rubric status `proposed`.
+    expect(after.content).toMatch(/status:\s*draft/);
   });
 
   it('serializes concurrent amendments from the locked current snapshot (EI-21395928602431222)', async () => {
@@ -566,7 +567,9 @@ Preserve this plan body.
       subjectPlan,
       characteristic: 'acceptance-roundtrip',
       title: 'Acceptance round-trip',
-      criteria: [{ key: 'outcome', title: 'Outcome', model: '', method: '', driftMarkers: '' }],
+      // Acceptance criteria may omit model/method, but the authoring contract
+      // requires a concrete drift marker so the outcome remains falsifiable.
+      criteria: [{ key: 'outcome', title: 'Outcome', model: '', method: '', driftMarkers: 'the outcome regresses' }],
       by: 'su-test',
     });
     expect(first.status).toBe('active');
@@ -574,7 +577,11 @@ Preserve this plan body.
     const [stored] = await db.adminSql<{ template_data: { criteria: Record<string, unknown>[] } }[]>`
       SELECT template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'acceptance-empty-prose' AND template = 'rubric'`;
-    expect(stored.template_data.criteria[0]).toEqual({ key: 'outcome', title: 'Outcome' });
+    expect(stored.template_data.criteria[0]).toEqual({
+      key: 'outcome',
+      title: 'Outcome',
+      driftMarkers: 'the outcome regresses',
+    });
 
     // getRubric maps the optional fields back to '' for the legacy Rubric shape. A
     // read → re-propose must accept that projection instead of rejecting the revision.
@@ -607,7 +614,7 @@ Preserve this plan body.
       subjectPlan,
       characteristic: 'acceptance-uniqueness',
       title: 'Acceptance uniqueness first',
-      criteria: [{ key: 'outcome', title: 'Outcome' }],
+      criteria: [{ key: 'outcome', title: 'Outcome', driftMarkers: 'the outcome regresses' }],
       by: 'su-first',
     });
 
@@ -618,7 +625,7 @@ Preserve this plan body.
         subjectPlan,
         characteristic: 'acceptance-uniqueness',
         title: 'Acceptance uniqueness second',
-        criteria: [{ key: 'outcome', title: 'Outcome' }],
+        criteria: [{ key: 'outcome', title: 'Outcome', driftMarkers: 'the outcome regresses' }],
         by: 'su-second',
       }),
     ).rejects.toThrow(/already has an active acceptance rubric.*acceptance-unique-first/i);
@@ -651,8 +658,8 @@ Preserve this plan body.
       characteristic: 'acceptance-amend',
       title: 'Acceptance amend',
       criteria: [
-        { key: 'outcome-a', title: 'Outcome A' },
-        { key: 'outcome-b', title: 'Outcome B' },
+        { key: 'outcome-a', title: 'Outcome A', driftMarkers: 'outcome A regresses' },
+        { key: 'outcome-b', title: 'Outcome B', driftMarkers: 'outcome B regresses' },
       ],
       by: 'su-test',
     });
@@ -685,8 +692,8 @@ Preserve this plan body.
        WHERE plan_slug = ${rubricId} AND template = 'rubric'`;
     expect(stored.template_data.methodRef).toBe('/internal/docs/testing/agent-e2e');
     expect(stored.template_data.criteria).toEqual([
-      { key: 'outcome-a', title: 'Outcome A' },
-      { key: 'outcome-b', title: 'Outcome B' },
+      { key: 'outcome-a', title: 'Outcome A', driftMarkers: 'outcome A regresses' },
+      { key: 'outcome-b', title: 'Outcome B', driftMarkers: 'outcome B regresses' },
     ]);
   });
 
