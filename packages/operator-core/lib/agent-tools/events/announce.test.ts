@@ -10,8 +10,7 @@
  *     already_fired (no await registered); an unfired one annotates the response.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
@@ -350,31 +349,17 @@ describe('events:await — near-miss advisory (P-005)', () => {
 // This asserts the factory covers the import list STATICALLY, so the next addition
 // fails right here, naming the missing export, instead of as an opaque mock error
 // in whichever unrelated test first walks that code path.
+//
+// The mechanism is shared (testing/mock-import-coverage.ts) because this suite is not
+// the only one making the promise: await.test.ts and compose-toolsurface.test.ts drive
+// the same handler through their own partial factories.
 describe('events/await/store mock coverage', () => {
-  const storeImportsOf = (relSourcePath: string): string[] => {
-    const src = readFileSync(fileURLToPath(new URL(relSourcePath, import.meta.url)), 'utf8');
-    const names: string[] = [];
-    // `[^}]*` spans newlines, so this matches both the multi-line import block in
-    // await.ts and the single-line one in emit.ts.
-    for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'[^']*events\/await\/store'/g)) {
-      for (const raw of (m[1] ?? '').split(',')) {
-        const spec = raw.trim();
-        if (!spec || spec.startsWith('type ')) continue; // type-only imports are erased
-        const name = (spec.split(/\s+as\s+/)[0] ?? '').trim();
-        if (name) names.push(name);
-      }
-    }
-    return names;
-  };
-
   it('mocks every store export the handlers under test import', () => {
-    const required = [...new Set([...storeImportsOf('./await.ts'), ...storeImportsOf('./emit.ts')])];
-    // Fail loudly if the regex ever stops matching: a guard that silently finds
-    // nothing to check would pass forever and is worse than no guard at all.
-    expect(required.length).toBeGreaterThan(0);
-    expect(required).toContain('probePatternMatchScope');
-
-    const missing = required.filter((name) => !(name in storeMock));
-    expect(missing).toEqual([]);
+    assertMockCoversImports(storeMock, {
+      importerUrl: import.meta.url,
+      sources: ['./await.ts', './emit.ts'],
+      moduleSpecifier: 'events/await/store',
+      expectNames: ['probePatternMatchScope'],
+    });
   });
 });

@@ -25,6 +25,7 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 import { readWorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
+import { scoutPotGate } from '../learning/pot-gate/gates';
 import {
   runScoutCycleTick,
   parseScoutCycleConfig,
@@ -68,6 +69,10 @@ export function makeScoutCycleAction(
   // P-010: reuse P-005's queue-health writer to bound producer fan-out. Unwired
   // keeps the PG-free factory contract; boot wires the production reader.
   admissionPressureGate?: typeof readWorkItemAdmissionProducerPressure,
+  // learning-pot-scope-gate D-001: the per-pot learning master switch. Same
+  // PG-free contract — unwired in unit tests, wired at boot (and, separately,
+  // in the blueprint op that also runs Scout; both must carry it, see gates.ts).
+  potGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ enabled: boolean }>,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
@@ -152,6 +157,7 @@ export function makeScoutCycleAction(
         ...(recordGovernor ? { recordGovernor } : {}),
         ...(workspaceCeilingGate ? { workspaceCeilingGate } : {}),
         ...(admissionPressureGate ? { admissionPressureGate } : {}),
+        ...(potGate ? { potGate } : {}),
       },
     );
 
@@ -179,12 +185,15 @@ export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
     // Wire BOTH governor seams at boot: the post-tick spend mirror
     // (recordScoutTickToGovernor) and the P-051 workspace-wide ceiling preflight
     // (scoutWorkspaceCeilingGate). Both flag-gated + best-effort/fail-open.
+    // Plus the per-pot master switch (learning-pot-scope-gate D-001) — Scout's
+    // FIRST real preflight; the blueprint op wires the same helper.
     makeScoutCycleAction(
       runCycle,
       undefined,
       recordScoutTickToGovernor,
       scoutWorkspaceCeilingGate,
       readWorkItemAdmissionProducerPressure,
+      scoutPotGate,
     ),
   );
 }

@@ -115,6 +115,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         { checkHiveSingleRunner },
         { scoutWorkspaceCeilingGate },
         { readWorkItemAdmissionProducerPressure },
+        { scoutPotGate },
       ] = await Promise.all([
         import('../../scout/register-scout-action.js'),
         import('../../learning-governor/registrants.js'),
@@ -131,6 +132,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         // "byte-for-byte the routine path" contract this file's header claims.
         import('../../learning-governor/scout-ceiling.js'),
         import('../../work-items-admission-promoter.js'),
+        import('../../learning/pot-gate/gates.js'),
       ]);
       deps = {
         runCycle: productionScoutRunner,
@@ -143,6 +145,11 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         // `blender:<hive>` registrant's ledgered spend and refuses a new cycle
         // once the aggregate crosses the (owner-tunable) ceiling.
         workspaceCeilingGate: scoutWorkspaceCeilingGate,
+        // learning-pot-scope-gate D-001: the per-pot learning master switch.
+        // Wired in BOTH scout entrypoints deliberately — the ceiling gate above
+        // was once wired only in the routine path and silently refused nothing
+        // here for months, which is the failure this line is copying the fix of.
+        potGate: scoutPotGate,
         // P-010: preserve routine/blueprint parity for queue-health throttling.
         admissionPressureGate: readWorkItemAdmissionProducerPressure,
       };
