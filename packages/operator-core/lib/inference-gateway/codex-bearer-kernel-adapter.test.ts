@@ -13,8 +13,11 @@
 import { describe, expect, it } from 'vitest';
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
+import { rewriteOpenAiCacheBody, shardedCacheKey } from './cache-policy';
 import {
   createCodexBearerKernelAdapter,
+  parseCodexRequestShape,
+  type CodexRequestShape,
   type CodexBearerAdapterOptions,
   type CodexBearerChunk,
   type CodexBearerFetchResponse,
@@ -131,6 +134,10 @@ interface HarnessOverrides {
   pin?: GatewayKernelAccountPin | null;
   requestHeaders?: Record<string, string | string[] | undefined>;
   rateResetAt?: CodexBearerAdapterOptions['rateResetAt'];
+  /** Downstream request body. Defaults to a non-streaming request. */
+  requestBody?: string;
+  shapeRequestBody?: CodexBearerAdapterOptions['shapeRequestBody'];
+  onRequestShape?: CodexBearerAdapterOptions['onRequestShape'];
   now?: () => number;
 }
 
@@ -155,6 +162,8 @@ function harness(
     failoverBackoffMs: 5_000,
     fetch: fetchImpl,
     rateResetAt: overrides.rateResetAt,
+    shapeRequestBody: overrides.shapeRequestBody,
+    onRequestShape: overrides.onRequestShape,
     now: overrides.now,
   });
 
@@ -170,7 +179,7 @@ function harness(
   };
 
   async function* body() {
-    yield Buffer.from('{"model":"gpt-5.6"}');
+    yield Buffer.from(overrides.requestBody ?? '{"model":"gpt-5.6"}');
   }
 
   const options: ExecuteGatewayRequestKernelOptions<
@@ -422,17 +431,166 @@ describe('codex bearer kernel adapter', () => {
     expect(started[0]?.metadata.pinYieldedFrom).toBe('codex-a');
   });
 
-  it('marks an event-stream response as streaming so the kernel arms its body-idle guard', async () => {
+  /**
+   * D-007. `proxyOpenAi` parses `stream:true` out of the REQUEST body
+   * (gateway.ts, the `isStream` block before the attempt loop) and uses that
+   * single fact for both its TTFB choice and `stageSpan.setStreaming`. This
+   * pins the source, not just the value.
+   */
+  it('marks a stream:true REQUEST as streaming, as proxyOpenAi does', async () => {
     const a = account('codex-a');
     const pool = makePool([a], []);
-    const { options, started, written } = harness(pool, async () =>
-      upstream(200, { 'content-type': 'text/event-stream' }, sseBody('data: 1\n\n', 'data: 2\n\n')),
+    const { options, started, written } = harness(
+      pool,
+      async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody('data: 1\n\n', 'data: 2\n\n')),
+      { requestBody: '{"model":"gpt-5.6","stream":true}' },
     );
 
     await executeGatewayRequestKernel(options);
 
     expect(started[0]?.streaming).toBe(true);
     expect(written).toEqual(['data: 1\n\n', 'data: 2\n\n']);
+  });
+
+  /**
+   * The half of D-007 that the P-002 suite could not see. These two cases are
+   * exactly where request-derived and response-derived streaming DISAGREE, so
+   * together they falsify the D-006 implementation rather than merely passing
+   * alongside it.
+   */
+  it('D-007: a streaming request whose upstream answers with a JSON error is still streaming', async () => {
+    const a = account('codex-a');
+    const pool = makePool([a], []);
+    const { options, started } = harness(
+      pool,
+      async () => upstream(429, { 'content-type': 'application/json' }, sseBody('{"error":"rate"}')),
+      { requestBody: '{"model":"gpt-5.6","stream":true}' },
+    );
+
+    await executeGatewayRequestKernel(options);
+
+    // Response content-type says application/json; the REQUEST said stream.
+    expect(started[0]?.streaming).toBe(true);
+  });
+
+  it('D-007: a non-streaming request is not streaming even when the upstream sends event-stream', async () => {
+    const a = account('codex-a');
+    const pool = makePool([a], []);
+    const { options, started } = harness(pool, async () =>
+      upstream(200, { 'content-type': 'text/event-stream' }, sseBody('data: 1\n\n')),
+    );
+
+    await executeGatewayRequestKernel(options);
+
+    expect(started[0]?.streaming).toBe(false);
+  });
+
+  it('reports the request-derived model and streaming shape exactly once', async () => {
+    const a = account('codex-a');
+    const b = account('codex-b');
+    const pool = makePool([a, b], [b]);
+    const shapes: CodexRequestShape[] = [];
+    let call = 0;
+    const { options } = harness(
+      pool,
+      async () =>
+        call++ === 0
+          ? upstream(429, {}, sseBody('{"error":"rate"}'))
+          : upstream(200, {}, sseBody('{"ok":true}')),
+      { requestBody: '{"model":"gpt-5.6","stream":true}', onRequestShape: (shape) => shapes.push(shape) },
+    );
+
+    await executeGatewayRequestKernel(options);
+
+    // Two attempts, ONE shape report — the live handler derives these before
+    // its loop, so a failover must not re-emit them.
+    expect(shapes).toEqual([{ model: 'gpt-5.6', streaming: true }]);
+  });
+
+  it('treats a non-JSON body as non-streaming with no model, like the live catch', async () => {
+    const a = account('codex-a');
+    const pool = makePool([a], []);
+    const shapes: CodexRequestShape[] = [];
+    const { options, started } = harness(pool, async () => upstream(200, {}, sseBody('ok')), {
+      requestBody: 'not json at all',
+      onRequestShape: (shape) => shapes.push(shape),
+    });
+
+    await executeGatewayRequestKernel(options);
+
+    expect(shapes).toEqual([{ model: null, streaming: false }]);
+    expect(started[0]?.streaming).toBe(false);
+  });
+
+  it('shapes the request body ONCE and re-sends the shaped bytes on every attempt', async () => {
+    const a = account('codex-a');
+    const b = account('codex-b');
+    const pool = makePool([a, b], [b]);
+    const shapeCalls: Array<{ accountId: string; ownerId: string | null }> = [];
+    let call = 0;
+    const { options, prepared } = harness(
+      pool,
+      async () =>
+        call++ === 0
+          ? upstream(429, {}, sseBody('{"error":"rate"}'))
+          : upstream(200, {}, sseBody('{"ok":true}')),
+      {
+        shapeRequestBody: (body, context) => {
+          shapeCalls.push(context);
+          const parsed = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+          parsed.prompt_cache_key = `psu-${context.ownerId ?? context.accountId}`;
+          return Buffer.from(JSON.stringify(parsed), 'utf8');
+        },
+      },
+    );
+
+    await executeGatewayRequestKernel(options);
+
+    // Shaped once, against the INITIAL account — matching the live handler,
+    // whose shardSeed is `owner || active.accountId` before the loop.
+    expect(shapeCalls).toEqual([{ accountId: 'codex-a', ownerId: 'su-codex-adapter' }]);
+    expect(prepared).toHaveLength(2);
+    for (const attempt of prepared) {
+      expect(JSON.parse(Buffer.from(attempt.body!).toString('utf8'))).toMatchObject({
+        model: 'gpt-5.6',
+        prompt_cache_key: 'psu-su-codex-adapter',
+      });
+    }
+  });
+
+  it('forwards the body unchanged when no shaper is supplied', async () => {
+    const a = account('codex-a');
+    const pool = makePool([a], []);
+    const { options, prepared } = harness(pool, async () => upstream(200, {}, sseBody('{"ok":true}')));
+
+    await executeGatewayRequestKernel(options);
+
+    expect(Buffer.from(prepared[0]!.body!).toString('utf8')).toBe('{"model":"gpt-5.6"}');
+  });
+
+  /**
+   * ORDERING GUARD for `shapeRequestBody`'s documented boundary.
+   *
+   * The kernel resolves its D-007 TTFB deadline from the PRE-shape buffer, so
+   * shaping is only safe while it cannot change the fields that deadline is
+   * derived from. That is a property of the REAL cache-policy rewrite, not an
+   * assumption, so assert it against the real function: if a future cache
+   * policy starts touching `stream`, this fails and sends the reader to the
+   * ordering note rather than letting a silent TTFB mismatch ship.
+   */
+  it('GUARD: the real cache-policy rewrite never changes the request-derived shape', () => {
+    for (const raw of [
+      '{"model":"gpt-5.6","stream":true}',
+      '{"model":"gpt-4.1","stream":false}',
+      '{"model":"gpt-5.6"}',
+      '{"stream":true}',
+    ]) {
+      const before = parseCodexRequestShape(Buffer.from(raw));
+      const after = parseCodexRequestShape(
+        rewriteOpenAiCacheBody(Buffer.from(raw), { cacheKey: shardedCacheKey('psu', 'seed', 8) }).body,
+      );
+      expect(after).toEqual(before);
+    }
   });
 
   /**
