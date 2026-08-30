@@ -493,7 +493,15 @@ export class PgCoordLog implements CoordEventLog {
       await this.opts.ensureSchema();
       const sql = this.opts.getSql();
       const workspaceId = this.resolveWs();
-      const lockKey = `${workspaceId}\u0000${surface}\u0000${line.msg_id}`;
+      // PostgreSQL text parameters cannot contain NUL bytes. The old
+      // delimiter-separated key used NUL as an in-process composite-key
+      // separator, then bound that string as text, so every idempotent
+      // append failed before it could read or insert the line
+      // (`invalid byte sequence for encoding "UTF8": 0x00`). JSON's
+      // deterministic escaping keeps the tuple unambiguous while ensuring
+      // even caller-provided NULs become the six printable characters
+      // `\u0000` before the value crosses the driver boundary.
+      const lockKey = JSON.stringify([workspaceId, surface, line.msg_id]);
       return sql.begin(async (tx) => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
         const existing = await tx<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`

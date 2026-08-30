@@ -17,6 +17,31 @@ function makeSql(sequence: Array<unknown | Error>): { sql: Sql; readonly calls: 
   return { sql: tag as unknown as Sql, get calls() { return calls; } };
 }
 
+function makeTransactionalSql(): {
+  sql: Sql;
+  readonly queryTexts: string[];
+  readonly queryParams: unknown[][];
+} {
+  const queryTexts: string[] = [];
+  const queryParams: unknown[][] = [];
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    let text = strings[0] ?? '';
+    for (let i = 1; i < strings.length; i += 1) {
+      text += '?';
+      text += strings[i] ?? '';
+    }
+    queryTexts.push(text);
+    queryParams.push(values);
+    if (text.includes('RETURNING id')) return Promise.resolve([{ id: '7' }]);
+    return Promise.resolve([]);
+  };
+  const sql = tag as unknown as Sql;
+  (sql as unknown as {
+    begin: (fn: (tx: Sql) => Promise<unknown>) => Promise<unknown>;
+  }).begin = (fn) => fn(sql);
+  return { sql, queryTexts, queryParams };
+}
+
 const envelope = {
   ts: '2026-08-12T19:55:00.000Z',
   msg_id: 'retry-message',
@@ -54,5 +79,30 @@ describe('PG contention retry', () => {
     await expect(log.appendLine('messages', 'sender', envelope)).resolves.toBe(41);
     expect(fake.calls).toBe(2);
     expect(sleep).toHaveBeenCalledWith(0);
+  });
+
+  it('uses a PostgreSQL-safe deterministic advisory-lock key for idempotent appends', async () => {
+    const fake = makeTransactionalSql();
+    const log = new PgCoordLog({
+      getSql: () => fake.sql,
+      ensureSchema: async () => {},
+      workspaceId: `ws${String.fromCharCode(0)}test`,
+    });
+    const line = {
+      ...envelope,
+      msg_id: `message${String.fromCharCode(0)}id`,
+    };
+
+    await expect(log.appendLineIfAbsent('messages', 'sender', line)).resolves.toMatchObject({
+      created: true,
+      sequence: 7,
+    });
+
+    expect(fake.queryTexts[0]).toContain('hashtextextended(?, 0)');
+    const lockKey = fake.queryParams[0]?.[0];
+    expect(lockKey).toBe(JSON.stringify([`ws${String.fromCharCode(0)}test`, 'messages', line.msg_id]));
+    expect(typeof lockKey).toBe('string');
+    expect((lockKey as string).includes(String.fromCharCode(0))).toBe(false);
+    expect(lockKey).toContain('\\u0000');
   });
 });
