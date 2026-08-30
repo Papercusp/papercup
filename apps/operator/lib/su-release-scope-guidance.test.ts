@@ -1,9 +1,7 @@
 /**
- * EI-20223212233187962 — the release checkpoint is a workspace-global gate.
- *
  * The generic SU scope guidance says to add `harness` to most project-facing
  * calls. Keep the explicit exception in every Papercusp SU source that can
- * reach an operator session, so the live schema is not obscured by that rule.
+ * reach an operator session, so live schemas are not obscured by that rule.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -11,13 +9,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROMPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts');
-const SOURCES = [
+const RELEASE_SOURCES = [
   'papercusp-su-engineer.tools.md',
   'pot-instances/papercup-pot.su.md',
 ];
+const RUBRIC_SOURCES = [
+  ...RELEASE_SOURCES,
+  'papercusp-su-power.tools.md',
+];
 
-describe('SU release checkpoint scope guidance (EI-20223212233187962)', () => {
-  for (const source of SOURCES) {
+describe('SU workspace-global scope guidance', () => {
+  for (const source of RELEASE_SOURCES) {
     it(`${source} identifies release:checkpoint-run as workspace-global`, () => {
       const prompt = readFileSync(join(PROMPTS, source), 'utf8');
 
@@ -40,6 +42,20 @@ describe('SU release checkpoint scope guidance (EI-20223212233187962)', () => {
         /`release:trace` is also workspace-global[\s\S]*?live schema\s+accepts only `path`, `sha`, `work_item`, and `after_generation`/,
       );
       expect(prompt).toContain('`harness` in its JSON arguments');
+    });
+  }
+
+  for (const source of RUBRIC_SOURCES) {
+    it(`${source} identifies rubrics:list as workspace-global`, () => {
+      const prompt = readFileSync(join(PROMPTS, source), 'utf8');
+
+      expect(prompt).toMatch(
+        /`rubrics:list` is also workspace-global, not\s+harness-scoped\./,
+      );
+      expect(prompt).toMatch(
+        /Its live schema\s+accepts only `status`, `characteristic`, `kind`, and `limit`/,
+      );
+      expect(prompt).toMatch(/do \*\*not\*\* pass\s+`harness`\s+to it/);
     });
   }
 });
