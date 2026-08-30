@@ -264,6 +264,48 @@ describe("bundled Node publication guard", () => {
     ).rejects.toThrow(/minimumNodeMajor 25 exceeds the bundled runtime v24\.18\.1/u);
     expect(governedCalls).toBe(2);
   });
+
+  it("does not overflow while probing a large archive index", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bundled-node-large-index-"));
+    scratchDirs.push(root);
+    const treeRoot = join(root, "tree");
+    await mkdir(join(treeRoot, "bin"), { recursive: true });
+    await writeFile(
+      join(treeRoot, "bin", "node"),
+      '#!/bin/sh\nprintf "%s\\n" "v24.18.1"\n',
+      { encoding: "utf8", mode: 0o755 },
+    );
+    // Repeat one long, valid member name enough times to make a full tar index exceed the
+    // former 1 MiB maxBuffer. The probe's narrowed tar pattern must avoid reading that index.
+    const filler = "filler-" + "x".repeat(96);
+    await writeFile(join(treeRoot, filler), "x", "utf8");
+    const fileList = join(root, "files.list");
+    await writeFile(
+      fileList,
+      ["bin/node", ...Array.from({ length: 20_000 }, () => filler)].join("\n") + "\n",
+      "utf8",
+    );
+    const archive = join(root, "server.tgz");
+    await execFile(
+      "tar",
+      [
+        "--create",
+        "--gzip",
+        "--file",
+        archive,
+        "--directory",
+        treeRoot,
+        "--files-from",
+        fileList,
+      ],
+      { encoding: "utf8" },
+    );
+
+    await expect(assertBundledNodeMeetsMinimum(archive, 24, { runGoverned: (operation) => operation() })).resolves.toEqual({
+      version: "v24.18.1",
+      major: 24,
+    });
+  });
 });
 
 describe("secret-scan reading is fail-closed", () => {

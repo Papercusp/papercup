@@ -112,7 +112,10 @@ export const WORKSPACE_HOST_PROVENANCE_BUILD_TYPE =
 const SHA256 = /^[a-f0-9]{64}$/;
 const NODE_VERSION = /^v(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const execFile = promisify(execFileCallback);
-const BUNDLED_NODE_PROBE_TIMEOUT_MS = 30_000;
+// A gzip tar must be decompressed to locate a member, even when the listing is narrowed to
+// `bin/node`. The audited P-003 bundle takes ~37s on the release host; keep the probe bounded but
+// leave measured headroom for slower builders instead of rejecting a valid multi-gigabyte bundle.
+const BUNDLED_NODE_PROBE_TIMEOUT_MS = 120_000;
 
 export interface PublicationManifestCliArgs {
   publicationDir: string;
@@ -923,9 +926,23 @@ export async function inspectBundledNodeRuntime(
   try {
     return await runProbe(async () => {
       try {
+        // Do not capture the entire archive index here. A real release bundle can contain
+        // tens of thousands of entries, and the old full listing overflowed child_process's
+        // 1 MiB buffer before we ever reached the one member this probe needs (P-003).
+        // GNU tar's unanchored exact path pattern still returns root and nested `bin/node`
+        // members, which preserves the duplicate/traversal checks below while keeping stdout
+        // bounded by the number of candidate runtime members.
         const listing = await execFile(
           "tar",
-          ["--list", "--gzip", "--file", bundlePath],
+          [
+            "--list",
+            "--gzip",
+            "--file",
+            bundlePath,
+            "--wildcards",
+            "--no-anchored",
+            "bin/node",
+          ],
           {
             encoding: "utf8",
             maxBuffer: 1 << 20,

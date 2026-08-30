@@ -8376,7 +8376,7 @@
           "POST"
         ]
       },
-      "description": "Read/set/reset runtime PG timeouts. The required op discriminator selects the operation: use { op: 'get' } to read, { op: 'set', ... } to write, or { op: 'reset' } to clear. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections that bounds the whole interactive admin-pool write class at the source; 0 = OFF (today's behavior). Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
+      "description": "Read/set/reset runtime PG timeouts. The required op discriminator selects the operation: use { op: 'get' } to read, { op: 'set', ... } to write, or { op: 'reset' } to clear. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections applied at connect ONLY when not behind PgBouncer (op:get adminPool); 0 = OFF (today's behavior). Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
       "capabilities": [
         "operator:write"
       ],

@@ -1241,18 +1241,36 @@ describe('background job deadlines (WI-6677)', () => {
     expect(job.status).toBe('timed_out');
     // The whole point: a SIGKILLed job cannot leave this behind.
     //
-    // WI-1046842 — carry the job's EXIT CODE into the failure message, because it
-    // is the one field that discriminates the ways this can go wrong, and without
-    // it every one of them prints the same `expected false to be true`:
-    //   143 → the TERM trap ran (or bash died of TERM): a genuine cleanup fault
-    //     0 → bash exited NORMALLY, so the trap never fired — SIGTERM reached the
-    //         `sleep` but not bash itself, and bash simply ran off the end of the
-    //         script (this is NOT a cleanup regression)
-    //   137 → SIGKILLed: the escalation beat the trap
-    //  null → never observed a normal exit at all
+    // WI-1046842 / WI-1064487 — carry the job's EXIT CODE into the failure message. But
+    // READ THE REGIME FIRST, because the exit code only became informative recently.
+    //
+    // The legend that stood here until WI-1064487 was WRONG, and wrong in the direction
+    // that costs the most: it told you `0` proved the trap never fired. Measured against
+    // PASSING runs — marker present on disk, so the trap demonstrably DID run — the
+    // observed exit codes were 143, 1 AND 0. All three. So `0` never discriminated
+    // anything, and anyone who trusted the legend was reading noise as a diagnosis.
+    //
+    // WHY it was noise (the defect, not a quirk): systemd-scope-env-runner.mjs is the
+    // unit's MAIN process and it collapsed every signal death to `finish(1)`, while dying
+    // instantly on SIGTERM — which closed the payload's stdout/stderr pipes mid-cleanup.
+    // So the code you saw depended on where the payload happened to be when its pipes
+    // broke, not on whether it cleaned up.
+    //
+    // REGIME A — runner patched (exitCodeFor + forwardTerminationSignalsTo present in
+    // systemd-scope-env-runner.mjs, WI-1064487). Signal deaths now report 128+signal, so:
+    //   143 → SIGTERM: the trap had its chance; no marker here IS a genuine cleanup fault
+    //   137 → SIGKILL: the 10s escalation beat the trap
+    //     0 → the payload exited cleanly of its own accord
+    //  null → no exit observed at all
+    // REGIME B — runner UNPATCHED (an older bundle, or a copied-beside-host stale copy).
+    // exitCode carries NO information about cleanup: 143, 1 and 0 all occur on success.
+    // Diagnose from the marker and the unit journal, and do not reason from this number.
+    //
+    // Either regime: if scopeUnit is set while exitCode is null, suspect the signalled
+    // process is a WRAPPER rather than the bash that holds the trap.
     expect(
       existsSync(marker),
-      `the job's TERM trap left no marker; job.exitCode=${job.exitCode} status=${job.status} scopeUnit=${job.scopeUnit ?? 'none'} sawWorking=${trapInstalled} (WI-1046842: 143=trap ran, 0=bash exited normally so the trap never fired, 137=SIGKILLed, null=killed BY SIGNAL with no trap in effect — and if scopeUnit is set while exitCode is null, suspect that the signalled process is a WRAPPER rather than the bash that holds the trap)`,
+      `the job's TERM trap left no marker; job.exitCode=${job.exitCode} status=${job.status} scopeUnit=${job.scopeUnit ?? 'none'} sawWorking=${trapInstalled} (WI-1064487: if the runner carries exitCodeFor(), 143=SIGTERM so the trap had its chance and this is a real cleanup fault, 137=SIGKILL beat the trap, 0=clean exit. If the runner is UNPATCHED, this exit code proves NOTHING about cleanup — 143, 1 and 0 all occur on PASSING runs — so diagnose from the marker and the unit journal instead. scopeUnit set while exitCode is null ⇒ suspect a WRAPPER was signalled, not the bash holding the trap.)`,
     ).toBe(true);
     expect(readFileSync(marker, 'utf8')).toContain('cleaned');
   }, 30_000);
