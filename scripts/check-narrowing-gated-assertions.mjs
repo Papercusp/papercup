@@ -21,47 +21,61 @@
  * (`expect(r.ok).toBe(true)`), so a false discriminant fails loudly instead of
  * silently skipping the body.
  *
- *   node scripts/check-narrowing-gated-assertions.mjs             # gate
- *   node scripts/check-narrowing-gated-assertions.mjs --report    # + arming breakdown
- *   node scripts/check-narrowing-gated-assertions.mjs --census    # every site, classified
- *   node scripts/check-narrowing-gated-assertions.mjs --file P    # scan only P (fixtures)
+ *   node scripts/check-narrowing-gated-assertions.mjs                    # gate
+ *   node scripts/check-narrowing-gated-assertions.mjs --report           # + arming breakdown
+ *   node scripts/check-narrowing-gated-assertions.mjs --census           # every site, classified
+ *   node scripts/check-narrowing-gated-assertions.mjs --file P           # scan only P (fixtures)
+ *   node scripts/check-narrowing-gated-assertions.mjs --all-discriminants # widen; see SCOPE
  *
- * ── THIS IS A RATCHET, NOT A REMEDIATION ─────────────────────────────────────
- * The filing suspected this class was "widespread". Measured over 7,686 committed test
- * files: 172 sites carry the shape and **ZERO are vacuous** — 159 assert the
- * discriminant directly, 7 arm it via an object matcher, 6 have an else branch that
- * also asserts. Asserting-the-discriminant is already the de-facto convention here, at
- * 172/172. Nothing needed fixing; this guard exists so the clean state STAYS clean,
- * which is exactly when a ratchet is cheapest to add (zero remediation backlog, so no
- * baseline and no grandfathering).
+ * ── WHAT WAS ACTUALLY MEASURED (and the claim it corrected) ──────────────────
+ * The filing suspected this class was "widespread". A first pass with a LINE/BRACE
+ * scanner reported 172 sites, 0 vacuous, and concluded the class was clean. That
+ * conclusion was WRONG, and this file is the instrument that falsified it.
+ *
+ * Rescanned with the AST below: 515 result-flag gates (`.ok` / `.success`) across
+ * 8,101 committed test files, of which **2 are genuinely vacuous** —
+ * `libs/generic/artifact-registry/src/registry.test.ts:126` and
+ * `packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.test.ts:897`,
+ * both fixed in the same change that added this guard. So the class is ~99.6% already
+ * compliant — asserting-the-discriminant IS the de-facto convention here — but it was
+ * never clean, and a guard was the only thing that could tell the difference.
+ *
+ * That near-miss is the argument for the ratchet: at 2 remediations the cost of adding
+ * it is nil, and the two it caught were each a test that goes green *precisely when
+ * the code it names breaks*.
  *
  * ── WHY AN AST, AND NOT A LINE SCANNER (READ THIS BEFORE "SIMPLIFYING") ───────
- * The measurement pass was first done with a line/regex scanner. It reported 11
- * vacuous sites. Three were spot-checked and ALL THREE were false positives; a
- * refined scanner reported 3, and those were false positives too. TWO distinct bugs,
- * both of which this file's AST approach makes UNREPRESENTABLE rather than
- * special-cased:
+ * THREE distinct bugs killed the line-scanner passes. All three are UNREPRESENTABLE
+ * here rather than special-cased — that is the whole reason this file parses:
  *
  *   1. THE OBJECT-MATCHER FORM. Looking for `expect(r.ok)` misses
  *      `expect(r).toMatchObject({ ok: false })`, which arms the narrow just as well.
- *      (Live instances: spec-test-adequacy-gate.test.ts:445, recipe-authority.test.ts:586.)
- *      Here it is `armingFromMatcher()`, keyed on the matcher's own object literal.
+ *      (Live: spec-test-adequacy-gate.test.ts:445, recipe-authority.test.ts:586.)
+ *      Here it is the OBJECT_MATCHERS branch, keyed on the matcher's own object literal.
+ *      Cost when missed: FALSE POSITIVES — armed sites reported as vacuous.
  *
- *   2. THE `} else {` BRACE-DEPTH BUG — subtle, and it cost a whole second pass.
- *      Walking brace depth to find a block's end NEVER sees depth return to zero on a
- *      `} else {` line: the closing and opening brace cancel. So the walk runs past the
- *      else and every else-branch assertion is invisible, making armed sites look
- *      vacuous. (Live instances: checkpoint.test.ts:2459, delegated-spawn-honor.test.ts:978,
- *      su-context-size.test.ts:98 — all three flagged by the line scanner, all three
- *      armed via else.) An AST cannot have this bug: `elseStatement` is a FIELD on the
- *      node, not something you find by counting characters.
+ *   2. THE `} else {` BRACE-DEPTH BUG. Walking brace depth to find a block's end NEVER
+ *      sees depth return to zero on a `} else {` line: the closing and opening brace
+ *      cancel. The walk runs past the else and every else-branch assertion is invisible.
+ *      (Live: checkpoint.test.ts:2459, delegated-spawn-honor.test.ts:978,
+ *      su-context-size.test.ts:98 — all three flagged, all three armed via else.)
+ *      An AST cannot have this bug: `elseStatement` is a FIELD, not a brace count.
+ *      Cost when missed: FALSE POSITIVES.
+ *
+ *   3. THE BRACELESS `if`. `if (a.ok) expect(...)` — a single-statement if with no
+ *      block at all. A scanner keyed on `{` cannot see it, so it is not merely
+ *      misjudged, it is never even considered. BOTH real defects this guard found are
+ *      this shape, which is why the first pass reported a confident zero.
+ *      Cost when missed: FALSE NEGATIVES — and this is the dangerous direction, because
+ *      an under-reporting detector reads exactly like a clean tree.
  *
  *   The compiler's lexer also owns strings, comments, template literals and regex
  *   literals, so `/\d{2}/` and `'}'` cannot desynchronise the scan the way they can a
  *   hand-rolled character walk.
  *
- *   A guard for this class that does not handle BOTH of the above fires ~11 false
- *   positives on day one and gets disabled — which is worse than not shipping it.
+ *   A guard for this class that does not handle ALL THREE either fires ~11 false
+ *   positives on day one and gets disabled, or reports a reassuring zero while the
+ *   real instances sit untouched. Both failure modes have already happened here.
  *
  * ── WHAT COUNTS AS ARMED (any ONE of these; all judged file-wide) ─────────────
  *   DIRECT   `expect(r.ok)…`, or `assert(r.ok)` / `invariant(r.ok)`  — the discriminant
@@ -76,12 +90,24 @@
  * positive costs far more than a missed site. It flags only the genuinely unarmed
  * case — a discriminant asserted NOWHERE in its own file.
  *
- * ── SCOPE LIMITS (documented, not accidental) ────────────────────────────────
- * Only SIMPLE narrowing conditions are judged: `r.ok`, `!r.ok`, `r.ok === true`,
- * `r.ok !== undefined`, and optional-chained variants. Compound conditions
- * (`if (r.ok && r.value)`) are NOT judged — they carry the same vacuity risk but add
- * false-positive surface, and measured they are rare. Widening this is a deliberate
- * follow-up, not an oversight.
+ * ── SCOPE LIMITS (measured, deliberate, and the reason this gates at all) ─────
+ * Two limits, both chosen from the measurement rather than guessed:
+ *
+ * 1. RESULT-FLAG DISCRIMINANTS ONLY (`.ok`, `.success`, … — see RESULT_FLAGS). This is
+ *    the discriminated-union class the filing is about, and the class that is 513/515
+ *    compliant. Widen it with `--all-discriminants` and the population becomes ~1,000
+ *    gates with ~77 unarmed ones on `kind` / `status` / `platform` / `id` — but those
+ *    are a DIFFERENT thing: mostly optional-field guards (`if (section.projectId)`),
+ *    where skipping when the field is absent is often the intended behaviour. That
+ *    class is real, unmeasured, and needs its own judgement call about which sites are
+ *    defects; folding it in here would make this guard fire 77 times on day one and be
+ *    turned off, taking the 2 genuine catches with it. `--all-discriminants` exists so
+ *    that follow-up can be measured without rewriting anything.
+ *
+ * 2. SIMPLE conditions only: `r.ok`, `!r.ok`, `r.ok === true`, `r.ok !== undefined` and
+ *    optional-chained variants. Compound conditions (`if (r.ok && r.value)`) are NOT
+ *    judged — same vacuity risk, more false-positive surface, and measured they are
+ *    rare. Both limits are follow-ups, not oversights.
  *
  * SUPPRESSION: put `narrowing-gate-ok: <reason>` on the `if` line or in the comment
  * block directly above it. A deliberate exception then carries its justification at
@@ -123,6 +149,16 @@ const ASSERT_FNS = new Set(['assert', 'invariant', 'assertOk', 'expectOk', 'ok']
 
 /** Matchers whose object-literal argument can arm a discriminant (pitfall #1). */
 const OBJECT_MATCHERS = new Set(['toMatchObject', 'toEqual', 'toStrictEqual', 'toContainEqual']);
+
+/**
+ * Boolean RESULT-FLAG discriminants — the discriminated-union class this guard gates on.
+ * Measured over the whole tree, `ok` (441) and `success` (74) are the shape; the rest of
+ * the truthiness-gate population narrows on string discriminants or optional fields,
+ * which is a different question (see SCOPE LIMITS). Keep this list tight: every name
+ * added here must be a flag whose FALSE value means "the operation did not happen",
+ * because that is what makes a skipped assertion a lie rather than a legitimate branch.
+ */
+const RESULT_FLAGS = new Set(['ok', 'success', 'succeeded', 'isOk', 'valid', 'passed']);
 
 /**
  * Dotted path for an identifier / property-access chain, else null. Optional chaining is
@@ -232,7 +268,12 @@ function objectLiteralKeys(node) {
  * Collect every arming signal in a file, then judge each narrowing gate against it.
  * Returns { sites, considered } where each site carries its verdict + arming form.
  */
-function scanSource(file, text) {
+function scanSource(file, text, { allDiscriminants = false } = {}) {
+  const inScope = (path) => {
+    if (allDiscriminants) return true;
+    const dot = path.lastIndexOf('.');
+    return dot > 0 && RESULT_FLAGS.has(path.slice(dot + 1));
+  };
   const ext = (file.split('.').pop() || 'ts').toLowerCase();
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, SCRIPT_KIND[ext] ?? ts.ScriptKind.TS);
 
@@ -279,8 +320,8 @@ function scanSource(file, text) {
         if (isBailStatement(n.thenStatement) && !containsAssertion(n.thenStatement)) bailedPaths.add(path);
         else if (isBailStatement(n.thenStatement)) bailedPaths.add(path);
 
-        // A GATE is a narrowing if whose then-branch asserts.
-        if (containsAssertion(n.thenStatement)) {
+        // A GATE is an in-scope narrowing `if` whose then-branch asserts.
+        if (inScope(path) && containsAssertion(n.thenStatement)) {
           const { line } = sf.getLineAndCharacterOfPosition(n.getStart(sf));
           gates.push({
             path,
@@ -345,6 +386,7 @@ const PREFILTER_RE = /\bif\s*\(\s*!?\s*[A-Za-z_$][\w$]*\s*(?:\?\.|\.)/;
 function main(argv) {
   const report = argv.includes('--report');
   const census = argv.includes('--census');
+  const allDiscriminants = argv.includes('--all-discriminants');
 
   const explicit = [];
   for (let i = 0; i < argv.length; i++) if (argv[i] === '--file' && argv[i + 1]) explicit.push(argv[++i]);
@@ -377,7 +419,7 @@ function main(argv) {
     parsed++;
     let r;
     try {
-      r = scanSource(f, text);
+      r = scanSource(f, text, { allDiscriminants });
     } catch {
       continue; // unparseable — not this guard's business to fail the build over
     }
