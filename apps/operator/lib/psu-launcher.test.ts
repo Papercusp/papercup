@@ -1286,6 +1286,54 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toMatch(/\n\s+py:\s*false/);
   });
 
+  it("rewrites a RETIRED global modelRoles.default (openrouter/stealth/ox-alpha) to the explicit --model this launch selected (EI-21919040934117285)", () => {
+    writeFileSync(
+      join(home, ".omp", "agent", "config.yml"),
+      AGENT_CFG.replace(
+        "default: papercusp-gateway/claude-sonnet-4-6",
+        "default: openrouter/stealth/ox-alpha",
+      ),
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    writeOmpSessionConfigDir("sess1", { model: "ollama/ornith" }, home);
+    const errMsgs = err.mock.calls.map((c) => String(c[0]));
+    err.mockRestore();
+    expect(errMsgs.some((m) => m.includes("CONFIG ERROR"))).toBe(true);
+    expect(
+      errMsgs.some((m) => m.includes("openrouter/stealth/ox-alpha")),
+    ).toBe(true);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain("default: ollama/ornith");
+    expect(written).not.toContain("ox-alpha");
+  });
+
+  it("rewrites a RETIRED global modelRoles.default to the gateway fallback when no explicit --model is passed (EI-21919040934117285)", () => {
+    writeFileSync(
+      join(home, ".omp", "agent", "config.yml"),
+      AGENT_CFG.replace(
+        "default: papercusp-gateway/claude-sonnet-4-6",
+        "default: stealth/ox-alpha:xhigh",
+      ),
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    writeOmpSessionConfigDir("sess1", {}, home);
+    err.mockRestore();
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain("default: papercusp-gateway/claude-sonnet-4-6");
+    expect(written).not.toContain("ox-alpha");
+  });
+
+  it("leaves a NON-retired modelRoles.default untouched, byte-for-byte", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    writeOmpSessionConfigDir("sess1", {}, home);
+    err.mockRestore();
+    expect(
+      err.mock.calls.some((c) => String(c[0]).includes("CONFIG ERROR")),
+    ).toBe(false);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain("default: papercusp-gateway/claude-sonnet-4-6");
+  });
+
   it("disables automatic provider retries for a LOCAL-model session and removes inherited retry policy (WI-5047)", () => {
     const withRetry =
       AGENT_CFG.replace(
