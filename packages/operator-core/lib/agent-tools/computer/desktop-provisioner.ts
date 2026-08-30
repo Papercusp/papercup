@@ -115,8 +115,70 @@ export interface SandboxDesktop {
    * backend authenticates. Absent for `xvfb`, which has nothing to authenticate to.
    */
   credentials?: KasmvncSessionCredentials;
+  /**
+   * WI-1105361 — what each requested app actually DID, so a blank framebuffer can be
+   * told apart from an app that never ran.
+   *
+   * THE FAILURE THIS CLOSES. Apps were spawned with `stdio: 'ignore'`, so when one died
+   * on launch the only observable was pixels that never changed. A caller watching the
+   * framebuffer — `desktop-gl-live.test.ts` polling for first paint — then reported "the
+   * strategy claimed GL, the pixels disagree" after 30s, which reads as an indictment of
+   * the GL ladder and is the wrong question entirely when `vglrun` exited non-zero in the
+   * first 200ms and printed the reason to a discarded stderr. Measured 2026-08-30: the
+   * live GL suite failed ~2 runs in 4 that way, and neither the verdict nor the poll
+   * duration could distinguish "painted nothing" from "was never running".
+   *
+   * `stderrTail` is bounded (last {@link APP_STDERR_TAIL_BYTES} bytes) — a long-lived
+   * chatty app must not grow this without limit — and holds the app's OWN stderr, which
+   * for a sandboxed GL app is where `[VGL] ERROR:` and `bwrap:` refusals surface.
+   *
+   * Reading it is a snapshot: `alive` is sampled at call time, never cached.
+   */
+  appDiagnostics: () => DesktopAppDiagnostic[];
   /** Tear the desktop down — kill apps, WM, and the X server. Idempotent. */
   release: () => Promise<void>;
+}
+
+/** Bounded stderr retained per app — enough for a launch failure, never a log sink. */
+export const APP_STDERR_TAIL_BYTES = 4096;
+
+/** Live bookkeeping behind {@link SandboxDesktop.appDiagnostics}. */
+interface AppRecord {
+  argv: readonly string[];
+  child: ChildProcess;
+  /** Mutated by the stderr listener; trimmed to APP_STDERR_TAIL_BYTES on every append. */
+  stderrTail: string;
+}
+
+/**
+ * Snapshot the app records. Separate from the closure so the shape is testable and so
+ * `alive` is unambiguously sampled HERE rather than at spawn time — a cached liveness
+ * boolean is the same lie the discarded stderr was.
+ */
+function snapshotAppDiagnostics(records: readonly AppRecord[]): DesktopAppDiagnostic[] {
+  return records.map((record) => ({
+    argv: record.argv,
+    pid: record.child.pid ?? null,
+    // `exitCode === null && signalCode === null` is the only state that means "still
+    // running": node sets one of them the moment the process is reaped.
+    alive: record.child.exitCode === null && record.child.signalCode === null,
+    exitCode: record.child.exitCode,
+    exitSignal: record.child.signalCode,
+    stderrTail: record.stderrTail,
+  }));
+}
+
+/** WI-1105361 — one app's observed launch outcome. See {@link SandboxDesktop.appDiagnostics}. */
+export interface DesktopAppDiagnostic {
+  /** The app as the CALLER asked for it, before the GL prefix and sandbox wrap. */
+  argv: readonly string[];
+  pid: number | null;
+  /** Sampled when `appDiagnostics()` is called, not when the app was spawned. */
+  alive: boolean;
+  exitCode: number | null;
+  exitSignal: string | null;
+  /** Last {@link APP_STDERR_TAIL_BYTES} bytes of the app's own stderr. */
+  stderrTail: string;
 }
 
 export interface ProvisionOptions {
@@ -534,6 +596,9 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     const sandboxOn = opts.sandboxApps ?? (await desktopAppSandboxEnabled());
     const a11yBusPath = a11yBusSocketPath(appEnv.DBUS_SESSION_BUS_ADDRESS);
     const sandboxDecisions: DesktopSandboxDecision[] = [];
+    // WI-1105361 — retained so a caller can ask why a framebuffer stayed blank. See
+    // SandboxDesktop.appDiagnostics for the failure this closes.
+    const appRecords: AppRecord[] = [];
 
     for (const appArgv of opts.apps ?? []) {
       if (appArgv.length === 0) continue;
@@ -578,10 +643,26 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
         {
           spawnOptions: {
             env: desktopSandboxEnv(launch.env, { ...(a11y?.env ?? {}), ...gl.env }),
-            stdio: 'ignore',
+            // WI-1105361 — stdout stays discarded (apps are chatty and nothing reads it),
+            // but stderr is PIPED and tailed. This was `stdio: 'ignore'`, which discarded
+            // the one artifact that distinguishes "the app painted nothing" from "the app
+            // never ran": `[VGL] ERROR:` / `bwrap:` refusals go to stderr and nowhere else.
+            // A piped stream MUST be drained (the listener below does) or a chatty app
+            // blocks on a full pipe buffer — which is why this is a tail, not a bare pipe.
+            stdio: ['ignore', 'ignore', 'pipe'],
           },
         },
       );
+      const record: AppRecord = { argv: appArgv, child: app.child, stderrTail: '' };
+      app.child.stderr?.setEncoding('utf8');
+      app.child.stderr?.on('data', (chunk: string) => {
+        record.stderrTail = (record.stderrTail + chunk).slice(-APP_STDERR_TAIL_BYTES);
+      });
+      // A pipe whose reader errors must not take the desktop down with it: the
+      // diagnostic is a convenience, and losing it is strictly better than losing
+      // the desktop the caller actually asked for.
+      app.child.stderr?.on('error', () => {});
+      appRecords.push(record);
       procs.push(app.child);
     }
     return {
@@ -600,6 +681,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       ...(opts.captureWidth && opts.captureHeight
         ? { capture: { width: opts.captureWidth, height: opts.captureHeight } }
         : {}),
+      appDiagnostics: () => snapshotAppDiagnostics(appRecords),
       release,
     };
   } catch (e) {

@@ -39,6 +39,9 @@ function fakeProvisioner() {
       height: opts?.height ?? 768,
       // No live X server here, so no GL was measured — the honest zero value.
       gl: NO_GL_STRATEGY,
+      // WI-1105361: this fake spawned no apps, so there is nothing to diagnose. Empty is
+      // the honest answer; a fabricated "alive" row would assert a process that never was.
+      appDiagnostics: () => [],
       // P-012: the default local backend, for the same reason the GL value is the zero
       // one — nothing was really started, so claiming the KasmVNC backend would assert
       // a listener this fake does not have.

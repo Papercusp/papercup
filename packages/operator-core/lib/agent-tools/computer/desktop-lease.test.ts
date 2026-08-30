@@ -25,6 +25,9 @@ function fakeDesktop(n: number): SandboxDesktop & { released: () => number } {
     height: 768,
     // No live X server here, so no GL was measured — the honest zero value.
     gl: NO_GL_STRATEGY,
+    // WI-1105361: this fake spawned no apps, so there is nothing to diagnose. Empty is
+    // the honest answer; a fabricated "alive" row would assert a process that never was.
+    appDiagnostics: () => [],
     // P-005: a fake desktop enrols nothing — the honest "unenrolled" value.
     taskId: null,
     // P-012: the default local backend. No `endpoint` and no `credentials` follow from

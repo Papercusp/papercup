@@ -40,6 +40,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { captureCommand } from '../agent-tools/computer/desktop-driver';
 import {
   provisionSandboxDesktop,
+  type DesktopAppDiagnostic,
   type SandboxDesktop,
 } from '../agent-tools/computer/desktop-provisioner';
 import { detectGlStrategy } from './gl-strategy';
@@ -114,18 +115,62 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * `elapsedMs` comes back so a genuinely slow first paint stays VISIBLE in the failure message
  * instead of being silently absorbed by a longer timeout: a frame that needed 20s is a real
  * finding about the desktop, even on the run where it eventually passes.
+ *
+ * ⚠ POLLING ALONE STILL CANNOT TELL YOU WHY (WI-1105361, measured 2026-08-30). With the sleep
+ * replaced by this poll, the suite still failed 2 runs in 4 — but now with `after 30183ms of
+ * polling`, and the run that passed painted in 2247ms. That is BIMODAL, not a load gradient:
+ * a frame that is slow arrives late, a frame that is never coming does not arrive at all, and
+ * 30s of identical blank captures cannot distinguish "the app painted nothing" from "the app
+ * exited before it could paint". Both read as `verdict: blank` on a desktop whose GL ladder
+ * measured `hardware`, which is why the failure looked like an indictment of the GL strategy.
+ *
+ * So the loop watches the PROCESS as well as the pixels. If every app has exited, the answer
+ * has already arrived and waiting out the remaining timeout only delays it — we stop and hand
+ * back the diagnostics (exit code, signal, and the app's own stderr, which is where
+ * `[VGL] ERROR:` and `bwrap:` refusals surface). `appExited` says which question the caller is
+ * actually looking at, so a failure message can name the app's death rather than blame GL.
  */
 async function captureWhenPainted(
-  display: string,
+  desktop: SandboxDesktop,
   timeoutMs = 30_000,
-): Promise<{ report: ReturnType<typeof analyzeImageBlankness>; elapsedMs: number }> {
+): Promise<{
+  report: ReturnType<typeof analyzeImageBlankness>;
+  elapsedMs: number;
+  appExited: boolean;
+  diagnostics: DesktopAppDiagnostic[];
+}> {
   const startedAt = Date.now();
-  let report = analyzeImageBlankness(capture(display));
-  while (report.verdict !== 'has-content' && Date.now() - startedAt < timeoutMs) {
+  let report = analyzeImageBlankness(capture(desktop.display));
+  let diagnostics = desktop.appDiagnostics();
+  // "Every app is gone" — not "any", because a desktop may legitimately run a helper that
+  // exits after doing its job while the app that paints is still running.
+  const allExited = () => diagnostics.length > 0 && diagnostics.every((d) => !d.alive);
+  while (report.verdict !== 'has-content' && Date.now() - startedAt < timeoutMs && !allExited()) {
     await wait(250);
-    report = analyzeImageBlankness(capture(display));
+    report = analyzeImageBlankness(capture(desktop.display));
+    diagnostics = desktop.appDiagnostics();
   }
-  return { report, elapsedMs: Date.now() - startedAt };
+  return { report, elapsedMs: Date.now() - startedAt, appExited: allExited(), diagnostics };
+}
+
+/**
+ * Render the app diagnostics into a failure message. Kept separate so every assertion in
+ * this file reports the same way — a caller that formats its own is one that will forget
+ * the stderr, which is the whole point of collecting it.
+ */
+function describeApps(diagnostics: readonly DesktopAppDiagnostic[]): string {
+  if (diagnostics.length === 0) return 'no apps were spawned on this desktop';
+  return diagnostics
+    .map((d) => {
+      const state = d.alive
+        ? 'STILL RUNNING'
+        : `EXITED code=${d.exitCode ?? 'null'} signal=${d.exitSignal ?? 'null'}`;
+      const stderr = d.stderrTail.trim();
+      return `${d.argv.join(' ')} [pid=${d.pid ?? '?'}] ${state}${
+        stderr ? `\n    stderr: ${stderr.replace(/\n/g, '\n            ')}` : ' (stderr: empty)'
+      }`;
+    })
+    .join('\n  ');
 }
 
 describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints real pixels', () => {
@@ -167,10 +212,16 @@ describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints re
 
     // Poll for first paint rather than sleeping a fixed interval and hoping — see
     // captureWhenPainted. A desktop that never paints still fails here.
-    const { report, elapsedMs } = await captureWhenPainted(desktop.display);
+    const { report, elapsedMs, appExited, diagnostics } = await captureWhenPainted(desktop);
     expect(
       report.verdict,
-      `GL app screenshot judged ${report.verdict} (${report.reason}) after ${elapsedMs}ms of polling on a desktop reporting gl.tier=${desktop.gl.tier} via ${desktop.gl.id} — this is the blank-screenshot trap: the strategy claimed GL, the pixels disagree`,
+      `GL app screenshot judged ${report.verdict} (${report.reason}) after ${elapsedMs}ms of polling on a desktop reporting gl.tier=${desktop.gl.tier} via ${desktop.gl.id}.\n` +
+        (appExited
+          ? '  THE APP EXITED — this is NOT the blank-screenshot trap and not a verdict on the GL\n' +
+            '  strategy: nothing was running to paint. Read its stderr below.\n  '
+          : '  This is the blank-screenshot trap: the strategy claimed GL, the app is still running,\n' +
+            '  and the pixels disagree.\n  ') +
+        describeApps(diagnostics),
     ).toBe('has-content');
 
     // Beyond the verdict: the measured margin should be nowhere near the threshold. A frame
@@ -265,11 +316,16 @@ describe.each(BACKENDS)('P-012 — $xServer backend parity', ({ xServer, enabled
       `no GL on this host (${desktop.gl.reason}) — the ${xServer} desktop cannot be trusted for ` +
         'pixel evidence, which is a recorded capability, not a test failure to route around',
     ).not.toBe('none');
-    const { report, elapsedMs } = await captureWhenPainted(desktop.display);
+    const { report, elapsedMs, appExited, diagnostics } = await captureWhenPainted(desktop);
     expect(
       report.verdict,
       `GL app screenshot judged ${report.verdict} after ${elapsedMs}ms of polling on a ${xServer} desktop reporting ` +
-        `gl.tier=${desktop.gl.tier} via ${desktop.gl.id} — the strategy claimed GL, the pixels disagree`,
+        `gl.tier=${desktop.gl.tier} via ${desktop.gl.id}.\n` +
+        (appExited
+          ? '  THE APP EXITED — nothing was running to paint, so this is not a verdict on the GL\n' +
+            '  strategy on this backend. Read its stderr below.\n  '
+          : '  The strategy claimed GL, the app is still running, and the pixels disagree.\n  ') +
+        describeApps(diagnostics),
     ).toBe('has-content');
     expect(report.distinctColors ?? 0).toBeGreaterThan(8);
   }, 90_000);
