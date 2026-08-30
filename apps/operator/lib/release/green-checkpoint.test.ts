@@ -23,6 +23,7 @@ import {
   checkpointVerdictSiblingKeys,
   checkpointCandidateProvenance,
   checkpointCandidateSourceFromCli,
+  checkpointEvidenceFor,
   normalizeCheckpointMaterializationSelection,
   parseCheckpointMaterializationSelection,
   parseTargetedReVerdictSelection,
@@ -2495,6 +2496,28 @@ describe("EI-213458 candidate-source normalization", () => {
     expect(() =>
       checkpointCandidateSourceFromCli("a".repeat(40), "unknown"),
     ).toThrow("expected pinned|tip");
+  });
+});
+
+describe("EI-218328 exact checkpoint-run evidence", () => {
+  it("builds the producer payload from the run's log, run id, and integration root only", () => {
+    const evidence = checkpointEvidenceFor("/srv/oddsmith", {
+      logPath: "/var/lib/papercusp/checkpoint-logs/oddsmith-run.log",
+      runId: "run-oddsmith-1",
+    });
+
+    expect(evidence).toEqual({
+      integrationRoot: "/srv/oddsmith",
+      logPath: "/var/lib/papercusp/checkpoint-logs/oddsmith-run.log",
+      runId: "run-oddsmith-1",
+    });
+    expect(Object.keys(evidence).sort()).toEqual(["integrationRoot", "logPath", "runId"]);
+  });
+
+  it("omits unavailable optional values instead of inventing a run identity", () => {
+    expect(checkpointEvidenceFor("/srv/oddsmith", {})).toEqual({
+      integrationRoot: "/srv/oddsmith",
+    });
   });
 });
 

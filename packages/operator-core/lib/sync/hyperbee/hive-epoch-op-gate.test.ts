@@ -424,6 +424,68 @@ describe('encryptOp epoch-read caching (EI-6945: substrate_outbox N+1)', () => {
 
     nowSpy.mockRestore();
   });
+
+  it('starts the TTL when a slow epoch read completes, not when it begins', async () => {
+    let resolveFirst!: (epoch: number) => void;
+    const getCurrentEpoch = vi
+      .fn<() => Promise<number>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<number>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValue(3);
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(1_000_000);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch,
+    });
+
+    const firstPending = cap.encryptOp(localOp({ hbKey: 'F-slow-first' }));
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+
+    // The backing PG read takes longer than the full 5s TTL.
+    nowSpy.mockReturnValue(1_010_000);
+    resolveFirst(3);
+    expect((await firstPending)!.epoch).toBe(3);
+
+    // A freshly loaded value must still be fresh immediately after completion.
+    nowSpy.mockReturnValue(1_010_001);
+    expect((await cap.encryptOp(localOp({ hbKey: 'F-after-slow-load' })))!.epoch).toBe(3);
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockRestore();
+  });
+
+  it('coalesces concurrent epoch-cache misses for the same generation', async () => {
+    let resolveEpoch!: (epoch: number) => void;
+    const getCurrentEpoch = vi.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveEpoch = resolve;
+        }),
+    );
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch,
+    });
+
+    const firstPending = cap.encryptOp(localOp({ hbKey: 'F-concurrent-a' }));
+    const secondPending = cap.encryptOp(localOp({ hbKey: 'F-concurrent-b' }));
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+
+    resolveEpoch(3);
+    const [first, second] = await Promise.all([firstPending, secondPending]);
+    expect(first!.epoch).toBe(3);
+    expect(second!.epoch).toBe(3);
+    expect(getCurrentEpoch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('buildEpochKeyResolver (owner|member dispatch)', () => {

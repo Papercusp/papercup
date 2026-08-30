@@ -168,6 +168,11 @@ export function buildEpochEncryptCapability(
   // well under the drain's own poll cadence.
   const EPOCH_CACHE_TTL_MS = 5000;
   let epochCache: { epoch: number; at: number; generation: number } | null = null;
+  // EI-21838477202906344: a slow PG read can outlive the entire TTL. Stamp the
+  // cache at successful completion (not request start), and share one in-flight
+  // read per generation so overlapping drain passes cannot amplify a stalled
+  // pool into another epoch-read N+1.
+  let epochLoadInFlight: { generation: number; promise: Promise<number> } | null = null;
   const getCurrentEpochCached = async (): Promise<number> => {
     const now = Date.now();
     // WI-4075: the generation is the IMMEDIATE invalidation signal for a local epoch
@@ -178,9 +183,23 @@ export function buildEpochEncryptCapability(
     if (epochCache && now - epochCache.at < EPOCH_CACHE_TTL_MS && epochCache.generation === generation) {
       return epochCache.epoch;
     }
-    const epoch = await deps.getCurrentEpoch();
-    epochCache = { epoch, at: now, generation };
-    return epoch;
+    if (epochLoadInFlight?.generation === generation) return epochLoadInFlight.promise;
+
+    const promise = (async () => {
+      const epoch = await deps.getCurrentEpoch();
+      const completionGeneration =
+        deps.workspaceId !== undefined ? getEpochGeneration(deps.workspaceId, deps.potId) : 0;
+      if (completionGeneration === generation) {
+        epochCache = { epoch, at: Date.now(), generation };
+      }
+      return epoch;
+    })();
+    epochLoadInFlight = { generation, promise };
+    try {
+      return await promise;
+    } finally {
+      if (epochLoadInFlight?.promise === promise) epochLoadInFlight = null;
+    }
   };
   // WI-2106: the re-key-evidence probe is a PG read, and `encryptOp` runs ONCE PER ROW of
   // the drain batch (DEFAULT_DRAIN_BATCH=200) — exactly the N+1 shape EI-6945 removed from

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { upsert } = vi.hoisted(() => ({ upsert: vi.fn() }));
+const { query, upsert } = vi.hoisted(() => ({ query: vi.fn(), upsert: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: 'sql-double' }),
+  getOrgPg: () => ({ sql: query }),
   upsertRoutine: upsert,
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'active-ws' }));
@@ -12,6 +12,7 @@ const tool = (await import('./bulk_dedup')).default;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  query.mockResolvedValue([]);
   upsert.mockResolvedValue({
     id: 'rt-bulk-1',
     nextFireAt: new Date('2026-08-26T21:00:00.000Z'),
@@ -38,7 +39,7 @@ describe('work_items:bulk_dedup handler', () => {
     )) as { data: Record<string, unknown> };
 
     expect(upsert).toHaveBeenCalledWith(
-      'sql-double',
+      query,
       expect.objectContaining({
         workspaceId: 'ctx-ws',
         installSlug: 'papercusp',
@@ -62,12 +63,46 @@ describe('work_items:bulk_dedup handler', () => {
     expect(out.data).toMatchObject({ ok: true, enqueued: true, runId: 'bulk-1', routineId: 'rt-bulk-1' });
   });
 
+  it('refuses a same-run rearm while its deduplicated routineFire is live', async () => {
+    query.mockResolvedValue([
+      {
+        routineId: 'rt_papercusp_work_item_admission_bulk_dedup_bulk_1',
+        workflowUuid: 'wf-bulk-1',
+        status: 'PENDING',
+      },
+    ]);
+
+    const out = (await tool.handler(
+      {
+        harness: 'papercusp',
+        confirm: true,
+        runId: 'bulk-1',
+        shardConcurrency: 1,
+      },
+      { workspaceId: 'ctx-ws' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(out.data).toMatchObject({
+      ok: false,
+      enqueued: false,
+      alreadyRunning: true,
+      reason: 'already_running',
+      runId: 'bulk-1',
+      routineId: 'rt_papercusp_work_item_admission_bulk_dedup_bulk_1',
+      workflowUuid: 'wf-bulk-1',
+      workflowStatus: 'PENDING',
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[1]).toBe('rt_papercusp_work_item_admission_bulk_dedup_bulk_1');
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it('uses the explicit workspace override instead of context', async () => {
     await tool.handler({ harness: 'papercusp', workspace: 'override-ws', confirm: true }, {
       workspaceId: 'ctx-ws',
     } as never);
     expect(upsert).toHaveBeenCalledWith(
-      'sql-double',
+      query,
       expect.objectContaining({ workspaceId: 'override-ws' }),
       expect.any(Function),
     );

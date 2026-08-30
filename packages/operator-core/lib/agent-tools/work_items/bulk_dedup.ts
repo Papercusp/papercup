@@ -16,6 +16,55 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { WORK_ITEM_ADMISSION_BULK_DEDUP } from '../../work-items-admission-bulk-dedup';
 
+type RoutineSql = Parameters<typeof upsertRoutine>[0];
+
+interface ActiveBulkDedupFire {
+  routineId: string;
+  workflowUuid: string;
+  status: 'PENDING' | 'ENQUEUED';
+}
+
+function bulkDedupRoutineId(harness: string, routineName: string): string {
+  return `rt_${harness}_${routineName}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+}
+
+/**
+ * A routine's payload is serialized into the DBOS workflow input at enqueue
+ * time. Updating the routine row while that deduplicated fire is live only
+ * changes the NEXT fire; it cannot change the already-serialized workflow
+ * input. Surface that state before upsertRoutine so a same-run rearm cannot
+ * report success while silently retaining stale controls.
+ */
+async function activeBulkDedupFire(
+  sql: RoutineSql,
+  routineId: string,
+): Promise<ActiveBulkDedupFire | null> {
+  try {
+    const rows = await sql<ActiveBulkDedupFire[]>`
+      SELECT r.id AS "routineId", d.workflow_uuid AS "workflowUuid", d.status
+        FROM harness_shared.routines r
+        JOIN dbos.workflow_status d
+          ON d.deduplication_id = ('routine:' || r.id)
+         AND d.status IN ('PENDING', 'ENQUEUED')
+       WHERE r.id = ${routineId}
+       ORDER BY d.created_at DESC
+       LIMIT 1
+    `;
+    return rows[0] ?? null;
+  } catch (error) {
+    // Some read-only/unit environments do not provision DBOS. That means
+    // there cannot be a live routineFire dedup row to protect. All other
+    // failures stay loud: updating a payload without the protection query
+    // would recreate the very outcome-unknown hazard this guard prevents.
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code ?? '')
+        : '';
+    if (code === '42P01') return null;
+    throw error;
+  }
+}
+
 export default defineTool({
   name: 'work_items:bulk_dedup',
   profile: 'engineer',
@@ -91,8 +140,26 @@ export default defineTool({
       activeWorkspaceId();
     const runId = args.runId ?? `bulk-dedup-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const routineName = `${WORK_ITEM_ADMISSION_BULK_DEDUP}-${runId}`.slice(0, 180);
+    const sql = getOrgPg().sql;
+    const activeFire = await activeBulkDedupFire(sql, bulkDedupRoutineId(args.harness, routineName));
+    if (activeFire) {
+      return {
+        data: {
+          ok: false,
+          enqueued: false,
+          alreadyRunning: true,
+          reason: 'already_running',
+          runId,
+          routineId: activeFire.routineId,
+          workflowUuid: activeFire.workflowUuid,
+          workflowStatus: activeFire.status,
+          message:
+            'A routineFire for this run is still pending/enqueued. Its serialized payload is immutable until the deduplication row reaches a terminal state; retry this runId after that.',
+        },
+      };
+    }
     const routine = await upsertRoutine(
-      getOrgPg().sql,
+      sql,
       {
         workspaceId,
         installSlug: args.harness,

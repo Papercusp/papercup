@@ -1279,10 +1279,13 @@ export function controlWrites(decoded: any, crDelayMs?: number): {
  *  @param {EnvironmentMap} [env]
  */
 export function turnSubmitCrDelayForAgent(agent: any, env?: EnvironmentMap): any;
-/** Backend-aware write plan for an injected turn. Codex receives one redundant
- *  delayed submit CR because the first CR can be consumed as input, leaving the
- *  turn text visible but unsent. A `reset` (RESET-CONTEXT) is a turn PREFIXED by
- *  the backend's context-clear command (see resetWritesForAgent).
+/** Backend-aware write plan for an injected turn. Codex and OMP receive one
+ *  redundant delayed submit CR because the first CR can be consumed as input,
+ *  leaving the turn text visible but unsent. OMP used to receive LF instead of
+ *  the terminal Enter byte; a real OMP 16.x session acknowledged the control
+ *  write but persisted no user message and produced no transcript at all.
+ *  A `reset` (RESET-CONTEXT) is a turn PREFIXED by the backend's context-clear
+ *  command (see resetWritesForAgent).
  *  @param {EnvironmentMap} [env]
  */
 export function controlWritesForAgent(decoded: any, agent: any, env?: EnvironmentMap): ({
