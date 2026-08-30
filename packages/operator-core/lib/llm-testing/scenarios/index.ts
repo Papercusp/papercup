@@ -183,6 +183,9 @@ import { OVERWATCH_OW02_OBSERVE_NOT_IDEA } from './overwatch/OW02-observe-not-id
 import { OT1_SECTION_PROTOCOL } from './onboarding-tutor/OT1-section-protocol';
 import { OT2_PROGRESS_CHECKPOINT } from './onboarding-tutor/OT2-progress-checkpoint';
 import { OT3_QUESTION_DETOUR } from './onboarding-tutor/OT3-question-detour';
+// PUI-LOOP-P01: pui-remote-shared-substrate P-005 / R11 — the new prompt
+// profile is a first-class llm-test target and uses its owned capability door.
+import { PUI_LOOP_P01_OWNED_DOOR_READ } from './pui-loop/P01-owned-door-read';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -328,6 +331,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   OT1_SECTION_PROTOCOL,
   OT2_PROGRESS_CHECKPOINT,
   OT3_QUESTION_DETOUR,
+  // pui-loop profile behavioral smoke (R11)
+  PUI_LOOP_P01_OWNED_DOOR_READ,
 ];
 
 export function getScenario(id: string): Scenario {
