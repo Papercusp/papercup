@@ -29,7 +29,11 @@
 
 import { updateIssue, commentIssue } from '../../issues-engineer';
 import type { ImprovementCandidate, ImprovementSeverity } from './policy';
-import { readImprovementItems, type ReadImprovementOpts } from './read-items';
+import {
+  readImprovementItems,
+  projectImprovementItemsForBoundedRead,
+  type ReadImprovementOpts,
+} from './read-items';
 import { signatureRecurrence, type SignatureRecurrence } from './digest';
 import { classifyIdeaType } from './triage';
 import { applyTriageDecision, type ApplyTriageInput, type ApplyTriageResult } from './triage-core';
@@ -41,6 +45,67 @@ import {
 } from '../../knowledge-packs/candidates';
 
 export const RECURRENCE_ESCALATION_THRESHOLD = 3;
+
+/** Actions produced per run when the caller does not say. */
+export const DEFAULT_MAX_ACTIONS = 10;
+
+/**
+ * WI-1216687 — the two-phase read that makes the recurrence population a SET.
+ *
+ * Before this, `runRecurrenceEscalation` read `{ windowPerScope: true }` with no
+ * `limit`, which `read-items.ts` defaults to 500 — the newest 500 rows PER SCOPE.
+ * Measured 2026-08-30: `harness:papercusp` holds 26,608 of the 27,464 improvement
+ * rows (96.9%) and its newest 500 reach back just 14.1 HOURS, against a corpus
+ * spanning ~87 days. So a signature had to recur 3× inside one 14h window to be
+ * counted at all, and every scope small enough to be fully covered was also too
+ * small to recur. Same defect class as WI-4532's `watchdogKeyed`: a caller that
+ * wants a SET and reads the newest N gets a RECENCY WINDOW.
+ *
+ * Raising the cap cannot fix it (the corpus grows ~1k rows/day), and reading the
+ * whole corpus into memory is not an option either — measured on the live topic
+ * corpus, 27,505 rows are title 2,782 kB · body 23 MB · payload 39 MB = 64 MB.
+ *
+ * The split: a signature is derived from the TITLE ALONE (`dedupSignature`), so
+ * phase 1 censuses the whole corpus reading only cheap columns (~5 MB, no body, no
+ * payload); phase 2 then hydrates FULL candidates for the members of the recurring
+ * signatures only — a few hundred rows — and hands them to the unchanged planner.
+ * Bodies and payload are therefore present wherever a decision actually reads them
+ * (`classifyIdeaType` hays over `title + body`; `alreadyGym` reads the payload-derived
+ * `ideaLifecycle`), so no classification silently drifts.
+ */
+export const RECURRING_SIGNATURE_SCAN_CAP = 50;
+
+/**
+ * Hydration budget for phase 2, in member rows. Groups are taken whole-or-not-at-all
+ * (the loop BREAKS rather than truncating), because a partially hydrated group would
+ * make `sig.count` under-report — and that count is both the ≥3 threshold test and the
+ * number quoted to the owner in "recurred N×".
+ */
+export const RECURRING_MEMBER_HYDRATION_CAP = 2000;
+
+/** Phase-1 output: everything decidable from cheap columns alone. */
+export interface RecurringSignatureSlate {
+  signature: string;
+  count: number;
+  /** Member ids, newest-first (the order `signatureRecurrence` emits). */
+  memberIds: string[];
+}
+
+/**
+ * Pure phase-1: which signatures clear the recurrence threshold, richest first.
+ * `signatureRecurrence` already sorts by `count desc, lastSeenMs desc`, so the cap
+ * keeps the strongest evidence rather than an arbitrary slice.
+ */
+export function selectRecurringSignatures(
+  all: ImprovementCandidate[],
+  opts: PlanEscalationOpts = {},
+): RecurringSignatureSlate[] {
+  const threshold = opts.threshold ?? RECURRENCE_ESCALATION_THRESHOLD;
+  return signatureRecurrence(all)
+    .filter((s) => s.count >= threshold)
+    .slice(0, RECURRING_SIGNATURE_SCAN_CAP)
+    .map((s) => ({ signature: s.signature, count: s.count, memberIds: [...s.ids] }));
+}
 
 /** Cap on the draft-lesson body staged with a candidate (owner edits anyway). */
 export const CANDIDATE_DRAFT_MAX_CHARS = 700;
@@ -77,7 +142,7 @@ export function planRecurrenceEscalation(
   opts: PlanEscalationOpts = {},
 ): EscalationAction[] {
   const threshold = opts.threshold ?? RECURRENCE_ESCALATION_THRESHOLD;
-  const maxActions = opts.maxActions ?? 10;
+  const maxActions = opts.maxActions ?? DEFAULT_MAX_ACTIONS;
   if (maxActions <= 0) return [];
 
   const byId = new Map(all.map((c) => [c.id, c]));
@@ -152,6 +217,19 @@ export interface EscalationResult {
 /** Injectable dependency seam (unit tests run without PG). */
 export interface EscalationDeps {
   readItems: (opts?: ReadImprovementOpts) => Promise<ImprovementCandidate[]>;
+  /**
+   * Phase-1 whole-corpus census (WI-1216687). The seam reads unbounded and lets only
+   * a caller-declared bounded projection back out, which is exactly the shape here:
+   * tens of thousands of rows in, at most {@link RECURRING_SIGNATURE_SCAN_CAP}
+   * signatures out.
+   */
+  scanCorpus: (
+    opts: ReadImprovementOpts,
+    projection: {
+      maxRows: number;
+      project: (items: readonly ImprovementCandidate[]) => RecurringSignatureSlate[];
+    },
+  ) => Promise<RecurringSignatureSlate[]>;
   updateIssue: (id: string, patch: { severity: 'major'; by: string }) => Promise<unknown>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<unknown>;
   applyTriage: (input: ApplyTriageInput) => Promise<ApplyTriageResult>;
@@ -161,6 +239,7 @@ export interface EscalationDeps {
 
 const defaultDeps: EscalationDeps = {
   readItems: (opts) => readImprovementItems(opts),
+  scanCorpus: (opts, projection) => projectImprovementItemsForBoundedRead(opts, projection),
   updateIssue: (id, patch) => updateIssue(id, patch),
   commentIssue,
   applyTriage: applyTriageDecision,
@@ -172,8 +251,35 @@ export async function runRecurrenceEscalation(
   opts: PlanEscalationOpts = {},
   deps: EscalationDeps = defaultDeps,
 ): Promise<EscalationResult> {
-  const all = await deps.readItems({ windowPerScope: true });
-  const actions = planRecurrenceEscalation(all, opts);
+  const maxActions = opts.maxActions ?? DEFAULT_MAX_ACTIONS;
+
+  // PHASE 1 (WI-1216687) — census the WHOLE corpus on cheap columns. A signature is
+  // derived from the title alone, so body and payload are dead weight here (64 MB vs
+  // ~5 MB measured). This replaces the old `{ windowPerScope: true }` read, whose
+  // undeclared `limit ?? 500` made the population the newest ~14h rather than a set.
+  // WI-9454's concern — that a busy scope must not crowd small ones out of the
+  // window — is subsumed rather than dropped: there is no window left to crowd.
+  const slate = await deps.scanCorpus(
+    { includeBody: false, includePayload: false },
+    {
+      maxRows: RECURRING_SIGNATURE_SCAN_CAP,
+      project: (items) => selectRecurringSignatures([...items], opts),
+    },
+  );
+
+  // PHASE 2 — hydrate FULL candidates (body + payload) for the members of those
+  // signatures only, so the unchanged planner sees exactly the fields it always saw:
+  // `classifyIdeaType` hays over `title + body`, `alreadyGym` reads the
+  // payload-derived `ideaLifecycle`. Groups are all-or-nothing so `count` stays exact.
+  const memberIds: string[] = [];
+  for (const sig of slate) {
+    if (memberIds.length + sig.memberIds.length > RECURRING_MEMBER_HYDRATION_CAP) break;
+    memberIds.push(...sig.memberIds);
+  }
+  const all = memberIds.length
+    ? await deps.readItems({ issueIds: memberIds, limit: memberIds.length })
+    : [];
+  const actions = planRecurrenceEscalation(all, { ...opts, maxActions });
   const result: EscalationResult = { escalated: 0, gymRouted: 0, promotionsSuggested: 0, candidatesStaged: 0 };
 
   for (const a of actions) {
