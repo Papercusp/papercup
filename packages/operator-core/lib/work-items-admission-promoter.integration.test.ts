@@ -213,6 +213,22 @@ describe('work-item admission promoter (real Postgres)', () => {
       SELECT promoted, merged, detail->>'status' AS status
         FROM harness_shared.admission_runs WHERE id = 'promoter-clones'`;
     expect(run).toEqual([{ promoted: 1, merged: 5, status: 'complete' }]);
+    // D-003: the ledger must carry the promoted-to-first-claim DISTRIBUTION, not
+    // only promotion volume. An independent acceptance grader measured 0 of 208
+    // real promoter-tick rows carrying it (EI-21844734848781188) — the value was
+    // computed for the backpressure read and then dropped on the floor.
+    const latency = await db.sql<Array<{ latency: Record<string, unknown> | null }>>`
+      SELECT detail->'promotedToFirstClaim' AS latency
+        FROM harness_shared.admission_runs WHERE id = 'promoter-clones'`;
+    expect(latency[0]?.latency).toMatchObject({
+      sampleSize: expect.any(Number),
+      p50Ms: null,
+      p95Ms: null,
+    });
+    // A failed telemetry read persists an explicit marker instead of a silent
+    // zero, so "no samples yet" stays distinguishable from "not measured". If
+    // this key ever appears, the block above is reporting absence as data.
+    expect(latency[0]?.latency).not.toHaveProperty('unavailable');
   }, 60_000);
 
   it('promotes a zero-flag item without any model call', async () => {

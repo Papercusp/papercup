@@ -15,7 +15,19 @@ import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
-export const DURABLE_PARK_AUDIT_RUN_KIND = 'daily-digest' as const;
+/**
+ * This producer's own admission_runs.run_kind.
+ *
+ * It was 'daily-digest' until migration 1028 — not by choice, but because
+ * migration 944 constrained run_kind to five literals and this producer was not
+ * one of them. The result was that the ledger's own grouping key attributed
+ * durable-park rows to the daily digest, which an acceptance grader following
+ * the rubric's prescribed "group by run_kind" method ran straight into
+ * (EI-21844734848781188). `detail.mode` still separates the audit and reconcile
+ * passes within this kind, the same way 'promoter' and 'fail-open' are
+ * separated within 'promoter-tick'.
+ */
+export const DURABLE_PARK_AUDIT_RUN_KIND = 'durable-park-audit' as const;
 export const DEFAULT_AGENT_REVIEW_OVERDUE_HOURS = 24;
 export const DURABLE_PARK_CLEAR_AUDIT_ACTION = 'work_items:durable_park:clear';
 

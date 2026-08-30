@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  assessBulkStageYield,
   buildDailyDigestPrompt,
   dailyDigestWatchdogKey,
   parseDailyDigestProposals,
@@ -26,6 +27,25 @@ import {
   type DailyDigestItem,
 } from './work-items-admission-daily-digest';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
+
+/**
+ * A bulk stage that actually judged what it set out to judge. Since D-035 this
+ * is the only kind that may open the digest gate: `status:'complete'` alone was
+ * satisfied by a stage that merged 0 pairs and left 1,500 of 1,770 unjudged, and
+ * that vacuous stage authorised a 313k-token model call over undeduplicated
+ * input. Tests below that exercise POST-gate behaviour use this so they are
+ * testing what they claim to test rather than re-testing the gate.
+ */
+const YIELDING_STAGE_DETAIL = {
+  resultCensusRunId: 'census-1',
+  modelProtocol: {
+    failures: 0,
+    exhaustedBatches: 0,
+    lastError: null,
+    ignoredUnknownJudgements: 0,
+    omittedExpectedJudgements: 0,
+  },
+};
 
 const context: DailyDigestContext = {
   sourceBulkStageRunId: 'bulk-stage-1',
@@ -166,6 +186,77 @@ describe('work-item admission daily digest', () => {
     );
   });
 
+  it('D-035: blocks a COMPLETE but VACUOUS bulk stage instead of digesting undeduplicated input', async () => {
+    // The historical failure, with stage wi882767-opus5-20260829-stage-1's real
+    // numbers: it reached status:'complete' having merged 0 pairs, exhausted 10
+    // of 12 batches and left 1,500 expected judgements unanswered — and that was
+    // enough to open this gate and authorise a 313k-token model call over a
+    // corpus the dedup pass had never actually touched.
+    const sql = (async (strings: TemplateStringsArray) => {
+      const statement = [...strings].join(' ');
+      if (statement.includes('SELECT detail, tokens_in')) return [];
+      if (statement.includes("run_kind = 'bulk-stage'")) {
+        return [
+          {
+            id: 'bulk-vacuous',
+            detail: {
+              status: 'complete',
+              resultCensusRunId: 'census-1',
+              modelProtocol: {
+                failures: 46,
+                exhaustedBatches: 10,
+                omittedExpectedJudgements: 1500,
+                lastError: 'expected object, received null',
+              },
+            },
+          },
+        ];
+      }
+      return [];
+    }) as unknown as import('./work-items').OrgSql;
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionDailyDigest({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      runId: 'daily-vacuous',
+      now: () => Date.parse('2026-08-30T00:00:00Z'),
+      sql,
+      llmCall,
+      fileUmbrella: vi.fn(),
+      linkUmbrella: vi.fn(),
+    });
+    expect(result).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'awaiting-yielding-bulk-stage',
+      modelCalled: false,
+    });
+    expect(llmCall).not.toHaveBeenCalled();
+  });
+
+  it('D-035: a stage that judged everything it asked about still opens the gate', () => {
+    // Calibration: without this the blocking assertions above would all pass on
+    // a predicate that simply always returns false.
+    expect(assessBulkStageYield(YIELDING_STAGE_DETAIL).yielded).toBe(true);
+  });
+
+  it('D-035: yield that cannot be PROVEN is treated as no yield', () => {
+    // Pre-D-035 rows carry no modelProtocol at all. Inferring yield from silence
+    // would rebuild the original defect one level down — a gate opening on
+    // evidence it never checked — so absence must fail closed.
+    expect(assessBulkStageYield({ resultCensusRunId: 'census-1' }).yielded).toBe(false);
+    expect(assessBulkStageYield(null).yielded).toBe(false);
+    expect(
+      assessBulkStageYield({ modelProtocol: { exhaustedBatches: 'nope', omittedExpectedJudgements: 0 } }).yielded,
+    ).toBe(false);
+    // But an 'unknown' VERDICT is an answer, not a gap: only a judgement that
+    // never came back counts against yield.
+    expect(
+      assessBulkStageYield({
+        modelProtocol: { exhaustedBatches: 0, omittedExpectedJudgements: 0, ignoredUnknownJudgements: 12 },
+      }).yielded,
+    ).toBe(true);
+  });
+
   it('records a blocked ledger row and never calls the model before a completed bulk stage', async () => {
     const statements: string[] = [];
     const sql = (async (strings: TemplateStringsArray) => {
@@ -203,7 +294,7 @@ describe('work-item admission daily digest', () => {
       const statement = [...strings].join(' ');
       if (statement.includes('SELECT detail, tokens_in')) return [];
       if (statement.includes("run_kind = 'bulk-stage'")) {
-        return [{ id: 'bulk-1', detail: { resultCensusRunId: 'census-1' } }];
+        return [{ id: 'bulk-1', detail: YIELDING_STAGE_DETAIL }];
       }
       if (statement.includes("run_kind = 'census'")) return [{ id: 'census-1', census_after: 3 }];
       if (statement.includes('FROM harness_shared.work_items')) {
@@ -272,7 +363,7 @@ describe('work-item admission daily digest', () => {
     const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = [...strings].join(' ');
       if (statement.includes('SELECT detail, tokens_in')) return [];
-      if (statement.includes("run_kind = 'bulk-stage'")) return [{ id: 'bulk-1', detail: { resultCensusRunId: 'census-1' } }];
+      if (statement.includes("run_kind = 'bulk-stage'")) return [{ id: 'bulk-1', detail: YIELDING_STAGE_DETAIL }];
       if (statement.includes("run_kind = 'census'")) return [{ id: 'census-1', census_after: 3 }];
       if (statement.includes('FROM harness_shared.work_items')) {
         return opts.corpusIds.map((id) => ({

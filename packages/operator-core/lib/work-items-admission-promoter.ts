@@ -837,6 +837,35 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
   };
 }
 
+/**
+ * D-003 ledger clause: every admission tick records the promoted-to-first-claim
+ * DISTRIBUTION, not merely promotion volume.
+ *
+ * The distribution was already computed by {@link readWorkItemAdmissionQueueHealth}
+ * for the backpressure read and then dropped — an independent acceptance grader
+ * measured 0 of 208 promoter-tick rows carrying it (EI-21844734848781188), which
+ * is why D-003 was rated unmet. This is therefore a WRITE, not a new measurement.
+ *
+ * Fail-soft in BOTH directions, which is the point. A tick must never fail
+ * because its telemetry read did; but it must never report a silent zero either,
+ * so an unavailable read persists an explicit `unavailable` marker. That keeps
+ * "no samples yet" (sampleSize 0) distinguishable from "not measured" (the read
+ * failed) — precisely the absence-vs-zero confusion this criterion exists to
+ * catch, and one a bare `null` would reintroduce.
+ */
+async function readPromotedToFirstClaimForLedger(
+  sql: OrgSql,
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<Record<string, unknown>> {
+  try {
+    const health = await readWorkItemAdmissionQueueHealth({ workspaceId, harnessSlug, sql });
+    return { ...health.promotedToFirstClaim };
+  } catch (error) {
+    return { unavailable: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** Fail-open P-010 adapter used by both Scout production entry points. */
 export async function readWorkItemAdmissionProducerPressure(opts: {
   workspaceId: string;
@@ -1277,6 +1306,11 @@ export async function runWorkItemAdmissionPromoter(opts: {
     const merged = plan.dispositions.filter((d) => d.action === 'merge').length;
     const held = plan.dispositions.filter((d) => d.action === 'hold').length;
     const censusAfter = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
+    const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(
+      sql,
+      opts.workspaceId,
+      opts.harnessSlug,
+    );
     const latencyMs = Math.max(0, now() - startedAt);
     await finishRun(sql, {
       runId,
@@ -1294,6 +1328,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
       detail: {
         status: 'complete',
         mode: 'promoter',
+        // D-003: the distribution rides beside the census counts on every tick.
+        promotedToFirstClaim,
         flaggedPairs: pairs.length,
         verdicts: plan.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
@@ -1465,6 +1501,11 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     for (const row of rows) (autoPromotedByHarness[row.harness_slug] ??= []).push(row.feature_id);
     for (const ids of Object.values(autoPromotedByHarness)) ids.sort();
     const liveness = await readPromoterLiveness(sql, opts.workspaceId, opts.harnessSlug, now(), staleMinutes);
+    const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(
+      sql,
+      opts.workspaceId,
+      opts.harnessSlug,
+    );
     await finishRun(sql, {
       runId,
       batchSize: autoPromoted.length,
@@ -1478,7 +1519,16 @@ export async function runWorkItemAdmissionFailOpen(opts: {
       tokensIn: 0,
       tokensOut: 0,
       latencyMs: Math.max(0, now() - startedAt),
-      detail: { status: 'complete', mode: 'fail-open', scope, liveness, autoPromotedByHarness },
+      // D-003 applies to BOTH admission paths: a fail-open tick that promotes
+      // unreviewed rows is exactly when claim latency is most worth knowing.
+      detail: {
+        status: 'complete',
+        mode: 'fail-open',
+        scope,
+        liveness,
+        promotedToFirstClaim,
+        autoPromotedByHarness,
+      },
     });
     return { runId, autoPromoted, autoPromotedByHarness, scope, liveness };
   } catch (error) {

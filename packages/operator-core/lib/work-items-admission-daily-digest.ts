@@ -204,7 +204,11 @@ export interface DailyDigestUmbrellaEffect extends FiledDailyDigestUmbrella {
 export interface DailyDigestRunResult {
   runId: string;
   status: 'complete' | 'blocked';
-  blockedReason?: 'awaiting-completed-bulk-stage' | 'census-coverage-mismatch' | 'empty-corpus';
+  blockedReason?:
+    | 'awaiting-completed-bulk-stage'
+    | 'awaiting-yielding-bulk-stage'
+    | 'census-coverage-mismatch'
+    | 'empty-corpus';
   sourceBulkStageRunId: string | null;
   sourceCensusRunId: string | null;
   corpusSize: number;
@@ -638,11 +642,67 @@ export function buildDailyDigestPrompt(context: DailyDigestContext): {
   return { system, user, includedItems: encoded.included, omittedItems: encoded.omitted };
 }
 
-async function readCompletedBulkStage(
+/**
+ * Whether a completed bulk stage actually JUDGED what it set out to judge.
+ *
+ * `status: 'complete'` alone is not evidence that bulk dedup ran: stage
+ * `wi882767-opus5-20260829-stage-1` reached 'complete' having merged 0 pairs,
+ * exhausted 10 of its 12 batches and left 1,500 of 1,770 pairs unjudged — and
+ * that vacuous stage was sufficient to open this digest's gate and authorise a
+ * 313k-token model call over a corpus the dedup pass had never touched. An
+ * independent acceptance grader caught it (EI-21844734848781188); D-035 records
+ * the ruling.
+ *
+ * The bar is deliberately strict and deliberately fail-CLOSED:
+ *
+ * - `exhaustedBatches` must be 0. A batch that exhausted its retries gave up,
+ *   so the pairs it covered were never adjudicated by anything.
+ * - `omittedExpectedJudgements` must be 0. These are pairs the stage asked
+ *   about and got no answer for — distinct from `ignoredUnknownJudgements`,
+ *   where the model DID answer 'unknown', which is a real verdict and is fine.
+ * - `modelProtocol` must be PRESENT. A stage row that cannot describe its own
+ *   yield has not proven it, and unprovable yield is treated as no yield. This
+ *   intentionally blocks on pre-D-035 rows: the whole defect was a gate that
+ *   opened on evidence it never actually checked, and inferring yield from
+ *   silence would rebuild it one level down.
+ *
+ * Blocking is cheap and loud — it writes an owner-visible ledger row naming the
+ * reason and spends no tokens — whereas opening wrongly buys a confident digest
+ * over undeduplicated input. Those costs are not symmetric, which is what
+ * justifies erring toward blocked.
+ */
+export function assessBulkStageYield(
+  detail: Record<string, unknown> | null | undefined,
+): { yielded: boolean; reason: string | null } {
+  const protocol = detail?.modelProtocol;
+  if (!protocol || typeof protocol !== 'object') {
+    return { yielded: false, reason: 'stage detail carries no modelProtocol block, so its yield is unprovable' };
+  }
+  const record = protocol as Record<string, unknown>;
+  const numberOrNull = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const exhausted = numberOrNull(record.exhaustedBatches);
+  const omitted = numberOrNull(record.omittedExpectedJudgements);
+  if (exhausted === null || omitted === null) {
+    return {
+      yielded: false,
+      reason: 'stage modelProtocol lacks numeric exhaustedBatches/omittedExpectedJudgements',
+    };
+  }
+  if (exhausted > 0) {
+    return { yielded: false, reason: `${exhausted} batch(es) exhausted their retries without a verdict` };
+  }
+  if (omitted > 0) {
+    return { yielded: false, reason: `${omitted} expected judgement(s) were never returned` };
+  }
+  return { yielded: true, reason: null };
+}
+
+async function readYieldingBulkStage(
   sql: OrgSql,
   workspaceId: string,
   harnessSlug: string,
-): Promise<BulkStageRow | null> {
+): Promise<{ stage: BulkStageRow | null; blockedReason?: DailyDigestRunResult['blockedReason'] }> {
   const rows = await sql<BulkStageRow[]>`
     SELECT id, detail
       FROM harness_shared.admission_runs
@@ -652,7 +712,14 @@ async function readCompletedBulkStage(
        AND detail->>'status' = 'complete'
      ORDER BY started_at DESC, id DESC
      LIMIT 1`;
-  return rows[0] ?? null;
+  const stage = rows[0] ?? null;
+  if (!stage) return { stage: null, blockedReason: 'awaiting-completed-bulk-stage' };
+  // Judge the LATEST completed stage only. Falling back to an older stage that
+  // did yield would pair this digest with a stale census, which is the failure
+  // this gate's census-coverage check exists to prevent.
+  const verdict = assessBulkStageYield(stage.detail);
+  if (!verdict.yielded) return { stage: null, blockedReason: 'awaiting-yielding-bulk-stage' };
+  return { stage };
 }
 
 function sourceCensusId(stage: BulkStageRow): string | null {
@@ -915,12 +982,13 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
     startedAt: new Date(startedMs).toISOString(),
   });
   try {
-    const stage = await readCompletedBulkStage(sql, opts.workspaceId, opts.harnessSlug);
+    const gate = await readYieldingBulkStage(sql, opts.workspaceId, opts.harnessSlug);
+    const stage = gate.stage;
     if (!stage) {
       const result: DailyDigestRunResult = {
         runId,
         status: 'blocked',
-        blockedReason: 'awaiting-completed-bulk-stage',
+        blockedReason: gate.blockedReason ?? 'awaiting-completed-bulk-stage',
         sourceBulkStageRunId: null,
         sourceCensusRunId: null,
         corpusSize: 0,
