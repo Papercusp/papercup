@@ -141,6 +141,7 @@ export default defineTool({
 
     const result = await retireFrozenCandidateRepairQueue(inspected.target, inspected.queue);
     const currentFixerAlive = await inspectFixerLiveness(result.current);
+    const casMiss = !result.retired;
     const identity = readIdentity(ctx);
     const auditRecorded = await recordAudit(identity.ownerId, {
       reason: args.reason,
@@ -148,13 +149,17 @@ export default defineTool({
       expectedRepairHead: args.expectedRepairHead,
       expectedUpdatedAtMs: args.expectedUpdatedAtMs,
       retired: result.retired,
-      casMiss: !result.retired,
+      casMiss,
     });
+    // A CAS miss is a storage outcome, not a liveness refusal. The nested `current`
+    // diagnostic describes the row after the failed write; it must not become the
+    // operation's headline reason.
     return json({
       ok: result.retired,
       op: 'retire',
       retired: result.retired,
-      casMiss: !result.retired,
+      casMiss,
+      reason: casMiss ? 'cas-miss' : undefined,
       target: inspected.target,
       auditRecorded,
       current: result.current

@@ -151,6 +151,7 @@ describe('release:repair-queue', () => {
     expect(result).toMatchObject({
       ok: false,
       casMiss: true,
+      reason: 'cas-miss',
       current: {
         fixerSpawnId: 'fixer-2',
         fixerAlive: false,
