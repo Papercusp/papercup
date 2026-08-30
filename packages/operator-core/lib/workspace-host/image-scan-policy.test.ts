@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SEVERITY_RANK } from './artifact-trust';
 import {
+  GCP_IMAGE_SCAN_POLICY,
   WORKSPACE_HOST_IMAGE_SCAN_POLICY,
   evaluateImageScanPolicy,
   type ImageScanPolicy,
@@ -29,7 +30,26 @@ describe('workspace-host image scan policy', () => {
     expect(WORKSPACE_HOST_IMAGE_SCAN_POLICY).toEqual({
       denyVulnerabilitiesAtOrAbove: 'high',
       maxSecretFindings: 0,
+      // FALSE on the SHARED constant, which still gates AWS and Azure. This is an
+      // exact-equality assertion on purpose: flipping this to true here would arm
+      // the coverage requirement for two providers whose scanners never measure it,
+      // and that mistake should fail HERE rather than as a release outage.
+      requireCoverageProof: false,
     });
+  });
+
+  it('scopes the coverage requirement to GCP, leaving the shared thresholds identical', () => {
+    expect(GCP_IMAGE_SCAN_POLICY).toEqual({
+      denyVulnerabilitiesAtOrAbove: 'high',
+      maxSecretFindings: 0,
+      requireCoverageProof: true,
+    });
+    // The thresholds must not drift apart: GCP is held to the SAME bar plus a proof
+    // obligation, not to a different bar.
+    expect(GCP_IMAGE_SCAN_POLICY.denyVulnerabilitiesAtOrAbove).toBe(
+      WORKSPACE_HOST_IMAGE_SCAN_POLICY.denyVulnerabilitiesAtOrAbove,
+    );
+    expect(GCP_IMAGE_SCAN_POLICY.maxSecretFindings).toBe(WORKSPACE_HOST_IMAGE_SCAN_POLICY.maxSecretFindings);
   });
 
   it('ranks severities from artifact-trust, so the two gates cannot disagree', () => {
@@ -120,11 +140,110 @@ describe('workspace-host image scan policy', () => {
 
     it('rejects an unusable policy instead of admitting on it', () => {
       expect(
-        codes(scan({}), { denyVulnerabilitiesAtOrAbove: 'nonsense', maxSecretFindings: 0 } as unknown as ImageScanPolicy),
+        codes(scan({}), {
+          denyVulnerabilitiesAtOrAbove: 'nonsense',
+          maxSecretFindings: 0,
+          requireCoverageProof: false,
+        } as unknown as ImageScanPolicy),
       ).toEqual(['invalid-policy']);
       expect(
-        codes(scan({}), { denyVulnerabilitiesAtOrAbove: 'high', maxSecretFindings: -1 }),
+        codes(scan({}), {
+          denyVulnerabilitiesAtOrAbove: 'high',
+          maxSecretFindings: -1,
+          requireCoverageProof: false,
+        }),
       ).toEqual(['invalid-policy']);
+      // A non-boolean requireCoverageProof is itself an unusable policy: a truthy
+      // string would otherwise silently arm the requirement, and a nullish one
+      // silently disarm it. Neither may be guessed at.
+      expect(
+        codes(scan({}), {
+          denyVulnerabilitiesAtOrAbove: 'high',
+          maxSecretFindings: 0,
+          requireCoverageProof: 'yes',
+        } as unknown as ImageScanPolicy),
+      ).toEqual(['invalid-policy']);
+    });
+  });
+
+  describe('scan coverage must be PROVEN, not assumed (WI-1092039 / D-196)', () => {
+    const covered = { mountedFilesystems: 3, candidateRootProof: '/mnt/candidate/sda1/etc/os-release' };
+
+    it('accepts a GCP scan that proves it mounted an OS root', () => {
+      const verdict = evaluateImageScanPolicy({ ...scan({ low: 4 }), ...covered }, GCP_IMAGE_SCAN_POLICY);
+      expect(verdict.accepted).toBe(true);
+      expect(verdict.failures).toEqual([]);
+    });
+
+    it('DENIES a GCP scan that reports zero findings but never proves it scanned anything', () => {
+      // The defect in one assertion. An empty scan and a clean scan are the same
+      // bytes; without the proof this verdict was `accepted: true`.
+      expect(codes(scan({}), GCP_IMAGE_SCAN_POLICY)).toEqual(['coverage-proof-missing']);
+    });
+
+    it('names WHICH half of the proof is absent, so the failure is actionable', () => {
+      const onlyMounts = evaluateImageScanPolicy(
+        { ...scan({}), mountedFilesystems: 3 },
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(onlyMounts.accepted).toBe(false);
+      expect(onlyMounts.failures[0]?.message).toContain('candidateRootProof');
+      expect(onlyMounts.failures[0]?.message).not.toContain('mountedFilesystems and');
+
+      const onlyProof = evaluateImageScanPolicy(
+        { ...scan({}), candidateRootProof: '/mnt/candidate/sda1/etc/os-release' },
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(onlyProof.failures[0]?.message).toContain('mountedFilesystems');
+    });
+
+    it('treats a zero-mount scan as unmeasured, not as an empty image', () => {
+      expect(codes({ ...scan({}), ...covered, mountedFilesystems: 0 }, GCP_IMAGE_SCAN_POLICY)).toEqual([
+        'coverage-proof-invalid',
+      ]);
+    });
+
+    it('rejects a malformed proof rather than coercing it', () => {
+      for (const bad of [3.5, -1, '3', true, {}, []]) {
+        expect(
+          codes({ ...scan({}), ...covered, mountedFilesystems: bad }, GCP_IMAGE_SCAN_POLICY),
+        ).toEqual(['coverage-proof-invalid']);
+      }
+      for (const bad of ['', '   ', 7, false, {}]) {
+        expect(
+          codes({ ...scan({}), ...covered, candidateRootProof: bad }, GCP_IMAGE_SCAN_POLICY),
+        ).toEqual(['coverage-proof-invalid']);
+      }
+    });
+
+    it('leaves AWS and Azure untouched: absent coverage is not a denial under the shared policy', () => {
+      // The reason this is two policies and not one flag. Both providers emit
+      // NEITHER field (measured 2026-08-30: zero occurrences in aws-ami-release.ts
+      // and azure-compute-gallery-release.ts). Arming the requirement globally would
+      // have turned a hardening into an outage for two blameless release paths.
+      const verdict = evaluateImageScanPolicy(scan({ low: 4 }), WORKSPACE_HOST_IMAGE_SCAN_POLICY);
+      expect(verdict.accepted).toBe(true);
+      expect(codes(scan({ low: 4 }))).toEqual([]);
+    });
+
+    it('still validates a proof that IS present, even when the policy does not require it', () => {
+      // Defence in depth for the providers above: the day an AWS/Azure scanner starts
+      // emitting a coverage value, a malformed one is caught immediately rather than
+      // on the later day someone remembers to flip requireCoverageProof on.
+      expect(codes({ ...scan({}), mountedFilesystems: 0 }, WORKSPACE_HOST_IMAGE_SCAN_POLICY)).toEqual([
+        'coverage-proof-invalid',
+      ]);
+      expect(codes({ ...scan({}), candidateRootProof: '' }, WORKSPACE_HOST_IMAGE_SCAN_POLICY)).toEqual([
+        'coverage-proof-invalid',
+      ]);
+    });
+
+    it('checks coverage BEFORE findings, so an unproven scan cannot be argued about on its counts', () => {
+      // An unproven scan carrying a policy-violating count must fail on the COVERAGE
+      // question. Reporting the threshold breach first would invite the reading that
+      // fixing the vulnerabilities makes this image releasable — it does not, because
+      // nothing here establishes the scan looked at the right disk.
+      expect(codes(scan({ critical: 9 }, 4), GCP_IMAGE_SCAN_POLICY)).toEqual(['coverage-proof-missing']);
     });
   });
 
