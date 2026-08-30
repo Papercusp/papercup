@@ -2706,6 +2706,85 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.checks).toBe(1);
           expect(r.checksDropped).toEqual(['B is stale']);
         });
+
+        /**
+         * EI-21851633473920728: an explicit `rowsMode:'replace'` was silently
+         * downgraded to merge/preserve-carried semantics whenever the accompanying
+         * checkpoint BODY also shrank by more than half — the shrink-guard's
+         * auto-retry (EI-20232176364474286) sets `preservePriorOnShrink`, which the
+         * check-row additivity checks read off the SAME flag as `additiveChecks`,
+         * with no regard for what `rowsMode` the caller actually asked for. The
+         * result: an item already at the 12-row cap kept every STALE row, every
+         * NEWLY SUBMITTED row landed in `checksNotRetained`, and the write still
+         * returned `ok: true` with `checks: 12` — reading as "12 stored" while
+         * `checksNotRetained` in the same payload named all 12 as not stored.
+         *
+         * `loop:checkpoint` refuses the analogous situation outright
+         * (`checkpoint_merge_would_evict_rows`); this pins `work_items:checkpoint`
+         * to the same no-silent-downgrade contract for an EXPLICIT replace.
+         */
+        describe("EI-21851633473920728: rowsMode:'replace' survives the shrink-guard retry", () => {
+          const bigBody = 'a substantial prior narrative body worth preserving. '.repeat(20);
+          const staleRows = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `STALE-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe stale ${i + 1}`,
+          }));
+          const freshRows = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `FRESH-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe fresh ${i + 1}`,
+          }));
+
+          it('refuses (does not silently merge-at-cap) when confirmRetire is not passed', async () => {
+            const prior = withCarryNoteChecks(bigBody, staleRows);
+            expect(prior.length).toBeGreaterThan(500);
+            const readCurrent = installLegacyPrior(prior);
+
+            const r = (await one({
+              id: 'WI-7',
+              checkpoint: 'concise refresh', // << 50% of bigBody — trips the shrink guard
+              rowsMode: 'replace',
+              checks: freshRows,
+            })) as { ok: boolean; errorCode?: string; checksDropped?: string[]; checksNotRetained?: string[] };
+
+            expect(r).toMatchObject({
+              ok: false,
+              errorCode: 'checkpoint_replace_would_drop_rows',
+              checksDropped: staleRows.map((row) => row.claim),
+            });
+            // The self-contradictory shape this bug reported must not appear on a refusal.
+            expect(r.checksNotRetained).toBeUndefined();
+            // Refused ⇒ nothing written.
+            expect(readCurrent()).toBe(prior);
+          });
+
+          it('replaces the stale rows with the supplied ones once confirmRetire:true is passed', async () => {
+            const prior = withCarryNoteChecks(bigBody, staleRows);
+            const readCurrent = installLegacyPrior(prior);
+
+            const r = (await one({
+              id: 'WI-7',
+              checkpoint: 'concise refresh',
+              rowsMode: 'replace',
+              confirmRetire: true,
+              checks: freshRows,
+            })) as { ok: boolean; checks: number; checksNotRetained?: string[]; checksDropped?: string[] };
+
+            expect(r.ok).toBe(true);
+            // `checks` reflects what was actually retained: the SUBMITTED rows, not
+            // the stale count masquerading as success.
+            expect(r.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+            expect(r.checksNotRetained).toBeUndefined();
+            expect(r.checksDropped).toEqual(staleRows.map((row) => row.claim));
+            const stored = readCurrent();
+            expect(stored).toContain('FRESH-01 holds');
+            expect(stored).toContain('FRESH-12 holds');
+            expect(stored).not.toContain('STALE-01 holds');
+            // The narrative body is still preserved beneath the fresh note (the
+            // shrink-guard's own no-loss contract, unaffected by this fix).
+            expect(stored).toContain('concise refresh');
+            expect(stored).toContain(bigBody.trim());
+          });
+        });
       });
 
       it('a re-sent claim INHERITS its stored evidence, so replace-semantics never loses a ✓ you kept', async () => {
