@@ -44,7 +44,12 @@ import { workGroupExists, isWorkGroupMember } from './work-group';
 import { projectClaimHolder, type ClaimHolder } from './claim-holder';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import type { ForceReleaseBasis, HolderLiveness } from '../agent-tools/work_items/release-force-guard';
+import {
+  assessForceRelease,
+  forceRefusalHint,
+  type ForceReleaseBasis,
+  type HolderLiveness,
+} from '../agent-tools/work_items/release-force-guard';
 
 /** P-029/D-060: the holder projection for a live claim row, or null when unheld.
  *  One helper so `plan_items:status` and `plan_items:my_items` cannot render the
@@ -123,6 +128,108 @@ export interface ClaimPlanItemOpts {
     basis: ForceReleaseBasis;
     reason: string;
     holderLiveness?: HolderLiveness;
+  };
+}
+
+/**
+ * A force takeover is a TOOL-LAYER decision plus a low-level exact-CAS mutation.
+ * Keep the preflight here so plan_items:claim and plan_items:convert cannot drift
+ * on the reason/liveness/claim-id contract. This helper deliberately does not
+ * decide assignment or work-group eligibility; claimPlanItem remains the sole
+ * policy coordinator and checks those gates for both ordinary and forced claims.
+ */
+export interface PlanItemForceTakeover {
+  expectedClaimId: string;
+  expectedOwner: string;
+  basis: ForceReleaseBasis;
+  reason: string;
+  holderLiveness?: HolderLiveness;
+}
+
+export type PlanItemForcePreflight =
+  | { ok: true; current: PlanItemClaim | null; forceTakeover?: PlanItemForceTakeover }
+  | {
+      ok: false;
+      code: 'force_state_unknown' | 'force_requires_reason' | 'force_unauthorized';
+      reason: string;
+      holder?: PlanItemClaim;
+      holderLiveness?: HolderLiveness;
+      hint?: string;
+    };
+
+/**
+ * Prepare a checked cross-holder takeover for a plan-item claim. A force flag is
+ * inert for an unclaimed item or the caller's own claim; only a foreign holder
+ * requires a reason plus the shared liveness/authority guard. A claim read failure
+ * fails closed because an unknown holder must never be treated as a vacancy.
+ */
+export async function preparePlanItemForceTakeover(opts: {
+  force?: boolean;
+  reason?: string;
+  callerOwnerId: string;
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  itemId: string;
+}): Promise<PlanItemForcePreflight> {
+  if (!opts.force) return { ok: true, current: null };
+
+  let current: PlanItemClaim | null;
+  try {
+    current = await getClaim(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'force_state_unknown',
+      reason: 'the current plan-item claim could not be read, so force was refused before mutation',
+      hint:
+        `Cannot make a force decision for ${opts.planSlug}#${opts.itemId} because its holder state is unknown ` +
+        `(${error instanceof Error ? error.message : String(error)}). Retry after checking coordination-store health.`,
+    };
+  }
+
+  if (!current || current.owner === opts.callerOwnerId) return { ok: true, current };
+
+  const reason = opts.reason?.trim() ?? '';
+  if (!reason) {
+    return {
+      ok: false,
+      code: 'force_requires_reason',
+      reason: `force would replace ${current.owner}'s plan-item claim — a reason is required`,
+      holder: current,
+      hint: `force would replace ${current.owner}'s claim — pass a \`reason\` the holder and owner can audit (EI-21618203307569668).`,
+    };
+  }
+
+  const verdict = await assessForceRelease({
+    callerOwnerId: opts.callerOwnerId,
+    holderOwnerId: current.owner,
+    workspaceId: opts.workspaceId,
+    // Plan-item claims have no separate progress column. The claim's activity
+    // timestamp is the safest available lower-bound progress signal.
+    itemLastProgressAt: current.lastActivityTs,
+  });
+  if (!verdict.allowed) {
+    return {
+      ok: false,
+      code: 'force_unauthorized',
+      reason: `force was refused because ${current.owner} still has a live plan-item claim`,
+      holder: current,
+      holderLiveness: verdict.holderLiveness,
+      hint: forceRefusalHint(current.owner),
+    };
+  }
+
+  return {
+    ok: true,
+    current,
+    forceTakeover: {
+      expectedClaimId: current.claimId,
+      expectedOwner: current.owner,
+      basis: verdict.basis as ForceReleaseBasis,
+      reason,
+      holderLiveness: verdict.holderLiveness,
+    },
   };
 }
 
@@ -261,41 +368,6 @@ export type ClaimPlanItemResult =
 export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanItemResult> {
   const mode = opts.livenessMode ?? (await harnessLivenessMode(opts.workspaceId, opts.harnessSlug));
 
-  // A force takeover is authorized by the tool layer, where the caller's
-  // identity/liveness/authority can be checked. Bypass assignment/work-group
-  // policy only for that pre-authorized path; the exact claim_id + owner CAS
-  // below still prevents replacing a newer holder.
-  if (opts.forceTakeover) {
-    const takeover = await forceTakeoverClaim({
-      workspaceId: opts.workspaceId,
-      harnessSlug: opts.harnessSlug,
-      planSlug: opts.planSlug,
-      itemId: opts.itemId,
-      owner: opts.owner,
-      ownerLabel: opts.ownerLabel,
-      ownerName: opts.ownerName,
-      intent: opts.intent,
-      livenessMode: mode,
-      ttlSec: opts.ttlSec,
-      expectedClaimId: opts.forceTakeover.expectedClaimId,
-      expectedOwner: opts.forceTakeover.expectedOwner,
-    });
-    if (!takeover.ok) return { status: 'conflict', conflict: takeover.conflict };
-    await notifyImplementingWorkItemHolderOfCollision(opts);
-    return {
-      status: 'claimed',
-      claim: takeover.claim,
-      mode,
-      viaAssignment: false,
-      forced: {
-        holder: opts.forceTakeover.expectedOwner,
-        basis: opts.forceTakeover.basis,
-        reason: opts.forceTakeover.reason,
-        ...(opts.forceTakeover.holderLiveness ? { holderLiveness: opts.forceTakeover.holderLiveness } : {}),
-      },
-    };
-  }
-
   const assignment = await getAssignment(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
 
   let viaAssignment = false;
@@ -332,6 +404,41 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
         };
       }
     }
+  }
+
+  // A force takeover is authorized by the tool layer, where the caller's
+  // identity/liveness/authority can be checked. Assignment and work-group policy
+  // was intentionally evaluated ABOVE this branch: force changes only the
+  // holder-CAS leg, never who is entitled to claim the plan item.
+  if (opts.forceTakeover) {
+    const takeover = await forceTakeoverClaim({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      planSlug: opts.planSlug,
+      itemId: opts.itemId,
+      owner: opts.owner,
+      ownerLabel: opts.ownerLabel,
+      ownerName: opts.ownerName,
+      intent: opts.intent,
+      livenessMode: mode,
+      ttlSec: opts.ttlSec,
+      expectedClaimId: opts.forceTakeover.expectedClaimId,
+      expectedOwner: opts.forceTakeover.expectedOwner,
+    });
+    if (!takeover.ok) return { status: 'conflict', conflict: takeover.conflict };
+    await notifyImplementingWorkItemHolderOfCollision(opts);
+    return {
+      status: 'claimed',
+      claim: takeover.claim,
+      mode,
+      viaAssignment,
+      forced: {
+        holder: opts.forceTakeover.expectedOwner,
+        basis: opts.forceTakeover.basis,
+        reason: opts.forceTakeover.reason,
+        ...(opts.forceTakeover.holderLiveness ? { holderLiveness: opts.forceTakeover.holderLiveness } : {}),
+      },
+    };
   }
 
   // EI-7189: peek at any prior claim BEFORE stealing it — best-effort, advisory
