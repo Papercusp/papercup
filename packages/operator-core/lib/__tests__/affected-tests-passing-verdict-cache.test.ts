@@ -354,7 +354,7 @@ describe('cross-run passing-task verdict reuse', () => {
     buildPassingTaskVerdictIdentity({
       taskKey: '@papercusp/web :: test',
       command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/checkpoint' },
-      gateConfig: { retry: true, timeoutMs: 1000 },
+      gateConfig: passingTaskVerdictCrossRunGateConfig({ retry: true, timeoutMs: 1000 }),
       dependencyHash: 'dep-a',
       ...overrides,
       environment: passingTaskVerdictCrossRunIdentityEnvironment(environment).environment,
