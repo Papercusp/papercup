@@ -347,9 +347,10 @@ async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promi
  * should be made on its own evidence, not inherited from this fix.
  *
  * ORDERING IS LOAD-BEARING: this is consulted only AFTER the winding-down gate
- * (EI-12832 — a paused fleet takes no new work whatever its spec says) and AFTER the
- * `source === 'default'` denyMissing branch. A self-filed bug must never become the
- * hole in either.
+ * (EI-12832 — a paused fleet takes no new work whatever its spec says). For a
+ * `source === 'default'` record it is the only exception to `denyMissing`, and it
+ * remains narrow to a server-attributed self-filed bug; peer/non-bug items still
+ * receive the no-spec refusal.
  */
 export function selfFiledFalloutAdmission(
   item: {
@@ -488,14 +489,23 @@ export async function admitWorkItemForFleetTarget(args: {
   // EI-12832: a paused fleet's member takes no NEW work, whatever its spec says.
   const paused = await fleetControlWindDownRefusal(scope, args.workspaceId);
   if (paused) return paused;
-  if (scope.record.source === 'default') return denyMissing(scope);
   const { getWorkItem } = await import('../work-items');
   const item = await getWorkItem(args.workItemId, args.harness);
+  // A fleet with no authored spec may still absorb a bug it filed itself. Read the
+  // server-backed item before the no-spec refusal so this narrow provenance exception
+  // applies to by-id claims too; peer-filed and non-bug items remain denied.
+  if (scope.record.source === 'default') {
+    if (item && selfFiledFalloutAdmission(item, scope)) {
+      return { allowed: true, scoped: true, scope };
+    }
+    return denyMissing(scope);
+  }
   if (!item) return { allowed: true, scoped: true, scope }; // the claim seam returns not_found
   if (await itemMatchesScope(item, scope)) return { allowed: true, scoped: true, scope };
-  // EI-18732199386440540: a fleet absorbs the fallout bugs it filed itself. Consulted
-  // only here — AFTER the winding-down gate and the denyMissing branch above, both of
-  // which must keep precedence. See selfFiledFalloutAdmission for why `createdBy` (not
+  // EI-18732199386440540: a fleet absorbs the fallout bugs it filed itself. For an
+  // authored spec this is consulted AFTER normal scope matching; for source:'default'
+  // it is the narrow exception handled immediately above. The winding-down gate keeps
+  // precedence in both cases. See selfFiledFalloutAdmission for why `createdBy` (not
   // a caller-supplied field) and why `bug` only.
   if (selfFiledFalloutAdmission(item, scope)) return { allowed: true, scoped: true, scope };
   if (await leaderDispatchedAdmission(item, scope)) return { allowed: true, scoped: true, scope };
@@ -599,7 +609,20 @@ export async function admitSubjectForFleetTarget(args: {
   // EI-12832: a paused fleet's member takes no NEW work, whatever its spec says.
   const paused = await fleetControlWindDownRefusal(scope, args.workspaceId);
   if (paused) return paused;
-  if (scope.record.source === 'default') return denyMissing(scope);
+  // A fleet with no authored spec may still absorb a bug it filed itself. The creator
+  // identity is server-derived, so this remains narrow: peer-filed and non-bug creates
+  // still receive the normal no-spec refusal.
+  if (scope.record.source === 'default') {
+    if (
+      selfFiledFalloutAdmission(
+        { kind: args.subject.kind, createdBy: args.createdBy ?? null },
+        scope,
+      )
+    ) {
+      return { allowed: true, scoped: true, scope };
+    }
+    return denyMissing(scope);
+  }
   if (matchesClaimSpecFilter(args.subject, scope.record.spec.view.filter)) {
     return { allowed: true, scoped: true, scope };
   }
@@ -1889,7 +1912,7 @@ export function fleetScopedMiss(
     windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss,
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
-    // fields (id/kind/title/plan). Copy it verbatim into the idle-park await below.
+    // fields (id/kind/title/plan/tags/goal). Copy it verbatim into the idle-park await below.
     ...(claimablePayloadFilter ? { payloadFilter: claimablePayloadFilter } : {}),
     ...(paused ? { paused: true as const } : {}),
     // EI-15777: surface how many of the caller's OWN pre-pause `work-item:claimable`
