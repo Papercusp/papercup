@@ -426,7 +426,8 @@ describe('runBootstrapLeg', () => {
     // ...and the convergence verdict was STILL computed and persisted.
     const convergencePatches = routinesPatchCallsWithKey('convergence');
     expect(convergencePatches).toHaveLength(1);
-    const patched = routinePatchBody(convergencePatches[0]![1]).convergence as Record<string, unknown>;
+    const patched = routinePatchBodyStrict(convergencePatches[0]![0], convergencePatches[0]![1])
+      .convergence as Record<string, unknown>;
     expect(patched).toMatchObject({ converged: true, judged: 0 });
   });
 
@@ -578,11 +579,8 @@ describe('runBootstrapLeg', () => {
         // the bootstrap one. Select by the metadata KEY each test actually
         // means; a third leg-level patch can then be added without touching
         // any of these assertions.
-        try {
-          return key in routinePatchBody(c[1] as unknown[]);
-        } catch {
-          return false;
-        }
+        const body = routinePatchBodyOrNull(String(c[0]), c[1] as unknown[]);
+        return body !== null && key in body;
       })
       .map((c) => [String(c[0]), c[1] as unknown[]] as [string, unknown[]]);
   }
@@ -591,35 +589,129 @@ describe('runBootstrapLeg', () => {
   }
   function routinesPatch(): { text: string; params: unknown[] } {
     const [call] = routinesPatchCalls();
+    // EI-18804080252964845: this message is only trustworthy because
+    // routinePatchBodyOrNull THROWS on a patch-shaped row it cannot read. While the
+    // parse was swallowed to `false`, a malformed row was filtered out and surfaced
+    // here as an absent write — a missing-write symptom for a malformed-read cause,
+    // which points at whoever last touched the writer instead of at the param shape.
     if (!call) throw new Error('expected a harness_shared.routines metadata patch; none was issued');
     return { text: call[0], params: call[1] };
   }
 
   /**
-   * EI-18799539619330782: the JSONB patch body out of a `patchRoutineMetadata` call.
+   * EI-18804080252964845: the JSONB patch body out of a `patchRoutineMetadata` call,
+   * with the bind index DERIVED from the statement's own `|| $N::jsonb` placeholder
+   * rather than hard-coded here.
    *
-   * Params are `[slug, workspaceId, patch]` — the patch is params[2]. It used to be
-   * params[1], and every reader here open-coded that index, so adding the tenant
-   * scope broke eight assertions at once. Read the body through this helper so the
-   * next param change is one edit, not eight.
+   * The index is a truth the SQL owns (`SET metadata = COALESCE(...) || $3::jsonb`).
+   * EI-18799539619330782 centralised the hand-maintained copy of it; deriving it
+   * removes the copy, so the next param reorder is zero edits instead of one.
+   *
+   * Every failure mode is LOUD, because the one thing this must never do is answer
+   * "no such patch" when it means "I could not read this patch".
    */
-  function routinePatchBody(params: unknown[]): Record<string, unknown> {
-    return JSON.parse(String(params[2])) as Record<string, unknown>;
+  function routinePatchBodyStrict(text: string, params: unknown[]): Record<string, unknown> {
+    const bind = /\|\|\s*\$(\d+)::jsonb/.exec(text);
+    if (!bind) {
+      throw new Error(
+        `routines metadata patch: statement no longer binds its body as '|| $N::jsonb', so the ` +
+          `patch param cannot be located (patchRoutineMetadata SQL shape changed?). SQL: ${text}`,
+      );
+    }
+    const index = Number(bind[1]) - 1;
+    const raw = params[index];
+    try {
+      return JSON.parse(String(raw)) as Record<string, unknown>;
+    } catch {
+      throw new Error(
+        `routines metadata patch: SQL binds the body as $${bind[1]}::jsonb, but params[${index}] ` +
+          `is not JSON (patchRoutineMetadata param shape changed?). Got ${JSON.stringify(String(raw))}; ` +
+          `params=${JSON.stringify(params.map((p) => String(p)))}`,
+      );
+    }
   }
+
+  /**
+   * The classifier used to SELECT rows: `null` means "not a routines metadata patch"
+   * (a SELECT, or some other write against the table) and is quietly excluded — that
+   * is the legitimate job the old blanket `catch { return false }` was also doing.
+   * A row that IS patch-shaped but unreadable throws instead of vanishing.
+   */
+  function routinePatchBodyOrNull(text: string, params: unknown[]): Record<string, unknown> | null {
+    if (!/UPDATE\s+harness_shared\.routines/i.test(text)) return null;
+    return routinePatchBodyStrict(text, params);
+  }
+
+  /** The bootstrap-key patch body — the shape 11 assertions below actually want. */
+  function routinesPatchBody(): Record<string, unknown> {
+    const { text, params } = routinesPatch();
+    return routinePatchBodyStrict(text, params);
+  }
+
+  /**
+   * EI-18804080252964845 — FALSIFIABILITY CONTROLS for the matcher above.
+   *
+   * The original defect was invisible *because* it was silent: a patch whose body
+   * param had moved was swallowed to `false`, dropped from the filtered set, and
+   * reported by `routinesPatch()` as an ABSENT WRITE. Three tests then failed with
+   * dial-path names while a peer held this file's lock editing dial-path logic — so
+   * the evidence read as "the peer broke it" and every part of that was wrong.
+   *
+   * These pin all four branches. Two of them must STAY quiet: a matcher that threw on
+   * every unfamiliar row would break the row SELECTION this filter exists to do, which
+   * is the job the blanket `catch` was also (correctly) performing.
+   *
+   * Calibration against reality is the 11 assertions below, which run this same code
+   * over genuinely-recorded `patchRoutineMetadata` calls — so if the real statement
+   * ever stops binding its body as `|| $N::jsonb`, they fail loudly with a named cause
+   * rather than these synthetic cases passing against a copy that has drifted.
+   */
+  describe('routines metadata patch matcher (EI-18804080252964845)', () => {
+    /** Verbatim shape of the non-history branch of `patchRoutineMetadata`. */
+    const PATCH_SQL = `UPDATE harness_shared.routines
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
+      WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:git-sync'`;
+    const BODY = JSON.stringify({ bootstrap: { ok: true } });
+
+    it('reads the body at the index the SQL itself binds', () => {
+      expect(routinePatchBodyOrNull(PATCH_SQL, [SLUG, WS, BODY])).toMatchObject({
+        bootstrap: { ok: true },
+      });
+    });
+
+    it('NAMES a moved patch param instead of reporting an absent write', () => {
+      // Exactly the EI-18799539619330782 reorder, replayed: the body is still at the
+      // OLD params[1] while the SQL binds $3. Before the fix this returned `false`.
+      const shifted = [SLUG, BODY, WS];
+      expect(() => routinePatchBodyOrNull(PATCH_SQL, shifted)).toThrow(/param shape changed/i);
+      // The whole point: it must NOT be able to masquerade as an absent write.
+      expect(() => routinePatchBodyOrNull(PATCH_SQL, shifted)).not.toThrow(/none was issued/i);
+    });
+
+    it('NAMES a changed SQL shape rather than silently excluding the row', () => {
+      const noBind = `UPDATE harness_shared.routines SET metadata = $9::text WHERE install_slug = $1`;
+      expect(() => routinePatchBodyOrNull(noBind, [SLUG, WS, '{}'])).toThrow(/SQL shape changed/i);
+    });
+
+    it('still excludes a non-patch routines row quietly', () => {
+      const read = `SELECT metadata FROM harness_shared.routines WHERE install_slug = $1`;
+      expect(routinePatchBodyOrNull(read, [SLUG])).toBeNull();
+    });
+  });
 
   it('WI-6284: the bootstrap metadata record NAMES the path that produced it (dialed vs no-topic stub)', async () => {
     // Dialed: a real peer duplex.
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
     openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
     await runBootstrapLeg(SLUG, WS);
-    expect(routinePatchBody(routinesPatch().params).bootstrap).toMatchObject({ path: 'dialed' });
+    expect(routinesPatchBody().bootstrap).toMatchObject({ path: 'dialed' });
 
     // No live swarm topic: the destroyed-stub no-op. Previously indistinguishable
     // from the above except by which optional keys happened to be present.
     unsafeMock.mockClear();
     getBootedHarnessMock.mockReturnValue(null);
     await runBootstrapLeg(SLUG, WS);
-    expect(routinePatchBody(routinesPatch().params).bootstrap).toMatchObject({
+    expect(routinesPatchBody().bootstrap).toMatchObject({
       path: 'no-topic-stub',
     });
   });
@@ -630,7 +722,7 @@ describe('runBootstrapLeg', () => {
     const { text, params } = routinesPatch();
     expect(text).toContain('harness_shared.routines');
     expect(params[0]).toBe(SLUG);
-    const patch = routinePatchBody(params);
+    const patch = routinePatchBodyStrict(text, params);
     expect(patch.bootstrap).toMatchObject({ ok: true, namespaceCount: 1, skippedExisting: 0 });
   });
 
@@ -639,7 +731,7 @@ describe('runBootstrapLeg', () => {
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
     openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
     await runBootstrapLeg(SLUG, WS);
-    const dialedWriter = routinePatchBody(routinesPatch().params).bootstrap as { writer?: unknown };
+    const dialedWriter = routinesPatchBody().bootstrap as { writer?: unknown };
     expect(dialedWriter.writer).toMatchObject({ pid: process.pid });
     expect(dialedWriter.writer).toHaveProperty('instance');
     expect(dialedWriter.writer).toHaveProperty('sha');
@@ -650,7 +742,7 @@ describe('runBootstrapLeg', () => {
     unsafeMock.mockClear();
     getBootedHarnessMock.mockReturnValue(null);
     await runBootstrapLeg(SLUG, WS);
-    const stubWriter = routinePatchBody(routinesPatch().params).bootstrap as { writer?: unknown };
+    const stubWriter = routinesPatchBody().bootstrap as { writer?: unknown };
     expect(stubWriter.writer).toMatchObject({ pid: process.pid });
     expect(stubWriter.writer).toHaveProperty('instance');
     expect(stubWriter.writer).toHaveProperty('sha');
@@ -889,7 +981,7 @@ describe('runBootstrapLeg', () => {
     expect(openHiveGitDuplexToDeviceMock.mock.calls[0][1]).toBe(PEER_DEVICE);
     expect(openHiveGitDuplexToDeviceMock.mock.calls[1][1]).toBe(PEER_DEVICE_2);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
-    const patch = routinePatchBody(routinesPatch().params);
+    const patch = routinesPatchBody();
     expect((patch.bootstrap as { ok?: boolean }).ok).toBe(true);
   });
 
@@ -904,7 +996,7 @@ describe('runBootstrapLeg', () => {
       .mockImplementationOnce(bootstrapOutcome({ ok: true, namespaces: ['abcd1234'], skippedExisting: [], skippedSelf: null, stderr: '' }));
     await runBootstrapLeg(SLUG, WS);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2); // first failed → tried the second
-    const patch = routinePatchBody(routinesPatch().params);
+    const patch = routinesPatchBody();
     expect((patch.bootstrap as { ok?: boolean }).ok).toBe(true); // the final (successful) outcome wins
   });
 
@@ -979,7 +1071,7 @@ describe('runBootstrapLeg', () => {
       expect(warnMsg).toBeTruthy();
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:no-path`);
       expect(warnMsg).toContain(`${PEER_DEVICE_2.slice(0, 8)}:no-path`);
-      const patch = routinePatchBody(routinesPatch().params);
+      const patch = routinesPatchBody();
       expect((patch.bootstrap as { ok?: boolean }).ok).toBe(false);
     } finally {
       warnSpy.mockRestore();
@@ -1017,7 +1109,7 @@ describe('runBootstrapLeg', () => {
       await runBootstrapLeg(SLUG, WS);
 
       expect(bootstrapFromPeerMock).not.toHaveBeenCalled(); // genuinely no dial this tick
-      const patch = routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+      const patch = routinesPatchBody().bootstrap as Record<string, unknown>;
       // Honest per-tick facts: nothing was dialed, so nothing climbed THIS tick.
       expect(patch).toMatchObject({ ok: false, rungs: 0, path: 'dialed' });
       // Carried forward from the prior tick's durable disk state — NOT zeroed.
@@ -1314,7 +1406,7 @@ describe('runBootstrapLeg', () => {
       openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(true));
       sqlTagMock.mockResolvedValue(prior ? [{ bootstrap: prior }] : []);
       await runBootstrapLeg(SLUG, WS);
-      return routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+      return routinesPatchBody().bootstrap as Record<string, unknown>;
     }
 
     it('counts CONSECUTIVE misses across ticks and stamps when the run started', async () => {
@@ -1348,7 +1440,7 @@ describe('runBootstrapLeg', () => {
 
         await runBootstrapLeg(SLUG, WS);
 
-        const patch = routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+        const patch = routinesPatchBody().bootstrap as Record<string, unknown>;
         expect(patch.consecutiveMisses).toBe(0);
         expect(patch.firstMissAt).toBeNull();
       } finally {
@@ -1516,7 +1608,7 @@ describe('runBootstrapLeg', () => {
 
         await runBootstrapLeg(SLUG, WS);
 
-        const patch = routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+        const patch = routinesPatchBody().bootstrap as Record<string, unknown>;
         expect(patch.path).toBe('no-topic-stub');
         expect(patch.consecutiveMisses).toBe(7);
         expect(patch.firstMissAt).toBe(1_000);

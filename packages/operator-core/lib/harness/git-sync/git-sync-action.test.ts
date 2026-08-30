@@ -346,6 +346,26 @@ import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../
 
 // --- helpers over the captured PG writes ------------------------------------------
 
+/**
+ * EI-18804080252964845: a JSONB bind read out of a captured write, by index.
+ *
+ * These indices are a copy of a truth the SQL owns, so a param reorder moves them
+ * (EI-18799539619330782 moved the routine patch from params[1] to params[2]). A bare
+ * `JSON.parse` then fails as `SyntaxError: Unexpected token 'w'` from inside a `.map`,
+ * which names neither the reader nor the cause. Fail with both instead.
+ */
+const jsonParam = (label: string, params: unknown[], index: number): Record<string, unknown> => {
+  const raw = params[index];
+  try {
+    return JSON.parse(String(raw)) as Record<string, unknown>;
+  } catch {
+    throw new Error(
+      `${label}: params[${index}] is not JSON (param shape changed?). Got ${JSON.stringify(String(raw))}; ` +
+        `params=${JSON.stringify(params.map((p) => String(p)))}`,
+    );
+  }
+};
+
 /** ALL JSONB patches applied to the routine's metadata, in order (breadcrumb included).
  *
  *  EI-18799539619330782: patchRoutineMetadata's params are `[slug, workspaceId, patch]`
@@ -353,7 +373,7 @@ import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../
 const allRoutinePatches = (): Array<Record<string, unknown>> =>
   unsafeCalls
     .filter((c) => c.text.includes('UPDATE harness_shared.routines'))
-    .map((c) => JSON.parse(String(c.params[2])) as Record<string, unknown>);
+    .map((c) => jsonParam('routine metadata patch', c.params, 2));
 
 /** EI-18799539619330782: the workspace_id every routine-metadata UPDATE was scoped to.
  *  An unscoped UPDATE is unbounded across tenants sharing an install_slug. */
@@ -376,7 +396,7 @@ const routinePatches = (): Array<Record<string, unknown>> =>
 const routineHistoryEntries = (): Array<Record<string, unknown>> =>
   unsafeCalls
     .filter((c) => c.text.includes("'git_sync_history'"))
-    .map((c) => JSON.parse(String(c.params[3])) as Record<string, unknown>);
+    .map((c) => jsonParam('routine history entry', c.params, 3));
 
 /** EI-21049559233457671: the whole-fire marker is intentionally asserted separately
  * from the local-stage outcome patch. */
@@ -389,7 +409,7 @@ const gitSyncActivityPatches = (): Array<Record<string, unknown>> =>
 const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Record<string, unknown> }> =>
   unsafeCalls
     .filter((c) => c.text.includes('INSERT INTO harness_shared.harness_escalations'))
-    .map((c) => ({ text: c.text, params: c.params, body: JSON.parse(String(c.params[2])) as Record<string, unknown> }));
+    .map((c) => ({ text: c.text, params: c.params, body: jsonParam('escalation upsert', c.params, 2) }));
 
 /** Escalation clears — each entry is the `kinds` array passed to the UPDATE. */
 const escalationClears = (): string[][] =>
