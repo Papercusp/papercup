@@ -30,6 +30,7 @@ vi.mock('../coordination/identity', () => ({
 
 import { readIssueClaimability } from '../../scheduler/get-next';
 import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const readM = vi.mocked(readIssueClaimability);
 const recM = vi.mocked(resolveFleetClaimSpec);
@@ -140,8 +141,8 @@ beforeEach(() => {
     admitted: admittedValue,
     ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
   })) as never);
-  recM.mockResolvedValue(null as never);
-  candM.mockResolvedValue([] as never);
+  mockResolvedTyped(recM, null);
+  mockResolvedTyped(candM, []);
 });
 
 describe('work_items:claimable handler', () => {
@@ -288,8 +289,8 @@ describe('work_items:claimable handler', () => {
   });
 
   it('an unrecognized `spec` (neither namespace matches) ERRORS with candidates — never falls back to the whole backlog', async () => {
-    recM.mockResolvedValue(null as never);
-    candM.mockResolvedValue([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }] as never);
+    mockResolvedTyped(recM, null);
+    mockResolvedTyped(candM, [{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }]);
     const out = await run({ harness: 'papercup', spec: 'bogus-spec' });
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/no unique fleet or claim-spec named 'bogus-spec'/);
@@ -302,15 +303,15 @@ describe('work_items:claimable handler', () => {
 
   it('an AMBIGUOUS revN shorthand ERRORS with candidates filtered to the true match set for that revision — EI-21857753284071679', async () => {
     // resolveFleetClaimSpec rejects `rev13` as ambiguous (>=2 live fleet specs at revision 13).
-    recM.mockResolvedValue(null as never);
+    mockResolvedTyped(recM, null);
     // The general most-recently-updated-20 window only surfaces ONE of the (actually 3) live
     // revision-13 fleets — that's the exact bug: listFleetClaimSpecCandidates must be called
     // WITH revision:13 so the full match set (the real cause of the ambiguity) is returned.
-    candM.mockResolvedValue([
+    mockResolvedTyped(candM, [
       { fleetSlug: 'goal-drain-work-on-everything-070565', specId: null, revision: 13 },
       { fleetSlug: 'nonp2p-bug-drain-0816', specId: null, revision: 13 },
       { fleetSlug: 'p2p-parity-lanes', specId: null, revision: 13 },
-    ] as never);
+    ]);
     const out = await run({ harness: 'papercup', spec: 'rev13' });
     expect(out.ok).toBe(false);
     expect(candM).toHaveBeenCalledWith({ workspaceId: 'ws-1', revision: 13 });
