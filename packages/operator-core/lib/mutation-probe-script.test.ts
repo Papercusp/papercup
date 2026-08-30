@@ -242,6 +242,56 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'true']);
     expect(code).toBe(2);
   });
+
+  /**
+   * EI-21882388979504012 — a test runner that cannot COLLECT its subject exits
+   * nonzero for MISUSE (vitest's "No test files found, exiting with code 1" is
+   * the reproduced case: copy-out mode moves the mutant under a scratch dir a
+   * project's include globs cannot reach), and that nonzero was previously
+   * indistinguishable by exit code alone from a genuine assertion failure —
+   * the probe scored it "MUTANT CAUGHT" while nothing was ever tested.
+   */
+  it('reports a RUNNER-MISUSE guard exit (e.g. "no test files found") as harness-error, never as a caught mutant', () => {
+    // Baseline (PAPERCUSP_MUTATION_PHASE=baseline) runs against the ORIGINAL
+    // file path directly (not {}), so the genuine grep succeeds there. Only
+    // the mutant phase hits the simulated runner-misuse branch — this is the
+    // exact shape of a runner that can collect the tracked path but not the
+    // scratch-dir copy.
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then echo "No test files found, exiting with code 1"; exit 1; fi; grep -q "^beta$" {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/RUNNER-MISUSE/i);
+    expect(out).toMatch(/No test files found/);
+    expect(out).toMatch(/verdict=harness-error/);
+    // The MUTATION_PROBE_RESULT line joins multi-token hits with commas
+    // (spaces would break its key=value parsing).
+    expect(out).toMatch(/runner_misuse=No,test,files,found/);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('calibration: a GENUINE mutant-phase assertion failure (no misuse marker in the output) is still scored CAUGHT', () => {
+    // Same shape as the misuse test above but the mutant branch fails via a
+    // real assertion, not a misuse string — proving the new detector does not
+    // over-trigger and swallow a legitimate catch.
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then grep -q "^beta$" {}; else true; fi',
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/MUTANT CAUGHT/);
+    expect(out).not.toMatch(/RUNNER-MISUSE/i);
+  });
 });
 
 describe('mutation-probe.sh — historical source mode', () => {
@@ -295,6 +345,36 @@ describe('mutation-probe.sh — historical source mode', () => {
     expect(out).toMatch(/absence_control=NEW_GUARD/);
     expect(out).toMatch(/positive_controls=1/);
     expect(out).toMatch(new RegExp(`against_commit=${history.oldSha}`));
+  });
+
+  /**
+   * EI-21882388979504012 — the same runner-MISUSE shape is exposed on the
+   * historical guard run, which also executes against a frozen SNAPSHOT path
+   * a project-relative runner cannot always collect. PAPERCUSP_MUTATION_PHASE
+   * is set to "historical" for exactly that one run (run_snapshot_command
+   * historical ...), so this keys off the same marker the script observes.
+   */
+  it('reports a RUNNER-MISUSE historical guard exit as harness-error, never as HISTORICAL SOURCE CAUGHT', () => {
+    const history = makeHistoricalRepo();
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-last-without',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      'grep -q "^stable-control$" {}',
+      '--test',
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = historical ]; then echo "No test files found, exiting with code 1"; exit 1; fi; grep -q "^NEW_GUARD$" {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/mode=historical/);
+    expect(out).toMatch(/RUNNER-MISUSE/i);
+    expect(out).toMatch(/No test files found/);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).toMatch(/runner_misuse=No,test,files,found/);
+    expect(out).not.toMatch(/HISTORICAL SOURCE CAUGHT/);
   });
 
   it('refuses historical mode without a positive control or calibration before running the guard', () => {

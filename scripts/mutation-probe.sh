@@ -991,7 +991,7 @@ if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
       include globs are usually relative to the repo root, so a path outside
       it silently matches nothing. A command exiting 1 for 'no tests ran' is
       INDISTINGUISHABLE by exit code alone from a genuine assertion failure,
-      so this script refuses to score it as MUTANT CAUGHT.
+      so this script refuses to credit it as a caught mutant.
 
       FIX: make --test able to run against an ARBITRARY path directly (e.g.
       \`npx vitest run {}\` rather than a bare \`npm test\` that globs from the
