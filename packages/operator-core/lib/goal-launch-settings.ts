@@ -449,6 +449,59 @@ export interface GoalBudgetTruth {
   spentCentsAt: string | null;
 }
 
+export type GoalPlanPlacementState =
+  | 'unplaced'
+  | 'admitting'
+  | 'independently-led'
+  | 'working'
+  | 'blocked'
+  | 'terminal';
+
+export type GoalPlanPlacementRepairAction =
+  | 'none'
+  | 'acquire-plan-lane'
+  | 'launch-spawned-leader'
+  | 'resume-partial-launch'
+  | 'restore-spawned-leader'
+  | 'reconcile-plan-lane-holder'
+  | 'resolve-plan-blockers';
+
+/**
+ * The compiled placement truth for one worklist plan. This is deliberately a
+ * receipt over the existing plan-item lease + fleet launch ledgers, not a new
+ * placement store. `reconciliation.action` is the one idempotent next repair a
+ * GOAL holder should perform after refreshing the named canonical records.
+ */
+export interface GoalPlanPlacement {
+  state: GoalPlanPlacementState;
+  fleet: {
+    slug: string;
+    controlState: string | null;
+    leaderOwnerId: string | null;
+    leaderLive: boolean;
+    liveMembers: number;
+    target: number | null;
+  } | null;
+  activeLane: {
+    itemId: string;
+    ownerId: string;
+    ownerFleet: string | null;
+    holderLive: boolean;
+    expiresAt: string | null;
+  } | null;
+  launchTransaction: {
+    transactionId: string | null;
+    state: 'launching' | 'partial' | 'verified' | null;
+    retryOwnerIds: string[];
+    nextAction: string | null;
+  } | null;
+  reconciliation: {
+    consistent: boolean;
+    action: GoalPlanPlacementRepairAction;
+    reason: string;
+  };
+}
+
 /**
  * P-012 (goal-mode-hardening-2026-08-10): the ONE compact portfolio snapshot
  * handed to a GOAL holder at launch and on every coord:orient. It is a read
@@ -477,6 +530,7 @@ export interface GoalPortfolioBrief {
     next: { id: string; text: string; phase: string | null; blockedBy: string[] } | null;
     counts: { todo: number; wip: number; blocked: number; needsHuman: number; done: number };
     ambiguousMatches: number;
+    placement: GoalPlanPlacement;
   }>;
   pots: Array<{ harness: string; role: 'owner' | 'contributing'; note: string | null }>;
   drainFleet: {
@@ -535,12 +589,141 @@ const portfolioObject = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const portfolioArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const portfolioString = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null);
+const portfolioBoolean = (value: unknown): boolean => value === true;
 const portfolioNumber = (value: unknown): number => {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : 0;
   return Number.isFinite(n) ? n : 0;
 };
 
-function parsePortfolioWorklist(raw: unknown): GoalPortfolioBrief['worklist'] {
+const portfolioJsonObject = (value: unknown): Record<string, unknown> | null => {
+  const direct = portfolioObject(value);
+  if (direct) return direct;
+  if (typeof value !== 'string') return null;
+  try {
+    return portfolioObject(JSON.parse(value));
+  } catch {
+    return null;
+  }
+};
+
+/** Pure compiler over the canonical records already assembled by the portfolio read. */
+export function compileGoalPlanPlacement(args: {
+  status: string | null;
+  itemStatuses: readonly string[];
+  actionableItemId: string | null;
+  source: unknown;
+  now?: Date;
+}): GoalPlanPlacement {
+  const source = portfolioObject(args.source) ?? {};
+  const nowMs = (args.now ?? new Date()).getTime();
+  const claims = portfolioArray(source.claims)
+    .map(portfolioObject)
+    .filter((claim): claim is Record<string, unknown> => claim !== null)
+    .filter((claim) => {
+      const expiresAt = portfolioString(claim.expiresAt);
+      return !expiresAt || Date.parse(expiresAt) > nowMs;
+    });
+  const laneRaw = args.actionableItemId
+    ? (claims.find((claim) => portfolioString(claim.itemId) === args.actionableItemId) ?? null)
+    : null;
+  const activeLane = laneRaw
+    ? {
+        itemId: portfolioString(laneRaw.itemId)!,
+        ownerId: portfolioString(laneRaw.ownerId) ?? 'unknown',
+        ownerFleet: portfolioString(laneRaw.fleetSlug),
+        holderLive: portfolioBoolean(laneRaw.holderLive),
+        expiresAt: portfolioString(laneRaw.expiresAt),
+      }
+    : null;
+  const fleetRaw = portfolioObject(source.fleet);
+  const fleetSlug = portfolioString(fleetRaw?.slug);
+  const fleet =
+    fleetRaw && fleetSlug
+      ? {
+          slug: fleetSlug,
+          controlState: portfolioString(fleetRaw.controlState),
+          leaderOwnerId: portfolioString(fleetRaw.leaderOwnerId),
+          leaderLive: portfolioBoolean(fleetRaw.leaderLive),
+          liveMembers: portfolioNumber(fleetRaw.liveMembers),
+          target: fleetRaw.target == null ? null : portfolioNumber(fleetRaw.target),
+        }
+      : null;
+  const transactionRaw = portfolioJsonObject(fleetRaw?.launchTransaction);
+  const transactionState = portfolioString(transactionRaw?.state);
+  const recoveryRaw = portfolioObject(transactionRaw?.recovery);
+  const launchTransaction: GoalPlanPlacement['launchTransaction'] = transactionRaw
+    ? {
+        transactionId: portfolioString(transactionRaw.transactionId),
+        state:
+          transactionState === 'launching' || transactionState === 'partial' || transactionState === 'verified'
+            ? transactionState
+            : null,
+        retryOwnerIds: portfolioArray(recoveryRaw?.retryOwnerIds).map(String).filter(Boolean),
+        nextAction: portfolioString(recoveryRaw?.nextAction),
+      }
+    : null;
+
+  const normalizedStatus = args.status?.trim().toLowerCase() ?? '';
+  const normalizedItems = args.itemStatuses.map((status) => status.trim().toLowerCase());
+  const terminal =
+    normalizedStatus === 'done' ||
+    normalizedStatus === 'shipped' ||
+    normalizedStatus === 'superseded' ||
+    (normalizedItems.length > 0 && normalizedItems.every((status) => status === 'done' || status === 'dropped'));
+  const blocked = !terminal && args.actionableItemId == null;
+
+  let state: GoalPlanPlacementState;
+  let action: GoalPlanPlacementRepairAction;
+  let reason: string;
+  if (terminal) {
+    state = 'terminal';
+    action = 'none';
+    reason = 'The plan is terminal; no placement repair is required.';
+  } else if (blocked) {
+    state = 'blocked';
+    action = 'resolve-plan-blockers';
+    reason = 'The plan has non-terminal work but no dependency-free todo item.';
+  } else if (!activeLane) {
+    state = 'unplaced';
+    action = 'acquire-plan-lane';
+    reason = `Acquire the ${args.actionableItemId} plan-item lease before fleet admission.`;
+  } else if (!fleet) {
+    state = 'admitting';
+    action = 'launch-spawned-leader';
+    reason = `The ${activeLane.itemId} lease is held; launch its independently led fleet with leader:'spawn'.`;
+  } else if (launchTransaction?.state === 'launching' || launchTransaction?.state === 'partial') {
+    state = 'admitting';
+    action = 'resume-partial-launch';
+    reason =
+      launchTransaction.nextAction ?? 'Resume the durable fleet launch transaction without replaying verified members.';
+  } else if (!fleet.leaderLive) {
+    state = 'admitting';
+    action = 'restore-spawned-leader';
+    reason = `Fleet ${fleet.slug} has no live delegated leader; restore one without moving the GOAL steward.`;
+  } else if (!activeLane.holderLive) {
+    state = 'blocked';
+    action = 'reconcile-plan-lane-holder';
+    reason = `The ${activeLane.itemId} lease holder is not live; restore it or reclaim the lane through the canonical lease authority.`;
+  } else {
+    const hasWip = normalizedItems.some((status) => status === 'wip');
+    state = hasWip ? 'working' : 'independently-led';
+    action = 'none';
+    reason =
+      state === 'working'
+        ? `Fleet ${fleet.slug} has live delegated leadership and is working the leased plan lane.`
+        : `Fleet ${fleet.slug} has live delegated leadership; the plan lane is ready for its next work transition.`;
+  }
+
+  return {
+    state,
+    fleet,
+    activeLane,
+    launchTransaction,
+    reconciliation: { consistent: action === 'none', action, reason },
+  };
+}
+
+function parsePortfolioWorklist(raw: unknown, now: Date): GoalPortfolioBrief['worklist'] {
   return portfolioArray(raw).flatMap((value) => {
     const row = portfolioObject(value);
     const ref = portfolioString(row?.ref);
@@ -564,6 +747,19 @@ function parsePortfolioWorklist(raw: unknown): GoalPortfolioBrief['worklist'] {
       const blockedBy = portfolioArray(item.blockedBy).map(String).filter(Boolean);
       return status === 'todo' && blockedBy.length === 0;
     });
+    // A WIP item is the fleet's current lane. Only fall through to the next
+    // dependency-free todo when nothing is already underway; otherwise a live
+    // WIP lease would be hidden behind the subsequent todo and compile as a
+    // false `unplaced` state.
+    const laneRow = items.find((item) => (portfolioString(item.status) ?? 'todo') === 'wip') ?? nextRow;
+    const next = nextRow
+      ? {
+          id: portfolioString(nextRow.id) ?? 'unknown',
+          text: portfolioString(nextRow.text) ?? '',
+          phase: portfolioString(nextRow.phase),
+          blockedBy: portfolioArray(nextRow.blockedBy).map(String).filter(Boolean),
+        }
+      : null;
     return [
       {
         ref,
@@ -572,16 +768,16 @@ function parsePortfolioWorklist(raw: unknown): GoalPortfolioBrief['worklist'] {
         slug,
         title: portfolioString(row.title),
         status: portfolioString(row.status),
-        next: nextRow
-          ? {
-              id: portfolioString(nextRow.id) ?? 'unknown',
-              text: portfolioString(nextRow.text) ?? '',
-              phase: portfolioString(nextRow.phase),
-              blockedBy: portfolioArray(nextRow.blockedBy).map(String).filter(Boolean),
-            }
-          : null,
+        next,
         counts,
         ambiguousMatches: portfolioNumber(row.ambiguousMatches),
+        placement: compileGoalPlanPlacement({
+          status: portfolioString(row.status),
+          itemStatuses: items.map((item) => portfolioString(item.status) ?? 'todo'),
+          actionableItemId: laneRow ? (portfolioString(laneRow.id) ?? 'unknown') : null,
+          source: row.placement,
+          now,
+        }),
       },
     ];
   });
@@ -591,7 +787,10 @@ function parsePortfolioWorklist(raw: unknown): GoalPortfolioBrief['worklist'] {
 export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
   const plans = brief.worklist.length
     ? brief.worklist
-        .map((p) => `${p.ordinal}. ${p.ref} [${p.status ?? 'missing'}]${p.next ? ` next=${p.next.id}` : ''}`)
+        .map(
+          (p) =>
+            `${p.ordinal}. ${p.ref} [${p.status ?? 'missing'}; placement=${p.placement.state}]${p.next ? ` next=${p.next.id}` : ''}`,
+        )
         .join('; ')
     : 'none declared';
   const priorities = brief.priorities.length
@@ -713,7 +912,68 @@ export async function readGoalPortfolioBrief(args: {
                               WHERE pi.workspace_id = p.workspace_id
                                 AND pi.harness_slug = p.harness_slug
                                 AND pi.plan_slug = p.plan_slug
-                           ), '[]'::jsonb)
+                           ), '[]'::jsonb),
+                           'placement', jsonb_build_object(
+                             'claims', COALESCE((
+                               SELECT jsonb_agg(jsonb_build_object(
+                                        'itemId', pic.item_id,
+                                        'ownerId', pic.owner,
+                                        'expiresAt', pic.expires_ts,
+                                        'fleetSlug', claim_presence.fleet_slug,
+                                        'holderLive', claim_presence.heartbeat_at >= now() - interval '10 minutes'
+                                      ) ORDER BY pic.item_id)
+                                 FROM harness_shared.plan_item_claims pic
+                                 LEFT JOIN LATERAL (
+                                   SELECT cp.fleet_slug, cp.heartbeat_at
+                                     FROM harness_shared.coord_presence cp
+                                    WHERE cp.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])
+                                      AND cp.owner_id = pic.owner
+                                    ORDER BY cp.heartbeat_at DESC
+                                    LIMIT 1
+                                 ) claim_presence ON true
+                                WHERE pic.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])
+                                  AND pic.harness_slug = p.harness_slug
+                                  AND pic.plan_slug = p.plan_slug
+                                  AND pic.expires_ts > now()
+                             ), '[]'::jsonb),
+                             'fleet', (
+                               SELECT jsonb_build_object(
+                                        'slug', af.fleet_slug,
+                                        'controlState', af.control_state,
+                                        'leaderOwnerId', af.leader_owner_id,
+                                        'leaderLive', leader_presence.heartbeat_at >= now() - interval '10 minutes',
+                                        'liveMembers', (
+                                          SELECT count(DISTINCT member_presence.owner_id)
+                                            FROM harness_shared.coord_presence member_presence
+                                           WHERE member_presence.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])
+                                             AND member_presence.fleet_slug = af.fleet_slug
+                                             AND member_presence.heartbeat_at >= now() - interval '10 minutes'
+                                        ),
+                                        'target', af.headcount_target,
+                                        'launchTransaction', af.last_launch_transaction
+                                      )
+                                 FROM harness_shared.agent_fleets af
+                                 LEFT JOIN LATERAL (
+                                   SELECT cp.heartbeat_at
+                                     FROM harness_shared.coord_presence cp
+                                    WHERE cp.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])
+                                      AND cp.owner_id = af.leader_owner_id
+                                    ORDER BY cp.heartbeat_at DESC
+                                    LIMIT 1
+                                 ) leader_presence ON true
+                                WHERE af.workspace_id = g.workspace_id
+                                  AND (CASE jsonb_typeof(af.headcount_config)
+                                         WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb
+                                         ELSE af.headcount_config
+                                       END)->>'plan' = p.plan_slug
+                                  AND (CASE jsonb_typeof(af.headcount_config)
+                                         WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb
+                                         ELSE af.headcount_config
+                                       END)->>'harness' = p.harness_slug
+                                ORDER BY af.updated_at DESC
+                                LIMIT 1
+                             )
+                           )
                          ) AS plan_row
                     FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb))
                          WITH ORDINALITY AS wr(ref, ordinality)
@@ -826,7 +1086,8 @@ export async function readGoalPortfolioBrief(args: {
       }
     }
 
-    const worklist = parsePortfolioWorklist(row.plans);
+    const assembledAt = args.now ?? new Date();
+    const worklist = parsePortfolioWorklist(row.plans, assembledAt);
     for (const plan of worklist) {
       if (!plan.title) degradedReasons.push(`worklist ref ${plan.ref} does not resolve`);
       if (plan.ambiguousMatches > 1 && !plan.ref.slice('plan:'.length).includes('/')) {
@@ -877,9 +1138,8 @@ export async function readGoalPortfolioBrief(args: {
     else if (!fleetRaw || portfolioNumber(fleetRaw.live) === 0)
       priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
     if (queue.needsHuman > 0) priorities.push(`Report ${queue.needsHuman} owner-walled queue item(s) with exact asks.`);
-    const nextPlan = worklist.find((plan) => plan.next);
-    if (nextPlan?.next)
-      priorities.push(`Place ${nextPlan.ref}#${nextPlan.next.id} with an independently led plan fleet.`);
+    const repairPlan = worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
+    if (repairPlan) priorities.push(`Reconcile ${repairPlan.ref}: ${repairPlan.placement.reconciliation.reason}`);
     if ((claimable ?? 0) > 0)
       priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);
     if (queue.blocked > 0)
@@ -891,7 +1151,7 @@ export async function readGoalPortfolioBrief(args: {
 
     return {
       schemaVersion: 1,
-      assembledAt: (args.now ?? new Date()).toISOString(),
+      assembledAt: assembledAt.toISOString(),
       goal: {
         id: args.goalId,
         title: launch.goalBrief.title,

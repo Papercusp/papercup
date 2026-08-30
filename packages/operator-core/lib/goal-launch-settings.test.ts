@@ -63,6 +63,7 @@ import {
   GOAL_LAUNCH_ROLES,
   isGoalLaunchRole,
   readGoalPortfolioBrief,
+  compileGoalPlanPlacement,
   readGoalLaunchSettings,
   renderGoalPortfolioBrief,
   writeGoalLaunchSettings,
@@ -830,10 +831,11 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
   };
 
   it('assembles ordered plan state, queue/fleet truth, continuity, and actionable priorities', async () => {
+    const seen: string[] = [];
     const brief = await readGoalPortfolioBrief({
       workspaceId: WS,
       goalId: 'goal-1',
-      sql: mockSql({ portfolio: { 'goal-1': portfolioRow } }),
+      sql: mockSql({ portfolio: { 'goal-1': portfolioRow }, seen }),
       now: NOW,
       launch,
     });
@@ -848,6 +850,10 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
           ref: 'plan:papercusp/alpha',
           next: { id: 'P-002', text: 'Place next', phase: 'Build', blockedBy: [] },
           counts: { todo: 2, wip: 0, blocked: 0, needsHuman: 0, done: 1 },
+          placement: {
+            state: 'unplaced',
+            reconciliation: { consistent: false, action: 'acquire-plan-lane' },
+          },
         },
       ],
       drainFleet: { slug: 'goal-1-drain', exists: true, live: 2, working: 1 },
@@ -859,7 +865,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
     expect(brief?.priorities).toEqual([
       'Report 1 owner-walled queue item(s) with exact asks.',
-      'Place plan:papercusp/alpha#P-002 with an independently led plan fleet.',
+      'Reconcile plan:papercusp/alpha: Acquire the P-002 plan-item lease before fleet admission.',
       'Triage 1 blocked/cursed queue item(s) and remove stranded blockers.',
       'Grade or route 2 pending Blender idea(s).',
     ]);
@@ -870,9 +876,130 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
 
     const rendered = renderGoalPortfolioBrief(brief!);
     expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
-    expect(rendered).toContain('1. plan:papercusp/alpha [active] next=P-002');
+    expect(rendered).toContain('1. plan:papercusp/alpha [active; placement=unplaced] next=P-002');
     expect(rendered).toContain('Queue: total=7; terminal=2; in-flight=2; blocked=1; needs-human=1');
     expect(rendered).toContain('CURRENT ACTION PRIORITIES');
+
+    const portfolioSql = seen.find((statement) => statement.includes('WITH goal_row AS')) ?? '';
+    expect(portfolioSql).toContain("pic.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
+    expect(portfolioSql).toContain("cp.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
+    expect(portfolioSql).toContain('count(DISTINCT member_presence.owner_id)');
+    expect(portfolioSql).toContain("END)->>'plan' = p.plan_slug");
+  });
+
+  it('compiles every placement state and one deterministic repair from existing ledgers', () => {
+    const base = {
+      status: 'active',
+      itemStatuses: ['done', 'todo'],
+      actionableItemId: 'P-002',
+      now: NOW,
+    };
+    const lane = {
+      itemId: 'P-002',
+      ownerId: 'su-plan',
+      fleetSlug: 'alpha-fleet',
+      holderLive: true,
+      expiresAt: '2026-08-28T02:40:00.000Z',
+    };
+    const fleet = {
+      slug: 'alpha-fleet',
+      controlState: 'active',
+      leaderOwnerId: 'su-plan',
+      leaderLive: true,
+      liveMembers: 2,
+      target: 3,
+      launchTransaction: {
+        transactionId: 'tx-1',
+        state: 'verified',
+        recovery: { retryOwnerIds: [], nextAction: 'none' },
+      },
+    };
+
+    expect(compileGoalPlanPlacement({ ...base, source: {} })).toMatchObject({
+      state: 'unplaced',
+      reconciliation: { action: 'acquire-plan-lane' },
+    });
+    expect(compileGoalPlanPlacement({ ...base, source: { claims: [lane] } })).toMatchObject({
+      state: 'admitting',
+      reconciliation: { action: 'launch-spawned-leader' },
+    });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        source: {
+          claims: [lane],
+          fleet: {
+            ...fleet,
+            launchTransaction: {
+              transactionId: 'tx-partial',
+              state: 'partial',
+              recovery: { retryOwnerIds: ['su-retry'], nextAction: 'retry only su-retry' },
+            },
+          },
+        },
+      }),
+    ).toMatchObject({
+      state: 'admitting',
+      launchTransaction: { retryOwnerIds: ['su-retry'] },
+      reconciliation: { action: 'resume-partial-launch', reason: 'retry only su-retry' },
+    });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        source: { claims: [lane], fleet },
+      }),
+    ).toMatchObject({ state: 'independently-led', reconciliation: { action: 'none', consistent: true } });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        itemStatuses: ['done', 'wip'],
+        source: { claims: [lane], fleet },
+      }),
+    ).toMatchObject({ state: 'working', reconciliation: { action: 'none', consistent: true } });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        source: { claims: [{ ...lane, holderLive: false }], fleet },
+      }),
+    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'reconcile-plan-lane-holder' } });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        itemStatuses: ['done', 'blocked'],
+        actionableItemId: null,
+        source: { claims: [lane], fleet },
+      }),
+    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-blockers' } });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        status: 'shipped',
+        itemStatuses: ['done', 'done'],
+        actionableItemId: null,
+        source: { claims: [lane], fleet },
+      }),
+    ).toMatchObject({ state: 'terminal', reconciliation: { action: 'none', consistent: true } });
+  });
+
+  it('ignores an expired actionable lease instead of compiling a false placement', () => {
+    expect(
+      compileGoalPlanPlacement({
+        status: 'active',
+        itemStatuses: ['todo'],
+        actionableItemId: 'P-001',
+        now: NOW,
+        source: {
+          claims: [
+            {
+              itemId: 'P-001',
+              ownerId: 'su-dead',
+              holderLive: false,
+              expiresAt: '2026-08-28T02:20:00.000Z',
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({ state: 'unplaced', activeLane: null, reconciliation: { action: 'acquire-plan-lane' } });
   });
 
   it('returns an explicit degraded snapshot instead of dropping a failed canonical read', async () => {
