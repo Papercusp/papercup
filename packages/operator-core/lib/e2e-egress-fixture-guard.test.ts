@@ -31,9 +31,22 @@ const REPO_ROOT = resolve(HERE, '../../..');
 const E2E_DIR = join(REPO_ROOT, 'apps', 'operator', 'e2e');
 const FIXTURE = join(E2E_DIR, '_egress.ts');
 
+/**
+ * Matches a named-import statement and captures its symbol list + module specifier.
+ *
+ * BOTH quote styles are accepted deliberately. A single-quote-only pattern reads a
+ * correct `from "./_egress"` as "no `test` import at all", which breaks this file in
+ * two opposite directions at once: the wiring test reports that spec as an offender
+ * it is not, and `importedSymbols` silently drops every symbol it imports, so the
+ * re-export test stops covering it. The second failure is invisible — it makes the
+ * guard quieter, not louder — which is the exact vacuous-pass shape this file's
+ * docstring exists to refuse. Keep the quote class here if you touch this.
+ */
+const namedImports = () => /import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g;
+
 /** The module a source file pulls its `test` binding from, or null if it has none. */
 export function testImportSpecifier(src: string): string | null {
-  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'([^']+)'/g)) {
+  for (const m of src.matchAll(namedImports())) {
     const names = m[1].split(',').map((s) => s.trim());
     if (names.some((n) => n === 'test' || n.startsWith('test as'))) return m[2];
   }
@@ -43,7 +56,7 @@ export function testImportSpecifier(src: string): string | null {
 /** Every symbol a source file imports from `specifier`. */
 export function importedSymbols(src: string, specifier: string): string[] {
   const out: string[] = [];
-  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'([^']+)'/g)) {
+  for (const m of src.matchAll(namedImports())) {
     if (m[2] !== specifier) continue;
     for (const raw of m[1].split(',')) {
       const name = raw.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
@@ -67,27 +80,42 @@ describe('e2e egress fixture wiring (P-005)', () => {
   });
 
   it('EVERY spec takes `test` from the egress fixture, never from @playwright/test', () => {
-    const offenders = specFiles().filter((f) => {
-      const spec = testImportSpecifier(readFileSync(join(E2E_DIR, f), 'utf8'));
-      return spec !== './_egress';
-    });
+    // Report the specifier each offender ACTUALLY binds `test` from. Naming a
+    // presumed culprit ('@playwright/test') instead sends the reader grepping for
+    // a string that need not be in the tree: the predicate is `!== './_egress'`,
+    // which also catches an unparsed import and a third-party fixture. A message
+    // that describes a different set than its predicate computes is a false lead
+    // wearing a diagnosis's clothes.
+    const offenders = specFiles()
+      .map((file) => ({
+        file,
+        from: testImportSpecifier(readFileSync(join(E2E_DIR, file), 'utf8')),
+      }))
+      .filter((o) => o.from !== './_egress');
 
     expect(
-      offenders,
+      offenders.map((o) => o.file),
       offenders.length === 0
         ? ''
         : [
-            `${offenders.length} e2e spec(s) import \`test\` directly from '@playwright/test'.`,
+            `${offenders.length} e2e spec(s) do not take \`test\` from './_egress'.`,
             '',
-            'Those specs are SILENTLY EXEMPT from the network-egress audit — they run,',
-            'they pass, and they cover nothing. Change the import to:',
+            'Such a spec is SILENTLY EXEMPT from the network-egress audit — it runs,',
+            'it passes, and it covers nothing. Change the import to:',
             '',
             "    import { test, expect, ... } from './_egress';",
             '',
             '(`_egress.ts` re-exports every symbol @playwright/test provides to the',
             'specs, so this is a pure module-specifier swap.)',
             '',
-            ...offenders.map((f) => `  - ${f}`),
+            ...offenders.map(
+              (o) =>
+                `  - ${o.file} — binds \`test\` from ${
+                  o.from === null
+                    ? 'NO parseable named import (check the import syntax itself, not just the module path)'
+                    : `'${o.from}'`
+                }`,
+            ),
           ].join('\n'),
     ).toEqual([]);
   });
@@ -163,6 +191,28 @@ describe('e2e egress fixture wiring (P-005)', () => {
         'expect',
         'test',
       ]);
+    });
+
+    // Both parsers were single-quote-only, which made a correctly-wired
+    // `from "./_egress"` spec read as un-wired. That broke the guard in two
+    // directions at once, so both are pinned here (WI-1215845).
+    it('reads a DOUBLE-quoted fixture import as wired, not as an offender', () => {
+      const plain = 'import { test, expect } from "./_egress";';
+      const withTypes = 'import { test, expect, assertMounted, type Page } from "./_egress";';
+      expect(testImportSpecifier(plain)).toBe('./_egress');
+      expect(testImportSpecifier(withTypes)).toBe('./_egress');
+    });
+
+    it('still flags a DOUBLE-quoted direct @playwright/test import', () => {
+      const direct = 'import { test, expect } from "@playwright/test";';
+      expect(testImportSpecifier(direct)).toBe('@playwright/test');
+    });
+
+    it('collects symbols from a DOUBLE-quoted fixture import', () => {
+      // The invisible half: when this returned [], the re-export test stopped
+      // covering the spec entirely instead of going red.
+      const src = 'import { test, assertMounted, type Page } from "./_egress";';
+      expect(importedSymbols(src, './_egress').sort()).toEqual(['Page', 'assertMounted', 'test']);
     });
   });
 });
