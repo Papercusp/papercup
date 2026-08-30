@@ -15,6 +15,7 @@ import {
   EMAIL_DRAFT_PROPOSAL_SCHEMA_VERSION,
   triggerRunPlanToken,
 } from './binding-engine';
+import type { ScheduledPlanFireRefusal, ScheduledPlanFireStartedResult } from '../harness/routines/plan-run-action';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../../..');
@@ -128,6 +129,36 @@ async function seedTriggerRun(over: {
   return rows[0].id;
 }
 
+function planRunRefusal(overrides: Partial<ScheduledPlanFireRefusal> = {}): ScheduledPlanFireRefusal {
+  return {
+    started: false,
+    instanceSlug: '',
+    runId: -1,
+    runSeq: -1,
+    minted: 0,
+    workItemIds: [],
+    actionableWorkItemIds: [],
+    replayed: false,
+    reason: 'not-startable',
+    detail: 'plan fire refused',
+    retryable: false,
+    ...overrides,
+  };
+}
+
+function startedPlanRun(triggerRunId: string, runId: number): ScheduledPlanFireStartedResult {
+  return {
+    started: true,
+    instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+    runId,
+    runSeq: 0,
+    minted: 1,
+    workItemIds: [],
+    actionableWorkItemIds: [],
+    replayed: false,
+  };
+}
+
 describe('external trigger durable dispatch', () => {
   it('launches the canonical plan run with trigger inputs and announces its work', async () => {
     const audit = {
@@ -179,6 +210,7 @@ describe('external trigger durable dispatch', () => {
       .fn()
       .mockRejectedValueOnce(new Error('temporary launch failure'))
       .mockResolvedValueOnce({
+        started: true,
         instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
         runId: 4242,
         runSeq: 0,
@@ -320,7 +352,8 @@ describe('external trigger durable dispatch', () => {
          SET action = ${JSON.stringify({ type: 'launch-plan', execution })}::text::jsonb
        WHERE workspace_id = ${WS} AND id = ${bindingId}`;
     const triggerRunId = await seedTriggerRun();
-    const runPlan = vi.fn(async () => ({
+    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => ({
+      started: true,
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
       runId: 9004,
       runSeq: 0,
@@ -362,6 +395,179 @@ describe('external trigger durable dispatch', () => {
         dispatch: { ok: true, wake: null, target: { wakeable: false } },
       },
     });
+  });
+
+  it('terminalizes a non-retryable plan-run invalid_data refusal with typed outcome evidence', async () => {
+    const triggerRunId = await seedTriggerRun();
+    const refusal = planRunRefusal({
+      reason: 'not-startable',
+      detail: 'The supplied inputs do not satisfy this plan schema',
+      retryable: false,
+      readiness: {
+        ready: false,
+        code: 'invalid_data',
+        source: 'input-schema',
+        missing: [],
+        issues: ['/trigger/payload/end must be object'],
+        hint: 'Fix the trigger payload before starting this plan.',
+      },
+    });
+    const runPlan = vi.fn(async () => refusal);
+
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    const run = await sql<Array<{
+      status: string;
+      attempts: number;
+      plan_run_ref: string | null;
+      error: string | null;
+      completed_at: Date | null;
+      outcome: Record<string, any>;
+    }>>`
+      SELECT status, attempts, plan_run_ref, error, completed_at, outcome
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(run[0]).toMatchObject({
+      status: 'skipped',
+      attempts: 1,
+      plan_run_ref: null,
+      error: 'external_trigger_plan_run_refused:not-startable:invalid_data',
+      outcome: {
+        planRunRefusal: {
+          reason: 'not-startable',
+          detail: refusal.detail,
+          retryable: false,
+          readiness: {
+            code: 'invalid_data',
+            source: 'input-schema',
+            issues: refusal.readiness?.issues,
+          },
+        },
+      },
+    });
+    expect(run[0].completed_at).toBeTruthy();
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan })).toMatchObject({ claimed: 0 });
+    expect(runPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a retryable missing_required plan-run refusal on the failed/retry path', async () => {
+    const triggerRunId = await seedTriggerRun();
+    const refusal = planRunRefusal({
+      reason: 'not-startable',
+      detail: 'Required input not supplied: end',
+      retryable: true,
+      readiness: {
+        ready: false,
+        code: 'missing_required',
+        source: 'input-schema',
+        missing: ['end'],
+        issues: [],
+        hint: 'Supply it via plans:set-template-data or pass it as inputs on this run.',
+      },
+    });
+    const runPlan = vi
+      .fn()
+      .mockResolvedValueOnce(refusal)
+      .mockResolvedValueOnce(startedPlanRun(triggerRunId, 4244));
+
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 0,
+      skipped: 0,
+      failed: 1,
+    });
+    const failed = await sql<Array<{
+      status: string;
+      attempts: number;
+      error: string | null;
+      outcome: Record<string, any>;
+    }>>`
+      SELECT status, attempts, error, outcome
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(failed[0]).toMatchObject({
+      status: 'failed',
+      attempts: 1,
+      error: 'external_trigger_plan_run_refused:not-startable:missing_required',
+      outcome: {
+        planRunRefusal: {
+          reason: 'not-startable',
+          detail: refusal.detail,
+          retryable: true,
+          readiness: { code: 'missing_required', missing: ['end'] },
+        },
+      },
+    });
+
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    const recovered = await sql<Array<{
+      status: string;
+      attempts: number;
+      plan_run_ref: string | null;
+      error: string | null;
+    }>>`
+      SELECT status, attempts, plan_run_ref, error
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(recovered[0]).toEqual({
+      status: 'succeeded',
+      attempts: 2,
+      plan_run_ref: '4244',
+      error: null,
+    });
+    expect(runPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('terminalizes a concurrency-skip plan-run refusal without retrying it', async () => {
+    const triggerRunId = await seedTriggerRun();
+    const refusal = planRunRefusal({
+      skippedForConcurrency: true,
+      reason: 'concurrency-skip',
+      detail: 'prior plan run 4245 is still running (concurrency=skip)',
+      retryable: false,
+      priorRunId: 4245,
+    });
+    const runPlan = vi.fn(async () => refusal);
+
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    const run = await sql<Array<{
+      status: string;
+      attempts: number;
+      error: string | null;
+      outcome: Record<string, any>;
+    }>>`
+      SELECT status, attempts, error, outcome
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(run[0]).toMatchObject({
+      status: 'skipped',
+      attempts: 1,
+      error: 'external_trigger_plan_run_skipped:concurrency-skip',
+      outcome: {
+        planRunRefusal: {
+          reason: 'concurrency-skip',
+          detail: refusal.detail,
+          retryable: false,
+          priorRunId: 4245,
+        },
+      },
+    });
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan })).toMatchObject({ claimed: 0 });
+    expect(runPlan).toHaveBeenCalledTimes(1);
   });
 
   it('parks a queue-preserved target_absent run beyond the ordinary cap, alerts once, then resolves on recovery', async () => {
@@ -446,7 +652,8 @@ describe('external trigger durable dispatch', () => {
          SET error = 'external_trigger_agentic_dispatch_failed:target_absent',
              outcome = '{}'::jsonb, next_attempt_at = now() - interval '1 second'
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
-    const runPlan = vi.fn(async () => ({
+    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => ({
+      started: true,
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
       runId: 9003, runSeq: 0, minted: 0, workItemIds: [], actionableWorkItemIds: [], replayed: true,
     }));
@@ -526,7 +733,8 @@ describe('external trigger durable dispatch', () => {
       },
     };
     const triggerRunId = await seedTriggerRun({ args });
-    const runPlan = vi.fn(async () => ({
+    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => ({
+      started: true,
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
       runId: 4243,
       runSeq: 0,
