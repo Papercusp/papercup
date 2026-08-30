@@ -30,18 +30,37 @@ import { setIssueState } from '../issues-engineer';
 import { parseRepeatedToolErrorKey } from './improvements/watchdog-key-migration';
 
 /**
- * The conservative auto-resolve decision (PURE). Resolve ONLY when the error has not
- * recurred within the window AND the item is itself older than the window — so a young
- * item that simply has not had time to recur is never closed, and a transient telemetry
- * gap on a fresh item cannot false-positive into a premature resolve. Erring toward
- * keeping-open is correct: a re-open is cheap, a wrongly-closed real bug is not.
+ * The conservative auto-resolve decision (PURE). Resolve ONLY when:
+ *   1. the error has not recurred within the window,
+ *   2. the item is itself older than the window (so a young item that simply has not
+ *      had time to recur is never closed), AND
+ *   3. a POSITIVE CONTROL: the tool was actually invoked (any status) at least once
+ *      within the window.
+ *
+ * (3) is EI-21905244571119790's fix. Without it, "zero recurrences" is ambiguous between
+ * "the bug is fixed" and "nobody exercised this code path" — and for a whole class of
+ * tool defects that manifest as a well-formed `{ok:false, ...}` return value rather than
+ * a thrown exception (e.g. testing:run-status's `unknown_run`), the telemetry channel
+ * `countRecentToolErrors` reads is STRUCTURALLY INCAPABLE of ever recording a recurrence,
+ * so recentRecurrences reads 0 forever regardless of whether the bug is fixed. Requiring
+ * evidence the tool was actually called converts an unfalsifiable "silence" into at least
+ * a real, if imperfect, signal, and — critically — an idle-tool false-close (recurrences=0
+ * because NOBODY called it) is now correctly kept open rather than resolved.
+ *
+ * Erring toward keeping-open is correct: a re-open is cheap, a wrongly-closed real bug is
+ * not — this is a strict tightening (never widens what auto-resolves).
  */
 export function decideStructuralAutoResolve(input: {
   recentRecurrences: number;
   itemAgeMs: number;
   windowMs: number;
+  recentTotalInvocations: number;
 }): boolean {
-  return input.recentRecurrences === 0 && input.itemAgeMs >= input.windowMs;
+  return (
+    input.recentRecurrences === 0 &&
+    input.itemAgeMs >= input.windowMs &&
+    input.recentTotalInvocations > 0
+  );
 }
 
 /** A selected OPEN structural-error item, with its tool parsed out of the watchdogKey. */
