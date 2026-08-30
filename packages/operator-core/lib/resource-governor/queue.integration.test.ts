@@ -333,6 +333,58 @@ describe('PgWorkItemAdmissionQueueStore', () => {
     });
   });
 
+  it('clears the governor claim hold atomically when resources are released', async () => {
+    const clock = { now: 50_000 };
+    const producer = instance('release-hold', () => clock.now);
+    const admitted = await producer.governor.admit({
+      idempotencyKey: 'release-clears-claim-hold',
+      admissionClass: 'inference',
+      demand: { cpuWeight: 1 },
+    });
+    if (admitted.kind !== 'queued') throw new Error('expected queued receipt');
+
+    const claim = await producer.driver.leaseNext({ owner: 'release-worker', ttlMs: 1_000 });
+    if (!claim) throw new Error('expected governor lease');
+    await producer.driver.markRunning(claim.receiptId, claim.lease.leaseId);
+    clock.now += 10;
+
+    await expect(producer.governor.release(claim.context, { cpuWeight: 2 })).resolves.toMatchObject({
+      released: true,
+    });
+
+    const rows = await db.sql<
+      Array<{
+        status: string;
+        taken_by: string | null;
+        state: string;
+        reason: string;
+        claim_hold: string | null;
+        claim_hold_by: string | null;
+        claim_hold_reason: string | null;
+      }>
+    >`
+      SELECT status,
+             taken_by,
+             payload->'resource_governor'->>'state' AS state,
+             payload->'resource_governor'->'decision'->>'reason' AS reason,
+             payload->>'_claimHold' AS claim_hold,
+             payload->>'claim_hold_by' AS claim_hold_by,
+             payload->>'claim_hold_reason' AS claim_hold_reason
+        FROM harness_shared.work_items
+       WHERE feature_id = ${claim.receiptId}`;
+    expect(rows).toEqual([
+      {
+        status: 'done',
+        taken_by: null,
+        state: 'completed',
+        reason: 'resources-released',
+        claim_hold: null,
+        claim_hold_by: null,
+        claim_hold_reason: null,
+      },
+    ]);
+  });
+
   it('orders policy leases by class virtual time, then durable row scheduling evidence', async () => {
     const nowMs = 100_000;
     const enqueue = async (
