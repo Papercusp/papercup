@@ -1700,14 +1700,35 @@ dependency_generation_main() {
   fi
   dependency_generation_ensure "$integration_root" "$generation_root" || return $?
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    # Index under the PRE-build inputs, and never abort on live lockfile drift.
+    #
+    # The copied trees reflect the dependency state that was installed when this
+    # run took the install mutex, so `input_before` is the key that actually
+    # describes them; `input_after` names a lockfile state that was never
+    # reified into them, which is why publishing under it would be the stale
+    # selector this branch set out to refuse.
+    #
+    # node_modules cannot move under us: every build caller enters through
+    # npm-install-safe's `--exec-under-lock` reader mutex, and
+    # dependency_generation_ensure independently proves the trees never changed
+    # via its own source-manifest bracket (which fails `torn-source`). Lockfiles
+    # get NO such protection — they are ordinary tracked files that any of ~100
+    # concurrent agents may edit and that a git-sync sweep rewrites on its own
+    # schedule. Re-reading them after a ~24-minute copy and aborting on any
+    # difference therefore discarded builds that had already published
+    # successfully, purely because an unrelated lockfile moved; that is what
+    # made a prewarm on this shared tree effectively uncompletable.
+    #
+    # The drift is still worth recording, and for --ensure-ref the re-open by
+    # the exact candidate key below remains the arbiter of whether this
+    # generation actually fits the candidate — a typed miss, not a fatal.
     input_after="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
     if [ "$input_after" != "$input_before" ]; then
       dependency_generation_log \
-        'FATAL: dependency inputs changed during generation prewarm; refusing a stale selector'
-      return 75
+        "live dependency inputs changed during generation prewarm (before=$input_before after=$input_after); indexing under the pre-build inputs the copied trees reflect"
     fi
     dependency_generation_publish_input_selector \
-      "$generation_root" "$input_after" || return $?
+      "$generation_root" "$input_before" || return $?
   else
     DEPENDENCY_GENERATION_TOKEN="$(
       dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH"
