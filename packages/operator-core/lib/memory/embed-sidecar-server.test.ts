@@ -8,7 +8,7 @@
  */
 import { getRerankWorkerState, isCoherentTarget } from '@papercusp/rerank';
 import { getWorkerState as getMemoryWorkerState } from '@papercusp/memory';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AdmissionContext } from '../resource-governor/admission';
 import type { GovernedOperationInput } from '../resource-governor/execution';
 import {
@@ -388,6 +388,138 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(admissions[1]?.demand?.memoryBytes).toBe(2);
     expect(admissions[2]?.demand?.memoryBytes).toBe(2);
     expect(admissions[3]?.demand?.memoryBytes).toBe(3);
+  });
+
+  it('propagates a client abort to the durable governor for abandoned started work', async () => {
+    let governedSignal: AbortSignal | undefined;
+    let started = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const governedOperation = async <T>(
+      input: GovernedOperationInput<T>,
+      run: (context: AdmissionContext) => Promise<T>,
+    ): Promise<T> => {
+      governedSignal = input.signal;
+      return run({
+        contractVersion: 1,
+        requestId: 'abort-test',
+        rootRequestId: 'abort-test',
+        parentRequestId: null,
+        idempotencyKey: 'abort-test',
+        admissionClass: input.admissionClass,
+        priority: 0,
+        demand: input.demand ?? {},
+        depth: 0,
+        createdAtMs: 0,
+        decisionGeneration: 1,
+      });
+    };
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: {
+        ...fakeBuilders,
+        gemma: async () => async (text: string) => {
+          started = true;
+          await gate;
+          return [text.length, 1];
+        },
+      },
+      warmAtBoot: false,
+      log: () => {},
+      workspaceId: 'abort-test-workspace',
+      governedOperation,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+
+    const controller = new AbortController();
+    const request = fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'query', texts: ['abandoned'] }),
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => {
+      expect(started).toBe(true);
+      expect(governedSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    controller.abort(new Error('client closed'));
+    await expect(request).rejects.toThrow();
+    await vi.waitFor(() => expect(governedSignal?.aborted).toBe(true));
+
+    // The operation itself may not support cancellation; releasing it proves
+    // the server still drains its started unit without resurrecting the
+    // abandoned request or losing the abort signal.
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(governedSignal?.aborted).toBe(true);
+  });
+
+  it('does not abort coalesced work until every client leaves', async () => {
+    let governedSignal: AbortSignal | undefined;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const governedOperation = async <T>(
+      input: GovernedOperationInput<T>,
+      run: (context: AdmissionContext) => Promise<T>,
+    ): Promise<T> => {
+      governedSignal = input.signal;
+      return run({
+        contractVersion: 1,
+        requestId: 'coalesced-abort-test',
+        rootRequestId: 'coalesced-abort-test',
+        parentRequestId: null,
+        idempotencyKey: 'coalesced-abort-test',
+        admissionClass: input.admissionClass,
+        priority: 0,
+        demand: input.demand ?? {},
+        depth: 0,
+        createdAtMs: 0,
+        decisionGeneration: 1,
+      });
+    };
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: {
+        ...fakeBuilders,
+        gemma: async () => async (text: string) => {
+          await gate;
+          return [text.length, 1];
+        },
+      },
+      warmAtBoot: false,
+      log: () => {},
+      workspaceId: 'coalesced-abort-test-workspace',
+      governedOperation,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const request = (controller: AbortController) =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts: ['shared-abortable'] }),
+        signal: controller.signal,
+      });
+    const first = request(firstController);
+    await vi.waitFor(() => expect(governedSignal).toBeInstanceOf(AbortSignal));
+    const second = request(secondController);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    firstController.abort(new Error('first client closed'));
+    await expect(first).rejects.toThrow();
+    expect(governedSignal?.aborted).toBe(false);
+
+    secondController.abort(new Error('second client closed'));
+    await expect(second).rejects.toThrow();
+    await vi.waitFor(() => expect(governedSignal?.aborted).toBe(true));
+    release();
   });
 
   it('POST /embed returns the D-004 shape, ordered per input text', async () => {

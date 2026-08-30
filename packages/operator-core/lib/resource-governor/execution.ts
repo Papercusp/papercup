@@ -58,6 +58,12 @@ export interface GovernedExecutionInput<T = unknown> {
   readonly owner: string;
   readonly leaseTtlMs?: number;
   /**
+   * Caller lifetime for this execution. When it aborts, the durable receipt
+   * is cancelled even if the bounded operation itself does not understand
+   * AbortSignal (for example, a native worker call).
+   */
+  readonly signal?: AbortSignal;
+  /**
    * Choose the terminal action after the bounded operation returns.  A normal
    * test failure still releases resources (the process really ran), while a
    * timeout/abort/launch failure cancels the receipt because no trustworthy
@@ -92,30 +98,96 @@ export async function withGovernedExecution<T>(
   deps: GovernedExecutionDeps,
   run: (context: AdmissionContext) => Promise<T>,
 ): Promise<T> {
-  const execution = await beginGovernedExecution(
-    request,
-    { owner: input.owner, leaseTtlMs: input.leaseTtlMs },
-    deps,
-  );
+  const signal = input.signal;
+  const abortReason = (): unknown =>
+    signal?.reason ?? Object.assign(new Error('governed execution aborted'), { name: 'AbortError' });
+  const abortMessage = (): string => {
+    const reason = signal?.reason;
+    return `governed execution aborted: ${reason instanceof Error ? reason.message : String(reason ?? 'request aborted')}`;
+  };
+  if (signal?.aborted) throw abortReason();
+
+  let execution: GovernedExecution | null = null;
+  let preBeginCancellation: Promise<boolean> | null = null;
+  let executionCancellation: Promise<boolean> | null = null;
+  const cancelForAbort = (): Promise<boolean> => {
+    if (execution) {
+      if (!executionCancellation) {
+        let current!: Promise<boolean>;
+        current = execution.cancel(abortMessage()).finally(() => {
+          if (executionCancellation === current) executionCancellation = null;
+        });
+        executionCancellation = current;
+      }
+      return executionCancellation;
+    }
+    if (!preBeginCancellation) {
+      preBeginCancellation = deps.governor.cancel(request.idempotencyKey, abortMessage()).then(
+        (result) => result.cancelled,
+        () => false,
+      );
+    }
+    return preBeginCancellation;
+  };
+  const onAbort = (): void => {
+    // The bounded operation may not itself understand AbortSignal, but its
+    // durable receipt must stop holding productive capacity as soon as the
+    // caller disappears. The operation can finish in the background.
+    void cancelForAbort().catch(() => undefined);
+  };
+  if (signal) {
+    if (signal.aborted) {
+      throw abortReason();
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
   try {
+    execution = await beginGovernedExecution(
+      request,
+      { owner: input.owner, leaseTtlMs: input.leaseTtlMs },
+      deps,
+    );
+    // If the caller aborted while admission/lease acquisition was in flight,
+    // the pre-begin cancel may have found no row yet. Re-issue cancellation
+    // against the now-materialized execution before starting work.
+    if (signal?.aborted) {
+      await cancelForAbort();
+      throw abortReason();
+    }
     const result = await run(execution.context);
+    if (signal?.aborted) {
+      await cancelForAbort();
+      throw abortReason();
+    }
     const settlement = input.settle
       ? await input.settle(result, execution.context)
       : {
           kind: 'release' as const,
           actualDemand: input.measureActualDemand ? await input.measureActualDemand() : undefined,
         };
+    if (signal?.aborted) {
+      await cancelForAbort();
+      throw abortReason();
+    }
     if (settlement.kind === 'cancel') await execution.cancel(settlement.reason);
     else await execution.finish(settlement.actualDemand);
     return result;
   } catch (error) {
+    if (signal?.aborted) {
+      if (execution) await cancelForAbort();
+      throw abortReason();
+    }
     // Preserve the operation's original error even if a best-effort durable
     // cancellation itself is unavailable (for example, a transient database
     // failure while recording the failure path).
-    await execution.cancel(
-      `governed execution failed: ${error instanceof Error ? error.message : String(error)}`,
-    ).catch(() => undefined);
+    if (execution) {
+      await execution
+        .cancel(`governed execution failed: ${error instanceof Error ? error.message : String(error)}`)
+        .catch(() => undefined);
+    }
     throw error;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -130,6 +202,8 @@ export interface GovernedOperationInput<T = unknown> {
   readonly metadata?: Readonly<Record<string, AdmissionMetadataValue>>;
   readonly idempotencyKey?: string;
   readonly leaseTtlMs?: number;
+  /** Cancel the durable receipt when the caller abandons this operation. */
+  readonly signal?: AbortSignal;
   /**
    * WI-638180: run on a DEDICATED database client this module closes when the
    * last in-flight governed operation settles, instead of the process-wide
@@ -163,6 +237,7 @@ export function runGovernedOperation<T>(
   const executionInput = {
     owner: input.owner,
     leaseTtlMs: input.leaseTtlMs,
+    ...(input.signal ? { signal: input.signal } : {}),
     ...(input.settle ? { settle: input.settle } : {}),
     ...(input.measureActualDemand ? { measureActualDemand: input.measureActualDemand } : {}),
   };

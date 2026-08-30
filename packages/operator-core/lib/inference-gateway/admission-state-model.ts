@@ -38,6 +38,11 @@ import type {
   PhysicalConstraintObservation,
   PhysicalConstraintVerdict,
 } from './physical-constraints';
+// VALUE import, deliberately not `import type`: the binding decision below has to RE-EVALUATE
+// an observation's age, not merely describe its stored shape. Until 2026-08-30 this module
+// imported `./physical-constraints` for types only, which is exactly why the freshness gate
+// below was missing — there was no way to call the re-classifier from here.
+import { refreshPhysicalConstraint } from './physical-constraints';
 
 export const GATEWAY_ADMISSION_STATE_SCHEMA_VERSION = 'inference-gateway-admission-state-v1' as const;
 
@@ -222,10 +227,23 @@ const FRESHNESS_RANK: Readonly<Record<GatewayLaneObservation['freshness'], numbe
 export function explainGatewayLaneBinding(
   klass: ClassAdmissionDecision,
   physical: readonly PhysicalConstraintObservation[],
+  nowMs: number,
 ): GatewayLaneBinding {
-  const bindingObservations = physical.filter(
-    (o) => o.constraint && o.binding === 'external-physical-contract',
-  );
+  // FRESHNESS IS CONSULTED HERE, not merely stored (D-009). `refreshPhysicalConstraint`
+  // re-classifies a row whose `expiresAtMs` has passed to state:'stale' — a row that was
+  // `measured` when collected keeps `constraint: true` and `state: 'measured'` in the stored
+  // object forever, so filtering the RAW row reports an expired provider quota as the live
+  // binding term. That is the misdiagnosis this whole model exists to prevent, arriving
+  // through the back door. Found by rubric vetting, 2026-08-30 (D-020).
+  //
+  // `actionable` is deliberately NOT part of this predicate, which is why this is not simply
+  // `canContractFromPhysicalConstraint`. That predicate answers "may this row DRIVE CONTROL";
+  // this one answers "what is IN FORCE on this lane right now", and a non-actionable external
+  // contract still binds what an operator is looking at. Two questions, two predicates — but
+  // both must consult freshness, and only one of them did.
+  const bindingObservations = physical
+    .map((o) => refreshPhysicalConstraint(o, nowMs))
+    .filter((o) => o.state === 'measured' && o.constraint && o.binding === 'external-physical-contract');
   if (klass.paused) {
     return {
       bindingTerm: 'pause',
@@ -330,7 +348,7 @@ export function describeGatewayAdmissionState(
       controlBypass: bypassKeys,
       physical: lanePhysical,
       attributions,
-      binding: explainGatewayLaneBinding(klass, lanePhysical),
+      binding: explainGatewayLaneBinding(klass, lanePhysical, nowMs),
       observation: {
         observedAtMs,
         collectedAtMs: nowMs,

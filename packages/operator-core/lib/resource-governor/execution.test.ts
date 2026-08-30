@@ -216,6 +216,52 @@ describe('governed execution lifecycle', () => {
     await expect(execution.finish()).resolves.toBe(false);
   });
 
+  it('cancels the durable receipt when the caller aborts before the operation settles', async () => {
+    const d = deps();
+    const controller = new AbortController();
+    let resolveRun!: (value: string) => void;
+    const run = withGovernedExecution(
+      { idempotencyKey: 'aborted-caller', admissionClass: 'process' },
+      { owner: 'bounded-runner', signal: controller.signal },
+      d,
+      async () => new Promise<string>((resolve) => {
+        resolveRun = resolve;
+      }),
+    );
+
+    await vi.waitFor(() => expect(d.current()).toMatchObject({ state: 'running' }));
+    controller.abort(new Error('client closed'));
+    await vi.waitFor(() =>
+      expect(d.current()).toMatchObject({
+        state: 'cancelled',
+        cancellationReason: 'governed execution aborted: client closed',
+      }),
+    );
+
+    // The underlying operation may not understand AbortSignal. Its eventual
+    // settle must still preserve the caller's abort outcome and never release
+    // the receipt back into a completed state.
+    resolveRun('late result');
+    await expect(run).rejects.toThrow('client closed');
+    expect(d.current()).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('does not create a durable receipt for an already-aborted caller', async () => {
+    const d = deps();
+    const controller = new AbortController();
+    controller.abort(new Error('request already gone'));
+
+    await expect(
+      withGovernedExecution(
+        { idempotencyKey: 'pre-aborted-caller', admissionClass: 'process' },
+        { owner: 'bounded-runner', signal: controller.signal },
+        d,
+        async () => 'unreachable',
+      ),
+    ).rejects.toThrow('request already gone');
+    expect(d.current()).toBeNull();
+  });
+
   it('uses a settlement policy to cancel undetermined outcomes and release measured outcomes', async () => {
     const d = deps();
     const cancelled = await withGovernedExecution(

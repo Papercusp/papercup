@@ -118,7 +118,7 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
  *  JS numbers, so the default cap bounds the cache near ~8MB. */
 export const EMBED_CACHE_MAX_DEFAULT = 1024;
 
-type EmbedFn = (text: string) => Promise<number[]>;
+type EmbedFn = (text: string, signal?: AbortSignal) => Promise<number[]>;
 
 /** Models this sidecar serves. 'gemma' and 'harrier' are asymmetric (kind
  *  selects the task prompt — harrier prefixes queries only, docs are raw);
@@ -607,9 +607,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     kind?: GemmaEmbedKind;
     textChars: number;
     demand: ResourceDemand;
-    run: () => Promise<T>;
+    signal?: AbortSignal;
+    run: (signal?: AbortSignal) => Promise<T>;
   }): Promise<T> => {
-    if (localScheduler) return input.run();
+    if (localScheduler) return input.run(input.signal);
     const operationInput: GovernedOperationInput<T> = {
       workspaceId: workspaceId!,
       namespace: 'embed-sidecar',
@@ -618,6 +619,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       demand: input.demand,
       payloadRef: `embed-sidecar:${input.operation}:${input.model}`,
       ...(parentAdmission ? { parent: parentAdmission } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
       metadata: {
         operation: input.operation,
         model: input.model,
@@ -626,11 +628,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         unit: 'single-text',
       },
     };
-    return governed(operationInput, () => input.run());
+    return governed(operationInput, () => input.run(input.signal));
   };
   let active = 0;
   interface QueueTask<T> {
     promise: Promise<T>;
+    signal: AbortSignal;
+    abort: (reason?: unknown) => void;
     cancel: () => boolean;
   }
   interface QueueEntry<T> {
@@ -673,9 +677,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   const scheduleDrain = (): void => {
     setTimeout(drainQueue, 5);
   };
-  const enqueue = <T>(work: () => Promise<T>, batch: QueueBatch = createQueueBatch()): QueueTask<T> => {
+  const enqueue = <T>(
+    work: (signal: AbortSignal) => Promise<T>,
+    batch: QueueBatch = createQueueBatch(),
+  ): QueueTask<T> => {
     let resolveTask!: (value: T | PromiseLike<T>) => void;
     let rejectTask!: (reason?: unknown) => void;
+    const controller = new AbortController();
     const promise = new Promise<T>((resolve, reject) => {
       resolveTask = resolve;
       rejectTask = reject;
@@ -689,7 +697,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         active++;
         batch.running++;
         Promise.resolve()
-          .then(work)
+          .then(() => work(controller.signal))
           .then(resolveTask, rejectTask)
           .finally(() => {
             active--;
@@ -720,7 +728,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       if (batch.running === 0) queueBatch(batch);
       drainQueue();
     }
-    return { promise, cancel: entry.cancel };
+    return {
+      promise,
+      signal: controller.signal,
+      abort: (reason?: unknown): void => {
+        if (!controller.signal.aborted) controller.abort(reason);
+      },
+      cancel: entry.cancel,
+    };
   };
 
   // WI-4196: per-text coalescing + bounded LRU over the text→vector mapping.
@@ -760,7 +775,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
    *  neither can starve the other (one FIFO, not two competing ones). */
   const computeCached = (
     key: string,
-    work: () => Promise<number[]>,
+    work: (signal: AbortSignal) => Promise<number[]>,
     signal: AbortSignal,
     batch: QueueBatch,
   ): Promise<number[]> => {
@@ -796,8 +811,15 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       if (released) return;
       released = true;
       owned.consumers--;
-      if (owned.consumers === 0 && owned.task.cancel() && inflight.get(key) === owned) {
-        inflight.delete(key);
+      if (owned.consumers === 0) {
+        owned.task.abort(new SidecarRequestAbortedError());
+        owned.task.cancel();
+        // A started task may continue briefly when its model/worker ignores
+        // AbortSignal. Do not let a later caller join that already-aborted
+        // task; it needs a fresh durable admission instead.
+        if (inflight.get(key) === owned) {
+          inflight.delete(key);
+        }
       }
     };
     return new Promise<number[]>((resolve, reject) => {
@@ -835,7 +857,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   ): Promise<number[]> =>
     computeCached(
       `${model}:${kind}\0${text}`,
-      () =>
+      (taskSignal) =>
         runSidecarUnit({
           admissionClass: 'embedding',
           operation: 'embed',
@@ -846,9 +868,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
             cpuWeight: 1,
             memoryBytes: Buffer.byteLength(text, 'utf8'),
           },
-          run: async () => {
+          signal: taskSignal,
+          run: async (runSignal) => {
             const embed = await getEmbedder(model, kind);
-            return embed(text);
+            return embed(text, runSignal);
           },
         }),
       signal,
@@ -872,7 +895,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   ): Promise<number> =>
     computeCached(
       `${model}\0${query}\0${text}`,
-      () =>
+      (taskSignal) =>
         runSidecarUnit({
           admissionClass: 'inference',
           operation: 'rerank',
@@ -882,6 +905,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
             cpuWeight: 1,
             memoryBytes: Buffer.byteLength(query, 'utf8') + Buffer.byteLength(text, 'utf8'),
           },
+          signal: taskSignal,
           run: async () => {
             const rerankFn = await getReranker(model);
             const scores = await rerankFn(query, [text]);

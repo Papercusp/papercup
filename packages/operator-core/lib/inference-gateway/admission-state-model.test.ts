@@ -166,18 +166,67 @@ describe('describeGatewayAdmissionState (unit)', () => {
   });
 
   it('reports binding precedence: pause outranks physical contract outranks window', () => {
-    const paused = explainGatewayLaneBinding(klass({ paused: true, pauseUntilMs: NOW + 1_000 }), [observation()]);
+    const paused = explainGatewayLaneBinding(klass({ paused: true, pauseUntilMs: NOW + 1_000 }), [observation()], NOW);
     expect(paused.bindingTerm).toBe('pause');
 
-    const physical = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), [observation()]);
+    const physical = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), [observation()], NOW);
     expect(physical.bindingTerm).toBe('physical-contract');
 
-    const window = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), []);
+    const window = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), [], NOW);
     expect(window.bindingTerm).toBe('effective-window');
 
-    const free = explainGatewayLaneBinding(klass({ inFlight: 1, effectiveWindow: 8 }), []);
+    const free = explainGatewayLaneBinding(klass({ inFlight: 1, effectiveWindow: 8 }), [], NOW);
     expect(free.bindingTerm).toBeNull();
     expect(free.writer).toBeNull();
+  });
+
+  it('an EXPIRED physical constraint stops binding the lane — freshness is consulted, not just stored', () => {
+    // Regression for the freshness-blind binding filter found by acceptance-rubric vetting
+    // on 2026-08-30 (plan capless-inference-gateway-2026-08-28, D-020). A row collected while
+    // `measured` keeps `state:'measured'` and `constraint:true` in the STORED object forever;
+    // only `refreshPhysicalConstraint` re-classifies it once `expiresAtMs` has passed. The
+    // binding filter used to read the raw row, so an expired provider quota was still reported
+    // as the live binding term with a `physical-constraints.ts#provider` writer beside it.
+    const expiresAtMs = NOW + 60_000;
+    const row = observation({ expiresAtMs });
+
+    // POSITIVE CONTROL — before expiry the same row MUST still bind, or this test would pass
+    // for the trivial reason that nothing ever binds.
+    const live = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), [row], NOW);
+    expect(live.bindingTerm).toBe('physical-contract');
+    expect(live.bindingObservations).toHaveLength(1);
+
+    // CONTROL for the FAILURE MODE, not just the outcome: past expiry the STORED row is
+    // byte-identical and still self-describes as a live constraint. Those two fields are
+    // exactly what the pre-fix filter read, so this assertion pins that the gate below is
+    // doing the work — if it ever passed because the row itself changed shape, this fails.
+    expect(row.state).toBe('measured');
+    expect(row.constraint).toBe(true);
+
+    // One millisecond past its own stated validity, the SAME row must stop binding and the
+    // lane must fall through to the term that actually explains it.
+    const afterExpiry = explainGatewayLaneBinding(
+      klass({ inFlight: 8, effectiveWindow: 8 }),
+      [row],
+      expiresAtMs + 1,
+    );
+    expect(afterExpiry.bindingTerm).toBe('effective-window');
+    expect(afterExpiry.bindingObservations).toHaveLength(0);
+
+    // And the same must hold through the operator-visible projection, not only the helper —
+    // that projection is where the misdiagnosis would actually reach a human. Asserted as a
+    // PAIR at the same inputs so the post-expiry `not.toBe` cannot pass vacuously: if lane
+    // scoping filtered this row out entirely, the pre-expiry leg fails first and says so.
+    const projectAt = (nowMs: number) =>
+      describeGatewayAdmissionState({
+        decision: decision({ classes: [klass({ inFlight: 8, effectiveWindow: 8 })] }),
+        physical: verdict([row]),
+        provider: 'claude',
+        nowMs,
+      }).lanes[0]!.binding.bindingTerm;
+
+    expect(projectAt(NOW)).toBe('physical-contract');
+    expect(projectAt(expiresAtMs + 1)).not.toBe('physical-contract');
   });
 
   it('does not attribute another account\'s physical constraint to this lane', () => {
