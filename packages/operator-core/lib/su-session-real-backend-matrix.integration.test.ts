@@ -50,9 +50,28 @@
  * RUNNING IT
  * ----------
  *   PAPERCUSP_REAL_BACKEND_MATRIX=1 \
+ *   PAPERCUSP_TEST_FILE_TIMEOUT_MS=1800000 \
  *   npm run test:file -- packages/operator-core/lib/su-session-real-backend-matrix.integration.test.ts
  *
  * Select a subset with PAPERCUSP_REAL_BACKEND_MATRIX_BACKENDS=claude,codex.
+ *
+ * THE TIMEOUT IS NOT OPTIONAL, AND OMITTING IT FAILS IN THE WORST WAY
+ * ------------------------------------------------------------------
+ * scripts/test-files.mjs defaults to a 300s watchdog for the whole FILE
+ * (DEFAULT_TEST_FILE_RUN_TIMEOUT_MS). This matrix budgets up to 240s of ready
+ * plus 300s of turn PER BACKEND, so any run that actually waits on a slow boot
+ * exceeds the default before it can reach a verdict.
+ *
+ * Measured 2026-08-30 on the codex+omp legs: the watchdog reaped the run at
+ * 300s and reported
+ *   TEST_FILE_GROUP_RESULT ... status=failed
+ * while the line above it said
+ *   status=timed-out — owned child tree reaped; NOT MEASURED
+ * Both adv rows had by then reached live native sessions (codex
+ * waiting-for-owner, omp running), so nothing was wrong with either backend.
+ * A reader who takes the `status=failed` at face value concludes the backends
+ * are broken; the run in fact produced NO verdict at all. Raise the timeout so
+ * a red here always means a red backend.
  *
  * COST NOTE: each leg spawns a real agent and spends real tokens on the
  * configured account. Turns are deliberately single-shot and the matrix ends
@@ -68,11 +87,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  SU_SESSION_COMMAND_TYPES,
   SU_SESSION_PROTOCOL_VERSION,
   SU_SESSION_SCHEMA,
   type SuSessionBackend,
   type SuSessionCommand,
   type SuSessionCommandResultEvent,
+  type SuSessionCommandType,
+  type SuSessionDescriptor,
   type SuSessionEvent,
   type SuSessionIdentity,
 } from '@papercusp/chat-protocol';
@@ -208,6 +230,12 @@ function pidAlive(pid: number | null | undefined): boolean {
 type MatrixCommand =
   | { type: 'owner_turn'; commandId: string; turnId: string; content: string }
   | { type: 'interrupt'; commandId: string; reason?: string }
+  | {
+      type: 'resume';
+      commandId: string;
+      cause: 'owner' | 'pui-restart' | 'runtime-replacement' | 'compaction';
+    }
+  | { type: 'focus'; commandId: string }
   | { type: 'end'; commandId: string; reason?: string };
 
 interface AttachedLeg {
@@ -223,6 +251,15 @@ interface AttachedLeg {
   pump(): Promise<void>;
   events(): readonly SuSessionEvent[];
   lifecycle(): string;
+  /** The full descriptor, so capability visibility and `runtimeGeneration` can
+   *  be asserted against the protocol rather than inferred from behaviour. */
+  descriptor(): SuSessionDescriptor<SuSessionBackend>;
+  /** Re-resolve the native runtime and swap it in under the SAME identity.
+   *  Returns false when the backend has not yet written a native record, so a
+   *  caller can tell "replacement did not happen" from "replacement happened
+   *  and changed nothing" — the two have opposite meanings for the generation
+   *  assertion below. */
+  replaceRuntime(reason: string): Promise<boolean>;
 }
 
 type AttachOutcome = { ok: true; leg: AttachedLeg } | { ok: false; code: string; error: string };
@@ -264,6 +301,13 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
         },
         events: () => adapter.host.recent.map((entry) => entry.event),
         lifecycle: () => adapter.host.descriptor().lifecycle,
+        descriptor: () => adapter.host.descriptor(),
+        replaceRuntime: async (reason) => {
+          const fresh = await resolveClaudeSuRuntime(binding);
+          if (!fresh?.transcriptPath) return false;
+          adapter.replaceRuntime(fresh, reason);
+          return true;
+        },
       },
     };
   },
@@ -288,6 +332,13 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
         },
         events: () => adapter.host.recent.map((entry) => entry.event),
         lifecycle: () => adapter.host.descriptor().lifecycle,
+        descriptor: () => adapter.host.descriptor(),
+        replaceRuntime: async (reason) => {
+          const fresh = await resolveCodexSuRuntime(binding);
+          if (!fresh?.rolloutPath) return false;
+          adapter.replaceRuntime(fresh, reason);
+          return true;
+        },
       },
     };
   },
@@ -312,6 +363,13 @@ const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) 
         },
         events: () => adapter.host.recent.map((entry) => entry.event),
         lifecycle: () => adapter.host.descriptor().lifecycle,
+        descriptor: () => adapter.host.descriptor(),
+        replaceRuntime: async (reason) => {
+          const fresh = await resolveOmpSuRuntime(binding);
+          if (!fresh?.transcriptPath) return false;
+          adapter.replaceRuntime(fresh, reason);
+          return true;
+        },
       },
     };
   },
@@ -487,6 +545,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
     let spawned: ManagedSpawnResult | null = null;
     let leg: LiveLeg;
     let attached: AttachedLeg | null = null;
+    /** What the END hop actually returned, so reconciliation can judge the
+     *  session against what really happened rather than assuming end worked. */
+    let endOutcome: string | null = null;
 
     it('CREATE: records exactly one deferred row carrying the pane argv, and spawns nothing', async () => {
       const opened = await openPuiSuSession({
@@ -787,5 +848,371 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           `the tool-result translation is unproven for ${backend}.${diagnostic}`,
       ).toBe(true);
     }, TURN_TIMEOUT_MS + 60_000);
+
+    // ── steering and retirement ───────────────────────────────────────────
+    // Everything above proves a session can be created, started, attached and
+    // driven ONCE. WI-287139 also requires that it can be STEERED and RETIRED.
+    // The conditions below deliberately run against the SAME live session, in
+    // lifecycle order, because identity stability is only meaningful as a
+    // property of one continuous session — asserting it across three freshly
+    // created ones would prove nothing and cost three times the tokens.
+
+    it('CAPABILITY VISIBILITY: every protocol command has a declared support state, and an unsupported one is REFUSED rather than silently imitated', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      const commands = session.descriptor().capabilities.commands;
+
+      // VISIBILITY: a missing entry is the defect this asserts against. An
+      // undefined support state reads as falsy at every call site, so a command
+      // silently becomes "not supported" without anyone declaring it so.
+      for (const type of SU_SESSION_COMMAND_TYPES) {
+        expect(
+          commands[type],
+          `${backend} declares no capability entry for '${type}'; ` +
+            'an absent entry is indistinguishable from an unsupported one at the call site.',
+        ).toBeTruthy();
+        expect(
+          commands[type].state,
+          `${backend} capability '${type}' has no state`,
+        ).toMatch(/^(supported|conditional|unsupported)$/);
+      }
+
+      // NO PROVIDER-ONLY FALLBACK. The protocol deliberately omits a
+      // "simulated" support value: "unsupported backend behavior must remain
+      // visible instead of being silently imitated". So a command this backend
+      // does not support must come back REFUSED — an `accepted`/`completed` for
+      // an unsupported command is the fallback this condition forbids.
+      const unsupported = (SU_SESSION_COMMAND_TYPES as readonly SuSessionCommandType[]).find(
+        (type) => commands[type].state === 'unsupported',
+      );
+
+      if (!unsupported) {
+        // Nothing to falsify against on this backend — record that explicitly
+        // rather than letting a vacuous pass look like a proven refusal path.
+        expect(
+          Object.values(commands).every((support) =>
+            support.state === 'unsupported' ? true : support.implementation === 'native' || support.implementation === 'host',
+          ),
+          `${backend} declares a supported command with no native/host implementation`,
+        ).toBe(true);
+        return;
+      }
+
+      // `focus` is the only command with no required payload, so it is the only
+      // one that can be probed generically. Anything else would need a
+      // backend-specific body and would be testing the payload, not the refusal.
+      if (unsupported !== 'focus') return;
+
+      const refusal = await session.send({ type: 'focus', commandId: `cap-${randomUUID().slice(0, 8)}` });
+      expect(
+        refusal.status,
+        `${backend} declares 'focus' unsupported but the host did not refuse it ` +
+          `(status=${refusal.status}). An unsupported command that reports success is a ` +
+          'provider-only fallback — the exact silent imitation the protocol forbids.',
+      ).toBe('refused');
+    }, 60_000);
+
+    it('EVENT ORDERING: sequence numbers are strictly increasing across the whole live session', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+
+      await attached.pump();
+      const sequences = attached.events().map((event) => event.sequence);
+      expect(
+        sequences.length,
+        'the session produced no events at all, so ordering is unproven',
+      ).toBeGreaterThan(0);
+
+      // The protocol says "strictly increasing within one durable session,
+      // INCLUDING RECONNECTS". A pump re-resolves and replaces the runtime, so
+      // this has already survived at least one replacement by the time it runs.
+      const outOfOrder: string[] = [];
+      for (let i = 1; i < sequences.length; i += 1) {
+        if (sequences[i] <= sequences[i - 1]) {
+          outOfOrder.push(`index ${i}: ${sequences[i - 1]} -> ${sequences[i]}`);
+        }
+      }
+      expect(
+        outOfOrder,
+        `${backend} emitted non-increasing sequence numbers: ${outOfOrder.slice(0, 5).join('; ')}. ` +
+          'A consumer that de-dupes or resumes on sequence would silently drop or replay events.',
+      ).toEqual([]);
+    }, 60_000);
+
+    it('INTERRUPT: the live runtime acknowledges an interrupt rather than dropping it', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      const support = session.descriptor().capabilities.commands.interrupt;
+      const result = await session.send({
+        type: 'interrupt',
+        commandId: `int-${randomUUID().slice(0, 8)}`,
+        reason: 'P-012 acceptance probe',
+      });
+
+      if (support.state === 'unsupported') {
+        expect(
+          result.status,
+          `${backend} declares interrupt unsupported, so it must be refused explicitly, not accepted`,
+        ).toBe('refused');
+        return;
+      }
+
+      // ACKNOWLEDGEMENT is the condition, not cancellation of in-flight work:
+      // the turn above has already completed, so there may be nothing to stop.
+      // What must not happen is the command vanishing at the control socket.
+      if (result.status === 'refused') {
+        // claude declares interrupt SUPPORTED, so a refusal there is a real
+        // defect. A backend that declares it conditional may decline, but must
+        // say why.
+        expect(
+          support.state,
+          `${backend} declares interrupt 'supported' but refused it: ` +
+            `${result.refusal?.code} ${result.refusal?.message}. A supported command may not refuse.`,
+        ).toBe('conditional');
+        expect(
+          result.refusal?.code,
+          `${backend} refused the interrupt without a code`,
+        ).toBeTruthy();
+        return;
+      }
+      expect(
+        result.status,
+        `${backend} neither completed nor refused the interrupt (status=${result.status}); ` +
+          'an unacknowledged interrupt is a control-socket delivery failure.',
+      ).toMatch(/^(completed|accepted)$/);
+    }, 120_000);
+
+    it('RUNTIME REPLACEMENT: swapping the runtime bumps runtimeGeneration while identity stays stable', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      const before = session.descriptor();
+      const replaced = await session.replaceRuntime('P-012 acceptance replacement');
+      expect(
+        replaced,
+        `no native runtime resolved for ${backend}, so replacement could not be exercised`,
+      ).toBe(true);
+      const after = session.descriptor();
+
+      expect(
+        after.runtimeGeneration,
+        `${backend} replaced its runtime without incrementing runtimeGeneration ` +
+          `(${before.runtimeGeneration} -> ${after.runtimeGeneration}); consumers use this to ` +
+          'invalidate cached runtime state, so a static generation means they never will.',
+      ).toBeGreaterThan(before.runtimeGeneration);
+
+      // STABLE IDENTITY is the other half: durable identity must survive
+      // runtime-process replacement, or reconciliation and resume both break.
+      expect(
+        after.identity.advSessionId,
+        `${backend} changed advSessionId across a runtime replacement`,
+      ).toBe(before.identity.advSessionId);
+      expect(
+        after.identity.nativeSessionId,
+        `${backend} changed nativeSessionId across a runtime replacement`,
+      ).toBe(before.identity.nativeSessionId);
+    }, 120_000);
+
+    it('NATIVE RESUME: the runtime accepts a resume for a runtime-replacement cause', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      const support = session.descriptor().capabilities.commands.resume;
+      const result = await session.send({
+        type: 'resume',
+        commandId: `res-${randomUUID().slice(0, 8)}`,
+        cause: 'runtime-replacement',
+      });
+
+      if (support.state === 'unsupported') {
+        expect(
+          result.status,
+          `${backend} declares resume unsupported, so it must be refused explicitly`,
+        ).toBe('refused');
+        return;
+      }
+      // Every backend declares resume CONDITIONAL (claude: "requires the tracked
+      // session UUID and a live or P-004-reconciled managed runtime"). So a
+      // refusal is in-contract here too — what it may not do is refuse opaquely.
+      if (result.status === 'refused') {
+        expect(
+          support.state,
+          `${backend} refused resume while declaring it 'supported'`,
+        ).toBe('conditional');
+        expect(
+          result.refusal?.code,
+          `${backend} refused resume without a code, so a caller cannot tell a declined ` +
+            'precondition from a broken control socket.',
+        ).toBeTruthy();
+        return;
+      }
+      expect(
+        result.status,
+        `${backend} dropped a resume command (status=${result.status}); resume is what a PUI ` +
+          'restart and a runtime replacement both rely on to re-establish the session.',
+      ).toMatch(/^(completed|accepted)$/);
+    }, 120_000);
+
+    it('PUI RESTART / REATTACH: a second attach adopts the SAME native session and spawns nothing new', async () => {
+      expect(advSessionId, 'SPAWN must have produced a row').toBeGreaterThan(0);
+      expect(attached, 'the first attach must have succeeded').toBeTruthy();
+      if (!attached) return;
+
+      const pidBefore = spawned?.child?.pid ?? null;
+      const firstNativeId = attached.nativeSessionId;
+
+      // A PUI restart is exactly this: the pane process is still alive, and a
+      // FRESH attach resolves the same durable row. Nothing about it should
+      // start a second agent.
+      const outcome = await ATTACH[backend](advSessionId, `p012-reattach-${advSessionId}`);
+      expect(
+        outcome.ok,
+        outcome.ok ? '' : `reattach to adv row ${advSessionId} refused with ${outcome.code}: ${outcome.error}`,
+      ).toBe(true);
+      if (!outcome.ok) return;
+
+      expect(
+        outcome.leg.nativeSessionId,
+        `reattach resolved a DIFFERENT native session (${firstNativeId} -> ${outcome.leg.nativeSessionId}); ` +
+          'a PUI restart must adopt the running agent, not start a second one.',
+      ).toBe(firstNativeId);
+
+      // NO DOUBLE-SPAWN: the row must still point at the one process the SPAWN
+      // hop started, and that process must still be the live one.
+      const row = await getAdvSession(advSessionId);
+      expect(row, `adv row ${advSessionId} vanished across a reattach`).toBeTruthy();
+      if (pidBefore) {
+        expect(
+          pidAlive(pidBefore),
+          `the original ${backend} pane process died during reattach; a restart that kills the ` +
+            'agent it was meant to re-adopt is the double-spawn defect in its other direction.',
+        ).toBe(true);
+      }
+    }, 120_000);
+
+    it('END: the end command is either honoured and the process exits, or refused EXPLICITLY per its declared contract', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      const support = session.descriptor().capabilities.commands.end;
+      const result = await session.send({
+        type: 'end',
+        commandId: `end-${randomUUID().slice(0, 8)}`,
+        reason: 'P-012 acceptance matrix teardown',
+      });
+      endOutcome = result.status;
+
+      // WHY THIS IS NOT SIMPLY `expect(status).toBe('completed')`.
+      //
+      // Every backend declares `end` as CONDITIONAL, not supported — claude's
+      // stated reason is "the managed host may refuse to close a human-attended
+      // runtime". A refusal is therefore a DECLARED outcome of this command, not
+      // a defect, and a matrix that fails on it is asserting past the contract
+      // it is supposed to be checking. (It did exactly that on its first run.)
+      //
+      // What `conditional` DOES promise is that the refusal is explicit and
+      // legible — a code and a message — rather than a silent drop or a
+      // success that did nothing. That is the assertion worth making.
+      if (result.status === 'refused') {
+        expect(
+          support.state,
+          `${backend} refused 'end' while declaring it '${support.state}'. Only a conditional or ` +
+            'unsupported command may refuse; a supported one may not.',
+        ).toMatch(/^(conditional|unsupported)$/);
+        expect(
+          result.refusal?.code,
+          `${backend} refused 'end' without a refusal code. An opaque refusal is indistinguishable ` +
+            'from a dropped command, which is what makes an abandoned agent invisible.',
+        ).toBeTruthy();
+        expect(
+          result.refusal?.message,
+          `${backend} refused 'end' without a message explaining why`,
+        ).toBeTruthy();
+        return;
+      }
+
+      expect(
+        result.status,
+        `${backend} neither honoured nor refused the end command (status=${result.status}); ` +
+          'a silently dropped end is how a real agent is left burning tokens.',
+      ).toMatch(/^(completed|accepted)$/);
+
+      // Acknowledgement is not exit. Wait for the process to actually go.
+      const pid = spawned?.child?.pid ?? null;
+      const deadline = Date.now() + 60_000;
+      while (pid && pidAlive(pid) && Date.now() < deadline) {
+        await delay(POLL_INTERVAL_MS);
+      }
+      if (pid) {
+        expect(
+          pidAlive(pid),
+          `the ${backend} agent process ${pid} was still alive 60s after the end command was ` +
+            'acknowledged. The command was accepted and the process ignored it.',
+        ).toBe(false);
+      }
+    }, 120_000);
+
+    it('ORPHAN-FREE RECONCILIATION: no live process is left UNTRACKED, whichever way the end hop resolved', async () => {
+      expect(advSessionId, 'CREATE must have produced a row').toBeGreaterThan(0);
+
+      // AN ORPHAN IS NOT "A LIVE PROCESS" — IT IS A LIVE PROCESS NOTHING OWNS.
+      //
+      // The first version of this test asserted the pid was simply dead, which
+      // made it fail whenever `end` was (legitimately) refused: a conditional
+      // end that declines to close a runtime leaves it alive ON PURPOSE, and
+      // that is not an orphan while the row still tracks it. Asserting death
+      // here turned one real observation into two false ones.
+      //
+      // The property that actually matters for reconciliation is that every
+      // live process remains REACHABLE — the row knows about it, so the
+      // reconciler and the teardown below can still find and reap it. An
+      // untracked live agent is the thing that burns tokens until a human
+      // notices.
+      const pid = spawned?.child?.pid ?? null;
+      const alive = pid ? pidAlive(pid) : false;
+
+      const row = await getAdvSession(advSessionId);
+      expect(
+        row,
+        `adv row ${advSessionId} vanished while pid ${pid} is ${alive ? 'STILL ALIVE' : 'gone'} — ` +
+          'a live process whose tracking row is gone is unreachable by definition.',
+      ).toBeTruthy();
+
+      if (alive) {
+        // Still running: that is only acceptable because end was refused, and
+        // it must still be tracked. Say which case we are in, so a reader is
+        // never left guessing whether this was intentional.
+        expect(
+          endOutcome,
+          `the ${backend} agent ${pid} is still alive but the end command reported ` +
+            `'${endOutcome}'. A live process after a HONOURED end is an ignored end, not a ` +
+            'conditional refusal.',
+        ).toBe('refused');
+        expect(
+          liveLegs.some((entry) => entry.advSessionId === advSessionId),
+          `pid ${pid} is alive and NOT registered in liveLegs, so teardown will not reap it — ` +
+            'this is the orphan condition.',
+        ).toBe(true);
+      }
+
+      // The discovery file is how the operator's wake-executor finds a live
+      // session. One pointing at a DEAD pid would make a dead session look
+      // injectable to every later reader — the inverse orphan.
+      const discovery = await discoverPsuPtyByAdvSessionId(advSessionId);
+      if (discovery && !alive) {
+        expect(
+          pidAlive(discovery.pid),
+          `psu-pty discovery for adv row ${advSessionId} still points at pid ${discovery.pid} ` +
+            'while the session is gone; the wake-executor would treat this dead session as injectable.',
+        ).toBe(false);
+      }
+    }, 120_000);
   });
 });
