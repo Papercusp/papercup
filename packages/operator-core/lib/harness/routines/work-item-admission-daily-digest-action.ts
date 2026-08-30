@@ -17,6 +17,7 @@ import {
   type DailyDigestUmbrellaFiler,
   type DailyDigestUmbrellaLinker,
 } from '../../work-items-admission-daily-digest';
+import { optionalModelSpec } from '../../learning/model-policy';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 function runId(): string {
@@ -82,14 +83,9 @@ export interface AdmissionDailyDigestActionDeps {
   log: (message: string) => void;
 }
 
-function optionalModelSpec(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') {
-    throw new Error(`daily digest expected a model spec string, received ${String(value)}`);
-  }
-  const spec = value.trim();
-  return spec === '' ? undefined : spec;
-}
+// optionalModelSpec is shared from learning/model-policy so a per-run override
+// behaves identically across promoter, bulk-dedup and daily-digest.
+
 
 async function productionRun(ctx: SystemActionCtx): Promise<DailyDigestRunResult> {
   if (process.env.VITEST) throw new Error('production admission daily digest must not run from a unit test');
@@ -107,7 +103,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<DailyDigestRunResult
     harnessSlug: ctx.installSlug,
     runId: explicit || runId(),
     maxTokens,
-    model: optionalModelSpec(payload.model),
+    model: optionalModelSpec(payload.model, 'daily digest'),
     llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
     fileUmbrella: productionFileUmbrella,
     linkUmbrella: productionLinkUmbrella,

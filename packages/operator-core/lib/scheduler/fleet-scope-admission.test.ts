@@ -247,6 +247,7 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
 const base: ClaimSpecSubject = {
   id: 'WI-7',
   title: 'Fix scheduler admission',
+  summary: 'admission summary text',
   kind: 'bug',
   priority: 3,
   tags: ['scheduler', 'non-p2p'],

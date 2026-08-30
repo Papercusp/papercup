@@ -26,3 +26,25 @@ export const LEARNING_MODEL_SPEC = `${LEARNING_MODEL_ID}:${LEARNING_MODEL_EFFORT
 export function isCanonicalLearningModel(value: unknown): value is typeof LEARNING_MODEL_SPEC {
   return value === LEARNING_MODEL_SPEC;
 }
+
+/**
+ * Parse a routine payload's optional `model` override into a model spec.
+ *
+ * `undefined` means "no override" — the caller falls back to
+ * {@link LEARNING_MODEL_SPEC}. A blank/whitespace string is treated as absent
+ * rather than as an empty model id, so a payload field cleared in the admin UI
+ * cannot send `model: ''` to a backend. A non-string is a payload authoring
+ * error and throws, naming `label` so the routine that received it is obvious
+ * from the message alone.
+ *
+ * Shared by every scheduled admission path (promoter, bulk-dedup, daily-digest)
+ * so a per-run override behaves identically at all three seams.
+ */
+export function optionalModelSpec(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`${label} expected a model spec string, received ${String(value)}`);
+  }
+  const spec = value.trim();
+  return spec === '' ? undefined : spec;
+}

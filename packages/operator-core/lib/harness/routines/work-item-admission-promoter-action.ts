@@ -14,6 +14,7 @@ import {
   type FailOpenRunResult,
   type PromoterRunResult,
 } from '../../work-items-admission-promoter';
+import { optionalModelSpec } from '../../learning/model-policy';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 function positiveInteger(value: unknown, fallback: number): number {
@@ -53,6 +54,7 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
     runId: runId(WORK_ITEM_ADMISSION_PROMOTER),
     batchSize: positiveInteger(payload.batchSize, DEFAULT_PROMOTER_BATCH_SIZE),
     recentTerminalDays: positiveInteger(payload.recentTerminalDays, 30),
+    model: optionalModelSpec(payload.model, 'admission promoter'),
     llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
   });
 }

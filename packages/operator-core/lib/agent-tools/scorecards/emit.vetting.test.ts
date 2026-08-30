@@ -14,6 +14,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
+// EI-21828643965337454 moved the sole-vetting-critic guard onto the FAIL-CLOSED
+// revision read: `readRubricPlanRevision` reports a failed read as `ok:false`
+// instead of flattening it into the same `null` an unversioned rubric returns.
+// This fixture stubbed only the fail-OPEN `getRubricPlanRevision`, so the new call
+// fell through to the real PG-backed read, returned `ok:false`, and every case here
+// refused with `..._revision_unreadable` before reaching the guard under test.
+// Default it to the SAME value the fail-open mock is set to, so the existing
+// per-test overrides (notably the unversioned-rubric case, which sets null) keep
+// meaning what they say; a test that wants the unreadable leg overrides it directly.
+const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const readVettingConsultCritique = vi.fn();
@@ -38,6 +48,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
+    readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
   };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
@@ -144,6 +155,12 @@ beforeEach(() => {
     return null;
   });
   getRubricPlanRevision.mockReset().mockResolvedValue(7);
+  // Derived, not hardcoded: a test that overrides the revision via the fail-open
+  // mock gets the same revision through the fail-closed read, so the two can never
+  // silently disagree about what this rubric's current revision is.
+  readRubricPlanRevision
+    .mockReset()
+    .mockImplementation(async (...a: unknown[]) => ({ ok: true, revision: await getRubricPlanRevision(...a) }));
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   readVettingConsultCritique.mockReset().mockResolvedValue(critique());

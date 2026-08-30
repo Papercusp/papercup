@@ -70,6 +70,10 @@ import {
 } from '@papercusp/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync';
 import { startBootedHandlesPgPublisher } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg';
 import {
+  startPrimaryManagedTimersBroadcaster,
+  startWorkerPrimaryManagedTimersCache,
+} from '@papercusp/operator-core/lib/cluster-managed-timers-sync';
+import {
   startWorkerStampPublisher,
   startWorkerStampReceiver,
   startPrimaryStampRelay,
@@ -749,6 +753,14 @@ const clusterHandle = sidecarMode ? null : startCluster({
       // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
       // opt-in perf feature (unlike the lag watchdog above).
       if (clusterWorkers > 1) startWorkerBootedHandlesCache();
+      // EI-19454206016477347: cache the primary's periodic managed-timers broadcast so
+      // this worker's `/api/internal/managed-timers` route (the schedule-federation
+      // probe target) can report the PRIMARY's own timers + DBOS schedules, not just
+      // this worker's — the primary owns the background machinery but never itself
+      // serves that route (SO_REUSEPORT always lands the request on a worker). Mirrors
+      // the booted-handles cache immediately above; ALWAYS-ON when true-clustered for
+      // the same reason.
+      if (clusterWorkers > 1) startWorkerPrimaryManagedTimersCache();
       // EI-19327550671915579 (part 2 of EI-18735338283879820): also publish to the
       // cross-SERVICE PG fallback, unconditionally (no clusterWorkers gate) — this is
       // the leg that reaches a request-only host under the dedicated-bg-host topology
@@ -821,6 +833,18 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   const bootedHandlesBroadcaster = clusterHandle.broadcast
     ? startBootedHandlesBroadcaster({ broadcast: clusterHandle.broadcast })
     : undefined;
+  // EI-19454206016477347: broadcast this primary's OWN managed-timer + DBOS-schedule
+  // registries to every worker, so a caller probing ANY worker's
+  // /api/internal/managed-timers route (the schedule-federation.ts probe target) also
+  // learns what the primary itself has armed — the primary never itself serves that
+  // route (SO_REUSEPORT always lands the request on a worker), so without this the
+  // primary's timers are structurally invisible to the one surface built to inventory
+  // them. ALWAYS-ON like the booted-handles broadcaster above: deliberately
+  // UNGATED (no substrate-ownership check) — see cluster-managed-timers-sync.ts's
+  // file-header doc for why that gate does not apply here.
+  const primaryManagedTimersBroadcaster = clusterHandle.broadcast
+    ? startPrimaryManagedTimersBroadcaster({ broadcast: clusterHandle.broadcast })
+    : undefined;
   // EI-19327550671915579: also publish to the cross-SERVICE PG fallback from the
   // true-cluster primary — it never runs the onWorker closure above (only its forked
   // children do), so without this a true-clustered substrate owner would only ever
@@ -847,6 +871,7 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     bootedHandlesBroadcaster?.stop();
+    primaryManagedTimersBroadcaster?.stop();
     bootedHandlesPgPublisher.stop();
     stampRelay?.stop();
     clusterHandle.drain?.(sig);

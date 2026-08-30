@@ -96,6 +96,18 @@ export const ITEM_FIELDS = [
   // (`\bp2p\b`) so "P2P sync fails" still matches but "nonp2p-bug-drain" does not. `glob`
   // remains right for wildcard/prefix/suffix shapes (`lib/p2p/*`, `*.test.ts`).
   'title',
+  // `summary` — EI-20240035377782004. The work-item summary/body text. Filterable for
+  // exactly `title`'s reason (WI-3268), one layer deeper: a keyword exclusion fence
+  // (p2p-lane-fence.ts's `buildP2pLaneFence`) that matches ONLY `title` admits an item
+  // whose TITLE is generic but whose SUMMARY explicitly names the excluded class — a
+  // live scope leak (fleet nonp2p-bug-drain-luna-max-0811 rev3 admitted EI-20239498607103954,
+  // titled generically but summarized "accepted P-205 Mac peer", "federation drills",
+  // "vm-rig MCP parity"). Same column as `harness_features_consolidated.summary` / the
+  // issue-family `work_items.summary`, so it is a real physical column on the base table
+  // for BOTH families — no COALESCE/payload fallback needed (mirrors `goal`'s note above).
+  // Composes with `not`/`any`/`all` like `title`. NOT rankable — ordering by summary text
+  // is meaningless, same rationale as `title`/`id` — excluded from `RANKABLE_ITEM_FIELDS`.
+  'summary',
   // `severity` — WI-6675. The issue-family severity (critical|major|minor|nit), read from
   // `payload._ei.severity` with a `payload.severity` fallback (the WI-6674 two-path hazard:
   // the accessor differs by RELATION, and the wrong one returns NULL for every row without
@@ -252,6 +264,7 @@ export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
   (f) =>
     f !== 'id' &&
     f !== 'title' &&
+    f !== 'summary' &&
     f !== 'severity' &&
     f !== 'risk_tier' &&
     f !== 'goal' &&

@@ -614,6 +614,73 @@ describe('inferred shared-tree findings — never claim a peer result for the ca
   });
 });
 
+describe('check-required-field-strands --typecheck — diagnostic-only type attribution (EI-21833727883305743)', () => {
+  it('fails when the dependent source omits the type name but the compiler diagnostic names it', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'required-field-strands-diagnostic-attribution-'));
+    const changed = 'packages/operator-core/lib/daily-digest.ts';
+    const dependent = 'packages/operator-core/lib/daily-digest-fixture.test.ts';
+    const dependentSource = 'export const fixture = {};\n';
+    try {
+      cpSync(resolve(ROOT, 'scripts'), join(tmp, 'scripts'), { recursive: true });
+      symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'));
+      mkdirSync(join(tmp, 'packages/operator-core/lib'), { recursive: true });
+      writeFileSync(join(tmp, changed), 'export interface DailyDigestRunResult { digestId: string; }\n');
+      writeFileSync(join(tmp, dependent), dependentSource);
+
+      const git = (...args: string[]) =>
+        execFileSync('git', args, {
+          cwd: tmp,
+          encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+        });
+      git('init', '-q', '.');
+      git('config', 'user.email', 'required-field-strands@test.invalid');
+      git('config', 'user.name', 'required-field-strands');
+      git('add', '-A');
+      git('commit', '-qm', 'base');
+
+      writeFileSync(
+        join(tmp, changed),
+        'export interface DailyDigestRunResult { digestId: string; runId: string; }\n',
+      );
+      // The real lint:tsc subprocess emits this diagnostic when the dependent's inferred
+      // object literal omits the expected type. The fixture source intentionally contains no
+      // DailyDigestRunResult reference; only the compiler message carries the type name.
+      const diagnostic =
+        `${dependent}(3,7): error TS2741: Property 'runId' is missing in type '{}' but required in type 'DailyDigestRunResult'.`;
+      writeFileSync(
+        join(tmp, 'scripts/lint-tsc.mjs'),
+        `console.error(${JSON.stringify(diagnostic)}); process.exit(1);\n`,
+      );
+
+      const result = spawnSync(
+        'node',
+        [
+          'scripts/check-required-field-strands.mjs',
+          '--typecheck',
+          '--base',
+          'HEAD',
+          `--files=${changed}`,
+        ],
+        { cwd: tmp, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      );
+      const out = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+      expect(dependentSource).not.toContain('DailyDigestRunResult');
+      expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(out).toContain('REQUIRED-FIELD ADDITION detected');
+      expect(out).toContain('DailyDigestRunResult');
+      expect(out).toContain(dependent);
+      expect(out).toContain('typecheck reported errors ATTRIBUTED TO YOUR CHANGE');
+      expect(out).toContain('source or compiler diagnostic references their exported type names');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
 /**
  * EI-20095543794921181 — the warning above was already correct and already
  * printed; the run still EXITED 0. Prose does not reach `&& echo PASS`,

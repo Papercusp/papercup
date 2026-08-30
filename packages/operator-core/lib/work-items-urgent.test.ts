@@ -39,6 +39,19 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-urgent' }));
 vi.mock('./sync/hyperbee/fanout-projection', () => ({ fanoutForObject: vi.fn(async () => {}) }));
+// WI-1139512 put a goal-holder authority fence on the create chokepoint, and it
+// reads through the SAME org-PG seam faked above. Because `fakeSql` answers EVERY
+// query with `[{ id: 'WI-9001' }]`, the authority read parsed that unrelated row as
+// a holder record and concluded "su-self is SUPERSEDED", so the fence — which is
+// deliberately fail-CLOSED — threw GoalHolderAuthorityError and reddened both
+// tool-level tests. The fence is behaving correctly; the FIXTURE was unfaithful.
+// Resolve to null (a plain create that serves no goal), matching this file's stated
+// scope: PG-touching seams are stubbed because this file is about the urgent-wake
+// hook. The fence itself is covered in modes/goal-context.test.ts.
+vi.mock('./modes/goal-context', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveGoalContext: vi.fn(async () => null),
+}));
 // The lifecycle-event emits are fire-and-forget into the REAL events engine —
 // and the fakeSql above answers EVERY query with [{ id: 'WI-9001' }], so the
 // engine's await-row parse hit `undefined.startsWith` and console.warn'd at a

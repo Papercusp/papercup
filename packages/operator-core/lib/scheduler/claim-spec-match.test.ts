@@ -168,6 +168,7 @@ describe('WI-5272 hardened p2p/federation/rig fence — false-positive vs real-l
     const preFixSubject = {
       id: 'WI-5270',
       title: 'De-quarantine follow-up: lib/memory/federation-slug-stamp.integration.test.ts flake',
+      summary: null,
       kind: 'change',
       priority: null,
       tags: [],

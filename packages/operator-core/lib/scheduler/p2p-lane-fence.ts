@@ -232,15 +232,30 @@ export const P2P_LANE_REJECTED_ANTI_TERMS = [
 
 /**
  * Build the `not: { any: [...] } }` FilterNode excluding every
- * {@link P2P_LANE_EXCLUSION_TERMS} title match. Compose this into a spec's
- * `view.filter` `all: [...]` array alongside the kind/state/plan clauses,
- * instead of hand-typing a title glob/word exclusion per term — that
- * hand-typing is exactly the drift this module exists to stop.
+ * {@link P2P_LANE_EXCLUSION_TERMS} TITLE-or-SUMMARY match. Compose this into a
+ * spec's `view.filter` `all: [...]` array alongside the kind/state/plan
+ * clauses, instead of hand-typing a title/summary glob/word exclusion per term
+ * — that hand-typing is exactly the drift this module exists to stop.
+ *
+ * EI-20240035377782004: checks `summary` as well as `title` — title-ONLY was
+ * the live scope leak. Fleet nonp2p-bug-drain-luna-max-0811's rev3 spec (built
+ * from this function, title-only at the time) admitted EI-20239498607103954,
+ * whose TITLE is generic but whose SUMMARY explicitly says "accepted P-205 Mac
+ * peer", "federation drills", "vm-rig MCP parity" — a P2P item a single-box
+ * fleet member cannot execute, let straight through because the fence never
+ * looked at the field carrying the tell. Every term now excludes on EITHER
+ * field matching (an `any` of `any`s, flattened into one list so the overall
+ * shape stays `not: { any: [...] } }`), so a term hit in EITHER field excludes
+ * the item — never a false admission just because the leak happened to be
+ * worded into summary instead of title.
  */
 export function buildP2pLaneFence(): FilterNode {
   return {
     not: {
-      any: P2P_LANE_EXCLUSION_TERMS.map((value) => ({ field: 'title', op: 'word', value }) as const),
+      any: P2P_LANE_EXCLUSION_TERMS.flatMap((value) => [
+        { field: 'title', op: 'word', value } as const,
+        { field: 'summary', op: 'word', value } as const,
+      ]),
     },
   };
 }

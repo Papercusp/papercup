@@ -37,6 +37,7 @@ import {
 } from '@papercusp/module-singleton';
 import { defaultGetRegisteredSchedules } from '../../../dbos/dbos-schedule-introspect';
 import { describeProcessRole, ownHonoPort } from '../../../schedule-federation';
+import { getCachedPrimaryManagedTimers } from '../../../cluster-managed-timers-sync';
 
 export default defineTool({
   method: 'GET',
@@ -108,6 +109,15 @@ export default defineTool({
       // Same degradation rule as above: a diagnostic must never be able to take
       // out the inventory it annotates.
     }
+    // EI-19454206016477347: this WORKER's own registries above never include the
+    // true-cluster PRIMARY's — the primary owns the background machinery but never
+    // itself serves this route (SO_REUSEPORT always lands the request on a worker).
+    // `getCachedPrimaryManagedTimers()` is a pure sync read of the latest snapshot the
+    // primary pushed over cluster IPC (cluster-managed-timers-sync.ts, mirroring
+    // EI-8816's booted-handles PUSH). `null` in a single-process / non-clustered host
+    // (the primary never broadcasts there) or before the first beat arrives — the field
+    // is simply omitted in that case, never a fabricated empty snapshot.
+    const cachedPrimary = getCachedPrimaryManagedTimers();
     return Response.json({
       ok: timersError === null,
       ...identity,
@@ -119,6 +129,18 @@ export default defineTool({
         ? {
             moduleDuplications,
             moduleDuplicationWarnings: formatModuleDuplicationWarnings(moduleDuplications),
+          }
+        : {}),
+      ...(cachedPrimary
+        ? {
+            primary: {
+              pid: cachedPrimary.pid,
+              role: cachedPrimary.role,
+              timers: cachedPrimary.timers,
+              dbosSchedules: cachedPrimary.dbosSchedules,
+              sentAt: cachedPrimary.sentAt,
+              staleMs: Date.now() - cachedPrimary.receivedAt,
+            },
           }
         : {}),
       ...(timersError ? { error: timersError } : {}),

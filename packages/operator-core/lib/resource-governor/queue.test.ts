@@ -11,6 +11,7 @@ import {
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
   type QueueMutationResult,
+  type QueueReconciliationResult,
   type StoredAdmissionRecord,
 } from './queue';
 
@@ -549,6 +550,90 @@ describe('WorkItemAdmissionQueueDriver', () => {
       plannedDemand: { databaseConnections: 1 },
       actualDemand: { databaseConnections: 2 },
       releasedAtMs: 1_100,
+    });
+  });
+
+  describe('reconcileExpired() coalescing (EI-1211660)', () => {
+    /** A store whose reconcileExpired() never resolves on its own — settleNext() drives it,
+     *  so a test can observe how many concurrent driver.reconcileExpired() calls are still
+     *  in flight before any of them settle. */
+    class DeferredReconcileStore extends MemoryQueueStore {
+      calls = 0;
+      private pendingResolvers: Array<(value: QueueReconciliationResult) => void> = [];
+
+      async reconcileExpired(_namespace: string, _nowMs: number): Promise<QueueReconciliationResult> {
+        this.calls += 1;
+        return new Promise((resolve) => {
+          this.pendingResolvers.push(resolve);
+        });
+      }
+
+      settleNext(result: QueueReconciliationResult): void {
+        const resolve = this.pendingResolvers.shift();
+        if (!resolve) throw new Error('settleNext() called with no reconcileExpired() call pending');
+        resolve(result);
+      }
+    }
+
+    it('shares one store round-trip across concurrent calls, then across settled calls within the window', async () => {
+      const clock = { now: 1_000 };
+      const store = new DeferredReconcileStore();
+      const driver = new WorkItemAdmissionQueueDriver(store, {
+        namespace: 'test',
+        now: () => clock.now,
+      });
+
+      // Two callers racing concurrently (the fleet-wide-admission shape this exists to fix)
+      // must observe exactly ONE store call between them, not two.
+      const first = driver.reconcileExpired();
+      const second = driver.reconcileExpired();
+      expect(store.calls).toBe(1);
+
+      store.settleNext({ requeued: 1, expired: 2, total: 3 });
+      await expect(first).resolves.toEqual({ requeued: 1, expired: 2, total: 3 });
+      await expect(second).resolves.toEqual({ requeued: 1, expired: 2, total: 3 });
+
+      // Still inside the coalesce window after settlement: a later caller reuses the same
+      // settled result rather than issuing a fresh round-trip.
+      clock.now += 500;
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 1, expired: 2, total: 3 });
+      expect(store.calls).toBe(1);
+
+      // Outside the window: the next call issues a genuinely fresh store round-trip.
+      clock.now += 10_000;
+      const fresh = driver.reconcileExpired();
+      expect(store.calls).toBe(2);
+      store.settleNext({ requeued: 0, expired: 0, total: 0 });
+      await expect(fresh).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
+    });
+
+    it('never caches a rejection — the very next call retries against the store fresh', async () => {
+      const clock = { now: 1_000 };
+      let calls = 0;
+      class FailOnceStore extends MemoryQueueStore {
+        async reconcileExpired(): Promise<QueueReconciliationResult> {
+          calls += 1;
+          if (calls === 1) throw new Error('transient contention');
+          return { requeued: 0, expired: 0, total: 0 };
+        }
+      }
+      const driver = new WorkItemAdmissionQueueDriver(new FailOnceStore(), {
+        namespace: 'test',
+        now: () => clock.now,
+      });
+
+      await expect(driver.reconcileExpired()).rejects.toThrow('transient contention');
+      // Immediately after, still well inside what would be the coalesce window — the failed
+      // attempt must not be cached against later callers.
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
+      expect(calls).toBe(2);
+    });
+
+    it('a store with no reconcileExpired() keeps returning the zero result with no coalescing state', async () => {
+      const store = new MemoryQueueStore();
+      const driver = new WorkItemAdmissionQueueDriver(store, { namespace: 'test', now: () => 1_000 });
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
     });
   });
 });

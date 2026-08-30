@@ -119,6 +119,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
   return {
     id,
     title: id,
+    summary: null,
     kind: 'feature',
     priority: null,
     tags: [],

@@ -9,6 +9,7 @@ import {
   WORK_ITEM_ADMISSION_BULK_DEDUP,
   type BulkDedupRunResult,
 } from '../../work-items-admission-bulk-dedup';
+import { optionalModelSpec } from '../../learning/model-policy';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 function optionalPositiveInteger(value: unknown): number | undefined {
@@ -24,14 +25,9 @@ function optionalPositiveInteger(value: unknown): number | undefined {
  * `payload.model` overrides the learning-policy default for THIS run only (see
  * BulkDedupRunOptions.model). Blank/absent keeps the canonical policy model.
  */
-function optionalModelSpec(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') {
-    throw new Error(`bulk dedup expected a model spec string, received ${String(value)}`);
-  }
-  const spec = value.trim();
-  return spec === '' ? undefined : spec;
-}
+// Shared with the promoter and daily-digest admission paths so a per-run
+// override behaves identically at all three seams.
+
 
 function optionalNonNegativeInteger(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
@@ -78,7 +74,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<BulkDedupRunResult> 
     harnessSlug: ctx.installSlug,
     runId,
     ownerId,
-    model: optionalModelSpec(payload.model),
+    model: optionalModelSpec(payload.model, 'bulk dedup'),
     maxStages: optionalPositiveInteger(payload.maxStages),
     pairsPerCall: optionalPositiveInteger(payload.pairsPerCall),
     shardConcurrency: optionalPositiveInteger(payload.shardConcurrency),

@@ -536,10 +536,15 @@ describe('claim-spec `view.fence` macro — server-side expansion (WI-6050)', ()
     const words = filter.not.any.map((leaf) => leaf.value);
     expect(words).toContain('p2p');
     expect(words).toContain('replication'); // WI-5639's leaked term — the single highest-value entry
+    // EI-20240035377782004: buildP2pLaneFence excludes on EITHER `title` OR
+    // `summary` matching (title-only was the live scope leak) — every term
+    // therefore produces TWO leaves, one per field, both `word`-matched.
     filter.not.any.forEach((leaf) => {
-      expect(leaf.field).toBe('title');
+      expect(['title', 'summary']).toContain(leaf.field);
       expect(leaf.op).toBe('word');
     });
+    const fields = new Set(filter.not.any.map((leaf) => leaf.field));
+    expect(fields).toEqual(new Set(['title', 'summary']));
   });
 });
 

@@ -30,6 +30,7 @@ import { FILTERABLE_ITEM_FIELDS, RANKABLE_ITEM_FIELDS } from './claim-spec';
 const FULL_SUBJECT: ClaimSpecSubject = {
   id: 'WI-1234',
   title: 'a title',
+  summary: 'a summary',
   kind: 'bug',
   priority: 7,
   tags: ['tag-a'],
@@ -50,6 +51,7 @@ const FULL_SUBJECT: ClaimSpecSubject = {
 const PROBE: Record<string, string | number> = {
   id: 'WI-1234',
   title: 'a title',
+  summary: 'a summary',
   kind: 'bug',
   priority: 7,
   tags: 'tag-a',

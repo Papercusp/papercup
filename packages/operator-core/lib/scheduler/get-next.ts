@@ -282,6 +282,11 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // `title` — WI-3268: keyword exclusion (glob/contains/!=) so a constrained fleet can
   // durably filter out a class of work (e.g. `*p2p*`) that carries no `tags` data.
   title: { col: (sql) => sql`title`, kind: 'scalar-text' },
+  // `summary` — EI-20240035377782004: same shape as `title` one layer deeper, closing the
+  // scope leak where a title-only exclusion fence admits an item whose SUMMARY (not title)
+  // names the excluded class. A real physical column on this base table for both families
+  // (same as `title`), so no COALESCE/payload fallback is needed.
+  summary: { col: (sql) => sql`summary`, kind: 'scalar-text' },
   // EI-18654360178824151: COALESCE the physical column with the SAME payload-derivation
   // fallback `planSlugOfWorkItem()` (claim-spec-match.ts) uses for the issue-family JS
   // evaluator — the two admission evaluators (this SQL compiler for feature-family items,

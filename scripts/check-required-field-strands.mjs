@@ -36,8 +36,8 @@
  *   0 — no required-field additions, or advisory mode, or --typecheck found nothing
  *       ATTRIBUTED TO THE CALLER (peer live-edits and standing committed reds are
  *       labelled by lint:tsc's --files attribution and never trip this exit)
- *   1 — --typecheck confirmed type errors attributed to the caller's files or to files
- *       referencing their exported types (the stranded-site population)
+ *   1 — --typecheck confirmed type errors attributed to the caller's files or to files whose
+ *       source or compiler diagnostic references their exported types (the stranded-site population)
  *   2 — --typecheck was requested, but findings came only from an inferred shared-tree
  *       file set, so they cannot be attributed to this caller; re-run with --files
  */
@@ -701,8 +701,9 @@ function main() {
   // required-field addition" headline that invited the causal reading and sent authors off
   // to debug (or un-require) a clean change. lint-tsc's `--files=` mode already solves the
   // exact attribution this leg needs: it fails ONLY on the named files PLUS files
-  // referencing the named files' exported type names (`filesReferencingTypeNames` — i.e.
-  // the stranded-dependent population this guard exists for), and labels every other red
+  // whose source or compiler diagnostic references the named files' exported type names
+  // (`filesReferencingTypeNames` / `diagnosticFilesReferencingTypeNames` — i.e. the
+  // stranded-dependent population this guard exists for), and labels every other red
   // as a peer live-edit or an already-recorded standing red that stays green. So forward
   // the caller's operator-core set instead of re-deriving a worse partition here.
   //
@@ -722,7 +723,10 @@ function main() {
     console.log(
       `\n--typecheck: running lint:tsc --files=<${ocFiles.length} file(s)> — verdict scoped to YOUR files`,
     );
-    console.log('  plus files referencing their exported types (the stranded-site population);');
+    console.log(
+      '  plus files whose source or compiler diagnostic references their exported type names',
+    );
+    console.log('  (the stranded-site population);');
     console.log('  peer live-edits and standing committed reds are labelled and stay green.');
   }
   let out = '';
@@ -792,7 +796,10 @@ function main() {
       '\n✗ typecheck reported errors ATTRIBUTED TO YOUR CHANGE — in the file(s) you named,',
     );
     console.error(
-      '  or in files that reference their exported types (likely stranded construction',
+      '  or in files whose source or compiler diagnostic references their exported type names',
+    );
+    console.error(
+      '  (likely stranded construction',
     );
     console.error(
       '  sites of the new required field). Peer/standing reds do NOT trip this verdict;',

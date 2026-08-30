@@ -84,6 +84,8 @@ interface SeedRow {
   /** Why this row is in the corpus — quoted into the divergence report. */
   why: string;
   title: string;
+  /** EI-20240035377782004: defaults to '' (matching every pre-existing row's seeded value). */
+  summary?: string;
   createdTs: number;
   featureOrder?: number | null;
   planSlugCol?: string | null;
@@ -189,6 +191,15 @@ const ROWS: SeedRow[] = [
     title: 'Hyperswarm Sidecar ISOLATION',
     createdTs: 8000,
   },
+  {
+    id: 'F-summary-only',
+    why: 'EI-20240035377782004: the actual live leak shape — a p2p/federation TELL that lives ONLY '
+      + 'in the summary/body text, with a completely generic title. A title-only fence field admits '
+      + 'this row; both engines must now agree it is excluded once `summary` is filterable.',
+    title: 'Follow up on outstanding review feedback',
+    summary: 'Team accepted P-205 Mac peer for the next round of federation drills.',
+    createdTs: 9000,
+  },
 ];
 
 async function seed(r: SeedRow) {
@@ -197,7 +208,7 @@ async function seed(r: SeedRow) {
       (harness_slug, feature_id, item_kind, status, workspace_id, title, summary,
        created_ts, updated_ts, feature_order, source_plan_slug, source_plan_item_ids,
        tags, goal_id, taken_by, redundancy, expected_cost_cents, payload)
-    VALUES (${H}, ${r.id}, 'feature', 'open', ${WS}, ${r.title}, '',
+    VALUES (${H}, ${r.id}, 'feature', 'open', ${WS}, ${r.title}, ${r.summary ?? ''},
        ${r.createdTs}, 0, ${r.featureOrder ?? null}, ${r.planSlugCol ?? null},
        ${r.planItemIdsCol ?? null}, ${r.tagsCol === undefined ? null : db.sql.json(r.tagsCol as never)},
        ${r.goalId ?? null}, ${r.takenBy ?? null}, ${r.redundancy ?? null},
@@ -213,7 +224,7 @@ async function seedIssue(r: SeedRow) {
       (harness_slug, feature_id, item_kind, status, workspace_id, title, summary,
        created_ts, updated_ts, source_plan_slug, source_plan_item_ids, tags,
        goal_id, taken_by, redundancy, expected_cost_cents, payload)
-    VALUES (${ISSUE_H}, ${`I-${r.id}`}, 'bug', 'open', ${WS}, ${r.title}, '',
+    VALUES (${ISSUE_H}, ${`I-${r.id}`}, 'bug', 'open', ${WS}, ${r.title}, ${r.summary ?? ''},
        ${r.createdTs}, 0, ${r.planSlugCol ?? null}, ${r.planItemIdsCol ?? null},
        ${r.tagsCol === undefined ? null : db.sql.json(r.tagsCol as never)},
        ${r.goalId ?? null}, ${r.takenBy ?? null}, ${r.redundancy ?? null},
@@ -229,6 +240,9 @@ async function seedIssue(r: SeedRow) {
 const LEAF_SPECS: Array<{ field: FilterLeaf['field']; ops: FilterLeaf['op'][]; value: unknown; inValue: unknown[] }> = [
   { field: 'id', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'F-agree', inValue: ['F-agree', 'F-absent'] },
   { field: 'title', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'p2p', inValue: ['p2p'] },
+  // EI-20240035377782004: same shape as `title` — a real physical column on both families,
+  // wired through both engines for the first time by this fix.
+  { field: 'summary', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'federation', inValue: ['federation'] },
   { field: 'kind', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'feature', inValue: ['feature', 'bug'] },
   { field: 'plan', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: PLAN, inValue: [PLAN] },
   { field: 'risk_tier', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'high', inValue: ['high', 'low'] },
@@ -248,6 +262,8 @@ const GLOB_PROBES: Array<{ field: FilterLeaf['field']; value: string }> = [
   { field: 'title', value: '*p2p*' },
   { field: 'title', value: '*LOSSY*' },
   { field: 'title', value: '*replication*' },
+  { field: 'summary', value: '*federation*' },
+  { field: 'summary', value: '*P-205*' },
   { field: 'plan', value: 'plan-*' },
   { field: 'tags', value: '*infra*' },
   { field: 'paths', value: 'libs/generic/*' },

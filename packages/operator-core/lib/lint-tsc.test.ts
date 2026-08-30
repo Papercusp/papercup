@@ -36,6 +36,7 @@ import {
   effectiveBaselineByFile,
   exportedTypeNames,
   filesReferencingTypeNames,
+  diagnosticFilesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
   formatStandingRedRow,
@@ -1687,6 +1688,50 @@ describe('exportedTypeNames + filesReferencingTypeNames (EI-18756182128903253)',
     dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
     writeFileSync(join(dir, 'anything.ts'), 'export const x = 1;');
     expect(filesReferencingTypeNames(dir, ['anything.ts'], new Set())).toEqual(new Set());
+  });
+});
+
+describe('diagnosticFilesReferencingTypeNames — compiler messages close source-text attribution gaps (EI-21833727883305743)', () => {
+  const DEPENDENT = 'packages/operator-core/lib/digest-fixture.test.ts';
+
+  it('attributes a dependent when TS names the changed exported type but its source does not', () => {
+    const output =
+      `${DEPENDENT}(12,7): error TS2741: Property 'runId' is missing in type '{}' but required in type 'DailyDigestRunResult'.`;
+    expect(
+      diagnosticFilesReferencingTypeNames(
+        output,
+        [DEPENDENT],
+        new Set(['DailyDigestRunResult']),
+      ),
+    ).toEqual(new Set([DEPENDENT]));
+  });
+
+  it('supports the other required-field assignability diagnostic codes', () => {
+    const output = [
+      `${DEPENDENT}(1,1): error TS2322: Type '{}' is not assignable to type 'DailyDigestRunResult'.`,
+      `${DEPENDENT}(2,1): error TS2739: Type '{}' is missing the following properties from type 'DailyDigestRunResult': runId`,
+    ].join('\n');
+    expect(
+      diagnosticFilesReferencingTypeNames(
+        output,
+        [DEPENDENT],
+        new Set(['DailyDigestRunResult']),
+      ),
+    ).toEqual(new Set([DEPENDENT]));
+  });
+
+  it('does not attribute a different diagnostic code or a type name appearing only in the file path', () => {
+    const output = [
+      `${DEPENDENT}(3,1): error TS2339: Property 'runId' does not exist on type '{}'.`,
+      `packages/operator-core/lib/DailyDigestRunResult-fixture.test.ts(4,1): error TS2741: Property 'runId' is missing.`,
+    ].join('\n');
+    expect(
+      diagnosticFilesReferencingTypeNames(
+        output,
+        [DEPENDENT, 'packages/operator-core/lib/DailyDigestRunResult-fixture.test.ts'],
+        new Set(['DailyDigestRunResult']),
+      ),
+    ).toEqual(new Set());
   });
 });
 

@@ -125,6 +125,7 @@ export default defineTool({
           subject: {
             id: null,
             title: null,
+            summary: null,
             // Plan-item assignment is the pre-promotion feature lane. A bug-only
             // or fixed-id member therefore refuses it; a plan-scoped feature fleet
             // admits it through its plan/plan_item leaves.

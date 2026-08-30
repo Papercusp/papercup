@@ -55,6 +55,7 @@ function subjectOf(p: {
   return {
     id: p.id ?? 'X-1',
     title: p.title ?? '',
+    summary: null,
     kind: p.kind ?? 'task',
     priority: null,
     tags: p.tags ?? [],

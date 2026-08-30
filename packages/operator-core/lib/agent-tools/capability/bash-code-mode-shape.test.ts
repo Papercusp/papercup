@@ -78,16 +78,28 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(args.safeParse({ command: 'true', timeout: 20000 }).success).toBe(true);
   });
 
+  // This test pins the SUBSTANCE of the guidance, not its wording. `capability:bash`
+  // sits against a hard 1500-unit prompt-weight cap (tool-guidance-budget.ts), so this
+  // prose gets legitimately re-compressed to stay under it — 897b933647 rewrote
+  // "strips database credential environment variables" to "strips DB credential env
+  // vars" and "fails before either search tool runs" to "fails before either tool runs",
+  // changing nothing semantic and reddening every exact-phrase assertion here.
+  // Asserting whole sentences made this file fail for editorial compression, which
+  // teaches the next editor to pad the guidance back over budget to appease a test.
+  // So match the load-bearing TOKENS (and tolerate the abbreviations a budget squeeze
+  // reaches for) — a real regression is the claim GOING AWAY, not being said shorter.
   it('routes operator database reads away from psql because shell credentials are scrubbed', () => {
     const guidance = (bashTool as unknown as { guidance?: { when?: string; notWhen?: string } }).guidance;
     expect(guidance?.notWhen).toContain('dev:pg_query');
-    expect(guidance?.notWhen).toContain('strips database credential environment variables');
+    // The claim that earns the redirect: the shell cannot see DB credentials.
+    expect(guidance?.notWhen).toMatch(/strips (?:database|DB) credential env(?:ironment)? var(?:iable)?s/);
     expect(guidance?.when).toContain('fixed-string searches');
     expect(guidance?.when).toContain('`rg -F`');
     expect(guidance?.when).toContain('`grep -F`');
-    expect(guidance?.when).toContain('shell-safe single-quoted argument');
+    // Quote the argument, because an unmatched backtick fails before the search runs.
+    expect(guidance?.when).toMatch(/single-quot(?:e|ed)/);
     expect(guidance?.when).toContain('unmatched backtick');
-    expect(guidance?.when).toContain('fails before either search tool runs');
+    expect(guidance?.when).toMatch(/fails before either (?:search )?tool runs/);
     expect(guidance?.when).toContain('do not shell-background child');
     expect(guidance?.when).toContain('without `wait`');
   });

@@ -146,6 +146,12 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     // silently placed into it merely because its eventual WI id is unknown.
     id: null,
     title: spec.title,
+    // EI-20240035377782004: same shape as `title` — the create-time spec is the only
+    // source (no row exists yet to read a column from). `body` is an accepted alias
+    // for `summary` at the tool-schema boundary but is normalized onto `summary`
+    // before this function ever sees `spec` (see the `_body` destructure at the
+    // items-array call site), so only `spec.summary` needs reading here.
+    summary: spec.summary ?? null,
     kind: spec.kind,
     priority: null,
     tags: spec.topics ?? [],

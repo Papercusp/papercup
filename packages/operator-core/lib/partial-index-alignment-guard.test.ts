@@ -73,6 +73,83 @@ describe('the index set is DERIVED from the schema, not hardcoded', () => {
   });
 });
 
+/**
+ * The scope boundary is a MEASURED conclusion, not unfinished work — and the shapes it
+ * excludes are the ones a widening edit picks up FIRST, so they are pinned here against
+ * synthetic fixtures rather than against whatever the live schema happens to hold.
+ *
+ * `harness_shared` has ~194 partial indexes and this lint claims 3 of them. That reads as
+ * a 191-index gap and was filed as one (EI-19452064467168046). Both ways to close it were
+ * measured and both are worse than staying narrow:
+ *
+ *   D-031  the syntactic rule does not generalise. Stating `col ? 'k'` in a comparison is
+ *          semantically free; stating `verb <> ''` is not. Aligning a real query to
+ *          `tool_usage_rollup_verb_idx` as this lint's rule would demand measured 27%
+ *          SLOWER while silently dropping 26% of the result rows.
+ *   D-035  the `idx_scan = 0` shortcut does not generalise either. Of 54 zero-match partial
+ *          indexes, ~40 KB is the real upside — while `arc_running_idx` matches zero rows
+ *          and is the 8th most-scanned index in the database (45.2M scans).
+ *
+ * Both on plan `db-performance-remediation-2026-07-26`. Widening is ALLOWED; it owes the
+ * D-031 gate (flag on syntax, never prescribe without a measured plan read). If you are
+ * widening deliberately, change these expectations deliberately — do not delete them.
+ */
+describe('the scope boundary holds: shapes outside the value-and-presence slice stay OUT', () => {
+  /** One generated-schema line in drizzle's real emitted shape. */
+  const schemaLine = (name: string, expr: string, where: string) =>
+    `\tindex("${name}").using("btree", ${expr}).where(sql\`${where}\`),`;
+
+  const names = (src: string) => parseGuardedIndexes(src).map((i: { index: string }) => i.index);
+
+  it('SELECTS the value-and-presence shape — so the exclusions below are not vacuous', () => {
+    expect(
+      names(schemaLine('fixture_aligned_idx', "sql`((body ->> 'k'::text))`", "(body ? 'k'::text)")),
+    ).toEqual(['fixture_aligned_idx']);
+  });
+
+  it('EXCLUDES an ordinary-column predicate over an indexed jsonb value (the D-035 majority)', () => {
+    // `WHERE ended_at IS NULL` is the commonest partial shape in harness_shared, and stating
+    // it is NOT semantically free: a query that wants ended rows must omit it. A widening
+    // that "also handles column predicates" selects this line first.
+    expect(
+      names(
+        schemaLine('fixture_column_pred_idx', "sql`((body ->> 'k'::text))`", '(ended_at IS NULL)'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('EXCLUDES a presence predicate guarding a DIFFERENT key than the expression reads', () => {
+    // This is the `readsValue` gate itself. The planner cannot derive `body ? 'b'` from a
+    // comparison on `body ->> 'a'` any more than the query can, so demanding the clause
+    // would not make the index usable — it would just add a result-changing filter.
+    expect(
+      names(schemaLine('fixture_key_mismatch_idx', "sql`((body ->> 'a'::text))`", "(body ? 'b'::text)")),
+    ).toEqual([]);
+  });
+
+  it('EXCLUDES a presence predicate whose index is over plain columns', () => {
+    // The live counterpart is coord_event_log_conditions_idx (asserted against the real
+    // schema above). Pinned synthetically too, so dropping that index cannot quietly turn
+    // the real-schema assertion into one that passes for the wrong reason.
+    expect(
+      names(
+        schemaLine(
+          'fixture_plain_column_idx',
+          'table.workspaceId.asc().nullsLast().op("text_ops")',
+          "((surface = 'messages'::text) AND (body ? 'condition_key'::text))",
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('EXCLUDES a NON-partial index of the indexed-value shape', () => {
+    // No `.where(...)` at all means no predicate to omit, so there is nothing to align.
+    expect(
+      names('\tindex("fixture_total_idx").using("btree", sql`((body ->> \'k\'::text))`),'),
+    ).toEqual([]);
+  });
+});
+
 describe('discrimination: the vulnerable shape fails, the fixed shape passes', () => {
   it('FLAGS an equality on the indexed expression with no presence guard', () => {
     expect(flag(`SELECT 1 FROM t WHERE body->>'related_msg_id' = 'm-1'`)).toHaveLength(1);

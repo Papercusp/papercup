@@ -175,6 +175,21 @@ const FIXTURE_FILES: ReadonlySet<string> = new Set([
   // plane stayed frozen ~8h). A runtime exemption needs no code edit, no
   // restart and no deploy; it applies on the very next git-sync tick.
   'packages/operator-core/lib/search/session-turn-parts.test.ts',
+  // The voice-credentials encryption-at-rest integration test: it intentionally
+  // writes credential-SHAPED literals (`sk_eleven_...`, `sk_plaintext_...`) as
+  // fixtures to prove the plaintext key never lands in the row. Its in-file
+  // regression test asserts `scanForSecrets([...this file's CURRENT content])`
+  // returns [] — but that only proves the scanner is happy with today's
+  // wording; a HISTORICAL blob (commit b3279dba9f, before the fixture literal
+  // was reworded to include a PLACEHOLDER_RE marker) contained
+  // `sk_plaintext_supersecret_9999`, which the shape rules do flag, and that
+  // blob is permanently inside the own-head publish range (EI-20191187592939864
+  // froze publication on it 2026-08-11; cleared via a runtime path exemption).
+  // Editing the CURRENT wording can never un-flag a blob already in history,
+  // so — same as every other entry in this set — the fix is a PATH exemption,
+  // not a content one. The runtime exemption for this exact path is retired
+  // now that this static entry covers it permanently (EI-20216447367071456).
+  'packages/operator-core/lib/voice-credentials.integration.test.ts',
 ]);
 
 /** True if `path` is a designated credential-fixture file exempt from the scan. */

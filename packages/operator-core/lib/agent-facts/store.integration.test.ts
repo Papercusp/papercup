@@ -588,14 +588,17 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(afterExempt.evictedRows).toBe(1);
   });
 
-  it('EI-21488671343297100: concurrent writers cannot race past the protected-victim guard', async () => {
+  it('EI-21488671343297100: concurrent writers cannot race past the ranking-aware cap guard', async () => {
     const scopeRef = 'su-protect-verified-cap-race';
     const peer = 'su-peer-verified-race';
 
     // Leave exactly one seat. The trigger below pauses both contenders only
     // after their admission read, making the old read-check/write gap
     // deterministic: without the per-partition advisory lock both transactions
-    // see 199 and enter the INSERT together.
+    // see 199 and enter the INSERT together, leaving 201 live rows. Both
+    // contenders are fresh verified findings, so the ranking-aware guard
+    // correctly admits them as better replacements; the lock must still make
+    // the second sweep observe the first write and evict exactly one peer.
     await db.sql`
       INSERT INTO harness_shared.agent_facts
         (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
@@ -636,12 +639,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       );
       const outcomes = await Promise.allSettled(contenders);
 
-      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
-      const [refused] = outcomes.filter((outcome) => outcome.status === 'rejected');
-      expect(refused).toBeDefined();
-      expect(String((refused as PromiseRejectedResult).reason)).toMatch(
-        /REFUSED before write:.*another author's verified fact/i,
-      );
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(2);
+      expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(0);
 
       const [afterRace] = await db.sql<{
         liveRows: number;
@@ -660,8 +659,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
       expect(afterRace).toEqual({
         liveRows: FACTS_PER_SCOPE_CAP,
-        incomingRows: 1,
-        evictedRows: 0,
+        incomingRows: 2,
+        evictedRows: 1,
       });
     } finally {
       await db.sql.unsafe(`

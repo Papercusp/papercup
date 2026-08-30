@@ -58,6 +58,39 @@
  * therefore covered the moment it lands, with no edit to this file — which is the whole
  * point, since every instance so far was one nobody knew to look for.
  *
+ * ─────────────────────────────────────────────────────────────────────────────────────
+ * SCOPE BOUNDARY — the narrowness below is MEASURED, not unfinished. Read before widening.
+ * ─────────────────────────────────────────────────────────────────────────────────────
+ *
+ * `harness_shared` holds ~194 partial indexes; this lint covers the 3 of value-and-presence
+ * shape. That looks like a 191-index gap and has been filed as one (EI-19452064467168046).
+ * It is not. Both obvious ways to close it were measured on the live database and both
+ * produce a WORSE outcome than leaving the lint narrow. Recorded as plan decisions on
+ * `db-performance-remediation-2026-07-26`:
+ *
+ *  - D-031 — WIDENING THE SYNTACTIC RULE IS UNSOUND. The property that makes this slice safe
+ *    is that stating the predicate is semantically FREE (see above); that is a fact about
+ *    `col ? 'k'` in a comparison, NOT about partial predicates in general. `WHERE ended_at
+ *    IS NULL` is not free — a query that wants ended rows must omit it. Measured on
+ *    `tool_usage_rollup_verb_idx` (partial on `verb <> ''`): the alignment this lint's rule
+ *    would have demanded ran 27% SLOWER (131.1ms -> 166.8ms) while silently DROPPING 26% of
+ *    the result rows, because a better non-partial index already served the query. The rule
+ *    D-031 sets: a lint may FLAG on syntax, but it must not PRESCRIBE an alignment without a
+ *    measured plan read. Any extension past this slice owes that gate.
+ *
+ *  - D-035 — THE EMPIRICAL SHORTCUT IS ALSO UNSOUND, AND WORTHLESS. Ranking partial indexes
+ *    by `idx_scan = 0` and triaging looks like a whole-class detector needing no implication
+ *    model. Measured: of 54 zero-match partial indexes (936 KB total), only 15 are never
+ *    scanned and most of those are healthy drained-queue markers that must not be dropped —
+ *    ~40 KB of real upside. Meanwhile `arc_running_idx` matches ZERO rows and is the 8th
+ *    most-scanned index in the database (45.2M scans). Zero-match is not weak evidence of
+ *    deadness; it is no evidence at all.
+ *
+ * So the boundary is a conclusion, not a TODO. It lives in `parseGuardedIndexes` as the
+ * `readsValue` gate, and `partial-index-alignment-guard.test.ts` pins it so a widening edit
+ * fails a test that points back here rather than shipping quietly. Widening is allowed —
+ * it is not free. Bring the D-031 plan gate with you, and update that test deliberately.
+ *
  * Sibling: packages/operator-core/lib/agent-tools/coordination/partial-jsonb-index-alignment.test.ts
  * pins migration 691's predicate text and the two sweeps' clause ordering (the specific,
  * measurement-carrying guard). This lint is the general class detector. They are
@@ -124,6 +157,11 @@ const ALLOWLIST = new Map();
  *
  * Only indexes whose indexed EXPRESSION reads the same key the predicate guards are
  * returned — a partial index over plain columns is a different (and provable) case.
+ *
+ * THE `readsValue` GATE BELOW IS THE SCOPE BOUNDARY described in this file's header. It is
+ * what keeps the ~191 other partial indexes in `harness_shared` out of this lint's class.
+ * Deleting it does not "finish" the lint; it makes the lint prescribe changes that were
+ * measured to regress (D-031: 27% slower, 26% of rows silently dropped). Read the header.
  *
  * @param {string} schemaSrc - Contents of the generated drizzle schema file
  * @returns {Array<{ index: string, col: string, key: string }>} the alignment-required set

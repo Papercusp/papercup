@@ -73,6 +73,7 @@ import {
   GatewayRequestKernelError,
   type GatewayKernelAdmissionController,
   type GatewayKernelAttemptContext,
+  type GatewayKernelContext,
 } from './request-kernel';
 import {
   createCodexBearerKernelAdapter,
@@ -6668,19 +6669,27 @@ export function createInferenceGateway(deps: GatewayDeps) {
     run: (_context, task) => task(),
   };
 
-  /** Run one static legacy entry inside a lane's existing callback-scoped
-   * admission authority. There is intentionally no lease or release callback:
-   * the queue releases only after `task` (including in-flight unregister) settles. */
-  // `async` because the D-004 pre-acceptance spool must persist the body BEFORE the admission
-  // decision is taken. Callers already treat the result as a promise, so this is not a contract
-  // change — the bypass path below still returns without awaiting anything.
-  async function executeLegacyLaneTask<TResult>(opts: {
+  /**
+   * The gateway's DURABLE admission crossing — D-004's pre-acceptance body spool, the
+   * `gatewayAdmissionGovernor` slot, the request deadline, and the payload pin that spans
+   * the admission + execution window.
+   *
+   * ⛔ D-022: THIS LAYER IS NOT STRANGLER SCAFFOLDING AND DOES NOT DIE WITH IT.
+   * `executeLegacyLaneTask` used to be these two layers fused into one function, which is
+   * why P-008's deletion list names it. Only the LANE bridge below is removable; deleting
+   * this layer alongside it would delete D-004 durability (the property that lets a receipt
+   * outlive its socket) from every lane. Measured at the split: two of the three entry sites
+   * cross this governor, and for `localOpenAiChat` it is the ONLY real admission it has.
+   *
+   * `async` because the spool must persist the body BEFORE the admission decision is taken.
+   * Callers already treat the result as a promise, so this is not a contract change — the
+   * bypass path below still returns without awaiting anything.
+   */
+  async function withDurableGatewayAdmission<TResult>(opts: {
     req: http.IncomingMessage;
     lane: GatewayLaneDescriptor;
-    admission: Pick<GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>, 'run'>;
-    task(executor: GatewayLegacyEntryExecutorId): Promise<TResult>;
+    task(context: GatewayKernelContext): Promise<TResult>;
   }): Promise<TResult> {
-    const entry = legacyEntryRouteForGatewayLane(opts.lane);
     const span = requestSpan(opts.req);
     const requestId = span?.requestId ?? ++legacyAdmissionRequestSeq;
     const ownerId = span?.ownerId ?? (opts.req.headers[OWNER_HEADER] as string | undefined)?.trim() ?? null;
@@ -6690,28 +6699,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? 'hard'
         : 'soft'
       : 'none';
-    const execute = () => executeGatewayLegacyLane({
-      context: {
-        requestId,
-        correlationId: `legacy-${requestId}`,
-        lane: opts.lane,
-        ownerId,
-        pin: null,
-        signal: legacyAdmissionSignal,
-        startedAt: span?.startedAt ?? Date.now(),
-      },
-      route: {
-        key: `${opts.lane.id}:${entry.executor}`,
-        value: entry.executor,
-        transport: entry.transport,
-      },
-      admission: opts.admission,
-      execute: () => opts.task(entry.executor),
-    });
+    const context: GatewayKernelContext = {
+      requestId,
+      correlationId: `legacy-${requestId}`,
+      lane: opts.lane,
+      ownerId,
+      pin: null,
+      signal: legacyAdmissionSignal,
+      startedAt: span?.startedAt ?? Date.now(),
+    };
+    const execute = () => opts.task(context);
     // `/v1/models` and the admin/health surfaces are explicitly registered
     // non-resident bypasses; their outer request wrapper owns the bypass
     // admission. Every other lane crosses Governor.admit before its legacy
     // executor can start provider/local work.
+    //
+    // D-022(3): this bypass-key check — NOT the no-op admission controller a caller
+    // happens to pass — is what implements the deliberate UNQUEUED path for codex
+    // `/v1/models`, so metadata is never starved behind an Anthropic storm.
     if (gatewayAdmissionBypassKeyForRequest(opts.req.method, opts.req.url)) return execute();
     // D-004: the body is persisted BEFORE the admission decision, so queue depth stops scaling
     // resident memory and the receipt can be executed after this socket is gone. A client that

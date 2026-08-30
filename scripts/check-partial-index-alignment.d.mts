@@ -10,6 +10,11 @@
  * Only indexes whose indexed EXPRESSION reads the same key the predicate guards are
  * returned — a partial index over plain columns is a different (and provable) case.
  *
+ * THE `readsValue` GATE BELOW IS THE SCOPE BOUNDARY described in this file's header. It is
+ * what keeps the ~191 other partial indexes in `harness_shared` out of this lint's class.
+ * Deleting it does not "finish" the lint; it makes the lint prescribe changes that were
+ * measured to regress (D-031: 27% slower, 26% of rows silently dropped). Read the header.
+ *
  * @param {string} schemaSrc - Contents of the generated drizzle schema file
  * @returns {Array<{ index: string, col: string, key: string }>} the alignment-required set
  */

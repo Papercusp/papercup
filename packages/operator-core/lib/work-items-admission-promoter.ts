@@ -1253,6 +1253,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
   runId?: string;
   batchSize?: number;
   recentTerminalDays?: number;
+  model?: string;
   now?: () => number;
 }): Promise<PromoterRunResult> {
   const sql = opts.sql ?? getOrgPg().sql;
@@ -1261,6 +1262,10 @@ export async function runWorkItemAdmissionPromoter(opts: {
   const runId = opts.runId ?? `promoter-${randomUUID()}`;
   const batchSize = opts.batchSize ?? DEFAULT_PROMOTER_BATCH_SIZE;
   const recentTerminalDays = opts.recentTerminalDays ?? DEFAULT_RECENT_TERMINAL_DAYS;
+  // Resolve ONCE: the same value must reach the llmCall and the ledger's model_id,
+  // or the ledger can name a model the run never used. Mirrors the sibling
+  // admission paths (bulk-dedup, daily-digest) so a per-run override reaches all three.
+  const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'promoter' });
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
@@ -1279,7 +1284,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
     if (pairs.length > 0) {
       const prompt = buildPromoterPrompt(pairs);
       const response = await opts.llmCall({
-        model: LEARNING_MODEL_SPEC,
+        model,
         system: prompt.system,
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
@@ -1297,7 +1302,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       runId,
-      modelId: LEARNING_MODEL_SPEC,
+      modelId: model,
       nowMs: now(),
       pending,
       plan,
@@ -1321,7 +1326,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       autoPromoted: 0,
       censusBefore,
       censusAfter,
-      modelId: pairs.length > 0 ? LEARNING_MODEL_SPEC : null,
+      modelId: pairs.length > 0 ? model : null,
       tokensIn,
       tokensOut,
       latencyMs,

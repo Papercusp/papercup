@@ -16,7 +16,17 @@ const gateEnabled = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
-  return { ...real, getRubric: (...a: unknown[]) => getRubric(...a) };
+  return {
+    ...real,
+    getRubric: (...a: unknown[]) => getRubric(...a),
+    // EI-21828643965337454 put the acceptance path behind a FAIL-CLOSED revision
+    // read. Unstubbed, it reached the real PG-backed read, returned `ok:false`, and
+    // the acceptance-kind case below refused with `..._revision_unreadable` — which
+    // looked like the audit-stamp exclusion breaking, when nothing about stamping
+    // had changed. Stub it readable; the unreadable leg is covered in
+    // emit.vetting.test.ts, which is where that guard's behaviour belongs.
+    readRubricPlanRevision: async () => ({ ok: true, revision: 1 }),
+  };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../scorecards')>();

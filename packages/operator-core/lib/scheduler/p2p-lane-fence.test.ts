@@ -259,3 +259,57 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     expect(v.ok, `spec invalid: ${v.errors.join('; ')}`).toBe(true);
   });
 });
+
+describe('EI-20240035377782004 — buildP2pLaneFence also fences on SUMMARY, not title alone', () => {
+  it('excludes an item with a GENERIC title whose SUMMARY names p2p/federation/rig work (the live leak, verbatim shape)', () => {
+    // Mirrors EI-20239498607103954: a title that reveals nothing, admitted by the
+    // title-only fence, whose summary explicitly says "accepted P-205 Mac peer",
+    // "federation drills", and "vm-rig MCP parity".
+    const item = issueItem({
+      id: 'EI-leak',
+      title: 'Follow up on outstanding review feedback',
+      summary:
+        'Team accepted P-205 Mac peer for the next round of federation drills; still need vm-rig MCP parity before sign-off.',
+    });
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(false);
+  });
+
+  it('excludes on a summary-only term hit even when the title is completely unrelated', () => {
+    const item = issueItem({
+      id: 'EI-summary-only',
+      title: 'Fix dashboard pagination off-by-one',
+      summary: 'Root cause traced to a hyperswarm reconnect storm corrupting the shared pagination cursor.',
+    });
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(false);
+  });
+
+  it('still admits a genuinely unrelated item whose summary is also unrelated', () => {
+    const item = issueItem({
+      id: 'EI-clean',
+      title: 'Fix dashboard pagination off-by-one',
+      summary: 'The page-size calculation drops the final row when total % pageSize === 0.',
+    });
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true);
+  });
+
+  it('does not over-fence a summary merely CONTAINING a term inside a larger word (word-boundary correctness carries to summary)', () => {
+    const item = issueItem({
+      id: 'EI-summary-boundary',
+      title: 'Meta-bug about a fleet claim spec',
+      summary: "Fleet nonp2p-bug-drain-0725's own claim-spec can't self-claim a meta-bug naming the fleet.",
+    });
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true); // admitted, not excluded
+  });
+
+  it('an anti-term (e.g. "hive") in the summary does not over-fence, same as in the title', () => {
+    const item = issueItem({
+      id: 'EI-summary-antiterm',
+      title: 'Recall pool outranking bug',
+      // NOTE: deliberately avoids the real exclusion term "federated" (unlike "hive",
+      // which is a REJECTED anti-term) — this is testing the anti-term, not accidentally
+      // tripping a genuine one.
+      summary: 'harness-scoped memories are systematically outranked by hive+user memories — a local coding hive issue.',
+    });
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true);
+  });
+});

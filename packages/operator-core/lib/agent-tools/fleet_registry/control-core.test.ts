@@ -413,8 +413,20 @@ describe('applyFleetControl', () => {
   it('a cue-leg failure never fails the state flip (registry is the source of truth)', async () => {
     getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
     membersM.mockRejectedValue(new Error('presence down'));
-    const r = await applyFleetControl({} as never, 'backend', 'wind-down');
-    expect(r).toMatchObject({ ok: true, controlState: 'winding-down', notified: [], cueMsgId: null });
+    // This test DELIBERATELY fails the optional member/cue leg, and withBoundedTimeout
+    // is supposed to announce that degradation on console.warn. vitest-fail-on-console
+    // turns any unclaimed warn into a failure, so the warn has to be claimed here —
+    // and claiming it by asserting the message is strictly better than silencing it:
+    // the degradation signal is part of the contract this test is pinning (the flip
+    // still succeeds AND the operator is told the cue leg fell back).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await applyFleetControl({} as never, 'backend', 'wind-down');
+      expect(r).toMatchObject({ ok: true, controlState: 'winding-down', notified: [], cueMsgId: null });
+      expect(warn.mock.calls.flat().join(' ')).toContain('fleet:wind-down:members');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('accepts a human fleet NAME (slugified like every registry surface)', async () => {
@@ -497,8 +509,15 @@ describe('applyFleetControl', () => {
       const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'plans shipped', {
         harness: 'papercusp',
       });
+      // 6e647f5111 took the stamp read OFF the receipt's critical path: the state
+      // boundary is persisted FIRST with the caller's bare reason, and the stamp is
+      // folded in by a SECOND, optional refresh write. So the augmented reason lands
+      // on the LAST setControl call, not the first — assert both legs, because the
+      // split IS the guarantee (a slow scheduler-oracle must not delay the flip).
+      const [, , firstPersist] = setControlM.mock.calls[0];
+      expect(firstPersist.reason).toBe('plans shipped');
       // caller's reason PREPENDED, the auto-stamp APPENDED — both durable on the row.
-      const persisted = setControlM.mock.calls[0][2];
+      const persisted = setControlM.mock.calls[setControlM.mock.calls.length - 1][2];
       expect(persisted.reason).toBe(`plans shipped | ${STAMP.summary}`);
       // structured stamp rides the result for the immediate caller.
       expect(r.drainStamp).toEqual(STAMP);
@@ -516,7 +535,9 @@ describe('applyFleetControl', () => {
       getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
       drainStampM.mockResolvedValue(STAMP);
       await applyFleetControl({} as never, 'backend', 'wind-down');
-      expect(setControlM.mock.calls[0][2].reason).toBe(STAMP.summary);
+      // Same split as above: the flip persists a bare (here undefined) reason first,
+      // then the optional refresh writes the stamp as the whole reason.
+      expect(setControlM.mock.calls[setControlM.mock.calls.length - 1][2].reason).toBe(STAMP.summary);
     });
 
     it('RESUME never computes a drain stamp (wind-down-only)', async () => {

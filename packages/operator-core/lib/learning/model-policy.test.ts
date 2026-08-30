@@ -10,6 +10,7 @@ import {
   LEARNING_MODEL_ID,
   LEARNING_MODEL_SPEC,
   isCanonicalLearningModel,
+  optionalModelSpec,
 } from './model-policy';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -338,5 +339,117 @@ describe('canonical learning model policy', () => {
 
   it('has a non-vacuous provider-model literal detector', () => {
     expect(providerModelIdsInTypeScript('bad.ts', "const model = 'claude-opus-4-8';")).toEqual(['claude-opus-4-8']);
+  });
+});
+
+describe('optionalModelSpec', () => {
+  it('treats absent and blank overrides as "no override" so the caller falls back to policy', () => {
+    // undefined/null are "the payload did not set it". A blank or whitespace
+    // string is the admin-UI-cleared-the-field case and must NOT reach a
+    // backend as an empty model id.
+    expect(optionalModelSpec(undefined, 'promoter')).toBeUndefined();
+    expect(optionalModelSpec(null, 'promoter')).toBeUndefined();
+    expect(optionalModelSpec('', 'promoter')).toBeUndefined();
+    expect(optionalModelSpec('   ', 'promoter')).toBeUndefined();
+  });
+
+  it('trims a real override and passes a NONCANONICAL spec through untouched', () => {
+    expect(optionalModelSpec('  gpt-5.6-sol:xhigh  ', 'promoter')).toBe(LEARNING_MODEL_SPEC);
+    // The whole point of a per-run override is escaping the canonical spec —
+    // e.g. routing away from a model whose account is rate-limited or, as on
+    // 2026-08-27, unsupported by the backing account. It must NOT be validated
+    // against isCanonicalLearningModel.
+    expect(optionalModelSpec('claude-opus-5:xhigh', 'promoter')).toBe('claude-opus-5:xhigh');
+  });
+
+  it('rejects a non-string payload and names the routine that received it', () => {
+    for (const bad of [42, true, {}, []]) {
+      expect(() => optionalModelSpec(bad, 'daily digest')).toThrow(/daily digest expected a model spec string/);
+    }
+  });
+});
+
+describe('scheduled admission paths resolve their model identically', () => {
+  /**
+   * D-035 regression guard. The plan gave bulk-dedup and daily-digest an
+   * `opts.model` override and a resolve-once seam, but the promoter kept
+   * `model: LEARNING_MODEL_SPEC` inline at its llmCall AND at both ledger
+   * writes. Nothing failed: the promoter simply could not be steered off a
+   * model whose account was rejecting it, and it is the SCHEDULED component
+   * whose failures produce the queue's fail-open share.
+   *
+   * These files sit outside SCOPED_SOURCE_DIRS, so the importer inventory
+   * above cannot see them — which is precisely why the omission survived.
+   */
+  const ADMISSION_ACTIONS = [
+    ['promoter', 'packages/operator-core/lib/harness/routines/work-item-admission-promoter-action.ts', 'admission promoter'],
+    ['bulk-dedup', 'packages/operator-core/lib/harness/routines/work-item-admission-bulk-dedup-action.ts', 'bulk dedup'],
+    ['daily-digest', 'packages/operator-core/lib/harness/routines/work-item-admission-daily-digest-action.ts', 'daily digest'],
+  ] as const;
+
+  it('routes every scheduled admission action payload through the shared helper', () => {
+    const violations: string[] = [];
+    for (const [id, path, label] of ADMISSION_ACTIONS) {
+      const source = sourceAt(path);
+      if (!/from ['"][^'"]*learning\/model-policy['"]/.test(source)) {
+        violations.push(`${id} does not import the shared model policy (${path})`);
+      }
+      if (!source.includes(`optionalModelSpec(payload.model, '${label}')`)) {
+        violations.push(`${id} does not pass payload.model through optionalModelSpec (${path})`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  /**
+   * The predicate, extracted so it can be run against synthetic sources. The
+   * runner must resolve once into a local `model` and use THAT at the llmCall
+   * and every ledger write, so admission_runs.model_id can never name a model
+   * the run did not use.
+   */
+  const resolveOnceViolations = (label: string, source: string): string[] => {
+    const violations: string[] = [];
+    if (!/const model = opts\.model\?\.trim\(\) \|\| LEARNING_MODEL_SPEC;/.test(source)) {
+      violations.push(`${label} lacks the resolve-once model seam`);
+    }
+    for (const seam of ['model: LEARNING_MODEL_SPEC', 'modelId: LEARNING_MODEL_SPEC']) {
+      if (source.includes(seam)) violations.push(`${label} still binds the constant directly at "${seam}"`);
+    }
+    return violations;
+  };
+
+  it('leaves no admission RUNNER binding the policy constant at a call or ledger seam', () => {
+    const runners = [
+      'packages/operator-core/lib/work-items-admission-promoter.ts',
+      'packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
+      'packages/operator-core/lib/work-items-admission-daily-digest.ts',
+    ];
+    expect(runners.flatMap((path) => resolveOnceViolations(path, sourceAt(path)))).toEqual([]);
+  });
+
+  it('control: the guard CATCHES the exact pre-fix promoter shape, and passes the fixed one', () => {
+    // Non-vacuity, run against synthetic sources so nothing in the shared tree
+    // is ever mutated to prove falsifiability. `preFix` is the body the
+    // promoter actually had: inline at the llmCall and at both ledger writes.
+    const preFix = [
+      'const response = await opts.llmCall({',
+      '  model: LEARNING_MODEL_SPEC,',
+      '});',
+      'await persistAdmissionPlan(sql, { modelId: LEARNING_MODEL_SPEC });',
+    ].join('\n');
+    const postFix = [
+      'const model = opts.model?.trim() || LEARNING_MODEL_SPEC;',
+      'const response = await opts.llmCall({',
+      '  model,',
+      '});',
+      'await persistAdmissionPlan(sql, { modelId: model });',
+    ].join('\n');
+
+    const caught = resolveOnceViolations('synthetic', preFix);
+    expect(caught).toContain('synthetic lacks the resolve-once model seam');
+    expect(caught).toContain('synthetic still binds the constant directly at "model: LEARNING_MODEL_SPEC"');
+    expect(caught).toContain('synthetic still binds the constant directly at "modelId: LEARNING_MODEL_SPEC"');
+    // …and does not fire on the shape we actually shipped.
+    expect(resolveOnceViolations('synthetic', postFix)).toEqual([]);
   });
 });

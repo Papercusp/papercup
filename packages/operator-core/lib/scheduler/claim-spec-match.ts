@@ -13,6 +13,8 @@ import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 export interface ClaimSpecSubject {
   id: string | null;
   title: string | null;
+  /** EI-20240035377782004: the work-item summary/body text — see FIELD_MAP.summary. */
+  summary: string | null;
   kind: string | null;
   priority: number | null;
   tags: string[];
@@ -133,6 +135,9 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
   return {
     id: item.id,
     title: item.title,
+    // EI-20240035377782004: mirror FIELD_MAP.summary — a real physical column on the base
+    // table for both families, no payload fallback needed (same shape as `title`).
+    summary: item.summary ?? null,
     kind: item.kind,
     priority: item.priority,
     tags: [...new Set([...staticTagsOfWorkItem(item), ...topicTags])],
@@ -199,6 +204,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
   switch (field) {
     case 'id': return subject.id;
     case 'title': return subject.title;
+    case 'summary': return subject.summary;
     case 'kind': return subject.kind;
     case 'priority': return subject.priority;
     case 'tags': return subject.tags;

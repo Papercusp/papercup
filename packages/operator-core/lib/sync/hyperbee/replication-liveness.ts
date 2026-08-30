@@ -260,6 +260,16 @@ export interface HarnessReplicationLiveness {
      * NOT happening — read it alongside `logs`, never instead of it.
      */
     expectedNeverAdmitted: number;
+    /**
+     * WI-6873: how many of the `live` logs above are ALSO mid-backlog
+     * (`backlogOps > 0`) — actively replaying, not frozen, not yet caught up.
+     * A nonzero count here is the "still catching up" signal this axis was
+     * missing: it means at least one op you are waiting on may simply not
+     * have replayed yet, distinct from every other count in this object
+     * (which all mean "something is actually wrong"). Never alarms; purely
+     * informational. See `logs[].backlogOps` for the per-log ops-behind count.
+     */
+    catchingUp: number;
   };
   /** WI-5781: the expected-but-unadmitted peers backing the count above. */
   expectedNeverAdmitted: Array<{
@@ -1573,6 +1583,7 @@ export function getReplicationLiveness(
       samplingStale: 0,
       dhtUniverseMismatch: 0,
       expectedNeverAdmitted: 0,
+      catchingUp: 0,
     };
     // WI-5781: expected-but-unadmitted peers for this harness.
     const unadmittedRows: HarnessReplicationLiveness['expectedNeverAdmitted'] = [];
@@ -1610,11 +1621,19 @@ export function getReplicationLiveness(
       // new `sampledAt`/`stale` markers remain populated — they ARE the
       // staleness signal.
       const stale = verdict === 'sampling_stale';
+      // WI-6873: derived here (not stored on LogState) so it can never drift
+      // from knownLength/mergedPosition — always max(0, …): a strictly-older
+      // or momentarily-inconsistent sample must never render as a negative
+      // backlog. Same stale-nulling convention as every other derived field.
+      const backlogOps =
+        stale || st.mergedPosition === null ? null : Math.max(0, st.knownLength - st.mergedPosition);
+      if (verdict === 'live' && backlogOps !== null && backlogOps > 0) counts.catchingUp += 1;
       rows.push({
         keyHex: st.keyHex,
         verdict,
         stale,
         sampledAt: st.lastSampleMs,
+        backlogOps,
         knownLength: stale ? null : st.knownLength,
         localLength: stale ? null : st.localLength,
         mergedPosition: stale ? null : st.mergedPosition,
