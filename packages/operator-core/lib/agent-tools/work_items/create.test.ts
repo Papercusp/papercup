@@ -437,6 +437,7 @@ describe('work_items:create handler (keyed-array)', () => {
       fleetAdmission.decision = { ...outOfScope };
       await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
       expect(createM.mock.calls[0][0].payload).toMatchObject({
+        _claimHold: true,
         fleetScopeDowngrade: { requestedAssignee: 'bee-7', reportedBy: 'me', fleet: 'fixed-wave', code: 'fleet_scope_violation' },
       });
     });
