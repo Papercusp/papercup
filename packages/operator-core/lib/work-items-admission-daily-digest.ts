@@ -326,17 +326,50 @@ export interface DailyDigestClamps {
   memberListsClamped: number;
   /** Largest overage seen per field, in characters beyond its ceiling. */
   maxOverageChars: { title: number; body: number; reason: number };
+  /** Member ids the model invented — absent from the corpus it was given (D-034). */
+  unknownMemberIdsDropped: number;
+  /** First few fabricated ids, so the failure is diagnosable without a re-run. */
+  unknownMemberIdSample: string[];
+  /** Members an earlier, higher-ranked umbrella had already claimed (D-034). */
+  duplicateMemberAssignmentsDropped: number;
+  /** Umbrellas dropped for repeating an earlier umbrella's title (D-034). */
+  duplicateTitleUmbrellasDropped: number;
+  /** Umbrellas dropped for falling under the member minimum after repair (D-034). */
+  undersizedUmbrellasDropped: number;
 }
 
-const EMPTY_CLAMPS: DailyDigestClamps = {
-  umbrellasReturned: 0,
-  umbrellasDropped: 0,
-  titlesClamped: 0,
-  bodiesClamped: 0,
-  reasonsClamped: 0,
-  memberListsClamped: 0,
-  maxOverageChars: { title: 0, body: 0, reason: 0 },
-};
+/**
+ * A FRESH zeroed clamp block per call — never a shared module-level constant.
+ * `parseDailyDigestProposals` MUTATES what it is handed (it pushes onto
+ * `unknownMemberIdSample`), so handing out a shared object would let one run's
+ * fabricated ids accumulate into the next run's disclosure.
+ */
+function freshClamps(): DailyDigestClamps {
+  return {
+    umbrellasReturned: 0,
+    umbrellasDropped: 0,
+    titlesClamped: 0,
+    bodiesClamped: 0,
+    reasonsClamped: 0,
+    memberListsClamped: 0,
+    maxOverageChars: { title: 0, body: 0, reason: 0 },
+    unknownMemberIdsDropped: 0,
+    unknownMemberIdSample: [],
+    duplicateMemberAssignmentsDropped: 0,
+    duplicateTitleUmbrellasDropped: 0,
+    undersizedUmbrellasDropped: 0,
+  };
+}
+
+/**
+ * Share of proposed member ids that may be fabricated before the reply is treated as
+ * untrustworthy rather than repairable (D-034). A stray invention among hundreds is
+ * noise; a tenth of them means the clustering itself is not evidence of anything.
+ */
+export const MAX_UNKNOWN_MEMBER_RATIO = 0.1;
+
+/** How many fabricated ids to retain for diagnosis. */
+const UNKNOWN_MEMBER_SAMPLE = 5;
 
 /** Clamp to `max` chars on a word boundary where one is close, else hard-cut. */
 function clampToChars(value: string, max: number): string {
@@ -453,27 +486,66 @@ export function parseDailyDigestProposals(
   const parsed = UmbrellasSchema.parse(clampedPayload);
   const seenTitles = new Set<string>();
   const assignedMembers = new Set<string>();
-  const proposals = parsed.umbrellas.map((raw) => {
-    const memberIds = [...new Set(raw.memberIds)];
-    if (memberIds.length < MIN_DAILY_DIGEST_MEMBERS) {
-      throw new Error(
-        `daily digest umbrella '${raw.title}' needs ${MIN_DAILY_DIGEST_MEMBERS} distinct members; received ${memberIds.length}`,
-      );
+  const proposals: DailyDigestUmbrellaProposal[] = [];
+  let proposedMemberIds = 0;
+
+  for (const raw of parsed.umbrellas) {
+    const deduped = [...new Set(raw.memberIds)];
+    proposedMemberIds += deduped.length;
+
+    // Fabricated ids (D-034). Verified real: d033-1 returned EI-21462267124852221,
+    // absent from work_items while its NEIGHBOURS in the same id range exist — a
+    // plausible-looking invention, not corpus drift.
+    const unknown = deduped.filter((id) => !allowedIds.has(id));
+    if (unknown.length > 0) {
+      clamps.unknownMemberIdsDropped += unknown.length;
+      for (const id of unknown) {
+        if (clamps.unknownMemberIdSample.length < UNKNOWN_MEMBER_SAMPLE) {
+          clamps.unknownMemberIdSample.push(id);
+        }
+      }
     }
-    const unknown = memberIds.filter((id) => !allowedIds.has(id));
-    if (unknown.length > 0)
-      throw new Error(`daily digest model returned non-corpus member id(s): ${unknown.join(', ')}`);
-    const overlap = memberIds.filter((id) => assignedMembers.has(id));
-    if (overlap.length > 0) {
-      throw new Error(`daily digest model assigned member id(s) to multiple umbrellas: ${overlap.join(', ')}`);
+    const known = deduped.filter((id) => allowedIds.has(id));
+
+    // A member already claimed by an earlier (higher-ranked) umbrella stays there.
+    const overlap = known.filter((id) => assignedMembers.has(id));
+    if (overlap.length > 0) clamps.duplicateMemberAssignmentsDropped += overlap.length;
+    const memberIds = known.filter((id) => !assignedMembers.has(id));
+
+    if (memberIds.length < MIN_DAILY_DIGEST_MEMBERS) {
+      clamps.undersizedUmbrellasDropped += 1;
+      continue;
     }
     const titleKey = normalizeTitle(raw.title);
-    if (seenTitles.has(titleKey))
-      throw new Error(`daily digest model returned duplicate umbrella title '${raw.title}'`);
+    if (seenTitles.has(titleKey)) {
+      clamps.duplicateTitleUmbrellasDropped += 1;
+      continue;
+    }
     seenTitles.add(titleKey);
     memberIds.forEach((id) => assignedMembers.add(id));
-    return { ...raw, memberIds: memberIds.sort() };
-  });
+    proposals.push({ ...raw, memberIds: memberIds.sort() });
+  }
+
+  // The threshold is what keeps this a REPAIR rather than a blindfold: dropping a
+  // stray invention is right, but a model fabricating membership wholesale has
+  // produced clustering nobody should trust, and that must still fail loudly.
+  if (proposedMemberIds > 0) {
+    const unknownRatio = clamps.unknownMemberIdsDropped / proposedMemberIds;
+    if (unknownRatio > MAX_UNKNOWN_MEMBER_RATIO) {
+      throw new Error(
+        `daily digest model fabricated ${clamps.unknownMemberIdsDropped}/${proposedMemberIds} member ids ` +
+          `(${(unknownRatio * 100).toFixed(1)}% > ${(MAX_UNKNOWN_MEMBER_RATIO * 100).toFixed(0)}% ceiling); ` +
+          `sample=${clamps.unknownMemberIdSample.join(', ')}. Membership is not trustworthy — not a repairable reply.`,
+      );
+    }
+  }
+  if (proposals.length === 0 && parsed.umbrellas.length > 0) {
+    throw new Error(
+      `daily digest model returned ${parsed.umbrellas.length} umbrella(s) but none survived validation ` +
+        `(undersized=${clamps.undersizedUmbrellasDropped}, duplicateTitles=${clamps.duplicateTitleUmbrellasDropped}, ` +
+        `unknownMemberIds=${clamps.unknownMemberIdsDropped})`,
+    );
+  }
   return { proposals, clamps };
 }
 
