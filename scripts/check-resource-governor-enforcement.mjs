@@ -535,6 +535,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts: its finite sandbox drill subprocess is finite diagnostic/correlation state, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight workload and start no independent resident work.",
   },
   {
+    path: "packages/operator-core/lib/release/checkpoint-qualification-transaction.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/checkpoint-qualification-transaction.ts: its only detected start is a `systemctl --user is-active <unit>` status probe that is bounded, awaited, and read for release/checkpoint control metadata; it spawns no worker, creates no resident queue, and must stay runnable while productive capacity is pressured.",
+  },
+  {
     path: "packages/operator-core/lib/release/checkpoint-required-ancestor.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1058,6 +1065,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for scripts/gen-tool-routing.ts: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
+  },
+  {
+    path: "scripts/guard-shared-tree-install.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/guard-shared-tree-install.mjs: its only detected start is a `git` plumbing read wrapped in execFileSync with an explicit 5s timeout, awaited and exiting immediately; this install guard must remain runnable precisely when capacity is pressured, and governing a metadata read would cost more than the admission record it would write.",
   },
   {
     path: "scripts/lexicon-residual-count.mjs",
@@ -1625,6 +1639,15 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "execFileAsync is promisify(execFile) for bounded, user-requested git fetch/rebase/status operations in a durable user worktree; git owns recovery state and no in-memory resident queue is created.",
+    },
+  ],
+  // ── reviewed retry around a receipt-producing write (EI-21850494041821321) ───
+  [
+    "packages/operator-core/lib/resource-governor/queue.ts::retry-around-receipt",
+    {
+      disposition: "semantic",
+      reason:
+        "The one retry in this file wraps store.enqueue — the write that CREATES the receipt — via acquireWithContentionRetry, and is keyed by idempotencyKey: a pg lock/statement timeout aborts its transaction so nothing is committed, and if an earlier attempt HAD committed, the retry returns that same row and the requestFingerprint check still raises a genuine idempotency conflict. Non-contention faults propagate on the first attempt. Admission is PRE-execution, so dropping the record would mean running ungoverned; the retry is the correct lever. NOTE: the detector's text-proximity heuristic does not actually match that call site — it matches the adjacent `admissionRetryBackoffsMs` / `receiptId` option-type declarations at lines 367-370. That precision gap is tracked separately; this row dispositions the file's real, reviewed retry.",
     },
   ],
 ]);

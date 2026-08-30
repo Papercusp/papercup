@@ -176,6 +176,23 @@ export function exportedTypeNames(root: string, files: Iterable<string>): Set<st
  */
 export function filesReferencingTypeNames(root: string, candidateFiles: Iterable<string>, typeNames: Set<string>): Set<string>;
 /**
+ * Find candidate files whose assignability diagnostic names a changed exported type.
+ *
+ * Source-text attribution misses inferred callback/object-literal errors: the dependent source
+ * can omit the expected type while tsc names it in the diagnostic message. Keep this parser
+ * narrow to the missing-property/assignability diagnostics emitted by required-field strands.
+ *
+ * @param {string} tscOutput
+ * @param {Iterable<string>} candidateFiles
+ * @param {Set<string>} typeNames
+ * @param {{root?: string, canonicalRoot?: string}} [roots]
+ * @returns {Set<string>}
+ */
+export function diagnosticFilesReferencingTypeNames(tscOutput: string, candidateFiles: Iterable<string>, typeNames: Set<string>, { root, canonicalRoot }?: {
+    root?: string;
+    canonicalRoot?: string;
+}): Set<string>;
+/**
  * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
  * package's baseline (EI-18649014117371738).
  *
@@ -1233,8 +1250,9 @@ export type PerFileGateResult = {
     attributed?: PerFileGateEntry[] | undefined;
     /**
      * - Subset of `attributed` NOT in the caller's
-     * changed-file set, attributed instead because the file references an exported type/interface
-     * one of the changed files also exports (EI-18756182128903253's cause-aware widening).
+     * changed-file set, attributed instead because the file or its compiler diagnostic references
+     * an exported type/interface one of the changed files also exports (EI-18756182128903253's
+     * cause-aware widening).
      */
     typeAttributed?: PerFileGateEntry[] | undefined;
     peerDrift?: PerFileGateEntry[] | undefined;

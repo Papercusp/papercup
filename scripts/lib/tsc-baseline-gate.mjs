@@ -113,8 +113,9 @@ import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observat
  * @property {PerFileGateEntry[]} improvements
  * @property {PerFileGateEntry[]} [attributed]
  * @property {PerFileGateEntry[]} [typeAttributed] - Subset of `attributed` NOT in the caller's
- *   changed-file set, attributed instead because the file references an exported type/interface
- *   one of the changed files also exports (EI-18756182128903253's cause-aware widening).
+ *   changed-file set, attributed instead because the file or its compiler diagnostic references
+ *   an exported type/interface one of the changed files also exports (EI-18756182128903253's
+ *   cause-aware widening).
  * @property {PerFileGateEntry[]} [peerDrift]
  * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
  * @property {number} total
@@ -604,6 +605,48 @@ export function filesReferencingTypeNames(root, candidateFiles, typeNames) {
 }
 
 /**
+ * Find candidate files whose assignability diagnostic names a changed exported type.
+ *
+ * Source-text attribution misses inferred callback/object-literal errors: the dependent source
+ * can omit the expected type while tsc names it in the diagnostic message. Keep this parser
+ * narrow to the missing-property/assignability diagnostics emitted by required-field strands.
+ *
+ * @param {string} tscOutput
+ * @param {Iterable<string>} candidateFiles
+ * @param {Set<string>} typeNames
+ * @param {{root?: string, canonicalRoot?: string}} [roots]
+ * @returns {Set<string>}
+ */
+export function diagnosticFilesReferencingTypeNames(
+  tscOutput,
+  candidateFiles,
+  typeNames,
+  { root, canonicalRoot } = {},
+) {
+  const candidates = new Set(candidateFiles);
+  const referencing = new Set();
+  if (candidates.size === 0 || typeNames.size === 0) return referencing;
+
+  const escaped = [...typeNames].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const typePattern = new RegExp(`\\b(?:${escaped.join('|')})\\b`);
+  const assignabilityCodes = new Set(['TS2322', 'TS2739', 'TS2741']);
+  const pathRoots = root
+    ? { root: realpathOrResolve(root), canonicalRoot: realpathOrResolve(canonicalRoot ?? root) }
+    : null;
+
+  for (const line of String(tscOutput).split('\n')) {
+    const match = line.match(LOCATED_DIAGNOSTIC);
+    if (!match || !assignabilityCodes.has(match[4])) continue;
+    const file = pathRoots ? normalizeResolvedDiagnosticPath(match[1], pathRoots) : match[1];
+    if (!candidates.has(file)) continue;
+    // Inspect only the compiler message, not the path/code prefix, so a type name in a filename
+    // cannot create attribution.
+    if (typePattern.test(line.slice(match[0].length))) referencing.add(file);
+  }
+  return referencing;
+}
+
+/**
  * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
  * package's baseline (EI-18649014117371738).
  *
@@ -775,12 +818,12 @@ export function decidePerFile({
 
   if (regressions.length > 0) {
     if (changedFiles) {
-      // EI-18756182128903253 — cause-aware widening: a regression outside `changedFiles` is STILL
-      // attributed (not peer drift) when the file references an exported type/interface one of the
-      // changed files also exports — the shape of "I added a required field, the fixture that
-      // constructs it broke, and the fixture is not in my diff". `typeAttributed` is kept separate
-      // from the directly-changed subset so callers/reporting can say WHY a file outside the diff
-      // still gates.
+      // EI-18756182128903253 / EI-21833727883305743 — cause-aware widening: a regression outside
+      // `changedFiles` is STILL attributed (not peer drift) when the file's source OR its
+      // compiler diagnostic references an exported type/interface one of the changed files also
+      // exports — the shape of "I added a required field, the fixture that constructs it broke,
+      // and the fixture is not in my diff". `typeAttributed` is kept separate from the directly-
+      // changed subset so callers/reporting can say WHY a file outside the diff still gates.
       const isTypeAttributed = (file) =>
         !changedFiles.has(file) && !!typeReferencedFiles && typeReferencedFiles.has(file);
       const attributed = regressions.filter((r) => changedFiles.has(r.file) || isTypeAttributed(r.file));
@@ -2750,17 +2793,28 @@ export async function runTscBaselineGate({
   // files are theirs, so never fall back to the git-status guess for the same run.
   const changedFiles = explicitFiles ?? (mineFlag ? gitChangedFiles(root) : null);
 
-  // EI-18756182128903253 — cause-aware widening: when scoped (--mine or --files), also attribute
-  // a regression OUTSIDE the changed set when that file references an exported type/interface one
-  // of the changed files also exports (the "I added a required field, an unchanged fixture broke"
-  // shape --mine was otherwise structurally blind to). Cheap: only reads the changed files plus the
-  // files that already have a regression, never a tree-wide scan.
+  // EI-18756182128903253 / EI-21833727883305743 — cause-aware widening: when scoped (--mine or
+  // --files), also attribute a regression OUTSIDE the changed set when the file's source OR its
+  // compiler diagnostic references an exported type/interface one of the changed files also
+  // exports (the "I added a required field, an unchanged fixture broke" shape --mine was
+  // otherwise structurally blind to). Cheap: only reads the changed files plus files that already
+  // have a regression, never a tree-wide scan.
   const typeReferencedFiles = changedFiles
-    ? filesReferencingTypeNames(
-        root,
-        Object.keys(currentByFile).filter((f) => f !== '(unattributed)' && !changedFiles.has(f)),
-        exportedTypeNames(root, changedFiles),
-      )
+    ? (() => {
+        const candidates = Object.keys(currentByFile).filter(
+          (f) => f !== '(unattributed)' && !changedFiles.has(f),
+        );
+        const typeNames = exportedTypeNames(root, changedFiles);
+        return new Set([
+          ...filesReferencingTypeNames(root, candidates, typeNames),
+          ...diagnosticFilesReferencingTypeNames(
+            tscOutput,
+            candidates,
+            typeNames,
+            diagnosticPathOptions,
+          ),
+        ]);
+      })()
     : null;
 
   // EI-19278299775574199 — under `--files`, `changedFiles` is the caller's OWN enumeration, so
@@ -2931,7 +2985,7 @@ export async function runTscBaselineGate({
       if (result.typeAttributed && result.typeAttributed.length > 0) {
         console.error(
           `   (${result.typeAttributed.length} of the above are NOT in your changed-file set — attributed because ` +
-            `they reference an exported type/interface one of your changed files also exports. This is the ` +
+            `their source or compiler diagnostic references an exported type/interface one of your changed files also exports. This is the ` +
             `EI-18756182128903253 fix: a required-field addition breaks a fixture/constructor your diff never ` +
             `touched, and that fixture now gates with your change instead of surfacing hours later at green-checkpoint.)`,
         );
