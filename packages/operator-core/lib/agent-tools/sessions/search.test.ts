@@ -255,6 +255,20 @@ describe('sessions:search — a provenance-filtered zero must not read as a quer
     expect(parsed.zeroHitCaveat).toMatch(/owner_candidates:true/);
   });
 
+  it('explains the excluded classifications when owner_candidates itself finds nothing', async () => {
+    const res = await callTool({ query: 'lane fix', owner_candidates: true, mode: 'verbatim', context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.total_hits).toBe(0);
+    expect(parsed.zeroHitCaveat).toBeDefined();
+    expect(parsed.zeroHitCaveat).toMatch(/owner_candidates:true/);
+    expect(parsed.zeroHitCaveat).toMatch(/not-user-turn/);
+    expect(parsed.zeroHitCaveat).toMatch(/drop the provenance filter|sessions:read/i);
+    // The candidate filter is already the recall path; do not tell callers to
+    // retry the same impossible classification with another text fragment.
+    expect(parsed.zeroHitCaveat).not.toMatch(/retrying with a different query fragment/i);
+  });
+
   it('stays silent when the provenance filter actually returned hits — nothing to explain', async () => {
     const tx = makeTx([
       { source_kind: 'claude', session_id: 'sess-1', turn_idx: 3, speaker: 'user', owner: 'su-self', harness_slug: null, ts: null, text: 'put yourself on auto mode' },

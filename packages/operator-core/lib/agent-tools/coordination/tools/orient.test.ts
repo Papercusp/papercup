@@ -17,6 +17,7 @@ import {
   ORIENT_FOLD_TOOL_NAMES,
 } from './orient';
 import orientTool from './orient';
+import { FLEET_DELTA_SCHEMA_VERSION, fingerprintFleet } from './fleet-monitor-delta';
 import type { InnerCall } from '../../_compound-dispatch';
 import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
@@ -2782,7 +2783,11 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
     const { call } = fakeCall({ ...FLEET });
     const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
     const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
-    expect(r.fleetDelta).toEqual({ baseline: true });
+    expect(r.fleetDelta).toEqual({
+      schemaVersion: FLEET_DELTA_SCHEMA_VERSION,
+      baseline: true,
+      fullReplacement: true,
+    });
     expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
     // The cursor received THIS read's fingerprint — the next call diffs against it.
     expect(cursor).toHaveBeenCalledWith(
@@ -2795,18 +2800,20 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
 
   it('DELTA: transitions since committed; `me` slims to the self row + agentsElided', async () => {
     const { call } = fakeCall({ ...FLEET });
-    const committed = {
-      members: {
-        'su-lead': { v: 'speaking', s: 'live', c: 1 },
-        'su-a': { v: 'speaking', s: 'live', d: 'WI-1', c: 2 },
-        'su-b': { v: 'speaking', s: 'live', c: 1 }, // was speaking, now stalled
-      },
-      orphaned: 0,
-      stalled: 0,
-    };
+    const committed = fingerprintFleet({
+      ok: true,
+      agents: [
+        { agentId: 'su-lead', isSelf: true, verdict: 'speaking', sessionState: 'live', claims: 1 },
+        { agentId: 'su-a', verdict: 'speaking', sessionState: 'live', doing: 'WI-1', claims: 2 },
+        { agentId: 'su-b', verdict: 'speaking', sessionState: 'live', claims: 1 },
+      ],
+      orphaned: [],
+      stalled: [],
+    })!;
     const cursor = vi.fn(async () => ({ committed, baseline: false }));
     const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
     expect(r.fleetDelta?.baseline).toBe(false);
+    expect(r.fleetDelta?.schemaVersion).toBe(FLEET_DELTA_SCHEMA_VERSION);
     expect(r.fleetDelta?.changes).toEqual([
       {
         change: 'updated',
@@ -2847,7 +2854,122 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
     const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
     const r = await composeOrient({}, call, 'su-lead', undefined, undefined, cursor);
     expect(cursor).toHaveBeenCalledTimes(1);
-    expect(r.fleetDelta).toEqual({ baseline: true });
+    expect(r.fleetDelta).toEqual({
+      schemaVersion: FLEET_DELTA_SCHEMA_VERSION,
+      baseline: true,
+      fullReplacement: true,
+    });
+  });
+
+  it('RESET: an old cursor schema returns a full replacement and keeps the full roster', async () => {
+    const { call } = fakeCall({ ...FLEET });
+    const cursor = vi.fn(async () => ({ committed: { schemaVersion: 'fleet-delta-v1' }, baseline: false }));
+    const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
+    expect(r.fleetDelta).toMatchObject({
+      schemaVersion: FLEET_DELTA_SCHEMA_VERSION,
+      baseline: false,
+      reset: { reason: 'schema-mismatch' },
+      fullReplacement: true,
+    });
+    expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
+  });
+
+  it('stages the cursor after leader metrics, announced gates, and pipeline are hydrated', async () => {
+    listActiveAnnouncementsMock.mockResolvedValue([
+      {
+        eventKey: 'fleet:backend:release-ready',
+        note: 'ship it',
+        scopeKind: 'fleet',
+        scopeRef: 'backend',
+        subscriberId: 'su-lead',
+        expiresTs: null,
+      },
+    ]);
+    const fleetMetrics = {
+      ok: true,
+      snapshot: {
+        schemaVersion: 'fleet-metrics-v1',
+        scope: {
+          fleet: 'backend',
+          harness: 'papercusp',
+          window: {
+            kind: 'fleet-lifetime',
+            startAt: '2026-08-21T00:00:00.000Z',
+            startSource: 'fleet-created-at',
+          },
+          stock: { mode: 'current-spec', specId: 'spec-a', revision: 9 },
+          flow: { mode: 'current-spec', specId: 'spec-a', revision: 9, source: 'fleet' },
+          population: { stock: 'current-spec-work-items', flow: 'current-spec-work-items' },
+        },
+        flow: {
+          opened: 0,
+          terminalLifecycle: 0,
+          terminalCounted: 0,
+          netLifecycle: 0,
+          netCounted: 0,
+          unit: 'work-items',
+        },
+        remaining: {
+          total: 0,
+          buckets: {
+            needsHuman: 0,
+            blocked: 0,
+            claimHeld: 0,
+            inFlight: 0,
+            claimable: 0,
+            otherUnclaimable: 0,
+          },
+        },
+        authority: {
+          lifecycleTerminal: 0,
+          counted: 0,
+          committed: 0,
+          validated: 0,
+          proposed: 0,
+          pendingHuman: 0,
+          invalid: 0,
+          legacy: 0,
+        },
+        issueUnits: { canonicalBugs: 0, observations: 0, occurrences: 0, duplicateOccurrences: 0 },
+      },
+    };
+    const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+    const { call } = fakeCall({
+      ...FLEET,
+      'fleet:leader-brief': () => ({ ok: true, summary: { fleet: 'backend' }, fleetMetrics, members: [] }),
+    });
+    const r = await composeOrient(
+      { mode: 'monitor', harness: 'papercusp' },
+      call,
+      'su-lead',
+      undefined,
+      undefined,
+      cursor,
+      undefined,
+      undefined,
+      { fleetSlug: 'backend', fleetRole: 'leader' },
+      undefined,
+      async () => ({ gate: 'green', deploy: 'current', checkedAtMs: Date.now() }),
+    );
+    expect(cursor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schemaVersion: FLEET_DELTA_SCHEMA_VERSION,
+        scope: expect.objectContaining({
+          fleet: 'backend',
+          harness: 'papercusp',
+          specId: 'spec-a',
+          stockPopulation: 'current-spec-work-items',
+          flowPopulation: 'current-spec-work-items',
+          workItemUnit: 'work-items',
+        }),
+        axes: expect.objectContaining({
+          metrics: expect.objectContaining({ availability: 'measured', flow: expect.objectContaining({ opened: 0 }) }),
+          gates: ['fleet:backend:release-ready'],
+          promotion: { availability: 'measured', gate: 'green', deploy: 'current' },
+        }),
+      }),
+    );
+    expect((r.leaderBrief as Record<string, unknown>).fleetMetrics).toEqual(fleetMetrics);
   });
 
   it('no cursor injected (flag off / unresolved identity) ⇒ pre-P-004 monitor behavior, byte-identical', async () => {

@@ -1026,7 +1026,7 @@ export interface GatewayStats {
   priorityTiers?: {
     healthyAccounts: number;
     tier1Reserve: number;
-    tiers: { tier: number; cap: number | null; inFlight: number; queued: number }[];
+    tiers: { tier: number; minShare: number | null; inFlight: number; queued: number }[];
   };
   upstream429: number;
   queued429: number;

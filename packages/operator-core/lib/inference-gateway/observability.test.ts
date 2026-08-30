@@ -210,8 +210,8 @@ test('gatewayWholesaleThrottled — false when headline window is rejected but p
           healthyAccounts: 1,
           tier1Reserve: 1,
           tiers: [
-            { tier: 1, cap: 24, inFlight: 1, queued: 0 },
-            { tier: 3, cap: 19, inFlight: 0, queued: 0 },
+            { tier: 1, minShare: 24, inFlight: 1, queued: 0 },
+            { tier: 3, minShare: 19, inFlight: 0, queued: 0 },
           ],
         },
       }),
@@ -229,7 +229,7 @@ test('gatewayWholesaleThrottled — true when priority tiers report no healthy a
         priorityTiers: {
           healthyAccounts: 0,
           tier1Reserve: 1,
-          tiers: [{ tier: 3, cap: 19, inFlight: 19, queued: 0 }],
+          tiers: [{ tier: 3, minShare: 19, inFlight: 19, queued: 0 }],
         },
       }),
     ),

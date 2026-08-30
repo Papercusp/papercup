@@ -66,6 +66,7 @@ import { FLAGS } from '@papercusp/flags';
 import { fixedCohortIds } from '../../../scheduler/claim-spec';
 import type { AckResult, CursorState } from '../read-cursors';
 import {
+  FLEET_DELTA_SCHEMA_VERSION,
   fingerprintFleet,
   diffFleet,
   slimAssignmentsForDelta,
@@ -645,22 +646,27 @@ export interface OrientResult {
    *  fleet route that overrode the presence-derived self scope for this call. The
    *  marker makes the widened `fleet:assignments` read explicit and auditable. */
   recoveredFleetScope?: { fleet: string; role: string | null; note: string };
-  /** Monitor-mode fleet DELTA (fleet-deltas-leader-primitives P-004): what changed
-   *  in the fleet since this caller's last monitor orient, diffed server-side
+  /** Versioned fleet DELTA (fleet-deltas-leader-primitives P-004/P-006): what changed
+   *  in the fleet since this caller's last orient, diffed server-side
    *  against the (owner, 'fleet:monitor') read cursor — the caller carries nothing.
-   *  `baseline:true` ⇒ first read (or cursor reset): `me` carries the FULL roster
-   *  this once. Otherwise `me.agents` is slimmed to the caller's own row
+   *  `baseline:true` or `fullReplacement:true` ⇒ `me` carries the FULL roster.
+   *  Otherwise `me.agents` is slimmed to the caller's own row
    *  (`peerRowsElidedFromScope` says how many peers were withheld — WI-6762: relative
    *  to the already scope-filtered set, NOT to the fleet) and `changes` carries the
-   *  member transitions ({change:added|updated|removed, id, from, to} — v=verdict,
-   *  s=sessionState, d=doing, c=claims). At-least-once: a wake that dies mid-turn
+   *  member transitions plus canonical metric/lifecycle/capacity/gate/promotion axes.
+   *  Population/unit/window labels make unlike scopes reset rather than compare.
+   *  At-least-once: a wake that dies mid-turn
    *  re-receives the same delta next call. Absent in full mode / flag off. */
   fleetDelta?: {
+    schemaVersion: typeof FLEET_DELTA_SCHEMA_VERSION;
     baseline: boolean;
     changes?: FleetDelta['rows'];
     unchanged?: number;
     orphaned?: { from: number; to: number };
     stalled?: { from: number; to: number };
+    axes?: FleetDelta['axes'];
+    reset?: FleetDelta['reset'];
+    fullReplacement?: true;
   };
   /** ownerPresent (flush-to-proceed-stretch-discipline-2026-07-04 P-004): whether a human
    *  power-user session is live for this workspace (readOwnerPresence — a fresh, non-revoked
@@ -1056,39 +1062,6 @@ export async function composeOrient(
     },
   );
   let me = overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership);
-  // ── fleet ROSTER delta (P-004 monitor / P-005 full): diff the roster against
-  // the caller's server-side cursor and deliver TRANSITIONS instead of the full
-  // roster re-read byte-identically almost every call (D-003 audit — the same
-  // ~100%-repeat shape in both modes). Gated on the INJECTED closure, not the
-  // mode — the handler decides per-mode whether to inject it (monitor: existing
-  // ORIENT_MONITOR_DELTA flag, unchanged; full: new ORIENT_FULL_DELTA flag).
-  // FAIL-OPEN at every step: an unrecognizable roster shape, a cursor store
-  // error, or a baseline (first read) all keep the full `me` fold — a delta must
-  // never make orientation worse than no delta.
-  let fleetDelta: OrientResult['fleetDelta'];
-  if (fleetCursor) {
-    try {
-      const fp = fingerprintFleet(me);
-      if (fp) {
-        const ack = await fleetCursor(fp as unknown as CursorState);
-        if (!ack.baseline && ack.committed) {
-          const delta = diffFleet(ack.committed as unknown as FleetFingerprint, fp);
-          fleetDelta = {
-            baseline: false,
-            changes: delta.rows,
-            unchanged: delta.unchanged,
-            ...(delta.orphaned ? { orphaned: delta.orphaned } : {}),
-            ...(delta.stalled ? { stalled: delta.stalled } : {}),
-          };
-          me = slimAssignmentsForDelta(me);
-        } else {
-          fleetDelta = { baseline: true };
-        }
-      }
-    } catch {
-      fleetDelta = undefined; /* fail-open: full roster */
-    }
-  }
   // EI-19452326548245557: this fold must BE the claim oracle, not a cheaper
   // lookalike. It used to be `work_items:list({ admissibleOnly: true })` — which by
   // that flag's OWN contract is "a cheap STRUCTURAL pre-filter ... NOT the full
@@ -1354,7 +1327,6 @@ export async function composeOrient(
     // (no await, no round-trip) — the whole point is that the answer has already
     // arrived by the time an agent would have thought to run `date` or `uptime`.
     host: getHostSnapshot(),
-    ...(fleetDelta !== undefined ? { fleetDelta } : {}),
     // P-004: fold the mechanical owner-present bit when the handler resolved it (undefined ⇒
     // leg absent; the handler passes null on a read failure).
     ...(ownerPresent !== undefined ? { ownerPresent } : {}),
@@ -2303,6 +2275,49 @@ export async function composeOrient(
       announcedGates: result.announcedGates ?? [],
       release: result.pipeline ?? null,
     });
+  }
+
+  // P-006: stage the cursor only AFTER the canonical leader snapshot and its
+  // announced-gate/release decorations are available. The old early fold could
+  // diff only roster rows, so it silently omitted every canonical spec-scoped
+  // measurement this cursor now promises. A reset keeps the full roster; only a
+  // comparable delta slims `me`.
+  if (fleetCursor) {
+    try {
+      const fp = fingerprintFleet(me, {
+        leaderBrief: result.leaderBrief,
+        announcedGates: result.announcedGates,
+        pipeline: result.pipeline,
+        fleet: effectiveFleetMembership?.fleetSlug ?? null,
+        harness: args.harness ?? null,
+      });
+      if (fp) {
+        const ack = await fleetCursor(fp as unknown as CursorState);
+        if (ack.baseline || !ack.committed) {
+          result.fleetDelta = {
+            schemaVersion: FLEET_DELTA_SCHEMA_VERSION,
+            baseline: true,
+            fullReplacement: true,
+          };
+        } else {
+          const delta = diffFleet(ack.committed as unknown as FleetFingerprint, fp);
+          result.fleetDelta = {
+            schemaVersion: FLEET_DELTA_SCHEMA_VERSION,
+            baseline: false,
+            changes: delta.rows,
+            unchanged: delta.unchanged,
+            ...(delta.orphaned ? { orphaned: delta.orphaned } : {}),
+            ...(delta.stalled ? { stalled: delta.stalled } : {}),
+            ...(delta.axes ? { axes: delta.axes } : {}),
+            ...(delta.reset ? { reset: delta.reset } : {}),
+            ...(delta.fullReplacement ? { fullReplacement: true } : {}),
+          };
+          if (!delta.fullReplacement) result.me = slimAssignmentsForDelta(me);
+        }
+      }
+    } catch {
+      result.fleetDelta = undefined; /* fail-open: full roster */
+    }
   }
 
   // ── coord:declare-intent — only when an intent is given (a WRITE; independently

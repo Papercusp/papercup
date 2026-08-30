@@ -52,7 +52,12 @@ TABLIST='[role="tablist"][aria-label^="Detail for"]'
 failures=0
 passes=0
 skips=0
-pass() { passes=$((passes + 1)); printf 'PASS  %s\n' "$*"; }
+passed_labels=""
+pass() {
+  passes=$((passes + 1))
+  passed_labels="${passed_labels}${passed_labels:+$'\n'}$*"
+  printf 'PASS  %s\n' "$*"
+}
 skip() { skips=$((skips  + 1)); printf 'SKIP  %s\n' "$*"; }
 fail() { failures=$((failures + 1)); printf 'FAIL  %s\n' "$*" >&2; }
 
@@ -257,8 +262,12 @@ settle 8 "$RAIL" 1 \
 # that can only pass against real data, which is what makes the run evidence.
 EXERCISED=""
 grep_pass() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
-[ "$HOSTS" -gt 0 ] && EXERCISED="${EXERCISED}landing-operate,expanded-host-tabs,"
-[ "$DRIFTING" -gt 0 ] && EXERCISED="${EXERCISED}drift-divergent-form,"
+grep_pass "$passed_labels" "R3 a fresh visit lands on Operate once a workspace exists" \
+  && EXERCISED="${EXERCISED}landing-operate,"
+grep_pass "$passed_labels" "R9 ?tab=resources selects Resources; the host tablist keeps exactly one tab stop" \
+  && EXERCISED="${EXERCISED}expanded-host-tabs,"
+grep_pass "$passed_labels" "R4 a diverging host renders ONE chip in the 'observed → desired' form" \
+  && EXERCISED="${EXERCISED}drift-divergent-form,"
 EXERCISED="${EXERCISED%,}"
 printf 'CW_RAIL_RESULT passed=%d failed=%d skipped=%d hosts=%d drifting=%d exercised=%s\n' \
   "$passes" "$failures" "$skips" "$HOSTS" "$DRIFTING" "${EXERCISED:-none}"

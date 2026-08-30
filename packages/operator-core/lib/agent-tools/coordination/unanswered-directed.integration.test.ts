@@ -18,6 +18,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_bas
 import type { AgentIdentity } from './identity';
 import { sendMessage } from './messages';
 import { fetchUnansweredDirected } from './unanswered-directed';
+import { fetchDirectiveActuations } from './directive-effect';
 import { fetchDirectiveActuationSummaries } from './directive-effect-read';
 import { coordWorkspaceId } from './log';
 
@@ -284,6 +285,37 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
 
     const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(unanswered.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('EI-21665996495417179: committed terminal completion is a checkpoint-safety alternative', async () => {
+    const closedAt = Date.now();
+    const payload = JSON.stringify({
+      _completionEvidence: {
+        verifiedHow: 'integration',
+        testsRun: 'npm run test:file -- directive-effect.test.ts',
+        testResult: 'PASS',
+      },
+    });
+    await fx.admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, payload,
+         terminal_owner, authority, created_ts, updated_ts, closed_ts)
+      VALUES
+        (${effectWorkspace}, 'papercusp', ${EFFECT_ITEM}, 'bug', ${`terminal fixture ${EFFECT_ITEM}`}, 'done',
+         ${payload}::jsonb, ${MEMBER.ownerId}, 'committed', ${closedAt - 1}, ${closedAt}, ${closedAt})
+    `;
+
+    const actuations = await fetchDirectiveActuations(
+      [{ kind: 'checkpoint', itemId: EFFECT_ITEM, harness: 'papercusp', sentAtMs: closedAt + 1 }],
+      { workspaceId: effectWorkspace },
+    );
+    expect(actuations).toEqual([
+      expect.objectContaining({
+        verdict: 'pre-existing',
+        alternativeProof: 'terminal-completion',
+        observedAtMs: closedAt,
+      }),
+    ]);
   });
 
   it('keeps an expectEffect directive unanswered until its named effect is proven', async () => {

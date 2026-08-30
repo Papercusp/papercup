@@ -27,12 +27,16 @@ import {
   acquireClaimLocal,
   heartbeatClaimLocal,
   releaseClaimLocal,
+  forceReleaseClaimLocal,
+  forceTakeoverClaimLocal,
   PLAN_ITEM_CLAIM_OP_KINDS,
   type AcquireOpts,
   type AcquireResult,
   type HeartbeatClaimParams,
   type HeartbeatResult,
   type ReleaseClaimParams,
+  type ForceReleaseClaimParams,
+  type ForceTakeoverClaimParams,
 } from './claims';
 
 /**
@@ -99,6 +103,29 @@ function asReleaseParams(payload: unknown): ReleaseClaimParams {
   return p as ReleaseClaimParams;
 }
 
+function asForceReleaseParams(payload: unknown): ForceReleaseClaimParams {
+  return asReleaseParams(payload);
+}
+
+function asForceTakeoverParams(payload: unknown): ForceTakeoverClaimParams {
+  const p = payload as Partial<ForceTakeoverClaimParams>;
+  if (
+    !p ||
+    typeof p.workspaceId !== 'string' ||
+    typeof p.harnessSlug !== 'string' ||
+    typeof p.planSlug !== 'string' ||
+    typeof p.itemId !== 'string' ||
+    typeof p.owner !== 'string' ||
+    typeof p.expectedClaimId !== 'string' ||
+    typeof p.expectedOwner !== 'string'
+  ) {
+    throw new Error(
+      'plan-item.claim.force-takeover: invalid payload (workspaceId, harnessSlug, planSlug, itemId, owner, expectedClaimId, expectedOwner required)',
+    );
+  }
+  return p as ForceTakeoverClaimParams;
+}
+
 /**
  * Register the plan-item claim authority op handlers against `coordinator`. Call
  * ONCE at boot (from the plan-items tool barrel). Idempotent: a no-op if the kinds
@@ -119,5 +146,11 @@ export function registerPlanItemClaimAuthorityOps(
   );
   registerAuthorityOp(PLAN_ITEM_CLAIM_OP_KINDS.release, async (payload) =>
     coordinator.release(asReleaseParams(payload)),
+  );
+  registerAuthorityOp(PLAN_ITEM_CLAIM_OP_KINDS.forceRelease, async (payload) =>
+    forceReleaseClaimLocal(asForceReleaseParams(payload)),
+  );
+  registerAuthorityOp(PLAN_ITEM_CLAIM_OP_KINDS.forceTakeover, async (payload) =>
+    forceTakeoverClaimLocal(asForceTakeoverParams(payload)),
   );
 }

@@ -50,6 +50,9 @@ export interface FleetCanonicalAxes {
     claimFlow?: unknown;
   };
   capacity: { availability: 'measured' | 'absent'; value?: unknown };
+  /** No canonical cost writer exists on leaderBrief yet. Keep that absence
+   * explicit so callers never read omission as a measured zero. */
+  cost: { availability: 'absent'; reason: 'canonical-cost-writer-unavailable' };
   gates: string[];
   promotion: { availability: 'measured' | 'absent'; gate?: string; deploy?: string };
 }
@@ -209,6 +212,10 @@ function canonicalProjection(context: FleetFingerprintContext): {
   const capacity: FleetCanonicalAxes['capacity'] = capacityValue
     ? { availability: 'measured', value: capacityValue }
     : { availability: 'absent' };
+  const cost: FleetCanonicalAxes['cost'] = {
+    availability: 'absent',
+    reason: 'canonical-cost-writer-unavailable',
+  };
 
   const gateSource = Array.isArray(context.announcedGates)
     ? context.announcedGates
@@ -249,7 +256,7 @@ function canonicalProjection(context: FleetFingerprintContext): {
         startSource: stringValue(lifecycleWindow?.startSource),
       },
     },
-    axes: { metrics, populationLifecycle, capacity, gates, promotion },
+    axes: { metrics, populationLifecycle, capacity, cost, gates, promotion },
   };
 }
 
@@ -383,6 +390,9 @@ export function diffFleet(committed: unknown, current: FleetFingerprint): FleetD
   if (population) axes.populationLifecycle = population;
   if (!sameValue(previous.axes.capacity, current.axes.capacity)) {
     axes.capacity = { from: previous.axes.capacity, to: current.axes.capacity };
+  }
+  if (!sameValue(previous.axes.cost, current.axes.cost)) {
+    axes.cost = { from: previous.axes.cost, to: current.axes.cost };
   }
   if (!sameValue(previous.axes.gates, current.axes.gates)) {
     axes.gates = { from: previous.axes.gates, to: current.axes.gates };

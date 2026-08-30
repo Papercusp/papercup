@@ -80,10 +80,10 @@ const tieredHr = (over: Partial<GatewayHeadroom> = {}): GatewayHeadroom => ({
     healthyAccounts: 8,
     tier1Reserve: 4,
     tiers: [
-      { tier: 1, cap: 24, inFlight: 1, queued: 0 },
-      { tier: 2, cap: 20, inFlight: 1, queued: 0 },
-      { tier: 3, cap: 20, inFlight: 6, queued: 3 }, // bee tier
-      { tier: 4, cap: 8, inFlight: 0, queued: 0 },
+      { tier: 1, minShare: 24, inFlight: 1, queued: 0 },
+      { tier: 2, minShare: 20, inFlight: 1, queued: 0 },
+      { tier: 3, minShare: 20, inFlight: 6, queued: 3 }, // bee tier
+      { tier: 4, minShare: 8, inFlight: 0, queued: 0 },
     ],
   },
   ...over,
@@ -131,10 +131,10 @@ test('GENUINELY saturated pool (paused + NO tiered spare capacity) ⇒ factor 0 
         healthyAccounts: 0, // no healthy account → pool truly has no fresh capacity
         tier1Reserve: 0,
         tiers: [
-          { tier: 1, cap: 24, inFlight: 24, queued: 0 },
-          { tier: 2, cap: 20, inFlight: 20, queued: 0 },
-          { tier: 3, cap: 20, inFlight: 20, queued: 0 }, // bee tier full → no spare
-          { tier: 4, cap: 8, inFlight: 8, queued: 0 },
+          { tier: 1, minShare: 24, inFlight: 24, queued: 0 },
+          { tier: 2, minShare: 20, inFlight: 20, queued: 0 },
+          { tier: 3, minShare: 20, inFlight: 20, queued: 0 }, // bee tier full → no spare
+          { tier: 4, minShare: 8, inFlight: 8, queued: 0 },
         ],
       },
     }),
@@ -156,10 +156,10 @@ test('rejected bound account with healthy tiered bee capacity ⇒ broad placemen
         healthyAccounts: 2,
         tier1Reserve: 1,
         tiers: [
-          { tier: 1, cap: 24, inFlight: 0, queued: 0 },
-          { tier: 2, cap: 20, inFlight: 0, queued: 0 },
-          { tier: 3, cap: 19, inFlight: 0, queued: 0 },
-          { tier: 4, cap: 1, inFlight: 0, queued: 0 },
+          { tier: 1, minShare: 24, inFlight: 0, queued: 0 },
+          { tier: 2, minShare: 20, inFlight: 0, queued: 0 },
+          { tier: 3, minShare: 19, inFlight: 0, queued: 0 },
+          { tier: 4, minShare: 1, inFlight: 0, queued: 0 },
         ],
       },
     }),
@@ -443,7 +443,7 @@ test('EI-20183190844096359: Codex capacity ignores stale Claude walls and report
     priorityTiers: {
       healthyAccounts: 1,
       tier1Reserve: 1,
-      tiers: [{ tier: 3, cap: 4, inFlight: 1, queued: 0 }],
+      tiers: [{ tier: 3, minShare: 4, inFlight: 1, queued: 0 }],
     },
     healthyAccounts: 1,
     inFlight: 1,
@@ -480,7 +480,7 @@ test('fleet:capacity account-only scope resolves a Codex account instead of defa
     priorityTiers: {
       healthyAccounts: 1,
       tier1Reserve: 1,
-      tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+      tiers: [{ tier: 3, minShare: 4, inFlight: 0, queued: 0 }],
     },
   });
   mockAccountStatus.mockResolvedValueOnce([
@@ -509,7 +509,7 @@ test('EI-21664939388634125: Codex tier oracle measures spare capacity when utili
     priorityTiers: {
       healthyAccounts: 6,
       tier1Reserve: 1,
-      tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 0 }],
+      tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 0 }],
     },
     healthyAccounts: 6,
     inFlight: 0,
@@ -556,7 +556,7 @@ test('EI-21664939388634125: incomplete or unusable Codex tier data remains unkno
       priorityTiers: {
         healthyAccounts: 6,
         tier1Reserve: 1,
-        tiers: [{ tier: 1, cap: 20, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 1, minShare: 20, inFlight: 0, queued: 0 }],
       },
       healthyAccounts: 6,
       inFlight: 0,
@@ -570,7 +570,7 @@ test('EI-21664939388634125: incomplete or unusable Codex tier data remains unkno
       priorityTiers: {
         healthyAccounts: 0,
         tier1Reserve: 1,
-        tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 0 }],
       },
       healthyAccounts: 0,
       inFlight: 0,

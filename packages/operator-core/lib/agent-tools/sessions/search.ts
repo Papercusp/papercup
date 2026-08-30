@@ -288,12 +288,17 @@ export default defineTool({
     // actively steers into it — no fragment can ever match. Measured
     // 2026-08-24: 0 `owner-typed` rows across claude/omp/codex against 18,091
     // `unenrolled-origin` ones; `owner_only` reached 30 rows corpus-wide.
-    const provenanceFiltered = filters?.turnOrigin != null || filters?.ownerOnly === true;
+    const provenanceFiltered =
+      filters?.turnOrigin != null ||
+      filters?.ownerOnly === true ||
+      filters?.ownerCandidates === true;
     if (pageHits.length === 0 && provenanceFiltered) {
       const kinds = [...FILE_BACKED_SOURCE_KINDS].sort().join('/');
       const which = filters?.ownerOnly === true
         ? "owner_only:true (persisted 'owner-typed' or 'owner-dialog')"
-        : `turn_origin:'${filters?.turnOrigin}'`;
+        : filters?.ownerCandidates === true
+          ? "owner_candidates:true (proven owner turns plus 'unenrolled-origin')"
+          : `turn_origin:'${filters?.turnOrigin}'`;
       zeroHitCaveat =
         `0 hits, but you filtered on PERSISTED provenance (${which}) — this is NOT evidence that no such turn ` +
         `exists, and retrying with a different query fragment will not help. Ingest cannot prove owner authorship ` +
@@ -301,12 +306,20 @@ export default defineTool({
         `'unenrolled-origin'` +
         (filters?.ownerOnly === true
           ? ", which owner_only EXCLUDES. On a CLI session owner_only reaches only turn-stamped owner-dialog answers."
-          : ".") +
-        ` For RECALL, re-run with owner_candidates:true (adds 'unenrolled-origin', still excluding agent-injected and ` +
-        `machine-surface replays) — but READ the hits: that bucket means "no machine envelope found", which is also true of ` +
-        `machine text that never carried one (measured: ~55% of it is machine-shaped), so it yields candidates to inspect, ` +
-        `never proof. No filter can settle authorship here; only reading the turn can. Reading THIS zero as "the owner never ` +
-        `said it" is the documented EI-13472 / WI-37419 failure.`;
+          : filters?.ownerCandidates === true
+            ? ". `owner_candidates:true` is already the recall filter: it still excludes persisted " +
+              "`agent-injected`, `machine-surface`, `synthetic`, and `not-user-turn` rows. A matching turn with one of " +
+              `those verdicts cannot be reached by changing the query fragment; drop the provenance filter or read the ` +
+              `recorded turn directly (sessions:read { session:'self' }) before attributing anything to the owner. ` +
+              `Candidate hits remain candidates, never proof.`
+            : ".") +
+        (filters?.ownerCandidates === true
+          ? " Reading THIS zero as proof that the owner never said it is the documented EI-13472 / WI-37419 failure."
+          : ` For RECALL, re-run with owner_candidates:true (adds 'unenrolled-origin', still excluding agent-injected and ` +
+            `machine-surface replays) — but READ the hits: that bucket means "no machine envelope found", which is also true of ` +
+            `machine text that never carried one (measured: ~55% of it is machine-shaped), so it yields candidates to inspect, ` +
+            `never proof. No filter can settle authorship here; only reading the turn can. Reading THIS zero as "the owner never ` +
+            `said it" is the documented EI-13472 / WI-37419 failure.`);
     }
 
     if (!zeroHitCaveat && args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {

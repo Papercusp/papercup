@@ -66,7 +66,10 @@
  */
 
 import { z } from 'zod';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
@@ -90,6 +93,167 @@ import {
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
+type ExecFileP = (
+  command: string,
+  args: string[],
+  options: { cwd: string; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string }>;
+let cachedExecFile: ExecFileP | null = null;
+const runExecFile = (...args: Parameters<ExecFileP>) => {
+  if (cachedExecFile === null) cachedExecFile = promisify(execFile) as unknown as ExecFileP;
+  return cachedExecFile(...args);
+};
+
+/**
+ * bg-host is the one restart target whose ExecStartPre rebuilds an artifact from
+ * the working tree. A recent restart therefore proves only that SOME bundle was
+ * built, not that the caller's current tree is in that bundle. Keep this source
+ * scope broad enough to include the host entrypoint and operator-core runtime
+ * code, but exclude tests so a test-only edit cannot manufacture a stale-runtime
+ * warning.
+ */
+const BG_HOST_BUNDLE_RELATIVE_PATH = 'apps/operator/dist-host/hono-host.mjs';
+const BG_HOST_SOURCE_ROOTS = ['apps/operator/bin', 'apps/operator/lib', 'packages/operator-core/lib'] as const;
+
+export type BgHostRestartFreshnessSnapshot = {
+  bundleMtimeMs: number | null;
+  newestSourceMtimeMs: number | null;
+  newestSourcePath: string | null;
+};
+
+export type BgHostRestartFreshness = BgHostRestartFreshnessSnapshot & {
+  /**
+   * `true` means the newest runtime source on disk is newer than the bundle
+   * produced for the coalesced restart, so the caller's edit is not loaded.
+   * `null` is UNKNOWN — never turn an unreadable artifact/tree into `false`.
+   */
+  treeChangedSinceRestart: boolean | null;
+  checked: boolean;
+};
+
+/**
+ * PURE — compare the current source graph with the bundle that the recent
+ * restart actually produced. This deliberately reports the source-vs-artifact
+ * relation rather than restarting eagerly: bg-host restarts can SIGKILL an
+ * in-flight git-sync operation, so the temporal throttle remains authoritative.
+ */
+export function evaluateBgHostRestartFreshness(
+  snapshot: BgHostRestartFreshnessSnapshot,
+): BgHostRestartFreshness {
+  const bundleMtimeMs =
+    snapshot.bundleMtimeMs != null && Number.isFinite(snapshot.bundleMtimeMs) ? snapshot.bundleMtimeMs : null;
+  const newestSourceMtimeMs =
+    snapshot.newestSourceMtimeMs != null && Number.isFinite(snapshot.newestSourceMtimeMs)
+      ? snapshot.newestSourceMtimeMs
+      : null;
+  const checked = bundleMtimeMs != null && newestSourceMtimeMs != null;
+  return {
+    bundleMtimeMs,
+    newestSourceMtimeMs,
+    newestSourcePath: snapshot.newestSourcePath ?? null,
+    treeChangedSinceRestart: checked ? newestSourceMtimeMs > bundleMtimeMs : null,
+    checked,
+  };
+}
+
+export type BgHostRestartFreshnessReader = (integrationRoot: string) => Promise<BgHostRestartFreshnessSnapshot>;
+
+/**
+ * Read the bundle and the newest runtime-source mtime without deciding whether
+ * to restart. The subprocess is bounded and the whole reader is fail-soft;
+ * callers must surface UNKNOWN rather than manufacture a clean result.
+ */
+const defaultBgHostRestartFreshnessReader: BgHostRestartFreshnessReader = async (integrationRoot) => {
+  const bundlePath = resolve(integrationRoot, BG_HOST_BUNDLE_RELATIVE_PATH);
+  let bundleMtimeMs: number | null = null;
+  try {
+    const mtimeMs = statSync(bundlePath).mtimeMs;
+    bundleMtimeMs = Number.isFinite(mtimeMs) ? mtimeMs : null;
+  } catch {
+    // The caller will report UNKNOWN if the bundle is absent or unreadable.
+  }
+
+  const { stdout } = await runExecFile(
+    'find',
+    [
+      ...BG_HOST_SOURCE_ROOTS,
+      '-type',
+      'f',
+      '(',
+      '-name',
+      '*.ts',
+      '-o',
+      '-name',
+      '*.tsx',
+      '-o',
+      '-name',
+      '*.js',
+      '-o',
+      '-name',
+      '*.mjs',
+      ')',
+      '-not',
+      '-name',
+      '*.test.ts',
+      '-not',
+      '-name',
+      '*.test.tsx',
+      '-not',
+      '-name',
+      '*.test.js',
+      '-not',
+      '-name',
+      '*.test.mjs',
+      '-not',
+      '-path',
+      '*/__tests__/*',
+      '-printf',
+      '%T@ %p\n',
+    ],
+    { cwd: integrationRoot, timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
+  );
+
+  let newestSourceMtimeMs: number | null = null;
+  let newestSourcePath: string | null = null;
+  for (const line of stdout.split('\n')) {
+    const separator = line.indexOf(' ');
+    if (separator <= 0) continue;
+    const mtimeMs = Number(line.slice(0, separator)) * 1000;
+    if (!Number.isFinite(mtimeMs) || (newestSourceMtimeMs != null && mtimeMs <= newestSourceMtimeMs)) continue;
+    newestSourceMtimeMs = mtimeMs;
+    newestSourcePath = line.slice(separator + 1);
+  }
+  return { bundleMtimeMs, newestSourceMtimeMs, newestSourcePath };
+};
+
+let bgHostRestartFreshnessReader = defaultBgHostRestartFreshnessReader;
+
+/**
+ * Test seam — production uses the bounded filesystem reader above; tests inject
+ * a snapshot so the handler's coalesce branch remains deterministic and never
+ * shells out to `find`.
+ */
+export function configureBgHostRestartFreshnessReaderForTests(
+  reader: BgHostRestartFreshnessReader = defaultBgHostRestartFreshnessReader,
+): void {
+  bgHostRestartFreshnessReader = reader;
+}
+
+async function readBgHostRestartFreshness(): Promise<BgHostRestartFreshness> {
+  const integrationRoot =
+    process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() || resolve(process.cwd(), '..', '..');
+  try {
+    return evaluateBgHostRestartFreshness(await bgHostRestartFreshnessReader(integrationRoot));
+  } catch {
+    return {
+      bundleMtimeMs: null,
+      newestSourceMtimeMs: null,
+      newestSourcePath: null,
+      treeChangedSinceRestart: null,
+      checked: false,
+    };
+  }
+}
 
 /** WI-4221: how long a real staging restart's cooldown marker stands before
  *  a subsequent restart request is allowed through again. Long enough to
@@ -588,6 +752,36 @@ export default defineTool({
         if (restartedRecently) {
           // GENUINE coalesce — a peer's restart actually landed within the window.
           const ago = Math.round(svc.secondsSinceStart!);
+          // bg-host is special: its restart rebuilds dist-host from the current
+          // tree. A genuine recent restart can therefore still be stale relative
+          // to a later edit. Diagnose that state, but do not turn the diagnostic
+          // into an eager restart — the temporal throttle is also the protection
+          // against repeatedly killing in-flight git-sync work.
+          const freshness = target === 'bg-host' ? await readBgHostRestartFreshness() : null;
+          const cooldownRemainingSec = Math.max(0, cooldownSec - ago);
+          const freshnessFields = freshness
+            ? {
+                treeChangedSinceRestart: freshness.treeChangedSinceRestart,
+                freshnessVerified: freshness.checked,
+                ...(freshness.bundleMtimeMs == null
+                  ? {}
+                  : { bundleMtime: new Date(freshness.bundleMtimeMs).toISOString() }),
+                ...(freshness.newestSourceMtimeMs == null
+                  ? {}
+                  : { newestSourceMtime: new Date(freshness.newestSourceMtimeMs).toISOString() }),
+                ...(freshness.newestSourcePath ? { newestSourcePath: freshness.newestSourcePath } : {}),
+              }
+            : {};
+          const freshnessNote =
+            freshness == null
+              ? ''
+              : !freshness.checked
+                ? ' Tree/bundle freshness could NOT be verified; do not assume the requested edit is loaded.'
+                : freshness.treeChangedSinceRestart
+                  ? ` WARNING: the runtime tree is newer than the bundle used by this restart${
+                      freshness.newestSourcePath ? ` (newest source: ${freshness.newestSourcePath})` : ''
+                    }; the requested edit is NOT loaded. The temporal throttle is preserved; retry after the remaining cooldown (~${cooldownRemainingSec}s) when safe.`
+                  : ' Tree/bundle freshness checked: no runtime source is newer than the bundle used by this restart.';
           return json({
             ok: true,
             target,
@@ -596,9 +790,10 @@ export default defineTool({
             verified: true,
             restartedSecondsAgo: ago,
             mainPid: svc.mainPid ?? null,
+            ...freshnessFields,
             note: `${cfg.unit} genuinely restarted ~${ago}s ago${
               holderName ? ` (marker held by ${holderName})` : ''
-            } — verified via systemd (MainPID ${svc.mainPid}). Skipping a redundant restart; probe it directly.`,
+            } — verified via systemd (MainPID ${svc.mainPid}). Skipping a redundant restart; probe it directly.${freshnessNote}`,
           });
         }
         if (!svc.ok) {

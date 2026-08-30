@@ -144,14 +144,25 @@ const clearGitSyncCollision = () => ({
 const restartModule = await import('./restart');
 const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
+const { configureBgHostRestartFreshnessReaderForTests, evaluateBgHostRestartFreshness } = restartModule;
 
 type Out = { content: { text: string }[] };
 type Fence = {
   assertCurrent: () => Promise<{ current: boolean; reason?: string; live_fence_seq?: number }>;
   seq?: number;
 };
+type FreshnessSnapshot = {
+  bundleMtimeMs: number | null;
+  newestSourceMtimeMs: number | null;
+  newestSourcePath: string | null;
+};
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
+const freshnessM = vi.fn(async (_integrationRoot: string): Promise<FreshnessSnapshot> => ({
+  bundleMtimeMs: null,
+  newestSourceMtimeMs: null,
+  newestSourcePath: null,
+}));
 /** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
  *  explicitly-typed stand-in for the real drain+fence primitive (which has
  *  its own coverage elsewhere) so `run` never infers to `never` through the
@@ -172,6 +183,12 @@ const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DEV_RESTART;
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
+  freshnessM.mockResolvedValue({
+    bundleMtimeMs: null,
+    newestSourceMtimeMs: null,
+    newestSourcePath: null,
+  });
+  configureBgHostRestartFreshnessReaderForTests(freshnessM);
   releaseM.mockResolvedValue({
     released: 1,
     releasedModes: ['exclusive'],
@@ -201,8 +218,47 @@ beforeEach(() => {
 });
 
 afterAll(() => {
+  configureBgHostRestartFreshnessReaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
+});
+
+describe('evaluateBgHostRestartFreshness (WI-207443)', () => {
+  it('reports changed-tree freshness when a runtime source is newer than the produced bundle', () => {
+    expect(
+      evaluateBgHostRestartFreshness({
+        bundleMtimeMs: 10_000,
+        newestSourceMtimeMs: 10_001,
+        newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+      }),
+    ).toEqual({
+      bundleMtimeMs: 10_000,
+      newestSourceMtimeMs: 10_001,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+      treeChangedSinceRestart: true,
+      checked: true,
+    });
+  });
+
+  it('reports current-tree freshness when the produced bundle is at least as new as runtime sources', () => {
+    expect(
+      evaluateBgHostRestartFreshness({
+        bundleMtimeMs: 10_001,
+        newestSourceMtimeMs: 10_000,
+        newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+      }),
+    ).toMatchObject({ treeChangedSinceRestart: false, checked: true });
+  });
+
+  it('reports UNKNOWN freshness when either side cannot be read', () => {
+    expect(
+      evaluateBgHostRestartFreshness({
+        bundleMtimeMs: null,
+        newestSourceMtimeMs: 10_000,
+        newestSourcePath: 'x.ts',
+      }),
+    ).toMatchObject({ treeChangedSinceRestart: null, checked: false });
+  });
 });
 
 describe('dev:restart dry run', () => {
@@ -817,6 +873,87 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       mainPid: 555,
     });
     expect(b.note).toMatch(/peer-one/);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a recent bg-host restart but explicitly reports a changed tree whose edit is not loaded', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [
+        {
+          owner: 'peer-bg',
+          owner_label: 'peer-bg-host',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
+    } as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 6060, secondsSinceStart: 600 } as never);
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_000,
+      newestSourceMtimeMs: 10_001,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restarted: false,
+      coalesced: true,
+      verified: true,
+      restartedSecondsAgo: 600,
+      mainPid: 6060,
+      treeChangedSinceRestart: true,
+      freshnessVerified: true,
+      bundleMtime: new Date(10_000).toISOString(),
+      newestSourceMtime: new Date(10_001).toISOString(),
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+    expect(b.note).toMatch(/runtime tree is newer than the bundle/i);
+    expect(b.note).toMatch(/requested edit is NOT loaded/i);
+    expect(b.note).toMatch(/temporal throttle is preserved/i);
+    expect(freshnessM).toHaveBeenCalledTimes(1);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a recent bg-host restart and reports current tree/bundle freshness', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [
+        {
+          owner: 'peer-bg',
+          owner_label: 'peer-bg-host',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
+    } as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 6061, secondsSinceStart: 12 } as never);
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      coalesced: true,
+      treeChangedSinceRestart: false,
+      freshnessVerified: true,
+    });
+    expect(b.note).toMatch(/freshness checked/i);
+    expect(b.note).not.toMatch(/NOT loaded/i);
     expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
   });

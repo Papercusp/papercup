@@ -93,7 +93,7 @@ describe('remoteLiveHeadroom — every unknown fails closed', () => {
       healthy({
         paused: true,
         pausedUntil: 1_000,
-        priorityTiers: { healthyAccounts: 2, tier1Reserve: 1, tiers: [{ tier: 1, cap: 4, inFlight: 0, queued: 0 }] },
+        priorityTiers: { healthyAccounts: 2, tier1Reserve: 1, tiers: [{ tier: 1, minShare: 4, inFlight: 0, queued: 0 }] },
       }),
       CAP,
     );

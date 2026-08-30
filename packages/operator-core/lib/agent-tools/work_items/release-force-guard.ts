@@ -45,6 +45,7 @@ export type ForceReleaseBasis =
 
 /** A checked cross-holder mutation that can leave a forensic trail. */
 export type ForceTransition = 'release' | 'claim';
+export type ForceTransitionSurface = 'work_items' | 'plan_items';
 
 /**
  * EI-18712366018708650: a fresh heartbeat is process keepalive, NOT evidence of real
@@ -460,6 +461,7 @@ export async function recordForceTransitionAudit(
   itemId: string,
   operation: ForceTransition,
   details: Record<string, unknown>,
+  surface: ForceTransitionSurface = 'work_items',
 ): Promise<void> {
   try {
     const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
@@ -471,7 +473,7 @@ export async function recordForceTransitionAudit(
     await sql.unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
-      [id, Date.now(), actor, `work_items:${operation}:force`, itemId, JSON.stringify(details), activeWorkspaceId()],
+      [id, Date.now(), actor, `${surface}:${operation}:force`, itemId, JSON.stringify(details), activeWorkspaceId()],
     );
   } catch (err) {
     console.warn(`[work_items:${operation}] force audit write failed:`, (err as Error)?.message);
@@ -500,9 +502,11 @@ export async function notifyForceTransition(
     harness?: string | null;
     operation: ForceTransition;
     replacementAssignee?: string;
+    surface?: ForceTransitionSurface;
   },
 ): Promise<void> {
   const isClaim = input.operation === 'claim';
+  const surface = input.surface ?? 'work_items';
   const verb = isClaim ? 'FORCE-CLAIMED' : 'FORCE-RELEASED';
   const operationVerb = isClaim ? 'force-claimed' : 'force-released';
   try {
@@ -526,7 +530,7 @@ export async function notifyForceTransition(
     const { notifyAttention } = await import('../../attention-notify');
     await notifyAttention({
       kind: 'intervention',
-      title: `work_items:${input.operation} force — ${input.itemId}`,
+      title: `${surface}:${input.operation} force — ${input.itemId}`,
       body: `${ident.ownerId} ${operationVerb} ${input.holder}'s claim on ${input.itemId} (basis: ${input.basis})${input.replacementAssignee ? `; new assignee: ${input.replacementAssignee}` : ''}: ${input.reason}`,
       importance: 'high',
       harnessSlug: input.harness ?? undefined,
@@ -535,6 +539,7 @@ export async function notifyForceTransition(
         holder: input.holder,
         basis: input.basis,
         operation: input.operation,
+        surface,
         ...(input.replacementAssignee ? { replacementAssignee: input.replacementAssignee } : {}),
       },
     });

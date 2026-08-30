@@ -75,7 +75,7 @@ describe('fleet:create', () => {
       priorityTiers: {
         healthyAccounts: 1,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 4, inFlight: 0, queued: 0 }],
       },
     });
 
@@ -101,7 +101,7 @@ describe('fleet:create', () => {
       priorityTiers: {
         healthyAccounts: 2,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 4, inFlight: 0, queued: 0 }],
       },
     });
 

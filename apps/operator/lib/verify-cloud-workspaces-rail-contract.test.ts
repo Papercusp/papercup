@@ -19,12 +19,9 @@
  * WI-369566. This file is the local repair: a real Vitest suite the rubric can
  * point at, which pins the script's contract rather than merely naming it.
  *
- * KNOWN GAP, deliberately not asserted here: the `exercised` field is derived
- * from fixture preconditions (HOSTS/DRIFTING) rather than from assertions that
- * actually reported PASS, and the stronger `grep_pass()` derivation is defined
- * and never called. That is tracked as EI-21680639474041670. A test asserting
- * the current weak behaviour would cement it, so this file pins only the
- * properties that are genuinely contractual.
+ * The `exercised` field is derived from the labels of assertions that actually
+ * reported PASS. This keeps a fixture with matching preconditions from being
+ * mistaken for one whose guarded assertion really ran.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -76,6 +73,31 @@ describe('verify-cloud-workspaces-rail.sh — live-verification contract', () =>
     ]) {
       expect(code).toContain(token);
     }
+  });
+
+  it('derives exercised coverage from PASS labels, not fixture preconditions', () => {
+    /* A fixture count only says that a subject might be available. The
+       coverage line must name a capability only after its assertion has
+       reported PASS, otherwise a failed assertion can still be quoted as
+       exercised coverage. */
+    expect(code).toMatch(
+      /passed_labels="\$\{passed_labels\}\$\{passed_labels:\+\$'\\n'\}\$\*"/,
+    );
+    expect(code).toContain(
+      'grep_pass "$passed_labels" "R3 a fresh visit lands on Operate once a workspace exists"',
+    );
+    expect(code).toContain(
+      'grep_pass "$passed_labels" "R9 ?tab=resources selects Resources; the host tablist keeps exactly one tab stop"',
+    );
+    expect(code).toContain(
+      "grep_pass \"$passed_labels\" \"R4 a diverging host renders ONE chip in the 'observed → desired' form\"",
+    );
+    expect(code).not.toMatch(
+      /\[\s*"\$HOSTS"\s+-gt\s+0\s*\]\s*&&\s*EXERCISED=/,
+    );
+    expect(code).not.toMatch(
+      /\[\s*"\$DRIFTING"\s+-gt\s+0\s*\]\s*&&\s*EXERCISED=/,
+    );
   });
 
   it('uses no unguarded negative assertion', () => {

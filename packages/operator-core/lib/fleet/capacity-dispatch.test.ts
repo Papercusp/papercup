@@ -201,7 +201,7 @@ test('capacity report labels fresh gateway zero-capacity snapshot as recovering 
       priorityTiers: {
         healthyAccounts: 0,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 20, inFlight: 20, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 20, inFlight: 20, queued: 0 }],
       },
     },
     { clampArmed: true, headroom: 13 },
@@ -229,7 +229,7 @@ test('EI-12282 — gateway reports spare bee slots but the REAL account pool is 
     priorityTiers: {
       healthyAccounts: 7, // gateway's split-brain-stale count (disagrees with the store)
       tier1Reserve: 2,
-      tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 2 }], // dispatchBudget = 16-1-2 = 13
+      tiers: [{ tier: 3, minShare: 16, inFlight: 1, queued: 2 }], // dispatchBudget = 16-1-2 = 13
     },
   };
   const accountAvailability = { provider: 'claude', total: 7, available: 1, usable: 0 };
@@ -262,7 +262,7 @@ test('EI-18664933641195210 — poolExhausted names EGRESS-THROTTLE as the domina
   // proxies forcing every account onto one already-throttled shared IP. The breakdown must say so loudly.
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = { provider: 'claude', total: 5, available: 2, usable: 0, edgeThrottledCount: 5, usageWalledCount: 1 };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -276,7 +276,7 @@ test('EI-18664933641195210 — poolExhausted names EGRESS-THROTTLE as the domina
 test('EI-18664933641195210 — poolExhausted names USAGE-WALL as the dominant cause (just wait, no infra escalation)', () => {
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = { provider: 'claude', total: 5, available: 0, usable: 0, edgeThrottledCount: 0, usageWalledCount: 5 };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -292,7 +292,7 @@ test('EI-18683773458136367 — poolExhausted does NOT claim a down/shared egress
   // for a condition that (per this fixture) is proven NOT to be a shared/down egress proxy.
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 1, usable: 0,
@@ -312,7 +312,7 @@ test('EI-18683773458136367 — poolExhausted does NOT claim a down/shared egress
 test('EI-18683773458136367 — DISTINCT-egress edge-throttle ALSO re-arming ⇒ names the backoff-loop, still no escalation', () => {
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 1, usable: 0,
@@ -335,7 +335,7 @@ test('WI-36943 — poolExhausted does NOT escalate an egress fault when traffic 
   // rate governor (self-clearing), not blocked by a down/shared egress proxy.
   const hr = {
     reachable: true, utilization: 0.9, utilizationPct: 90, paused: false, rejected: false, queueDepth: 1, inFlight: 3,
-    priorityTiers: { healthyAccounts: 1, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 3, queued: 1 }] },
+    priorityTiers: { healthyAccounts: 1, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 3, queued: 1 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 3, available: 0, usable: 0,
@@ -359,7 +359,7 @@ test('WI-36943 — recurrence guard: edge-throttle count alone (edge+wall === to
   // EI-18664933641195210 dominant-cause test, pinned again here under the new guard's name.
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 0,
-    priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 0, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 0, queued: 2 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 3, available: 0, usable: 0,
@@ -380,7 +380,7 @@ test('WI-36943 — recurrence guard: edge-throttle count alone (edge+wall === to
 test('P-007 — a BLIND pool reading must not manufacture an owner-gated egress escalation', () => {
   const hr = {
     reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 4 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 0, usable: 0,
@@ -409,7 +409,7 @@ test('P-007 — companion: the SAME fixture with a non-blind reading still escal
   // fixture never reaches the escalation branch at all, rather than because `blind` gates it.
   const hr = {
     reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 4 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 0, usable: 0,
@@ -426,7 +426,7 @@ test('P-007 — companion: the SAME fixture with a non-blind reading still escal
 test('EI-19995356951235246 — a marginal edge/usage tie chooses the non-escalating branch', () => {
   const hr = {
     reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 4 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 0, usable: 0,
@@ -457,7 +457,7 @@ test('EI-19995356951235246 — binding reset terms override marginal counts', ()
   );
   const hr = {
     reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 4 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -483,7 +483,7 @@ test('EI-18683773458136367 — shared-egress evidence UNKNOWN (not supplied) ⇒
   // same OWNER-GATED escalate language as before this fix (the EI-18664933641195210 test above).
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = { provider: 'claude', total: 5, available: 2, usable: 0, edgeThrottledCount: 5, usageWalledCount: 1 };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -567,7 +567,7 @@ test('EI-12282 — poolExhausted does NOT fire when real accounts ARE usable (no
     utilization: 0.5,
     paused: false,
     queueDepth: 0,
-    priorityTiers: { healthyAccounts: 4, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 2, tiers: [{ tier: 3, minShare: 16, inFlight: 1, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -587,7 +587,7 @@ test('EI-12282 — no account cross-check supplied ⇒ byte-identical to before 
     utilization: 0.97,
     paused: true,
     queueDepth: 2,
-    priorityTiers: { healthyAccounts: 7, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 7, tier1Reserve: 2, tiers: [{ tier: 3, minShare: 16, inFlight: 1, queued: 2 }] },
   };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 13 });
   assert.equal(r.poolExhausted, false);
@@ -604,7 +604,7 @@ test('EI-12282 — exhaustion suppressed during the fresh-gateway restart grace 
     rejected: true,
     queueDepth: 0,
     processUptimeMs: 4_000, // within the 30s restart grace
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, minShare: 16, inFlight: 0, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -625,7 +625,7 @@ test('EI-12282 — zero usable accounts but ZERO gateway slots is the ordinary s
     paused: true,
     rejected: true,
     queueDepth: 0,
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, cap: 16, inFlight: 16, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, minShare: 16, inFlight: 16, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -646,7 +646,7 @@ test('EI-18791793869559327 — recurrence guard: usable>0 but ALL usable account
     utilization: 0.1,
     paused: false,
     queueDepth: 0,
-    priorityTiers: { healthyAccounts: 3, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 2, tiers: [{ tier: 3, minShare: 16, inFlight: 1, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -670,7 +670,7 @@ test('EI-18791793869559327 — no false alarm: usable accounts NOT all sustained
     utilization: 0.1,
     paused: false,
     queueDepth: 0,
-    priorityTiers: { healthyAccounts: 4, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 2, tiers: [{ tier: 3, minShare: 16, inFlight: 0, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -690,7 +690,7 @@ test('EI-18791793869559327 — sustainedlyLimitedCount omitted ⇒ fail-safe, by
     utilization: 0.1,
     paused: false,
     queueDepth: 0,
-    priorityTiers: { healthyAccounts: 3, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 2, tiers: [{ tier: 3, minShare: 16, inFlight: 0, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -709,7 +709,7 @@ test('EI-18791793869559327 — poolExhausted takes precedence over degraded (usa
     utilization: 0.5,
     paused: true,
     queueDepth: 0,
-    priorityTiers: { healthyAccounts: 7, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 7, tier1Reserve: 2, tiers: [{ tier: 3, minShare: 16, inFlight: 1, queued: 2 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -730,7 +730,7 @@ test('EI-18791793869559327 — degraded suppressed during the fresh-gateway rest
     rejected: true,
     queueDepth: 0,
     processUptimeMs: 4_000, // within the 30s restart grace
-    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 0, tiers: [{ tier: 3, minShare: 16, inFlight: 0, queued: 0 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -751,7 +751,7 @@ test('EI-19281217347369076 — a majority-BLIND pool caveats poolExhausted inste
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
     resetInSec: 12400,
-    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = { provider: 'claude', total: 4, available: 0, usable: 0, blindCount: 4 };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -771,7 +771,7 @@ test('EI-19281217347369076 — a majority-BLIND pool caveats poolExhausted inste
 test('EI-19281217347369076 — a MINORITY blind (<50%) does NOT trip the caveat; poolExhausted reads with its normal confidence', () => {
   const hr = {
     reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = { provider: 'claude', total: 5, available: 1, usable: 0, blindCount: 2 };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -784,7 +784,7 @@ test('EI-19281217347369076 — a MINORITY blind (<50%) does NOT trip the caveat;
 test('EI-19281217347369076 — no blindCount supplied ⇒ unchanged (fail-safe-omit, byte-identical to before this field existed)', () => {
   const hr = {
     reachable: true, utilization: 0.97, paused: true, queueDepth: 2, inFlight: 1,
-    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 2 }] },
   };
   const accountAvailability = { provider: 'claude', total: 5, available: 1, usable: 0 }; // no blindCount
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -809,7 +809,7 @@ test('EI-21282868699055979 — Codex blind advice names a provider-scoped probe'
     utilization: 0.2,
     queueDepth: 0,
     inFlight: 0,
-    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 0, queued: 1 }] },
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 0, queued: 1 }] },
   };
   const r = buildCapacityReport(hr, {
     clampArmed: true,
@@ -849,7 +849,7 @@ test('EI-19928050541357086 — a majority of MERELY-STALE (never-probe-failed) r
   // exhaustion + owner-escalation verdict off data nobody has looked at in over half an hour.
   const hr = {
     reachable: true, utilization: 0.9, utilizationPct: 90, paused: false, rejected: false, queueDepth: 1, inFlight: 1,
-    priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 1 }] },
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 10, inFlight: 1, queued: 1 }] },
   };
   // 2/3 accounts merely stale (no probe ever failed on them) — this is what capacity.ts's
   // `rows.filter((r) => r.lastProbeFailedAt != null || r.readingStatus !== 'fresh').length` would compute.
@@ -981,7 +981,7 @@ function preFixReport<T extends { symptomKnowledge?: unknown }>(r: T): Omit<T, '
 function incidentDegradedReport() {
   const hr = {
     reachable: true, utilization: 0.82, utilizationPct: 82, paused: false, rejected: false, queueDepth: 2, inFlight: 3,
-    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 3, queued: 2 }] },
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 3, queued: 2 }] },
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 1, usable: 1, edgeThrottledCount: 3, usageWalledCount: 0,
@@ -1046,7 +1046,7 @@ test('P-001 — present on ALL THREE alarming branches (exhausted / blocked / de
   const exhausted = buildCapacityReport(
     {
       reachable: true, utilization: 0.5, utilizationPct: 50, paused: false, rejected: false, queueDepth: 1, inFlight: 1,
-      priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 1, queued: 1 }] },
+      priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 1, queued: 1 }] },
     },
     { clampArmed: true, headroom: 10, accountAvailability: { provider: 'claude', total: 3, available: 0, usable: 0 } },
   );
@@ -1058,7 +1058,7 @@ test('P-001 — present on ALL THREE alarming branches (exhausted / blocked / de
   const blocked = buildCapacityReport(
     {
       reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, rejected: false, queueDepth: 5, inFlight: 2,
-      priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 2, inFlight: 2, queued: 5 }] },
+      priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 2, inFlight: 2, queued: 5 }] },
     },
     { clampArmed: true, headroom: 10 },
   );
@@ -1073,7 +1073,7 @@ test('P-001 — ABSENT on a healthy read and on an unreachable gateway (a non-al
   const abundant = buildCapacityReport(
     {
       reachable: true, utilization: 0.1, utilizationPct: 10, paused: false, rejected: false, queueDepth: 0, inFlight: 0,
-      priorityTiers: { healthyAccounts: 6, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 0 }] },
+      priorityTiers: { healthyAccounts: 6, tier1Reserve: 1, tiers: [{ tier: 3, minShare: 20, inFlight: 0, queued: 0 }] },
     },
     { clampArmed: true, headroom: 10, accountAvailability: { provider: 'claude', total: 6, available: 5, usable: 5 } },
   );

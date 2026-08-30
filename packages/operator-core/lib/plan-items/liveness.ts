@@ -34,6 +34,7 @@ import {
 } from './assignments';
 import {
   acquireClaim,
+  forceTakeoverClaim,
   getClaim,
   listClaimsForPlan,
   type PlanItemClaim,
@@ -43,6 +44,7 @@ import { workGroupExists, isWorkGroupMember } from './work-group';
 import { projectClaimHolder, type ClaimHolder } from './claim-holder';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { ForceReleaseBasis, HolderLiveness } from '../agent-tools/work_items/release-force-guard';
 
 /** P-029/D-060: the holder projection for a live claim row, or null when unheld.
  *  One helper so `plan_items:status` and `plan_items:my_items` cannot render the
@@ -110,6 +112,18 @@ export interface ClaimPlanItemOpts {
   /** Force a mode (tests / explicit). Default: resolved from harness shared-ness. */
   livenessMode?: LivenessMode;
   ttlSec?: number;
+  /**
+   * A tool-layer force guard has already authorized replacing this exact
+   * holder. The low-level force-takeover op re-checks the claim_id + owner CAS;
+   * this option only carries that authorization into the policy coordinator.
+   */
+  forceTakeover?: {
+    expectedClaimId: string;
+    expectedOwner: string;
+    basis: ForceReleaseBasis;
+    reason: string;
+    holderLiveness?: HolderLiveness;
+  };
 }
 
 /** EI-7189: surfaced when the item's PREVIOUS claim had just lapsed (TTL-expired,
@@ -217,9 +231,28 @@ export async function notifyImplementingWorkItemHolderOfCollision(opts: ClaimPla
 }
 
 export type ClaimPlanItemResult =
-  | { status: 'claimed'; claim: PlanItemClaim; mode: LivenessMode; viaAssignment: boolean; priorHolderWarning?: PriorHolderWarning }
+  | {
+      status: 'claimed';
+      claim: PlanItemClaim;
+      mode: LivenessMode;
+      viaAssignment: boolean;
+      priorHolderWarning?: PriorHolderWarning;
+      forced?: {
+        holder: string;
+        basis: ForceReleaseBasis;
+        reason: string;
+        holderLiveness?: HolderLiveness;
+      };
+    }
   | { status: 'conflict'; conflict: PlanItemClaim }
-  | { status: 'refused'; reason: string; assignee?: string };
+  | {
+      status: 'refused';
+      reason: string;
+      assignee?: string;
+      holder?: PlanItemClaim;
+      holderLiveness?: HolderLiveness;
+      hint?: string;
+    };
 
 /**
  * Take the live claim on a plan item, enforcing the assignment + work-group policy,
@@ -227,6 +260,42 @@ export type ClaimPlanItemResult =
  */
 export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanItemResult> {
   const mode = opts.livenessMode ?? (await harnessLivenessMode(opts.workspaceId, opts.harnessSlug));
+
+  // A force takeover is authorized by the tool layer, where the caller's
+  // identity/liveness/authority can be checked. Bypass assignment/work-group
+  // policy only for that pre-authorized path; the exact claim_id + owner CAS
+  // below still prevents replacing a newer holder.
+  if (opts.forceTakeover) {
+    const takeover = await forceTakeoverClaim({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      planSlug: opts.planSlug,
+      itemId: opts.itemId,
+      owner: opts.owner,
+      ownerLabel: opts.ownerLabel,
+      ownerName: opts.ownerName,
+      intent: opts.intent,
+      livenessMode: mode,
+      ttlSec: opts.ttlSec,
+      expectedClaimId: opts.forceTakeover.expectedClaimId,
+      expectedOwner: opts.forceTakeover.expectedOwner,
+    });
+    if (!takeover.ok) return { status: 'conflict', conflict: takeover.conflict };
+    await notifyImplementingWorkItemHolderOfCollision(opts);
+    return {
+      status: 'claimed',
+      claim: takeover.claim,
+      mode,
+      viaAssignment: false,
+      forced: {
+        holder: opts.forceTakeover.expectedOwner,
+        basis: opts.forceTakeover.basis,
+        reason: opts.forceTakeover.reason,
+        ...(opts.forceTakeover.holderLiveness ? { holderLiveness: opts.forceTakeover.holderLiveness } : {}),
+      },
+    };
+  }
+
   const assignment = await getAssignment(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
 
   let viaAssignment = false;
