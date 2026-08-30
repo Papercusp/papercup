@@ -198,3 +198,90 @@ describe('evaluatePromoterLiveness', () => {
     ).toBe(true);
   });
 });
+
+describe('responsePayload', () => {
+  const reply = (over: Partial<PromoterLlmResult>): PromoterLlmResult => ({
+    text: '',
+    inputTokens: 0,
+    outputTokens: 0,
+    ...over,
+  });
+
+  it('returns an already-parsed payload untouched', () => {
+    expect(responsePayload(reply({ json: { judgements: [] }, text: 'ignored' }))).toEqual({
+      judgements: [],
+    });
+  });
+
+  // The defect this block pins: tryParseJson (libs/testing-shell/src/llm/llm-client.ts)
+  // returns null — not undefined — when a reply is unrecoverable, and llmCall assigns
+  // `json` straight from it on every responseFormat:'json' call. A bare `!== undefined`
+  // guard forwards that FAILURE sentinel on as if it were a payload, so the caller
+  // reports `expected object, received null` and the reply text is discarded unread.
+  // Null must mean "not parsed", never "the payload is null".
+  it('does NOT forward tryParseJson null sentinel as a payload', () => {
+    expect(() => responsePayload(reply({ json: null, text: '{"judgements": [' }))).toThrow(
+      /not parseable JSON/,
+    );
+  });
+
+  it('recovers from the text when json is null but the text is valid JSON', () => {
+    expect(responsePayload(reply({ json: null, text: '{"judgements": []}' }))).toEqual({
+      judgements: [],
+    });
+  });
+
+  it('reports a truncated reply as unterminated, with its token count and both ends', () => {
+    let message = '';
+    try {
+      responsePayload(
+        reply({ json: null, text: '{"judgements": [{"pairKey": "a|b"', outputTokens: 8000 }),
+      );
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/unterminated/);
+    expect(message).toMatch(/signature of hitting the output cap/);
+    expect(message).toMatch(/outputTokens=8000/);
+    expect(message).toMatch(/head=/);
+    expect(message).toMatch(/tail=/);
+  });
+
+  it('distinguishes a prose refusal from a truncation', () => {
+    let message = '';
+    try {
+      responsePayload(reply({ json: null, text: 'I cannot complete this request.' }));
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/no-json-delimiters/);
+    expect(message).not.toMatch(/unterminated/);
+  });
+
+  it('still reports genuinely empty output as empty, with its token count', () => {
+    expect(() => responsePayload(reply({ json: null, text: '   ', outputTokens: 0 }))).toThrow(
+      /returned empty output \(outputTokens=0\)/,
+    );
+  });
+
+  // CONTROL — a deliberately-wrong implementation kept permanently, per the repo's
+  // falsifiability rule for a subject reached by import (mutation-probe historical mode
+  // cannot help here: the assertions import the module by path, so a frozen snapshot is
+  // never the code under test). This is the exact pre-fix body. It proves the assertions
+  // above discriminate: if this control ever stops exhibiting the bug, they are vacuous.
+  const preFixResponsePayload = (response: PromoterLlmResult): unknown => {
+    if (response.json !== undefined) return response.json;
+    const text = response.text.trim();
+    if (!text) throw new Error('promoter model returned empty output');
+    return JSON.parse(text);
+  };
+
+  it('control: the pre-fix body silently returned the null sentinel as a payload', () => {
+    const truncated = reply({ json: null, text: '{"judgements": [' });
+    // The pre-fix body hands null onward — which is what surfaced downstream as the
+    // opaque `expected object, received null`, with the reply text discarded unread.
+    expect(preFixResponsePayload(truncated)).toBeNull();
+    // The fixed body refuses to, and says why instead.
+    expect(() => responsePayload(truncated)).toThrow(/unterminated/);
+  });
+});
