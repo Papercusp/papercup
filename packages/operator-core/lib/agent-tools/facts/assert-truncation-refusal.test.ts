@@ -51,7 +51,7 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
 });
 vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: boundedTxnHarness.boundedOrgTxn }));
 
-import assertTool from './assert';
+import assertTool, { normalizeMeasurementInput } from './assert';
 import { FACT_BODY_MAX_CHARS, clampFactBody } from '../../agent-facts/store';
 
 type AssertSchemaField = { description?: string };
@@ -273,5 +273,45 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     const payload = payloadOf(result);
     expect(payload.fact).toMatchObject({ measurement: { subjectVolatile: true, measuredAt } });
     expect(payload.snapshotWarning).toMatchObject({ measuredAt });
+  });
+
+  it('normalizes the persisted/read measurement object into canonical flat write fields', async () => {
+    const measuredAt = '2026-08-30T03:19:00.000Z';
+    await assertTool.handler(
+      {
+        scope: 'owner',
+        scopeRef: 'su-test',
+        key: 'k-measurement-alias',
+        body: 'currently 29 supported rows',
+        kind: 'conclusion',
+        confidence: 'verified',
+        recheck: { probe: 'read the fact', falsifier: 'the value changed' },
+        measurement: { subjectVolatile: true, measuredAt },
+      } as never,
+      ctx,
+    );
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({
+      kind: 'conclusion',
+      confidence: 'verified',
+      subjectVolatile: true,
+      measuredAt,
+    });
+    expect(assertFactSpy.mock.calls[0][0]).not.toHaveProperty('measurement');
+  });
+
+  it('refuses contradictory flat and nested measurement fields before the write', () => {
+    expect(() =>
+      normalizeMeasurementInput({
+        measurement: { subjectVolatile: true, measuredAt: '2026-08-30T03:19:00.000Z' },
+        subjectVolatile: false,
+      }),
+    ).toThrow(/measurement\.subjectVolatile conflicts/i);
+    expect(() =>
+      normalizeMeasurementInput({
+        measurement: { subjectVolatile: true, measuredAt: '2026-08-30T03:19:00.000Z' },
+        measuredAt: '2026-08-30T03:20:00.000Z',
+      }),
+    ).toThrow(/measurement\.measuredAt conflicts/i);
   });
 });

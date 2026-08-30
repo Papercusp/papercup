@@ -97,6 +97,55 @@ const FACT_RECHECK_SCHEMA = z
     `P-010: paired re-verification contract. Supply BOTH probe and falsifier (max ${FACT_RECHECK_FIELD_MAX_CHARS} chars each). The pair folds verbatim beside the fact so a future reader knows how to test it and what result disproves it. Omission remains compatible but the success receipt warns loudly that the fact has no recheck contract.`,
   );
 
+/**
+ * `AgentFact` exposes snapshot metadata under `measurement`, while the write
+ * boundary historically accepted its two scalar members as top-level fields.
+ * Keep the output-shaped form callable as a compatibility alias and normalize
+ * it to the canonical flat fields before reaching the store.
+ */
+const FACT_MEASUREMENT_SCHEMA = z
+  .object({
+    subjectVolatile: z.literal(true).describe('The sampled subject may still be changing.'),
+    measuredAt: z
+      .string()
+      .min(1)
+      .max(80)
+      .describe('ISO timestamp at which the moving subject was sampled.'),
+  })
+  .strict()
+  .optional()
+  .describe(
+    'Compatibility input alias for the persisted/read `measurement` object. It is normalized to the canonical top-level subjectVolatile/measuredAt fields; if both forms are supplied, their values must agree.',
+  );
+
+export function normalizeMeasurementInput(input: {
+  measurement?: { subjectVolatile: true; measuredAt: string };
+  subjectVolatile?: boolean;
+  measuredAt?: string;
+}): { subjectVolatile?: boolean; measuredAt?: string } {
+  const measurement = input.measurement;
+  if (measurement) {
+    if (input.subjectVolatile !== undefined && input.subjectVolatile !== measurement.subjectVolatile) {
+      throw new InvalidInputError(
+        'facts:assert — measurement.subjectVolatile conflicts with top-level subjectVolatile; supply one value or make them agree',
+      );
+    }
+    if (input.measuredAt !== undefined && input.measuredAt.trim() !== measurement.measuredAt.trim()) {
+      throw new InvalidInputError(
+        'facts:assert — measurement.measuredAt conflicts with top-level measuredAt; supply one timestamp or make them agree',
+      );
+    }
+  }
+  return {
+    ...(input.subjectVolatile !== undefined || measurement
+      ? { subjectVolatile: input.subjectVolatile ?? measurement?.subjectVolatile }
+      : {}),
+    ...(input.measuredAt !== undefined || measurement
+      ? { measuredAt: input.measuredAt ?? measurement?.measuredAt }
+      : {}),
+  };
+}
+
 /** Compatibility is intentional, silence is not: teach an ordinary fact's
  * writer that TTL/retraction are its only freshness controls when no executable
  * recheck pair was supplied. An undecidable already requires settledBy, so its
@@ -457,6 +506,7 @@ export default defineTool({
       .describe(
         'Mark the asserted values as a snapshot of a subject that may still be changing. When true, measuredAt is required; if measuredAt is supplied without this flag, the store infers subjectVolatile:true. The fold renders an explicit SNAPSHOT marker and the TTL is limited to 15 minutes.',
       ),
+    measurement: FACT_MEASUREMENT_SCHEMA,
     measuredAt: z
       .string()
       .max(80)
@@ -608,6 +658,7 @@ export default defineTool({
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
     const identity = resolveAgentIdentity(ctx);
     const concreteHarnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+    const normalizedMeasurement = normalizeMeasurementInput(args);
     // EI-7517: default an OMITTED scopeRef from the caller's context for the
     // self-scoped cases (owner = me, harness = this harness, role = my role), so
     // the common "assert a fact about just myself" doesn't error on a missing
@@ -763,8 +814,8 @@ export default defineTool({
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
       confidence: args.confidence ?? null,
-      subjectVolatile: args.subjectVolatile === true,
-      measuredAt: args.measuredAt ?? null,
+      subjectVolatile: normalizedMeasurement.subjectVolatile === true,
+      measuredAt: normalizedMeasurement.measuredAt ?? null,
       kind: args.kind ?? null,
       settledBy: safeSettledBy ?? null,
       ...(safeRecheck ? { recheck: safeRecheck } : {}),

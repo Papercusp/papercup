@@ -93,6 +93,33 @@ describe('facts:assert shareable federation contract', () => {
   });
 });
 
+describe('facts:assert measurement input compatibility', () => {
+  it('accepts the persisted/read measurement object alongside a conclusion', () => {
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        kind: 'conclusion',
+        confidence: 'verified',
+        recheck: { probe: 'read the fact', falsifier: 'the fact is no longer true' },
+        measurement: {
+          subjectVolatile: true,
+          measuredAt: '2026-08-30T03:19:00.000Z',
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an incomplete measurement object instead of silently flattening it', () => {
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        kind: 'conclusion',
+        measurement: { measuredAt: '2026-08-30T03:19:00.000Z' },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('facts:assert supersedes contract', () => {
   it('publishes a bounded sibling-key list on every modality branch', () => {
     expect(
