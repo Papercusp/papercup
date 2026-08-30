@@ -43,6 +43,21 @@ export interface ImageScanPolicy {
   denyVulnerabilitiesAtOrAbove: Exclude<VulnerabilitySeverity, 'unknown'>;
   /** Maximum tolerated secret findings. */
   maxSecretFindings: number;
+  /**
+   * Require the scanner to PROVE it covered the image before its findings are
+   * believed: `mountedFilesystems >= 1` and a non-empty `candidateRootProof`.
+   *
+   * Deliberately REQUIRED rather than optional-defaulting-false. An optional flag is
+   * exactly the shape that produced the defect this field closes — the coverage pair
+   * was carried to this gate for a full day while nothing read it, because absence
+   * read as acceptance. A required field forces every policy to STATE whether its
+   * provider can prove coverage, so a new provider cannot inherit "no" by silence.
+   *
+   * Set FALSE only for a provider whose scanner does not measure coverage at all
+   * (today: AWS and Azure — see `WORKSPACE_HOST_IMAGE_SCAN_POLICY`). Setting it TRUE
+   * against such a provider fail-closes a release path that did nothing wrong.
+   */
+  requireCoverageProof: boolean;
 }
 
 /**
