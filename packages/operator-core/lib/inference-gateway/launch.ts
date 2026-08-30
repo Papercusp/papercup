@@ -344,7 +344,16 @@ function makeCredentialHealthAlert(
             severity: 'blocker',
             summary,
             body,
-            meta: { source: 'credential-health', deadAccountId: accountId, consecutive401s },
+            // EI-21843060786178076 audit: the `already` check above is a read-then-write race —
+            // narrow, but not atomic. Pin the same entity onto a stable subjectSignature too, so
+            // even a raced double-fire coalesces through openEscalation's own PG-advisory-lock
+            // dedup path instead of leaking a duplicate escalation.
+            meta: {
+              source: 'credential-health',
+              deadAccountId: accountId,
+              consecutive401s,
+              subjectSignature: `inference-gateway:credential-health:${accountId}`,
+            },
           });
         }
       } catch (e) {
