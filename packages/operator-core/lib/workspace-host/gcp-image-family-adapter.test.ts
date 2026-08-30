@@ -364,6 +364,26 @@ describe('GCP image-family production adapter', () => {
         // the candidate — which GCP_IMAGE_SCAN_POLICY now correctly denies.
         mountedFilesystems: 3,
         candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
+        // SCOPE ATTRIBUTION, for the same reason as the two blocks above: GCP_IMAGE_SCAN_POLICY
+        // judges the 'papercusp-bundled' scope, and it earns that scoped verdict by PROOF rather
+        // than by the fields merely being present. Omitting them does not make this fixture
+        // "simpler" — it makes the adapter fail closed on an unattributed scan, so this path
+        // would stop exercising the scoped arithmetic at all.
+        //
+        // The numbers are chosen to satisfy the partition-completeness proof exactly, because a
+        // fixture that only just squeaks past it would not notice if that proof were weakened:
+        //   vulnerabilityByScope sums to vulnerabilityFindings (1 + 2 = 3)
+        //   vulnerabilityCriticalHighByScope sums to the at/above-threshold count derived
+        //     INDEPENDENTLY from vulnerabilityBySeverity above (Low 2 + Negligible 1 = 0 high)
+        //   secretsByScope sums to secretFindings (0 + 0 = 0)
+        // Both scope labels are written explicitly, including the zeros: a partition stated as
+        // half a partition is what the totality check exists to catch.
+        vulnerabilityByScope: { 'papercusp-bundled': 1, 'inherited-base-image': 2 },
+        vulnerabilityCriticalHighByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 0 },
+        secretsByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 0 },
+        // The denominator that makes an empty bundled bucket falsifiable: >= 1 cataloged package
+        // is what separates "we looked at the bundle and it is clean" from "we never found it".
+        bundleCatalogedArtifacts: 289,
         evidenceRef: 'gcp://scan/evidence-1',
       }),
     };
