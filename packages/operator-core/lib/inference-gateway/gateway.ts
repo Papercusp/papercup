@@ -135,6 +135,7 @@ import {
   CodexNonStreamAggregateError,
   makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
+  codexReserveModelFor,
   refreshCodexToken,
   resolveCodexAccessToken,
   type CodexAuth,
@@ -5856,6 +5857,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       requestHeaders: req.headers,
       stripRequestHeaders: STRIP_REQUEST,
       streaming: wantStream,
+      // Public Luna may be backed by the ChatGPT subscription's hidden reserve
+      // tier after a premium-window 429. The adapter keeps the public model in
+      // telemetry and only rewrites the retry body at the upstream seam.
+      reserveModel: codexReserveModelFor(bodyModel),
       tokenTimeoutMs,
       failoverBackoffMs: bare429FailoverBackoffMs,
       ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,

@@ -56,6 +56,16 @@ export const CODEX_ORIGINATOR = process.env.CODEX_ORIGINATOR || 'codex_cli_rs';
 /** The OpenAI-Beta header value codex sends for the Responses backend. */
 export const CODEX_OPENAI_BETA = process.env.CODEX_OPENAI_BETA || 'responses=experimental';
 
+/** Public Luna model id and the ChatGPT-backend reserve tier that serves it.
+ *
+ * The subscription backend exposes a second, hidden model id (`gpt-reserve`) for
+ * the base-model-inference reserve bucket.  A normal `gpt-5.6-luna` request can
+ * therefore receive a premium-window 429 while the same account still has Luna
+ * reserve capacity.  Keep these ids together at this transport seam; callers
+ * should never expose the hidden id to downstream clients. */
+export const CODEX_LUNA_MODEL = 'gpt-5.6-luna';
+export const CODEX_LUNA_RESERVE_MODEL = 'gpt-reserve';
+
 /** Refresh proactively when the access token expires within this window (ms). */
 const EXPIRY_SKEW_MS = 60_000;
 
@@ -164,6 +174,30 @@ export function accessTokenExpired(accessToken: string, nowMs: number): boolean 
 export function codexBackendUrl(incomingUrl: string): string {
   const stripped = incomingUrl.replace(/^\/v1/, '');
   return `${CODEX_CHATGPT_BACKEND_BASE}${stripped}`;
+}
+
+/** Return the hidden reserve model when a request names public Luna (including
+ * Papercusp aliases and effort suffixes), otherwise null. Pure. */
+export function codexReserveModelFor(model: string | null | undefined): string | null {
+  if (!model?.trim()) return null;
+  return parseBridgeModel(model).id === CODEX_LUNA_MODEL ? CODEX_LUNA_RESERVE_MODEL : null;
+}
+
+/** Replace only the JSON Responses `model` field for a retry on a hidden
+ * ChatGPT-subscription tier. Malformed/non-object bodies are returned unchanged
+ * so this helper cannot turn a client error into a transport error. Pure. */
+export function rewriteCodexRequestModel(bodyBuf: Buffer, upstreamModel: string): Buffer {
+  if (!bodyBuf.length || !upstreamModel.trim()) return bodyBuf;
+  try {
+    const parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return bodyBuf;
+    const body = parsed as Record<string, unknown>;
+    if (typeof body.model !== 'string' || body.model === upstreamModel) return bodyBuf;
+    body.model = upstreamModel;
+    return Buffer.from(JSON.stringify(body), 'utf8');
+  } catch {
+    return bodyBuf;
+  }
 }
 
 /**
@@ -716,13 +750,34 @@ export interface CodexCapacityWindows {
   windowResetAt7d?: number;
 }
 
+/** The upstream bucket selected for a Codex response. The backend currently
+ * reports `premium` for the ordinary weekly window and
+ * `base_model_inference` for the Luna reserve tier. */
+export type CodexRateLimitBucket = 'premium' | 'base_model_inference' | 'unknown';
+
+/** Identify the bucket before choosing a header family. Active-limit is the
+ * authoritative discriminator when both families are present; the prefix-only
+ * fallback keeps older responses usable. Pure. */
+export function codexRateLimitBucket(h: Record<string, string | undefined>): CodexRateLimitBucket {
+  const lower: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(h)) lower[key.toLowerCase()] = value;
+  const active = (lower['x-codex-active-limit'] ?? '').trim().toLowerCase().replace(/-/g, '_');
+  if (active === 'base_model_inference' || active === 'basemodelinference') return 'base_model_inference';
+  if (active === 'premium') return 'premium';
+  const hasReserve = Object.keys(lower).some((key) => key.startsWith('x-base-model-inference-'));
+  const hasPremium = Object.keys(lower).some((key) => key.startsWith('x-codex-primary-') || key.startsWith('x-codex-secondary-'));
+  if (hasReserve && !hasPremium) return 'base_model_inference';
+  if (hasPremium) return 'premium';
+  return 'unknown';
+}
+
 /** Windows at/under this many minutes land in the SHORT (5h) projection slot; longer ones in the
  *  7d slot. The boundary only has to separate ~300min (5h) from ~10080min (weekly) cleanly. */
 const CODEX_SHORT_WINDOW_MAX_MINUTES = 720;
 
 function codexWindowSlot(
   h: Record<string, string | undefined>,
-  prefix: 'x-codex-primary' | 'x-codex-secondary',
+  prefix: string,
   nowMs: number,
 ): { short: boolean; utilization: number; resetAt?: number } | null {
   const usedRaw = h[`${prefix}-used-percent`];
@@ -736,10 +791,32 @@ function codexWindowSlot(
   if (!Number.isFinite(used) || !Number.isFinite(minutes) || minutes <= 0) return null;
   let resetAt: number | undefined;
   const resetAtSec = Number(h[`${prefix}-reset-at`] ?? '');
-  const resetAfterSec = Number(h[`${prefix}-reset-after-seconds`] ?? '');
+  const resetAfterSec = Number(h[`${prefix}-reset-after-seconds`] ?? h[`${prefix}-reset-after`] ?? '');
   if (Number.isFinite(resetAtSec) && resetAtSec > 0) resetAt = resetAtSec * 1000;
   else if (Number.isFinite(resetAfterSec) && resetAfterSec > 0) resetAt = nowMs + resetAfterSec * 1000;
   return { short: minutes <= CODEX_SHORT_WINDOW_MAX_MINUTES, utilization: Math.max(0, used) / 100, resetAt };
+}
+
+function parseCodexWindowFamily(
+  h: Record<string, string | undefined>,
+  prefixes: readonly string[],
+  nowMs: number,
+): CodexCapacityWindows {
+  const out: CodexCapacityWindows = {};
+  for (const prefix of prefixes) {
+    const slot = codexWindowSlot(h, prefix, nowMs);
+    if (!slot) continue;
+    if (slot.short) {
+      if (out.utilization === undefined) {
+        out.utilization = slot.utilization;
+        if (slot.resetAt !== undefined) out.windowResetAt = slot.resetAt;
+      }
+    } else if (out.utilization7d === undefined) {
+      out.utilization7d = slot.utilization;
+      if (slot.resetAt !== undefined) out.windowResetAt7d = slot.resetAt;
+    }
+  }
+  return out;
 }
 
 /**
@@ -760,19 +837,20 @@ export function parseCodexRateLimitHeaders(
   h: Record<string, string | undefined>,
   nowMs: number = Date.now(),
 ): CodexCapacityWindows {
-  const out: CodexCapacityWindows = {};
-  for (const prefix of ['x-codex-primary', 'x-codex-secondary'] as const) {
-    const slot = codexWindowSlot(h, prefix, nowMs);
-    if (!slot) continue;
-    if (slot.short) {
-      if (out.utilization === undefined) {
-        out.utilization = slot.utilization;
-        if (slot.resetAt !== undefined) out.windowResetAt = slot.resetAt;
-      }
-    } else if (out.utilization7d === undefined) {
-      out.utilization7d = slot.utilization;
-      if (slot.resetAt !== undefined) out.windowResetAt7d = slot.resetAt;
-    }
+  const lower: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(h)) lower[key.toLowerCase()] = value;
+  const generic = ['x-codex-primary', 'x-codex-secondary'] as const;
+  const reserve = ['x-base-model-inference-primary', 'x-base-model-inference-secondary'] as const;
+  const bucket = codexRateLimitBucket(lower);
+  // When the backend tells us which meter is active, do not project a different
+  // family that happens to be present on the same response. This is the key
+  // guard against treating the generic weekly wall as Luna capacity (or vice
+  // versa). With no active-limit marker, retain the historical generic-first
+  // behavior and fall back to the reserve family when it is the only signal.
+  const families = bucket === 'base_model_inference' ? [reserve] : bucket === 'premium' ? [generic] : [generic, reserve];
+  for (const family of families) {
+    const parsed = parseCodexWindowFamily(lower, family, nowMs);
+    if (Object.keys(parsed).length > 0) return parsed;
   }
-  return out;
+  return {};
 }

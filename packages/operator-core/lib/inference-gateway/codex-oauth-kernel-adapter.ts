@@ -42,7 +42,7 @@
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import type { CodexCliAccount } from './codex-cli-bridge';
-import type { CodexAuth } from './codex-oauth-proxy';
+import { rewriteCodexRequestModel, type CodexAuth } from './codex-oauth-proxy';
 import {
   GatewayRequestKernelError,
   withPromiseDeadline,
@@ -57,7 +57,13 @@ const OAUTH_TRANSPORT: GatewayTransportId = 'oauth-http';
 
 /** Why a route exists. Drives token handling in `prepareAttempt` and keeps every
  *  route key distinct, which is what the kernel's route-cycle guard reads. */
-export type CodexOAuthRouteReason = 'initial' | 'refresh' | 'sibling-egress' | 'rotate';
+export type CodexOAuthRouteReason =
+  | 'initial'
+  | 'refresh'
+  | 'sibling-egress'
+  | 'rotate'
+  | 'reserve'
+  | 'reserve-fallback';
 
 /** An egress binding as this adapter sees it. The entry itself is opaque — it is
  *  handed straight back to `dispatcherFor`, exactly as the live handler passes
@@ -71,6 +77,8 @@ export interface CodexOAuthRouteValue {
   account: CodexCliAccount;
   egress: CodexOAuthEgressPick;
   reason: CodexOAuthRouteReason;
+  /** Public model or the hidden Luna reserve tier used for this attempt. */
+  modelMode: 'public' | 'reserve';
 }
 
 export type CodexOAuthChunk = Uint8Array;
@@ -135,6 +143,8 @@ export interface CodexOAuthAdapterOptions {
    * was raised to correct.
    */
   streaming: boolean;
+  /** Hidden upstream model to try after a public Luna 429. */
+  reserveModel?: string | null;
   tokenTimeoutMs: number;
   /** Backoff applied to an account parked without an explicit rate reset. */
   failoverBackoffMs: number;
@@ -208,17 +218,25 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
   // account-level guard has to be explicit — same reasoning as the bearer adapter).
   const triedAccounts = new Set<string>([opts.initialAccount.accountId]);
   let seq = 0;
+  // A public Luna 429 gets one same-account retry on the hidden reserve tier.
+  // Once selected, subsequent egress/account retries stay on that tier until a
+  // definitive model refusal sends us back to the public model.
+  let reserveAttempted = false;
 
-  const routeFor = (account: CodexCliAccount, reason: CodexOAuthRouteReason): GatewayKernelRoute<CodexOAuthRouteValue> => {
+  const routeFor = (
+    account: CodexCliAccount,
+    reason: CodexOAuthRouteReason,
+    modelMode: 'public' | 'reserve' = 'public',
+  ): GatewayKernelRoute<CodexOAuthRouteValue> => {
     const egress = opts.pickEgress(egressView(account, async () => auth?.accessToken ?? ''), now());
     seq += 1;
     return {
       // Distinct per attempt: a same-account re-attempt MUST present a new key or
       // the kernel's route-cycle guard rejects it (D-011).
-      key: `oauth:${account.accountId}:${reason}:${seq}`,
+      key: `oauth:${account.accountId}:${reason}:${modelMode}:${seq}`,
       accountId: account.accountId,
       transport: OAUTH_TRANSPORT,
-      value: { account, egress, reason },
+      value: { account, egress, reason, modelMode },
     };
   };
 
@@ -243,7 +261,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     selectReattempt(context) {
       const currentRoute = context.currentRoute;
       if (!currentRoute) return null;
-      const { account, egress } = currentRoute.value;
+      const { account, egress, modelMode } = currentRoute.value;
       const status = context.lastResponse?.status ?? null;
 
       // 401 → refresh this account's token ONCE and retry it. Deliberately not
@@ -251,7 +269,24 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       if (status === 401) {
         if (refreshedAccounts.has(account.accountId)) return null;
         refreshedAccounts.add(account.accountId);
-        return routeFor(account, 'refresh');
+        return routeFor(account, 'refresh', modelMode);
+      }
+
+      // A normal Luna request can be walled on the premium meter while the
+      // account still has base-model-inference reserve capacity. Retry once on
+      // the backend's hidden reserve model before cooling the egress or rotating
+      // the account. This is same-account by construction, so hard pins remain
+      // strict.
+      if (status === 429 && modelMode === 'public' && opts.reserveModel && !reserveAttempted) {
+        reserveAttempted = true;
+        return routeFor(account, 'reserve', 'reserve');
+      }
+
+      // If the hidden model is not enabled for this subscription, preserve the
+      // old public-model behavior after the probe's definitive 4xx refusal.
+      // 401/429 are handled by refresh/reserve/rotation below instead.
+      if (modelMode === 'reserve' && status >= 400 && status < 500 && status !== 401 && status !== 429) {
+        return routeFor(account, 'reserve-fallback', 'public');
       }
 
       // Transport failure (no response) / 429 / retryable 5xx → try a sibling
@@ -267,7 +302,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         opts.coolIp(egress.key, Math.min(reset.retryAfterMs ?? opts.failoverBackoffMs, opts.ipCooldownMaxMs));
       }
       if (!opts.siblingEgressAvailable(egressView(account, async () => ''), now(), egress.key)) return null;
-      return routeFor(account, 'sibling-egress');
+      return routeFor(account, 'sibling-egress', modelMode);
     },
 
     selectFailover(context) {
@@ -290,13 +325,13 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       // A different account needs its own OAuth material.
       auth = undefined;
       authAccount = '';
-      return routeFor(account, 'rotate');
+      return routeFor(account, 'rotate', currentRoute.value.modelMode);
     },
 
     async prepareAttempt(
       context: GatewayKernelAttemptContext<CodexOAuthRouteValue>,
     ): Promise<CodexOAuthPreparedAttempt> {
-      const { account, egress, reason } = context.route.value;
+      const { account, egress, reason, modelMode } = context.route.value;
 
       if (reason === 'refresh') {
         if (!auth) {
@@ -355,7 +390,12 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         url: opts.upstreamUrl,
         method: opts.method,
         headers,
-        body: context.body.length ? new Uint8Array(context.body) : null,
+        body:
+          context.body.length && modelMode === 'reserve' && opts.reserveModel
+            ? new Uint8Array(rewriteCodexRequestModel(context.body, opts.reserveModel))
+            : context.body.length
+              ? new Uint8Array(context.body)
+              : null,
         accountId: account.accountId,
         dispatcher: (await opts.dispatcherFor(active, egress.entry)) ?? undefined,
       };
@@ -365,7 +405,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       prepared: CodexOAuthPreparedAttempt,
       context: GatewayKernelAttemptContext<CodexOAuthRouteValue>,
     ): Promise<CodexOAuthUpstream> {
-      const { account, egress } = context.route.value;
+      const { account, egress, modelMode } = context.route.value;
       opts.onEgressAttempt?.(account.accountId);
 
       let upstream: CodexOAuthFetchResponse;
@@ -398,10 +438,16 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         transport: OAUTH_TRANSPORT,
         metadata: { accountId: account.accountId, headers, pinYieldedFrom, egressKey: egress.key },
         body: upstream.body,
-        // 401 is retryable via REFRESH (selectReattempt); 429 and 5xx via a
-        // sibling IP or an account rotation. Everything else is forwarded so the
-        // caller's own client sees the real upstream status.
-        retryable: upstream.status === 401 || upstream.status === 429 || upstream.status >= 500,
+        // 401 is retryable via REFRESH; 429 and 5xx via a sibling IP or account
+        // rotation. A definitive 4xx from the hidden reserve model is also
+        // retryable once so the adapter can restore the public Luna request for
+        // accounts that do not expose that tier. Other 4xx responses are
+        // forwarded unchanged.
+        retryable:
+          upstream.status === 401 ||
+          upstream.status === 429 ||
+          upstream.status >= 500 ||
+          (modelMode === 'reserve' && upstream.status >= 400 && upstream.status < 500),
         discard: upstream.body?.cancel ? () => upstream.body?.cancel?.() : undefined,
       };
     },

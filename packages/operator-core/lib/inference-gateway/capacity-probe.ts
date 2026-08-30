@@ -100,6 +100,9 @@ export interface CapacityProbeDeps {
   now?: () => number;
   /** Internal shared deadline supplied by the bounded multi-account sweep. */
   deadlineAt?: number;
+  /** Optional Codex model to probe. Use `gpt-reserve` to measure the Luna
+   * reserve bucket instead of the default Sol/generic bucket. */
+  codexModel?: string;
 }
 
 /**
@@ -414,6 +417,7 @@ export async function probeCodexAccountCapacity(
   }
 
   const failures: string[] = [];
+  const probeModel = deps.codexModel?.trim() || CODEX_CAPACITY_PROBE_MODEL;
   for (const egress of probeEgressCandidates(account)) {
     const route = describeEgress(egress);
     const routeTimeoutMs = remainingMs(deadlineAt, now);
@@ -442,7 +446,7 @@ export async function probeCodexAccountCapacity(
               originator: CODEX_ORIGINATOR,
             },
             body: JSON.stringify({
-              model: CODEX_CAPACITY_PROBE_MODEL,
+              model: probeModel,
               stream: true,
               store: false,
               instructions: 'You are a capacity probe.',
@@ -511,7 +515,7 @@ export function isWalledCandidate(a: ClaudeAccount, fullUtil: number): boolean {
  */
 export async function probeCapacityForAccounts(
   accounts: ClaudeAccount[],
-  opts: { walledOnly?: boolean; fullUtil?: number; timeoutMs?: number } = {},
+  opts: { walledOnly?: boolean; fullUtil?: number; timeoutMs?: number; codexModel?: string } = {},
   deps: CapacityProbeDeps = {},
 ): Promise<CapacityProbeResult[]> {
   const fullUtil = opts.fullUtil ?? 0.97;
@@ -530,6 +534,7 @@ export async function probeCapacityForAccounts(
 
   const out: CapacityProbeResult[] = [];
   const queue = [...targets];
+  const probeDeps = opts.codexModel ? { ...deps, codexModel: opts.codexModel } : deps;
   const workers = Array.from({ length: Math.min(PROBE_CONCURRENCY, Math.max(1, queue.length)) }, async () => {
     for (;;) {
       const a = queue.shift();
@@ -541,7 +546,7 @@ export async function probeCapacityForAccounts(
       }
       const accountDeadlineAt = Math.min(sweepDeadlineAt, startedAt + CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS);
       const probe = (a.provider ?? 'claude') === 'codex' ? probeCodexAccountCapacity : probeAccountCapacity;
-      out.push(await probe(a, { ...deps, now, deadlineAt: accountDeadlineAt }, fullUtil));
+      out.push(await probe(a, { ...probeDeps, now, deadlineAt: accountDeadlineAt }, fullUtil));
     }
   });
   await Promise.all(workers);

@@ -12,7 +12,7 @@
  */
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './codex-cli-bridge';
-import { parseCodexRateLimitHeaders } from './codex-oauth-proxy';
+import { codexRateLimitBucket, parseCodexRateLimitHeaders } from './codex-oauth-proxy';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
 import { recordDbOutcome, setDbHealthTransitionHandler, type DbHealthSnapshot } from './db-health';
@@ -230,7 +230,7 @@ function makeWindowProjector(
 ): (headers: Record<string, string | undefined>, status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
   const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number }>();
-  return (headers, _status, _model, accountId) => {
+  return (headers, _status, model, accountId) => {
     let w = parseUnifiedWindow(headers);
     let w7 = parseUnified7dWindow(headers);
     if (
@@ -254,7 +254,14 @@ function makeWindowProjector(
     )
       return;
     const t = Date.now();
-    const prev = last.get(accountId);
+    // Generic premium and Luna reserve headers can arrive back-to-back during a
+    // reactive reserve retry. Keep independent throttle slots so the reserve
+    // reading is not discarded as a duplicate of the preceding premium 429.
+    const hasAnthropic = Object.keys(headers).some((key) => key.toLowerCase().startsWith('anthropic-ratelimit-unified-'));
+    const bucket = hasAnthropic ? 'anthropic' : codexRateLimitBucket(headers);
+    const modelKey = model.trim().toLowerCase() || 'unknown';
+    const projectionKey = `${accountId}:${bucket}:${modelKey}`;
+    const prev = last.get(projectionKey);
     const util = w.utilization ?? prev?.util ?? 0;
     const resetAt = w.windowResetAt ?? prev?.resetAt ?? 0;
     const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
@@ -268,7 +275,7 @@ function makeWindowProjector(
       Math.abs(util7d - prev.util7d) >= 0.03 ||
       resetAt7d !== prev.resetAt7d;
     if (!significant) return;
-    last.set(accountId, { util, resetAt, util7d, resetAt7d, at: t });
+    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t });
     // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
     // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
     // edge). Live traffic is the most frequent observer, so this is where an escalation

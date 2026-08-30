@@ -112,9 +112,9 @@ function reportRow(r: CapacityProbeResult) {
 export default defineTool({
   name: 'accounts:probe-capacity',
   description:
-    "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
+    "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Optionally pass `model:'gpt-reserve'` to measure Luna's base-model-inference reserve bucket instead of the default Sol/generic bucket. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
   guidance: {
-    when: "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex.",
+    when: "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex, and `model:'gpt-reserve'` when checking Luna reserve capacity.",
     notWhen: 'Clearing local pauses (`accounts:reset-rate`) or gateway exclusions (POST `/admin/readmit`).',
     chaining: "`accounts:probe-capacity { provider:'codex' }` → `fleet:capacity { provider:'codex' }`; leave confirmed walls walled.",
     seeAlso: [
@@ -133,6 +133,11 @@ export default defineTool({
       .enum(['claude', 'codex'])
       .optional()
       .describe("Provider pool to refresh (default 'claude'; codex probes ChatGPT-subscription codex-cli accounts)."),
+    model: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Optional Codex upstream model for the capacity reading (for Luna reserve use 'gpt-reserve')."),
     walledOnly: z
       .boolean()
       .optional()
@@ -159,6 +164,7 @@ export default defineTool({
     const results = await probeCapacityForAccounts(accounts, {
       walledOnly: args.walledOnly ?? false,
       fullUtil: DRAIN_FULL_UTIL,
+      ...(args.model ? { codexModel: args.model } : {}),
     });
 
     // Record every USABLE reading — a probe reading is exactly what live traffic would have written, so
