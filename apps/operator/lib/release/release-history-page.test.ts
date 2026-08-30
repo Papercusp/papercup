@@ -319,6 +319,31 @@ describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of
     for (const p of ['path:', 'referrer:', 'screen:', 'lang:']) expect(html).toContain(p);
   });
 
+  // EI-18859175264310052. This page and papercusp.com publish into the SAME
+  // PostHog project, so a consumer query has to be able to name which producer it
+  // means. `surface` is that axis, and it must be on EVERY event: the queries that
+  // actually got contaminated were scoped by TIME ALONE, with no event filter, so
+  // a prop present on only some events would not have saved them.
+  it('stamps an explicit `surface` on every event, so producers are separable by contract', () => {
+    expect(html).toContain('"surface":"releases"');
+  });
+
+  // The falsifiable half of the rule above. `page` is 'index' | 'plan' |
+  // 'work-item' — a page WITHIN this surface — and it separated the two producers
+  // only because the site happens not to send it. If someone ever deletes
+  // `surface` and leans on that coincidence again, this fails: it asserts the two
+  // props are genuinely distinct axes, not that some page-ish string exists.
+  it('does not let `page` stand in for `surface` — they are different axes', () => {
+    const planHtml = renderPlanHtml(
+      { slug: 'a-plan', title: 'A plan', bodyHtml: '<p>x</p>' } as never,
+      { generatedAt: GENERATED_AT, analytics: ANALYTICS, version: '0.0.9' } as never,
+    );
+    // Same surface on a DIFFERENT page => surface is constant, page is not.
+    expect(planHtml).toContain('"surface":"releases"');
+    expect(planHtml).toContain('"page":"plan"');
+    expect(html).toContain('"page":"index"');
+  });
+
   it('instruments what this page is FOR — downloads, the Discord link, and the demo', () => {
     for (const ev of [
       'release_history_viewed',

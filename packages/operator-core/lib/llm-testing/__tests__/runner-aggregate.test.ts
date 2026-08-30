@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { SCENARIOS, getScenario } from '../scenarios';
+import { listTargets } from '../targets';
 
 describe('scenario registry', () => {
   it('exposes the full operator suite (S01–S12 + M1–M12), oracle (O1–O6), and architect (A1–A6)', () => {
@@ -121,6 +122,8 @@ describe('scenario registry', () => {
       'su-S31b-asymmetry-prose',
       'su-S31c-asymmetry-field',
       'su-S31d-asymmetry-provenance',
+      // pui-loop — the owned loop's su-derived prompt profile (D-034)
+      'pui-loop-P01-owned-door-read',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

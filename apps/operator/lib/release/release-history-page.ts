@@ -180,7 +180,25 @@ function beaconScript(
   version: string | null,
   pagePath: string,
 ): string {
-  const props = JSON.stringify({ page, version });
+  // `surface` is the PRODUCER CONTRACT, and it is the reason this object exists
+  // rather than just {page, version}. Two independent web surfaces — papercusp.com
+  // and this releases page — publish into the SAME PostHog project, so every
+  // consumer query must be able to say which one it means.
+  //
+  // ⛔ Do NOT use `page` for that. It is 'index' | 'plan' | 'work-item' — a page
+  // WITHIN this surface, not the surface itself. It only ever separated the two
+  // producers because the site happens not to send a `page` prop, which is a
+  // coincidence of two independent designs rather than an agreement: the day the
+  // site adds one, any consumer filtering on `page` silently changes meaning.
+  // EI-18859175264310052 is the detector gap behind exactly that (its instance,
+  // the site's Sessions/Bounce/Engaged tiles counting beta-tester traffic, was
+  // fixed in WI-6556 by leaning on that very coincidence).
+  //
+  // Stamped on EVERY event, so a consumer scoped by TIME ALONE — no event filter,
+  // which is the case that got contaminated and the easiest to forget — still has
+  // an explicit axis to scope on. Additive and safe: it never removes a prop an
+  // existing query reads.
+  const props = JSON.stringify({ surface: 'releases', page, version });
   return `<script>
 (function () {
   // ── anonymous analytics, ported from papercusp.com (public-site src/page.html)
