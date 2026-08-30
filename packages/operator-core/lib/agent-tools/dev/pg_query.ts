@@ -24,6 +24,7 @@ import {
   buildCorpusNamespaceAdvisory,
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
+  buildAgentActivityLedgerAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
@@ -416,6 +417,17 @@ export default defineTool({
       } catch {
         nativeToolAdvisory = null;
       }
+      // EI-21847759967934033: the SIBLING of the advisory above, and it exists because that one
+      // is silent on the read that actually caused harm. That one fires when the query ASKS FOR a
+      // native tool by name; this one fires on the single-agent "is this peer working?" read that
+      // never mentions native tools at all, whose truthful MCP-only answer is then read as the
+      // agent's whole activity. Both can fire for one investigation and say different things.
+      let agentActivityAdvisory: string | null = null;
+      try {
+        agentActivityAdvisory = buildAgentActivityLedgerAdvisory(sql);
+      } catch {
+        agentActivityAdvisory = null;
+      }
       // WI-38056: reading ONE of the two completion-evidence surfaces. Its own
       // builder for the usual reason — this one does not warn about the wrong
       // tenant or an empty table, but about a POPULATED table answering
@@ -448,6 +460,7 @@ export default defineTool({
           jsonbTypeofAdvisory,
           splitEvidenceAdvisory,
           nativeToolAdvisory,
+          agentActivityAdvisory,
           sessionTurnPartsJsonAdvisory,
           corpusNamespaceAdvisory,
           tenantAdvisory,
