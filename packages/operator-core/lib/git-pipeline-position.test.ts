@@ -6735,9 +6735,22 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
   type CandidateExpected = ReturnType<typeof assessGateCandidate>;
   const candidateCases: Array<{ name: string; input: CandidateInput; expected: CandidateExpected }> = [
     {
+      // EI-21862849770458561: `checkpointRunInFlight` must be EXPLICITLY `{ active: false }`
+      // for this to be a genuinely-measured absence — an omitted/null field is the SEPARATE
+      // "unmeasured" case below, which used to fall through to this same code by mistake.
       name: 'measured no-active-run',
-      input: { judgingSha: null, verdictUnknownLegs: [] },
+      input: { judgingSha: null, verdictUnknownLegs: [], checkpointRunInFlight: { active: false } },
       expected: 'no-active-run',
+    },
+    {
+      // EI-21862849770458561: `checkpointRunInFlight == null` means the mapper could not
+      // measure liveness at all (neither cache nor live-lock read answered) — genuinely
+      // UNKNOWN, not a measured "nothing running". Before the fix this fell through to
+      // 'no-active-run', contradicting the cell's own "measured absence, not a failed read"
+      // meaning text and steering a reader into firing release:checkpoint-run on an unknown.
+      name: 'unmeasured checkpointRunInFlight is unknown, not no-active-run',
+      input: { judgingSha: null, verdictUnknownLegs: [], checkpointRunInFlight: null },
+      expected: null,
     },
     {
       name: 'active run whose candidate is not yet published',
