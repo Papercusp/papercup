@@ -74,12 +74,21 @@ describe('gateway provider adapters', () => {
     ]);
     expect(lanes.localOpenAiChat).toMatchObject({
       protocol: 'openai-chat',
-      legacyEntryExecutor: 'proxyLocal',
       upstreams: ['local-registry'],
       admissionProfile: 'local',
       retryPolicy: 'local-backend-failover',
       accountPool: null,
     });
+    // P-011 / D-022: this lane is RE-HOMED — entered directly through
+    // `withDurableGatewayAdmission`, not the strangler bridge — so it declares NO entry
+    // executor. Asserted explicitly because the ABSENCE is the load-bearing state: it is what
+    // keeps the lane out of `bridgeAdmitted` in lane-kernel-conformance. `toMatchObject`
+    // ignores absent keys, so dropping the old assertion alone would not have tested this.
+    expect(lanes.localOpenAiChat.legacyEntryExecutor).toBeUndefined();
+    // The local-http TRANSPORT still names its handler; only the LANE ENTRY went away.
+    expect(lanes.localOpenAiChat.transports).toEqual([
+      expect.objectContaining({ id: 'local-http', legacyExecutor: 'proxyLocal' }),
+    ]);
   });
 
   it('binds every legacy handler to a static lane or transport strategy and fails closed', () => {
@@ -98,10 +107,11 @@ describe('gateway provider adapters', () => {
       executor: 'proxyOpenAi',
       transport: 'bearer-http',
     });
-    expect(legacyEntryRouteForGatewayLane(lanes.localOpenAiChat)).toEqual({
-      executor: 'proxyLocal',
-      transport: 'local-http',
-    });
+    // P-011 / D-022: a RE-HOMED lane resolves no bridge route at all — it fails CLOSED with a
+    // message naming the real reason, rather than reporting a missing transport.
+    expect(() => legacyEntryRouteForGatewayLane(lanes.localOpenAiChat)).toThrow(
+      /declares no legacy entry executor/,
+    );
     expect(legacyExecutorForGatewayTransport(lanes.openaiResponses, 'oauth-http')).toBe(
       'serveCodexOAuthProxy',
     );
@@ -112,8 +122,12 @@ describe('gateway provider adapters', () => {
       /does not support transport 'cli-exec'/,
     );
 
+    // MUST be built from a lane that STILL declares an entry executor. This fixture used to
+    // spread `localOpenAiChat`; at P-011 that lane re-homed, which would have silently moved
+    // this case onto the "declares no legacy entry executor" branch above — still throwing, so
+    // still green, while no longer testing the missing-transport failure it is named for.
     const malformed = {
-      ...lanes.localOpenAiChat,
+      ...lanes.anthropicMessages,
       transports: [],
     };
     expect(() => legacyEntryRouteForGatewayLane(malformed)).toThrow(/has no declared transport/);

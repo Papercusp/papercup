@@ -144,6 +144,24 @@ const ALLOWLIST: Record<string, Classification> = {
     reason:
       'historical author provenance on an immutable stamped census (migration 892) — no executable reader/reaper treats it as current ownership, and rebinding would falsify who took the snapshot.',
   },
+  // A NAME COLLISION, not a coordination column (WI-1220421). This scan is name-based, and
+  // `owner_id` here belongs to a DIFFERENT IDENTIFIER SPACE: it is the app-side
+  // `AuthIdentity.ownerId` — the opaque `sub` of a JWT the app itself verifies
+  // (apps/sidecar/src/auth.ts) — not a papercusp agent/session id. Migration 1029 states
+  // outright that the two spaces are unrelated and NOT derivable from one another, and that
+  // inferring one from the other is the failure the table exists to prevent.
+  //
+  // Note this is the one exempt entry where a rebind is PROHIBITED rather than merely
+  // pointless, so do not "upgrade" it to covered: rewriting it would re-point a real
+  // platform user's app mapping at a different app owner and silently deliver one person's
+  // mail into another person's app — the cross-tenant leak the
+  // app_owner_mappings_owner_unique constraint was added to stop. Per owner-mapping.ts, a
+  // wrong mapping "does not raise an error anywhere".
+  'app_owner_mappings.owner_id': {
+    status: 'exempt',
+    reason:
+      'app-side JWT `sub` (migration 1029), a different identifier space from papercusp agent ids — a deliberately configured operator mapping, never a presence-tied holder claim, with no reaper or lease. Rebinding is PROHIBITED, not merely unnecessary: it would silently deliver one user’s data into another user’s app.',
+  },
   // Migration 745 (EI-19411045952024591). Deliberately the EXEMPT twin of the COVERED
   // 'routines.target_owner_id' above: that column is the live claim (rebound so the loop
   // keeps waking the right agent); THIS one is its append-only HISTORY. Rebinding here

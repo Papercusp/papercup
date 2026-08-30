@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 835,
+  "count": 836,
   "tools": [
     {
       "name": "ablation:report",
@@ -27520,6 +27520,37 @@
         "when": "Revoke ONE of your OWN device keys from a harness (a lost or rotated device) so peers stop admitting it.",
         "notWhen": "Revoking ANOTHER contributor's key / kicking out a bad actor — not supported (self-revocation only, v2 for owner-revocation).",
         "chaining": "Resolve the device pubkey from the contributor's own device_attestations first (e.g. via dev:dogfood_substrate_status or the Contributors tab)."
+      }
+    },
+    {
+      "name": "supervision:annotate-pause",
+      "http": {
+        "path": "/api/agent-tools/supervision/annotate-pause",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record WHY (and by whom) a currently-paused SUPERVISED systemd unit was administratively disabled/masked, and optionally when to re-review it. Pausing a unit is a raw `systemctl --user disable --now` outside any Papercusp tool call, so this is the after-the-fact annotation the reconciler's escalation reads back — a pause left unannotated past 4h is reported as the anomaly (⚠ NO REASON RECORDED) in both the ambient notify and the filed EI.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You (or someone) just paused a SUPERVISED unit (`systemctl --user disable --now <unit>`) and want the pause on record — or you are triaging a `[supervision-paused]` EI / a \"NO REASON RECORDED\" escalation and can supply the missing context. Also usable proactively, before the reconciler's next tick observes the pause.",
+        "notWhen": "For a scheduled ROUTINE's pause (git-sync, green-checkpoint, scout, …) use routines:set { active:false, reason } instead — that path is mediated by a tool call and already requires a reason at pause time. This tool is only for the systemd-unit supervision layer (`SUPERVISED_PROCESSES`).",
+        "chaining": "dev:service_health or routines:list to confirm the unit is actually paused first; supervision:annotate-pause to record why; the reconciler auto-resolves the escalation once the unit is re-enabled — nothing to call to \"un-annotate\"."
       }
     },
     {
