@@ -5975,3 +5975,27 @@ try {
 }
 terminalEmitted = true;
 outSync(`Full run log: ${RUN_LOG_PATH}`);
+// WI-1334906: every OTHER terminal branch in this file (refusedForks, the
+// undetermined-only path, the `failed` path, both zero-task branches, and
+// `--print-affected`/dry-run) ends with an explicit `process.exit(N)`. This,
+// the plain "all affected tests passed" branch — the common case for a
+// healthy run with real tasks — was the ONE exception: it fell off the end
+// of the module and relied on Node's default behavior of exiting once the
+// event loop empties on its own.
+//
+// That default breaks the instant ANYTHING this run (or a tool one of its
+// spawned tasks pulled in transitively, e.g. esbuild's persistent transform
+// service) leaves a live handle behind — a pipe, a socket, an unref'd timer
+// that got ref'd back. Measured: a green-checkpoint run whose suite had
+// already finished (219 files, durable in `test_runs`) sat idle at ~0% CPU
+// for 39+ minutes past completion with ZERO vitest workers left, its only
+// surviving child an orphaned `esbuild --service` still holding the loop
+// open — no verdict ever written, the shared run-lock held until killed,
+// and the next scheduled fire refused `already_running`. Any red run was
+// immune (it force-exits above); only the green path could wedge like this.
+//
+// Force the exit here exactly like every sibling branch already does, so a
+// stray handle downstream can delay flushing this line but can never again
+// cost the whole verdict. `terminalEmitted` is already true, so the `exit`
+// handler's abort-marker guard (see emitAbortMarker) is a correct no-op.
+process.exit(0);
