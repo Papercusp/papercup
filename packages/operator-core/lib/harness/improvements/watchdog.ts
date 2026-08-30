@@ -211,6 +211,15 @@ export type WatchdogSource =
   // sweep's PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC<=0 kill switch already makes
   // this inert when disabled):
   | 'release-deploy-staleness'
+  // EI-18835078701597295: the CAUSE-side companion to 'release-deploy-staleness' above.
+  // That one alarms on the downstream symptom (green pin deployable-but-not-live) at 3h;
+  // this one counts CONSECUTIVE COALESCED deploy attempts, which is the same outage
+  // visible on the second failed acquire. The dead-holder reclaim only fires for a holder
+  // with a parseable, verifiably-gone host-local pid — a wedged-but-live holder, an owner
+  // string with no pid, or a recycled pid all coalesce forever with nothing paging.
+  // WORKSPACE-GLOBAL (one release pipeline, NOT in HARNESS_SCOPED_WATCHDOG_SOURCES); its
+  // own PAPERCUSP_DEPLOY_COALESCE_STREAK_THRESHOLD<=0 kill switch makes it inert:
+  | 'deploy-coalesce-stall'
   // EI-13022: a PROTECTIVE HOLD (pot pauseNewWork / kettle:pause) left standing
   // against a work-COMMANDING steering directive — the 2026-07-15 incident class:
   // the palette paused pot+kettle 6min after a kettle model-pin death, the pin was
@@ -3997,6 +4006,18 @@ export async function defaultPapercuspCollectors(
       collect: () =>
         import('./release-deploy-staleness-detect').then((m) =>
           m.collectReleaseDeployStalenessSignals({ installSlug: opts.installSlug ?? undefined }),
+        ),
+    },
+    // EI-18835078701597295: the CAUSE-side companion to the staleness collector above.
+    // Counts consecutive coalesced deploy attempts from the pipeline history the deploy CLI
+    // now writes on every coalesce. OPERATOR-scoped (workspace-global); a pipeline where any
+    // attempt is completing emits nothing, and its own threshold kill switch makes it inert
+    // when PAPERCUSP_DEPLOY_COALESCE_STREAK_THRESHOLD<=0.
+    {
+      name: 'papercusp-deploy-coalesce-stall',
+      collect: () =>
+        import('./deploy-coalesce-stall-detect').then((m) =>
+          m.collectDeployCoalesceStallSignals({ installSlug: opts.installSlug ?? undefined }),
         ),
     },
     // EI-10869: the lost-wake recurrence guard — a rate scan over harness_shared.event_awaits
