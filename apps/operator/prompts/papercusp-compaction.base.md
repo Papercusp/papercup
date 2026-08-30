@@ -35,7 +35,10 @@ of a paraphrase) finds the pre-compaction turn with its surrounding context;
 add `mode:'verbatim'` only once you have a SHORT exact phrase to substring-match
 (it requires a contiguous literal match, so a multi-word paraphrase there
 returns a false 0 — read a 0-hit verbatim result as \"try hybrid\", never as
-\"it didn't happen\"); `sessions:read { session:'self' }` reads the tail."** A
+\"it didn't happen\"); `sessions:read { session:'self', tail: 40 }` reads the
+last 40 turns — pass `tail:N` (an integer); `sessions:read` has NO `mode`
+argument (that belongs to `sessions:search` above only) and rejects one with
+`invalid_args`."** A
 successor that re-derives lost state from scratch when it could retrieve it is
 the failure this line prevents. (EI-18862790811651475 / EI-18877285731929394 —
 both false-negative failure modes now carry an inline `hint`/`zeroHitCaveat`

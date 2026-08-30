@@ -158,7 +158,8 @@ export async function buildCompactionRecovery(
     selfRecall:
       "Your pre-compaction turns survive on disk and are INDEXED — recover any lost detail with " +
       "sessions:search { session:'self', mode:'verbatim', query:'<what you remember>' } " +
-      "(or sessions:read { session:'self' } for the tail).",
+      "(or sessions:read { session:'self', tail: 40 } for the last 40 turns — pass tail:N, " +
+      "an integer; sessions:read has NO mode argument, that belongs to sessions:search only).",
     coverage: {
       selfSession: false,
       control: false,
