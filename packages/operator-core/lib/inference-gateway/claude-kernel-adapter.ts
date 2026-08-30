@@ -92,6 +92,52 @@ export interface ClaudeRouteValue {
   reason: ClaudeRouteReason;
 }
 
+/**
+ * Why a non-2xx attempt failed, as read from the response BODY (D-013).
+ *
+ * The live handler cannot tell a hard per-account USAGE CAP from a transient
+ * bare-burst 429 by status and headers alone — util can read 0 on a capped
+ * account because the cap is a different meter — so it peeks the error body and
+ * classifies the text (gateway.ts:4425-4459). The same is true of a 403, whose
+ * org/subscription disqualification is only visible in the body (:4632).
+ *
+ * That classification therefore CANNOT live in the caller's
+ * `admission.observeAttempt`: the kernel hands that hook `{ context, response,
+ * error }` with no body (request-kernel.ts:110-114). The adapter is the only
+ * place holding the body before a retry decision, so it peeks and classifies
+ * here — while the Anthropic-specific PREDICATES stay caller-side behind
+ * `classifyResponse`, and every governor/cooldown SIDE EFFECT stays caller-side
+ * in `observeAttempt` exactly as D-012 constraint 1 requires.
+ */
+export type ClaudeFailureKind =
+  /** Hard per-account wall named by the body → pause the account to its reset, rotate. */
+  | 'usage-cap'
+  /** 403 org/subscription disqualification → pause the account, rotate. */
+  | 'org-disallowed'
+  /** Per-IP edge throttle (no window headers) → sibling egress IP first, else rotate. */
+  | 'bare-429'
+  /** A window/`retry-after` 429 → rotate after a backoff; never a sibling-IP retry. */
+  | 'rate-429'
+  /** 529 server overload → back off on the SAME account; never an account signal. */
+  | 'overload'
+  /** Not retryable — hand it straight to the caller, as the live handler forwards it. */
+  | 'forward';
+
+export interface ClaudeResponseClassification {
+  kind: ClaudeFailureKind;
+  /** When the account should stay out of rotation until (usage cap / org pause). */
+  resetAt?: number;
+  /** Opaque passthrough for the caller's `observeAttempt` — streaks, alerts, log suffixes. */
+  detail?: unknown;
+}
+
+export interface ClaudeClassifyInput {
+  status: number;
+  headers: Record<string, string>;
+  /** The peeked body prefix, decoded as UTF-8. Empty when the peek timed out. */
+  body: string;
+}
+
 export type ClaudeChunk = Uint8Array;
 
 export interface ClaudeResponseMetadata {
@@ -101,6 +147,14 @@ export interface ClaudeResponseMetadata {
   headers: Record<string, string>;
   /** Egress key that served, so the caller can clear its transport-fail streak. */
   egressKey: string;
+  /**
+   * Body-derived failure classification (D-013), or null for a 2xx and whenever
+   * no `classifyResponse` was supplied. The caller's `observeAttempt` reads this
+   * to fire `gov.penalize` / cooldowns / streak alerts, and the selection hooks
+   * read it to pick the retry branch — one classification, two consumers, so the
+   * body is peeked exactly once per attempt.
+   */
+  classification: ClaudeResponseClassification | null;
 }
 
 export interface ClaudePreparedAttempt {
@@ -169,6 +223,27 @@ export interface ClaudeAdapterOptions {
    * Returning false here declines rotation WITHOUT consuming a pool slot.
    */
   canRotate?(): boolean;
+  /**
+   * Classifies a peeked NON-2xx body (D-013). Absent ⇒ no body is ever peeked and
+   * the adapter falls back to status-only retryability, which is what the pure
+   * transport tests drive.
+   *
+   * The callback keeps every Anthropic-specific predicate (`classifyHttpError`,
+   * `parseUsageReset`, `ORG_DISALLOWED_RE`) in the caller where it already lives;
+   * the adapter contributes the peek, the replay, and the branch — not provider
+   * knowledge.
+   */
+  classifyResponse?(input: ClaudeClassifyInput): ClaudeResponseClassification;
+  /** Bytes of a non-2xx body to peek for classification (live `USAGE_LIMIT_PEEK_BYTES`). */
+  peekBytes?: number;
+  /**
+   * Bound on the classification peek. The live handler wraps `peekBody` in a
+   * `withDeadline` because the peek reader is NOT wired to the attempt abort, so an
+   * acknowledged-but-never-delivered error body would otherwise hold the admission
+   * slot past the stall deadline (gateway.ts:4433-4449). On timeout the body is
+   * cancelled and the attempt is treated as unclassifiable — i.e. forwarded.
+   */
+  peekTimeoutMs?: number;
   now?(): number;
 }
 
@@ -207,6 +282,46 @@ async function withTokenDeadline<T>(promise: Promise<T>, ms: number, label: stri
   }
 }
 
+/**
+ * Pull up to `limit` bytes off the body for classification, then hand back a body
+ * that REPLAYS them ahead of the remainder — the live handler's
+ * `peekedHead` + `peekedRest` forward path (gateway.ts:5014-5019), expressed as a
+ * single stream so the kernel's downstream relay stays unaware a peek happened.
+ */
+async function peekBody(
+  body: AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void },
+  limit: number,
+): Promise<{ head: Uint8Array; body: AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void } }> {
+  const iterator = body[Symbol.asyncIterator]();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let done = false;
+  while (size < limit) {
+    const next = await iterator.next();
+    if (next.done) {
+      done = true;
+      break;
+    }
+    const chunk = next.value as Uint8Array;
+    chunks.push(chunk);
+    size += chunk.length;
+  }
+  const head = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  const replay = {
+    async *[Symbol.asyncIterator]() {
+      if (head.length) yield head;
+      if (done) return;
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) return;
+        yield next.value as Uint8Array;
+      }
+    },
+    cancel: () => body.cancel?.(),
+  };
+  return { head, body: replay };
+}
+
 export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKernelAdapter {
   const now = opts.now ?? (() => Date.now());
 
@@ -239,6 +354,14 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
   const resolveResetAt = (
     context: GatewayKernelRouteContext<ClaudeRouteValue, ClaudeChunk, ClaudeResponseMetadata>,
   ): number => {
+    // A body-derived wall carries its OWN reset — the usage cap's parsed reset
+    // instant, or the org-disallow pause. The live handler hands exactly that to
+    // `pool.onExhausted` (gateway.ts:4733 via `internalRetry.exhaustResetAt`,
+    // set to `usageCapResetAt` at :4526), so it must win over a header-derived
+    // window: a capped account parked only to the short failover backoff would
+    // rejoin the round-robin while still walled.
+    const classified = context.lastResponse?.metadata?.classification;
+    if (typeof classified?.resetAt === 'number' && Number.isFinite(classified.resetAt)) return classified.resetAt;
     const headers = context.lastResponse?.metadata?.headers;
     if (headers) {
       const parsed = opts.rateReset(headers);
@@ -258,23 +381,31 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       if (!currentRoute) return null;
       const { account, egress } = currentRoute.value;
       const status = context.lastResponse?.status ?? null;
+      const kind = context.lastResponse?.metadata?.classification?.kind ?? null;
 
       // 529 SERVER overload — back off and retry the SAME account. Deliberately
       // first: it is a distinct branch from the egress-rotation cases below, and
       // the live handler treats it as `{ rotate: false }` (gateway.ts:4521)
       // regardless of whether a sibling egress IP happens to exist. Not gated on
       // the pin — retrying a hard-pinned account does not leave it.
-      if (status === 529) {
+      if (kind === 'overload' || (kind === null && status === 529)) {
         if (overloadRetried.has(account.accountId)) return null;
         overloadRetried.add(account.accountId);
         return routeFor(account, 'overload-backoff');
       }
 
-      // Transport failure (no response) / 429 / retryable 5xx → try a sibling
-      // egress IP on the SAME account before parking it, matching the live
-      // `siblingEgressAvailable(...) || rotate(...)` order.
+      // Sibling egress IP on the SAME account, before parking it — the live
+      // `siblingEgressAvailable(...) || rotate(...)` order. ONLY two shapes take
+      // it (D-013): a bare TRANSPORT failure, and a BARE-burst 429, which is a
+      // per-IP edge throttle rather than an account signal. A usage cap, an
+      // org-disallowed 403 and a windowed rate-429 are all ACCOUNT-level walls in
+      // the live handler — it sets `rotate: true` for each (gateway.ts:4526,
+      // :4592/:4535, :4635) and never retries the same credential on a new IP —
+      // so they fall through to `selectFailover`.
       const transportFailure = context.lastResponse === null && context.lastError !== null;
-      if (!transportFailure && status !== 429 && !(status !== null && status >= 500)) return null;
+      const siblingEligible =
+        transportFailure || (kind === null ? status === 429 || (status !== null && status >= 500) : kind === 'bare-429');
+      if (!siblingEligible) return null;
       if (!opts.siblingEgressAvailable(account, now(), egress.key)) return null;
       return routeFor(account, 'sibling-egress');
     },
@@ -288,7 +419,8 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // A 529 is server overload, never an account signal: the live handler backs
       // off on the same account and never rotates. Decline rather than park a
       // healthy account for someone else's outage.
-      if (context.lastResponse?.status === 529) return null;
+      const kind = context.lastResponse?.metadata?.classification?.kind ?? null;
+      if (kind === 'overload' || (kind === null && context.lastResponse?.status === 529)) return null;
 
       // The caller's fleet-wide bare-burst veto (G1). Checked BEFORE touching the
       // pool: `onExhausted` both PARKS and returns, so consulting it here and then
@@ -353,6 +485,44 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         );
       }
       const headers = headersToObject(response.headers);
+
+      // D-013: classify a NON-2xx from its body, then replay the peeked bytes so
+      // the forward path stays byte-identical. A 2xx is NEVER peeked — the hot
+      // path keeps zero added latency and no false-positive risk, matching the
+      // live handler's own note (gateway.ts:4377-4378).
+      let classification: ClaudeResponseClassification | null = null;
+      let body = response.body;
+      if (opts.classifyResponse && response.status >= 300) {
+        let head = Buffer.alloc(0) as Uint8Array;
+        if (body) {
+          try {
+            const peeked = await withTokenDeadline(
+              peekBody(body, opts.peekBytes ?? 8192),
+              opts.peekTimeoutMs ?? 30_000,
+              'classification peek',
+            );
+            head = peeked.head;
+            body = peeked.body;
+          } catch {
+            // The peek reader is not wired to the attempt abort, so an
+            // acknowledged-but-undelivered body must not hold the slot. Cancel it
+            // and treat the attempt as unclassifiable — the live fallback at
+            // gateway.ts:4439-4449, which forwards rather than guessing.
+            try {
+              await body.cancel?.();
+            } catch {
+              /* drain the stalled body */
+            }
+            body = null;
+          }
+        }
+        classification = opts.classifyResponse({
+          status: response.status,
+          headers,
+          body: Buffer.from(head).toString('utf8'),
+        });
+      }
+
       return {
         status: response.status,
         // Request-derived, as the live handler's span is (D-007).
@@ -366,15 +536,23 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
           accountId: prepared.accountId,
           headers,
           egressKey: context.route.value.egress.key,
+          classification,
         },
-        body: response.body,
+        body,
         // Drives whether the kernel consults selectReattempt/selectFailover at all
         // (request-kernel.ts:951). It DEFAULTS TO FALSE, so omitting it silently
-        // disables every retry branch this adapter implements. 429 → sibling IP or
-        // rotation; 5xx (529 included) → same-account backoff or rotation.
-        // Everything else is forwarded so the caller's client sees the real status.
-        retryable: response.status === 429 || response.status >= 500,
-        discard: response.body?.cancel ? () => response.body?.cancel?.() : undefined,
+        // disables every retry branch this adapter implements.
+        //
+        // CLASSIFIED (D-013): retry exactly the shapes the live handler retries.
+        // Note this makes a plain 5xx NON-retryable, which is live parity, not a
+        // narrowing: `proxy` only ever builds an `internalRetry` inside its
+        // 429/529, 403 and 401 branches (gateway.ts:4399/:4605/:4675) — there is
+        // no 5xx branch at all, so a 500/502/503 is FORWARDED unretried. The
+        // status-only fallback below is what the pure transport tests drive.
+        retryable: classification
+          ? classification.kind !== 'forward'
+          : response.status === 429 || response.status === 529,
+        discard: body?.cancel ? () => body?.cancel?.() : undefined,
       };
     },
   };
