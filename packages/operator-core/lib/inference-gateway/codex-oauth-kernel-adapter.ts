@@ -285,7 +285,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       // If the hidden model is not enabled for this subscription, preserve the
       // old public-model behavior after the probe's definitive 4xx refusal.
       // 401/429 are handled by refresh/reserve/rotation below instead.
-      if (modelMode === 'reserve' && status >= 400 && status < 500 && status !== 401 && status !== 429) {
+      if (modelMode === 'reserve' && status !== null && status >= 400 && status < 500 && status !== 401 && status !== 429) {
         return routeFor(account, 'reserve-fallback', 'public');
       }
 
