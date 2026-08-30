@@ -987,8 +987,8 @@ export async function getFeedbackCore(
   //     (EI-20864690354207496 F2) — the same persisted-stamp ledger every
   //     revival site reads; a fresh selection carries no stamps, so this
   //     guard is structural, not decorative.
-  if (revivalPending) {
-    const r = await revive!({
+  if (revivalPending && revive) {
+    const r = await revive({
       ownerId: revivalCandidate!.ownerId,
       conversationId: opened.conversation_id,
       brief: revivalBrief({
