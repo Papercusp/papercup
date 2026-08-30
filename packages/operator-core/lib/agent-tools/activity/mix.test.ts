@@ -3,6 +3,43 @@ import { activityMode, summarizeActivityMix, unwrapActivityRow } from './mix';
 
 const row = (ts: number, tool_name: string, args_json: unknown = {}) => ({ ts, tool_name, args_json });
 
+/**
+ * EI-21847759967934033. This tool measures ONE owner from `tool_invocations`, which records MCP
+ * calls only — native Bash/Read/Grep/Edit produce no row. Percentages make that worse than a raw
+ * count does, because they normalize the missing half away: an owner whose real work was shell
+ * reads as a confident mix of the little it happened to do over MCP, and "mostly orienting" is the
+ * reading that gets a working peer woken and accused.
+ */
+describe('activity:mix declares its own blind spot', () => {
+  it('carries the marker on an ordinary, healthy mix — not only on an empty one', () => {
+    const result = summarizeActivityMix([
+      row(0, 'dev:pg_query'),
+      row(5, 'work_items:get', { id: 'WI-1' }),
+      row(40, 'capability:edit', { file_path: 'src/a.ts' }),
+    ]);
+
+    // Unconditional by design: a marker that appears only when rows are sparse teaches the reader
+    // that its ABSENCE means the data is complete, which is the same wrong inference one step over.
+    expect(result.bursts).toBeGreaterThan(0);
+    expect(result.nativeToolCallsNotRecorded).toContain('records MCP calls ONLY');
+    expect(result.nativeToolCallsNotRecorded).toContain('Bash');
+  });
+
+  it('states the rule and refuses to invert the error onto the store it recommends', () => {
+    const marker = summarizeActivityMix([]).nativeToolCallsNotRecorded;
+
+    // The instrument-independent rule — the only claim that stays true whichever store you read.
+    expect(marker).toContain('Positive rows prove activity');
+    expect(marker).toContain('proves nothing about idleness');
+    // Names where native calls CAN be seen...
+    expect(marker).toContain('activity:tool-log');
+    // ...and immediately bounds it: agent_activity was empty for ~45% of agents (24h: 182 of 333),
+    // so recommending it without this caveat would relocate the identical directional error.
+    expect(marker).toMatch(/empty for ~45% of agents/);
+    expect(marker).toMatch(/empty tool-log is equally not evidence/);
+  });
+});
+
 describe('activity:mix pure attribution', () => {
   it('drops automatic telemetry before it can create a burst', () => {
     const result = summarizeActivityMix([

@@ -43,6 +43,8 @@ interface ActivityBurst {
 }
 
 export interface ActivityMixResult {
+  /** The instrument's own coverage gap — see {@link NATIVE_TOOL_CALLS_NOT_RECORDED}. Always set. */
+  nativeToolCallsNotRecorded: string;
   rowsPulled: number;
   logicalCalls: number;
   bursts: number;
@@ -280,6 +282,8 @@ export function summarizeActivityMix(rows: ActivityMixRow[], totalRows = rows.le
 
   const denominator = attributed || 1;
   return {
+    // First, deliberately: it must be read BEFORE the percentages it qualifies.
+    nativeToolCallsNotRecorded: NATIVE_TOOL_CALLS_NOT_RECORDED,
     rowsPulled: rows.length,
     logicalCalls: calls.length,
     bursts: bursts.length,
@@ -300,6 +304,29 @@ const isoBoundary = z
   .string()
   .datetime({ offset: true })
   .describe('Absolute ISO 8601 timestamp; defaults to the last 24 hours when omitted.');
+
+/**
+ * The instrument's own coverage gap, returned WITH every measurement (EI-21847759967934033).
+ *
+ * This tool reads `tool_invocations`, which records MCP calls only — a Claude Code agent's native
+ * Bash/Read/Grep/Edit produce no row at all, and this box's bypass-permissions preamble steers
+ * agents toward native Bash for reads. Percentages make that worse than a raw row count does: they
+ * normalize the missing half away entirely, so an owner whose real work was shell reads as a
+ * confident mix of the little it happened to do over MCP. The population here is narrower still,
+ * since automatic telemetry and dispatch wrappers are excluded by design.
+ *
+ * Emitted UNCONDITIONALLY rather than only when the row count is low, because a marker that
+ * appears only sometimes teaches the reader that its absence means the data is complete. It is a
+ * non-empty string rather than a bare `true` so it cannot be skimmed past as a flag, while
+ * remaining truthy for a caller that tests it as one.
+ */
+const NATIVE_TOOL_CALLS_NOT_RECORDED =
+  'harness_shared.tool_invocations records MCP calls ONLY — native Bash/Read/Grep/Edit produce no ' +
+  "row, so this is the shape of the owner's MCP activity, not of everything it did (24h: native " +
+  '54,009 calls vs MCP 35,479 across the fleet). Positive rows prove activity; a small or empty ' +
+  "mix proves nothing about idleness. To see native calls, cross-check `activity:tool-log { owner }`, " +
+  'which reads harness_shared.agent_activity — but that store is empty for ~45% of agents (24h: 182 ' +
+  'of 333), so an empty tool-log is equally not evidence.';
 
 export default defineTool({
   name: 'activity:mix',
@@ -354,6 +381,8 @@ export default defineTool({
         owner,
         since,
         until,
+        // `nativeToolCallsNotRecorded` arrives with the summary — it belongs to the percentages,
+        // not to this handler's plumbing, so every caller of summarizeActivityMix carries it too.
         ...summarizeActivityMix(rows, total),
       },
     };
