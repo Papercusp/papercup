@@ -2501,8 +2501,8 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; use a shell-safe single-quoted argument, since an unmatched backtick fails before either search tool runs. Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap lines (e.g., `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; do not shell-background child with `&`/nohup/setsid/disown without `wait`; 4h/12h defaults.",
-        "notWhen": "Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.",
+        "when": "Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the argument — an unmatched backtick fails before either tool runs. Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search if available; else POSIX `grep`/`grep -E` or a Node parser. In `rg`, use lowercase `-e`/`--regexp`; uppercase `-E` means `--encoding`. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap lines (e.g., `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; do not shell-background child with `&`/nohup/setsid/disown without `wait`; 4h/12h defaults.",
+        "notWhen": "Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.",
         "chaining": "run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push."
       }
     },
@@ -6628,7 +6628,7 @@
           "POST"
         ]
       },
-      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). For a directed expects:'action' message that names a WI-/EI- work-item, the result may carry `dispatchAdvisory` when coord:send delivered prose without assigning that work; use coord:dispatch with workItemIds:[…] for transfer.",
+      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
       "capabilities": [
         "coord:write"
       ],
@@ -6651,7 +6651,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES often got wrong: `premises` is an array of ref strings, not objects — `premises: [\"WI-1234#completion\"]`; `youMayNotKnow` takes `{ ref, provenance }` and `couldNotDetermine` takes `{ what, note? }` — `youMayNotKnow: [{ ref: \"WI-1\", provenance: \"authored\" }]`, `couldNotDetermine: [{ what: \"the gap\" }]`, not a string or array of strings. For a directed action on a named WI-/EI- work-item, prefer `coord:dispatch` with workItemIds:[…] when the target needs the durable execution lane; coord:send only records/delivers prose and may return `dispatchAdvisory` if the target does not hold the item. wake:'required' reports misses; wake:'optimistic' needs `backstop`.",
+        "when": "Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch. wake:'required' reports misses; wake:'optimistic' needs `backstop`.",
         "notWhen": "Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff."
       }
     },
@@ -26339,7 +26339,7 @@
           "POST"
         ]
       },
-      "description": "Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the \"is the data layer alive at all?\" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.",
+      "description": "Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + subjectRef + since; newest-first. `subjectRef` is the scalar observation.subject.ref filter (for example a WI-/EI- id), unlike scorecards:emit's structured subject:{kind,ref}. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the \"is the data layer alive at all?\" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.",
       "capabilities": [
         "coord:read"
       ],
@@ -26364,9 +26364,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Kettle emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.",
+        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Kettle emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit's structured `subject:{kind,ref}` object.",
         "notWhen": "You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — scorecards:emit.",
-        "chaining": "scorecards:list { rubricRef: \"pot-coordination-health\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions."
+        "chaining": "scorecards:list { rubricRef: \"pot-coordination-health\", subjectRef: \"EI-123\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions. `subjectRef` is a string filter; `scorecards:emit` is the separate tool that accepts `subject:{kind,ref}`."
       }
     },
     {

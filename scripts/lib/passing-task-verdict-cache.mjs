@@ -7,12 +7,12 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { staticImportClosure } from "./related-tests.mjs";
 
 export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
-  "affected-passing-task-verdict-v3";
+  "affected-passing-task-verdict-v4";
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS = 32;
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -197,6 +197,41 @@ export const CAPABILITY_BASH_SEAM_IDENTITY_ENV = Object.freeze([
   "PC_HEAVY_DURABLE_CALLER",
 ]);
 
+/**
+ * Caller/session state observed changing across two otherwise identical real `test:affected`
+ * invocations. These values describe the Codex conversation or the retry wrapper, not the task.
+ *
+ * `AFFECTED_RETRY_FAILED` deserves an explicit safety argument: a verdict is stored only for a
+ * clean FIRST pass (`shouldStorePassingTaskVerdict` requires initialStatus=0). Changing whether a
+ * later failure would be retried therefore cannot make an already-stored pass less valid. The
+ * resolved `retryFailed` gate field is normalised for the same reason below.
+ *
+ * Keep this an exact allow-list. A blanket CODEX_* / DISABLE_* wipe could hide a future variable
+ * that genuinely changes the child process, turning a safe miss into an unsafe hit.
+ */
+const CALLER_VOLATILE_IDENTITY_ENV = Object.freeze([
+  "AFFECTED_RETRY_FAILED",
+  "CODEX_SESSION_ID",
+  "CODEX_THREAD_ID",
+  "DISABLE_AUTO_COMPACT",
+  "DISABLE_COMPACT",
+]);
+
+// Codex prepends one fresh arg0 directory after a compaction/resume. Measured live, that directory
+// contains only the client's `.lock`; the stable Codex executable path beside it remains hashed.
+// Remove only this exact Papercusp-managed shape instead of weakening PATH as a whole: binary
+// resolution is a real task input, while the rotating empty launcher directory is not.
+const CODEX_ARG0_PATH_SEGMENT =
+  /[\\/]\.papercusp[\\/]su-codex-homes[\\/]session-[^\\/]+[\\/]tmp[\\/]arg0[\\/]codex-arg0[^\\/]*$/;
+
+function normalizeCrossRunPath(value) {
+  if (typeof value !== "string") return value;
+  return value
+    .split(delimiter)
+    .filter((segment) => !CODEX_ARG0_PATH_SEGMENT.test(segment))
+    .join(delimiter);
+}
+
 export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
   const { environment: identityEnvironment } =
     passingTaskVerdictIdentityEnvironment(environment);
@@ -208,8 +243,12 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
     "VITEST_MAX_THREADS",
     ...SHELL_VOLATILE_IDENTITY_ENV,
     ...CAPABILITY_BASH_SEAM_IDENTITY_ENV,
+    ...CALLER_VOLATILE_IDENTITY_ENV,
   ]) {
     delete identityEnvironment[perRunName];
+  }
+  if (Object.hasOwn(identityEnvironment, "PATH")) {
+    identityEnvironment.PATH = normalizeCrossRunPath(identityEnvironment.PATH);
   }
   return {
     environment: identityEnvironment,
@@ -231,6 +270,9 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
  *   (`timeoutDurationEstimate`), so every run moves the next run's value. Measured: one run hit
  *   `cross-run:identity-match` and the byte-identical next run missed with `gate-config-changed`
  *   purely because the first had recorded a duration.
+ * - `retryFailed` is resolved from caller override + live load. A stored verdict necessarily came
+ *   from a clean first pass, so whether a failure WOULD have received an absorption retry cannot
+ *   change what that pass proved; retaining it only makes load/caller drift invalidate the proof.
  *
  * Validity is decided by `dependencyHash` — the content sha256 of the task's whole dependency
  * closure — so none of this widens what a stored verdict is allowed to claim. FAIL-SAFE
@@ -242,7 +284,7 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
  * shared identity spec.
  */
 export function passingTaskVerdictCrossRunGateConfig(gateConfig) {
-  const crossRun = { ...gateConfig, affectedBase: null };
+  const crossRun = { ...gateConfig, affectedBase: null, retryFailed: null };
   if (crossRun.batchTimeout && typeof crossRun.batchTimeout === "object") {
     crossRun.batchTimeout = {
       ...crossRun.batchTimeout,

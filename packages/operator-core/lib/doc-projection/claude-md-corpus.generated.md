@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 296
-  corpus-blocks: 257
+  corpus-parts: 297
+  corpus-blocks: 258
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -760,6 +760,27 @@ Two specifics worth knowing:
   CHANGE."* That error, not the red itself, is what repeatedly costs hours here.
 - **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a
   poll loop and not a hand-built await.
+
+⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE — never "just re-run" the gate at tip.** The standard
+main-greening procedure is **freeze-and-converge** (`RELEASE_FREEZE_AND_CONVERGE_DEFAULT`,
+default ON; P-013 / D-007). On the first real code red the gate opens ONE frozen repair queue,
+and every later run RESUMES that exact candidate rather than a newer tip. Turning it off
+"restores the pre-D-001 re-cut-at-tip stream — the treadmill D-007 diagnosed, where each new cut
+re-admits the whole sweep and imports breakage faster than fixes land."
+
+So when the gate is red: **fix the frozen candidate's reds so the fixes land ON TOP of it**
+(advancing `repairHead`) — the queue re-tests that sha itself. Do NOT fire
+`release:checkpoint-run` to "try again": it always cuts a FRESH candidate at the current tip
+(`candidateSource: tip`, and it exposes no candidate arg), which silently restarts the treadmill
+on a tree where ~100 agents commit continuously. Do not hand-pin with `--candidate` either —
+that fights the mechanism instead of using it.
+
+`release:repair-queue { op:'retire' }` clears ONE queue ROW, not the mechanism, and is **not a
+"make the gate move" lever**. Retire ONLY when the queue is provably *unreachable-green*: its
+fixer is dead AND the fixes are absent from the frozen candidate (verify per path with
+`git rev-parse <candidate>:<path>` vs `git rev-parse staging:<path>` — equal blobs mean the fix
+is NOT in it). Having retired one, let the next run re-freeze; do not start re-cutting.
+
 
 ✅ **It DOES answer *"which sha is the run judging right now"*, AND it now names its own
 provenance — read `source.authoritative` before you act on the sha.** The cell returns
