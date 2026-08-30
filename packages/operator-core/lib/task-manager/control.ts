@@ -25,6 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
+import { notifyTaskKillRequested } from './kill-notify';
 import { closeTask, getSubtree, getTask, updateTaskLimits } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
 
@@ -310,6 +311,13 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
 
   // ── the trustworthy path ────────────────────────────────────────────────
   if (row.confined && row.scopeUnit) {
+    // EI-21905196224862433: announce kill-intent BEFORE the signal actually goes
+    // out. A confined job's Node-side watcher is the `systemd-run --pipe --wait`
+    // CLIENT, not the payload — that client exits 0 once the unit is gone
+    // regardless of whether it ended normally or was killed here, so a listener
+    // (capability:bash's job registry) needs this notice to land before the
+    // client can possibly have exited and its close handler run.
+    notifyTaskKillRequested(taskId, signal);
     const res = await systemctl(['kill', `--signal=${signal}`, row.scopeUnit], d);
     if (!res.ok) {
       return { ok: false, taskId, action: 'kill', error: 'command_failed', detail: res.detail };
@@ -319,6 +327,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
       await d.sleep(opts.escalateAfterMs);
       if (countScopeProcesses(row, d) > 0) {
         escalated = true;
+        notifyTaskKillRequested(taskId, 'SIGKILL');
         await systemctl(['kill', '--signal=SIGKILL', row.scopeUnit], d);
       }
     }
@@ -400,6 +409,11 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     return { ok: false, taskId, action: 'kill', error: verdict.error, detail: verdict.detail };
   }
   try {
+    // EI-21905196224862433: same kill-intent notice as the confined path above —
+    // an UNCONFINED job's watched child IS the real payload, so its own close
+    // handler already sees `code===null, signal===<sig>` correctly, but the
+    // notice is cheap to send unconditionally and keeps both paths consistent.
+    notifyTaskKillRequested(taskId, signal);
     d.kill(verdict.pid, signal);
   } catch (e) {
     return { ok: false, taskId, action: 'kill', error: 'command_failed', detail: (e as Error).message };
