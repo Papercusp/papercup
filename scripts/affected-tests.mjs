@@ -1724,8 +1724,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       "packages/operator-core/lib/system-health/recovery-dependency-audit.test.ts",
     appliesTo: (f) =>
       f === "package.json" ||
-      f === "packages/operator-core/lib/system-health/recovery-dependency-scan.ts" ||
-      f === "packages/operator-core/lib/system-health/recovery-dependency-audit.ts" ||
+      // operator-core's own manifest is where this script is DECLARED, and the registry
+      // lookup above silently drops a guard whose script is missing from it. The
+      // lint:no-fake-timers-in-integration entry was already caught by exactly that
+      // (registered, never attached), so re-run on a manifest edit.
+      f === "packages/operator-core/package.json" ||
+      // The scanner's own sources need no line here: both live under packages/**.ts and
+      // are already matched by the population predicate below.
       (/^(?:apps|packages|libs)\//.test(f) &&
         /\.ts$/.test(f) &&
         !/\.(?:test|integration\.test|d)\.ts$/.test(f) &&
