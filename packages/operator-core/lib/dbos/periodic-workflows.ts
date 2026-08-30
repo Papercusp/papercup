@@ -1870,3 +1870,61 @@ DBOS.registerScheduled(governorReceiptGcWorkflow, {
   name: 'governorReceiptGc',
   crontab: '0 20 * * * *',
 });
+
+// Every 2h: cloud-resource-obligation sweep (closes EI-21915296593490861).
+//
+// P-046 agents repeatedly create real, metered GCP infra (custom networks, subnets,
+// Cloud Routers, Cloud NATs) because the project default network has no NAT and a
+// clean-room/Packer guest cannot reach the internet without one. Until this routine
+// existed the teardown obligation was recorded ONLY as prose in a work-item checkpoint
+// ("TEARDOWN OWED — standing GCP cost"). Nothing enforced or detected it, and prose
+// does not survive the creating agent's death: WI-40474 measured three successive
+// holders dying/stalling in sequence while the obligation sat undischarged in
+// checkpoint text across every handoff.
+//
+// harness_shared.cloud_resource_obligations (migration 1040) makes the obligation a
+// ROW, not a paragraph, and THIS tick is the owner-independent sweep the issue calls
+// for: it runs on the DBOS scheduler's own process, so detection no longer depends on
+// any agent's session surviving. Past-grace obligations are escalated via
+// captureImprovement with a stable watchdogKey, so a re-nudge coalesces onto the same
+// work-item (bumping repeatCount) instead of filing a sibling every tick. This sweep
+// never calls a cloud-provider API itself (no working GCP credential is assumed to be
+// available in-process) — teardown remains a human/infra-owner action taken against
+// the escalation it files. Never throws (mirrors every other retention/sweep tick
+// here): a per-candidate capture failure is recorded in the result and skipped, not
+// allowed to poison the whole scheduled step.
+async function cloudResourceObligationSweepTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('cloud-resource-obligation-sweep')) return;
+      try {
+        const { runCloudResourceObligationSweepOnce } = await import(
+          '../workspace-host/cloud-resource-obligations'
+        );
+        const { captureImprovement } = await import('../harness/improvements/capture-core');
+        const { sql } = getOrgPg();
+        const r = await runCloudResourceObligationSweepOnce(sql, { capture: captureImprovement });
+        if (r.candidates > 0 || r.errors.length > 0) {
+          console.log(
+            `[cloud-resource-obligation-sweep] ${r.candidates} past-grace obligation(s), ` +
+              `${r.escalated} escalated` +
+              (r.errors.length > 0 ? `, ${r.errors.length} capture failure(s): ${JSON.stringify(r.errors)}` : ''),
+          );
+        }
+      } catch (err) {
+        console.warn(`[cloud-resource-obligation-sweep] tick skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'cloud-resource-obligation-sweep' },
+  );
+}
+const cloudResourceObligationSweepWorkflow = idempotentRegisterWorkflow('cloudResourceObligationSweep', () =>
+  DBOS.registerWorkflow(cloudResourceObligationSweepTick, {
+    name: 'cloudResourceObligationSweep',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(cloudResourceObligationSweepWorkflow, {
+  name: 'cloudResourceObligationSweep',
+  crontab: '0 30 */2 * * *',
+});
