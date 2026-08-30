@@ -170,6 +170,61 @@ export async function ensureBuildProtocol(
   return { path: protocolPath, created: true };
 }
 
+/**
+ * EI-21854247573857420: `overlayTemplateFiles` copies a template's ENTIRE root
+ * onto the new app dir, but no template root ships a `.gitignore` — so a
+ * materialized app's own git (created by `pot:create`, distinct from this
+ * monorepo's) has nothing stopping it from tracking `node_modules/`/`.next/`
+ * build output. That is what blew a real materialization past git-sync's
+ * 250MB cumulative dirty-set peel limit (portal, 2026-08-30). Mirrors
+ * `ensureBuildProtocol`: a template-provided `.gitignore` is preserved
+ * untouched; a missing one gets this common fallback. Unlike PROTOCOL.md, an
+ * EXISTING-but-empty `.gitignore` is not an error — an empty file is a
+ * legitimate (if unusual) choice, not a broken artifact.
+ */
+const DEFAULT_APP_GITIGNORE = `node_modules/
+.next/
+dist/
+out/
+build/
+*.tsbuildinfo
+coverage/
+.env
+.env.*
+*.log
+logs/
+.DS_Store
+`;
+
+export async function ensureGitignore(rootPath: string): Promise<{ path: string; created: boolean }> {
+  const gitignorePath = join(rootPath, '.gitignore');
+  try {
+    await readFile(gitignorePath, 'utf8');
+    return { path: gitignorePath, created: false };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      throw new MaterializeTemplateError(
+        `materialized template .gitignore at ${gitignorePath} could not be read: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        422,
+      );
+    }
+  }
+  try {
+    await writeFile(gitignorePath, DEFAULT_APP_GITIGNORE, 'utf8');
+  } catch (error) {
+    throw new MaterializeTemplateError(
+      `materialized template .gitignore at ${gitignorePath} could not be created: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      500,
+    );
+  }
+  return { path: gitignorePath, created: true };
+}
+
 const RELEASE_GATE_SCRIPT_PRIORITY = [
   'check:gate',
   'check:union',
@@ -499,6 +554,10 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
     const protocol = await ensureBuildProtocol(materialized.path, src.listing);
     if (protocol.created && !materialized.filesCopied.includes('PROTOCOL.md')) {
       materialized.filesCopied.push('PROTOCOL.md');
+    }
+    const gitignore = await ensureGitignore(materialized.path);
+    if (gitignore.created && !materialized.filesCopied.includes('.gitignore')) {
+      materialized.filesCopied.push('.gitignore');
     }
     releaseGateTestCommand = await ensureReleaseGateTestCommand(materialized.path);
   } catch (e) {
