@@ -115,6 +115,18 @@ export interface ChecksComponentsSection {
   manifests?: string[];
 }
 
+/**
+ * `theme-tokens` (D-011) — the app consumes the papercusp-ui shared theme
+ * token package: a generated tokens.css carrying the 3-state
+ * light/dark/system model, and NO raw hex colors in app CSS outside it.
+ */
+export interface ChecksThemeTokensSection {
+  /** App-root-relative path to the GENERATED tokens.css (e.g. "app/tokens.css"). */
+  tokensCss: string;
+  /** App CSS files that must be raw-hex-free (tokens.css itself is exempt). */
+  appCss: string[];
+}
+
 /** One portable command in the shared mobile-base acceptance contract. */
 export interface ChecksMobileCommand {
   /** Stable command id (rust-fmt, rust-test, binding-smoke, token-drift, ...). */
@@ -313,6 +325,7 @@ export interface TemplateChecksConfig {
   gym?: ChecksGymSection;
   composition?: ChecksCompositionSection;
   components?: ChecksComponentsSection;
+  themeTokens?: ChecksThemeTokensSection;
   mobileBase?: ChecksMobileBaseSection;
   androidShell?: ChecksAndroidShellSection;
   iphoneShell?: ChecksIphoneShellSection;
@@ -505,6 +518,22 @@ export function validateChecksConfig(value: unknown): string[] {
           value.components.manifests,
           true,
         );
+    }
+  }
+
+  if (value.themeTokens !== undefined) {
+    if (!isRecord(value.themeTokens))
+      errors.push("themeTokens: must be an object");
+    else {
+      if (!isNonEmptyString(value.themeTokens.tokensCss))
+        errors.push("themeTokens.tokensCss: required non-empty string");
+      requireStringArray(
+        errors,
+        "themeTokens",
+        "appCss",
+        value.themeTokens.appCss,
+        true,
+      );
     }
   }
 

@@ -43,6 +43,18 @@ vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
   resolveHarnessContentPath: vi.fn(() => undefined),
 }));
+// EI-21872682653374832 — `createOneWorkItem` stamps goal provenance (_create-core.ts:1199).
+// Unmocked, `resolveGoalContext` reaches the real authority read, which fails CLOSED with
+// `goal_holder_authority_unreadable` (goal-context.ts:54) because no fixture can supply that
+// authority. The stamp's catch console.warns by design (EI-20075667133396690, so a stamp that
+// THREW stays distinguishable from one that correctly DECLINED), and vitest-fail-on-console
+// turns that warn into a failure — reddening all 9 tests here before any of them reach their
+// own assertion. Returning null is the honest fixture answer: this agent runs under no goal,
+// which is the majority production path and the one these tests actually mean to exercise.
+// Do NOT "fix" this by silencing the production warn; the warn is the feature.
+vi.mock('../../modes/goal-context', () => ({
+  resolveGoalContext: vi.fn(async () => null),
+}));
 
 import { createOneWorkItem, selectExplicitRepoPathRoot } from './_create-core';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';

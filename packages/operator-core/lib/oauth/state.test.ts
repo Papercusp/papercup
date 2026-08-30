@@ -5,8 +5,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // nonce store that honours the three query shapes the SUT issues (INSERT,
 // the claim CTE, and the reset DELETE) so the consume/replay logic is exercised
 // deterministically without a live PG.
+//
+// ⚠ MUST mock the '@papercusp/db-org/connection' SUBPATH, not the package root.
+// vi.mock is keyed by module specifier, and db-org's exports map resolves
+// '.' -> src/index.ts but './connection' -> src/connection.ts — two distinct
+// module records. state.ts imports getOrgPg from the subpath, so mocking the
+// root leaves it bound to the REAL getOrgPg, which opens the live "org-admin"
+// pool and trips the unit-lane detector (EI-19311807188719573) on every test
+// here — including the pure signature/malformed cases, via afterEach's
+// __resetForTest(). Keep this specifier in sync with state.ts's import.
 const __nonces = new Map<string, { consumed: boolean; privateContext: Record<string, string> }>();
-vi.mock('@papercusp/db-org', async (orig) => {
+vi.mock('@papercusp/db-org/connection', async (orig) => {
   const sql: any = Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = strings.join(' ');
