@@ -19,7 +19,11 @@ export const PHASE_A_PLAN_ITEM = 'P-302' as const;
 export const PHASE_A_POT_HOME = 'hello-world-3-pot' as const;
 export const PHASE_A_TOWER_GIT_SYNC_SLUG = PHASE_A_POT_HOME;
 export const PHASE_A_VM_GIT_SYNC_SLUG = 'hello-world' as const;
-export const PHASE_A_REPO_KEY = 'gh-1296269' as const;
+// The fixed canary's registry pin was re-keyed from the original Hello-World
+// upstream id (gh-1296269) to the self-hive repo id (gh-1303510992). Keep this
+// explicit: the physical drill must target the same immutable bare store the
+// registry advertises, never a stale retired store or a caller-selected path.
+export const PHASE_A_REPO_KEY = 'gh-1303510992' as const;
 
 export type PhysicalDrillHost = 'tower' | 'vm';
 export type PhysicalDrillGitSyncSlug =
