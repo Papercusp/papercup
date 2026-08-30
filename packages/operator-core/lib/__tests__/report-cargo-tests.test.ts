@@ -30,6 +30,7 @@ import {
   cargoDiskPolicyFromEnv,
   classifyCargoRun,
   detectCargoTermination,
+  DEFAULT_CARGO_DISK_POLICY,
   DEFAULT_CARGO_RECLAIM_POLICY,
   ensureCargoCacheTag,
   formatCargoDiskRefusal,
@@ -230,10 +231,37 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
         PAPERCUSP_DISK_ALARM_FREE_PCT: '12.5',
         PAPERCUSP_DISK_ALARM_FREE_GB: '8',
       }),
-    ).toEqual({ freePctMin: 0.125, freeBytesMin: 8 * GIB });
+    ).toEqual({ freePctMin: 0.125, freeBytesMin: 8 * GIB, percentFloorBypassBytes: 128 * GIB });
     expect(
       cargoDiskPolicyFromEnv({ PAPERCUSP_DISK_ALARM_FREE_PCT: '0', PAPERCUSP_DISK_ALARM_FREE_GB: '-1' }),
-    ).toEqual({ freePctMin: 0.1, freeBytesMin: 5 * GIB });
+    ).toEqual({ freePctMin: 0.1, freeBytesMin: 5 * GIB, percentFloorBypassBytes: 128 * GIB });
+  });
+
+  it('EI-21901389541963783: percentFloorBypassBytes is env-tunable via its own key, defaulting to the unchanged 128 GiB constant', () => {
+    expect(cargoDiskPolicyFromEnv({})).toEqual({
+      freePctMin: 0.1,
+      freeBytesMin: 5 * GIB,
+      percentFloorBypassBytes: 128 * GIB,
+    });
+    expect(
+      cargoDiskPolicyFromEnv({ PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB: '96' }),
+    ).toEqual({ freePctMin: 0.1, freeBytesMin: 5 * GIB, percentFloorBypassBytes: 96 * GIB });
+    // A non-positive override falls back to the unchanged default, exactly like the two existing keys.
+    expect(
+      cargoDiskPolicyFromEnv({ PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB: '0' }),
+    ).toEqual({ freePctMin: 0.1, freeBytesMin: 5 * GIB, percentFloorBypassBytes: 128 * GIB });
+  });
+
+  it('EI-21901389541963783: an env-tuned percentFloorBypassBytes actually changes the admission verdict and the refusal message', () => {
+    const tightPolicy = cargoDiskPolicyFromEnv({
+      PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB: '50',
+    });
+    // 60 GiB free clears a 50 GiB bypass floor but would refuse against the default 128 GiB floor.
+    const result = assessCargoDiskAdmission({ totalBytes: 2_000 * GIB, freeBytes: 60 * GIB }, tightPolicy);
+    expect(result).toMatchObject({ allowed: true, status: 'ok', reasons: [], percentFloorBypassGiB: 50 });
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 2_000 * GIB, freeBytes: 60 * GIB }, DEFAULT_CARGO_DISK_POLICY),
+    ).toMatchObject({ allowed: false, status: 'blocked', reasons: ['free-percent'] });
   });
 
   it('fails open when statfs values are unreadable instead of manufacturing a disk verdict', () => {
@@ -650,7 +678,11 @@ describe('native-suite admission reclaim reaches its own producer output (P-001)
     // them (128 GiB is ~3-5x the measured 24-40 GiB native target footprint).
     expect(CARGO_PERCENT_FLOOR_BYPASS_BYTES).toBe(128 * GIB);
     expect(DEFAULT_CARGO_RECLAIM_POLICY.maxBytes).toBe(128 * GIB);
-    expect(cargoDiskPolicyFromEnv({})).toEqual({ freePctMin: 0.1, freeBytesMin: 5 * GIB });
+    expect(cargoDiskPolicyFromEnv({})).toEqual({
+      freePctMin: 0.1,
+      freeBytesMin: 5 * GIB,
+      percentFloorBypassBytes: 128 * GIB,
+    });
 
     // The reporter must spend the budget on the admission path, not sweep blindly.
     expect(REPORTER_SOURCE).toContain('stopWhen: () => readDiskAdmission().allowed');

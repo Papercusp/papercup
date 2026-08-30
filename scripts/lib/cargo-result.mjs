@@ -103,20 +103,24 @@ export function ensureCargoCacheTag(targetDir) {
  * deliberately keeps Cargo targets warm during normal operation, so this is an
  * admission guard, not an unconditional cache cleaner.
  */
-export const DEFAULT_CARGO_DISK_POLICY = Object.freeze({
-  freePctMin: 0.1,
-  freeBytesMin: 5 * GIB,
-});
-
 /**
  * EI-21149612505559395: a 7.3 TiB volume at 97% used still had 284 GiB free, yet
  * the percentage leg refused Cargo and red-pinned every release. 128 GiB is a
  * deliberately conservative absolute working-headroom escape hatch: it is far
  * above the hard 5 GiB safety floor and the observed native target footprint,
  * while preserving the percentage refusal for genuinely tight volumes (for
- * example the existing 2 TiB / 80 GiB regression case).
+ * example the existing 2 TiB / 80 GiB regression case). Kept as a bare constant
+ * (not env-driven) so existing direct imports/assertions of this exact value
+ * are unaffected; `cargoDiskPolicyFromEnv` below is where a host can actually
+ * retune it.
  */
 export const CARGO_PERCENT_FLOOR_BYPASS_BYTES = 128 * GIB;
+
+export const DEFAULT_CARGO_DISK_POLICY = Object.freeze({
+  freePctMin: 0.1,
+  freeBytesMin: 5 * GIB,
+  percentFloorBypassBytes: CARGO_PERCENT_FLOOR_BYPASS_BYTES,
+});
 
 /** EX_TEMPFAIL: the suite did not run and becomes valid after space is reclaimed. */
 export const CARGO_DISK_REFUSAL_EXIT_CODE = 75;
@@ -127,13 +131,26 @@ function positiveEnvNumber(env, name, fallback) {
 }
 
 /** Reuse the disk alarm's existing tuning keys rather than minting a second
- * configuration surface for the Cargo-test entry point. */
+ * configuration surface for the Cargo-test entry point.
+ *
+ * EI-21901389541963783: `percentFloorBypassBytes` defaults to the SAME 128 GiB
+ * value as `CARGO_PERCENT_FLOOR_BYPASS_BYTES` — zero behavior change unless a
+ * host explicitly sets the env var. This exists so a host with verified,
+ * measured peak Cargo working-set data can retune the absolute-headroom escape
+ * hatch without editing source; it does not itself change what the default
+ * floor is, and does not by itself resolve a real disk-pressure incident. */
 export function cargoDiskPolicyFromEnv(env = process.env) {
   return {
     freePctMin:
       positiveEnvNumber(env, 'PAPERCUSP_DISK_ALARM_FREE_PCT', DEFAULT_CARGO_DISK_POLICY.freePctMin * 100) / 100,
     freeBytesMin:
       positiveEnvNumber(env, 'PAPERCUSP_DISK_ALARM_FREE_GB', DEFAULT_CARGO_DISK_POLICY.freeBytesMin / GIB) * GIB,
+    percentFloorBypassBytes:
+      positiveEnvNumber(
+        env,
+        'PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB',
+        DEFAULT_CARGO_DISK_POLICY.percentFloorBypassBytes / GIB,
+      ) * GIB,
   };
 }
 
@@ -551,9 +568,16 @@ export function assessCargoDiskAdmission(
     };
   }
 
+  // Defensive fallback: any caller passing a policy object that predates this
+  // field (a stale cached policy, a hand-built test fixture) still gets the
+  // original 128 GiB behavior rather than `undefined` reaching the comparison.
+  const percentFloorBypassBytes = Number.isFinite(policy.percentFloorBypassBytes)
+    ? policy.percentFloorBypassBytes
+    : CARGO_PERCENT_FLOOR_BYPASS_BYTES;
+
   const freePct = Math.min(1, freeBytes / totalBytes);
   const reasons = [];
-  if (freePct < policy.freePctMin && freeBytes < CARGO_PERCENT_FLOOR_BYPASS_BYTES) {
+  if (freePct < policy.freePctMin && freeBytes < percentFloorBypassBytes) {
     reasons.push('free-percent');
   }
   if (freeBytes < policy.freeBytesMin) reasons.push('free-bytes');
@@ -566,7 +590,7 @@ export function assessCargoDiskAdmission(
     freePct,
     usedPct: Math.round((1 - freePct) * 100),
     freeGiB: Math.floor(freeBytes / GIB),
-    percentFloorBypassGiB: Math.floor(CARGO_PERCENT_FLOOR_BYPASS_BYTES / GIB),
+    percentFloorBypassGiB: Math.floor(percentFloorBypassBytes / GIB),
     policy,
   };
 }
@@ -577,7 +601,7 @@ export function formatCargoDiskRefusal(admission) {
   return (
     `[report-cargo-tests] REFUSED before spawning Cargo: filesystem is ${admission.usedPct}% used ` +
     `with ${admission.freeGiB} GiB available; admission requires at least ${minFreePct}% free ` +
-    `unless absolute working headroom is at least ${Math.floor(CARGO_PERCENT_FLOOR_BYPASS_BYTES / GIB)} GiB, ` +
+    `unless absolute working headroom is at least ${admission.percentFloorBypassGiB} GiB, ` +
     `and always requires at least ${minFreeGiB} GiB free. ` +
     `Reclaim inactive build caches, then retry. Warm targets are preserved by default (WI-5080).`
   );
