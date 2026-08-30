@@ -2118,6 +2118,29 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((d.failingTests as string[]).length).toBe(20);
   });
 
+  it('EI-218328: buildCheckpointDetail persists only bounded run-bound checkpoint evidence', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      checkpointEvidence: {
+        logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+        runId: 'run-oddsmith-1',
+        integrationRoot: '/srv/oddsmith',
+      },
+    });
+
+    expect(d.checkpointEvidence).toEqual({
+      logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+      runId: 'run-oddsmith-1',
+      integrationRoot: '/srv/oddsmith',
+    });
+    expect(Object.keys(d.checkpointEvidence as object).sort()).toEqual([
+      'integrationRoot',
+      'logPath',
+      'runId',
+    ]);
+  });
+
   it('WI-39944: buildCheckpointDetail preserves the bounded repair-queue identity needed by durable readers', () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',
