@@ -52,6 +52,8 @@ import {
 } from "./git-ops";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
+import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
+import type { TscDiagnostic } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import {
   TARGETED_REVERDICT_ENABLED,
   assessTargetedReVerdict,
@@ -164,6 +166,99 @@ import {
 export interface CheckpointSetupIdentity {
   identity: string;
   output: string;
+}
+
+/** Exact identity of the checkpoint run that produced a verdict or gate-stall row. */
+export interface CheckpointEvidence {
+  logPath?: string;
+  runId?: string;
+  integrationRoot?: string;
+}
+
+/** One parsed compiler diagnostic carried by the early changed-file typecheck. */
+export type CheckpointTypecheckDiagnostic = TscDiagnostic;
+
+/** Structured evidence for a completed early changed-file typecheck failure. */
+export interface CheckpointTypecheckPreflight {
+  status: "failed";
+  checkedFiles: string[];
+  failingFiles: string[];
+  diagnostics: CheckpointTypecheckDiagnostic[];
+}
+
+const EARLY_TYPECHECK_DIAGNOSTIC_MAX = 100;
+
+/**
+ * Extract the file-level and compiler-level evidence from raw changed-file typecheck output.
+ *
+ * The early preflight is the only gate path that can know these diagnostics before the expensive
+ * affected-test sweep. Keep the stable `failingTests` signature separate: it drives release-fixer
+ * dedup/re-triage, while these fields let a responder see the exact source files and compiler
+ * messages without reconstructing them from a truncated summary.
+ */
+export function parseEarlyTypecheckEvidence(
+  output: string,
+  files: readonly string[],
+  root?: string,
+): {
+  failingFiles: string[];
+  diagnostics: CheckpointTypecheckDiagnostic[];
+} {
+  const normalizedFiles = [
+    ...new Set(files.map((file) => file.replaceAll("\\", "/")).filter(Boolean)),
+  ];
+  const knownBySuffix = new Map<string, string[]>();
+  for (const file of normalizedFiles) {
+    const suffix = `/${file}`;
+    knownBySuffix.set(suffix, [
+      ...(knownBySuffix.get(suffix) ?? []),
+      file,
+    ]);
+  }
+  const rootPrefix = root
+    ? `${path.resolve(root).replaceAll("\\", "/").replace(/\/+$/, "")}/`
+    : null;
+  const normalizeFile = (file: string | null): string | null => {
+    if (!file) return null;
+    let normalized = file.replaceAll("\\", "/");
+    if (rootPrefix && normalized.startsWith(rootPrefix)) {
+      normalized = normalized.slice(rootPrefix.length);
+    }
+    const matches = [...knownBySuffix.entries()]
+      .filter(([suffix]) => normalized.endsWith(suffix))
+      .flatMap(([, matches]) => matches);
+    return matches.length === 1 ? matches[0] : normalized;
+  };
+  const parsed = parseTscDiagnostics(output).map((diagnostic) => ({
+    ...diagnostic,
+    file: normalizeFile(diagnostic.file),
+  }));
+  const failingFiles = [
+    ...new Set(
+      parsed
+        .filter((diagnostic) => diagnostic.category === "error")
+        .map((diagnostic) => diagnostic.file)
+        .filter((file): file is string => Boolean(file)),
+    ),
+  ].sort();
+  return {
+    // Preserve every recoverable failing path above even when a pathological compiler output has
+    // more diagnostics than the bounded durable message can carry.
+    failingFiles,
+    diagnostics: parsed.slice(0, EARLY_TYPECHECK_DIAGNOSTIC_MAX),
+  };
+}
+
+/** Build the exact-run evidence object carried by result/event/storage boundaries. */
+export function checkpointEvidenceFor(
+  integrationRoot: string,
+  result: Pick<CheckpointResult, "logPath" | "runId">,
+): CheckpointEvidence {
+  return {
+    integrationRoot,
+    ...(result.logPath ? { logPath: result.logPath } : {}),
+    ...(result.runId ? { runId: result.runId } : {}),
+  };
 }
 
 /** Immutable dependency selection produced before the checkpoint serializer. */
@@ -384,6 +479,8 @@ export interface CheckpointDeps {
     summary: string;
     failingTests?: string[];
     flakeSuspects?: string[];
+    /** Exact files/diagnostics recovered from an early changed-file typecheck failure. */
+    typecheckPreflight?: CheckpointTypecheckPreflight;
     /** Workspace-mapped failures, so a re-run knows the cwd for each file. Feeds the
      *  stale-candidate re-triage; absent ⇒ no re-triage (the red is treated as real). */
     failingFiles?: FailingFile[];
@@ -734,6 +831,10 @@ export interface CheckpointDeps {
     status: "passed" | "failed" | "skipped";
     summary: string;
     failingSignatures?: string[];
+    /** Full compiler diagnostics, before the human summary is bounded/truncated. */
+    diagnostics?: CheckpointTypecheckDiagnostic[];
+    /** Exact file paths named by the compiler diagnostics. */
+    failingFilePaths?: string[];
   }>;
   /** WI-2997 (EI-7443 follow-up, item 3): per-file 7d historical flake stats for
    *  the CURRENTLY failing test files, so the not-green broadcast/escalate can
@@ -1075,6 +1176,10 @@ export interface CheckpointResult {
   /** WI-4957: the full-suite output log THIS run wrote, when produced (not-green paths
    *  only — an advance/up-to-date verdict has no failing suite output to reference). */
   logPath?: string;
+  /** Exact producing-run identity, used by the release-fixer and stall watchdog. */
+  checkpointEvidence?: CheckpointEvidence;
+  /** Structured source files/compiler diagnostics from the early typecheck abort. */
+  typecheckPreflight?: CheckpointTypecheckPreflight;
   /** isolation-retry-resilience-2026-07-19 (EI-15849): see CheckpointDeps.runGreen's
    *  `isolationNote` — carried through verbatim so a NOT-absorbed verdict's reasoning is
    *  durably recorded (release-actions.ts persists it via buildCheckpointDetail), not lost
@@ -2750,6 +2855,55 @@ export function renderOrchestratorTranscript(
     `${lines.join("\n")}\n` +
     `--- end orchestrator transcript ---\n`
   );
+}
+
+/** Persist an early typecheck failure before the full-suite log writer can run. */
+function writeEarlyTypecheckFailureLog(input: {
+  logDir: string;
+  candidate: string;
+  base: string | null;
+  runId?: string;
+  checkedFiles: readonly string[];
+  failingFiles: readonly string[];
+  diagnostics: readonly CheckpointTypecheckDiagnostic[];
+  summary: string;
+}): string | undefined {
+  try {
+    mkdirSync(input.logDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const logPath = path.join(
+      input.logDir,
+      `${stamp}-base-${(input.base ?? "none").slice(0, 12)}-cand-${input.candidate.slice(0, 12)}-early-typecheck.log`,
+    );
+    const header =
+      `${orchestratorStdoutTag()} candidate=${input.candidate} ` +
+      `base=${input.base ?? "none"} written=${new Date().toISOString()} green=false ` +
+      `promoted=see-GATE_PROMOTION early=changed-file-typecheck ` +
+      `runId=${input.runId ?? "unresolved"}\n`;
+    const evidence = [
+      "--- early changed-file typecheck evidence ---",
+      `checkedFiles=${JSON.stringify(input.checkedFiles.slice(0, 100))}`,
+      `failingFiles=${JSON.stringify(input.failingFiles)}`,
+      `diagnostics=${JSON.stringify(input.diagnostics)}`,
+      "--- early changed-file typecheck summary ---",
+      input.summary,
+      "",
+    ].join("\n");
+    writeFileSync(
+      logPath,
+      header +
+        sanitizeCheckpointLogText(
+          defangCapturedResultMarkers(
+            renderOrchestratorTranscript() + evidence,
+          ),
+        ),
+    );
+    pruneOldLogs(input.logDir, 14);
+    return logPath;
+  } catch {
+    // The typecheck verdict remains valid even if its best-effort diagnostic log cannot be written.
+    return undefined;
+  }
 }
 
 /** Strip SGR colour codes. The suite runs under a pty-less pipe but vitest still
@@ -7887,8 +8041,14 @@ async function runGreenCheckpointInner(
       pipeline,
       summary: result.summary ?? null,
       failingTests: result.failingTests ?? [],
+      ...(result.typecheckPreflight
+        ? { typecheckPreflight: result.typecheckPreflight }
+        : {}),
       logPath: result.logPath ?? null,
       runId: result.runId ?? deps.runId ?? null,
+      ...(result.checkpointEvidence
+        ? { checkpointEvidence: result.checkpointEvidence }
+        : {}),
       lineage: result.lineage ?? null,
       candidateSource,
     };
@@ -8987,6 +9147,17 @@ async function runGreenCheckpointInner(
               const failingSignatures = preflight.failingSignatures?.length
                 ? [...new Set(preflight.failingSignatures)]
                 : ["lint:tsc"];
+              const typecheckPreflight: CheckpointTypecheckPreflight = {
+                status: "failed",
+                checkedFiles: [...operatorCoreFiles],
+                failingFiles: [
+                  ...new Set(preflight.failingFilePaths ?? []),
+                ].sort(),
+                diagnostics: (preflight.diagnostics ?? []).slice(
+                  0,
+                  EARLY_TYPECHECK_DIAGNOSTIC_MAX,
+                ),
+              };
               deps.log(
                 `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${operatorCoreFiles.length} operator-core file(s) ` +
                   `(${files.length} total changed file(s)) — ` +
@@ -8996,12 +9167,26 @@ async function runGreenCheckpointInner(
                 deps.log(
                   `early changed-file typecheck output:\n${preflight.summary}`,
                 );
+              const earlySummary =
+                `Early changed-file typecheck failed before the affected-test sweep (${elapsed()}).\n\n` +
+                preflight.summary;
+              const earlyLogPath = writeEarlyTypecheckFailureLog({
+                logDir: cfg.checkpointLogDir,
+                candidate,
+                base: lastReady,
+                runId: deps.runId,
+                checkedFiles: typecheckPreflight.checkedFiles,
+                failingFiles: typecheckPreflight.failingFiles,
+                diagnostics: typecheckPreflight.diagnostics,
+                summary: earlySummary,
+              });
+              if (earlyLogPath) deps.log(`early typecheck evidence → ${earlyLogPath}`);
               earlyPreflightFailure = {
                 green: false,
-                summary:
-                  `Early changed-file typecheck failed before the affected-test sweep (${elapsed()}).\n\n` +
-                  preflight.summary,
+                summary: earlySummary,
                 failingTests: failingSignatures,
+                typecheckPreflight,
+                ...(earlyLogPath ? { logPath: earlyLogPath } : {}),
               };
             } else {
               deps.log(
@@ -9100,6 +9285,7 @@ async function runGreenCheckpointInner(
     flakeSuspects,
     failingFiles = [],
     logPath,
+    typecheckPreflight,
     isolationNote,
     retriedTests,
     cleanGreen,
@@ -9119,6 +9305,10 @@ async function runGreenCheckpointInner(
         ". Verify both halves at tip before fixing or quarantining the reported test."
       : "";
   let verdictSummary = `${summary}${splitPairNote}`;
+  const checkpointEvidence = checkpointEvidenceFor(cfg.integrationRoot, {
+    logPath,
+    runId: deps.runId,
+  });
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -9262,6 +9452,8 @@ async function runGreenCheckpointInner(
         summary: fossilSummary,
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
+        ...(checkpointEvidence ? { checkpointEvidence } : {}),
+        ...(typecheckPreflight ? { typecheckPreflight } : {}),
         ...(isolationNote ? { isolationNote } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
@@ -9300,6 +9492,8 @@ async function runGreenCheckpointInner(
       ...(cleanGreen === undefined ? {} : { cleanGreen }),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
+      ...(checkpointEvidence ? { checkpointEvidence } : {}),
+      ...(typecheckPreflight ? { typecheckPreflight } : {}),
       ...(isolationNote ? { isolationNote } : {}),
       ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
     };
@@ -9330,6 +9524,8 @@ async function runGreenCheckpointInner(
       promotionPending: true,
       summary: verdictSummary,
       ...(failingTests?.length ? { failingTests } : {}),
+      ...(typecheckPreflight ? { typecheckPreflight } : {}),
+      ...(checkpointEvidence ? { checkpointEvidence } : {}),
       ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
@@ -9434,6 +9630,8 @@ async function runGreenCheckpointInner(
         reason: "infra-inconclusive",
         summary: infraSummary,
         infraFault,
+        ...(checkpointEvidence ? { checkpointEvidence } : {}),
+        ...(typecheckPreflight ? { typecheckPreflight } : {}),
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(isolationNote ? { isolationNote } : {}),
@@ -9572,6 +9770,8 @@ async function runGreenCheckpointInner(
               ...(isolationNote ? { isolationNote } : {}),
               ...(retriedTests ? { retriedTests } : {}),
               ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
+              ...(checkpointEvidence ? { checkpointEvidence } : {}),
+              ...(typecheckPreflight ? { typecheckPreflight } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
             };
             await emitTerminalRed(terminalResult);
@@ -9687,6 +9887,8 @@ async function runGreenCheckpointInner(
       ...(forRetriage ? { retriage: forRetriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
+      ...(checkpointEvidence ? { checkpointEvidence } : {}),
+      ...(typecheckPreflight ? { typecheckPreflight } : {}),
       ...(isolationNote ? { isolationNote } : {}),
       ...(lineage ? { lineage } : {}),
       ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
@@ -10433,6 +10635,8 @@ async function runGreenCheckpointInner(
       ...(retriage ? { retriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
+      ...(checkpointEvidence ? { checkpointEvidence } : {}),
+      ...(typecheckPreflight ? { typecheckPreflight } : {}),
       ...(isolationNote ? { isolationNote } : {}),
       ...(lineage ? { lineage } : {}),
     };
@@ -13958,9 +14162,20 @@ export function realCheckpointDeps(
         const summary =
           summarizeSuiteOutput(output).trim() ||
           `npm run lint:tsc exited ${result.code}`;
+        const evidence = parseEarlyTypecheckEvidence(
+          output,
+          files,
+          cfg.checkpointRoot,
+        );
         return result.code === 0
           ? { status: "passed", summary, failingSignatures: [] }
-          : { status: "failed", summary, failingSignatures: ["lint:tsc"] };
+          : {
+              status: "failed",
+              summary,
+              failingSignatures: ["lint:tsc"],
+              diagnostics: evidence.diagnostics,
+              failingFilePaths: evidence.failingFiles,
+            };
       } finally {
         try {
           unlinkSync(responseFile);
