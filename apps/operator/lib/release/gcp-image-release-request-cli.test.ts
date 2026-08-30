@@ -95,7 +95,7 @@ function inputDocument(overrides: Record<string, unknown> = {}): Record<string, 
     source: { repository: "https://github.com/Papercusp/papercusp.git", revision: "daf63630615e9266fe9cee27d388ff44aa42366f" },
     baseImage: { reference: BASE_IMAGE, architecture: "x86_64", sha256: BASE_SHA },
     builder: { templatePath: "infra/images/workspace-host.pkr.hcl" },
-    materials: [{ path: "template.pkr.hcl", executable: false }],
+    materials: [{ path: "template.pkr.hcl", executable: false }, { path: INITIALIZER_PATH, executable: true }],
     cleanRoom: { zone: "us-central1-a", serviceAccountEmail: "papercusp-vm@example.iam.gserviceaccount.com", subnetwork: "pc-p046-rel-subnet" },
     compatibilityRequest: {
       action: "install",
