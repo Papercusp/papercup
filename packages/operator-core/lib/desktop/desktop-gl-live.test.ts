@@ -227,6 +227,30 @@ describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints re
     // Beyond the verdict: the measured margin should be nowhere near the threshold. A frame
     // that only just clears it is a warning that the app painted almost nothing.
     expect(report.distinctColors ?? 0).toBeGreaterThan(8);
+
+    // …and WHICH renderer painted them, not merely that something did (WI-1105361 / D-031).
+    //
+    // THIS IS THE GUARD THAT WAS MISSING. Every assertion above passes on SOFTWARE pixels:
+    // llvmpipe is a working rasterizer, so a `hardware` desktop that silently fell back to
+    // it still paints, still clears the colour threshold, and still reads green. That is
+    // precisely how a sandbox binding `/dev/dri` but no `/dev/nvidia*` hid — for the whole
+    // life of P-002 — behind a suite that only ever asked whether pixels existed.
+    //
+    // The fallback announces itself in the app's OWN stderr, which is already collected
+    // here, so this costs nothing extra: libglvnd failing over to the Mesa ICD on an NVIDIA
+    // device prints `driver (null)` and then `failed to create dri2 screen`.
+    if (desktop.gl.tier === 'hardware') {
+      const stderr = diagnostics.map((d) => d.stderrTail).join('\n');
+      expect(
+        /driver \(null\)|failed to create dri2 screen/.test(stderr),
+        `the desktop reports gl.tier=hardware via ${desktop.gl.id}, but the app's EGL fell back\n` +
+          '  to a software vendor INSIDE the sandbox — so the hardware claim is not being kept.\n' +
+          '  D-031: the GL ladder probes OUTSIDE the sandbox, where the GPU always works, so it\n' +
+          '  can record `hardware` while the app inside reaches llvmpipe. Check that the vendor\n' +
+          '  device nodes are bound for this tier (discoverGpuDeviceNodes in desktop-sandbox.ts).\n  ' +
+          describeApps(diagnostics),
+      ).toBe(false);
+    }
   }, 60_000);
 
   it('records a measured GL strategy on the provisioned desktop (feeds D-004 capabilities)', async () => {

@@ -19,6 +19,7 @@ import {
   a11yBusSocketPath,
   buildDesktopSandboxCommand,
   desktopSandboxEnv,
+  discoverGpuDeviceNodes,
   type DesktopSandboxInput,
 } from './desktop-sandbox';
 
@@ -206,6 +207,84 @@ describe('buildDesktopSandboxCommand — GL', () => {
 
   it.each(['software', 'none'] as const)('gives a %s desktop no GPU handle', (tier) => {
     expect(build({ glTier: tier }).argv).not.toContain('/dev/dri');
+  });
+});
+
+/**
+ * WI-1105361. `/dev/dri` is the Mesa/DRM interface; the NVIDIA proprietary stack needs its
+ * OWN nodes. Binding only `/dev/dri` left NVIDIA's EGL with no device inside the sandbox,
+ * so libglvnd fell through to the Mesa ICD, which cannot drive an NVIDIA card — the desktop
+ * rendered in llvmpipe SOFTWARE while `gl-strategy` recorded `tier: 'hardware'`, because
+ * `probeRenderer` runs OUTSIDE the sandbox where NVIDIA works.
+ *
+ * Measured with the byte-exact production argv, n=20 per arm: without these nodes 20/20 runs
+ * reached `llvmpipe (LLVM 20.1.2)`; with them, 20/20 reached `NVIDIA GeForce RTX 3090`.
+ *
+ * The nodes are INJECTED here rather than discovered, so these assertions mean the same
+ * thing on a CI box with no GPU as on the RTX host where the bug was found.
+ */
+describe('buildDesktopSandboxCommand — vendor GPU nodes (WI-1105361)', () => {
+  const NODES = ['/dev/nvidia0', '/dev/nvidia-uvm', '/dev/nvidiactl'] as const;
+
+  it('binds each vendor GPU node for a hardware desktop, AFTER --dev /dev', () => {
+    const argv = build({ glTier: 'hardware' }, { gpuDeviceNodes: NODES }).argv;
+    for (const node of NODES) {
+      const at = mountIndex(argv, '--dev-bind-try', node, node);
+      expect(at, `${node} must be bound`).toBeGreaterThan(-1);
+      // `--dev /dev` builds a minimal /dev; a bind BEFORE it is silently replaced.
+      expect(at, `${node} must come after --dev /dev`).toBeGreaterThan(mountIndex(argv, '--dev', '/dev'));
+    }
+  });
+
+  it('uses --dev-bind-try, never --dev-bind, so an absent node cannot abort the whole command', () => {
+    const argv = build({ glTier: 'hardware' }, { gpuDeviceNodes: NODES }).argv;
+    for (const node of NODES) {
+      expect(mountIndex(argv, '--dev-bind', node, node), `${node} must not use the strict form`).toBe(-1);
+    }
+  });
+
+  /**
+   * THE CLAUSE-6 SAFETY PROPERTY. The plan's A-bar targets a GPU-LESS GCP workspace VM.
+   * A host with no NVIDIA nodes must come out byte-identical to the pre-fix command, or
+   * this fix breaks the very environment the next A-bar clause depends on.
+   */
+  it('adds nothing on a GPU-less host, while still binding /dev/dri', () => {
+    const argv = build({ glTier: 'hardware' }, { gpuDeviceNodes: [] }).argv;
+    expect(argv.filter((a) => a.includes('nvidia'))).toEqual([]);
+    expect(mountIndex(argv, '--dev-bind-try', '/dev/dri', '/dev/dri')).toBeGreaterThan(-1);
+  });
+
+  it.each(['software', 'none'] as const)(
+    'gives a %s desktop no vendor GPU node even when the host has them',
+    (tier) => {
+      const argv = build({ glTier: tier }, { gpuDeviceNodes: NODES }).argv;
+      expect(argv.filter((a) => a.includes('nvidia'))).toEqual([]);
+    },
+  );
+
+  it('discovers only real NVIDIA device nodes, never a lookalike', () => {
+    // Host-independent: on a GPU-less box this is [] and the assertion still holds.
+    for (const node of discoverGpuDeviceNodes()) {
+      expect(node).toMatch(/^\/dev\/nvidia(ctl|-modeset|-uvm|-uvm-tools|\d+)$/);
+    }
+  });
+
+  /**
+   * THE CONTROL, in this file's established idiom (see `legacyClobberedOrder`): the exact
+   * pre-fix mount plan — `/dev/dri` and nothing else — kept executable and permanent. The
+   * bug it encodes was invisible for a reason: it produced no error, no red test and real
+   * pixels, just software ones. So the assertions above must be shown to REJECT it, or a
+   * green here would only prove they ran.
+   */
+  it('REJECTS the pre-fix plan that bound /dev/dri alone', () => {
+    const preFix = build({ glTier: 'hardware' }, { gpuDeviceNodes: [] }).argv;
+
+    // It still looks entirely healthy on the old assertion...
+    expect(mountIndex(preFix, '--dev-bind-try', '/dev/dri', '/dev/dri')).toBeGreaterThan(-1);
+    // ...and yet carries no vendor node, which is what silently cost hardware GL.
+    for (const node of NODES) {
+      expect(mountIndex(preFix, '--dev-bind-try', node, node)).toBe(-1);
+    }
   });
 });
 
