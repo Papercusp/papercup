@@ -86,7 +86,11 @@ fn shared_manifest_writer_supports_release_relative_paths_and_verification() {
         ])
         .output()
         .unwrap();
-    assert!(write.status.success(), "{}", String::from_utf8_lossy(&write.stderr));
+    assert!(
+        write.status.success(),
+        "{}",
+        String::from_utf8_lossy(&write.stderr)
+    );
     let body = std::fs::read_to_string(&manifest).unwrap();
     assert!(body.contains("\"binaryPath\": \"bin/pui\""));
     assert!(body.contains("\"companionPath\": \"pui-companion.wasm\""));
@@ -104,6 +108,10 @@ fn shared_manifest_writer_supports_release_relative_paths_and_verification() {
         ])
         .output()
         .unwrap();
-    assert!(verify.status.success(), "{}", String::from_utf8_lossy(&verify.stderr));
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
     std::fs::remove_dir_all(scratch).unwrap();
 }
