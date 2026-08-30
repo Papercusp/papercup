@@ -6,6 +6,7 @@ import {
   type AdmissionContext,
 } from './admission';
 import {
+  PgWorkItemAdmissionQueueStore,
   WorkItemAdmissionQueueDriver,
   type DurableAdmissionQueueStore,
   type DurableAdmissionRecord,
@@ -19,6 +20,11 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
   failEnqueue = false;
   /** Optional concrete fault to throw instead of the generic one, so tests can inject a pg-shaped error. */
   enqueueError: unknown;
+  /** EI-21863356544930781: fail the next N enqueues, then succeed — a TRANSIENT fault, so a test
+   *  can tell "rode out the dip and persisted" apart from "never failed in the first place". */
+  failEnqueueTimes = 0;
+  /** Every enqueue attempt, so a test can assert a non-retryable fault was tried exactly ONCE. */
+  enqueueAttempts = 0;
 
   get size(): number {
     return this.rows.size;
@@ -39,6 +45,11 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
   }
 
   async enqueue(record: DurableAdmissionRecord) {
+    this.enqueueAttempts += 1;
+    if (this.failEnqueueTimes > 0) {
+      this.failEnqueueTimes -= 1;
+      throw this.enqueueError ?? new Error('database unavailable');
+    }
     if (this.failEnqueue) throw this.enqueueError ?? new Error('database unavailable');
     const key = this.key(record.namespace, record.idempotencyKey);
     const existing = this.rows.get(key);
@@ -238,13 +249,19 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
   }
 }
 
-function governor(store: DurableAdmissionQueueStore, now = () => 1_000) {
+function governor(
+  store: DurableAdmissionQueueStore,
+  now = () => 1_000,
+  // EI-21863356544930781: lets a retry test collapse the real ~6s of backoff to nothing.
+  driverOptions: { admissionRetryBackoffsMs?: readonly number[]; sleep?: (ms: number) => Promise<void> } = {},
+) {
   let request = 0;
   let lease = 0;
   const driver = new WorkItemAdmissionQueueDriver(store, {
     namespace: 'test',
     now,
     leaseIdFactory: () => `lease-${++lease}`,
+    ...driverOptions,
   });
   return {
     driver,
@@ -252,7 +269,44 @@ function governor(store: DurableAdmissionQueueStore, now = () => 1_000) {
   };
 }
 
+function recordingSqlClient() {
+  const queries: Array<{ text: string; values: unknown[] }> = [];
+  const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    queries.push({ text: strings.join('?'), values });
+    return Promise.resolve([] as unknown[]);
+  };
+  const client = {
+    begin: async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
+  } as never;
+  return { client, queries };
+}
+
 describe('WorkItemAdmissionQueueDriver', () => {
+  it('bounds PostgreSQL queue mutations with database-side lock and statement timeouts', async () => {
+    const { client, queries } = recordingSqlClient();
+    const store = new PgWorkItemAdmissionQueueStore({
+      sql: client,
+      workspaceId: 'workspace-test',
+    });
+
+    await expect(store.reconcileExpired('test', 1_000)).resolves.toEqual({
+      requeued: 0,
+      expired: 0,
+      total: 0,
+    });
+
+    const timeoutQueries = queries.filter((query) => query.text.includes('SELECT set_config'));
+    expect(timeoutQueries).toHaveLength(2);
+    expect(timeoutQueries[0]).toMatchObject({
+      text: "SELECT set_config('lock_timeout', ?, true)",
+      values: ['8000ms'],
+    });
+    expect(timeoutQueries[1]).toMatchObject({
+      text: "SELECT set_config('statement_timeout', ?, true)",
+      values: ['15000ms'],
+    });
+  });
+
   it('returns one stable durable receipt across process restart and rejects conflicting replay', async () => {
     const store = new MemoryQueueStore();
     const first = governor(store).governor;
@@ -308,6 +362,74 @@ describe('WorkItemAdmissionQueueDriver', () => {
     expect((error?.cause as Error | undefined)?.message).toBe(
       'relation "harness_shared.work_items" does not exist',
     );
+  });
+
+  // EI-21863356544930781: a transient pg contention timeout (55P03) on the admission write used to
+  // cost the caller the whole run. Reproduced as two consecutive testing:run calls failing with
+  // "durable admission record could not be persisted ... sqlstate=55P03" while the SAME tests ran
+  // fine via npm immediately after — the tests were runnable throughout; only the bookkeeping
+  // write lost its lock race. Admission is PRE-execution, so the fix is a bounded retry, not
+  // best-effort recording.
+  const contentionError = () =>
+    Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+
+  const noSleep = { admissionRetryBackoffsMs: [1, 1, 1] as const, sleep: async () => {} };
+
+  it('rides out a transient pg contention timeout on the admission write and still persists', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueueTimes = 2; // fails twice, then succeeds — the contention dip clears
+    store.enqueueError = contentionError();
+
+    const outcome = await governor(store, () => 1_000, noSleep).governor.admit({
+      idempotencyKey: 'rides-out',
+      admissionClass: 'mcp',
+    });
+
+    expect(outcome.kind).toBe('queued');
+    expect(store.size).toBe(1);
+    expect(store.enqueueAttempts).toBe(3); // two failures + the successful write
+  });
+
+  /**
+   * NEGATIVE CONTROL. Without this, the test above would still pass if the retry were
+   * unconditional — which would be a real defect: a genuine fault (missing relation, DB down,
+   * a bug) must surface on the FIRST attempt, not after burning the backoff budget. Asserting
+   * the attempt COUNT is the part that discriminates; asserting only that it threw would not.
+   */
+  it('does NOT retry a non-contention fault — it surfaces on the first attempt', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueue = true;
+    store.enqueueError = Object.assign(
+      new Error('relation "harness_shared.work_items" does not exist'),
+      { code: '42P01' },
+    );
+
+    await expect(
+      governor(store, () => 1_000, noSleep).governor.admit({
+        idempotencyKey: 'real-fault',
+        admissionClass: 'mcp',
+      }),
+    ).rejects.toBeInstanceOf(AdmissionPersistenceError);
+
+    expect(store.enqueueAttempts).toBe(1);
+  });
+
+  it('says the retries are spent when contention never clears, so a caller does not just retry again', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueue = true; // contention that never clears
+    store.enqueueError = contentionError();
+
+    const error = await governor(store, () => 1_000, noSleep)
+      .governor.admit({ idempotencyKey: 'never-clears', admissionClass: 'mcp' })
+      .then(
+        () => null,
+        (thrown: unknown) => thrown as AdmissionPersistenceError,
+      );
+
+    expect(error).toBeInstanceOf(AdmissionPersistenceError);
+    expect(error?.message).toContain('after 4 attempts');
+    expect(error?.message).toContain('sqlstate=55P03');
+    expect(store.enqueueAttempts).toBe(4); // initial + 3 backoffs
   });
 
   it('includes postgres diagnostic fields when the fault is a pg error', async () => {

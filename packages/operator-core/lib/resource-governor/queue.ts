@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { boundedOrgTxn } from '../pg-bounded-txn';
 import {
   acquireWithContentionRetry,
   isWorkspaceContended,
@@ -611,7 +612,12 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
   }
 
   private async transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
-    return (await this.sql.begin(async (tx) => fn(tx as unknown as SqlClient))) as T;
+    // Resource-governor transitions update the shared work_items table. Keep every
+    // mutation atomic, but also bound both lock waits and statement execution so a
+    // contended governor write cannot strand scheduler/get_next behind an unbounded
+    // postgres-js transaction. Passing the injected client preserves hermetic tests
+    // and non-default backends; production callers still use getOrgPg() through this.sql.
+    return boundedOrgTxn(fn, { client: this.sql });
   }
 
   private async lockKeys(tx: SqlClient, keys: readonly string[]): Promise<void> {
