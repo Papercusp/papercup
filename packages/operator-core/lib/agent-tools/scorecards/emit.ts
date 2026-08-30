@@ -38,7 +38,11 @@ import type { ScorecardGradingAudit } from '../../harness/improvements/observati
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
 import { emitScorecardEmitted } from '../../scorecard-emitted-events';
-import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
+import {
+  evaluateCriterionCargoChecks,
+  evaluateCriterionTestChecks,
+  evaluateCriterionCoverageChecks,
+} from '../../rubrics-criterion-checks';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarnessSlug } from '../plans/source';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF, specTestAdequacySubjectRef } from '../plans/spec-test-adequacy';
@@ -353,6 +357,8 @@ export async function emitScorecard(
   deps: {
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
     evaluateChecks?: typeof evaluateCriterionTestChecks;
+    /** Injectable seam for tests — production runs the native Cargo crate runner. */
+    evaluateCargoChecks?: typeof evaluateCriterionCargoChecks;
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
     /** Audited coord-identity continuity resolver. */
     sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
@@ -362,6 +368,20 @@ export async function emitScorecard(
 ) {
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  // P-004: the meta-rubric is an attestation surface, not a free-standing
+  // observation. Without a subject the scorecard cannot say WHICH acceptance
+  // rubric it vetted, so it can never satisfy the ship gate and only creates a
+  // misleading "successful" history row. Enforce this at the write boundary,
+  // before revision reads, deduplication, checks, or the ledger write.
+  if (args.rubricRef === META_ACCEPTANCE_RUBRIC_ID && !args.subject) {
+    return {
+      ok: false as const,
+      code: 'meta_acceptance_subject_required' as const,
+      error:
+        `scorecard for meta-rubric '${META_ACCEPTANCE_RUBRIC_ID}' requires subject:{ kind:'rubric', ref:'<acceptance-rubric-id>' } ` +
+        'naming the specific acceptance rubric being vetted; a subject-less meta-scorecard cannot attest a rubric or satisfy the acceptance ship gate',
+    };
+  }
   // EI-21542997259558722: an acceptance rubric retires with its shipped or
   // superseded subject plan. A queued/carry-resumed grader can wake much later
   // with a valid rubric id and otherwise append a redundant verdict after the
@@ -995,6 +1015,36 @@ export async function emitScorecard(
         };
       }
       checkRuns = Object.keys(checkEvaluation.checkRuns).length > 0 ? checkEvaluation.checkRuns : undefined;
+    }
+
+    // ── P-011 (owner-ratified D-006): native Cargo criterion checks ──
+    // Vitest's file router intentionally refuses Rust source paths. Cargo checks
+    // use their own manifest boundary and preserve explicit source attribution in
+    // the stamped native run instead of routing `.rs` files through Vitest.
+    const cargoCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'cargo');
+    if (cargoCheckedCriteria.length > 0) {
+      const evaluateCargo = deps.evaluateCargoChecks ?? evaluateCriterionCargoChecks;
+      const checkRoot = await resolveDeterministicCheckRoot(args, {
+        ...input,
+        rubricWorkspaceId: rubric.workspaceId,
+        rubricSubjectPlan: rubric.subjectPlan,
+      });
+      const checkEvaluation = await evaluateCargo({
+        criteria: rubric.criteria,
+        ratings,
+        ...(checkRoot ? { root: checkRoot } : {}),
+        timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
+      });
+      if (!checkEvaluation.ok) {
+        return {
+          ok: false as const,
+          error: checkEvaluation.detail,
+          checkRefusal: checkEvaluation,
+        };
+      }
+      if (Object.keys(checkEvaluation.checkRuns).length > 0) {
+        checkRuns = { ...(checkRuns ?? {}), ...checkEvaluation.checkRuns };
+      }
     }
 
     // ── P-006 (deterministic-coverage-census): kind:'coverage' criterion checks ──
