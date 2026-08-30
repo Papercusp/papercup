@@ -44,10 +44,11 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Injected by esbuild `--define` only in the desktop-sidecar bundle (see
-// papercusp-desktop/bin/build-desktop-sidecar.sh). Absent (bare reference
-// would throw ReferenceError) under tsx/dev/test/the non-bundled operator —
-// read it via `typeof` so the reference never throws.
+// Injected by esbuild `--define` in bundled host/desktop artifacts (see
+// apps/operator/bin/bundle-host.sh and papercusp-desktop/bin/
+// build-desktop-sidecar.sh). Absent (bare reference would throw ReferenceError)
+// under tsx/dev/test/the non-bundled operator — read it via `typeof` so the
+// reference never throws.
 declare const __PAPERCUSP_SIDECAR_VERSION__: string | undefined;
 declare const __PAPERCUSP_BUNDLED_SOURCE_SHA__: string | undefined;
 declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;

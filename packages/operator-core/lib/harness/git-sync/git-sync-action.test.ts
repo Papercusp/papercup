@@ -584,6 +584,23 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
   });
 
+  it('EI-21647996938145436: records the loaded process/build identity with every outcome', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    const identity = routinePatches()[0]?.loaded_build_identity as Record<string, unknown>;
+    expect(identity).toMatchObject({
+      pid: process.pid,
+      instance: expect.any(String),
+      version: expect.any(String),
+      recorded_at: expect.any(Number),
+    });
+    // `sha` is nullable for an identity-less runtime, but the key itself is
+    // mandatory so readers never confuse omission with an unobserved identity.
+    expect(identity).toHaveProperty('sha');
+  });
+
   it('returns the typed pipeline outcome to the on-demand fire seam', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
 

@@ -9,6 +9,7 @@
  */
 
 import { connect as netConnect } from 'node:net';
+import { hostname } from 'node:os';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
@@ -226,6 +227,30 @@ export interface ProbeResult {
    * visible without re-deriving it.
    */
   acceptQueue?: { pending: number; backlog: number };
+  /**
+   * Provenance for a code-drift verdict. The mtime leg remains a useful
+   * fallback for legacy/unbundled processes, but it must not be rendered as
+   * equivalent to a build identity carried by the process that actually
+   * loaded the code (EI-21647996938145436).
+   */
+  provenance?: {
+    source: 'runtime-vintage' | 'mtime-fallback';
+    loadedSha?: string | null;
+    expectedSha?: string | null;
+    loadedPid?: number | null;
+    loadedReportedAt?: string | null;
+    reason?: string;
+  };
+}
+
+/** A build identity joined to the process that produced the drift verdict. */
+export interface LoadedCodeIdentity {
+  source: 'runtime-vintage';
+  treeSha: string | null;
+  bundleVersion?: string | null;
+  pid?: number | null;
+  host?: string | null;
+  reportedAt?: string | null;
 }
 
 /**
@@ -730,6 +755,8 @@ export function evaluateBgHostCodeDrift(
   bootMs: number | null,
   hotChangeMs: number | null,
   newestFile?: string | null,
+  loadedIdentity?: LoadedCodeIdentity | null,
+  currentSourceSha?: string | null,
 ): ProbeResult {
   return evaluateCodeDrift(PORTLESS_PROBE_NAMES.bgHostCode, bootMs, hotChangeMs, newestFile, {
     unknown: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)',
@@ -739,7 +766,14 @@ export function evaluateBgHostCodeDrift(
       `loop fires / scheduled routines / wake emits are running STALE code until ` +
       `\`systemctl --user restart papercusp-bg-host.service\`. If you just landed routine-behavior code and it ` +
       `"doesn't take effect", this is why (see agent-insights/bg-host-runs-stale-routine-code).`,
-  });
+    identityCurrent: (loadedSha, expectedSha) =>
+      `bg-host code current (loaded build ${loadedSha} from runtime-vintage matches current source ${expectedSha}; ` +
+      `mtime is only a fallback signal)`,
+    identityDrift: (loadedSha, expectedSha, identity) =>
+      `⚠ bg-host CODE DRIFT: loaded build ${loadedSha} from ${identityLabel(identity)} differs from current source ${expectedSha} — ` +
+      `scheduled loop fires / routines / wake emits are running STALE code until ` +
+      `\`systemctl --user restart papercusp-bg-host.service\`.`,
+  }, loadedIdentity, currentSourceSha);
 }
 
 /**
@@ -754,6 +788,8 @@ export function evaluateMcpProxyCodeDrift(
   bootMs: number | null,
   hotChangeMs: number | null,
   newestFile?: string | null,
+  loadedIdentity?: LoadedCodeIdentity | null,
+  currentSourceSha?: string | null,
 ): ProbeResult {
   return evaluateCodeDrift(PORTLESS_PROBE_NAMES.mcpProxyCode, bootMs, hotChangeMs, newestFile, {
     unknown: 'mcp-proxy code-drift unknown (boot time or hot-path change time unreadable)',
@@ -764,7 +800,14 @@ export function evaluateMcpProxyCodeDrift(
       `bulkhead / retry behaviour is running STALE code until ` +
       `\`systemctl --user restart papercup-mcp-proxy.service\`. If agents are still hitting a proxy ` +
       `failure you already fixed, this is why (EI-21390665295968159).`,
-  });
+    identityCurrent: (loadedSha, expectedSha) =>
+      `mcp-proxy code current (loaded build ${loadedSha} from runtime-vintage matches current source ${expectedSha}; ` +
+      `mtime is only a fallback signal)`,
+    identityDrift: (loadedSha, expectedSha, identity) =>
+      `⚠ mcp-proxy CODE DRIFT: loaded build ${loadedSha} from ${identityLabel(identity)} differs from current source ${expectedSha} — ` +
+      `the :9071 proxy is running STALE code until ` +
+      `\`systemctl --user restart papercup-mcp-proxy.service\`.`,
+  }, loadedIdentity, currentSourceSha);
 }
 
 /** Shared pure verdict for a "tsx-loads the working tree, no file-watch" unit: process
@@ -775,17 +818,110 @@ function evaluateCodeDrift(
   bootMs: number | null,
   hotChangeMs: number | null,
   newestFile: string | null | undefined,
-  copy: { unknown: string; current: string; drift: (behindMin: number, which: string) => string },
+  copy: {
+    unknown: string;
+    current: string;
+    drift: (behindMin: number, which: string) => string;
+    identityCurrent: (loadedSha: string, expectedSha: string) => string;
+    identityDrift: (loadedSha: string, expectedSha: string, identity: LoadedCodeIdentity) => string;
+  },
+  loadedIdentity?: LoadedCodeIdentity | null,
+  currentSourceSha?: string | null,
 ): ProbeResult {
+  const loadedSha = loadedIdentity?.treeSha?.trim() || null;
+  const expectedSha = currentSourceSha?.trim() || null;
+  if (loadedSha && expectedSha) {
+    const provenance = {
+      source: 'runtime-vintage' as const,
+      loadedSha,
+      expectedSha,
+      loadedPid: loadedIdentity?.pid ?? null,
+      loadedReportedAt: loadedIdentity?.reportedAt ?? null,
+    };
+    if (!sameSourceSha(loadedSha, expectedSha)) {
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: 0,
+        note: copy.identityDrift(loadedSha, expectedSha, loadedIdentity),
+        provenance,
+      };
+    }
+    // A matching commit identity proves the bundle was built from this commit,
+    // but not that the working tree is clean. Keep the mtime leg for a newer
+    // uncommitted edit so identity-first does not hide that distinct case.
+    if (bootMs !== null && hotChangeMs !== null && hotChangeMs <= bootMs) {
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: 0,
+        note: copy.identityCurrent(loadedSha, expectedSha),
+        provenance,
+      };
+    }
+  }
   if (bootMs == null || hotChangeMs == null) {
-    return { name, up: true, status: null, latencyMs: 0, present: false, note: copy.unknown };
+    return {
+      name,
+      up: true,
+      status: null,
+      latencyMs: 0,
+      present: false,
+      note: copy.unknown,
+      provenance: {
+        source: 'mtime-fallback',
+        ...(loadedSha ? { loadedSha } : {}),
+        ...(expectedSha ? { expectedSha } : {}),
+        reason: 'loaded build identity was unavailable or could not be compared',
+      },
+    };
   }
   if (hotChangeMs <= bootMs) {
-    return { name, up: true, status: null, latencyMs: 0, note: copy.current };
+    return {
+      name,
+      up: true,
+      status: null,
+      latencyMs: 0,
+      note: `${copy.current} (provenance: mtime fallback; loaded build identity was unavailable or did not match)`,
+      provenance: {
+        source: 'mtime-fallback',
+        ...(loadedSha ? { loadedSha } : {}),
+        ...(expectedSha ? { expectedSha } : {}),
+        reason: 'loaded build identity was unavailable or did not match',
+      },
+    };
   }
   const behindMin = Math.max(1, Math.round((hotChangeMs - bootMs) / 60_000));
   const which = newestFile ? ` (newest: ${newestFile})` : '';
-  return { name, up: true, status: null, latencyMs: 0, note: copy.drift(behindMin, which) };
+  return {
+    name,
+    up: true,
+    status: null,
+    latencyMs: 0,
+    note: `${copy.drift(behindMin, which)} (provenance: mtime fallback; a newer uncommitted working-tree change may be present)`,
+    provenance: {
+      source: 'mtime-fallback',
+      ...(loadedSha ? { loadedSha } : {}),
+      ...(expectedSha ? { expectedSha } : {}),
+      reason: 'mtime detected a newer working-tree change',
+    },
+  };
+}
+
+function sameSourceSha(a: string, b: string): boolean {
+  const left = a.trim().toLowerCase();
+  const right = b.trim().toLowerCase();
+  if (!left || !right) return false;
+  return left === right || (left.length >= 7 && right.startsWith(left)) || (right.length >= 7 && left.startsWith(right));
+}
+
+function identityLabel(identity: LoadedCodeIdentity): string {
+  const pid = identity.pid == null ? '' : ` pid ${identity.pid}`;
+  const host = identity.host ? ` on ${identity.host}` : '';
+  const reported = identity.reportedAt ? ` reported ${identity.reportedAt}` : '';
+  return `runtime-vintage${pid}${host}${reported}`;
 }
 
 /** Probe bg-host code drift (WI-1867): unit MainPID elapsed-seconds vs the newest
@@ -866,8 +1002,13 @@ async function probeCodeDrift(
     // running" from "probe failed", which this call site used to conflate.
     const { probeServiceStart } = await import('./agent-tools/dev/systemd-service-probe');
     const svc = await probeServiceStart(spec.unit);
-    const bootMs =
-      svc.ok && svc.secondsSinceStart !== undefined ? now - svc.secondsSinceStart * 1000 : null;
+    const processStartMs =
+      svc.ok && svc.startedAtMs !== undefined
+        ? svc.startedAtMs
+        : svc.ok && svc.secondsSinceStart !== undefined
+          ? now - svc.secondsSinceStart * 1000
+          : null;
+    const bootMs = processStartMs;
     if (bootMs === null) {
       return { ...spec.evaluate(null, null), latencyMs: Date.now() - start };
     }
@@ -876,6 +1017,48 @@ async function probeCodeDrift(
     if (!integrationRoot) {
       const { stdout } = await run('git', ['rev-parse', '--show-toplevel'], { timeout: 3000 });
       integrationRoot = stdout.trim();
+    }
+    let loadedIdentity: LoadedCodeIdentity | null = null;
+    try {
+      const { listRuntimeVintage } = await import('./runtime-vintage');
+      const rows = await listRuntimeVintage();
+      const processPid = svc.mainPid ?? null;
+      if (processPid !== null) {
+        const row = rows.find((candidate) => {
+          const reportedAtMs = Date.parse(candidate.reportedAt);
+          return (
+            candidate.host === hostname() &&
+            candidate.pid === processPid &&
+            Number.isFinite(reportedAtMs) &&
+            reportedAtMs >= bootMs
+          );
+        });
+        if (row) {
+          loadedIdentity = {
+            source: 'runtime-vintage',
+            treeSha: row.treeSha,
+            bundleVersion: row.bundleVersion,
+            pid: row.pid,
+            host: row.host,
+            reportedAt: row.reportedAt,
+          };
+        }
+      }
+    } catch {
+      // The mtime path below remains the bounded fail-soft fallback when the
+      // boot self-report or its datastore is unavailable.
+    }
+    let currentSourceSha: string | null = null;
+    try {
+      const { stdout } = await run('git', ['rev-parse', 'HEAD'], {
+        timeout: 3000,
+        cwd: integrationRoot,
+        maxBuffer: 1024 * 1024,
+      });
+      const sha = stdout.trim();
+      if (/^[0-9a-f]{7,40}$/i.test(sha)) currentSourceSha = sha;
+    } catch {
+      // A missing git identity leaves the mtime fallback as the only honest leg.
     }
     const { stdout: findOut } = await run(
       'find',
@@ -893,7 +1076,10 @@ async function probeCodeDrift(
         newestFile = line.slice(sp + 1);
       }
     }
-    return { ...spec.evaluate(bootMs, hotChangeMs, newestFile), latencyMs: Date.now() - start };
+    return {
+      ...spec.evaluate(bootMs, hotChangeMs, newestFile, loadedIdentity, currentSourceSha),
+      latencyMs: Date.now() - start,
+    };
   } catch {
     return { name: spec.name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: spec.failedNote };
   }

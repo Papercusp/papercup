@@ -118,4 +118,35 @@ describe('resolveBuildInfo', () => {
       expect(r.version).toBe('0.0.0');
     });
   });
+
+  describe('bakedSha / __PAPERCUSP_BUNDLED_SOURCE_SHA__ (EI-21647996938145436)', () => {
+    it('prefers the bundle-time source SHA when no deploy env SHA is present', () => {
+      const r = resolveBuildInfo({
+        env: { npm_package_version: '1.2.3' } as NodeJS.ProcessEnv,
+        gitSha: () => 'checkout-head',
+        bakedSha: 'bundle-sha',
+        bundled: true,
+      });
+      expect(r).toEqual({ sha: 'bundle-sha', version: '1.2.3' });
+    });
+
+    it('prefers PAPERCUSP_BUILD_SHA over the baked source SHA', () => {
+      const r = resolveBuildInfo({
+        env: { PAPERCUSP_BUILD_SHA: 'deploy-sha' } as NodeJS.ProcessEnv,
+        gitSha: () => 'checkout-head',
+        bakedSha: 'bundle-sha',
+        bundled: true,
+      });
+      expect(r.sha).toBe('deploy-sha');
+    });
+
+    it('does not borrow the current checkout SHA for an identity-less bundle', () => {
+      const r = resolveBuildInfo({
+        env: {} as NodeJS.ProcessEnv,
+        gitSha: () => 'current-checkout-head',
+        bundled: true,
+      });
+      expect(r.sha).toBeNull();
+    });
+  });
 });

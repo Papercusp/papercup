@@ -52,6 +52,13 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     // scripts/check-systemd-dropins-installed.mjs does that against live DropInPaths.
   });
 
+  it('bakes the source SHA into the generated host so runtime identity cannot borrow checkout HEAD', () => {
+    expect(bundleHost).toContain('git -C "$REPO_ROOT" rev-parse --short HEAD');
+    expect(bundleHost).toContain('BUNDLED_SOURCE_SHA_DEFINE');
+    expect(bundleHost).toContain('--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__');
+    expect(bundleHost).toContain('"${BUNDLED_SOURCE_SHA_DEFINE[@]}"');
+  });
+
   it('fails closed when the bundled CLI-entry recurrence guard rejects the graph', () => {
     const guard = 'if ! node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
     expect(bundleHost).toContain(guard);

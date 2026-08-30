@@ -143,7 +143,17 @@ HOST_EXTERNALS+=(
 # self-exec guards would all fire at boot. isCliEntry()
 # (operator-core/lib/util/cli-entry.ts) returns false under this define — its
 # ONLY consumer (verified 2026-07-07). Unlike the sidecar build we bake NO
-# version/dogfood-ref defines: the dev host reads live process.env.
+# version/dogfood-ref defines: the dev host reads live process.env. The source
+# SHA is different: it describes the bytes in THIS generated artifact, so it
+# must be captured before esbuild runs rather than read from git by the running
+# bundle (EI-21647996938145436).
+SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+BUNDLED_SOURCE_SHA_DEFINE=()
+if [[ -n "$SOURCE_SHA" ]]; then
+  BUNDLED_SOURCE_SHA_DEFINE=(
+    "--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=\"${SOURCE_SHA}\""
+  )
+fi
 # EI-9413: bundle-host.sh reruns on EVERY service restart (ExecStartPre), and
 # systemd's restart-always can fire another attempt while a prior esbuild
 # invocation's write to $OUTFILE hasn't finished flushing (or, on a wedged
@@ -223,6 +233,7 @@ if ! (
     --metafile="$METAFILE" \
     --banner:js="$HOST_BANNER" \
     --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
+    "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
     --log-limit=20 \
     "${HOST_EXTERNALS[@]}"; then
     echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
