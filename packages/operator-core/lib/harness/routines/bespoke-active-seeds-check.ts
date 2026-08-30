@@ -183,9 +183,45 @@ export interface InactiveBespokeSeed extends CheckedBespokeActiveSeed {
   pausedAtMs: number | null;
 }
 
+/**
+ * A registered routine whose row is PRESENT and ACTIVE but which is not actually executing.
+ *
+ * This is the failure one level past `inactive`, and until it was measured nothing in the
+ * system could see it: `active=true` satisfied every existing check while the routine had
+ * never run once. `frozen-candidate-drift-sweep` was seeded active/ephemeral/900s at
+ * 2026-08-30T22:33:05Z and sat at `last_fired_at IS NULL` indefinitely, because
+ * `armEphemeralExecutor` reads the routine table EXACTLY ONCE at host boot (its own
+ * `syncEphemeralRoutine` docstring: "event-driven — NOT a polling rescan") and that boot had
+ * happened 14h21m earlier. A row seeded by a standalone `tsx` seed script — a different
+ * process from the bg-host that owns the module-singleton arm-set — therefore never gets a
+ * timer, and nothing said so.
+ *
+ * That is the same shape as the two failures already recorded in this file's header, one
+ * further level up: existence was guarded, execution was not.
+ */
+export interface DarkBespokeSeed extends CheckedBespokeActiveSeed {
+  /** Epoch ms of the last recorded fire; null when it has NEVER fired. */
+  lastFiredAtMs: number | null;
+  /** Epoch ms the row was created — the clock the never-fired grace window runs against. */
+  createdAtMs: number | null;
+  /** Declared cadence (`trigger_config.interval_sec`); null for cron/durable rows. */
+  intervalSec: number | null;
+  /** true ⇒ never fired at all; false ⇒ fired, but far later than its own cadence promises. */
+  neverFired: boolean;
+  /** Age used for the verdict: since creation when never fired, else since the last fire. */
+  ageSec: number;
+}
+
 export interface CheckResult {
   missing: CheckedBespokeActiveSeed[];
   inactive: InactiveBespokeSeed[];
+  /**
+   * Registered routines that are present + active but not executing (never fired, or long
+   * past their own declared cadence). Separate from `inactive` because the REPAIR differs:
+   * an inactive row needs un-pausing, a dark row needs its executor to actually pick it up
+   * (for the ephemeral tier, a host restart or a `syncEphemeralRoutine` event).
+   */
+  dark: DarkBespokeSeed[];
   /**
    * The subset of `missing` + `inactive` that warrants waking a human right now: everything
    * missing, plus every inactive routine NOT covered by a future `reviewBy`.
@@ -195,9 +231,35 @@ export interface CheckResult {
    * dated pause must be able to answer it "no" — otherwise the notice re-fires on every boot
    * forever and becomes the cry-wolf noise that got the ORIGINAL routine paused.
    */
-  escalatable: Array<CheckedBespokeActiveSeed | InactiveBespokeSeed>;
+  escalatable: Array<CheckedBespokeActiveSeed | InactiveBespokeSeed | DarkBespokeSeed>;
   ok: boolean;
 }
+
+/**
+ * How many of its own declared intervals a routine may miss before it counts as dark.
+ *
+ * Deliberately generous. Ephemeral fires are `shed: true` (bounded sweeps yield under load),
+ * so a routine legitimately skips ticks on a busy host and a tight multiple would flap. Set
+ * against the measured live population (2026-08-30): every healthy ephemeral routine was
+ * inside 0.75× its interval, while the one real straggler sat at 5.9× — so 4× separates them
+ * with no row anywhere near the boundary.
+ */
+export const DARK_STALE_INTERVAL_MULTIPLE = 4;
+
+/** Grace for a NEVER-fired row, as a multiple of its cadence: a just-seeded routine has not
+ *  missed anything yet. Floored so a fast cadence still gets a sane minimum window. */
+export const DARK_NEVER_FIRED_INTERVAL_MULTIPLE = 2;
+export const DARK_NEVER_FIRED_FLOOR_SEC = 600;
+
+/**
+ * Grace for a never-fired row with NO declared `interval_sec` (a cron/durable row). Cron
+ * cadences here are not parsed, so this is a conservative floor rather than a derived
+ * expectation — a full day of an active routine never once firing is unambiguous regardless
+ * of schedule. Cron STALENESS (fired, but late) is deliberately NOT judged: inferring a
+ * cadence from an unparsed cron expression would be a guess, and the durable tier rides DBOS
+ * `routinesTick`, which has its own health surface.
+ */
+export const DARK_NEVER_FIRED_CRON_GRACE_SEC = 86_400;
 
 /** Pure-ish core: given a sql client + scope, report which registered routines are
  *  missing or seeded-but-inactive. Exported so it's testable against a fake `sql`
@@ -212,7 +274,14 @@ export async function checkBespokeActiveSeeds(opts: {
 }): Promise<CheckResult> {
   const entries = opts.entries ?? BESPOKE_ACTIVE_SEEDS;
   const now = opts.now ?? Date.now();
-  type Row = { name: string; active: boolean; metadata: { pause?: PauseMeta } | null };
+  type Row = {
+    name: string;
+    active: boolean;
+    metadata: { pause?: PauseMeta } | null;
+    last_fired_at: Date | string | null;
+    created_at: Date | string | null;
+    trigger_config: { interval_sec?: unknown } | null;
+  };
   const resolvedEntries = entries.map(
     (entry): CheckedBespokeActiveSeed => ({
       ...entry,
@@ -232,7 +301,8 @@ export async function checkBespokeActiveSeeds(opts: {
   await Promise.all(
     [...entriesByScope].map(async ([installSlug, scopedEntries]) => {
       const rows = (await opts.sql<Row[]>`
-        SELECT name, active, metadata FROM harness_shared.routines
+        SELECT name, active, metadata, last_fired_at, created_at, trigger_config
+        FROM harness_shared.routines
         WHERE install_slug = ${installSlug} AND workspace_id = ${opts.workspaceId}
           AND name = ANY(${scopedEntries.map((s) => s.name)})
       `) as unknown as Row[];
@@ -242,15 +312,81 @@ export async function checkBespokeActiveSeeds(opts: {
 
   const missing: CheckedBespokeActiveSeed[] = [];
   const inactive: InactiveBespokeSeed[] = [];
+  const dark: DarkBespokeSeed[] = [];
   for (const entry of resolvedEntries) {
     const row = rowsByScopeAndName.get(`${entry.installSlug}\u0000${entry.name}`);
     if (row === undefined) missing.push(entry);
     else if (row.active !== true) inactive.push({ ...entry, ...readPause(row.metadata) });
+    else {
+      // Present AND active — the case every prior revision of this check treated as healthy.
+      const verdict = judgeLiveness(row, now);
+      if (verdict) dark.push({ ...entry, ...verdict });
+    }
   }
   // A missing row can carry no re-affirmation (there is nothing to write it on), so every
   // missing entry escalates; an inactive one escalates unless its reviewBy is still ahead.
-  const escalatable = [...missing, ...inactive.filter((e) => !isReaffirmed(e.reviewBy, now))];
-  return { missing, inactive, escalatable, ok: missing.length === 0 && inactive.length === 0 };
+  // A dark row is active by definition, so it carries no pause record to re-affirm with:
+  // like `missing`, every one escalates.
+  const escalatable = [...missing, ...inactive.filter((e) => !isReaffirmed(e.reviewBy, now)), ...dark];
+  return {
+    missing,
+    inactive,
+    dark,
+    escalatable,
+    ok: missing.length === 0 && inactive.length === 0 && dark.length === 0,
+  };
+}
+
+/** Coerce a pg timestamptz (Date, or string when a caller's fake `sql` returns raw) to epoch ms. */
+function toEpochMs(v: Date | string | null): number | null {
+  if (v === null || v === undefined) return null;
+  const t = v instanceof Date ? v.getTime() : Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Decide whether an ACTIVE registered routine is actually executing.
+ *
+ * Returns null for a healthy row, or the dark-verdict fields when it is not running. Fails
+ * OPEN (null) on a row whose timestamps are unreadable. That inverts the fail-closed rule
+ * `isReaffirmed` states above, deliberately: there, an unreadable field must not buy SILENCE
+ * about a pause someone chose. Here the finding accuses a specific routine of being broken
+ * and dispatches someone to fix it, so an unreadable `created_at` — which is what would have
+ * established that the grace window even elapsed — must not manufacture that accusation.
+ */
+function judgeLiveness(
+  row: {
+    last_fired_at: Date | string | null;
+    created_at: Date | string | null;
+    trigger_config: { interval_sec?: unknown } | null;
+  },
+  now: number,
+): Pick<DarkBespokeSeed, 'lastFiredAtMs' | 'createdAtMs' | 'intervalSec' | 'neverFired' | 'ageSec'> | null {
+  const rawInterval = Number(row.trigger_config?.interval_sec);
+  const intervalSec = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : null;
+  const lastFiredAtMs = toEpochMs(row.last_fired_at);
+  const createdAtMs = toEpochMs(row.created_at);
+
+  if (lastFiredAtMs === null) {
+    // NEVER fired. Judge against CREATION, so a freshly-seeded row is not accused of missing
+    // a tick it has not yet reached.
+    if (createdAtMs === null) return null;
+    const graceSec =
+      intervalSec === null
+        ? DARK_NEVER_FIRED_CRON_GRACE_SEC
+        : Math.max(intervalSec * DARK_NEVER_FIRED_INTERVAL_MULTIPLE, DARK_NEVER_FIRED_FLOOR_SEC);
+    const ageSec = (now - createdAtMs) / 1000;
+    if (ageSec <= graceSec) return null;
+    return { lastFiredAtMs, createdAtMs, intervalSec, neverFired: true, ageSec };
+  }
+
+  // It HAS fired. Only a self-declared cadence (`interval_sec`) supports a lateness verdict;
+  // an unparsed cron expression does not, so those rows are left to the durable tier's own
+  // health surface rather than judged against a guessed schedule.
+  if (intervalSec === null) return null;
+  const ageSec = (now - lastFiredAtMs) / 1000;
+  if (ageSec <= intervalSec * DARK_STALE_INTERVAL_MULTIPLE) return null;
+  return { lastFiredAtMs, createdAtMs, intervalSec, neverFired: false, ageSec };
 }
 
 interface PauseMeta {
