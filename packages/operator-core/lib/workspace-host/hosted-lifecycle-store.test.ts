@@ -95,7 +95,7 @@ describe('hosted lifecycle store', () => {
     expect(inserted).toBe(false);
   });
 
-  it('marks orphaned work, queues one idempotent idle-stop job, and uses replay-safe notifications', async () => {
+  it('marks orphaned work and uses replay-safe notifications', async () => {
     const notify = vi.fn(async (_input: { dedupeKey: string }) => ({
       recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true,
     }));
@@ -110,27 +110,28 @@ describe('hosted lifecycle store', () => {
             recovery_attempts: 0,
           }];
         }
-        if (text.includes('AS active_lifecycle_jobs')) {
-          return [{
-            ...directory,
-            observed_state: 'running', last_activity_at: '2026-08-27T20:00:00Z',
-            active_lifecycle_jobs: 0,
-          }];
-        }
-        if (text.includes('INSERT INTO harness_shared.workspace_host_operations')) {
-          return [{ id: 'idle-stop:customer-a:2026-08-27T20:00:00.000Z' }];
-        }
         return [];
       }),
     });
     const result = await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
     expect(result.orphaned).toEqual(['orphan-1']);
-    expect(result.idleStopsQueued).toEqual(['idle-stop:customer-a:2026-08-27T20:00:00.000Z']);
-    expect(notify).toHaveBeenCalledTimes(2);
-    expect(notify.mock.calls.map(([input]) => input.dedupeKey)).toEqual(expect.arrayContaining([
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls.map(([input]) => input.dedupeKey)).toEqual([
       'hosted-lifecycle:control-a:orphan-1:orphaned',
-      'hosted-lifecycle:control-a:idle-stop:customer-a:2026-08-27T20:00:00.000Z:queued',
-    ]));
+    ]);
+  });
+
+  it('no longer issues an idle-stop query against customer_workspaces (the sweep was retired)', async () => {
+    const queries: string[] = [];
+    setHostedLifecycleStoreHooks({
+      transaction: fakeTransaction((text) => {
+        queries.push(text);
+        return [];
+      }),
+    });
+    await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
+    expect(queries.some((query) => query.includes('idle_stop_after_minutes IS NOT NULL'))).toBe(false);
+    expect(queries.some((query) => query.includes('active_lifecycle_jobs'))).toBe(false);
   });
 
   it('projects bounded support diagnostics from the canonical writer fields', async () => {

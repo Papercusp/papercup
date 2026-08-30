@@ -640,6 +640,7 @@ export default defineTool({
   description:
     "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
+      " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
       " Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
     // EI-21600823435053404: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
@@ -1374,11 +1375,18 @@ export default defineTool({
             owner_id: identity.ownerId,
             summary,
             entries: entriesOut,
-            // EI-18667514339699744: coord:orient folds this SAME array under `recent`
-            // (its own key name for "the most-recent bounded entries"). Alias it here
-            // too so a caller who reads either tool's key name off THIS result gets
-            // real rows instead of a silent [] on a cross-surface accessor mismatch.
-            recent: entriesOut,
+            // EI-18667514339699744: coord:orient folds this SAME rows under `recent`
+            // (its own key name for "the most-recent bounded entries"), so a caller
+            // who reads either tool's key name off THIS result must find something
+            // real rather than a silent [] on a cross-surface accessor mismatch.
+            // EI-21902920583326819: `recent` used to be a SECOND full copy of
+            // `entries` (identical bodies/sections/premises), doubling the wire
+            // bytes of every inbox read for a key nothing in this codebase actually
+            // consumes as full rows (orient.ts's own `call('coord:inbox', ...)`
+            // reads only `.entries`). It is now a cheap id-only pointer INTO
+            // `entries` — a caller that reads `.recent` and needs a row's content
+            // looks it up by `msg_id` in `entries`, same as it always could.
+            recent: entriesOut.map((e) => e["msg_id"]),
             injection,
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).

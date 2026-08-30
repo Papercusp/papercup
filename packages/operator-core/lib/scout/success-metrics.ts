@@ -50,6 +50,7 @@ import { hasForcedDiversity } from './invariants';
 import type { RoutedIdeaProvenance } from './outcome-feedback';
 import type { CreativeLens, SuIdeationLens } from './types';
 import { SU_IDEATION_LENSES } from './types';
+import { cellUnknown, type CellUnknown } from '../cell-contract';
 
 /** The digest lane a rubric-RATING-grounded idea is attributed to (scheduler's histogram key). */
 export const RUBRIC_GROUNDING_LANE = 'rubric-rating';
@@ -161,7 +162,7 @@ export interface SuccessCriterion {
   /** What was actually MEASURED — the audit trail behind `status`. */
   observed: string;
   /** Why the bar could not be judged (present only when status==='unknown'). */
-  unknownReason?: string;
+  unknownReason?: CellUnknown;
 }
 
 export interface ProgramSuccessReport {
@@ -326,7 +327,7 @@ export function evaluateProgramSuccess(
       ? {
           status: 'unknown' as const,
           observed: 'no routed ideas in the window',
-          unknownReason: 'empty ledger window — nothing to attribute to a lane',
+          unknownReason: cellUnknown('insufficient-data', 'empty ledger window — nothing to attribute to a lane'),
         }
       : {
           status: (rubricGrounded > 0 ? 'pass' : 'fail') as SuccessStatus,
@@ -365,8 +366,7 @@ export function evaluateProgramSuccess(
       ? {
           status: 'unknown' as const,
           observed: `no fired cycle in the window carries a signal score (${noSignalGates} no-signal veto(es) recorded)`,
-          unknownReason:
-            'volume mode not engaged on any fired tick in this window (or all ticks predate the P-015 score write)',
+          unknownReason: cellUnknown('not-measured', 'volume mode not engaged on any fired tick in this window (or all ticks predate the P-015 score write)'),
         }
       : {
           status: (zeroSignalFires.length === 0 ? 'pass' : 'fail') as SuccessStatus,
@@ -435,7 +435,7 @@ export function evaluateProgramSuccess(
       ? {
           status: 'unknown' as const,
           observed: `no cycle ran or errored in the window (${errorBarSource.totalTicks} tick(s), all gated)${capacityNote}${soakNote}`,
-          unknownReason: 'empty cycle window — no cycle got a fair shot, so there is no error-rate denominator',
+          unknownReason: cellUnknown('insufficient-data', 'empty cycle window — no cycle got a fair shot, so there is no error-rate denominator'),
         }
       : errorRate >= maxErrorRate
         ? {
@@ -446,10 +446,9 @@ export function evaluateProgramSuccess(
           ? {
               status: 'unknown' as const,
               observed: `${measured} — clean, but the denominator cannot support a pass yet${capacityNote}${soakNote}`,
-              unknownReason:
-                `denominator too small: n=${cycleTicks} cycle(s), need >=${minDenominator} for zero errors to reject ` +
+              unknownReason: cellUnknown('insufficient-data', `denominator too small: n=${cycleTicks} cycle(s), need >=${minDenominator} for zero errors to reject ` +
                 `the historical ~30% rate at p<0.05 (rule of three: at n=${cycleTicks} the data is still consistent ` +
-                `with a true error rate far above ${pct(maxErrorRate)})`,
+                `with a true error rate far above ${pct(maxErrorRate)})`),
             }
           : {
               status: 'pass' as const,
@@ -504,8 +503,7 @@ export function evaluateProgramSuccess(
       ? {
           status: 'unknown' as const,
           observed: `ledger snapshot truncated at its row limit — ${reconciled} cycle(s) reconciled, ${mismatches.length} apparent mismatch(es) NOT trusted`,
-          unknownReason:
-            'a truncated ledger read cannot distinguish real write-path drift from rows the read simply did not fetch — re-run with a higher `limit`',
+          unknownReason: cellUnknown('insufficient-data', 'a truncated ledger read cannot distinguish real write-path drift from rows the read simply did not fetch — re-run with a higher `limit`'),
         }
       : reconciled === 0 && mismatches.length === 0
         ? ranWithNoRoutedOutput
@@ -525,7 +523,7 @@ export function evaluateProgramSuccess(
           : {
               status: 'unknown' as const,
               observed: `no post-fix cycle in the window both ran and routed ideas${preFixNote}`,
-              unknownReason: 'nothing to reconcile — no routing activity the P-003 fix governs',
+              unknownReason: cellUnknown('not-applicable', 'nothing to reconcile — no routing activity the P-003 fix governs'),
             }
         : {
             status: (mismatches.length === 0 ? 'pass' : 'fail') as SuccessStatus,
@@ -563,7 +561,7 @@ export function evaluateProgramSuccess(
       ? {
           status: 'unknown' as const,
           observed: `0 of ${ideas.length} routed ideas are graded at all`,
-          unknownReason: 'no grades in the window — the grading channel has not produced input yet',
+          unknownReason: cellUnknown('insufficient-data', 'no grades in the window — the grading channel has not produced input yet'),
         }
       : {
           status: (revisedFromFeedback.length > 0 ? 'pass' : 'fail') as SuccessStatus,
@@ -641,8 +639,7 @@ export function evaluateProgramSuccess(
             observed:
               `only ${diversitySample.length} scout ideator sample(s) in the recent window ` +
               `(${usingLiveTickSample ? 'live tick detail' : 'routed ideas'}) — too few to judge diversity`,
-            unknownReason:
-              'a sample of <2 cannot distinguish a diverse roster from a collapsed one (and must not be allowed to certify either)',
+            unknownReason: cellUnknown('insufficient-data', 'a sample of <2 cannot distinguish a diverse roster from a collapsed one (and must not be allowed to certify either)'),
           }
       : {
           status: (hasForcedDiversity(diversitySample, 2) ? 'pass' : 'fail') as SuccessStatus,
@@ -666,15 +663,13 @@ export function evaluateProgramSuccess(
       ? {
           status: 'unknown' as const,
           observed: 'gym task corpus not read for this report — provenance unproven',
-          unknownReason:
-            'without the corpus counts this bar cannot distinguish a real benchmark from a generated stub, and MUST NOT default to pass (that default is exactly how six scorecards certified a toy benchmark)',
+          unknownReason: cellUnknown('not-measured', 'without the corpus counts this bar cannot distinguish a real benchmark from a generated stub, and MUST NOT default to pass (that default is exactly how six scorecards certified a toy benchmark)'),
         }
       : corpus.realCount + corpus.syntheticCount === 0
         ? {
             status: 'unknown' as const,
             observed: `no gym tasks recorded for ${corpus.harnessSlug ?? 'this harness'} — nothing is being optimized`,
-            unknownReason:
-              'an empty corpus is neither a real signal nor a fake one; it means the gym has no benchmark at all, which this bar reports rather than grades',
+            unknownReason: cellUnknown('not-applicable', 'an empty corpus is neither a real signal nor a fake one; it means the gym has no benchmark at all, which this bar reports rather than grades'),
           }
         : corpus.syntheticCount > 0
           ? {
@@ -691,8 +686,7 @@ export function evaluateProgramSuccess(
                 observed:
                   `${corpus.realCount} real gym task(s) are LABELLED for ${corpus.harnessSlug ?? 'this harness'}, but NONE has a scored run yet — ` +
                   'the corpus is declared, not exercised.',
-                unknownReason:
-                  'a real label with no scored run proves nothing: rows can be inserted for tasks the runner cannot actually execute, so this bar refuses to pass on labels alone and waits for observed scores against real tasks',
+                unknownReason: cellUnknown('insufficient-data', 'a real label with no scored run proves nothing: rows can be inserted for tasks the runner cannot actually execute, so this bar refuses to pass on labels alone and waits for observed scores against real tasks'),
               }
             : {
                 status: 'pass' as const,

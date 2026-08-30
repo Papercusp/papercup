@@ -34,9 +34,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
+import {
+  DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
+  NO_OUTPUT_OVERRIDE_CEILING_MS,
+  NO_OUTPUT_OVERRIDE_FLOOR_MS,
+} from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
 import {
   GREEN_CHECKPOINT_CRON,
   greenCheckpointCronForInstall,
@@ -508,3 +512,67 @@ describe("green-checkpoint cron derivation is pinned to migration 976 (EI-218109
     expect(sql).toMatch(/floor\(\s*schedule\.second_of_hour\s*\/\s*60\.0\s*\)/);
   });
 });
+
+/**
+ * EI-18734881428789368 — the bounds on the reaper's env override.
+ *
+ * The header above says an assertion here should be a real ordering decision, and that
+ * "two names for one number belongs in an import". FLOOR/CEILING are two names for one
+ * number — and the import it prescribes is the exact one this chain cannot have:
+ * operator-core must not import from apps/operator, which is WHY SELF_WATCHDOG_MS and
+ * CHECKPOINT_LOCK_STALE_MS live over here. So the reaper mirrors them as literals and
+ * this is the pin that keeps the mirrors honest. Without it, moving a neighbour would
+ * leave the override silently permitting a runtime value that inverts the chain — the
+ * one hole a constant-only guard cannot see, because it asserts the CONSTANT while the
+ * reaper runs on the env-resolved value.
+ */
+describe("reaper no-output override bounds (EI-18734881428789368)", () => {
+  it("mirrors its un-importable neighbours exactly", () => {
+    expect(NO_OUTPUT_OVERRIDE_FLOOR_MS).toBe(SELF_WATCHDOG_MS);
+    expect(NO_OUTPUT_OVERRIDE_CEILING_MS).toBe(CHECKPOINT_LOCK_STALE_MS);
+  });
+
+  it("leaves a band that actually contains the default", () => {
+    // Anti-vacuity: if the band excluded the default, every override would be refused and
+    // the lever would be decorative — a guard reporting green while guarding nothing.
+    expect(NO_OUTPUT_OVERRIDE_FLOOR_MS).toBeLessThan(
+      DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
+    );
+    expect(DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS).toBeLessThan(
+      NO_OUTPUT_OVERRIDE_CEILING_MS,
+    );
+  });
+
+  it("accepts an in-band override and refuses one that would invert the chain", async () => {
+    const load = async () => {
+      vi.resetModules();
+      return (
+        await import("@papercusp/operator-core/lib/dbos/dbos-executor-reaper")
+      ).STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
+    };
+    const prev = process.env.PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const inBand = DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS + 60_000;
+      process.env.PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS = String(inBand);
+      expect(await load()).toBe(inBand);
+
+      // 60m: the exact historical value that made the reaper the tightest link and
+      // cancelled healthy runs. The override must refuse to reproduce it, and must SAY so.
+      process.env.PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS = String(60 * 60_000);
+      expect(await load()).toBe(DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("green-gate timing chain"),
+      );
+    } finally {
+      warn.mockRestore();
+      if (prev === undefined) {
+        delete process.env.PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS;
+      } else {
+        process.env.PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS = prev;
+      }
+      vi.resetModules();
+    }
+  });
+});
+

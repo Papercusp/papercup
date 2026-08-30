@@ -528,21 +528,45 @@ export const PAPERCUSP_TOOL_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> 
 /**
  * Mangled spelling -> colon name, built from the table above so it cannot drift.
  *
+ * ⚠ TWO SPELLINGS PER TOOL — THE CLIENTS DO NOT MANGLE ALIKE (EI-21905492455933253):
+ *   - claude / omp mangle ':' ONLY        -> `session_request-compaction`
+ *   - codex mangles '-' AS WELL AS ':'    -> `session_request_compaction`
+ * Registering only the first made every DECLARED tool whose colon name contains a
+ * HYPHEN unresolvable from codex: `specFor` missed, and the call was classified
+ * `unknown-tool` — i.e. the drift alarm fired on tools sitting in this very table.
+ * Measured before the fix (context_injection_coverage, port='mid-turn',
+ * outcome='unknown-tool', 3 days): `mcp__papercusp_su__session_request_compaction`
+ * 4,760 calls, `mcp__papercusp_su__fleet_leader_brief` 170.
+ *
+ * No recall was being lost — every hyphenated entry above is a `fields: []`
+ * no-signal declaration, and both outcomes derive '' — so the cost was precision:
+ * ~1.6k/day of false drift signal in the alarm that WI-37587 and WI-37589 were both
+ * filed to de-noise, plus a trap primed for whoever first adds a SIGNAL-bearing
+ * hyphenated tool (it would derive nothing for codex, and per this file's own
+ * asymmetry a missing mapping is indistinguishable from a deliberate omission, so
+ * it would never re-raise the alarm).
+ *
  * Inverting a mangled name in general is AMBIGUOUS (`work_items_get` could be
  * `work_items:get` or `work:items_get`), which is exactly why this is built
  * FORWARD from the declared set instead of parsed. A collision would make one
  * of two declared tools silently unreachable, so it throws at module load
- * rather than resolving to whichever happened to be inserted last.
+ * rather than resolving to whichever happened to be inserted last. That guard is
+ * also what makes registering a SECOND spelling safe rather than reckless: a
+ * hyphen-free name yields two identical spellings, which is a same-value re-set,
+ * while two DIFFERENT tools colliding on the codex spelling still throws.
  */
 const MANGLED_TO_COLON: ReadonlyMap<string, string> = (() => {
   const map = new Map<string, string>();
-  for (const colon of Object.keys(PAPERCUSP_TOOL_VOCABULARY)) {
-    const mangled = colon.replace(/:/g, '_');
+  const register = (mangled: string, colon: string): void => {
     const prior = map.get(mangled);
     if (prior && prior !== colon) {
       throw new Error(`mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`);
     }
     map.set(mangled, colon);
+  };
+  for (const colon of Object.keys(PAPERCUSP_TOOL_VOCABULARY)) {
+    register(colon.replace(/:/g, '_'), colon); // claude / omp
+    register(colon.replace(/[:-]/g, '_'), colon); // codex mangles '-' too
   }
   return map;
 })();

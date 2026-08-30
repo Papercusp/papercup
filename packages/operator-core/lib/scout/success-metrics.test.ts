@@ -163,7 +163,8 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
     const b = bar(r, 'cycle-error-rate');
     expect(b.status).toBe('unknown');
     expect(b.status).not.toBe('pass');
-    expect(b.unknownReason).toContain('denominator too small: n=1');
+    expect(b.unknownReason?.code).toBe('insufficient-data');
+    expect(b.unknownReason?.detail).toContain('denominator too small: n=1');
     // The measurement is still reported — the refusal is about the CLAIM, not the data.
     expect(b.observed).toContain('0 error ticks / 1 cycle ticks');
   });

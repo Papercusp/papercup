@@ -61,7 +61,7 @@ const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
  *
  *  INVARIANT (cross-file, same convention as the result MARKERs / lock-stale in
  *  release-actions.ts + green-checkpoint.ts) — the full chain must stay MONOTONIC:
- *    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (120m, release-actions.ts)
+ *    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (115m, release/green-checkpoint-schedule.ts)
  *      <  SELF_WATCHDOG_MS            (180m, green-checkpoint.ts)
  *      <  THIS                        (185m)
  *      <  CHECKPOINT_LOCK_STALE_MS    (190m, green-checkpoint.ts)
@@ -74,6 +74,59 @@ const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
  *  asserted by apps/operator/lib/release/release-timing-invariants.test.ts, which is
  *  the guard that was missing when this silently inverted. */
 export const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 185 * 60 * 1000;
+/** EI-18734881428789368 — the operator override for the window above, and why it is
+ *  BOUNDED where its ORPHAN sibling twelve lines below is free.
+ *
+ *  The ask was "this has no env lever, its sibling does". The asymmetry was real but the
+ *  sibling's pattern is the wrong one to copy: the orphan window is STANDALONE, so any
+ *  positive value is safe, whereas THIS constant is one link in the monotonic chain
+ *  documented above. Moving one link alone is not the fix for an inversion — it is how
+ *  the chain inverted, twice. A permissive override would therefore have handed an
+ *  operator mid-incident a lever whose natural use (shrink it so the reaper stops
+ *  waiting) silently re-arms the exact "reaper cancels a healthy checkpoint" incident,
+ *  and the compile-time guards could not catch it because they assert the CONSTANT.
+ *
+ *  So the override may only move within the band its neighbours leave. A value outside
+ *  the band is REFUSED — falling back to the default and naming the other links that
+ *  must move with it — which is the actionable answer at 3am, not a silent inversion.
+ *
+ *  FLOOR/CEILING mirror SELF_WATCHDOG_MS and CHECKPOINT_LOCK_STALE_MS, which live in
+ *  apps/operator/lib/release/green-checkpoint.ts and CANNOT be imported here
+ *  (operator-core must not import from apps/operator — the same layering that forced
+ *  this chain across three files in the first place). They are pinned to the real
+ *  constants by apps/operator/lib/release/release-timing-invariants.test.ts, so a
+ *  neighbour that moves without these fails there rather than drifting silently. */
+export const NO_OUTPUT_OVERRIDE_FLOOR_MS = 3 * 60 * 60_000; // mirrors SELF_WATCHDOG_MS (180m)
+export const NO_OUTPUT_OVERRIDE_CEILING_MS = 190 * 60_000; // mirrors CHECKPOINT_LOCK_STALE_MS (190m)
+
+/** The window the reaper ACTUALLY runs with. Note the naming split, which differs from
+ *  the orphan sibling on purpose: `DEFAULT_…` stays a plain compile-time constant so the
+ *  chain guards keep asserting a value that cannot vary with the environment, and THIS is
+ *  the env-resolved one the sweep uses. Env: PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS. */
+export const STALE_ROUTINE_FIRE_NO_OUTPUT_MS = ((): number => {
+  const raw = process.env.PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
+  const v = Number(raw);
+  const fallback = `falling back to ${DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS}ms`;
+  if (!Number.isFinite(v) || v <= 0) {
+    console.warn(
+      `[dbos-reaper] PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS=${raw} is not a positive number; ${fallback}.`,
+    );
+    return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
+  }
+  if (v <= NO_OUTPUT_OVERRIDE_FLOOR_MS || v >= NO_OUTPUT_OVERRIDE_CEILING_MS) {
+    console.warn(
+      `[dbos-reaper] PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS=${v}ms would break the green-gate timing chain ` +
+        `(must be strictly between SELF_WATCHDOG_MS=${NO_OUTPUT_OVERRIDE_FLOOR_MS}ms and ` +
+        `CHECKPOINT_LOCK_STALE_MS=${NO_OUTPUT_OVERRIDE_CEILING_MS}ms); ${fallback}. ` +
+        `Widening past the ceiling is a real ordering decision: raise CHECKPOINT_LOCK_STALE_MS in ` +
+        `apps/operator/lib/release/green-checkpoint.ts together with this window, and keep ` +
+        `apps/operator/lib/release/release-timing-invariants.test.ts green.`,
+    );
+    return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
+  }
+  return v;
+})();
 /** WI-1416: the FAST-orphan window for a routineFire in the genuinely anomalous
  *  ENQUEUED-with-no-live-queue-row state (see the corrected queue-row semantics on
  *  the stale query below). This path used to fire at `staleSchedulerMs` (90s) for ANY
@@ -112,7 +165,7 @@ export async function reapDeadExecutorWorkflows(
   sql: Sql,
   livenessThresholdMs: number = DEFAULT_LIVENESS_THRESHOLD_MS,
   staleSchedulerMs: number = DEFAULT_STALE_SCHEDULER_MS,
-  staleRoutineFireNoOutputMs: number = DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
+  staleRoutineFireNoOutputMs: number = STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
   staleRoutineFireOrphanMs: number = DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS,
   /**
    * EI-18752434722211671: this process's OWN start time (epoch ms), when known.

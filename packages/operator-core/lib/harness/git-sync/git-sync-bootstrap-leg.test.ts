@@ -155,10 +155,39 @@ const {
 // (the re-key adoption below). It MUST be in this mock even though no
 // pre-WI-6364 case touches it — vitest throws on ANY missing key the moment the
 // module is accessed, with an error naming an unrelated module.
-vi.mock('../../harness-registry', () => ({
-  loadHarnessRegistry: loadHarnessRegistryMock,
-  saveHarnessRegistry: saveHarnessRegistryMock,
-}));
+/* EI-18795996821389029 — derived, NOT hand-listed, for the same reason storage is
+ * (see the comment above that mock). harness-registry exports 13 values; this file
+ * only cares about 2. When it was a literal object the other 11 were UNDEFINED on
+ * the mock, and the line-84 comment below records that already biting: boot-all's
+ * real graph reaches back here for `deregisterEphemeralForeignHarness` et al and
+ * crashes with "no export is defined on the mock" — an error naming a module this
+ * leg never mentions, which is why it reads as unrelated. Deriving the stub set from
+ * the real export list closes that whole class for this module.
+ *
+ * The inert stub MATCHES THE REAL FUNCTION'S SHAPE rather than blanket-async as the
+ * storage mock does: harness-registry is a near-even 7-async/6-sync split, so a
+ * blanket `async () => undefined` would hand a Promise to callers of the sync
+ * helpers (dedupeProjectsBySlug, isEphemeralForeignProject, ...) — trading an absent
+ * export for a wrong-typed one. Non-function exports keep their real values. */
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const inert = Object.fromEntries(
+    Object.entries(actual).map(([k, v]) => {
+      if (typeof v !== 'function') return [k, v];
+      return [
+        k,
+        v.constructor.name === 'AsyncFunction'
+          ? vi.fn(async () => undefined)
+          : vi.fn(() => undefined),
+      ];
+    }),
+  );
+  return {
+    ...inert,
+    loadHarnessRegistry: loadHarnessRegistryMock,
+    saveHarnessRegistry: saveHarnessRegistryMock,
+  };
+});
 vi.mock('../../hive-membership-store', () => ({ listHiveMembers: listHiveMembersMock }));
 /* Storage is fully stubbed (no real git/fs from a unit test), but the stub set is
  * derived from the REAL export list so a new export in storage.ts cannot silently
@@ -320,18 +349,48 @@ describe('runBootstrapLeg', () => {
    * here (mostly misleading "called 0 times" — the leg aborted before dialing) plus
    * a red fleet gate. The factory is now derived from the real export list; this
    * fails if anyone reverts it to a hand-listed object and misses an export. */
-  it('EI-18748959711888135: the storage stub exposes every real storage export', async () => {
-    const real = await vi.importActual<Record<string, unknown>>('../../sync/pot-git/storage');
-    const stub = (await import('../../sync/pot-git/storage')) as unknown as Record<string, unknown>;
+  /* The assertion is shared so a third derived mock is ~5 lines, not a copy-paste of
+   * the detection logic (which is where the self-check would quietly get dropped).
+   *
+   * Specifiers stay STATIC at each call site on purpose: vitest resolves `import()`
+   * against its mock registry using the literal specifier, so passing a variable
+   * path here would compare the real module against ITSELF and pass unconditionally —
+   * a guard that can only succeed, which is worse than no guard because it reads
+   * as coverage. */
+  const expectStubCoversRealExports = (
+    label: string,
+    real: Record<string, unknown>,
+    stub: Record<string, unknown>,
+  ) => {
     const missingFrom = (m: Record<string, unknown>) => Object.keys(real).filter((k) => !(k in m));
-    expect(missingFrom(stub)).toEqual([]);
+    expect(missingFrom(stub), `${label}: mock omits real export(s)`).toEqual([]);
     // Exercise the detection itself against a deliberately incomplete stub, so this
     // guard cannot silently stop detecting (a guard whose failure path never runs is
     // indistinguishable from no guard).
     const probeKey = Object.keys(real)[0]!;
     const incomplete = { ...stub };
     delete incomplete[probeKey];
-    expect(missingFrom(incomplete)).toEqual([probeKey]);
+    expect(missingFrom(incomplete), `${label}: the guard stopped detecting`).toEqual([probeKey]);
+  };
+
+  it('EI-18748959711888135: the storage stub exposes every real storage export', async () => {
+    expectStubCoversRealExports(
+      'storage',
+      await vi.importActual<Record<string, unknown>>('../../sync/pot-git/storage'),
+      (await import('../../sync/pot-git/storage')) as unknown as Record<string, unknown>,
+    );
+  });
+
+  /* EI-18795996821389029 — same class, one module over. This one is not hypothetical:
+   * the mock listed 2 of 13 exports, and the comment at the top of this file records
+   * boot-all's real graph already crashing on the missing
+   * `deregisterEphemeralForeignHarness`. */
+  it('EI-18795996821389029: the harness-registry stub exposes every real export', async () => {
+    expectStubCoversRealExports(
+      'harness-registry',
+      await vi.importActual<Record<string, unknown>>('../../harness-registry'),
+      (await import('../../harness-registry')) as unknown as Record<string, unknown>,
+    );
   });
 
   it('self-gates as a no-op when the local repo already has a peer MEMBER namespace (warm repo)', async () => {

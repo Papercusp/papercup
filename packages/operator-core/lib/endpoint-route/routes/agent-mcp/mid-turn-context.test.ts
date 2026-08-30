@@ -1043,7 +1043,7 @@ describe('papercusp MCP vocabulary — the 97% of drift-alarm noise (WI-37589)',
   // mcp__papercusp-su__* tools, 2,424 calls/day deriving nothing. After
   // WI-37587 fixed claude's NATIVE tools this WAS the remaining noise floor,
   // and an alarm that is ~100% noise cannot show a real drift event.
-  describe('both spellings resolve to one entry', () => {
+  describe('every client spelling resolves to one entry', () => {
     it('resolves the CLIENT-MANGLED name a hook actually sends', () => {
       expect(deriveQuery('mcp__papercusp-su__dev_pg_query', { sql: 'SELECT 1 FROM plans' })).toBe(
         'SELECT 1 FROM plans',
@@ -1055,6 +1055,59 @@ describe('papercusp MCP vocabulary — the 97% of drift-alarm noise (WI-37589)',
     it('capability:bash mirrors claude Bash exactly — same fields, same em-dash', () => {
       const args = { command: 'rg foo', description: 'find foo' };
       expect(deriveQuery('mcp__papercusp-su__capability_bash', args)).toBe(deriveQuery('Bash', args));
+    });
+
+    /**
+     * EI-21905492455933253 — THE CLIENTS DO NOT MANGLE ALIKE. claude/omp replace
+     * ':' only, so hyphens survive; codex replaces '-' as well. Registering only
+     * the first spelling made every DECLARED tool whose colon name contains a
+     * hyphen resolve as `unknown-tool` from codex — the drift alarm firing on
+     * tools sitting in the vocabulary itself.
+     *
+     * The strings below are the EXACT ones observed in
+     * context_injection_coverage (port='mid-turn', outcome='unknown-tool'), not
+     * constructed for the test: session_request_compaction at 4,760 calls / 3
+     * days and fleet_leader_brief at 170.
+     *
+     * This regresses INVISIBLY without a guard — the symptom is a telemetry row
+     * nobody reads, never a failing turn — which is the whole reason it is here.
+     */
+    it("resolves codex's spelling, which mangles '-' to '_' as well as ':'", () => {
+      expect(deriveQueryDetailed('mcp__papercusp_su__session_request_compaction', { focus: 'x' })).toEqual({
+        query: '',
+        miss: 'no-signal',
+      });
+      expect(deriveQueryDetailed('mcp__papercusp_su__fleet_leader_brief', {}).miss).toBe('no-signal');
+    });
+
+    it("does not regress claude's spelling of the same declared tools", () => {
+      expect(deriveQueryDetailed('mcp__papercusp-su__session_request-compaction', {}).miss).toBe('no-signal');
+      expect(deriveQueryDetailed('mcp__papercusp-su__fleet_leader-brief', {}).miss).toBe('no-signal');
+    });
+
+    it('resolves a SIGNAL-bearing tool under the codex spelling too', () => {
+      // codex is ~77% of mid-turn traffic, so this is the path that matters most.
+      expect(deriveQuery('mcp__papercusp_su__dev_pg_query', { sql: 'SELECT 1 FROM plans' })).toBe(
+        'SELECT 1 FROM plans',
+      );
+    });
+
+    /**
+     * NEGATIVE CONTROLS. Widening resolution must cover DECLARED tools only — if
+     * it also started resolving unmapped ones the alarm would go quiet, which is
+     * strictly worse than the noise it was fixing.
+     */
+    it('leaves a genuinely UNMAPPED tool loud in both spellings', () => {
+      // coord:declare-intent is the single largest unknown-tool row (9,004 codex
+      // calls / 3 days) and is deliberately NOT in the vocabulary. It must stay
+      // reported as drift rather than be swallowed by the widening.
+      expect(deriveQueryDetailed('mcp__papercusp_su__coord_declare_intent', { intent: 'x' }).miss).toBe(
+        'unknown-tool',
+      );
+      expect(deriveQueryDetailed('mcp__papercusp-su__coord_declare-intent', { intent: 'x' }).miss).toBe(
+        'unknown-tool',
+      );
+      expect(deriveQueryDetailed('mcp__papercusp_su__brand_new_verb', { q: 'x' }).miss).toBe('unknown-tool');
     });
   });
 

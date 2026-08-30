@@ -1,0 +1,330 @@
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+/**
+ * EI-21894520557549786 — a bounded pc-heavy wait loop went SILENT for its
+ * whole timeout under fleet contention: `npm run test:affected` ran for its
+ * full 40-minute deadline, emitted only the initial command echo, and was
+ * SIGTERMed externally having measured ZERO tasks.
+ *
+ * Root defect (confirmed by direct bash test, not just reading): every wait
+ * loop in pc-heavy.sh read the clock via `$(date +%s)` — a forked external
+ * command — on EVERY tick. Under the fork pressure documented alongside the
+ * sibling EI-21415546552163181 ("pc-heavy runner exits 254 when host fork
+ * returns EAGAIN"), that fork can fail and return empty. An empty `_now`
+ * then poisoned BOTH halves of the wait: the heartbeat arithmetic (bash
+ * treats "" as 0 in `$(( ))`, so the diff never crosses the threshold) AND
+ * the deadline check (`[ "" -ge N ]` errors "integer expression expected" —
+ * silently, since this script runs under `set -uo pipefail` with no `-e` —
+ * so the surrounding `&&`/`if` guarding `break` never fires). Together: a
+ * BOUNDED wait becomes UNBOUNDED and TOTALLY SILENT, exactly the "neither
+ * red nor green" shape the bug report calls out as the dangerous one.
+ *
+ * Fix: read the clock via bash's builtin `$EPOCHSECONDS` (bash 5.0+)
+ * instead of forking `date +%s`, at every wait-loop tick. Confirmed via
+ * strace that a bare `$EPOCHSECONDS` reference costs ZERO clone/fork
+ * syscalls, vs one for `$(date +%s)` — this eliminates the fork-pressure
+ * vulnerability at its ROOT (the loop no longer needs `date` to succeed at
+ * all) rather than merely defending against its failure. On any bash below
+ * 5.0, where EPOCHSECONDS is unset, `${EPOCHSECONDS:-$(date +%s)}` falls
+ * back to the original (still fork-vulnerable, but status-quo) behavior —
+ * never a new regression.
+ *
+ * This suite proves both halves: the source now reads the clock this way at
+ * every identified site (structural), and a live, contended waiter still
+ * heartbeats and honors its timeout correctly EVEN WHEN `date` is entirely
+ * unusable on PATH (behavioral) — the exact condition the original bug
+ * needed to hang.
+ */
+
+// Overridable so falsifiability can be proven against a mutated COPY outside
+// the tree (scripts/mutation-probe.sh tier 2) without ever mutating the
+// shared checkout — git-sync commits the whole tree on a short cadence, so
+// an in-tree mutation can be committed mid-probe even when nothing goes
+// wrong. Every reference to the subject goes through this constant.
+const PC_HEAVY = process.env.PC_HEAVY_SCRIPT ?? resolve(__dirname, '../../../scripts/pc-heavy.sh');
+const source = readFileSync(PC_HEAVY, 'utf8');
+
+describe('pc-heavy wait loops read the clock without forking (EI-21894520557549786)', () => {
+  it('is syntactically valid bash', () => {
+    expect(() =>
+      execFileSync('bash', ['-n', PC_HEAVY], { timeout: 10_000, killSignal: 'SIGKILL' }),
+    ).not.toThrow();
+  });
+
+  // One assertion per confirmed wait-loop site, anchored on the line
+  // immediately preceding it so a future edit that reorders unrelated code
+  // cannot make this pass by accident. Each site must read via
+  // `${EPOCHSECONDS:-$(date +%s)}`, never a bare `$(date +%s)`.
+  const sites: Array<{ label: string; anchor: string; read: string }> = [
+    {
+      label: 'exclusive-writer contention loop (initial anchor)',
+      anchor: 'exec {_exclusive_writer_fd}>"$_exclusive_writer_path"',
+      read: '_exclusive_writer_started="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'exclusive-writer contention loop (per-tick read)',
+      anchor: 'kill -0 "$_exclusive_writer_wait_pid" 2>/dev/null; do',
+      read: '_exclusive_writer_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'exclusive slot-drain barrier (initial anchor)',
+      anchor: '"$_exclusive_slot_count" -lt 1 ] && _exclusive_slot_count=1',
+      read: '_exclusive_started="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'exclusive slot-drain barrier (per-tick read)',
+      anchor: '_exclusive_release_partial',
+      read: '_exclusive_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'ordinary heavy-slot queue (initial anchor)',
+      anchor: 'waiting up to ${_timeout}s" >&2',
+      read: '_wait_start="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'ordinary heavy-slot queue (per-tick read)',
+      anchor: 'break 2; fi',
+      read: '_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'retry-intent-clear wait (initial anchor)',
+      anchor: 'command -v flock >/dev/null 2>&1 || return 0',
+      read: '_intent_started="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'retry-intent-clear wait (heartbeat-branch read)',
+      anchor: 'retry still waiting for exclusive materializer intent',
+      read: '_intent_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'retry-intent-clear wait (pre-deadline fallback read)',
+      anchor: 'exclusive materializer intent cleared; starting retry',
+      read: '_intent_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+  ];
+
+  for (const { label, anchor, read } of sites) {
+    it(`${label}: reads via $EPOCHSECONDS, not a bare $(date +%s)`, () => {
+      const anchorAt = source.indexOf(anchor);
+      expect(anchorAt, `anchor text must exist: ${JSON.stringify(anchor)}`).toBeGreaterThan(-1);
+      // Search a bounded window after the anchor for the guarded read — wide
+      // enough to span a preceding comment block, narrow enough that it
+      // cannot accidentally match a DIFFERENT site's read.
+      const window = source.slice(anchorAt, anchorAt + 1500);
+      expect(window, `${label}: expected "${read}" within 1500 chars of the anchor`).toContain(read);
+    });
+  }
+
+  it('never leaves an unguarded `_now=$(date +%s)`-style bare read at any of the 4 wait loops', () => {
+    // Positive control for the assertions above: this exact bare pattern is
+    // what the ORIGINAL bug looked like. Its absence here is not vacuous —
+    // grep confirms these 4 loops' specific variable names no longer appear
+    // paired with a bare (unguarded) date call.
+    const bareForms = [
+      '_exclusive_writer_now=$(date +%s)',
+      '_exclusive_now=$(date +%s)',
+      '_wait_start=$(date +%s)',
+      '_intent_now=$(date +%s)',
+      '_intent_started=$(date +%s)',
+      '_exclusive_writer_started=$(date +%s)',
+      '_exclusive_started=$(date +%s)',
+    ];
+    for (const bare of bareForms) {
+      expect(source, `must not contain the unguarded form: ${bare}`).not.toContain(bare);
+    }
+  });
+});
+
+describe('$EPOCHSECONDS truly costs zero forks (the mechanism this fix relies on)', () => {
+  it('a bare $EPOCHSECONDS reference performs no clone/fork/vfork syscall', () => {
+    // strace -c summarizes syscalls; a bare variable expansion assigned to a
+    // shell var (no command substitution) should show NO clone/fork line at
+    // all for the reference itself. Skips cleanly if strace is unavailable
+    // (a bare-container CI image) rather than false-failing on a missing tool.
+    const strace = spawnSync('which', ['strace'], { encoding: 'utf8' });
+    if (strace.status !== 0) return;
+    const r = spawnSync(
+      'strace',
+      ['-f', '-c', '-e', 'trace=clone,fork,vfork', 'bash', '-c', 'x=$EPOCHSECONDS'],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    // strace writes its summary to stderr.
+    expect(r.stderr).not.toMatch(/\bclone\b|\bfork\b|\bvfork\b/);
+  });
+
+  it('POSITIVE CONTROL: $(date +%s) DOES fork — proves the instrument works', () => {
+    const strace = spawnSync('which', ['strace'], { encoding: 'utf8' });
+    if (strace.status !== 0) return;
+    const r = spawnSync(
+      'strace',
+      ['-f', '-c', '-e', 'trace=clone,fork,vfork', 'bash', '-c', 'x=$(date +%s)'],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    expect(r.stderr).toMatch(/\bclone\b/);
+  });
+
+  it('$EPOCHSECONDS still advances with real wall-clock time (not a stale one-shot value)', async () => {
+    const r1 = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS'], { encoding: 'utf8' });
+    await new Promise((res) => setTimeout(res, 1100));
+    const r2 = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS'], { encoding: 'utf8' });
+    expect(Number(r2.stdout.trim())).toBeGreaterThan(Number(r1.stdout.trim()));
+  });
+
+  it('$EPOCHSECONDS matches `date +%s` within 1 second (correctness, not just presence)', () => {
+    const r = spawnSync('bash', ['-c', 'echo $EPOCHSECONDS; date +%s'], { encoding: 'utf8' });
+    const [a, b] = r.stdout.trim().split('\n').map(Number);
+    expect(Math.abs(a - b)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('live: a contended waiter still heartbeats and honors its timeout with `date` entirely unusable', () => {
+  let dir = '';
+  let brokenDateDir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'pcheavy-clockguard-'));
+    // A `date` binary that ALWAYS fails — simulates the pathological,
+    // sustained fork-pressure condition the original bug needed (every
+    // single `date +%s` call in the loop failing, not just one). Placed
+    // FIRST on PATH so it shadows the real `date`.
+    brokenDateDir = mkdtempSync(join(tmpdir(), 'pcheavy-brokendate-'));
+    const fakeDate = join(brokenDateDir, 'date');
+    writeFileSync(fakeDate, '#!/usr/bin/env bash\nexit 1\n');
+    chmodSync(fakeDate, 0o755);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(brokenDateDir, { recursive: true, force: true });
+  });
+
+  function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+    return {
+      // brokenDateDir FIRST so its `date` shadows the real one for every
+      // subprocess this test spawns, matching a host where `date` is
+      // genuinely unable to fork.
+      PATH: `${brokenDateDir}:${process.env.PATH ?? ''}`,
+      PC_HEAVY_DIR: dir,
+      PC_HEAVY_IONICE: '',
+      PAPERCUSP_CHECKPOINT_LOG_DIR: join(dir, 'checkpoint-logs'),
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '4096',
+      PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '0',
+      ...extra,
+    };
+  }
+
+  async function waitFor(label: string, predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+    const started = Date.now();
+    for (;;) {
+      if (predicate()) return;
+      if (Date.now() - started > timeoutMs) throw new Error(`waitFor(${JSON.stringify(label)}) timed out`);
+      await new Promise((res) => setTimeout(res, 20));
+    }
+  }
+
+  function heldSlotCount(slotsDir: string, slots: number): number {
+    let held = 0;
+    for (let i = 0; i < slots; i += 1) {
+      const probe = spawnSync('flock', ['-n', join(slotsDir, `slot.${i}`), 'true'], { stdio: 'ignore' });
+      if (probe.status !== 0) held += 1;
+    }
+    return held;
+  }
+
+  function killGroup(child: ReturnType<typeof spawn>): void {
+    const pid = child.pid;
+    if (!pid) return;
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
+  }
+
+  it('the broken-date fixture itself actually fails (sanity check on the fixture)', () => {
+    const r = spawnSync('date', ['+%s'], { env: { PATH: `${brokenDateDir}:${process.env.PATH ?? ''}` } });
+    expect(r.status).not.toBe(0);
+  });
+
+  it('emits periodic "still queued" heartbeats AND honors PC_HEAVY_TIMEOUT_SEC, with `date` unusable throughout', async () => {
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
+    try {
+      const waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo got-it'], {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_TIMEOUT_SEC: '20',
+          PC_HEAVY_HEARTBEAT_SEC: '1',
+        }),
+        cwd: dir,
+      });
+      let stderrText = '';
+      let stdoutText = '';
+      waiter.stderr?.on('data', (c) => { stderrText += String(c); });
+      waiter.stdout?.on('data', (c) => { stdoutText += String(c); });
+      const exited = new Promise<number>((res) => waiter.on('exit', (c) => res(c ?? -1)));
+      const beats = () => (stderrText.match(/\[pc-heavy\] still queued/g) ?? []).length;
+
+      // With the ORIGINAL `$(date +%s)` pattern and a permanently-broken
+      // `date`, this would never happen — the heartbeat arithmetic silently
+      // never crosses its threshold because `_now` never advances (stuck at
+      // "" -> arithmetic 0). This is the direct behavioral proof the fix
+      // works: $EPOCHSECONDS never calls `date` at all, so a broken `date`
+      // cannot suppress the heartbeat.
+      await waitFor('two "still queued" heartbeats despite date being broken', () => beats() >= 2, 15_000);
+
+      killGroup(holder); // frees the slot; the waiter now proceeds
+      const code = await exited;
+      expect(stdoutText.trim()).toBe('got-it');
+      expect(code).toBe(0);
+      expect(beats()).toBeGreaterThanOrEqual(2);
+    } finally {
+      killGroup(holder);
+    }
+  }, 30_000);
+
+  it('a refused (never-drained) wait still exits via its own deadline check, not an external kill, with `date` unusable', async () => {
+    // Occupy the only slot for the WHOLE test — the waiter must be refused
+    // by its own PC_HEAVY_TIMEOUT_SEC deadline, not rescued.
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
+    try {
+      const started = Date.now();
+      const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'echo should-not-run'], {
+        env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_TIMEOUT_SEC: '2' }),
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 15_000, // generous outer bound; the script's OWN 2s deadline must fire well inside this
+      });
+      const elapsedMs = Date.now() - started;
+      // The OLD bug's whole defect was that the deadline check ALSO went
+      // silent — this loop would spin until externally killed rather than
+      // ever self-terminating. Bounding well under the outer `timeout`
+      // proves the script's own 2s deadline fired on its own.
+      expect(elapsedMs).toBeLessThan(10_000);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('REFUSED');
+      expect(r.stdout.trim()).not.toBe('should-not-run');
+    } finally {
+      killGroup(holder);
+    }
+  }, 20_000);
+});

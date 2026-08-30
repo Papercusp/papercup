@@ -152,15 +152,24 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
 // EI-18667514339699744: coord:inbox returns its rows under `entries`; coord:orient
 // folds the SAME rows under `recent`. A caller reading the wrong key for the surface
 // it's actually on got a silent [] (indistinguishable from "no mail") instead of an
-// error. Pin that coord:inbox's own result exposes BOTH key names for the same array.
-describe("coord:inbox — `recent` alias (EI-18667514339699744)", () => {
-  it("exposes the same rows under both `entries` and `recent`", async () => {
+// error. Pin that coord:inbox's own result exposes BOTH key names for the same rows.
+//
+// EI-21902920583326819: `recent` used to be a byte-for-byte SECOND full copy of
+// `entries` (doubling every inbox read's wire cost for a key nothing in this
+// codebase reads as full rows). It is now a cheap `msg_id`-only pointer into
+// `entries` — still present under both names (no silent []), just not
+// re-serialized twice.
+describe("coord:inbox — `recent` alias (EI-18667514339699744, EI-21902920583326819)", () => {
+  it("exposes the same rows under `entries` and their `msg_id`s under `recent`", async () => {
     M.readInbox.mockResolvedValueOnce([
       { msg_id: "m1", kind: "message", from: "peer", ts: "2026-07-26T00:00:00Z", summary: "hi" },
     ] as unknown[]);
     const result = (await inbox("owner-a")) as { content: Array<{ text: string }> };
-    const parsed = JSON.parse(result.content[0].text) as { entries: unknown[]; recent: unknown[] };
+    const parsed = JSON.parse(result.content[0].text) as {
+      entries: Array<{ msg_id: string }>;
+      recent: string[];
+    };
     expect(parsed.entries).toHaveLength(1);
-    expect(parsed.recent).toEqual(parsed.entries);
+    expect(parsed.recent).toEqual(parsed.entries.map((e) => e.msg_id));
   });
 });
