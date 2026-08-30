@@ -540,6 +540,44 @@ async function readUnadjudicatedCensus(
  */
 export const ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS = 900_000;
 
+/**
+ * Run one census scan under {@link ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}.
+ *
+ * WI-1194246 declared that bound by wrapping each scan in `sql.begin` purely to
+ * carry `SET LOCAL`. That is right on a bare pool checkout and WRONG on a handle
+ * the caller already has open in a transaction: a postgres.js transaction handle
+ * exposes `savepoint`, not `begin`, so the nested call throws
+ * `TypeError: sql.begin is not a function`. It did exactly that to every
+ * bulk-dedup stage — `runWorkItemAdmissionBulkDedup` is the one
+ * `withinTransaction: true` caller and runs its post-merge census on the stage's
+ * own `tx` (work-items-admission-bulk-dedup.ts, the `runCensus` inside
+ * `sql.begin`), so the whole scheduled bulk-dedup path threw before this branch
+ * existed.
+ *
+ * `SET LOCAL` is already transaction-scoped, so inside a caller's transaction we
+ * simply declare the bound on THEIR handle and it reverts at their COMMIT — the
+ * same shape `persistCensusPlan` below has always used for its own
+ * `withinTransaction` branch. The bound then covers the remainder of that
+ * caller's transaction rather than this statement alone; for the only caller
+ * that is the bulk-dedup stage, whose other statements are short and which is
+ * itself the long-running work this bound exists to permit.
+ */
+async function withCensusStatementTimeout<T>(
+  sql: OrgSql,
+  opts: AdmissionCensusRunOptions,
+  body: (tx: OrgSql) => Promise<T>,
+): Promise<T> {
+  const declare = `SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`;
+  if (opts.withinTransaction) {
+    await sql.unsafe(declare);
+    return body(sql);
+  }
+  return (await sql.begin(async (tx) => {
+    await tx.unsafe(declare);
+    return body(tx as unknown as OrgSql);
+  })) as T;
+}
+
 async function scanEdgeChunk(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
@@ -549,15 +587,14 @@ async function scanEdgeChunk(
   chunkIndex: number,
   chunkCount: number,
 ): Promise<{ anchors: number; edges: number; hard: number }> {
-  // WI-1194246: wrapped in a transaction PURELY to carry `SET LOCAL
-  // statement_timeout`. It MUST be SET LOCAL, never a session-level `SET`:
-  // this runs on a SHARED pool checkout, so a session-level set would leak
-  // this bound onto whatever ran next on the same connection — silently
-  // un-capping an unrelated caller. SET LOCAL reverts at COMMIT. The body is a
-  // single statement, so the wrapper does not change atomicity.
-  const rows = await sql.begin<Array<{ anchors: number; edges: number; hard: number }>>(async (tx) => {
-    await tx.unsafe(`SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`);
-    return (tx as unknown as OrgSql)<Array<{ anchors: number; edges: number; hard: number }>>`
+  // WI-1194246: runs under the census's declared statement_timeout. It MUST be
+  // SET LOCAL, never a session-level `SET`: this can run on a SHARED pool
+  // checkout, so a session-level set would leak the bound onto whatever ran
+  // next on the same connection — silently un-capping an unrelated caller.
+  // SET LOCAL reverts at COMMIT. The body is a single statement, so the
+  // wrapper does not change atomicity.
+  const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
+    tx<Array<{ anchors: number; edges: number; hard: number }>>`
     WITH corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
@@ -595,8 +632,7 @@ async function scanEdgeChunk(
     SELECT (SELECT count(*)::int FROM anchors) AS anchors,
            count(*)::int AS edges,
            count(*) FILTER (WHERE cos >= ${ADMISSION_COMPONENT_FLOOR})::int AS hard
-      FROM written`;
-  });
+      FROM written`);
   return {
     anchors: Number(rows[0]?.anchors ?? 0),
     edges: Number(rows[0]?.edges ?? 0),
@@ -711,13 +747,11 @@ async function readTextContextEdges(
 ): Promise<AdmissionCensusEdge[]> {
   const textEdges: AdmissionCensusEdge[] = [];
   for (const missingChunk of partitionTextContextIds(missingEmbeddingIds)) {
-    // WI-1194246: transaction wrapper exists PURELY to carry `SET LOCAL
-    // statement_timeout` on this shared pool checkout — see
+    // WI-1194246: runs under the census's declared statement_timeout — see
     // ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS above. SET LOCAL reverts at COMMIT,
     // so it cannot leak the bound onto the next caller of this connection.
-    const rows = await sql.begin<TextEdgeDbRow[]>(async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`);
-      return (tx as unknown as OrgSql)<TextEdgeDbRow[]>`
+    const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
+      tx<TextEdgeDbRow[]>`
     WITH corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
@@ -751,8 +785,7 @@ async function readTextContextEdges(
                   c.id
          LIMIT ${TEXT_CONTEXT_NEIGHBOURS}
       ) neighbour ON neighbour.exact_key OR neighbour.trgm >= ${TEXT_CONTEXT_TRGM_FLOOR}
-     ORDER BY m.id, neighbour.exact_key DESC, neighbour.trgm DESC, neighbour.id`;
-    });
+     ORDER BY m.id, neighbour.exact_key DESC, neighbour.trgm DESC, neighbour.id`);
     textEdges.push(
       ...rows.map((row) => ({
         a: row.missing_id,
