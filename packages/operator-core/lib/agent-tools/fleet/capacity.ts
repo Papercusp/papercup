@@ -393,6 +393,29 @@ interface ProviderCapacityReading {
   [key: string]: unknown;
 }
 
+/**
+ * Codex ChatGPT-subscription accounts may not have rows in the Claude-oriented account-pool store.
+ * In that case the gateway's Codex /stats tier oracle is still a measured capacity source, but only
+ * when it contains a positive healthy-account count and a concrete spare bee-tier budget. Missing,
+ * non-positive, or incomplete tier data remains UNKNOWN so headcount admission stays fail-closed.
+ */
+function hasMeasuredCodexTierCapacity(
+  provider: AccountProvider,
+  report: Pick<
+    ReturnType<typeof buildCapacityReport>,
+    'tierLayer' | 'healthyAccounts' | 'dispatchBudget' | 'beeTier' | 'capByTier'
+  >,
+): boolean {
+  if (provider !== 'codex' || report.tierLayer !== true) return false;
+  if (!Number.isInteger(report.healthyAccounts) || report.healthyAccounts <= 0) return false;
+  if (!Number.isInteger(report.dispatchBudget) || report.dispatchBudget <= 0) return false;
+  const beeTier = report.capByTier?.find((row) => row.tier === report.beeTier);
+  return beeTier != null &&
+    [beeTier.cap, beeTier.inFlight, beeTier.queued].every(
+      (value) => Number.isInteger(value) && value >= 0,
+    );
+}
+
 /** One provider-scoped reading, shared by uniform and mixed-fleet responses. */
 async function readCapacityForProvider(
   args: CapacityScopeArgs,
@@ -426,7 +449,11 @@ async function readCapacityForProvider(
     provider,
     model: args.model ?? null,
     account: args.account ?? null,
-    verdict: !accountAvailability ? 'unknown' : report.blind ? 'blind' : 'measured',
+    verdict: report.blind
+      ? 'blind'
+      : accountAvailability || hasMeasuredCodexTierCapacity(provider, report)
+        ? 'measured'
+        : 'unknown',
     ...report,
     accountPool,
   };

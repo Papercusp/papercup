@@ -498,6 +498,103 @@ test('fleet:capacity account-only scope resolves a Codex account instead of defa
   headroomSpy.mockRestore();
 });
 
+test('EI-21664939388634125: Codex tier oracle measures spare capacity when utilization and account rows are absent', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce({
+    provider: 'codex',
+    reachable: true,
+    // Codex has no Claude-style unified utilization window. The tier oracle is the authoritative
+    // admission signal for this route.
+    priorityTiers: {
+      healthyAccounts: 6,
+      tier1Reserve: 1,
+      tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 0 }],
+    },
+    healthyAccounts: 6,
+    inFlight: 0,
+    queueDepth: 0,
+  });
+  // ChatGPT-subscription CLI accounts are surfaced by the gateway but may not be represented in the
+  // operator account-pool rows used by the optional cross-check.
+  mockAccountStatus.mockResolvedValueOnce([]);
+
+  try {
+    const res = (await capacityMod.default.handler(
+      { provider: 'codex', headroom: 3 } as never,
+      { role: 'su' } as never,
+    )) as { content: { text: string }[] };
+    const body = JSON.parse(res.content[0]!.text);
+
+    assert.equal(body.verdict, 'measured');
+    assert.equal(body.utilization, null);
+    assert.equal(body.healthyAccounts, 6);
+    assert.equal(body.dispatchBudget, 20);
+    assert.equal(body.recommendedHeadroom, 3);
+    assert.equal(body.accountPool, null);
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('EI-21664939388634125: incomplete or unusable Codex tier data remains unknown without account rows', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const readings = [
+    // No tier layer: top-level health alone cannot establish bee-tier capacity.
+    {
+      provider: 'codex' as const,
+      reachable: true,
+      healthyAccounts: 6,
+      inFlight: 0,
+      queueDepth: 0,
+    },
+    // The tier layer is present, but the bee tier is absent, so its budget is unmeasured.
+    {
+      provider: 'codex' as const,
+      reachable: true,
+      priorityTiers: {
+        healthyAccounts: 6,
+        tier1Reserve: 1,
+        tiers: [{ tier: 1, cap: 20, inFlight: 0, queued: 0 }],
+      },
+      healthyAccounts: 6,
+      inFlight: 0,
+      queueDepth: 0,
+    },
+    // A spare queue slot with no healthy account is contradictory for fresh admission and must not
+    // be promoted to a measured refill allowance.
+    {
+      provider: 'codex' as const,
+      reachable: true,
+      priorityTiers: {
+        healthyAccounts: 0,
+        tier1Reserve: 1,
+        tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 0 }],
+      },
+      healthyAccounts: 0,
+      inFlight: 0,
+      queueDepth: 0,
+    },
+  ];
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom');
+  mockAccountStatus.mockResolvedValue([]);
+
+  try {
+    for (const reading of readings) {
+      headroomSpy.mockResolvedValueOnce(reading);
+      const res = (await capacityMod.default.handler(
+        { provider: 'codex', headroom: 3 } as never,
+        { role: 'su' } as never,
+      )) as { content: { text: string }[] };
+      const body = JSON.parse(res.content[0]!.text);
+      assert.equal(body.verdict, 'unknown');
+    }
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
 test('EI-21268415877542410: capacity reports one honest account-pool snapshot, not fake store divergence', async () => {
   const capacityMod = await import('./capacity');
   const observability = await import('../../inference-gateway/observability');
