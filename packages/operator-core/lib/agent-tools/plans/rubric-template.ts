@@ -167,6 +167,11 @@ export function resolveCriterionWindow(
  *    REFUSING — a check that can never run is a booby trap, not advice). At GRADING
  *    time scorecards:emit actually RUNS the files (never stale ledger rows) and refuses
  *    a path that no longer resolves.
+ *  - kind:'cargo'      → { manifestPath, sourceFiles, test? } runs one native Cargo
+ *    crate at GRADING time. `sourceFiles` are the repo-relative Rust implementation
+ *    files the crate-level verdict is attributed to; Cargo's stable runner does not
+ *    expose per-test source files, so the record keeps this attribution explicit
+ *    instead of pretending its aggregate counts came from each file independently.
  *  - kind:'instrument' → the existing instrumentKey binding, generalized into the same
  *    structured slot. `effectiveCriterionInstrumentKey` prefers it over the legacy
  *    top-level field.
@@ -196,6 +201,31 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
             'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
             'tree at propose time; actually RUN at grading time.',
         ),
+    })
+      .strict(),
+  z
+    .object({
+      kind: z.literal('cargo'),
+      manifestPath: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe(
+          'repo-root-relative Cargo.toml manifest for the native test crate; validated to resolve against the live tree at propose time',
+        ),
+      sourceFiles: z
+        .array(z.string().min(1).max(500))
+        .min(1)
+        .max(50)
+        .describe(
+          'repo-root-relative Rust/source files whose crate-level Cargo verdict is attributed to this criterion; Cargo does not expose per-test source attribution',
+        ),
+      test: z
+        .string()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe('optional Cargo test-name filter; an empty match is refused at grading time'),
     })
     .strict(),
   z

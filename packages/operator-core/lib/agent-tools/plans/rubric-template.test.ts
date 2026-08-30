@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   rubricTemplateDataSchema,
   rubricCriterionSchema,
+  rubricCriterionCheckSchema,
   rubricCriterionWindowSchema,
   resolveCriterionWindow,
   rubricKindOf,
@@ -84,6 +85,35 @@ describe('rubric template schema', () => {
   it('is STRICT: rejects an unknown criterion field', () => {
     expect(
       rubricCriterionSchema.safeParse({ ...minimalCriterion, weight: 3 }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a native Cargo check with explicit manifest/source attribution', () => {
+    expect(
+      rubricCriterionCheckSchema.safeParse({
+        kind: 'cargo',
+        manifestPath: 'apps/tui/Cargo.toml',
+        sourceFiles: ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs'],
+        test: 'app::tests::renders',
+      }).success,
+    ).toBe(true);
+    expect(
+      rubricCriterionSchema.safeParse({
+        ...minimalCriterion,
+        check: {
+          kind: 'cargo',
+          manifestPath: 'apps/tui/Cargo.toml',
+          sourceFiles: ['apps/tui/src/app.rs'],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      rubricCriterionCheckSchema.safeParse({
+        kind: 'cargo',
+        manifestPath: 'apps/tui/Cargo.toml',
+        sourceFiles: ['apps/tui/src/app.rs'],
+        extra: true,
+      }).success,
     ).toBe(false);
   });
 });
