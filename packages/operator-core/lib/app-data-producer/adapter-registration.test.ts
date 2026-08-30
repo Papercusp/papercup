@@ -180,23 +180,77 @@ describe('P-011 registration is isolated from the rest of the sync', () => {
     expect(onGateError).toHaveBeenCalledTimes(1);
   });
 
-  it('does not abort a Gmail sync when the real gate cannot reach the database', async () => {
+  it('does not abort a Gmail sync when the real gate cannot reach the database, and REPORTS the decline (P-007)', async () => {
     // No createAppSink override: this exercises the DEFAULT production path
     // against an unusable sql handle, which is what a database fault looks like.
-    const deps = captureDeps(gmailFetch(), null);
-    const { createAppSink: _omitted, ...withRealGate } = deps.value;
+    //
+    // P-007 added the second half of this assertion. Surviving the fault was
+    // never enough: the gate swallows its own error to protect the sync, so
+    // before the adapters passed `onGateError` this sync was indistinguishable
+    // from one where no mapping was configured — the user's app silently stopped
+    // receiving mail and nothing anywhere said why.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const deps = captureDeps(gmailFetch(), null);
+      const { createAppSink: _omitted, ...withRealGate } = deps.value;
 
-    const result = await syncGoogleGmailSource(
-      {} as unknown as Sql,
-      source('gmail', { historyId: '10' }),
-      'token',
-      withRealGate,
-    );
+      const result = await syncGoogleGmailSource(
+        {} as unknown as Sql,
+        source('gmail', { historyId: '10' }),
+        'token',
+        withRealGate,
+      );
 
-    expect(result.messages).toBeGreaterThan(0);
-    for (const kinds of deps.sinkKindsPerEvent) {
-      expect(kinds).toContain('personal-vault');
-      expect(kinds).not.toContain('app-delivery');
+      expect(result.messages).toBeGreaterThan(0);
+      for (const kinds of deps.sinkKindsPerEvent) {
+        expect(kinds).toContain('personal-vault');
+        expect(kinds).not.toContain('app-delivery');
+      }
+
+      // Registration is resolved once per sync, so exactly one report.
+      expect(errors).toHaveBeenCalledTimes(1);
+      const line = String(errors.mock.calls[0]![0]);
+      // The prefix is the interface `logs:read { grep }` matches on.
+      expect(line).toContain('[app-data-producer] SINK REGISTRATION DECLINED');
+      expect(line).toContain('app=email');
+      expect(line).toContain(SOURCE_ID);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('reports the decline on the CALENDAR path too — the wiring is per-adapter and can drift', async () => {
+    // `onGateError` is passed at each adapter's own registration site, so
+    // asserting it on Gmail alone would let Calendar lose it silently. Both
+    // adapters route through the shared `reportAppSinkGateError`, and this is
+    // what holds that symmetry.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const deps = captureDeps(calendarFetch(), null);
+      const { createAppSink: _omitted, ...withRealGate } = deps.value;
+
+      const result = await syncGoogleCalendarSource(
+        {} as unknown as Sql,
+        source('gcal', { syncToken: 'tok-1' }),
+        'access-token',
+        {},
+        withRealGate,
+      );
+
+      // The sync completed rather than aborting on the gate fault.
+      expect(result.created + result.updated).toBeGreaterThan(0);
+      expect(deps.sinkKindsPerEvent.length).toBeGreaterThan(0);
+      for (const kinds of deps.sinkKindsPerEvent) {
+        expect(kinds).toContain('personal-vault');
+        expect(kinds).not.toContain('app-delivery');
+      }
+
+      expect(errors).toHaveBeenCalledTimes(1);
+      const line = String(errors.mock.calls[0]![0]);
+      expect(line).toContain('[app-data-producer] SINK REGISTRATION DECLINED');
+      expect(line).toContain('app=calendar');
+    } finally {
+      errors.mockRestore();
     }
   });
 });

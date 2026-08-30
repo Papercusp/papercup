@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
 import readTool, { capabilityReadSeeAlso } from './read';
-import writeTool from './write';
+import writeTool, { emptyWriteWouldDestroy } from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
 import { writeScratchReference } from '../../scratch-reference';
@@ -610,6 +610,88 @@ describe('capability:write', () => {
       expect(() => readFileSync(f, 'utf8')).toThrow();
     },
   );
+
+  /**
+   * EI-21824594852517420: an empty write over existing bytes is the one write
+   * whose damage is entirely silent — ok:true, bytes:0, and the loss visible
+   * only on a later byte-compare. The measured cause was guarding a code:run
+   * tool result as `result.content ?? ''`, where the result is already the
+   * unwrapped string, so `.content` is undefined and the guard yields ''.
+   */
+  describe('empty-content overwrite', () => {
+    /**
+     * The obvious-but-wrong predicate, kept PERMANENTLY as a falsifiability
+     * control: guarding on `content === ''` alone also refuses creating a new
+     * empty file and re-writing an already-empty one, neither of which destroys
+     * anything. The cases below disagree with it, so a regression that widens
+     * the guard back to the naive form fails here instead of looking green.
+     */
+    const naiveWouldDestroy = (content: string, _existingBytes: number | null) => content === '';
+
+    it('refuses to replace an existing non-empty file with empty content', async () => {
+      const f = join(DIR, 'empty-guard/keep.txt');
+      mkdirSync(dirname(f), { recursive: true });
+      writeFileSync(f, 'important\n', 'utf8');
+
+      const r = (await writeTool.handler!({ file_path: f, content: '' }, ctx)) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+
+      expect(r.isError).toBe(true);
+      expect(parse(r)).toMatchObject({ ok: false, reason: 'empty_overwrite_refused', existingBytes: 10 });
+      // The refusal must teach the actual cause, not just say no.
+      expect(parse(r).message).toContain('allow_empty_overwrite');
+      expect(parse(r).message).toContain('raw: true');
+      // The whole point: the bytes are still there.
+      expect(readFileSync(f, 'utf8')).toBe('important\n');
+    });
+
+    it('truncates when the caller explicitly opts in', async () => {
+      const f = join(DIR, 'empty-guard/truncate.txt');
+      mkdirSync(dirname(f), { recursive: true });
+      writeFileSync(f, 'goodbye\n', 'utf8');
+
+      const r = (await writeTool.handler!(
+        { file_path: f, content: '', allow_empty_overwrite: true },
+        ctx,
+      )) as { content: Array<{ text: string }> };
+
+      expect(parse(r)).toMatchObject({ ok: true, bytes: 0 });
+      expect(readFileSync(f, 'utf8')).toBe('');
+    });
+
+    it('still creates a NEW empty file (nothing to destroy)', async () => {
+      const f = join(DIR, 'empty-guard/fresh.txt');
+      const r = (await writeTool.handler!({ file_path: f, content: '' }, ctx)) as {
+        content: Array<{ text: string }>;
+      };
+      expect(parse(r)).toMatchObject({ ok: true, bytes: 0 });
+      expect(readFileSync(f, 'utf8')).toBe('');
+      // The naive guard would have refused this.
+      expect(naiveWouldDestroy('', null)).toBe(true);
+      expect(emptyWriteWouldDestroy('', null)).toBe(false);
+    });
+
+    it('still re-writes an already-empty file (nothing to destroy)', async () => {
+      const f = join(DIR, 'empty-guard/already-empty.txt');
+      mkdirSync(dirname(f), { recursive: true });
+      writeFileSync(f, '', 'utf8');
+
+      const r = (await writeTool.handler!({ file_path: f, content: '' }, ctx)) as {
+        content: Array<{ text: string }>;
+      };
+      expect(parse(r)).toMatchObject({ ok: true, bytes: 0 });
+      // The naive guard would have refused this too.
+      expect(naiveWouldDestroy('', 0)).toBe(true);
+      expect(emptyWriteWouldDestroy('', 0)).toBe(false);
+    });
+
+    it('leaves every non-empty write untouched', async () => {
+      expect(emptyWriteWouldDestroy('x', 10)).toBe(false);
+      expect(emptyWriteWouldDestroy('', 10)).toBe(true);
+    });
+  });
 });
 
 describe('capability:edit', () => {

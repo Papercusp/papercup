@@ -16,6 +16,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { resolveFederatedPotScope } from './federated-pot-scope';
 import { getHiveBySlug } from './hive-store';
 
 export interface HiveSettingRecord {
@@ -78,12 +79,15 @@ function rowToRecord(r: HiveSettingDbRow): HiveSettingRecord {
  */
 export async function setHiveSetting(input: SetHiveSettingInput, sql?: Sql): Promise<HiveSettingRecord> {
   const s = pg(sql);
+  // The Hive identity row is keyed by this machine's LOCAL handle, so validate
+  // existence before translating to the owner-authored scope used on the wire.
   const hive = await getHiveBySlug(input.workspaceId, input.potHomeSlug, sql);
   if (!hive) {
     throw new Error(
       `setHiveSetting: no Hive '${input.potHomeSlug}' in workspace '${input.workspaceId}' — settings belong to a Hive`,
     );
   }
+  const potScope = await resolveFederatedPotScope(input.workspaceId, input.potHomeSlug, { sql });
   const value = input.value === undefined ? null : JSON.stringify(input.value);
   const now = Date.now();
   const rows = (await s.unsafe(
@@ -93,7 +97,7 @@ export async function setHiveSetting(input: SetHiveSettingInput, sql?: Sql): Pro
        value = EXCLUDED.value,
        updated_at = $5
      RETURNING ${COLS}`,
-    [input.workspaceId, input.potHomeSlug, input.settingKey, value, now],
+    [input.workspaceId, potScope, input.settingKey, value, now],
   )) as unknown as HiveSettingDbRow[];
   return rowToRecord(rows[0]);
 }
@@ -106,10 +110,11 @@ export async function getHiveSetting(
   sql?: Sql,
 ): Promise<HiveSettingRecord | null> {
   const s = pg(sql);
+  const potScope = await resolveFederatedPotScope(workspaceId, potHomeSlug, { sql });
   const rows = (await s.unsafe(
     `SELECT ${COLS} FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 AND setting_key = $3 LIMIT 1`,
-    [workspaceId, potHomeSlug, settingKey],
+    [workspaceId, potScope, settingKey],
   )) as unknown as HiveSettingDbRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
@@ -121,10 +126,11 @@ export async function listHiveSettings(
   sql?: Sql,
 ): Promise<HiveSettingRecord[]> {
   const s = pg(sql);
+  const potScope = await resolveFederatedPotScope(workspaceId, potHomeSlug, { sql });
   const rows = (await s.unsafe(
     `SELECT ${COLS} FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 ORDER BY setting_key`,
-    [workspaceId, potHomeSlug],
+    [workspaceId, potScope],
   )) as unknown as HiveSettingDbRow[];
   return rows.map(rowToRecord);
 }
@@ -137,10 +143,11 @@ export async function deleteHiveSetting(
   sql?: Sql,
 ): Promise<boolean> {
   const s = pg(sql);
+  const potScope = await resolveFederatedPotScope(workspaceId, potHomeSlug, { sql });
   const rows = (await s.unsafe(
     `DELETE FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 AND setting_key = $3 RETURNING setting_key`,
-    [workspaceId, potHomeSlug, settingKey],
+    [workspaceId, potScope, settingKey],
   )) as unknown as Array<{ setting_key: string }>;
   return rows.length > 0;
 }

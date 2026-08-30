@@ -1204,7 +1204,7 @@ describe('background job deadlines (WI-6677)', () => {
     //  null → never observed a normal exit at all
     expect(
       existsSync(marker),
-      `the job's TERM trap left no marker; job.exitCode=${job.exitCode} status=${job.status} (WI-1046842: 143=trap ran, 0=bash exited normally so the trap never fired, 137=SIGKILLed before it could)`,
+      `the job's TERM trap left no marker; job.exitCode=${job.exitCode} status=${job.status} scopeUnit=${job.scopeUnit ?? 'none'} sawWorking=${trapInstalled} (WI-1046842: 143=trap ran, 0=bash exited normally so the trap never fired, 137=SIGKILLed, null=killed BY SIGNAL with no trap in effect — and if scopeUnit is set while exitCode is null, suspect that the signalled process is a WRAPPER rather than the bash that holds the trap)`,
     ).toBe(true);
     expect(readFileSync(marker, 'utf8')).toContain('cleaned');
   }, 30_000);

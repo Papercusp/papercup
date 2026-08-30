@@ -328,6 +328,12 @@ describe("rendering", () => {
     );
   });
 
+  it("gives row titles a constrained overflow box for real ellipsis", () => {
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row-title\s*\{[^}]*display: block;[^}]*min-width: 0;[^}]*max-width: 100%;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/s,
+    );
+  });
+
   it("isolates the sticky header from scrolling report rows", () => {
     const headerRule = REPORT_CSS.match(
       /\.review-report__head\s*\{([\s\S]*?)\}/,

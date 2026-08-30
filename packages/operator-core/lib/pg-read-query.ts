@@ -2111,6 +2111,89 @@ export function buildNativeToolAttributionAdvisory(rawSql: string): string | nul
 }
 
 /**
+ * Columns that scope a `tool_invocations` read down to ONE named agent.
+ *
+ * `coord_owner_id` is the coordination identity; `spawn_id` is the launch identity of a single
+ * session. Deliberately NOT `parent_spawn_id` (a lineage question, not "is this agent working")
+ * and NOT `role` (a whole population).
+ */
+const SINGLE_AGENT_SCOPE_COLUMNS = ['coord_owner_id', 'spawn_id'];
+
+/**
+ * `tool_invocations` scoped to ONE agent — a coverage gap read as inactivity (EI-21847759967934033).
+ *
+ * The SIBLING of {@link buildNativeToolAttributionAdvisory}, and it exists because that one is
+ * silent here. That advisory fires when a query ASKS FOR a native tool by name, catching the
+ * caller who already suspects native tools exist. This one fires on the query that never mentions
+ * them: `SELECT tool_name, count(*) FROM tool_invocations WHERE coord_owner_id = '<peer>' AND
+ * invoked_at > … GROUP BY 1` — the "is this agent working?" read. Its answer is a truthful list of
+ * MCP calls, and it is read as the agent's WHOLE activity.
+ *
+ * Why this asymmetry is expensive rather than merely incomplete: the error is DIRECTIONAL. Missing
+ * rows can only ever make an agent look LESS active, so a sparse window reads as "idle" — and
+ * "idle" is the reading that triggers action against a peer (a pointed wake, a deadline, a
+ * reassignment). The opposite mistake is impossible, so no amount of care in reading the number
+ * protects you; only knowing what the instrument does not record does.
+ *
+ * MEASURED, not hypothetical. EI-21847759967934033: su-2a1ddad8's ledger window showed only
+ * `coord:glance` x22 and `activity:report` x31, so it was told to stop spinning and warned its work
+ * might be reassigned; `session_turn_parts` for the same owner carries 17 `Bash` calls — its single
+ * most-used tool, and invisible here. Fleet-wide over ingested transcript parts (24h, 2026-08-30):
+ * native 54,009 calls across 183 agents vs MCP 35,479 across 128, so roughly 60% of recorded tool
+ * use leaves no row in this table. This box's bypass-permissions preamble actively steers agents to
+ * native Bash for reads, which is why the blind spot covers the COMMON case rather than an edge.
+ *
+ * Deliberately requires a scoping PREDICATE, not a mention. A fleet-wide rollup that merely
+ * projects or GROUP BYs `coord_owner_id` is asking which MCP tools get used — a question this
+ * table answers correctly — and warning there would be noise that trains the reader to skip
+ * advisories. `IS NOT NULL` is likewise a population filter, not a single-agent scope.
+ *
+ * ⚠ THE REMEDY IS DELIBERATELY NOT "read this other store instead". `activity:tool-log` reads
+ * harness_shared.agent_activity, which DOES record native calls (verified end-to-end: for the
+ * owner above it renders 28 calls including the Bash command text, over the very window the
+ * ledger showed as two orient loops) — but that store is not universal either. Measured 24h,
+ * 2026-08-30: of 333 su-* owners appearing in tool_invocations, only 182 had any agent_activity
+ * rows, so it is EMPTY for roughly 45% of agents. Naming it as the fix without that caveat would
+ * relocate the identical directional error onto a second instrument and lend it this advisory's
+ * authority. Hence the rule the advisory actually states, which is instrument-independent:
+ * positive rows prove activity; absence in ANY of these stores proves nothing.
+ */
+export function buildAgentActivityLedgerAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'tool_invocations')) return null;
+
+  // Identifiers, so match the literal-and-comment-stripped body: an owner id quoted inside an
+  // unrelated string must not count, and a column named in a `--` comment is not a predicate.
+  const body = stripSqlLiteralsAndComments(rawSql);
+  const scoped = SINGLE_AGENT_SCOPE_COLUMNS.some((col) =>
+    new RegExp(`\\b${col}\\s*(?:=|<>|!=|~~?\\*?|\\bin\\b|\\blike\\b|\\bilike\\b)`, 'i').test(body),
+  );
+  if (!scoped) return null;
+
+  return (
+    '⚠ single-agent activity read: harness_shared.tool_invocations records MCP calls ONLY, so this ' +
+    'window is NOT "everything this agent did" — native Claude Code Bash/Read/Grep/Edit produce no ' +
+    'row at all, and this box\'s bypass-permissions preamble actively steers agents to native Bash ' +
+    'for reads. Measured over ingested transcript parts (24h): native 54,009 calls across 183 ' +
+    'agents vs MCP 35,479 across 128, so ~60% of recorded tool use is invisible here. The error is ' +
+    'DIRECTIONAL — missing rows can only make an agent look LESS active, so a sparse or empty ' +
+    'window reads as "idle" and escalates into waking, accusing or reassigning a peer who was ' +
+    'working (EI-21847759967934033: this ledger showed one agent making only coord:glance / ' +
+    'activity:report while it was in fact running Bash the whole time). THE RULE: positive rows ' +
+    'prove activity; absence here proves nothing. To look for the missing half, start with ' +
+    "`activity:tool-log { owner: '<the coord ownerId>' }` — it reads harness_shared.agent_activity, " +
+    'which DOES record native calls, and renders the command text. But do not invert the error ' +
+    'onto it: that store is empty for ~45% of agents (24h: 182 of 333 tool_invocations owners had ' +
+    'any rows), so an empty tool-log is equally not evidence of idleness. Corroborate with the ' +
+    "transcript store, which is corpus-namespaced — workspace_id = 'default', NOT your tenant id: " +
+    'SELECT tool_name, count(*) FROM harness_shared.session_turn_parts WHERE ' +
+    "workspace_id = 'default' AND owner = '<the coord ownerId>' AND ts > now() - interval " +
+    "'30 minutes' GROUP BY 1 ORDER BY 2 DESC. `owner` is the coord ownerId, so both take the same " +
+    'id you scoped this query with.'
+  );
+}
+
+/**
  * Flag the seconds-as-milliseconds epoch trap on tool-invocation recency reads
  * (EI-20261119579595975).
  *

@@ -22,6 +22,7 @@ import {
 } from '../personal-vault/live-sink';
 import {
   createAppDeliverySinkIfConfigured,
+  reportAppSinkGateError,
   type AppDeliveryExternalSink,
 } from '../app-data-producer/live-sink';
 
@@ -597,7 +598,11 @@ export async function syncGoogleCalendarSource(
   // owner mapping configures it. Resolved ONCE per sync, not per event.
   const createAppSink = provided.createAppSink
     ?? ((db: postgres.Sql, workspaceId: string, sourceId: string) =>
-      createAppDeliverySinkIfConfigured(db, workspaceId, sourceId, 'calendar'));
+      createAppDeliverySinkIfConfigured(db, workspaceId, sourceId, 'calendar', {
+        // P-007: the gate swallows its own errors to protect the sync (D-013),
+        // so without this a registration fault is invisible everywhere.
+        onGateError: reportAppSinkGateError,
+      }));
   const appSink = await createAppSink(sql, source.workspaceId, source.id);
   const sinks: IngestSink[] = appSink ? [sink, appSink] : [sink];
   const now = (provided.now ?? (() => new Date()))();

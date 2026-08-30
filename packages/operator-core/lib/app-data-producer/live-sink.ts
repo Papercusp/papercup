@@ -135,6 +135,35 @@ export interface AppDeliverySinkOptions extends AppDeliveryOptions {
 }
 
 /**
+ * P-007 — the default `onGateError`, so a swallowed registration fault leaves a
+ * trace instead of nothing.
+ *
+ * Shared by both adapters rather than spelled out at each call site: the prefix
+ * IS the interface (it is what `logs:read { grep }` matches), so two adapters
+ * writing it independently is two chances for it to drift apart.
+ *
+ * This is deliberately NOT a `trigger_deliveries` row. That ledger is keyed by
+ * (source, dedupe_key, sink_kind, sink_ref) — one row per EVENT per sink — and
+ * this fault happens at REGISTRATION, before any event exists. Forcing it in
+ * would need a fabricated dedupe key and would report a delivery that was never
+ * attempted. The durable, queryable answer to "is the producer healthy" is
+ * `readAppProducerStatus` in status.ts, which re-reads the same configuration
+ * this gate tripped over; this line is the timestamped breadcrumb saying a
+ * specific sync was affected.
+ */
+export function reportAppSinkGateError(
+  cause: unknown,
+  context: { app: ProducerApp; sourceId: string },
+): void {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  console.error(
+    `[app-data-producer] SINK REGISTRATION DECLINED (gate error) app=${context.app} source=${context.sourceId} — ${reason}. ` +
+      'This sync delivered nothing to the app and wrote NO delivery row; the reconcile sweep is the repair path. ' +
+      'Run status.ts readAppProducerStatus for the current configuration verdict.',
+  );
+}
+
+/**
  * Ready-to-pass sink for one locally authenticated human.
  *
  * The target user is a SERVER-OWNED argument, never anything from the provider

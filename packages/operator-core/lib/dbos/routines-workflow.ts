@@ -1446,6 +1446,27 @@ async function routinesTickImpl(): Promise<void> {
           console.warn(`[app-data-producer] ${res.outcome}: ${res.app}/${res.userId} — ${res.reason}`);
         }
       }
+
+      // P-007. The sweep's own results CANNOT report the failure this plan
+      // exists to end: with no owner mapping there are no pairs, so `results`
+      // is [] and every count below reads zero — identical to a healthy,
+      // fully-drained producer. The status read enumerates the APPS instead of
+      // the mappings, so an unconfigured or misconfigured producer is a row
+      // rather than an absence.
+      //
+      // probeApps:false — this runs on every tick, and the network probe is
+      // the reconcile sweep's job (it just ran). Configuration and ledger
+      // state answer "is this switched on and is it erroring" without one.
+      const { readAppProducerStatus, hasProducerFault } = await import('../app-data-producer/status');
+      let producerStatus: Awaited<ReturnType<typeof readAppProducerStatus>> = [];
+      try {
+        producerStatus = await readAppProducerStatus(sql, activeWorkspaceId(), { probeApps: false });
+        for (const s of producerStatus.filter((r) => r.fault)) {
+          console.error(`[app-data-producer] ${s.health.toUpperCase()}: ${s.app}${s.userId ? `/${s.userId}` : ''} — ${s.detail}`);
+        }
+      } catch (cause) {
+        console.error('[app-data-producer] status read failed', cause);
+      }
       // Returned rather than voided so a swallowed failure is distinguishable
       // from a healthy empty run in operation_outputs.
       return {
@@ -1461,6 +1482,11 @@ async function routinesTickImpl(): Promise<void> {
         skippedCount: results.filter((r) => r.outcome === 'skipped').length,
         morePending: results.some((r) => r.more),
         results: results.slice(0, 25),
+        // The health verdict, hoisted so a reader of operation_outputs does not
+        // have to re-derive it from the rows — and so `resultCount: 0` can never
+        // again be mistaken for a healthy producer.
+        producerFault: hasProducerFault(producerStatus),
+        producerStatus,
       };
     },
     { name: 'app-data-producer-reconcile-sweep' },

@@ -7,7 +7,7 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -30,6 +30,38 @@ export function findWritePathGlobMetacharacter(filePath: string): string | null 
   return null;
 }
 
+/**
+ * Would writing `content` destroy existing bytes at the destination?
+ *
+ * Empty content is the one write whose damage is entirely SILENT: the handler
+ * reports ok:true with bytes:0, and the loss surfaces only on a later
+ * byte-compare. Every upstream mistake converges here — a failed parse, an
+ * undefined variable, and above all a bare-string tool result guarded as
+ * `result.content ?? ''`, which yields '' because a code:run tool result is the
+ * unwrapped text and has no `.content` property (EI-21824594852517420).
+ *
+ * The predicate is deliberately narrower than `content === ''`: creating a new
+ * empty file, and re-writing an already-empty one, destroy nothing and stay
+ * allowed. Only an empty write over existing bytes is refused, and only without
+ * the explicit opt-in — deliberate truncation remains one flag away.
+ *
+ * Exported so the destructive case is testable directly, without depending on
+ * reaching the filesystem.
+ */
+export function emptyWriteWouldDestroy(content: string, existingBytes: number | null): boolean {
+  return content === '' && existingBytes !== null && existingBytes > 0;
+}
+
+/** Size of an existing regular file, or null when absent / not a regular file. */
+function existingFileByteLength(abs: string): number | null {
+  try {
+    const stat = statSync(abs);
+    return stat.isFile() ? stat.size : null;
+  } catch {
+    return null;
+  }
+}
+
 export default defineTool({
   name: 'capability:write',
   description:
@@ -49,6 +81,10 @@ export default defineTool({
   args: z.object({
     file_path: z.string().min(1).describe('Absolute path, or relative to the project dir.'),
     content: z.string().describe('Full file content to write (overwrites any existing file).'),
+    allow_empty_overwrite: z
+      .boolean()
+      .optional()
+      .describe('Permit empty content to replace an existing non-empty file (deliberate truncation). Without it that one case is refused.'),
   }),
   async handler(args, ctx) {
     const globMetacharacter = findWritePathGlobMetacharacter(args.file_path);
@@ -65,6 +101,11 @@ export default defineTool({
     // any disagreement between the two resolutions keys the lock off a file this
     // handler never touches (EI-20881501070735530).
     const outcome = await guardFileLock(ctx, [abs], { intent: 'capability:write' }, async () => {
+      // Inside the lock: the size read and the write must not straddle a peer's write.
+      const existingBytes = existingFileByteLength(abs);
+      if (!args.allow_empty_overwrite && emptyWriteWouldDestroy(args.content, existingBytes)) {
+        return emptyOverwriteRefused(abs, existingBytes ?? 0);
+      }
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, args.content, 'utf8');
       const bytes = Buffer.byteLength(args.content, 'utf8');
@@ -75,6 +116,35 @@ export default defineTool({
     return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy, outcome.reader);
   },
 });
+
+/**
+ * Refuse the silent-destruction case, and teach the fix AT the failure site
+ * rather than in the always-loaded tool description (prompt weight is charged
+ * every turn; this text is charged only when someone is about to lose a file).
+ */
+function emptyOverwriteRefused(abs: string, existingBytes: number) {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ok: false,
+        reason: 'empty_overwrite_refused',
+        path: abs,
+        existingBytes,
+        message:
+          `refusing to replace ${abs} (${existingBytes} bytes) with empty content. ` +
+          'This is almost always an upstream mistake rather than an intended truncation. ' +
+          'The common cause is guarding a tool result as `result.content ?? \'\'`: a code:run tool result ' +
+          'is the already-unwrapped text, so `.content` is undefined and the guard silently yields \'\'. ' +
+          'Use the string result directly, and pass capability:read { raw: true } when the text is ' +
+          'destined for a write — the default line view is display-formatted (path header + line-number ' +
+          'prefixes) and writing it back corrupts the file. ' +
+          'If you really mean to truncate, pass allow_empty_overwrite: true.',
+      }),
+    }],
+    isError: true,
+  };
+}
 
 function invalidPath(message: string) {
   return {

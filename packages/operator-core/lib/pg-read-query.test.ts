@@ -20,6 +20,7 @@ import {
   buildCorpusNamespaceAdvisory,
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
+  buildAgentActivityLedgerAdvisory,
   buildEpochUnitAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
@@ -2141,6 +2142,117 @@ describe('buildNativeToolAttributionAdvisory — native tools are absent from to
 
     expect(buildCorpusNamespaceAdvisory(trap2)).toBeTruthy();
     expect(buildNativeToolAttributionAdvisory(trap2)).toBeNull();
+  });
+});
+
+/**
+ * EI-21847759967934033. The query in the first case is VERBATIM in shape the one that was actually
+ * run against a working peer: its truthful MCP-only answer was read as the agent's whole activity,
+ * and the agent was told to stop spinning and warned its work might be reassigned. The transcript
+ * store for that same owner carries 17 `Bash` calls over the same window.
+ */
+describe('buildAgentActivityLedgerAdvisory — a single-agent ledger window is not that agent`s activity', () => {
+  const TI = 'harness_shared.tool_invocations';
+  const PEER = 'su-2a1ddad8-3a5a-48cd-97fc-5314d9767ed0';
+
+  it('fires on the "is this peer working?" read that caused the incident', () => {
+    const advisory = buildAgentActivityLedgerAdvisory(
+      `SELECT tool_name, count(*) AS calls, max(invoked_at) AS last_at\n` +
+        `FROM ${TI}\n` +
+        `WHERE coord_owner_id = '${PEER}'\n` +
+        `  AND workspace_id = 'papercusp-workspace'\n` +
+        `  AND invoked_at > now() - interval '60 minutes'\n` +
+        `GROUP BY tool_name ORDER BY 2 DESC`,
+    );
+    expect(advisory).toBeTruthy();
+    // States the coverage gap and names the direction of the error.
+    expect(advisory).toContain('MCP calls ONLY');
+    expect(advisory).toContain('DIRECTIONAL');
+    // Hands over the store that DOES see native calls, and the raw corroborating query with its
+    // corpus predicate already correct, so acting on the advice cannot land in the second trap.
+    expect(advisory).toContain('activity:tool-log');
+    expect(advisory).toContain('session_turn_parts');
+    expect(advisory).toContain("workspace_id = 'default'");
+  });
+
+  /**
+   * The caveat is load-bearing, not decoration. `agent_activity` is empty for ~45% of agents
+   * (24h: 182 of 333 tool_invocations owners had rows), so an advisory that named
+   * `activity:tool-log` as THE fix would relocate the identical directional error onto a second
+   * instrument — and lend it this advisory's authority. If a later edit trims the caveat to
+   * shorten the message, this fails.
+   */
+  it('does not invert the error onto the store it recommends', () => {
+    const advisory = buildAgentActivityLedgerAdvisory(
+      `SELECT count(*) FROM ${TI} WHERE coord_owner_id = '${PEER}'`,
+    );
+    expect(advisory).toBeTruthy();
+    // The instrument-independent rule, stated outright.
+    expect(advisory).toContain('positive rows prove activity; absence here proves nothing');
+    // And the specific warning that the recommended store is itself incomplete.
+    expect(advisory).toMatch(/empty for ~45% of agents/);
+    expect(advisory).toMatch(/empty tool-log is equally not evidence/);
+  });
+
+  it('fires on a prefix-matched owner scope and on a spawn_id scope', () => {
+    expect(
+      buildAgentActivityLedgerAdvisory(
+        `SELECT date_trunc('minute', invoked_at), count(*) FROM ${TI} ` +
+          `WHERE coord_owner_id LIKE 'su-61b2b4e5%' AND invoked_at > now() - interval '30 minutes' GROUP BY 1`,
+      ),
+    ).toBeTruthy();
+    expect(
+      buildAgentActivityLedgerAdvisory(`SELECT * FROM ${TI} WHERE spawn_id = 'spawn-abc' ORDER BY invoked_at`),
+    ).toBeTruthy();
+  });
+
+  /**
+   * THE REASON THIS BUILDER EXISTS, pinned. The sibling advisory is silent on the harmful query
+   * because it never names a native tool — that silence is the whole gap. If someone later widens
+   * the sibling to cover this shape, this expectation fails and the right repair is to DELETE one
+   * of them, not to keep both firing.
+   */
+  it('REGRESSION: covers exactly the query the native-tool advisory is silent on', () => {
+    const harmful = `SELECT tool_name, count(*) FROM ${TI} WHERE coord_owner_id = '${PEER}' GROUP BY 1`;
+    expect(buildNativeToolAttributionAdvisory(harmful)).toBeNull();
+    expect(buildAgentActivityLedgerAdvisory(harmful)).toBeTruthy();
+
+    // And the converse: an unscoped read that ASKS FOR a native tool is the sibling's case only.
+    const askedByName = `SELECT count(*) FROM ${TI} WHERE tool_name IN ('Edit','Write')`;
+    expect(buildNativeToolAttributionAdvisory(askedByName)).toBeTruthy();
+    expect(buildAgentActivityLedgerAdvisory(askedByName)).toBeNull();
+  });
+
+  it('is silent for a fleet-wide rollup that only projects or groups by the owner', () => {
+    expect(
+      buildAgentActivityLedgerAdvisory(
+        `SELECT coord_owner_id, count(*) FROM ${TI} WHERE invoked_at > now() - interval '24 hours' GROUP BY coord_owner_id`,
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent for an IS NOT NULL population filter, which scopes to no one agent', () => {
+    expect(
+      buildAgentActivityLedgerAdvisory(
+        `SELECT count(*) FROM ${TI} WHERE coord_owner_id IS NOT NULL AND status = 'error'`,
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent when the owner scope is against a different table', () => {
+    expect(
+      buildAgentActivityLedgerAdvisory(
+        `SELECT tool_name, count(*) FROM harness_shared.session_turn_parts WHERE owner = '${PEER}' GROUP BY 1`,
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent when the scope appears only in a comment', () => {
+    expect(
+      buildAgentActivityLedgerAdvisory(
+        `SELECT count(*) FROM ${TI}\n-- was: WHERE coord_owner_id = '${PEER}'\nWHERE status = 'error'`,
+      ),
+    ).toBeNull();
   });
 });
 

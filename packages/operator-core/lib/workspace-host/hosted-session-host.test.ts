@@ -6,9 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HostedWorkspaceHostSessionAdapter,
   SafeRootFileService,
+  type HostedDesktopBackend,
+  type HostedDesktopDialInput,
+  type HostedDesktopSocket,
   type HostedHostOutboundEnvelope,
   type HostedHostPty,
 } from './hosted-session-host';
+import { desktopViewerHeartbeatMs } from '../desktop/hosted-desktop-channel';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 
 const roots: string[] = [];
@@ -279,5 +283,294 @@ describe('SafeRootFileService', () => {
     await symlink(join(root, 'src', 'index.ts'), join(root, 'src', 'alias.ts'));
     const files = new SafeRootFileService(root);
     await expect(files.list('src')).resolves.toEqual([{ name: 'index.ts', kind: 'file', bytes: 24 }]);
+  });
+});
+
+/**
+ * P-013 tranche 2 — the desktop channel on the hosted relay (D-023).
+ *
+ * These pin the SEAM, not KasmVNC: the backend is a fake, so what is under test
+ * is which credential gets dialled, what is refused, what is audited, and what
+ * holds the desktop awake. The pure decisions they rest on (role→credential,
+ * loopback assertion, heartbeat cadence) are pinned in hosted-desktop-channel.test.ts.
+ */
+class FakeDesktopSocket implements HostedDesktopSocket {
+  sent: Buffer[] = [];
+  closed = false;
+  private readonly bus = new EventEmitter();
+  send(data: Buffer) {
+    this.sent.push(data);
+    return !this.closed;
+  }
+  close() {
+    this.closed = true;
+  }
+  onData(listener: (data: Buffer) => void) {
+    this.bus.on('data', listener);
+    return () => this.bus.off('data', listener);
+  }
+  onClose(listener: (reason: string) => void) {
+    this.bus.on('close', listener);
+    return () => this.bus.off('close', listener);
+  }
+  emitData(value: Buffer) {
+    this.bus.emit('data', value);
+  }
+  emitClose(reason: string) {
+    this.bus.emit('close', reason);
+  }
+}
+
+const desktopCredentials = {
+  view: { user: 'pc-view', secret: 'view-secret' },
+  control: { user: 'pc-control', secret: 'control-secret' },
+};
+
+function desktopHarness(
+  overrides: {
+    endpoint?: { host: string; port: number } | null;
+    dialError?: Error;
+  } = {},
+) {
+  const sent: HostedHostOutboundEnvelope[] = [];
+  const audit = vi.fn();
+  const sockets: FakeDesktopSocket[] = [];
+  const dials: HostedDesktopDialInput[] = [];
+  const beats: string[] = [];
+  const backend: HostedDesktopBackend = {
+    lookup: async (desktopSessionId) =>
+      desktopSessionId === 'missing-desktop'
+        ? null
+        : {
+            endpoint: overrides.endpoint === undefined ? { host: '127.0.0.1', port: 6901 } : overrides.endpoint,
+            credentials: desktopCredentials,
+          },
+    dial: async (input) => {
+      dials.push(input);
+      if (overrides.dialError) throw overrides.dialError;
+      const socket = new FakeDesktopSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    heartbeat: (desktopSessionId) => beats.push(desktopSessionId),
+  };
+  const adapter = new HostedWorkspaceHostSessionAdapter({
+    binding,
+    workspaceRoot: '/nonexistent-desktop-root',
+    send: (message) => sent.push(message),
+    onAudit: audit,
+    createPty: () => new FakePty(),
+    desktop: backend,
+  });
+  const openDesktop = (
+    channelId: string,
+    role: 'controller' | 'observer' = 'observer',
+    desktopSessionId: string | undefined = 'desktop-1',
+  ) =>
+    adapter.accept({
+      type: 'relay.open',
+      channelId,
+      userId: 'user-1',
+      hostedSessionId: 'session-1',
+      audience: 'workspace-operator',
+      role,
+      kind: 'desktop',
+      desktopSessionId,
+    });
+  const relay = (channelId: string, payload: unknown) => adapter.accept({ type: 'relay', channelId, payload });
+  const payloads = (channelId: string) =>
+    sent
+      .filter((message) => message.type === 'relay' && message.channelId === channelId)
+      .map((message) => (message as { payload: unknown }).payload);
+  const auditActions = () => audit.mock.calls.map((call) => (call[0] as { action: string }).action);
+  return { adapter, sent, audit, auditActions, sockets, dials, beats, openDesktop, relay, payloads };
+}
+
+describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () => {
+  it('dials the view-only credential for a watcher and the control credential for a takeover', async () => {
+    const { openDesktop, dials, payloads, auditActions } = desktopHarness();
+    await openDesktop('watch-1', 'observer');
+    await openDesktop('take-1', 'controller');
+
+    expect(dials).toHaveLength(2);
+    expect(dials[0].grant).toMatchObject({ action: 'watch', user: 'pc-view', inputAllowed: false });
+    expect(dials[1].grant).toMatchObject({ action: 'takeover', user: 'pc-control', inputAllowed: true });
+    // The whole privilege boundary: a watcher's dial never carries the control secret.
+    expect(JSON.stringify(dials[0].grant)).not.toContain('control-secret');
+    expect(payloads('watch-1')).toContainEqual({ type: 'desktop.ready', action: 'watch', inputAllowed: false });
+    expect(payloads('take-1')).toContainEqual({ type: 'desktop.ready', action: 'takeover', inputAllowed: true });
+    expect(auditActions()).toEqual(['desktop_watch_started', 'desktop_takeover_started']);
+  });
+
+  it('pumps bytes both ways and chunks a large sandbox update', async () => {
+    const { openDesktop, relay, sockets, payloads } = desktopHarness();
+    await openDesktop('channel-1', 'controller');
+    await relay('channel-1', { type: 'desktop.data', data: Buffer.from('rfb-input').toString('base64') });
+    sockets[0].emitData(Buffer.alloc(100 * 1024, 7));
+
+    expect(sockets[0].sent.map((buffer) => buffer.toString())).toEqual(['rfb-input']);
+    const frames = payloads('channel-1').filter(
+      (payload): payload is { type: string; data: string } =>
+        typeof payload === 'object' && payload !== null && (payload as { type?: unknown }).type === 'desktop.data',
+    );
+    // 100 KiB over a 48 KiB chunk = 3 frames, and they must reassemble byte-exactly.
+    expect(frames).toHaveLength(3);
+    expect(Buffer.concat(frames.map((frame) => Buffer.from(frame.data, 'base64')))).toEqual(
+      Buffer.alloc(100 * 1024, 7),
+    );
+  });
+
+  it('refuses a non-loopback endpoint without dialling it', async () => {
+    const { openDesktop, dials, sent, auditActions } = desktopHarness({ endpoint: { host: '10.0.0.5', port: 6901 } });
+    await openDesktop('channel-1');
+
+    expect(dials).toHaveLength(0);
+    expect(sent).toContainEqual({ type: 'relay.close', channelId: 'channel-1', reason: 'endpoint_not_loopback' });
+    expect(auditActions()).toContain('desktop_denied');
+  });
+
+  it('refuses an endpoint-less session, an unknown session, and a missing desktopSessionId', async () => {
+    const absent = desktopHarness({ endpoint: null });
+    await absent.openDesktop('channel-1');
+    expect(absent.sent).toContainEqual({ type: 'relay.close', channelId: 'channel-1', reason: 'endpoint_absent' });
+
+    const unknown = desktopHarness();
+    await unknown.openDesktop('channel-2', 'observer', 'missing-desktop');
+    expect(unknown.sent).toContainEqual({
+      type: 'relay.close',
+      channelId: 'channel-2',
+      reason: 'desktop_session_unknown',
+    });
+
+    const bare = desktopHarness();
+    await bare.openDesktop('channel-3', 'observer', undefined);
+    expect(bare.sent).toContainEqual({
+      type: 'relay.close',
+      channelId: 'channel-3',
+      reason: 'desktop_session_required',
+    });
+    expect(bare.dials).toHaveLength(0);
+  });
+
+  it('refuses a desktop open on a host with no desktop backend installed', async () => {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: '/nonexistent-desktop-root',
+      send: (message) => sent.push(message),
+      createPty: () => new FakePty(),
+    });
+    await adapter.accept({
+      type: 'relay.open',
+      channelId: 'channel-1',
+      userId: 'user-1',
+      hostedSessionId: 'session-1',
+      audience: 'workspace-operator',
+      role: 'observer',
+      kind: 'desktop',
+      desktopSessionId: 'desktop-1',
+    });
+    expect(sent).toEqual([{ type: 'relay.close', channelId: 'channel-1', reason: 'desktop_unsupported' }]);
+  });
+
+  it('keeps an absent kind opening a PTY and rejects an unrecognised one outright', async () => {
+    const root = await projectRoot();
+    const { adapter, ptys, sent } = harness(root);
+    // The wire contract: a control plane predating `kind` still opens terminals.
+    await adapter.accept({
+      type: 'relay.open',
+      channelId: 'legacy-1',
+      userId: 'user-1',
+      hostedSessionId: 'session-1',
+      audience: 'workspace-operator',
+      role: 'controller',
+    });
+    expect(ptys).toHaveLength(1);
+
+    await adapter.accept({
+      type: 'relay.open',
+      channelId: 'future-1',
+      userId: 'user-1',
+      hostedSessionId: 'session-1',
+      audience: 'workspace-operator',
+      role: 'controller',
+      kind: 'hologram',
+    });
+    // Rejected, not defaulted into a terminal.
+    expect(ptys).toHaveLength(1);
+    expect(sent.some((message) => message.channelId === 'future-1')).toBe(false);
+  });
+
+  it('rejects a non-desktop operation on a desktop channel without killing the channel', async () => {
+    const { openDesktop, relay, sockets, payloads } = desktopHarness();
+    await openDesktop('channel-1', 'controller');
+    await relay('channel-1', { type: 'pty.input', data: Buffer.from('x').toString('base64') });
+
+    expect(payloads('channel-1')).toContainEqual({
+      type: 'operation.error',
+      operation: 'pty.input',
+      code: 'invalid_desktop_operation',
+    });
+    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].closed).toBe(false);
+  });
+
+  it('tears the channel down when the sandbox socket closes, and tells the control plane', async () => {
+    const { openDesktop, relay, sockets, sent, auditActions } = desktopHarness();
+    await openDesktop('channel-1', 'controller');
+    sockets[0].emitClose('sandbox_gone');
+
+    expect(sent).toContainEqual({ type: 'relay.close', channelId: 'channel-1', reason: 'sandbox_gone' });
+    expect(auditActions()).toContain('desktop_detached');
+    // The channel is gone: a later write reaches no socket.
+    await relay('channel-1', { type: 'desktop.data', data: Buffer.from('late').toString('base64') });
+    expect(sockets[0].sent).toHaveLength(0);
+  });
+
+  it('closes the socket without echoing when the control plane initiates the close', async () => {
+    const { adapter, openDesktop, sockets, sent } = desktopHarness();
+    await openDesktop('channel-1', 'controller');
+    const before = sent.length;
+    await adapter.accept({ type: 'relay.close', channelId: 'channel-1', reason: 'tab_closed' });
+
+    expect(sockets[0].closed).toBe(true);
+    // No relay.close echoed back for a close the control plane asked for.
+    expect(sent.slice(before).filter((message) => message.type === 'relay.close')).toEqual([]);
+  });
+
+  it('heartbeats the desktop while a viewer is attached, once per desktop, and stops on the last detach', async () => {
+    vi.useFakeTimers();
+    const { adapter, openDesktop, beats } = desktopHarness();
+    // Two tabs on ONE desktop must produce ONE beat per tick, not two.
+    await openDesktop('watch-1', 'observer');
+    await openDesktop('take-1', 'controller');
+    await vi.advanceTimersByTimeAsync(desktopViewerHeartbeatMs() * 2);
+    expect(beats).toEqual(['desktop-1', 'desktop-1']);
+
+    await adapter.accept({ type: 'relay.close', channelId: 'watch-1', reason: 'tab_closed' });
+    await vi.advanceTimersByTimeAsync(desktopViewerHeartbeatMs());
+    // Still one viewer attached: the desktop stays held.
+    expect(beats).toHaveLength(3);
+
+    await adapter.accept({ type: 'relay.close', channelId: 'take-1', reason: 'tab_closed' });
+    await vi.advanceTimersByTimeAsync(desktopViewerHeartbeatMs() * 3);
+    // Last viewer gone: no further beats, so the idle reaper may do its job.
+    expect(beats).toHaveLength(3);
+  });
+
+  it('does not heartbeat a desktop whose dial failed', async () => {
+    vi.useFakeTimers();
+    const { openDesktop, beats } = desktopHarness({ dialError: new Error('connect ECONNREFUSED') });
+    await openDesktop('channel-1', 'controller');
+    await vi.advanceTimersByTimeAsync(desktopViewerHeartbeatMs() * 3);
+    expect(beats).toEqual([]);
+  });
+
+  it('closes every desktop socket when the connector goes down', async () => {
+    const { adapter, openDesktop, sockets } = desktopHarness();
+    await openDesktop('channel-1', 'observer');
+    await openDesktop('channel-2', 'controller');
+    adapter.close('connector_closed');
+    expect(sockets.map((socket) => socket.closed)).toEqual([true, true]);
   });
 });
