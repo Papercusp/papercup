@@ -294,6 +294,80 @@ const invokeLaunchHandler = (
     context as never,
   );
 
+/**
+ * Read a handler result's payload as JSON — and, when it is NOT JSON, fail with
+ * the message the handler actually returned.
+ *
+ * This handler returns successes as JSON via `json()` but refusals as PLAIN TEXT
+ * via `err()`. Parsing blind therefore turns every unexpected refusal into
+ * `SyntaxError: Unexpected token 'C', "Could not "... is not valid JSON` — a decoy
+ * thrown by the very line that was supposed to read the error, destroying the one
+ * thing you need. In the 2026-08-02 gate red (candidate 56b264231f11) all 40
+ * launch-on-plan failures showed that SyntaxError; the real cause,
+ * `Could not resolve plan ...`, was invisible until someone read the handler by
+ * hand (EI-19315529747727303).
+ *
+ * Tests that ASSERT a refusal should keep reading `.content[0].text` directly —
+ * this helper is for the success paths, so that an unexpected refusal reports
+ * itself instead of a parser artifact.
+ */
+function parseHandlerPayload(res: unknown): any {
+  const text = (res as { content?: { text?: string }[] } | null | undefined)?.content?.[0]?.text;
+  if (typeof text !== 'string') {
+    throw new Error(
+      `Expected a JSON payload, but the handler returned no text content. Received: ${JSON.stringify(res)}`,
+    );
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const refused = (res as { isError?: boolean } | null | undefined)?.isError === true;
+    throw new Error(
+      `Expected a JSON payload, but the handler ${refused ? 'REFUSED' : 'returned non-JSON text'}:\n${text}`,
+    );
+  }
+}
+
+describe('parseHandlerPayload — refusals must not surface as a decoy SyntaxError (EI-19315529747727303)', () => {
+  it('surfaces the handler REFUSAL TEXT, not a JSON parser artifact', () => {
+    // Exactly the shape err() produces, and exactly the string from the
+    // 2026-08-02 gate red where 40 failures all reported the SyntaxError.
+    const refusal = {
+      content: [{ type: 'text' as const, text: 'Could not resolve plan `my-plan`: no such plan' }],
+      isError: true,
+    };
+
+    // The old blind parse produced this — the control that proves the guard bites.
+    expect(() => JSON.parse(refusal.content[0].text)).toThrow(SyntaxError);
+
+    let caught: Error | undefined;
+    try {
+      parseHandlerPayload(refusal);
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught).not.toBeInstanceOf(SyntaxError);
+    expect(caught!.message).toContain('Could not resolve plan `my-plan`');
+    expect(caught!.message).toContain('REFUSED');
+    // The decoy must be gone, not merely accompanied by the real message.
+    expect(caught!.message).not.toContain('is not valid JSON');
+  });
+
+  it('still returns the parsed payload on the success path', () => {
+    const ok = {
+      content: [{ type: 'text' as const, text: JSON.stringify({ fleet: 'f1', opened: 3 }) }],
+      isError: false,
+    };
+    expect(parseHandlerPayload(ok)).toEqual({ fleet: 'f1', opened: 3 });
+  });
+
+  it('reports a missing/!string text content instead of throwing on a property read', () => {
+    expect(() => parseHandlerPayload({ content: [] })).toThrow(/no text content/);
+    expect(() => parseHandlerPayload(undefined)).toThrow(/no text content/);
+  });
+});
+
 describe('fleet:launch-on-plan bounded response race (EI-21200981774877112)', () => {
   it('returns a pending response at the deadline without cancelling detached completion', async () => {
     let finish!: () => void;
@@ -569,7 +643,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       {} as never,
       null,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(true);
     expect(setFleetHeadcountTargetMock).toHaveBeenCalledWith({
@@ -621,7 +695,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       {} as never,
       null,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(true);
     expect(spawnHeadlessMock.mock.calls[0][0].envelope.greetingCmd).toContain('--model=sonnet:high');
@@ -657,7 +731,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     });
 
     const res = await invokeLaunchHandler({ name: 'Profiled Fleet' } as never, {} as never, null);
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(spawnHeadlessMock).toHaveBeenCalled();
     const command = (spawnHeadlessMock.mock.calls[0][0] as any).envelope.greetingCmd as string;
@@ -702,7 +776,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     spawnHeadlessMock.mockReturnValue({ status: 'ok', terminal: 'headless-1', pid: 201, taskId: 'task-1' });
 
     const res = await invokeLaunchHandler({ name: 'Goal Slot Fleet' } as never, {} as never, null);
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const command = (spawnHeadlessMock.mock.calls[0][0] as any).envelope.greetingCmd as string;
 
     expect(payload.ignoredRoleDiagnostics).toEqual([
@@ -740,7 +814,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     spawnHeadlessMock.mockReturnValue({ status: 'ok', terminal: 'headless-1', pid: 201, taskId: 'task-1' });
 
     const res = await invokeLaunchHandler({ name: 'Legacy Member Role Fleet' } as never, {} as never, null);
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const command = (spawnHeadlessMock.mock.calls[0][0] as any).envelope.greetingCmd as string;
 
     expect(payload.ok).toBe(true);
@@ -802,7 +876,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     readPlanBySlugMock.mockClear();
 
     const res = await invokeLaunchHandler({ name: 'Stale Profile Fleet' } as never, {} as never, null);
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(true);
     expect(payload.plan).toBeNull();
@@ -865,7 +939,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Memory Full Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(listLiveTasksMock).toHaveBeenCalledWith('ws-1');
     // The member is opened even though the budget says there is no slot for it.
@@ -898,7 +972,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Measured Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(spawnHeadlessMock).toHaveBeenCalled();
     expect(payload.hostMemoryClamp).toMatchObject({
@@ -994,7 +1068,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Caller Led', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(ensureFleetLeaderControlMock).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
@@ -1027,7 +1101,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.spawnedLeader).toMatchObject({ registered: true });
     expect(setFleetLeaderMock).toHaveBeenCalledWith('ws-1', 'spawn-led', payload.spawnedLeader.ownerId);
@@ -1063,7 +1137,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(true);
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
@@ -1094,7 +1168,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Live Leader Protected', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(getPresenceMock).toHaveBeenCalledWith('live-leader');
     expect(payload.leaderSpawnIgnored).toContain('already exists and is led by');
@@ -1115,7 +1189,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Unknown Leader', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.leaderSpawnIgnored).toContain('liveness could not be confirmed');
     expect(payload.spawnedLeader).toBeNull();
@@ -1138,7 +1212,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Absent Leader Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(getPresenceMock).toHaveBeenCalledWith('dead-leader');
     expect(payload.callerMembership).toEqual({
@@ -1169,7 +1243,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Leaderless Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(getPresenceMock).not.toHaveBeenCalled();
     expect(payload.spawnedLeader).toMatchObject({ registered: true });
@@ -1196,7 +1270,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'Full Fleet Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(true);
     expect(payload.spawnedLeader).toMatchObject({ registered: true });
@@ -1245,7 +1319,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       { name: 'CAS Race Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(setFleetLeaderMock).toHaveBeenCalledWith(
       'ws-1',
@@ -1282,7 +1356,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.callerMembership).toEqual({
       enrolled: false,
@@ -1321,7 +1395,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.callerMembership.enrolled).toBe(true);
     expect(setPresenceFleetMock).toHaveBeenCalledWith('ws-1', 'owner-1', 'unrelated-top-up', 'leader');
@@ -1503,7 +1577,7 @@ describe('memberLaunchCommand', () => {
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const warnedPayload = JSON.parse((warned as any).content[0].text);
+    const warnedPayload = parseHandlerPayload(warned);
     expect(warnedPayload.ok).toBe(true);
     expect(warnedPayload.sizingAdvisory).toMatchObject({
       requestedMembers: 2,
@@ -1531,7 +1605,7 @@ describe('memberLaunchCommand', () => {
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const notWarnedPayload = JSON.parse((notWarned as any).content[0].text);
+    const notWarnedPayload = parseHandlerPayload(notWarned);
     expect(notWarnedPayload.ok).toBe(true);
     expect(notWarnedPayload.sizingAdvisory).toBeNull();
     expect(notWarnedPayload.message).not.toMatch(/Sizing advisory:/);
@@ -2031,7 +2105,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     // The leader always learns, structurally, what members were told.
     expect(payload.memberBaselineHeadlines).toHaveLength(MEMBER_BASELINE_RULES.length);
@@ -2077,7 +2151,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       { name: 'Text Brief Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, launchContext: briefText } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.briefReadError).toBeNull();
     expect(payload.opened).toHaveLength(1);
@@ -2141,7 +2215,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.perMemberLaunchContextPaths).toHaveLength(2);
     expect(payload.perMemberLaunchContextPaths[0]).toContain('launch-context-member-1.md');
@@ -2182,7 +2256,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     const cmd = (i: number) => spawnConsoleMock.mock.calls[i][0].envelope.greetingCmd as string;
     // Member 1: its own model, with effort folded ONTO the spec (psu has no --effort).
@@ -2208,7 +2282,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     const fs = require('node:fs');
     const composed = fs.readFileSync(payload.perMemberLaunchContextPaths[0], 'utf8');
@@ -2228,7 +2302,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.perMemberLaunchContextPaths).toHaveLength(3);
     expect(payload.perMemberLaunchContextPaths[0]).toContain('launch-context-member-1.md');
@@ -2331,7 +2405,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     // Each member wrote its OWN composed context (the carry override forces the per-member path).
     expect(payload.perMemberLaunchContextPaths).toHaveLength(2);
@@ -2358,7 +2432,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.resolvedMembers).toHaveLength(2);
     // Member 1: its own model (effort folded), carry, and limit.
@@ -2381,7 +2455,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
       { name: 'Plain Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.resolvedMembers).toBeNull();
   });
@@ -2399,7 +2473,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.message).toMatch(/per-member `claimKinds` is NOT applied at launch/);
     expect(payload.message).toContain('scheduler:set_claim_spec');
@@ -2425,7 +2499,7 @@ describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
       { name: 'Display Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.message).toContain('[DISPLAY=:1]');
     expect(payload.message).not.toMatch(/⚠.*socket scan/);
@@ -2443,7 +2517,7 @@ describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
       { name: 'Xvfb Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.message).toContain('[DISPLAY=:93]');
     expect(payload.message).toMatch(/⚠ no active login seat was detected.*socket scan.*EI-8289/);
@@ -2479,7 +2553,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
       { name: 'DBus Fail Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     // NOT true: `ok` mirrors `opened.length > 0` on this actual-spawn-attempted path
     // (launch-on-plan.ts's final `return json({ ok: opened.length > 0, ... })`) — that's
     // distinct from the early-return "suppressed" paths (relaunchSuppressed/capacitySuppressed)
@@ -2505,7 +2579,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
       { name: 'Admission Fail Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(false);
     expect(payload.opened).toEqual([]);
@@ -2554,7 +2628,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
       { name: 'Partial DBus Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.opened).toHaveLength(2);
     expect(payload.failed).toHaveLength(1);
@@ -2591,7 +2665,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Metadata Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       { metadata } as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(metadata).toHaveBeenCalledWith({
       launchOutcome: {
@@ -2606,7 +2680,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Provenance Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const command = (spawnConsoleMock.mock.calls[0]?.[0] as {
       envelope?: { greetingCmd?: string };
     })?.envelope?.greetingCmd;
@@ -2684,7 +2758,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Worker Attestation Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const tx = payload.launchTransaction;
 
     expect(tx.workerAttestations).toHaveLength(2);
@@ -2711,7 +2785,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Canary Stop Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     // An unconfirmed canary is not a positive failure. The remainder still opens so a
     // slow backend (notably codex xhigh) cannot turn one late first turn into a four-member
     // deficit; the canary remains in the recovery set for later liveness reconciliation.
@@ -2790,7 +2864,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       await vi.advanceTimersByTimeAsync(LAUNCH_RESPONSE_DEADLINE_MS);
 
       const response = await responsePromise;
-      const payload = JSON.parse((response as any).content[0].text);
+      const payload = parseHandlerPayload(response);
       expect(payload.completionPending).toBe(true);
       expect(payload.completionHandle).toMatchObject({
         transactionId: payload.launchTransaction.transactionId,
@@ -2836,7 +2910,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Slow Canary Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.launchTransaction.state).toBe('verified');
     expect(payload.launchTransaction.failed).toEqual([]);
@@ -2859,7 +2933,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Slow Later Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const waveSizes = launchTransaction.verify.mock.calls.map(
       (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
     );
@@ -2879,7 +2953,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Bounded Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 8 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const waveSizes = launchTransaction.verify.mock.calls.map(
       (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
     );
@@ -2921,7 +2995,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Partial Fifty Fleet', plan: 'my-plan', harness: 'papercusp', count: 50 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const tx = payload.launchTransaction;
     const requestedIds = tx.requestedMemberIds as string[];
     const verifiedIds = tx.verifiedMemberIds as string[];
@@ -2962,7 +3036,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'Mismatch Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     // Spawning and verification are separate phases (WI-39368): the final
     // pre-pinned member is already open before the second wave's verifier can
     // report its attestation mismatch.
@@ -3004,7 +3078,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.relaunchSuppressed).toBe(true);
     expect(payload.liveMembers).toBe(2);
     expect(payload.opened).toEqual([]);
@@ -3027,7 +3101,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       { name: 'Beta Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(admissionMocks.preflight).toHaveBeenCalledWith(
@@ -3064,7 +3138,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       { name: 'Capacity Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.requestedOpenCount).toBe(3);
     expect(payload.capacityClamp).toMatchObject({ requestedOpenCount: 3, openCount: 1, clamped: true });
@@ -3136,7 +3210,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       { name: 'Full Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.capacitySuppressed).toBe(true);
     expect(payload.opened).toEqual([]);
@@ -3155,7 +3229,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       { name: 'Gamma Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
   });
@@ -3197,7 +3271,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       { name: 'Refire Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.opened).toEqual([]);
     expect(payload.failed).toEqual([]);
@@ -3224,7 +3298,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.relaunchSuppressed).toBe(true);
     expect(payload.opened).toEqual([]);
@@ -3279,7 +3353,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       { name: 'Resume Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const commands = spawnConsoleMock.mock.calls.map(
       (call) => (call[0].envelope as { greetingCmd: string }).greetingCmd,
     );
@@ -3341,7 +3415,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       { name: 'Resume Expired Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const commands = spawnConsoleMock.mock.calls.map(
       (call) => (call[0].envelope as { greetingCmd: string }).greetingCmd,
     );
@@ -3375,7 +3449,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       { name: 'Refire Fleet', plan: 'drain-me', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.message).toMatch(
       /Fleet `refire-fleet` was already launched — 3 members opened \d+s ago \(possibly by this very session\)\./,
     );
@@ -3414,7 +3488,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       { name: 'Partial Notice Fleet', plan: 'drain-me', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.message).toMatch(
       /Fleet `partial-notice-fleet` was already launched — 1 member opened \d+s ago \(possibly by this very session\)\./,
     );
@@ -3432,7 +3506,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       { name: 'Solo Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.message).toMatch(/1 member opened \d+s ago/);
     expect(payload.message).not.toMatch(/1 members opened/);
   });
@@ -3470,7 +3544,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'] } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as {
@@ -3504,7 +3578,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       { name: 'Pure Drain Fleet', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'] } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as { spec: { specId: string; view: { filter: unknown } } };
@@ -3517,7 +3591,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       { name: 'No Kinds Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as { spec: { view: { filter: unknown } } };
@@ -3536,7 +3610,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       { name: 'Resilient Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['task'] } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.claimSpecApplied).toMatchObject({ ok: false, errors: ['db unavailable'] });
@@ -3552,7 +3626,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as { potSlug: string | null };
@@ -3569,7 +3643,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 2, claimKinds: ['bug'] } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(liveFleetMemberIds).toHaveBeenCalledWith('drain-fleet', 'ws-1', 'launch');
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
@@ -3636,7 +3710,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(evaluateCollapseGuardMock.mock.calls[0][0]).toMatchObject({ confirm: true });
@@ -3647,7 +3721,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
       { name: 'Fed Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.claimSpecApplied.poolEffect).toMatchObject({ matched: 5, pool: 10 });
     expect(payload.message).toContain('claim-lane pool-effect');
@@ -3701,7 +3775,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
       { name: 'Nonp2p Bug Drain', plan: 'bug-drain-tracking-plan', harness: 'papercusp', count: 10 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalled();
     const warning = payload.claimSpecApplied.warning as string;
@@ -3771,7 +3845,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
   it('WARNS on a degenerate lane — naming the share, the burst day, and the composition', async () => {
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch();
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     const warning = payload.claimSpecApplied.warning as string;
 
     expect(warning).toContain('⚠ DEGENERATE LANE');
@@ -3798,7 +3872,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     });
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch();
-    const warning = JSON.parse((res as any).content[0].text).claimSpecApplied.warning as string;
+    const warning = parseHandlerPayload(res).claimSpecApplied.warning as string;
 
     expect(warning).toContain('99% of the 1252 claimable row(s)');
     // The pre-floor number is still shown, but explicitly labelled as the other population.
@@ -3815,14 +3889,14 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     });
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch();
-    const warning = JSON.parse((res as any).content[0].text).claimSpecApplied.warning as string;
+    const warning = parseHandlerPayload(res).claimSpecApplied.warning as string;
     expect(warning).toContain('99% of the 1252 claimable row(s)');
     expect(warning).not.toContain('matched before claim floors');
   });
 
   it('is SILENT on a healthy lane — a warning that fires on normal backlogs would be tuned out', async () => {
     const res = await launch();
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.claimSpecApplied.warning ?? '').not.toContain('DEGENERATE LANE');
   });
@@ -3830,7 +3904,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
   it('WARNS but never REFUSES — a nit-sweep fleet is a legitimate thing to want', async () => {
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch({ count: 2 });
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     // Members really opened — the launch proceeded despite the warning.
     expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
@@ -3840,7 +3914,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
   it('FAILS OPEN — a composition read that throws never blocks the launch', async () => {
     aggregateAdmittedCompositionMock.mockRejectedValue(new Error('pg exploded'));
     const res = await launch();
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     // A diagnostic that becomes a new single point of failure is worse than no diagnostic.
@@ -3874,7 +3948,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
       { name: 'Plan Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(aggregateAdmittedCompositionMock).toHaveBeenCalledTimes(1);
     // A healthy composition stays silent — no false alarm on the common case.
@@ -3911,7 +3985,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
       { name: 'Fresh Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
     expect(promotePlanItemsMock.mock.calls[0][0]).toMatchObject({ planSlug: 'my-plan', harnessSlug: 'papercusp' });
@@ -3955,7 +4029,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Fresh Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
 
@@ -3986,7 +4060,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Forgot Start', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.message).toMatch(/FAILSAFE auto-promoted 2 plan items/);
   });
 
@@ -3996,7 +4070,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Already Started', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.message).not.toMatch(/FAILSAFE auto-promoted/);
     expect(payload.promotionFailsafe).toMatchObject({ ran: true, promoted: 0, skipped: 5 });
   });
@@ -4013,7 +4087,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Missing Triad', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.message).toMatch(/0 of 5 open plan items.*spec triad.*Nothing is claimable yet/i);
     expect(payload.message).toContain('requirements, design');
     expect(payload.message).toContain('EI-TRIAD-1');
@@ -4031,7 +4105,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Resilient Promote', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.promotionFailsafe).toBeNull();
@@ -4050,7 +4124,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Refused Admission', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect((res as any).isError).toBe(true);
     expect(payload).toMatchObject({
@@ -4098,7 +4172,7 @@ function reservesLaneForLaunchingFleet(
       { name: 'Released Ready Handoff', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
 
     expect(payload.ok).toBe(true);
     expect(admissionMocks.preflight).toHaveBeenCalledWith(
@@ -4154,7 +4228,7 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
       { name: 'Override Fleet', plan: 'my-plan', harness: 'papercusp', count: 4, account: 'auto' } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(payload.opened).toEqual([]);
     expect(payload.capacitySuppressed).toBe(true);
@@ -4180,7 +4254,7 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     // The owner-ordered launch actually opens — the exact consequence the bug reported (a
     // 4→0 clamp with no override arg) no longer strands it.
