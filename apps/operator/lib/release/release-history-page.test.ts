@@ -334,11 +334,14 @@ describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of
   // `surface` and leans on that coincidence again, this fails: it asserts the two
   // props are genuinely distinct axes, not that some page-ish string exists.
   it('does not let `page` stand in for `surface` — they are different axes', () => {
-    const planHtml = renderPlanHtml(
-      { slug: 'a-plan', title: 'A plan', bodyHtml: '<p>x</p>' } as never,
-      { generatedAt: GENERATED_AT, analytics: ANALYTICS, version: '0.0.9' } as never,
-    );
-    // Same surface on a DIFFERENT page => surface is constant, page is not.
+    const planHtml = renderPlanPageHtml(plan(), {
+      generatedAt: GENERATED_AT,
+      analytics: ANALYTICS,
+      version: '0.0.9',
+    });
+    // `surface` is CONSTANT across pages; `page` VARIES. That is the whole
+    // distinction, and asserting both together is what makes this falsifiable:
+    // deleting `surface` and re-deriving it from `page` cannot satisfy both.
     expect(planHtml).toContain('"surface":"releases"');
     expect(planHtml).toContain('"page":"plan"');
     expect(html).toContain('"page":"index"');
