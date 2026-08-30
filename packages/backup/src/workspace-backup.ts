@@ -500,6 +500,21 @@ export class WorkspaceBackup {
       // malformed value from an older host. Preserve that as unknown rather
       // than turning it into a false/true assertion.
       dbDumpOk = typeof dumpOutcome?.ok === 'boolean' ? dumpOutcome.ok : null;
+      // ...but "unknown" here is NOT the same as "unknowable": the hook wrote
+      // its own verdict to the durable `hook_pg_dump` event before the step
+      // result was ever cached, so a replayed `undefined` can be resolved back
+      // to the truth instead of persisted as NULL. That distinction is
+      // load-bearing rather than cosmetic. This column is read by the
+      // FAIL-CLOSED pre-destructive migration guard (snapshot-admission.ts),
+      // which admits only `db_dump_ok IS TRUE`, while the status write below
+      // deliberately fails OPEN and still records 'ok'. Leaving NULL here
+      // therefore produced a receipt that looks healthy and yet permanently
+      // blocks every migration >= 1007 — a 9.6GB dump that demonstrably landed
+      // still wedged the migration runner (and with it the release gate).
+      // The resume path already resolves this the same way; so must this one.
+      if (dbDumpOk === null) {
+        dbDumpOk = await this.recoverDbDumpOkFromHookEvent(snapshotRowId!);
+      }
 
       try {
         await this.event(snapshotRowId!, 'progress', { phase: 'kopia_snapshot' });
@@ -645,6 +660,36 @@ export class WorkspaceBackup {
       `;
     } catch {
       // Event log is best-effort.
+    }
+  }
+
+  /**
+   * Recover the pre-snapshot dump verdict from the durable `hook_pg_dump`
+   * event when the step runner handed back a replayed/malformed result.
+   *
+   * The event is written by the hook itself, before any step result is cached,
+   * so it is the authority the cached value merely mirrors — this reads the
+   * same payload the resume path resolves through `resolveDbDumpOk`, keeping
+   * one definition of "what the dump actually did" across both paths.
+   *
+   * Stays best-effort and null-on-doubt: an unreadable event log must leave
+   * the value UNKNOWN rather than assert a dump that may never have run.
+   */
+  private async recoverDbDumpOkFromHookEvent(snapshotId: number): Promise<boolean | null> {
+    const sql = backupHost().getSql();
+    try {
+      const rows = await sql<{ payload_json: Record<string, unknown> | null }[]>`
+        SELECT payload_json
+          FROM harness_shared.backup_events
+         WHERE workspace_id = ${this.workspaceId}
+           AND snapshot_id = ${snapshotId}
+           AND kind = 'hook_pg_dump'
+         ORDER BY id DESC
+         LIMIT 1
+      `;
+      return resolveDbDumpOk(null, rows[0]?.payload_json);
+    } catch {
+      return null;
     }
   }
 
