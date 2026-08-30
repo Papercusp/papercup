@@ -1410,32 +1410,49 @@ export function startOutboxDrain(
         drainOpts.fanoutTimeoutMs = fanoutTimeoutMs;
         drainOpts.quarantinedIds = quarantinedIds;
         // WI-2009 watchdog: race the pass against the timeout so ONE hung await
-        // can never wedge the serialized loop forever (the live-VM permanence
-        // signature). The abandoned zombie pass is swallowed — if it settles
-        // later its work is either complete (drained_at already stamped) or
-        // re-attempted by a fresh pass (at-least-once tolerates the duplicate).
-        const drainedThisPass = await outboxDrainAdmission.run(async () => {
+        // can never wedge the serialized loop forever. Admission intentionally
+        // wraps ONLY the underlying pass, not this timeout race: when the
+        // watchdog fires, the caller is released to re-attempt, but the
+        // process-wide slot remains held until the underlying pass settles.
+        // Otherwise every timed-out "zombie" pass would keep its row/JSONB/
+        // append work alive after the gate released its slot, defeating the
+        // process-wide memory and throughput bound (D-124).
+        const drainedThisPass = await new Promise<number>((resolve, reject) => {
           // Start the pass + watchdog only AFTER FIFO admission. Counting queue
           // time as a pass timeout would create abandoned zombie drains before
           // their SELECT even began and defeat the memory bound.
-          const pass = drainOutboxOnce(handle, pg, drainOpts);
-          if (passTimeoutMs <= 0) return pass;
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          try {
-            return await Promise.race([
-              pass,
-              new Promise<never>((_, reject) => {
-                timer = setTimeout(() => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)), passTimeoutMs);
-                timer.unref?.();
-              }),
-            ]);
-          } finally {
-            if (timer) clearTimeout(timer);
-            // Detach the (possibly zombie) pass so a late rejection can't
-            // become an unhandled rejection after we've moved on.
-            pass.catch(() => {});
-          }
-        }, drainAdmissionAbort.signal);
+          void outboxDrainAdmission
+            .run(async () => {
+              const pass = drainOutboxOnce(handle, pg, drainOpts);
+              if (passTimeoutMs <= 0) {
+                try {
+                  resolve(await pass);
+                } catch (e) {
+                  reject(e);
+                }
+                return;
+              }
+
+              const timer = setTimeout(
+                () => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)),
+                passTimeoutMs,
+              );
+              timer.unref?.();
+              try {
+                // Keep the admission callback alive until the real pass
+                // settles. `resolve`/`reject` become harmless no-ops if the
+                // timeout already settled the caller-facing promise.
+                resolve(await pass);
+              } catch (e) {
+                reject(e);
+              } finally {
+                clearTimeout(timer);
+              }
+            }, drainAdmissionAbort.signal)
+            // A queued pass may be aborted by stopInternal before admission.
+            // Once admitted, the callback absorbs the pass outcome above.
+            .catch(reject);
+        });
         // WI-2009 leg 3: a drained row is forward progress — reset the
         // no-progress clock + clear the escalation latch (recovered).
         if (drainedThisPass > 0) {
