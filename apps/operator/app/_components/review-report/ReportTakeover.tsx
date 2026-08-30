@@ -178,23 +178,51 @@ export function ReportTakeoverLayer({
     if (parentState) parentState.count += 1;
     else takeoverParents.set(parent, { count: 1, restoreFocus: priorFocus });
 
-    const children = Array.from(parent.children);
-    const layerIndex = children.indexOf(layer);
-    const siblings = children.filter(
-      (node, index): node is HTMLElement =>
-        node !== layer &&
-        node instanceof HTMLElement &&
-        // Equal-z takeover siblings later in DOM order paint above this one.
-        // Leave those active; the later layer will isolate this lower layer.
-        (!node.classList.contains("review-report-takeover") ||
-          index < layerIndex),
-    );
     // Move focus before hiding the prior pane so no focused descendant is ever
     // seated under aria-hidden/inert, even for the duration of one effect.
     layer.focus({ preventScroll: true });
-    for (const sibling of siblings) isolateSibling(sibling);
+
+    // The routed dock shell can mount after this host's first effect. A one-time
+    // parent.children snapshot leaves that late sibling exposed beneath the
+    // takeover, including every keyboard target it contains. Reconcile the
+    // direct children for the whole layer lifetime; childList observation runs
+    // before the browser's next paint, so a newly mounted pane never becomes an
+    // assistive-technology or keyboard escape hatch.
+    const acquiredSiblings = new Set<HTMLElement>();
+    const reconcileSiblings = () => {
+      if (layer.parentElement !== parent) return;
+      const children = Array.from(parent.children);
+      const layerIndex = children.indexOf(layer);
+      const nextSiblings = new Set(
+        children.filter(
+          (node, index): node is HTMLElement =>
+            node !== layer &&
+            node instanceof HTMLElement &&
+            // Equal-z takeover siblings later in DOM order paint above this
+            // one. Leave those active; the later layer isolates this lower one.
+            (!node.classList.contains("review-report-takeover") ||
+              index < layerIndex),
+        ),
+      );
+
+      for (const sibling of acquiredSiblings) {
+        if (nextSiblings.has(sibling)) continue;
+        releaseSibling(sibling);
+        acquiredSiblings.delete(sibling);
+      }
+      for (const sibling of nextSiblings) {
+        if (acquiredSiblings.has(sibling)) continue;
+        isolateSibling(sibling);
+        acquiredSiblings.add(sibling);
+      }
+    };
+
+    reconcileSiblings();
+    const siblingObserver = new MutationObserver(reconcileSiblings);
+    siblingObserver.observe(parent, { childList: true });
 
     return () => {
+      siblingObserver.disconnect();
       // React removes the focused subtree before passive-effect cleanup, so
       // browsers have already fallen back to <body> by the time this runs.
       // A real focus move to visible chrome remains a concrete non-body node
@@ -202,7 +230,8 @@ export function ReportTakeoverLayer({
       const activeWasInside =
         layer.contains(document.activeElement) ||
         document.activeElement === document.body;
-      for (const sibling of siblings) releaseSibling(sibling);
+      for (const sibling of acquiredSiblings) releaseSibling(sibling);
+      acquiredSiblings.clear();
 
       const current = takeoverParents.get(parent);
       if (!current) return;

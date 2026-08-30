@@ -205,6 +205,28 @@ for (const scenario of scenarios) {
         scenario.name + " ReviewReportShell did not mount.",
       );
 
+      await expect(takeover).toBeFocused();
+      const siblingIsolation = await takeover.evaluate((node) =>
+        Array.from(node.parentElement?.children ?? [])
+          .filter(
+            (sibling): sibling is HTMLElement =>
+              sibling !== node && sibling instanceof HTMLElement,
+          )
+          .map((sibling) => ({
+            tag: sibling.tagName,
+            className: sibling.className,
+            testId: sibling.dataset.testid ?? null,
+            inert: sibling.hasAttribute("inert"),
+            ariaHidden: sibling.getAttribute("aria-hidden"),
+          })),
+      );
+      expect(siblingIsolation.length).toBeGreaterThan(0);
+      expect(
+        siblingIsolation.filter(
+          (sibling) => !sibling.inert || sibling.ariaHidden !== "true",
+        ),
+      ).toEqual([]);
+
       const geometry = await takeover.evaluate((node) => {
         const reportNode = node.querySelector(".review-report") as HTMLElement;
         const header = node.querySelector(

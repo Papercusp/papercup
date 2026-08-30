@@ -5,7 +5,13 @@
 // and ReportTakeoverLayer renders the takeover chrome. Mirrors the
 // PlanDashboardHost.test.tsx nuqs-mock conventions.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 const { nuqs, setQueryStates } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
@@ -200,6 +206,45 @@ describe("ReportTakeoverLayer", () => {
     expect(route.hasAttribute("inert")).toBe(false);
     expect(route.hasAttribute("aria-hidden")).toBe(false);
     expect(document.activeElement).toBe(opener);
+  });
+
+  it("isolates routed content that mounts after the takeover", async () => {
+    function Harness({
+      open,
+      routeMounted,
+    }: {
+      open: boolean;
+      routeMounted: boolean;
+    }) {
+      return (
+        <main>
+          {open ? (
+            <ReportTakeoverLayer>
+              <button type="button">Apply selected</button>
+            </ReportTakeoverLayer>
+          ) : null}
+          {routeMounted ? (
+            <section data-testid="late-route-content">
+              <button type="button">Routed action</button>
+            </section>
+          ) : null}
+        </main>
+      );
+    }
+
+    const { rerender } = render(<Harness open routeMounted={false} />);
+    expect(document.activeElement).toBe(screen.getByTestId("report-takeover"));
+
+    rerender(<Harness open routeMounted />);
+    const route = screen.getByTestId("late-route-content");
+    await waitFor(() => {
+      expect(route.hasAttribute("inert")).toBe(true);
+      expect(route.getAttribute("aria-hidden")).toBe("true");
+    });
+
+    rerender(<Harness open={false} routeMounted />);
+    expect(route.hasAttribute("inert")).toBe(false);
+    expect(route.hasAttribute("aria-hidden")).toBe(false);
   });
 
   it("falls back to the app-pane landmark when completion removes the opener", () => {
