@@ -280,6 +280,30 @@ if [ "\$vuln_by_artifact" = "null" ]; then detail="vuln-artifact-parse-failed"; 
 # aggregate itself; a caveat that lives only in a comment is one the reader never sees.
 vuln_distinct_artifacts=\$(jq '[.matches[]? | (.artifact.name + " " + (.artifact.version // "?"))] | unique | length' /tmp/vuln.json 2>/dev/null || echo "null")
 if [ "\$vuln_distinct_artifacts" = "null" ]; then detail="vuln-artifact-census-parse-failed"; exit 1; fi
+# WHICH ARTIFACTS CARRY THE **DENIED** FINDINGS — the field that makes a remediation targetable.
+#
+# The two fields above cannot answer this between them, and the way they fail is the reason this
+# one exists. vuln_by_artifact ranks by TOTAL findings, so it is dominated by the inherited mass:
+# on the 0.0.18 candidate its top-25 is kernel and Go stdlib, and the npm packages that are OURS
+# to fix sit at 30/6/3/2 findings with part of the population past the cap entirely. Crossing
+# severity with ECOSYSTEM proves the denied set is 1054 kernel + 665 go + 26 npm, but "ecosystem
+# npm" is not something anyone can go and bump — a VERSION is. So the actionable question, "which
+# packages carry the 26 findings we can actually fix", had no instrument, and the package names
+# had to be taken from a comment rather than measured (D-202).
+#
+# Restricted to Critical|High because that is the population the ratified policy DENIES; it is
+# not a threshold decision (D-172/174/175 forbid moving one) but a filter matching the bar that
+# already exists. The name says what it MEASURES rather than what the policy calls it, so it stays
+# true if the bar ever moves and a consumer can recombine it against whatever threshold applies.
+#
+# Severity is lowercased before comparison and defaulted, so a null severity is EXCLUDED rather
+# than crashing the projection — and the cap is paired with its own denominator below, for the
+# same reason the ranked list above is: a bounded measurement must declare its bound ON the
+# aggregate, never in a comment.
+vuln_crit_high_by_artifact=\$(jq -c '[.matches[]? | select((.vulnerability.severity // "" | ascii_downcase) == "critical" or (.vulnerability.severity // "" | ascii_downcase) == "high") | (.artifact.name + " " + (.artifact.version // "?"))] | group_by(.) | map({name:.[0], count:length}) | sort_by(-.count) | .[0:100] | map({key:.name, value:.count}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_crit_high_by_artifact" = "null" ]; then detail="vuln-crit-high-artifact-parse-failed"; exit 1; fi
+vuln_crit_high_distinct_artifacts=\$(jq '[.matches[]? | select((.vulnerability.severity // "" | ascii_downcase) == "critical" or (.vulnerability.severity // "" | ascii_downcase) == "high") | (.artifact.name + " " + (.artifact.version // "?"))] | unique | length' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_crit_high_distinct_artifacts" = "null" ]; then detail="vuln-crit-high-artifact-census-parse-failed"; exit 1; fi
 
 # Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
 # emitted: this document is read back over SSH and lands in release logs and work-item
@@ -315,10 +339,12 @@ jq -n \\
   --argjson vulnerabilityBySeverityAndEcosystem "\$vuln_by_severity_ecosystem" \\
   --argjson vulnerabilityByArtifact "\$vuln_by_artifact" \\
   --argjson vulnerabilityDistinctArtifacts "\$vuln_distinct_artifacts" \\
+  --argjson vulnerabilityCriticalHighByArtifact "\$vuln_crit_high_by_artifact" \\
+  --argjson vulnerabilityCriticalHighDistinctArtifacts "\$vuln_crit_high_distinct_artifacts" \\
   --argjson secretsByArea "\$secrets_by_area" \\
   --argjson secretsByRule "\$secrets_by_rule" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
+  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, vulnerabilityCriticalHighByArtifact:\$vulnerabilityCriticalHighByArtifact, vulnerabilityCriticalHighDistinctArtifacts:\$vulnerabilityCriticalHighDistinctArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -547,6 +573,23 @@ async function scan(input) {
       ? {
           vulnerabilityDistinctArtifacts:
             measurement.vulnerabilityDistinctArtifacts,
+        }
+      : {}),
+    // WHICH artifacts carry the DENIED findings. The ranked list above is ordered by TOTAL, so
+    // the inherited mass (kernel, Go stdlib) crowds out the handful of packages that are ours to
+    // bump — the 0.0.18 candidate put all 26 of our npm findings below its top-25 cut or into its
+    // tail. This pair answers "what do we actually go and fix", and ships with its own denominator
+    // for the same reason as the pair above.
+    ...(isPlainObject(measurement.vulnerabilityCriticalHighByArtifact)
+      ? {
+          vulnerabilityCriticalHighByArtifact:
+            measurement.vulnerabilityCriticalHighByArtifact,
+        }
+      : {}),
+    ...(Number.isSafeInteger(measurement.vulnerabilityCriticalHighDistinctArtifacts)
+      ? {
+          vulnerabilityCriticalHighDistinctArtifacts:
+            measurement.vulnerabilityCriticalHighDistinctArtifacts,
         }
       : {}),
     ...(isPlainObject(measurement.secretsByRule)

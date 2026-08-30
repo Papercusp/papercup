@@ -652,6 +652,23 @@ function scanEvidence(
     ...(typeof result.vulnerabilityDistinctArtifacts === 'number'
       ? { vulnerabilityDistinctArtifacts: result.vulnerabilityDistinctArtifacts }
       : {}),
+    // The same ranking restricted to the DENIED severities, because the list above is ordered by
+    // total and the inherited mass buries what we can act on: on the 0.0.18 candidate every one
+    // of the 26 npm findings that are ours to bump fell below its cut or into its tail, so the
+    // package names had to be read from a comment instead of measured (D-202). Carried as a pair
+    // with its own denominator, on the same rule as the pair above.
+    ...(isRecord(result.vulnerabilityCriticalHighByArtifact)
+      ? {
+          vulnerabilityCriticalHighByArtifact:
+            result.vulnerabilityCriticalHighByArtifact as Readonly<Record<string, number>>,
+        }
+      : {}),
+    ...(typeof result.vulnerabilityCriticalHighDistinctArtifacts === 'number'
+      ? {
+          vulnerabilityCriticalHighDistinctArtifacts:
+            result.vulnerabilityCriticalHighDistinctArtifacts,
+        }
+      : {}),
     ...(isRecord(result.secretsByRule)
       ? { secretsByRule: result.secretsByRule as Readonly<Record<string, number>> }
       : {}),
