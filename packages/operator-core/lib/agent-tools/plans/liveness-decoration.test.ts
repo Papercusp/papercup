@@ -24,7 +24,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   // Imported INSIDE the factory: `vi.mock` is hoisted above the import block, so
   // a top-level binding referenced here can be in its TDZ when the factory runs.
-  const { mockSqlThrowOnUnmatched } = await import('@papercusp/test-config');
+  // The `/mock-sql` SUBPATH, never the '@papercusp/test-config' barrel: the barrel
+  // statically re-exports testcontainers/msw/@nestjs-testing/drizzle, which a unit-tier
+  // test has no business loading (EI-13226 / EI-8888). `mock-sql.ts` has zero imports.
+  const { mockSqlThrowOnUnmatched } = await import('@papercusp/test-config/mock-sql');
   return {
     ...actual,
     // EI-14882: ROUTED, not catch-all. This mock used to answer EVERY query with
