@@ -293,6 +293,13 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
       vulnerabilityFindings: Object.values(this.scanBySeverity).reduce((a, b) => a + b, 0),
       vulnerabilityBySeverity: this.scanBySeverity,
       secretFindings: 0,
+      // Proof the scanner actually mounted the candidate. Same reasoning as the
+      // sub-threshold findings above: a fixture that omits this would exercise the
+      // happy path against a scan that never demonstrated it read the disk, and
+      // under GCP_IMAGE_SCAN_POLICY that is now a denial rather than a pass. Values
+      // mirror the live r5 measurement recorded in D-196.
+      mountedFilesystems: 3,
+      candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
       evidenceRef: `gcp://scan/${input.imageId}`,
     };
   }
