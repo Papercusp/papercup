@@ -147,6 +147,7 @@
     "@papercusp/testing-shell": "*",
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-mcp": "*",
+    "@papercusp/ui-primitives": "*",
     "@testcontainers/postgresql": "^11.14.0",
     "@workos-inc/node": "^10.10.0",
     "adm-zip": "^0.5.17",

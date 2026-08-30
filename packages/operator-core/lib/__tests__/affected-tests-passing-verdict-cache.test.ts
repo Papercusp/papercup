@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -921,6 +921,87 @@ describe('shell-volatile variables are outside the cross-run identity', () => {
       expect(clone).not.toHaveProperty(name);
       expect(environment[name]).toBe('shell-state');
     }
+  });
+});
+
+// WI-1024071 live two-run reproduction, 2026-08-30. Run A and Run B selected the same 21 tasks
+// over the same explicit changed path and shared cache, but every task missed. ENV_DELTA named
+// only the post-compaction caller seam below; the rotating Codex arg0 PATH directory contained
+// only `.lock`. Pin the complete observed delta so the real instrument cannot silently go inert
+// again while narrower hand-built identity tests stay green.
+describe('Codex resume and retry-attempt plumbing are outside the cross-run identity', () => {
+  const stablePathParts = [
+    '/repo/node_modules/.bin',
+    '/opt/codex/vendor/codex-path',
+    '/usr/bin',
+    '/bin',
+  ];
+  const pathWithArg0 = (session: string, suffix: string): string =>
+    [
+      stablePathParts[0],
+      stablePathParts[1],
+      `/home/agent/.papercusp/su-codex-homes/${session}/tmp/arg0/codex-arg0${suffix}`,
+      ...stablePathParts.slice(2),
+    ].join(pathDelimiter);
+
+  const runA = {
+    LANG: 'C.UTF-8',
+    PATH: pathWithArg0('session-21178', 'iRIaLF'),
+    CODEX_SESSION_ID: '01a050-before-compaction',
+    CODEX_THREAD_ID: '01a050-before-compaction',
+    AFFECTED_RETRY_FAILED: '0',
+  };
+  const runB = {
+    LANG: 'C.UTF-8',
+    PATH: pathWithArg0('session-21178', 'uTUqd9'),
+    CODEX_SESSION_ID: '01a051-after-compaction',
+    CODEX_THREAD_ID: '01a051-after-compaction',
+    DISABLE_AUTO_COMPACT: '1',
+    DISABLE_COMPACT: '1',
+  };
+
+  it('matches the complete measured Run A -> Run B environment delta', () => {
+    const before = passingTaskVerdictCrossRunIdentityEnvironment(runA).environment;
+    const after = passingTaskVerdictCrossRunIdentityEnvironment(runB).environment;
+    expect(after).toEqual(before);
+    expect(before).toEqual({
+      LANG: 'C.UTF-8',
+      PATH: stablePathParts.join(pathDelimiter),
+    });
+  });
+
+  it('control: the per-run identity still distinguishes the same caller state', () => {
+    const before = passingTaskVerdictIdentityEnvironment(runA).environment;
+    const after = passingTaskVerdictIdentityEnvironment(runB).environment;
+    expect(after).not.toEqual(before);
+    expect(after.PATH).not.toBe(before.PATH);
+  });
+
+  it('does not blanket-strip CODEX_* or PATH entries outside the exact arg0 shape', () => {
+    const environment = passingTaskVerdictCrossRunIdentityEnvironment({
+      PATH: ['/repo/bin', '/tmp/codex-arg0-is-a-real-tool-dir', '/usr/bin'].join(pathDelimiter),
+      CODEX_MODEL: 'gpt-result-affecting-control',
+    }).environment;
+    expect(environment).toEqual({
+      PATH: ['/repo/bin', '/tmp/codex-arg0-is-a-real-tool-dir', '/usr/bin'].join(pathDelimiter),
+      CODEX_MODEL: 'gpt-result-affecting-control',
+    });
+  });
+
+  it('normalises the resolved retry decision but retains the static retry threshold', () => {
+    const failFast = passingTaskVerdictCrossRunGateConfig({
+      retryFailed: false,
+      retryLoad1Threshold: 40,
+    });
+    const absorbUnderLoad = passingTaskVerdictCrossRunGateConfig({
+      retryFailed: true,
+      retryLoad1Threshold: 40,
+    });
+    expect(absorbUnderLoad).toEqual(failFast);
+    expect(failFast).toMatchObject({ retryFailed: null, retryLoad1Threshold: 40 });
+    expect(
+      passingTaskVerdictCrossRunGateConfig({ retryFailed: true, retryLoad1Threshold: 80 }),
+    ).not.toEqual(failFast);
   });
 });
 
