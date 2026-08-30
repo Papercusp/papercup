@@ -852,6 +852,184 @@ describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () 
   });
 });
 
+describe("EI-21036544613774607: convergeRepairHeadWithStaging fast-forwards a stale repairHead", () => {
+  // GATE STALL ROOT CAUSE this bug was filed with: a frozen-candidate repair worktree
+  // is built ONCE at `queue.repairHead` (== `queue.candidate` on the first dispatch, before
+  // any fixer commit exists) and NEVER rebases onto staging, so it can re-fail forever on a
+  // bug staging already fixed after the freeze. This asserts the fix: before the FIRST
+  // worktree build, repairHead is fast-forwarded to the current staging tip whenever it is
+  // still an ancestor of staging (the common, no-fixer-commit-yet case).
+  it("converges repairHead to a moved staging tip when repairHead is still an ancestor of staging", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-repair-converge-"));
+    const repo = join(root, "work");
+    mkdirSync(repo);
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+        },
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+        );
+      }
+      return result.stdout.trim();
+    };
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+
+    try {
+      git(repo, "init", "-q", "-b", "staging");
+      git(repo, "config", "user.email", "fixture@example.invalid");
+      git(repo, "config", "user.name", "fixture");
+      writeFileSync(join(repo, "a"), "1");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "frozen candidate");
+      const frozenCandidate = git(repo, "rev-parse", "HEAD");
+
+      // Staging keeps moving AFTER the candidate froze — the exact shape of the filed
+      // evidence, where a FeatureRow fix landed on staging 11 minutes after the repair
+      // worktree branched and the repair could never inherit it.
+      writeFileSync(join(repo, "b"), "a fix that landed after the freeze");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "later staging fix");
+      const stagingTip = git(repo, "rev-parse", "HEAD");
+
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: repo,
+        releaseRoot: repo,
+        checkpointRoot: repo,
+        integrationBranch: "staging",
+      });
+
+      const queue = {
+        schemaVersion: 3 as const,
+        phase: "awaiting-fixer" as const,
+        candidate: frozenCandidate,
+        base: frozenCandidate,
+        // First dispatch, before any fixer has ever run: repairHead === candidate.
+        repairHead: frozenCandidate,
+        worktreePath: join(root, "repair-worktree"),
+        attempts: 0,
+        openedAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now(),
+        fixerSpawnId: null,
+        failingTests: ["lib/a.test.ts"],
+      };
+
+      const converged = await deps.convergeRepairHeadWithStaging?.(queue);
+      expect(converged?.repairHead).toBe(stagingTip);
+      // The immutable pin is documented "never moves for this queue entry" — assert it.
+      expect(converged?.candidate).toBe(frozenCandidate);
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a DIVERGED repairHead untouched (a fixer commit already exists on it)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-repair-no-converge-"));
+    const repo = join(root, "work");
+    mkdirSync(repo);
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+        },
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+        );
+      }
+      return result.stdout.trim();
+    };
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+
+    try {
+      git(repo, "init", "-q", "-b", "staging");
+      git(repo, "config", "user.email", "fixture@example.invalid");
+      git(repo, "config", "user.name", "fixture");
+      writeFileSync(join(repo, "a"), "1");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "frozen candidate");
+      const frozenCandidate = git(repo, "rev-parse", "HEAD");
+
+      // A fixer already ran once and produced its own commit (this is what
+      // markFrozenRepairFixerFinished carries `repairHead` to). That commit is unique
+      // to the fixer's isolated worktree — it is NOT reachable from staging.
+      git(repo, "switch", "-qc", "repair");
+      writeFileSync(join(repo, "fix"), "a fixer's own unpushed commit");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "fixer attempt 1");
+      const diverged = git(repo, "rev-parse", "HEAD");
+
+      // Meanwhile staging ALSO moved, independently, via different content.
+      git(repo, "switch", "-q", "staging");
+      writeFileSync(join(repo, "b"), "unrelated later staging work");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "later staging work");
+      const stagingTip = git(repo, "rev-parse", "HEAD");
+      expect(stagingTip).not.toBe(diverged);
+
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: repo,
+        releaseRoot: repo,
+        checkpointRoot: repo,
+        integrationBranch: "staging",
+      });
+
+      const queue = {
+        schemaVersion: 3 as const,
+        phase: "awaiting-fixer" as const,
+        candidate: frozenCandidate,
+        base: frozenCandidate,
+        repairHead: diverged,
+        worktreePath: join(root, "repair-worktree"),
+        attempts: 1,
+        openedAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now(),
+        fixerSpawnId: null,
+        failingTests: ["lib/a.test.ts"],
+      };
+
+      const converged = await deps.convergeRepairHeadWithStaging?.(queue);
+      // Not an ancestor of staging (it has unique content) — must be left EXACTLY as-is.
+      expect(converged?.repairHead).toBe(diverged);
+      expect(converged).toEqual(queue);
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
   it("populates submodule working trees so a fixer can reproduce the red it was sent to fix", async () => {
     const root = mkdtempSync(join(tmpdir(), "green-cp-repair-submodule-"));
