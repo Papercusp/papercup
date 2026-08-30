@@ -21,10 +21,25 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../identity';
 import { sendMessage } from '../messages';
 import { COORD_ROLES } from '../roles';
 import { goalRefSchema } from '../../../agent-goal-ref';
+
+/**
+ * EI-21862403163570302: `work_items:complete` fires `coord:emit` as its
+ * INTRINSIC lifecycle broadcast (D-002/D-004) and this was the one
+ * `sendMessage()` call site left unbounded when EI-21860312102671987 fixed
+ * `coord:send`'s (tools/send.ts's `sendOne`) — so a saturated/wedged
+ * `coord_event_log` write here silently hung `work_items:complete` itself
+ * past its own transport timeout, indistinguishable from "the DB is down"
+ * while ordinary reads stayed instant. Same fix, same reasoning: bound the
+ * whole call so a stuck persist throws a decisive `DbCallDeadlineError`
+ * instead of hanging forever; the underlying call is not cancelled, so
+ * nothing about the actual persist changes, only how long the caller waits
+ * on it. */
+export const COORD_EMIT_DB_DEADLINE_MS = DEFAULT_DB_CALL_DEADLINE_MS;
 
 export default defineTool({
   name: 'coord:emit',
@@ -79,21 +94,24 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const harnessSlug = typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
-    const env = await sendMessage(identity, {
-      to: args.to,
-      summary: args.summary,
-      body: args.body,
-      plan_slug: args.plan_slug,
-      related_msg_id: args.related_msg_id,
-      ...(harnessSlug ? { harnessSlug } : {}),
-      // The lifecycle markers — visible signal, not an excluded ambient category.
-      extra: {
-        auto: true,
-        lifecycle: args.category,
-        ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
-        ...(args.declared_plan_items ? { declared_plan_items: args.declared_plan_items } : {}),
-      },
-    });
+    const env = await withDbCallDeadline(
+      sendMessage(identity, {
+        to: args.to,
+        summary: args.summary,
+        body: args.body,
+        plan_slug: args.plan_slug,
+        related_msg_id: args.related_msg_id,
+        ...(harnessSlug ? { harnessSlug } : {}),
+        // The lifecycle markers — visible signal, not an excluded ambient category.
+        extra: {
+          auto: true,
+          lifecycle: args.category,
+          ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
+          ...(args.declared_plan_items ? { declared_plan_items: args.declared_plan_items } : {}),
+        },
+      }),
+      { ms: COORD_EMIT_DB_DEADLINE_MS, label: 'coord:emit.sendMessage' },
+    );
     return {
       content: [
         {

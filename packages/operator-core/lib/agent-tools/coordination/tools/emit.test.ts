@@ -3,11 +3,12 @@
  * sendMessage `extra` passthrough it relies on.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { CoordEventLog, LineSurface } from '@papercusp/coordination/event-log';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog } from '../log';
 import { sendMessage } from '../messages';
-import coordEmit from './emit';
+import coordEmit, { COORD_EMIT_DB_DEADLINE_MS } from './emit';
 
 const ctx = { uiClientId: 'su-test', isSuperuser: true, workspaceId: 'default' } as never;
 
@@ -111,5 +112,42 @@ describe('sendMessage extra passthrough', () => {
     })) as Record<string, unknown>;
     expect('a' in env).toBe(false);
     expect(env.b).toBe(1);
+  });
+
+  it('EI-21862403163570302: a hung coord_event_log persist is bounded by withDbCallDeadline instead of hanging coord:emit (and its caller, work_items:complete) indefinitely', async () => {
+    // Wrap the real InMemoryCoordLog so every OTHER method behaves normally,
+    // but the line-append path (what sendMessage's persist ultimately calls)
+    // never settles — simulating the saturated/wedged coord_event_log write
+    // reported in this item.
+    const real = log;
+    const hanging: CoordEventLog = {
+      ...real,
+      appendLine: (_surface: LineSurface, _writerKey: string, _line) => new Promise(() => {}),
+      appendLineIfAbsent: (_surface: LineSurface, _writerKey: string, _line) => new Promise(() => {}),
+    };
+    configureCoordLog(hanging);
+
+    vi.useFakeTimers();
+    try {
+      const parsed = (coordEmit.args as { parse: (x: unknown) => unknown }).parse({
+        category: 'completion',
+        summary: 'F-1 DONE — 12 tests',
+      });
+      const pending = coordEmit.handler(parsed as never, ctx);
+      let rejection: unknown;
+      pending.catch((err) => {
+        rejection = err;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(COORD_EMIT_DB_DEADLINE_MS);
+      await Promise.resolve(); // let the rejection handler above settle
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(pending).rejects.toThrow(
+        /\[db-call-deadline\] "coord:emit\.sendMessage" did not resolve within/,
+      );
+      expect(rejection).toBeInstanceOf(Error);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
