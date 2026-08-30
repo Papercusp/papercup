@@ -2522,12 +2522,47 @@ function AdvConvStyles() {
         min-width: 760px;
       }
       /* The nav reuses .pc-plans__rail (border-right + column flex + bg) for
-         pixel parity with the Create sidebar; only its width is set here. */
+         pixel parity with the Create sidebar; only its width is set here.
+
+         STICKY, deliberately (P-003 / plan decisions D-001 + D-002). The shell
+         below is min-width 760px inside an overflow-x:auto root, and the /adv
+         content column is routinely narrower than that -- measured 2026-08-30 on
+         an isolated verifier rig, the scroll container is 648px at the desktop's
+         own minimum window width (tauri.conf.json minWidth 800) and 470px at a
+         1200px window, so the shell scrolls horizontally by 112px and 290px
+         respectively. Left unpinned the rail scrolls away with everything else:
+         at 800px its left edge measured -8px at maximum scroll, i.e. navigation
+         is partly off-screen exactly when the user has scrolled to read the
+         detail pane. Pinning it to the scrollport keeps navigation reachable at
+         every scroll offset WITHOUT touching the information architecture --
+         master-detail stays invariant at every width per D-001, which rules out
+         the reverted narrow-width drill-in.
+
+         background-color is set (not background) so .pc-plans__rail's gradient
+         background-image survives for pixel parity, while the rail gains an
+         opaque base. The gradient alone is translucent, so a sticky rail without
+         this would show the inbox sliding underneath it.
+
+         max-height / border-bottom are reset because plans.css is imported
+         globally by routes/adv/index.tsx and its
+         "@media (max-width: 980px) .pc-plans__rail" rule -- written for the
+         plans page's single-column collapse -- otherwise reaches this rail,
+         which does NOT collapse. Measured: the rail computed max-height 522px
+         (58vh) at both 900px and 800px windows while the inbox and detail panes
+         were 800px tall, so the rail visibly stopped ~278px short of the bottom.
+         Only max-height and border-bottom leak; border-right is already won back
+         by this rule on document order (measured 1px at 800px). */
       .pc-advconv__nav {
         flex: 0 0 auto;
         width: 64px;
         min-height: 0;
         border-right: 1px solid var(--advconv-border);
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background-color: var(--advconv-bg);
+        max-height: none;
+        border-bottom: none;
       }
       .pc-advconv__nav-actions {
         display: flex;
