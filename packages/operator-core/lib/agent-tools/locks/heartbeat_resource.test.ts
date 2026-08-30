@@ -134,7 +134,10 @@ describe('locks:heartbeat_resource handler', () => {
         pgCode: '57014',
       });
       txnM.mockRejectedValueOnce(contended);
-      txnM.mockImplementation(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({}));
+      // Let the parameter types come from the mocked signature (the pattern the rest
+      // of this file uses). Hand-annotating them re-declared `fn` as returning
+      // `unknown`, which no longer satisfies the real `(tx) => Promise<unknown>`.
+      txnM.mockImplementation(async (_d, _o, fn) => fn({} as never));
       hbM.mockResolvedValue({ extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
 
       const pending = call();
