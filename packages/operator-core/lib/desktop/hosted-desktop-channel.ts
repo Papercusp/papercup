@@ -38,11 +38,6 @@ import {
   KASMVNC_VIEW_USER,
 } from './x-server-backend';
 import type { KasmvncSessionCredentials } from './kasmvnc-credentials';
-import {
-  DEFAULT_DESKTOP_LIFECYCLE_POLICY,
-  DESKTOP_LIFECYCLE_POLICY,
-  type DesktopLifecyclePolicy,
-} from './desktop-lifecycle';
 
 /**
  * The viewer role, structurally identical to the hosted relay's
@@ -159,37 +154,15 @@ export function assertLoopbackDesktopEndpoint(
   return { host: endpoint.host, port: endpoint.port };
 }
 
-/**
- * How many heartbeats must fit inside the SHORTEST idle window.
- *
- * Five, so a viewer survives four consecutive missed beats — a relay hiccup, a
- * paused event loop, a slow write — without its desktop being classified idle out
- * from under a person who is looking at it.
+/*
+ * The viewer heartbeat cadence used to live here. It moved to
+ * `./desktop-lifecycle` when P-014 gave the LOCAL viewer lane a heartbeat too:
+ * the value is a pure derivation of that file's idle-threshold table, and two
+ * lanes in different directories now depend on it, so it belongs beside the
+ * policy it derives from rather than inside the hosted lane's channel module.
+ * Import `desktopViewerHeartbeatMs` / `DESKTOP_VIEWER_HEARTBEAT_DIVISOR` from
+ * `./desktop-lifecycle`.
  */
-export const DESKTOP_VIEWER_HEARTBEAT_DIVISOR = 5;
-
-/**
- * The interval at which a connected viewer touches `last_active_at` (D-008 rule 4).
- *
- * DERIVED, never hardcoded. `desktop-lifecycle.ts` owns the idle thresholds, and
- * this value is only correct relative to the SMALLEST of them — so it is computed
- * from that table rather than restated as a constant that silently becomes wrong
- * the day someone lowers a kind's `idleAfterSec`. (Repo convention: a value that
- * describes another module's truth is derived, pinned, or attested — never
- * hand-maintained.)
- *
- * The minimum is taken across EVERY kind plus the conservative default, not just
- * `kasmvnc`, because P-011's microvm desktops idle in 5 minutes and a viewer
- * attached to one of those must heartbeat fast enough for it too.
- */
-export function desktopViewerHeartbeatMs(
-  policy: Readonly<Record<string, DesktopLifecyclePolicy>> = DESKTOP_LIFECYCLE_POLICY,
-  fallback: DesktopLifecyclePolicy = DEFAULT_DESKTOP_LIFECYCLE_POLICY,
-): number {
-  const windows = [...Object.values(policy), fallback].map((entry) => entry.idleAfterSec);
-  const shortestIdleSec = Math.min(...windows);
-  return Math.floor((shortestIdleSec * 1000) / DESKTOP_VIEWER_HEARTBEAT_DIVISOR);
-}
 
 /**
  * A viewer channel's identity, as the adapter tracks it while attached.

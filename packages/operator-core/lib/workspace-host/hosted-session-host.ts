@@ -23,10 +23,10 @@ import { getScreenSerialization, spawnPty, type PtyHandle } from '../pty-bridge'
 import type { PtyAccessScope } from '../pty-ticket';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import type { KasmvncSessionCredentials } from '../desktop/kasmvnc-credentials';
+import { desktopViewerHeartbeatMs } from '../desktop/desktop-lifecycle';
 import {
   assertLoopbackDesktopEndpoint,
   desktopViewersHold,
-  desktopViewerHeartbeatMs,
   hostedDesktopGrant,
   HostedDesktopEndpointError,
   type HostedDesktopAction,

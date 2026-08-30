@@ -106,6 +106,17 @@ const HOUR = 3600;
  *   mechanism: the real fix is D-008 rule 4 — a connected viewer heartbeats
  *   `last_active_at`, which keeps the session out of `idle` entirely, and P-014
  *   drops this hold back down once that heartbeat is landed and measured.
+ *
+ *   ⚠ STILL 4h ON PURPOSE, and the reason is worth stating because half of its
+ *   retirement condition is now met. P-014 landed the mechanism: both viewer lanes
+ *   heartbeat (see `desktopViewerHeartbeatMs` below) and both tear a dead stream
+ *   down, which is what let `VIEWER_HOLD_SEC` drop from six hours to twenty
+ *   minutes. What has NOT happened is the measurement — no KasmVNC viewer has
+ *   carried a real frame end-to-end yet, so nothing has observed how this
+ *   heartbeat behaves against a live encoder under load. Retiring a backstop on
+ *   the strength of unit tests alone is how a margin gets removed the week before
+ *   it was needed. This drops to the 2h sandbox shape when P-014's measurement
+ *   half runs, not before.
  */
 export const DESKTOP_LIFECYCLE_POLICY: Readonly<Record<DesktopKind, DesktopLifecyclePolicy>> = {
   'xvfb-local': { idleAfterSec: 15 * 60, freezeAfterSec: 2 * HOUR, reapAfterFrozenSec: 6 * HOUR },
@@ -136,33 +147,93 @@ export const DEFAULT_DESKTOP_LIFECYCLE_POLICY: DesktopLifecyclePolicy = {
 export const PROVISIONING_STUCK_SEC = 30 * 60;
 
 /**
+ * How many heartbeats must fit inside the SHORTEST idle window.
+ *
+ * Five, so a viewer survives four consecutive missed beats — a relay hiccup, a
+ * paused event loop, a slow write — without its desktop being classified idle out
+ * from under a person who is looking at it.
+ */
+export const DESKTOP_VIEWER_HEARTBEAT_DIVISOR = 5;
+
+/**
+ * The interval at which a connected viewer touches `last_active_at` (D-008 rule 4).
+ *
+ * DERIVED, never hardcoded. This file owns the idle thresholds, and this value is
+ * only correct relative to the SMALLEST of them — so it is computed from that
+ * table rather than restated as a constant that silently becomes wrong the day
+ * someone lowers a kind's `idleAfterSec`. (Repo convention: a value that describes
+ * another module's truth is derived, pinned, or attested — never hand-maintained.)
+ *
+ * The minimum is taken across EVERY kind plus the conservative default, not just
+ * `kasmvnc`, because P-011's microvm desktops idle in 5 minutes and a viewer
+ * attached to one of those must heartbeat fast enough for it too.
+ *
+ * It lives HERE rather than beside either viewer lane because both lanes now beat:
+ * the hosted relay adapter (`workspace-host/hosted-session-host.ts`) and the local
+ * WS bridge (`deployment/frame-vnc.ts`). A cadence derived from this file's policy
+ * table, imported by both, is what keeps the two lanes from drifting apart.
+ */
+export function desktopViewerHeartbeatMs(
+  policy: Readonly<Record<string, DesktopLifecyclePolicy>> = DESKTOP_LIFECYCLE_POLICY,
+  fallback: DesktopLifecyclePolicy = DEFAULT_DESKTOP_LIFECYCLE_POLICY,
+): number {
+  const windows = [...Object.values(policy), fallback].map((entry) => entry.idleAfterSec);
+  const shortestIdleSec = Math.min(...windows);
+  return Math.floor((shortestIdleSec * 1000) / DESKTOP_VIEWER_HEARTBEAT_DIVISOR);
+}
+
+/**
+ * The longest either viewer lane may take to notice its stream is dead and clear
+ * the binding. It is a CEILING this file declares, not a window either lane owns:
+ * each lane pins its own real constant against it in its own test, so a lane that
+ * lengthens its teardown fails there instead of silently widening the hold below.
+ *
+ * Current lanes: `frame-vnc.VNC_STREAM_IDLE_MS` (local WS bridge) and
+ * `hosted-session-host.HOSTED_HOST_SESSION_IDLE_MS` (hosted relay adapter).
+ */
+export const VIEWER_STREAM_TEARDOWN_CEILING_SEC = 15 * 60;
+
+/**
+ * Slack above the teardown ceiling, so the hold does not expire in the same beat
+ * the lane is already tearing the stream down. Sized well above the heartbeat
+ * cadence rather than at it: the point is that a hold never lapses on a viewer a
+ * lane is about to clear anyway.
+ */
+export const VIEWER_HOLD_MARGIN_SEC = 5 * 60;
+
+/**
  * How long a viewer binding defers governance. An active viewer (`watch` /
  * `takeover`) means a human is looking at this desktop, and freezing it under
  * them would be indistinguishable from a crash — so a bound viewer holds the
  * governor off.
  *
- * ⚠ WHY THIS IS HOURS AND NOT MINUTES — the sizing is derived from how the
- * binding actually behaves, and getting it from the name alone gives the wrong
- * answer. `frame-vnc` binds the viewer when the stream OPENS and clears it back
- * to `none` on teardown; nothing writes the row in between. So the activity clock
- * marks the START of a viewing session, not its liveness, and a bound viewer that
- * has been quiet for 40 minutes is overwhelmingly a person still watching — not a
- * stale flag. A short bound here would freeze a desktop out from under a live
- * 31-minute VNC session, which is precisely the "indistinguishable from a crash"
- * failure this hold exists to prevent. (This was a real defect in the first cut of
- * this file, caught by a test: the bound was 30 minutes.)
+ * ⚠ WHY THIS IS DERIVED, AND WHY IT USED TO BE SIX HOURS. The sizing follows from
+ * what the binding MEANS, and for most of this file's life the binding meant very
+ * little: `frame-vnc` bound the viewer when the stream opened and cleared it on
+ * teardown, and nothing wrote the row in between. The activity clock therefore
+ * marked the START of a viewing session, not its liveness, so a bound viewer quiet
+ * for 40 minutes was overwhelmingly a person still watching rather than a stale
+ * flag. A short bound would have frozen a desktop out from under a live 31-minute
+ * VNC session — the exact "indistinguishable from a crash" failure this hold
+ * exists to prevent, and a real defect in the first cut of this file (caught by a
+ * test; the bound was 30 minutes). Six hours was the correct backstop for a
+ * binding nobody could trust.
  *
- * It is still BOUNDED, because teardown can be skipped — a crashed viewer process
- * never runs the clear, and an unbounded hold would let one stuck flag leak a
- * desktop forever. Six hours is longer than any plausible single viewing session
- * and short enough that a crashed teardown costs one idle desktop for an evening.
- * Protect the human first; do not let a stale boolean impersonate one indefinitely.
+ * P-014 changed the premise rather than the number. BOTH lanes now heartbeat
+ * `last_active_at` every `desktopViewerHeartbeatMs()` while a viewer is attached
+ * (D-008 rule 4), and BOTH tear the stream down — and so clear the binding — when
+ * it stops carrying viewer traffic. A bound viewer is therefore a LIVE viewer, and
+ * what remains to be covered is only the residue: the window in which a lane has
+ * not yet noticed its stream died. So the hold is that ceiling plus a margin, not
+ * a guess at how long a person watches. It is derived from the two constants above
+ * so it cannot drift away from the lanes it is protecting.
  *
- * If a future streaming tier (P-013) heartbeats the row while a viewer is
- * connected, this can drop back to minutes — the binding would then mean
- * liveness, which is what a short bound requires.
+ * Still bounded, for the same reason as before: teardown can be skipped outright
+ * if the operator process dies mid-session, and an unbounded hold would let one
+ * stuck flag leak a desktop forever. The difference is that the leak now costs
+ * twenty minutes instead of an evening.
  */
-export const VIEWER_HOLD_SEC = 6 * HOUR;
+export const VIEWER_HOLD_SEC = VIEWER_STREAM_TEARDOWN_CEILING_SEC + VIEWER_HOLD_MARGIN_SEC;
 
 export interface DesktopVerdict {
   id: string;

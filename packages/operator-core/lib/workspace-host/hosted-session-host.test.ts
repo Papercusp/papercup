@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  HOSTED_HOST_SESSION_IDLE_MS,
   HostedWorkspaceHostSessionAdapter,
   SafeRootFileService,
   type HostedDesktopBackend,
@@ -12,7 +13,10 @@ import {
   type HostedHostOutboundEnvelope,
   type HostedHostPty,
 } from './hosted-session-host';
-import { desktopViewerHeartbeatMs } from '../desktop/hosted-desktop-channel';
+import {
+  VIEWER_STREAM_TEARDOWN_CEILING_SEC,
+  desktopViewerHeartbeatMs,
+} from '../desktop/desktop-lifecycle';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 
 const roots: string[] = [];
@@ -756,5 +760,17 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       channelId: 'term-1',
       payload: { type: 'operation.error', requestId: 'req-1', operation: 'desktop.roster', code: 'desktop_unsupported' },
     });
+  });
+});
+
+describe('hosted lane teardown window vs the governor hold (P-014)', () => {
+  it('gives up a dead session inside the ceiling the viewer hold is derived from', () => {
+    // `VIEWER_HOLD_SEC` is computed as this ceiling plus a margin, on the premise
+    // that every lane clears its binding within it. That premise is only true if
+    // each lane pins its own window — otherwise lengthening this constant would
+    // shorten the hold RELATIVE to the lane by exactly the amount added, and the
+    // governor would start freezing desktops this adapter had not yet released.
+    // Nothing else in the tree connects these two numbers.
+    expect(HOSTED_HOST_SESSION_IDLE_MS / 1000).toBeLessThanOrEqual(VIEWER_STREAM_TEARDOWN_CEILING_SEC);
   });
 });
