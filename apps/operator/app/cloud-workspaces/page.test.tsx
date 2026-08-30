@@ -1344,16 +1344,61 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     ).toBe("true");
   });
 
-  it("collapses the rail to an icon strip at narrow widths without losing its labels", () => {
-    /* The labels leave the LAYOUT, never the accessible name — the collapse
-       must cost a keyboard or screen-reader user nothing. */
-    expect(cloudPageCss).toMatch(
-      /@container cw-shell \(max-width: 1100px\)[\s\S]*?\.railStepBody[\s\S]*?display: none/,
+  it("keeps rail disclosure and shell columns synchronized to the page container", () => {
+    /* The operator routinely embeds this route in a pane far narrower than
+       the browser viewport. A global media query can therefore disagree with
+       a container query: the old contract hid the rail body while leaving its
+       268px grid track in place. Slice each breakpoint so these assertions
+       prove the paired transition lives in ONE rule. */
+    expect(cloudPageCss).toContain("container-type: inline-size");
+    expect(cloudPageCss).toContain("container-name: cw-page");
+    expect(cloudPageCss).not.toContain("container-name: cw-shell");
+
+    const mediumStart = cloudPageCss.indexOf(
+      "@container cw-page (max-width: 1100px)",
     );
-    expect(cloudPageCss).toContain("container-name: cw-shell");
-    expect(cloudPageCss).toMatch(
-      /@media \(max-width: 1100px\)\s*\{\s*\.shell\s*\{\s*grid-template-columns: 74px/,
+    const narrowStart = cloudPageCss.indexOf(
+      "@container cw-page (max-width: 760px)",
     );
+    const compactStart = cloudPageCss.indexOf(
+      "@container cw-page (max-width: 500px)",
+    );
+    expect(mediumStart).toBeGreaterThan(-1);
+    expect(narrowStart).toBeGreaterThan(mediumStart);
+    expect(compactStart).toBeGreaterThan(narrowStart);
+
+    const medium = cloudPageCss.slice(mediumStart, narrowStart);
+    expect(medium).toContain(
+      "grid-template-columns: 74px minmax(0, 1fr)",
+    );
+    expect(medium).toContain(".railStepBody,");
+    expect(medium).toContain("display: none");
+
+    const narrow = cloudPageCss.slice(narrowStart, compactStart);
+    expect(narrow).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(narrow).toContain(".railSteps {");
+    expect(narrow).toContain("flex-direction: row");
+    expect(narrow).toContain(".railStepBody {");
+    expect(narrow).toContain("display: flex");
+    expect(narrow).toContain(".railStats {");
+    expect(narrow).toContain("grid-template-columns: repeat(4, minmax(0, 1fr))");
+    expect(narrow).toContain(".hostRow {");
+    expect(narrow).toContain(".hostRowActions {");
+  });
+
+  it("bounds recent activity density without dropping its entries", () => {
+    const activityStart = cloudPageCss.indexOf(".railActivityList {");
+    const activityEnd = cloudPageCss.indexOf(
+      ".railActivityList li {",
+      activityStart,
+    );
+    expect(activityStart).toBeGreaterThan(-1);
+    expect(activityEnd).toBeGreaterThan(activityStart);
+
+    const activityRule = cloudPageCss.slice(activityStart, activityEnd);
+    expect(activityRule).toContain("max-height:");
+    expect(activityRule).toContain("overflow-y: auto");
+    expect(activityRule).toContain("scrollbar-gutter: stable");
   });
 
   it("styles an inert rail step off aria-disabled, not :disabled", () => {

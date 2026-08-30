@@ -19,8 +19,22 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-width: 0;
   padding: 22px 24px 40px;
   color: var(--fg);
+  background:
+    radial-gradient(
+      circle at 88% -8%,
+      color-mix(in srgb, var(--accent), transparent 92%),
+      transparent 34%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg-1), transparent 82%),
+      transparent 240px
+    );
+  container-type: inline-size;
+  container-name: cw-page;
 }
 
 /* ── Page header ──────────────────────────────────────────────────────────── */
@@ -37,6 +51,7 @@
   margin: 6px 0 0;
   font-size: 26px;
   font-weight: 620;
+  letter-spacing: -0.025em;
 }
 
 .eyebrow {
@@ -46,8 +61,9 @@
   margin: 0;
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.055em;
   text-transform: uppercase;
-  color: var(--fg-mute);
+  color: color-mix(in srgb, var(--accent), var(--fg-mute) 48%);
 }
 
 .intro {
@@ -115,8 +131,6 @@
   grid-template-columns: 268px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
-  container-type: inline-size;
-  container-name: cw-shell;
 }
 
 .stageArea {
@@ -132,9 +146,18 @@
   flex-direction: column;
   gap: 18px;
   padding: 14px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border), var(--accent) 8%);
   border-radius: 12px;
-  background: var(--bg-1);
+  background:
+    linear-gradient(
+      155deg,
+      color-mix(in srgb, var(--accent), var(--bg-1) 96%),
+      var(--bg-1) 42%,
+      color-mix(in srgb, var(--bg-deeper), var(--bg-1) 62%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--fg), transparent 95%),
+    0 22px 54px -46px color-mix(in srgb, var(--accent), transparent 28%);
 }
 
 .railSteps {
@@ -188,6 +211,9 @@
   border-color: color-mix(in srgb, var(--accent), transparent 55%);
   background: color-mix(in srgb, var(--accent), var(--bg-1) 88%);
   color: var(--fg);
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, var(--accent), transparent 10%),
+    0 10px 24px -20px color-mix(in srgb, var(--accent), transparent 18%);
 }
 
 .railStepIcon {
@@ -200,6 +226,7 @@
   border-radius: 7px;
   background: var(--bg-2);
   color: var(--fg-dim);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fg), transparent 94%);
 }
 
 .railStep[data-active="true"] .railStepIcon {
@@ -274,7 +301,11 @@
   padding: 7px 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-2);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--bg-2), var(--accent) 3%),
+    var(--bg-2)
+  );
 }
 
 .railStat span {
@@ -318,9 +349,13 @@
   display: flex;
   flex-direction: column;
   gap: 9px;
+  max-height: 286px;
   margin: 0;
-  padding: 0;
+  padding: 0 4px 0 0;
   list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .railActivityList li {
@@ -364,12 +399,16 @@
 }
 
 /*
- * Narrow shell: the rail collapses to a 74px icon strip. Labels, evidence,
- * stats and the activity feed drop out of the layout; the tooltip and the
- * button's own aria-label carry the same information, so nothing is lost to a
- * keyboard or screen-reader user.
+ * Medium shell: rail disclosure and its grid track collapse in the SAME
+ * container query. The tooltip and the button's own aria-label carry the
+ * hidden evidence, so nothing is lost to keyboard or screen-reader users.
  */
-@container cw-shell (max-width: 1100px) {
+@container cw-page (max-width: 1100px) {
+  .shell {
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 14px;
+  }
+
   .rail {
     padding: 10px 8px;
   }
@@ -387,35 +426,162 @@
   }
 }
 
-@media (max-width: 1100px) {
-  .shell {
-    grid-template-columns: 74px minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 720px) {
+@container cw-page (max-width: 760px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
   }
 
   .rail {
     position: static;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .railSteps {
     flex-direction: row;
-    align-items: center;
     gap: 6px;
+  }
+
+  .railStep {
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 7px 8px;
+  }
+
+  .railStep[data-active="true"] {
+    box-shadow:
+      inset 0 -3px 0 color-mix(in srgb, var(--accent), transparent 10%),
+      0 10px 24px -20px color-mix(in srgb, var(--accent), transparent 18%);
+  }
+
+  .railStepBody {
+    display: flex;
+    gap: 0;
+  }
+
+  .railStepEvidence,
+  .railStepDot,
+  .railActivity {
+    display: none;
+  }
+
+  .railStepIcon {
+    width: 24px;
+    height: 24px;
+  }
+
+  .railStepIndex {
+    font-size: 10.5px;
+  }
+
+  .railStepLabel {
+    font-size: 12px;
+  }
+
+  .railStats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    padding-top: 10px;
+  }
+
+  .railStat {
+    min-width: 0;
+    padding: 6px 7px;
+  }
+
+  .railStat span {
+    font-size: 10.5px;
+  }
+
+  .railStat strong {
+    font-size: 13px;
+  }
+
+  .hostRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 5px;
+  }
+
+  .hostRowMain {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    width: 100%;
+    padding: 9px;
+  }
+
+  .hostCost {
+    grid-row: 2;
+    grid-column: 2;
+    margin-top: 2px;
+  }
+
+  .hostRowActions {
+    justify-content: flex-end;
+    padding: 0 8px 7px;
+  }
+}
+
+@container cw-page (max-width: 500px) {
+  .railStep {
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    text-align: center;
+  }
+
+  .railStepIndex {
+    display: none;
+  }
+
+  .railStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 /* ── Stage chrome ─────────────────────────────────────────────────────────── */
 
 .stage {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 18px;
   padding: 20px 22px 24px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border), var(--accent) 6%);
   border-radius: 12px;
-  background: var(--bg-1);
+  background:
+    linear-gradient(
+      155deg,
+      color-mix(in srgb, var(--accent), var(--bg-1) 97%),
+      var(--bg-1) 38%,
+      color-mix(in srgb, var(--bg-deeper), var(--bg-1) 70%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--fg), transparent 95%),
+    0 24px 70px -56px color-mix(in srgb, var(--accent), transparent 18%);
+}
+
+.stage::before {
+  position: absolute;
+  top: -1px;
+  right: 22px;
+  left: 22px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent), transparent 44%),
+    transparent
+  );
+  content: "";
+  pointer-events: none;
 }
 
 .stageHeader {
@@ -428,8 +594,9 @@
 
 .stageHeaderCopy h2 {
   margin: 5px 0 0;
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 610;
+  letter-spacing: -0.018em;
 }
 
 .stageEyebrow {
@@ -983,10 +1150,16 @@
   align-items: flex-start;
   gap: 10px;
   padding: 13px 14px;
-  border: 1px solid color-mix(in srgb, var(--warn), transparent 55%);
+  border: 1px solid color-mix(in srgb, var(--warn), transparent 52%);
+  border-left-width: 3px;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--warn), var(--bg-1) 89%);
+  background: linear-gradient(
+    110deg,
+    color-mix(in srgb, var(--warn), var(--bg-1) 86%),
+    color-mix(in srgb, var(--warn), var(--bg-1) 94%) 72%
+  );
   color: var(--warn);
+  box-shadow: 0 16px 34px -30px color-mix(in srgb, var(--warn), transparent 8%);
 }
 
 .driftBanner strong {
@@ -1040,10 +1213,26 @@
 }
 
 .hostRowItem {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border), var(--accent) 4%);
   border-radius: 10px;
-  background: var(--bg);
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--bg), var(--accent) 2%),
+    var(--bg) 54%,
+    color-mix(in srgb, var(--bg-deeper), var(--bg) 64%)
+  );
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fg), transparent 96%);
   overflow: hidden;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.hostRowItem:hover {
+  border-color: color-mix(in srgb, var(--border), var(--accent) 18%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--fg), transparent 95%),
+    0 14px 34px -30px color-mix(in srgb, var(--accent), transparent 22%);
 }
 
 /* Row scale, not 400–900px cards: the fleet is legible at a glance. */
