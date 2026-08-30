@@ -54,12 +54,14 @@
 #                             --must-be-absent <literal> \
 #                             --positive-control <literal> \
 #                             --calibration <command containing {}> \
-#                             --test <command containing {}>
+#                             --test <command containing {}> \
+#                             [--subject-must-behave <command containing {}>]
 #   scripts/mutation-probe.sh --file <tracked-path> \
 #                             --against-last-without <literal> \
 #                             --positive-control <literal> \
 #                             --calibration <command containing {}> \
-#                             --test <command containing {}>
+#                             --test <command containing {}> \
+#                             [--subject-must-behave <command containing {}>]
 #
 # Historical mode freezes both the current working-tree bytes and the selected
 # commit's bytes before either command runs. `{}` is replaced with a fresh
@@ -68,6 +70,42 @@
 # test must pass against current and then produce the requested historical
 # verdict. `--against-commit` requires `--must-be-absent`; the content-selected
 # form uses its selector as that absence control automatically.
+#
+# ⚠ LOCATION-DEPENDENT SUBJECTS (EI-21902332137059032, HIT LIVE 2026-08-30
+#   probing apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh,
+#   EI-18139694363457325) — historical mode NEVER runs --test against the
+#   literal in-tree --file path; every phase relocates a frozen snapshot to a
+#   scratch directory first. A subject that resolves anything relative to its
+#   OWN location ($0-relative sibling files, a sibling config/lib directory)
+#   is a DIFFERENT PROGRAM once relocated there. That is dangerous specifically
+#   when the subject fails OPEN rather than crashing (an admission/deny path
+#   that silently no-ops when a sibling is missing): the relocated copy of the
+#   CURRENT (fixed) source can then score identically to a genuinely-broken
+#   historical source, turning a location artifact into a false `survived`
+#   verdict — "your guard is weaker than you think" is exactly the wrong
+#   conclusion to draw, and the natural next move is to weaken a guard that
+#   was correct all along. --calibration does NOT protect you from this: it is
+#   documented as validating the instrument/token's PRESENCE in the frozen
+#   bytes, not that the subject BEHAVES once relocated, so the textbook
+#   `grep -q <literal> {}` calibration this header itself models passes
+#   happily on a snapshot whose runtime behaviour is entirely dead.
+#
+#   --subject-must-behave <command containing {}>
+#       Optional smoke assertion, historical mode only. Runs the command once
+#       with {} = the literal in-tree --file path, and once with {} = a
+#       relocated copy of the frozen CURRENT snapshot; if the two exit codes
+#       differ, refuses (harness-error) before running calibration or scoring
+#       the historical source, naming the mismatch as evidence of relocation-
+#       dependence rather than a real fixed-vs-broken distinction. Pass a
+#       command that actually exercises the subject's behaviour (e.g. invoke
+#       the hook against a known input and check its verdict) — not a bytes-
+#       level `grep`, which cannot observe this class of failure by design.
+#       Omitting this flag costs nothing (zero extra guard invocations, and it
+#       is disabled by default so it can never change an existing caller's
+#       verdict) — but for a subject you know or suspect resolves sibling
+#       paths, pass it; it is the built-in version of the self-checking
+#       oracle this incident's reporter had to hand-roll to avoid the false
+#       verdict above.
 #
 # ⛔ DESTRUCTIVE SUBJECTS (EI-20566003853444873 — the 2026-08-15 incident)
 #   This script's original blast-radius model protected THE FILE UNDER TEST and
@@ -197,6 +235,7 @@ AGAINST_LAST_WITHOUT=""
 MUST_BE_ABSENT=""
 CALIBRATION_CMD=""
 POSITIVE_CONTROLS=()
+SUBJECT_MUST_BEHAVE=""
 HISTORICAL_MODE=0
 DELETES_ACK=0
 FAKE_DESTRUCTIVE=0
@@ -225,6 +264,7 @@ while [ $# -gt 0 ]; do
     --must-be-absent)     MUST_BE_ABSENT="${2:-}"; shift 2 || die "--must-be-absent needs a value" ;;
     --positive-control)   POSITIVE_CONTROLS+=("${2:-}"); shift 2 || die "--positive-control needs a value" ;;
     --calibration)        CALIBRATION_CMD="${2:-}"; shift 2 || die "--calibration needs a value" ;;
+    --subject-must-behave) SUBJECT_MUST_BEHAVE="${2:-}"; shift 2 || die "--subject-must-behave needs a value" ;;
     --fake-destructive)    FAKE_DESTRUCTIVE=1; shift ;;
     --i-know-this-deletes) DELETES_ACK=1;      shift ;;
     --sandbox-root) SANDBOX_ROOT="${2:-}"; shift 2 || die "--sandbox-root needs a value" ;;
@@ -272,6 +312,12 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     *"{}"*) ;;
     *) die "--calibration must contain {} (the frozen current/historical snapshot path)" ;;
   esac
+  if [ -n "$SUBJECT_MUST_BEHAVE" ]; then
+    case "$SUBJECT_MUST_BEHAVE" in
+      *"{}"*) ;;
+      *) die "--subject-must-behave must contain {} (the in-tree/relocated path is substituted there)" ;;
+    esac
+  fi
   if [ -n "$AGAINST_COMMIT" ]; then
     [ -n "$MUST_BE_ABSENT" ] || die "--against-commit requires --must-be-absent <literal> so the selected commit is proven to be the before-fix side"
   else
@@ -281,6 +327,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
 else
   [ -n "$MUTATE" ] || die "missing --mutate"
   [ -z "$AGAINST_COMMIT" ] && [ -z "$AGAINST_LAST_WITHOUT" ] || die "historical selector requires --calibration and --positive-control; use historical mode deliberately"
+  [ -z "$SUBJECT_MUST_BEHAVE" ] || die "--subject-must-behave only applies to historical mode (needs --against-commit or --against-last-without); copy-out (mutation) mode already runs an equivalent relocation check automatically (the copy-baseline phase, EI-21884666893062196)."
 fi
 # The `{}` requirement is MODE-SPECIFIC, and the asymmetry is deliberate — do not "tidy" it
 # back into an unconditional check (EI-19455888914364007).
@@ -694,6 +741,61 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   CALIBRATION_CURRENT_LOG="$SCRATCH/calibration-current.log"
   CALIBRATION_HISTORICAL_LOG="$SCRATCH/calibration-historical.log"
   HISTORICAL_GUARD_LOG="$SCRATCH/historical-guard.log"
+
+  # --- subject-must-behave: prove RELOCATION alone does not change behaviour -
+  # (EI-21902332137059032, 2026-08-30 -- the location-dependent-subject class
+  # documented in this script's own header.) Opt-in and skipped entirely when
+  # the caller does not pass --subject-must-behave, so this can never change
+  # an existing caller's verdict. When passed, run the smoke command once
+  # in-tree (against the literal --file path) and once relocated (against a
+  # fresh copy of the frozen CURRENT snapshot, the same relocation every later
+  # phase uses); a mismatched exit code means relocation itself -- not the
+  # fixed-vs-broken content historical mode is trying to distinguish -- is
+  # what changed the subject's behaviour, so refuse before spending the rest
+  # of the run on a verdict that would not be trustworthy.
+  if [ -n "$SUBJECT_MUST_BEHAVE" ]; then
+    SMB_IN_TREE_CMD="${SUBJECT_MUST_BEHAVE//\{\}/$FILE}"
+    SMB_IN_TREE_LOG="$SCRATCH/subject-must-behave-in-tree.log"
+    SMB_IN_TREE_RC=0
+    if run_guard subject-must-behave-in-tree "subject-must-behave (in-tree)" "$SMB_IN_TREE_CMD" "$SMB_IN_TREE_LOG"; then
+      :
+    else
+      SMB_IN_TREE_RC=$?
+    fi
+
+    SMB_RELOCATED_LOG="$SCRATCH/subject-must-behave-relocated.log"
+    SMB_RELOCATED_RC=0
+    if run_snapshot_command subject-must-behave-relocated "subject-must-behave (relocated)" "$CURRENT_SNAPSHOT" "$SUBJECT_MUST_BEHAVE" "$SMB_RELOCATED_LOG"; then
+      :
+    else
+      SMB_RELOCATED_RC=$?
+    fi
+
+    if [ "$SMB_IN_TREE_RC" != "$SMB_RELOCATED_RC" ]; then
+      log "SUBJECT-MUST-BEHAVE MISMATCH: in-tree exit=$SMB_IN_TREE_RC, relocated exit=$SMB_RELOCATED_RC"
+      printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=-1 historical_exit=-1 calibration_current=-1 calibration_historical=-1 against_commit=%s subject_must_behave=mismatch in_tree_exit=%d relocated_exit=%d\n' \
+        "$EXPECT" "$TARGET_MODE" "$HISTORICAL_SHA" "$SMB_IN_TREE_RC" "$SMB_RELOCATED_RC"
+      die "the --subject-must-behave command behaves DIFFERENTLY against the exact same bytes depending on WHERE they sit -- in-tree exit=$SMB_IN_TREE_RC, relocated-to-scratch exit=$SMB_RELOCATED_RC.
+
+      This is almost always a subject that resolves something relative to its
+      OWN location (a \$0-relative sibling file, a sibling config/lib
+      directory) rather than to the fixed-vs-broken CONTENT historical mode is
+      trying to distinguish. Historical mode relocates every snapshot to a
+      scratch directory before running --test, so a location-dependent subject
+      is silently a DIFFERENT PROGRAM at that path -- most dangerously when it
+      fails OPEN (no crash, just stops enforcing) instead of crashing outright,
+      because that shape can make the current AND historical snapshots score
+      identically and report a false 'survived' verdict that says nothing
+      about the subject's actual fixed-vs-broken content (EI-21902332137059032).
+
+      FIX: make the subject's location-relative resolution portable (copy or
+      symlink its sibling directory alongside the frozen snapshot, or resolve
+      siblings via an overridable env var or --file's own directory rather
+      than \$0), then re-run. There is no --in-tree escape hatch for historical
+      mode -- it is always copy-out (see --file's own header)."
+    fi
+    log "subject-must-behave: relocation-consistent (in-tree exit=$SMB_IN_TREE_RC, relocated exit=$SMB_RELOCATED_RC)"
+  fi
 
   CURRENT_RC=0
   if run_snapshot_command baseline "current snapshot guard" "$CURRENT_SNAPSHOT" "$TEST_CMD" "$CURRENT_GUARD_LOG"; then

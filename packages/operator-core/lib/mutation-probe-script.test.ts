@@ -483,6 +483,99 @@ describe('mutation-probe.sh — historical source mode', () => {
     expect(out).toMatch(/requires at least one --positive-control/i);
     expect(readFileSync(history.file, 'utf8')).toContain('NEW_GUARD');
   });
+
+  /**
+   * EI-21902332137059032 — historical mode never ran --test against the
+   * literal in-tree --file path, so it had no way to notice that RELOCATING a
+   * snapshot (which every phase does) can itself change a subject's
+   * behaviour, independent of the fixed-vs-broken content being compared.
+   * --subject-must-behave is the opt-in fix: run a smoke command once
+   * in-tree, once relocated, and refuse if they disagree. This fixture models
+   * a subject that resolves a SIBLING file relative to its own directory (the
+   * $0-relative-resolution class named in the bug report) — present next to
+   * the real in-tree file, absent next to any relocated copy under scratch.
+   */
+  it('--subject-must-behave catches a subject whose behaviour depends on a sibling relative to its own path', () => {
+    const history = makeHistoricalRepo();
+    writeFileSync(join(history.repo, 'sibling-marker'), 'present');
+    const subjectMustBehave = 'd=$(dirname "{}"); [ -f "$d/sibling-marker" ] && exit 1 || exit 0';
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-last-without',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      'grep -q "^stable-control$" {}',
+      '--subject-must-behave',
+      subjectMustBehave,
+      '--test',
+      'grep -q "^NEW_GUARD$" {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/SUBJECT-MUST-BEHAVE MISMATCH/);
+    expect(out).toMatch(/subject_must_behave=mismatch/);
+    expect(out).toMatch(/verdict=harness-error/);
+    // Never reaches (and never falsely reports) a historical-source verdict.
+    expect(out).not.toMatch(/HISTORICAL SOURCE/);
+  });
+
+  it('--subject-must-behave is a no-op (zero behaviour change) when relocation does not change the subject', () => {
+    const history = makeHistoricalRepo();
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-last-without',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      'grep -q "^stable-control$" {}',
+      '--subject-must-behave',
+      'grep -q "^stable-control$" {}',
+      '--test',
+      'grep -q "^NEW_GUARD$" {}',
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/subject-must-behave: relocation-consistent/);
+    expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+  });
+
+  it('rejects --subject-must-behave outside historical mode', () => {
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      'grep -q "^beta$" {}',
+      '--subject-must-behave',
+      'true {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/--subject-must-behave only applies to historical mode/);
+  });
+
+  it('rejects --subject-must-behave without a {} placeholder', () => {
+    const history = makeHistoricalRepo();
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-last-without',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      'grep -q "^stable-control$" {}',
+      '--subject-must-behave',
+      'true',
+      '--test',
+      'grep -q "^NEW_GUARD$" {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/--subject-must-behave must contain \{\}/);
+  });
 });
 
 /**
