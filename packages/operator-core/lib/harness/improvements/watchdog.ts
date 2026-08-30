@@ -2145,11 +2145,33 @@ export async function collectSchemaAheadSignals(
  * no migration. Every query plan tuned against them here is tuned against
  * something that is not shipped.
  *
- * Fires on `liveOnly` and `definitionMismatch` only. `referenceOnly` (an index
- * the migrations produce that is missing live) is deliberately NOT fired: that is
- * `collectMigrationDriftSignals`' question, it answers it more precisely, and a
- * second collector on the same condition would just double the claim capacity a
- * single unapplied migration consumes.
+ * `referenceOnly` — an index the migrations produce that is MISSING live — is
+ * reported too, but only when NO migration is pending. That condition is what
+ * separates the two readings of the same evidence:
+ *
+ *   - migrations pending  -> the index is missing because its migration has not
+ *     run yet. `collectMigrationDriftSignals` already says so, more precisely,
+ *     and firing here as well would just double the claim capacity one unapplied
+ *     migration consumes (the WI-6037 complaint). Suppressed.
+ *   - nothing pending     -> every migration ran, and the index is still absent.
+ *     No ledger-based check can see this: the migration is recorded as applied,
+ *     so `migration-drift` is silent and `schema-ahead-of-code` is silent. Real,
+ *     and reportable only here.
+ *
+ * The second case is not hypothetical — it is what commissioned this gate.
+ * Measured on the dev database 2026-08-29: `code_recipes_runcount_idx`,
+ * `decision_ledger_ws_posture_idx` and `test_runs_branch_idx` are absent while
+ * all four creating migrations applied months ago, no `DROP INDEX` for them
+ * exists anywhere in the corpus, and every column they reference still exists.
+ * (At least one has a plausible mechanism: migration 378 creates
+ * `code_recipes_runcount_idx` inside a conditional `IF EXISTS(...) THEN` branch,
+ * which a fresh install takes and an upgraded database may not — so a fresh
+ * install and an upgrade legitimately end up with different schemas.)
+ *
+ * The pending-migration probe FAILS CLOSED: if it cannot be read, `referenceOnly`
+ * is suppressed. A missed finding is recoverable on the next tick; a finding that
+ * fires on every normal staging-ahead-of-release window is how a source gets
+ * discounted.
  *
  * Severity `major`, not `critical`. Nothing is broken right now — the live schema
  * is a superset — so this is a fidelity finding, and paging it as an outage would
@@ -2167,6 +2189,8 @@ export async function collectSchemaAheadSignals(
  */
 export async function collectSchemaObjectDriftSignals(
   check: () => Promise<SchemaObjectDriftResult> = checkSchemaObjectDrift,
+  /** Pending-migration probe — see the `referenceOnly` note above. Injectable for tests. */
+  migrationCheck: () => Promise<{ missing: string[] }> = checkMigrationDrift,
 ): Promise<WatchdogSignal[]> {
   let result: SchemaObjectDriftResult;
   try { result = await check(); } catch { return []; }
@@ -2192,8 +2216,18 @@ export async function collectSchemaObjectDriftSignals(
     return [];
   }
 
+  // Fails closed: an unreadable probe suppresses referenceOnly rather than
+  // guessing that nothing is pending.
+  let migrationsPending = true;
+  try { migrationsPending = ((await migrationCheck()).missing ?? []).length > 0; } catch { /* stays true */ }
+
   const { liveOnly, definitionMismatch } = result.drift;
-  if (liveOnly.length === 0 && definitionMismatch.length === 0) return [];
+  const referenceOnly = migrationsPending ? [] : result.drift.referenceOnly;
+  if (liveOnly.length === 0 && definitionMismatch.length === 0 && referenceOnly.length === 0) return [];
+
+  // What the finding RENDERS, with referenceOnly already gated — so the body can
+  // never name something the gate above decided not to report.
+  const reportable = { ...result.drift, referenceOnly };
 
   const stamp = result.manifestGeneratedAt
     ? `\n\nReference manifest generated: ${result.manifestGeneratedAt}. If these objects were added by a migration NEWER than that, the manifest is stale — regenerate it (PAPERCUSP_UPDATE_INDEX_MANIFEST=1 npm run test:file -- apps/operator/test/schema-object-drift.integration.test.ts) before treating them as drift.`
@@ -2206,12 +2240,15 @@ export async function collectSchemaObjectDriftSignals(
     body:
       `Watchdog signal (schema-object-drift): the live database's index set does not match the one the ` +
       `migrations build, so this database is NOT what a fresh install gets. Query plans validated here are ` +
-      `validated against indexes users may not have.\n\n${describeSchemaObjectDrift(result.drift)}\n\n` +
+      `validated against indexes users may not have.\n\n${describeSchemaObjectDrift(reportable)}\n\n` +
       `Compared ${result.drift.liveIndexCount} live indexes against ${result.drift.referenceIndexCount} ` +
       `migration-derived ones across: ${result.drift.schemasCompared.join(', ')}. Not compared (no migration ` +
       `builds them): ${result.drift.schemasNotCompared.join(', ') || 'none'}.${stamp}\n\n` +
-      `Remedy: either add a migration that creates the object (so every install gets it) or drop it here (so ` +
-      `this database matches what ships). Leaving it is the one option that keeps the two permanently different.`,
+      `Remedy for an object that exists only HERE: add a migration that creates it (so every install gets it) ` +
+      `or drop it (so this database matches what ships). For one that exists only in the MIGRATIONS: find out ` +
+      `why applying them did not produce it here — a conditional DDL branch that a fresh install takes and an ` +
+      `upgrade does not is the usual mechanism. Leaving either is the one option that keeps a shipped install ` +
+      `and this database permanently different.`,
     severity: 'major',
     kind: 'bug',
     paths: ['libs/papercusp/libs/db/sql'],

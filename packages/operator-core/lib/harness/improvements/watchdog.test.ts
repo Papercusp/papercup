@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs'; // EI-20847917368795366: source-pinned WIRING guard
 import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
 import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources'; // WI-40769
+import { INFRA_SIGNAL_SOURCES } from './policy'; // WI-918476
 import {
   planWatchdogCaptures,
   collectServiceDownSignals,
@@ -15,6 +16,7 @@ import {
   isEphemeralSignal,
   rollupWatchdogTicks,
   collectMigrationDriftSignals,
+  collectSchemaObjectDriftSignals,
   collectSchemaAheadSignals,
   routineFailureSignalsFromRows,
   loopStalledSignalsFromRows,
@@ -3619,5 +3621,107 @@ describe('bridge-needs-owner-unalerted (WI-38327 recurrence guard)', () => {
   it('is ephemeral-benchmark filtered like every other per-harness source (test debris is not an improvement)', () => {
     const [signal] = bridgeNeedsOwnerSignalsFromRows([gated({ harness_slug: 'xbench-throwaway', owner_alerted: false })]);
     expect(isEphemeralBenchmarkSignal(signal)).toBe(true);
+  });
+});
+
+describe('collectSchemaObjectDriftSignals (WI-918476)', () => {
+  const entry = (name: string, table = 't') => ({
+    schema: 'harness_shared',
+    name,
+    table,
+    definition: `CREATE INDEX ${name} ON harness_shared.${table} USING btree (c)`,
+    constraintBacked: false,
+  });
+  const clean = {
+    liveOnly: [],
+    referenceOnly: [],
+    definitionMismatch: [],
+    schemasCompared: ['harness_shared'],
+    schemasNotCompared: ['dbos'],
+    liveIndexCount: 100,
+    referenceIndexCount: 100,
+  };
+  const result = (drift: Partial<typeof clean>) => async () => ({
+    drift: { ...clean, ...drift },
+    unavailableReason: null,
+    manifestGeneratedAt: '2026-08-29T00:00:00.000Z',
+  });
+  const noPending = async () => ({ missing: [] as string[] });
+
+  it('says nothing when the live schema matches the migrations', async () => {
+    expect(await collectSchemaObjectDriftSignals(result({}), noPending)).toEqual([]);
+  });
+
+  it('fires on an index that exists live but in no migration, and NAMES it', async () => {
+    const [signal] = await collectSchemaObjectDriftSignals(
+      result({ liveOnly: [entry('plugin_configs_plugin_idx', 'plugin_configs')] }),
+      noPending,
+    );
+    expect(signal.source).toBe('schema-object-drift');
+    expect(signal.severity).toBe('major'); // fidelity finding, not an outage
+    expect(signal.body).toContain('plugin_configs_plugin_idx');
+  });
+
+  describe('referenceOnly is gated on whether any migration is still pending', () => {
+    const missingIndex = result({ referenceOnly: [entry('test_runs_branch_idx', 'test_runs')] });
+
+    it('FIRES when every migration has been applied — no ledger check can see this case', async () => {
+      // The migration is recorded as applied and the index is still absent, so
+      // migration-drift and schema-ahead-of-code are both silent by construction.
+      const [signal] = await collectSchemaObjectDriftSignals(missingIndex, noPending);
+      expect(signal?.body).toContain('test_runs_branch_idx');
+    });
+
+    it('STAYS QUIET while a migration is pending — that is migration-drift\'s finding, not this one', async () => {
+      // The normal staging-ahead-of-release window. Firing here too is the
+      // WI-6037 complaint: one unapplied migration consuming double claim capacity.
+      expect(
+        await collectSchemaObjectDriftSignals(missingIndex, async () => ({ missing: ['900-x.sql'] })),
+      ).toEqual([]);
+    });
+
+    it('FAILS CLOSED when the pending-migration probe throws', async () => {
+      // A missed finding recurs on the next tick; a source that fires on every
+      // deploy window gets discounted, and then it protects nothing.
+      expect(
+        await collectSchemaObjectDriftSignals(missingIndex, async () => { throw new Error('pg down'); }),
+      ).toEqual([]);
+    });
+
+    it('does not suppress liveOnly just because a migration is pending', async () => {
+      // The gate is scoped to referenceOnly ONLY. An index that exists live and in
+      // no migration is unaffected by anything the ledger is doing.
+      const [signal] = await collectSchemaObjectDriftSignals(
+        result({ liveOnly: [entry('hand_made_idx')], referenceOnly: [entry('test_runs_branch_idx')] }),
+        async () => ({ missing: ['900-x.sql'] }),
+      );
+      expect(signal.body).toContain('hand_made_idx');
+      expect(signal.body).not.toContain('test_runs_branch_idx');
+    });
+  });
+
+  it('reports an UNGENERATED manifest as a finding rather than as a clean result', async () => {
+    const [signal] = await collectSchemaObjectDriftSignals(
+      async () => ({ drift: null, unavailableReason: 'the migration-derived index manifest is empty', manifestGeneratedAt: null }),
+      noPending,
+    );
+    expect(signal.key).toBe('schema-object-drift-unavailable');
+  });
+
+  it('stays quiet when the LIVE census fails — unreachable is service-health\'s question', async () => {
+    expect(
+      await collectSchemaObjectDriftSignals(
+        async () => ({ drift: null, unavailableReason: 'live index census failed: connection refused', manifestGeneratedAt: null }),
+        noPending,
+      ),
+    ).toEqual([]);
+  });
+
+  it('is classed INFRA, so no auto-implement worker decides to DROP INDEX on the shared database', () => {
+    expect(INFRA_SIGNAL_SOURCES).toContain('schema-object-drift');
+  });
+
+  it('is NOT auto-close eligible — it degrades quiet, so silence can mean "could not look"', () => {
+    expect(AUTO_CLOSE_ELIGIBLE_SOURCES).not.toContain('schema-object-drift');
   });
 });
