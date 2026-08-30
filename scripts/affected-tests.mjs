@@ -4098,6 +4098,24 @@ let quarantinedFailed = 0;
 // must keep the run non-green. Keep this count separate so gate triage does not invent a code
 // failure from process-start starvation while the result marker still exposes the uncertainty.
 let undeterminedTasks = 0;
+// A guard REGISTERED `notCheckedIsNonGating: true` has declared UP FRONT that "I could not
+// look" is its EXPECTED answer here. `lint:required-field-strands:typecheck` says so in its
+// own registration: its subject is the WORKING DIFF, "so a gate checkout — clean by
+// construction — makes it examine zero files and exit EXIT_NOT_CHECKED on every candidate.
+// Non-gating is therefore mandatory, not defensive."
+//
+// Folding that answer into `undeterminedTasks` made the flag a promise this consumer never
+// kept: classifyTaskExit correctly separated 'not-checked' from 'undetermined', and then both
+// branches incremented the same gating counter. Every candidate scheduling such a guard was
+// red-pinned by a guard that had explicitly declared it had no opinion — measured on candidate
+// 57483d0491 (2026-08-30), where the gate's own log read "NOT CHECKED (exit 2) — verdict is
+// UNDETERMINED; not retrying and keeping the affected-tests run non-green."
+//
+// Counted and reported LOUDLY below — missing coverage must stay visible, which was the real
+// concern behind the old behaviour — but NOT gating, exactly as `quarantinedFailed` is. A guard
+// WITHOUT the flag still classifies as a plain failure and lands in `failed`, so this can never
+// turn an unregistered guard's silence into a green.
+let notCheckedNonGating = 0;
 // EI-19332556961886184: a non-quarantined failure whose own output ALSO shows a vitest
 // hard-timeout signature ("Test/Hook timed out in Nms.") — tracked separately from
 // `failed` so a triager can see "N failed, M of which show a timeout signature" instead
@@ -4121,6 +4139,7 @@ readTerminalCounters = () => ({
 // interleaved output. Track names as we go and name them in the final summary.
 const failedTaskNames = [];
 const undeterminedTaskNames = [];
+const notCheckedTaskNames = [];
 // EI-19395701908500754: the per-FILE break set, accumulated as we go. `failedTaskNames`
 // above names WORKSPACES; nothing named FILES, so triagers mined the gate's prose for
 // them and got fixture paths. A failed task whose files cannot be named goes into
@@ -5225,18 +5244,25 @@ for (const scheduled of initialPool.results) {
     } else if (exitClass === "not-checked") {
       // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported
       // LOUDLY rather than swallowed: the guard really did verify nothing, and a reader who
-      // takes this run as coverage of the strand class would be wrong. It is not a content
-      // failure, but it is still an UNDETERMINED verdict that must keep the run non-green;
-      // otherwise `failed=0` would falsely present missing coverage as a pass.
-      undeterminedTasks++;
+      // takes this run as coverage of the strand class would be wrong.
+      //
+      // But it does NOT gate. Reaching this branch at all means the task was registered
+      // `notCheckedIsNonGating: true` — classifyTaskExit returns 'not-checked' only for such a
+      // task — i.e. its registration declared in advance that this exact answer is expected
+      // here. Gating on it anyway contradicted that declaration and, because these guards read
+      // the WORKING DIFF (empty in a gate's clean checkout), red-pinned EVERY candidate
+      // unconditionally. Keeping the coverage gap visible is handled by the loud line here plus
+      // the AFFECTED_TESTS_NOT_CHECKED marker at the end of the run — not by failing the gate.
+      notCheckedNonGating++;
       const taskName = `${t.ws.name} :: ${t.script}`;
-      undeterminedTaskNames.push(taskName);
+      notCheckedTaskNames.push(taskName);
       errSync(
-        `\n  ⚠ ${taskName} NOT CHECKED (exit ${EXIT_NOT_CHECKED}) — verdict is UNDETERMINED; ` +
-          `not retrying and keeping the affected-tests run non-green.\n` +
+        `\n  ⚠ ${taskName} NOT CHECKED (exit ${EXIT_NOT_CHECKED}) — this guard verified NOTHING; ` +
+          `not retrying, and NOT gating (registered notCheckedIsNonGating).\n` +
           `    This guard infers its subject from the working diff, which is empty in a clean\n` +
           `    checkout, so it has no opinion here. It speaks in a LOCAL run, where the edit\n` +
-          `    that triggers it is still uncommitted.`,
+          `    that triggers it is still uncommitted. Do not read this run as coverage of that\n` +
+          `    class — but it is not evidence of a break either, so it cannot fail the run.`,
       );
     } else if (exitClass === "quarantined") {
       quarantinedFailed++;
@@ -5399,6 +5425,15 @@ try {
 
 if (quarantinedFailed) {
   errSync(`\n${quarantinedFailed} quarantined task(s) failed (not gating).`);
+}
+if (notCheckedNonGating) {
+  // Greppable, and deliberately distinct from AFFECTED_TESTS_UNDETERMINED: this one does NOT
+  // affect the verdict. It names the coverage the run did not obtain so a reader never mistakes
+  // a green run for evidence about these guards' invariants.
+  errSync(
+    `\nAFFECTED_TESTS_NOT_CHECKED tasks=${notCheckedNonGating} (not gating — each declared notCheckedIsNonGating)`,
+  );
+  for (const name of notCheckedTaskNames) errSync(`  - ${name}`);
 }
 // EI-18796017307093897: a caller observed a background `npm run test:affected`
 // job report "completed, exit code 0" while this SAME run's own log said "1
