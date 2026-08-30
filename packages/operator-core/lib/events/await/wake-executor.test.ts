@@ -337,6 +337,105 @@ describe('executeWake — delivery-time fleet claim-release freshness (EI-215553
   });
 });
 
+describe('executeWake — delivery-time fleet member-dead liveness re-check (EI-21901188813309549)', () => {
+  const memberDeadWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'fleet:member-dead:pui-cockpit',
+      payload: { fleetSlug: 'pui-cockpit', agentId: 'su-worker', transition: 'member-dead', from: 'live', to: 'ended' },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  const verdictMap = (sessionState: string | null) =>
+    vi.fn(async () => new Map([['su-worker', { ownerId: 'su-worker', sessionState, wakeable: false, liveTurn: false, confirmLiveness: null, heartbeatFresh: false } as never]]));
+
+  it('still-ended member still delivers the normal wake', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-still-dead' }));
+    const write = vi.fn(() => true);
+    const resolveMemberLiveness = verdictMap('ended');
+    const d = deps({ findPty: findPty as never, write: write as never, resolveMemberLiveness: resolveMemberLiveness as never });
+
+    const out = await executeWake(memberDeadWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(resolveMemberLiveness).toHaveBeenCalledWith([{ ownerId: 'su-worker' }], { hydratePerId: true });
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+    expect(d.sendCoordMessage).not.toHaveBeenCalled();
+  });
+
+  it('a member confirmed no longer ended is downgraded to the coord inbox before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-recovered' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const resolveMemberLiveness = verdictMap('live');
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      resolveMemberLiveness: resolveMemberLiveness as never,
+    });
+
+    const out = await executeWake(memberDeadWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain("currently 'live', not 'ended'");
+    expect(opts.body).toContain('fleet:member-dead:pui-cockpit');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('unknown/missing/erroring liveness read fails open and preserves the normal wake', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolvers = [
+      vi.fn(async () => new Map()), // unmatched ownerId
+      vi.fn(async () => new Map([['su-worker', { ownerId: 'su-worker', sessionState: null } as never]])), // unknown state
+      vi.fn(async () => {
+        throw new Error('liveness oracle unavailable');
+      }),
+    ];
+
+    for (const resolveMemberLiveness of resolvers) {
+      const findPty = vi.fn(() => ({ id: 'pty-fail-open' }));
+      const write = vi.fn(() => true);
+      const d = deps({ findPty: findPty as never, write: write as never, resolveMemberLiveness: resolveMemberLiveness as never });
+
+      await expect(executeWake(memberDeadWork(), d)).resolves.toEqual({ kind: 'delivered', channel: 'pty-inject' });
+      expect(findPty).toHaveBeenCalled();
+      expect(write).toHaveBeenCalled();
+      expect(d.sendCoordMessage).not.toHaveBeenCalled();
+    }
+  });
+
+  it('malformed member-dead payload skips the liveness lookup and preserves the normal wake', async () => {
+    const resolveMemberLiveness = verdictMap('live');
+    const findPty = vi.fn(() => ({ id: 'pty-malformed' }));
+    const write = vi.fn(() => true);
+    const d = deps({ findPty: findPty as never, write: write as never, resolveMemberLiveness: resolveMemberLiveness as never });
+
+    const out = await executeWake(memberDeadWork({ payload: { fleetSlug: 'pui-cockpit', transition: 'member-dead' } }), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(resolveMemberLiveness).not.toHaveBeenCalled();
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+  });
+
+  it('a non-member-dead event key is unaffected by the liveness check', async () => {
+    const resolveMemberLiveness = verdictMap('live');
+    const findPty = vi.fn(() => ({ id: 'pty-unrelated' }));
+    const write = vi.fn(() => true);
+    const d = deps({ findPty: findPty as never, write: write as never, resolveMemberLiveness: resolveMemberLiveness as never });
+
+    const out = await executeWake(work({ eventKey: 'lock:grant:t-1', wakeHandle: advHandle() }), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(resolveMemberLiveness).not.toHaveBeenCalled();
+  });
+});
+
 describe('executeWake — delivery-time canonical claimable freshness (EI-21584263523911583)', () => {
   const claimableWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
     work({
