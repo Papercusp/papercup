@@ -1096,6 +1096,32 @@ const RESOLVER_INFLIGHT_MS = RESOLVER_INVOKE_TIMEOUT_MS + RESOLVER_INFLIGHT_MARG
  */
 const PROCESS_INSTANCE_ID = `${process.pid}.${Date.now().toString(36)}`;
 
+/**
+ * Identity of the process/build that wrote a git-sync outcome. The
+ * runtime-vintage row is the boot-time receipt; this marker is the routine's
+ * own write-time receipt, so readers can distinguish a stale process that
+ * kept ticking from a current one without inferring identity from the
+ * checkout's present HEAD.
+ */
+interface GitSyncLoadedBuildIdentity {
+  pid: number;
+  instance: string;
+  sha: string | null;
+  version: string;
+  recorded_at: number;
+}
+
+function loadedBuildIdentity(recordedAt: number): GitSyncLoadedBuildIdentity {
+  const build = getBuildInfo();
+  return {
+    pid: process.pid,
+    instance: PROCESS_INSTANCE_ID,
+    sha: build.sha,
+    version: build.version,
+    recorded_at: recordedAt,
+  };
+}
+
 /** The shape of the `metadata->'last_resolver'` marker the dedup reads. */
 export interface ResolverMarker {
   status?: string;
@@ -1719,11 +1745,16 @@ async function recordOutcome(
   const errors = 'errors' in outcome ? outcome.errors : [];
   const errorMessage = errors.map((e) => `${e.scope}: ${e.message}`).join('; ');
   const skippedPaths = outcome.skippedPaths ?? [];
-  const skippedLocked = outcome.status === 'skipped-locked';
   const localSyncRecordedAt = Date.now();
   await patchRoutineMetadata(slug, workspaceId, {
     last_status: outcome.status,
     last_synced_at: localSyncRecordedAt,
+    // EI-21647996938145436: this is a write-time receipt from the process that
+    // actually ran the routine, not a re-derived checkout HEAD. The boot-time
+    // runtime-vintage row answers the same question at host start; keeping this
+    // marker on every outcome also covers long-lived ticks and stale-bundle
+    // diagnosis when the boot report was missing or identity-less.
+    loaded_build_identity: loadedBuildIdentity(localSyncRecordedAt),
     // EI-20315742298217655: the github-bridge leg runs after this write and may
     // promote an owner-actionable egress failure into the top-level last_status /
     // last_error fields. Keep the local commit stage explicit so readers can still
