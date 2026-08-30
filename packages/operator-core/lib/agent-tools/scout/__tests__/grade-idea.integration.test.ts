@@ -145,3 +145,108 @@ describe('blender:grade-idea by bare work-item id (EI-15389, real PG)', () => {
     expect(out.ideaId).toBeNull();
   });
 });
+
+describe('blender:grade-idea keyed by routedRef (EI-21864158051054483, real PG)', () => {
+  // EI-21864158051054483: an agent-review caller routinely holds only the BARE
+  // work-item id, not the canonical `wi:<id>`/`gym:<id>` change-feed ref this
+  // path's docstring calls "the accepted reference format" — a straight
+  // symmetry gap against the ideaId-side fix already proven above (EI-15389).
+  // Own fixture rows (not the shared beforeAll set) so each test is independent
+  // of grading order/sovereignty from the ideaId-keyed suite above.
+  let db: OrgTestDb;
+  const WS2 = 'ws-grade-idea-ei21864158051054483';
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  async function humanGradeOf(ideaId: string): Promise<{ human_grade: number | null; graded_by: string | null } | undefined> {
+    const rows = await db.adminSql<{ human_grade: number | null; graded_by: string | null }[]>`
+      SELECT human_grade, graded_by FROM harness_shared.scout_routed_ideas WHERE idea_id = ${ideaId}`;
+    return rows[0];
+  }
+
+  it('a bare work-item id passed as routedRef resolves via the wi: prefix fallback', async () => {
+    await recordRoutedIdea({
+      ideaId: 'scout-1784334639774:scout-idea-reframing-9-1',
+      lens: 'reframing',
+      rail: 'improvement',
+      routedRef: 'wi:EI-19991080208681012',
+      harnessSlug: HARNESS,
+      sourceHive: HARNESS,
+      cycleId: 'c9',
+      title: 'agent-review routed work-item idea',
+      workspaceId: WS2,
+    });
+    // Reproduces the exact reported shape: routedRef holds the bare work-item
+    // id (the id an agent-review round is keyed by), not `wi:<id>`.
+    const out = await runGradeIdea({ routedRef: 'EI-19991080208681012', grade: 4 }, { role: 'mug' });
+    expect(out.applied).toBe(true);
+    expect(out.ideaId).toBe('scout-1784334639774:scout-idea-reframing-9-1');
+    const row = await humanGradeOf('scout-1784334639774:scout-idea-reframing-9-1');
+    expect(Number(row!.human_grade)).toBe(4);
+  });
+
+  it('a bare gym id passed as routedRef resolves via the gym: prefix fallback', async () => {
+    await recordRoutedIdea({
+      ideaId: 'scout-1784334639774:scout-idea-analogical-9-2',
+      lens: 'analogical',
+      rail: 'gym',
+      routedRef: 'gym:SP-901',
+      harnessSlug: HARNESS,
+      sourceHive: HARNESS,
+      cycleId: 'c9',
+      title: 'agent-review routed gym idea',
+      workspaceId: WS2,
+    });
+    const out = await runGradeIdea({ routedRef: 'SP-901', grade: 3 }, { role: 'mug' });
+    expect(out.applied).toBe(true);
+    expect(out.ideaId).toBe('scout-1784334639774:scout-idea-analogical-9-2');
+  });
+
+  it('a bare id passed as routedRef whose row is keyed DIRECTLY by that id still resolves', async () => {
+    await recordRoutedIdea({
+      ideaId: 'EI-999',
+      lens: 'su-ideate',
+      rail: 'plan',
+      routedRef: 'plan:some-other-plan-2026-07-20',
+      harnessSlug: HARNESS,
+      sourceHive: HARNESS,
+      cycleId: 'c9',
+      title: 'su re-routed idea (direct idea_id)',
+      workspaceId: WS2,
+    });
+    const out = await runGradeIdea({ routedRef: 'EI-999', grade: 5 }, { role: 'mug' });
+    expect(out.applied).toBe(true);
+    expect(out.ideaId).toBe('EI-999');
+  });
+
+  it('a canonical wi: ref passed as routedRef still resolves via the exact match (no regression)', async () => {
+    await recordRoutedIdea({
+      ideaId: 'scout-1784334639774:scout-idea-firstprinciples-9-3',
+      lens: 'first-principles',
+      rail: 'improvement',
+      routedRef: 'wi:EI-777900',
+      harnessSlug: HARNESS,
+      sourceHive: HARNESS,
+      cycleId: 'c9',
+      title: 'canonical-ref regression guard',
+      workspaceId: WS2,
+    });
+    const out = await runGradeIdea({ routedRef: 'wi:EI-777900', grade: 5 }, { role: 'mug' });
+    expect(out.applied).toBe(true);
+    expect(out.ideaId).toBe('scout-1784334639774:scout-idea-firstprinciples-9-3');
+  });
+
+  it('an unresolvable bare routedRef returns a LOUD not-found (never a success-shaped no-op)', async () => {
+    const out = await runGradeIdea({ routedRef: 'EI-nonexistent-999999', grade: 3 }, { role: 'mug' });
+    expect(out.applied).toBe(false);
+    expect(out.reason).toBe('not-found');
+    expect(out.ideaId).toBeNull();
+  });
+});
