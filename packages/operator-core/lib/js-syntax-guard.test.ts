@@ -267,29 +267,42 @@ describe('check-js-syntax CLI', () => {
 });
 
 describe('check-js-syntax — live verdict over the real tree', () => {
-  it('REACHED the tree, and the tree is clean', () => {
-    let out: string;
-    let code = 0;
-    try {
-      // The full-tree scan: enumerates via `git ls-files --recurse-submodules` (which can block
-      // on .git/index.lock while git-sync commits this shared tree) and then spawns `node --check`
-      // per tracked .mjs. Both legs are unbounded without this timeout — see GUARD_TIMEOUT_MS.
-      out = execFileSync(process.execPath, [GUARD], {
-        encoding: 'utf8',
-        cwd: ROOT,
-        timeout: GUARD_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-      });
-    } catch (e) {
-      const r = classifySpawnFailure(e, 'check-js-syntax (full tree)');
-      code = r.code;
-      out = r.out;
-    }
-    // Assert the DENOMINATOR before the verdict. A guard enumerating via git ls-files
-    // returns nothing for a checkout it cannot read, and its ✓ then means "scanned
-    // nothing", which is the failure this whole file exists to make impossible.
-    const scanned = Number(out.match(/all (\d+) tracked \.mjs/)?.[1] ?? 0);
-    expect(scanned).toBeGreaterThan(200);
-    expect(code, out).toBe(0);
-  });
+  it(
+    'REACHED the tree, and the tree is clean',
+    () => {
+      let out: string;
+      let code = 0;
+      try {
+        // The full-tree scan: enumerates via `git ls-files --recurse-submodules` (which can block
+        // on .git/index.lock while git-sync commits this shared tree) and then spawns `node --check`
+        // per tracked .mjs, plus (since the load-check leg landed) an in-process eslint scope
+        // analysis of every one of them too. Both legs are unbounded without this timeout — see
+        // GUARD_TIMEOUT_MS.
+        out = execFileSync(process.execPath, [GUARD], {
+          encoding: 'utf8',
+          cwd: ROOT,
+          timeout: GUARD_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+        });
+      } catch (e) {
+        const r = classifySpawnFailure(e, 'check-js-syntax (full tree)');
+        code = r.code;
+        out = r.out;
+      }
+      // Assert the DENOMINATOR before the verdict. A guard enumerating via git ls-files
+      // returns nothing for a checkout it cannot read, and its ✓ then means "scanned
+      // nothing", which is the failure this whole file exists to make impossible.
+      const scanned = Number(out.match(/all (\d+) tracked \.mjs/)?.[1] ?? 0);
+      expect(scanned).toBeGreaterThan(200);
+      expect(code, out).toBe(0);
+    },
+    // Vitest's own per-test timeout is a SEPARATE ceiling from GUARD_TIMEOUT_MS (which only
+    // bounds the child `execFileSync` call) — the default 5000ms was silently killing this
+    // test the moment the load-check leg made a full-tree run genuinely take longer than
+    // that, well before the 120s GUARD_TIMEOUT_MS the subprocess itself is allowed. Give the
+    // test at least as long as the subprocess is allowed to run, plus headroom for process
+    // spawn/teardown, so a real wedge still fails LOUD via classifySpawnFailure instead of
+    // being pre-empted by an unrelated, tighter vitest default.
+    GUARD_TIMEOUT_MS + 15_000,
+  );
 });
