@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { useLexicon } from '@/lib/useLexicon';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 
@@ -82,18 +83,23 @@ function StatusDot({ status }: { status: DocStatus }) {
   return <span className={`pc-doc-dot ${cls}`} aria-hidden />;
 }
 
-// Stale-while-revalidate cache (perf rule A18 — globalThis-pinned) for the
+// Stale-while-revalidate cache (perf rule A18 — realm-pinned) for the
 // per-(harness, selected-doc) docs payload. The /adv body re-mounts the active
 // panel on every tab switch (D-002); without this, each Docs visit blanked to
 // "Loading docs…" and refetched the no-store endpoint (~3.8s warm switch,
 // app-impersonation-e2e round6 D-002/P-021). A revisit now renders the cached
 // tree instantly and refreshes in the background; `recompute=1` keeps that
 // refresh git-accurate, so freshness is preserved.
-const ADV_DOCS_CACHE_KEY = '__advDocsCache';
+// Pinned through the primitive rather than a hand-rolled globalThis key: the
+// pinning semantics are identical, but a hand-rolled key is INVISIBLE to
+// listModuleDuplications(), so a split of this module would leave two caches
+// serving different tabs while the realm-wide report answered a clean [].
+// Module scope, once — pinModuleState counts every call as an evaluation.
 type AdvDocsCache = Map<string, MergedDocsResponse>;
-const advDocsCache: AdvDocsCache =
-  ((globalThis as Record<string, unknown>)[ADV_DOCS_CACHE_KEY] as AdvDocsCache | undefined) ??
-  ((globalThis as Record<string, unknown>)[ADV_DOCS_CACHE_KEY] = new Map() as AdvDocsCache);
+const advDocsCache = pinModuleState<AdvDocsCache>(
+  '@papercusp/web.adv-docs-cache',
+  () => new Map(),
+);
 
 export default function AdvDocsTab({ slug }: { slug: string }) {
   const t = useLexicon();
