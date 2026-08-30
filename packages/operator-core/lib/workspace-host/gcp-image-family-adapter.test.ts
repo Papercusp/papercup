@@ -76,6 +76,32 @@ const CANDIDATE_NAME = `papercusp-workspace-host-${VERSION.replaceAll('.', '-')}
 const CANDIDATE_ID = `projects/${PROJECT}/global/images/${CANDIDATE_NAME}`;
 const IMAGE_NAME = `papercusp-workspace-host-${VERSION.replaceAll('.', '-')}`;
 const IMAGE_ID = `projects/${PROJECT}/global/images/${IMAGE_NAME}`;
+const IAP_NETWORK = 'papercusp-clean-room-network';
+const IAP_FIREWALL_RULE = {
+  direction: 'INGRESS',
+  disabled: false,
+  sourceRanges: ['35.235.240.0/20'],
+  allowed: [{ IPProtocol: 'tcp', ports: ['22'] }],
+  targetTags: ['papercusp-clean-room'],
+};
+
+function gcloudPreflightResult(
+  command: string,
+  args: readonly string[],
+): GcpImageFamilyCommandResult | undefined {
+  if (command !== 'gcloud' || args[0] !== 'compute') return undefined;
+  if (args[1] === 'networks' && args[2] === 'subnets' && args[3] === 'describe') {
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({ network: `projects/${PROJECT}/global/networks/${IAP_NETWORK}` }),
+      stderr: '',
+    };
+  }
+  if (args[1] === 'firewall-rules' && args[2] === 'list') {
+    return { exitCode: 0, stdout: JSON.stringify([IAP_FIREWALL_RULE]), stderr: '' };
+  }
+  return undefined;
+}
 
 function artifact(templateSha256: string): WorkspaceHostImageArtifact {
   const manifest = buildWorkspaceHostBuildManifest({
@@ -151,10 +177,13 @@ function artifact(templateSha256: string): WorkspaceHostImageArtifact {
   };
 }
 
-function provenance(sourceCandidateImageId?: string): string {
+function provenance(
+  sourceCandidateImageId?: string,
+  buildManifestIdentity = CONTEXT.artifact.buildManifest.manifestIdentity,
+): string {
   return JSON.stringify({
     contractVersion: GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
-    buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+    buildManifestIdentity,
     releaseVersion: VERSION,
     releaseSha256: RELEASE_SHA,
     architecture: 'x86_64',
@@ -287,17 +316,21 @@ describe('GCP image-family production adapter', () => {
       request: { ...CONTEXT.request, releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact } },
     };
     const compute = new ComputeFake();
-    compute.images.set(CANDIDATE_NAME, {
-      name: CANDIDATE_NAME,
-      description: provenance(),
-      architecture: 'X86_64',
-      state: 'ACTIVE',
-    });
     const calls: Array<{ command: string; args: readonly string[]; options?: unknown }> = [];
     const commandRunner = {
       run: vi.fn(
         async (command: string, args: readonly string[], options?: unknown): Promise<GcpImageFamilyCommandResult> => {
           calls.push({ command, args, options });
+          if (args[0] === 'build') {
+            compute.images.set(CANDIDATE_NAME, {
+              name: CANDIDATE_NAME,
+              description: provenance(undefined, candidateArtifact.buildManifest.manifestIdentity),
+              architecture: 'X86_64',
+              state: 'ACTIVE',
+            });
+          }
+          const gcloud = gcloudPreflightResult(command, args);
+          if (gcloud) return gcloud;
           return {
             exitCode: 0,
             stdout:
@@ -354,9 +387,16 @@ describe('GCP image-family production adapter', () => {
     // `auth` sits FIRST on purpose: it proves Application Default Credentials — the credential
     // packer actually authenticates with — can still mint a token, before init/validate/build
     // spend anything. See the ADC recurrence guard below.
-    expect(calls.map((call) => call.args[0])).toEqual(['auth', 'init', 'validate', 'build']);
-    const validateCall = calls[2];
-    const buildCall = calls[3];
+    expect(calls.map((call) => `${call.command}:${call.args[0]}`)).toEqual([
+      'gcloud:compute',
+      'gcloud:compute',
+      'gcloud:auth',
+      'packer:init',
+      'packer:validate',
+      'packer:build',
+    ]);
+    const validateCall = calls[4];
+    const buildCall = calls[5];
     expect(buildCall?.args).not.toContain('--shell');
     // The evaluation is worthless unless it evaluates the SAME variables the build uses: a
     // validate run with different (or no) vars can pass while the build it is guarding fails.
@@ -364,8 +404,12 @@ describe('GCP image-family production adapter', () => {
       (args ?? []).filter((_, index) => args?.[index - 1] === '-var');
     expect(varsOf(validateCall?.args)).toEqual(varsOf(buildCall?.args));
     expect(varsOf(validateCall?.args).length).toBeGreaterThan(0);
+    expect(varsOf(validateCall?.args).find((value) => value.startsWith('builder_network_tags='))).toBe(
+      'builder_network_tags=["papercusp-clean-room"]',
+    );
     const scan = await adapter.scanImage({
       projectId: PROJECT,
+      subnetwork: context.request.cleanRoom.subnetwork,
       imageId: CANDIDATE_ID,
       buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
       releaseSha256: RELEASE_SHA,
@@ -376,6 +420,57 @@ describe('GCP image-family production adapter', () => {
       state: 'ACTIVE',
       architecture: 'x86_64',
     });
+  });
+
+  it('refuses before ADC or Packer when no IAP firewall rule admits the template builder tag', async () => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL));
+    const candidateArtifact = artifact(createHash('sha256').update(template).digest('hex'));
+    const context = {
+      ...CONTEXT,
+      artifact: candidateArtifact,
+      request: { ...CONTEXT.request, releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact } },
+    };
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const commandRunner: GcpImageFamilyCommandRunner = {
+      run: async (command, args = []) => {
+        calls.push({ command: typeof command === 'string' ? command : command.command, args });
+        if (typeof command === 'string' && args[0] === 'compute' && args[1] === 'firewall-rules') {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([{ ...IAP_FIREWALL_RULE, targetTags: ['unrelated-builder-tag'] }]),
+            stderr: '',
+          };
+        }
+        if (typeof command === 'string') {
+          return (
+            gcloudPreflightResult(command, args) ?? {
+              exitCode: args[0] === 'auth' ? 0 : 1,
+              stdout: args[0] === 'auth' ? 'ya29.test-adc-token' : '',
+              stderr: '',
+            }
+          );
+        }
+        return { exitCode: 1, stdout: '', stderr: '' };
+      },
+    };
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(new ComputeFake(), { repositoryRoot: REPO_ROOT, commandRunner }),
+    );
+    await adapter.bindReleaseContext(context);
+
+    await expect(
+      adapter.buildCandidate({
+        projectId: PROJECT,
+        candidateImageName: CANDIDATE_NAME,
+        templatePath: 'infra/images/workspace-host.pkr.hcl',
+        buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+        releaseVersion: VERSION,
+        releaseSha256: RELEASE_SHA,
+        architecture: 'x86_64',
+        requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+      }),
+    ).rejects.toThrow(/GCP IAP firewall preflight found no INGRESS tcp:22 rule/);
+    expect(calls.map((call) => `${call.command}:${call.args[0]}`)).toEqual(['gcloud:compute', 'gcloud:compute']);
   });
 
   /**
@@ -425,11 +520,12 @@ describe('GCP image-family production adapter', () => {
     // Stdout-only failure: the diagnostic MUST reach the thrown error.
     await expect(
       buildCandidate(async (_command, args) =>
-        args[0] === 'auth'
-          ? { exitCode: 0, stdout: 'ya29.test-adc-token', stderr: '' }
-          : args[0] === 'init'
-            ? { exitCode: 0, stdout: '', stderr: '' }
-            : { exitCode: 1, stdout: PACKER_STDOUT_ERROR, stderr: '' },
+        gcloudPreflightResult('gcloud', args) ??
+          (args[0] === 'auth'
+            ? { exitCode: 0, stdout: 'ya29.test-adc-token', stderr: '' }
+            : args[0] === 'init'
+              ? { exitCode: 0, stdout: '', stderr: '' }
+              : { exitCode: 1, stdout: PACKER_STDOUT_ERROR, stderr: '' }),
       ),
     ).rejects.toThrow(/setsubtract/);
 
@@ -437,11 +533,12 @@ describe('GCP image-family production adapter', () => {
     // distinguishable from "the diagnostic was dropped" — the ambiguity that caused the bug.
     await expect(
       buildCandidate(async (_command, args) =>
-        args[0] === 'auth'
-          ? { exitCode: 0, stdout: 'ya29.test-adc-token', stderr: '' }
-          : args[0] === 'init'
-            ? { exitCode: 0, stdout: '', stderr: '' }
-            : { exitCode: 1, stdout: '', stderr: '' },
+        gcloudPreflightResult('gcloud', args) ??
+          (args[0] === 'auth'
+            ? { exitCode: 0, stdout: 'ya29.test-adc-token', stderr: '' }
+            : args[0] === 'init'
+              ? { exitCode: 0, stdout: '', stderr: '' }
+              : { exitCode: 1, stdout: '', stderr: '' }),
       ),
     ).rejects.toThrow(/produced no output on either stream/);
   });
@@ -496,6 +593,8 @@ describe('GCP image-family production adapter', () => {
     await expect(
       build({
         run: async (_command, args) => {
+          const gcloud = gcloudPreflightResult('gcloud', args ?? []);
+          if (gcloud) return gcloud;
           const step = args?.[0];
           attempted.push(String(step));
           return step === 'auth'
@@ -509,7 +608,10 @@ describe('GCP image-family production adapter', () => {
     // 2. A credential that EXITS ZERO but mints nothing is still dead. gcloud can succeed while
     //    printing no token, and an exit-code-only check reads that as healthy.
     await expect(
-      build({ run: async () => ({ exitCode: 0, stdout: '   ', stderr: '' }) }),
+      build({
+        run: async (_command, args) =>
+          gcloudPreflightResult('gcloud', args ?? []) ?? { exitCode: 0, stdout: '   ', stderr: '' },
+      }),
     ).rejects.toThrow(/Application Default Credentials cannot mint an access token/);
 
     // 3. THE LOAD-BEARING ASSERTION. The probe must run under the same credential-scoped
@@ -537,6 +639,11 @@ describe('GCP image-family production adapter', () => {
       {
         run: async (command, args, options) => {
           seen.push({ args: args ?? [], env: (options?.env ?? {}) as Record<string, string | undefined> });
+          const gcloud = gcloudPreflightResult(
+            typeof command === 'string' ? command : command.command,
+            args ?? (typeof command === 'string' ? [] : command.args),
+          );
+          if (gcloud) return gcloud;
           return { exitCode: 0, stdout: '', stderr: '' };
         },
       },
@@ -789,6 +896,7 @@ describe('GCP image-family production adapter', () => {
       await capture(
         scanAdapter.scanImage({
           projectId: PROJECT,
+          subnetwork: CONTEXT.request.cleanRoom.subnetwork,
           imageId: CANDIDATE_ID,
           buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
           releaseSha256: RELEASE_SHA,
@@ -833,6 +941,7 @@ describe('GCP image-family production adapter', () => {
     await expect(
       adapter.scanImage({
         projectId: PROJECT,
+        subnetwork: CONTEXT.request.cleanRoom.subnetwork,
         imageId: CANDIDATE_ID,
         buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
         releaseSha256: RELEASE_SHA,

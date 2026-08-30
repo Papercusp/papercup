@@ -4,9 +4,9 @@
  * the PlansClient monolith; the panels must derive identically).
  *
  * Covers:
- *  - `useCreateScope` precedence: `?h` filter wins → `?scope=all` (registry
- *    slugs, or undefined while the registry hasn't loaded) → no active slug →
- *    undefined → `?scope=self` → [slug] → expanded → resolveHarnessScope
+ *  - `useCreateScope` precedence: `?h` filter wins → `?scope=all` (undefined,
+ *    selecting the workspace-wide reader) → no active slug → undefined →
+ *    `?scope=self` → [slug] → expanded → resolveHarnessScope
  *    union (slug + transitive sub-harnesses); a failed registry fetch falls
  *    back to [advActiveSlug];
  *  - `useResolvedHarnessSlug`: `?slug` wins; localStorage fallback otherwise;
@@ -55,6 +55,7 @@ const hookFixtures = {
   blocked: { items: [] as unknown[] },
   attention: { groups: [] as unknown[] },
 };
+let planListCalls: Array<Record<string, unknown>>;
 const refreshSpies = {
   needsHuman: vi.fn(),
   actionable: vi.fn(),
@@ -68,12 +69,15 @@ vi.mock('@/app/admin/plans/plans-api', async () => {
   );
   return {
     ...actual,
-    usePlanList: (): HookState => ({
-      data: hookFixtures.planList.data,
-      loading: hookFixtures.planList.loading,
-      error: hookFixtures.planList.error,
-      refresh: vi.fn(),
-    }),
+    usePlanList: (params?: Record<string, unknown>): HookState => {
+      planListCalls.push(params ?? {});
+      return {
+        data: hookFixtures.planList.data,
+        loading: hookFixtures.planList.loading,
+        error: hookFixtures.planList.error,
+        refresh: vi.fn(),
+      };
+    },
     usePlanItems: (params: { needsHuman?: boolean; actionable?: boolean; status?: string }): HookState => {
       if (params?.needsHuman) {
         return { data: hookFixtures.needsHuman, loading: false, error: null, refresh: refreshSpies.needsHuman };
@@ -129,6 +133,7 @@ beforeEach(() => {
   hookFixtures.actionable = { items: [] };
   hookFixtures.blocked = { items: [] };
   hookFixtures.attention = { groups: [] };
+  planListCalls = [];
   for (const s of Object.values(refreshSpies)) s.mockReset();
   lsStore.clear();
   vi.stubGlobal('localStorage', lsStub);
@@ -156,13 +161,14 @@ describe('useCreateScope', () => {
     expect(result.current.harnessFilter).toBe('picked');
   });
 
-  it('scope=all fans out across every registry slug', async () => {
-    stubRegistry([{ slug: 'a' }, { slug: 'b' }]);
+  it('scope=all stays workspace-wide beyond the explicit 64-harness fan-out cap', () => {
+    stubRegistry(Array.from({ length: 65 }, (_, i) => ({ slug: `h${i}` })));
     const { result } = renderHook(() => useCreateScope(), wrap('?slug=active&scope=all'));
-    await waitFor(() => expect(result.current.harnessSlugsForFetch).toEqual(['a', 'b']));
+    expect(result.current.harnessSlugsForFetch).toBeUndefined();
+    expect(result.current.scopeMode).toBe('all');
   });
 
-  it('scope=all is undefined (ctx-harness-only) until the registry resolves', () => {
+  it('scope=all remains workspace-wide while the registry query is unresolved', () => {
     registryRows = undefined; // query unresolved (data === undefined)
     const { result } = renderHook(() => useCreateScope(), wrap('?slug=active&scope=all'));
     expect(result.current.harnessSlugsForFetch).toBeUndefined();
@@ -260,6 +266,19 @@ const SCOPE = (over: Partial<CreateScope> = {}): CreateScope => ({
 });
 
 describe('usePlanListMaps', () => {
+  it('omits harness_slugs for workspace-wide scope and preserves an explicit targeted scope', () => {
+    const workspaceWide = renderHook(() => usePlanListMaps(SCOPE()), wrap(''));
+    expect(planListCalls.at(-1)).toMatchObject({ includeArchived: true, includeLegacy: true });
+    expect(planListCalls.at(-1)).not.toHaveProperty('harness_slugs');
+    workspaceWide.unmount();
+
+    renderHook(
+      () => usePlanListMaps(SCOPE({ harnessSlugsForFetch: ['active', 'child'] })),
+      wrap(''),
+    );
+    expect(planListCalls.at(-1)).toMatchObject({ harness_slugs: ['active', 'child'] });
+  });
+
   it('derives sorted unique harnessOptions and the bucket/title maps via the real bucketOf', () => {
     hookFixtures.planList = {
       data: {

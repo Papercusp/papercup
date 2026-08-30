@@ -34,10 +34,11 @@ export type GatewayRequestOutcome =
   | 'unclassified';
 
 /** The admission layers one HTTP request crosses before provider work starts.
- * `durable` is the resource-governor receipt/admission boundary;
- * `provider` is the live PriorityAdmissionQueue; `account` is reserved for a
- * per-account governor when a lane exposes that boundary explicitly. */
-export const GATEWAY_ADMISSION_LAYERS = ['durable', 'provider', 'account'] as const;
+ * `payloadSpool` is the pre-admission durable body write; `durable` is the
+ * resource-governor receipt/admission boundary; `provider` is the live
+ * PriorityAdmissionQueue; `account` is reserved for a per-account governor
+ * when a lane exposes that boundary explicitly. */
+export const GATEWAY_ADMISSION_LAYERS = ['payloadSpool', 'durable', 'provider', 'account'] as const;
 export type GatewayAdmissionLayer = (typeof GATEWAY_ADMISSION_LAYERS)[number];
 
 /** Structural subset of PriorityAdmissionQueue.snapshot(). Keeping this type

@@ -201,8 +201,12 @@ export function useCreateScope(): CreateScope {
 
   const harnessSlugsForFetch = useMemo<readonly string[] | undefined>(() => {
     if (harnessFilter) return [harnessFilter];
+    // "All harnesses" is the unscoped workspace-wide list, not an explicit
+    // fan-out over the registry. `callPlansRead('list', …)` maps an omitted
+    // harness_slugs field to workspaceWide:true; the explicit field is a
+    // bounded (max 64) targeted-scope primitive.
     if (scopeMode === 'all') {
-      return registryProjects.length ? registryProjects.map((p) => p.slug) : undefined;
+      return undefined;
     }
     if (!advActiveSlug) return undefined;
     if (scopeMode === 'self') return [advActiveSlug];
@@ -250,7 +254,7 @@ export function usePlanListMaps(scope: CreateScope): PlanListMaps {
   const planList = usePlanList({
     includeArchived: true,
     includeLegacy: true,
-    harness_slugs: scope.harnessSlugsForFetch,
+    ...(scope.harnessSlugsForFetch ? { harness_slugs: scope.harnessSlugsForFetch } : {}),
   });
   const plans = useMemo(() => planList.data?.plans ?? [], [planList.data]);
 

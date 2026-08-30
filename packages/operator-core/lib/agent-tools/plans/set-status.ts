@@ -416,6 +416,87 @@ export function completedGuardTrips(opts: {
   return opts.currentStatus === 'done' && opts.nextStatus === 'dropped';
 }
 
+/**
+ * Work-item ids explicitly named by a routed/follow-up clause.
+ *
+ * A plan-item drop is allowed to reconcile its own stale execution record, but
+ * that same record must not also be the destination of an obligation the drop
+ * note says was routed elsewhere. The route is currently prose (D-019 requires
+ * it to be cited in the item note), so keep the detector deliberately narrow:
+ * only WI-/EI- ids in text carrying an unmistakable routing marker qualify.
+ * Bare citations remain ordinary evidence and do not change existing drops.
+ */
+const ROUTED_WORK_ITEM_REF = /\b((?:WI|EI|F)-\d+)\b/gi;
+const ROUTING_MARKER =
+  /\b(?:rout(?:e|ed|ing)|re-?rout(?:e|ed|ing)|follow[-\s]?up|standing home|owning item|unperformed(?:\s+\w+){0,4}\s+to)\b/i;
+
+/** Pure extraction seam for the routed-follow-up drop guard. */
+export function routedWorkItemRefs(text: string | undefined): string[] {
+  if (!text || !ROUTING_MARKER.test(text)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  // Keep the work-item id associated with the same sentence/clause as the
+  // routing marker. A later historical mention of another work-item in the
+  // rationale must not accidentally turn that item into the routed target.
+  const segments = text
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/(?<=[.!?;])\s+/))
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  for (const segment of segments) {
+    if (!ROUTING_MARKER.test(segment)) continue;
+    ROUTED_WORK_ITEM_REF.lastIndex = 0;
+    for (const match of segment.matchAll(ROUTED_WORK_ITEM_REF)) {
+      const id = match[1]?.toUpperCase();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Should an automated drop be refused because its prose routes an obligation
+ * to a still-live work-item that the dropped plan item would reconcile?
+ *
+ * The linked-row read is intentionally performed before the plan lock, like the
+ * existing coverage guard. A terminal target is safe (there is no obligation
+ * left to preserve), and an unlinked target is safe because the plan-item
+ * reconciler cannot reach it. Only the dangerous composition — an explicit route
+ * marker naming a non-terminal row in this plan-item's reconciliation set —
+ * refuses.
+ */
+export function routedFollowUpConflict(
+  text: string | undefined,
+  linked: ReadonlyArray<{
+    id: string;
+    state: string;
+    family?: 'feature' | 'issue';
+    assignee?: string | null;
+    viaImplementsEdge?: boolean;
+  }>,
+): {
+  id: string;
+  state: string;
+} | null {
+  const routed = new Set(routedWorkItemRefs(text));
+  if (routed.size === 0) return null;
+  return (
+    linked.find(
+      (wi) =>
+        routed.has(wi.id.toUpperCase()) &&
+        !TERMINAL_WORK_ITEM_STATES.has(wi.state) &&
+        !wi.assignee &&
+        // The reconciler deliberately preserves issue-family stamp-only rows:
+        // a `plan_item` stamp can mean "discovered while working", not
+        // "implements". Feature-family rows remain stamp-borne by design.
+        (wi.family !== 'issue' || wi.viaImplementsEdge === true),
+    ) ?? null
+  );
+}
+
 /** The minimal claim shape the terminal-flip guard reads (a subset of PlanItemClaim). */
 export interface HolderInfo {
   owner: string;
@@ -868,6 +949,56 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         `[plans:set-status] in-flight coverage guard ${it.slug}#${it.itemId} failed:`,
         (e as Error)?.message ?? e,
       );
+    }
+  }
+
+  // EI-21817168412278643: D-019 permits a dropped operational plan item only
+  // when its unperformed obligation remains owned by a NON-TERMINAL follow-up.
+  // The existing terminal reconciler correctly closes a dropped item's linked
+  // feature work-item as stale residue. If the drop note routes the obligation
+  // to that same linked row, those two correct rules compose into silent loss.
+  // Refuse before the plan lock so the caller must route to an independently
+  // owned/unbound follow-up instead. A normal automated drop reflection does
+  // not trip this: its note says "completed", not "routed/follow-up".
+  if (it.status === 'dropped') {
+    const routeText = [it.note, it.rationale].filter(Boolean).join('\n');
+    if (routedWorkItemRefs(routeText).length > 0) {
+      try {
+        const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
+        const conflict = routedFollowUpConflict(routeText, linked);
+        if (conflict) {
+          return {
+            ok: false,
+            slug: it.slug,
+            itemId: it.itemId,
+            error: 'routed_follow_up_conflict',
+            routedWorkItem: conflict.id,
+            routedWorkItemState: conflict.state,
+            reason:
+              `drop refused — routed follow-up ${conflict.id} is still non-terminal ` +
+              `(${conflict.state}) and is also linked to ${it.slug}#${it.itemId}; ` +
+              'dropping this plan item would reconcile that obligation as stale residue. ' +
+              'Route the obligation to an independently owned/unbound follow-up first.',
+          };
+        }
+      } catch (e) {
+        // This is a safety guard, not a best-effort advisory: when the caller
+        // explicitly says the drop routes an obligation, an unreadable linked
+        // set cannot prove that the target is safe to destroy.
+        console.warn(
+          `[plans:set-status] routed follow-up guard ${it.slug}#${it.itemId} failed:`,
+          (e as Error)?.message ?? e,
+        );
+        return {
+          ok: false,
+          slug: it.slug,
+          itemId: it.itemId,
+          error: 'routed_follow_up_unreadable',
+          reason:
+            `drop refused — could not verify whether the routed follow-up for ${it.slug}#${it.itemId} ` +
+            'is also linked to this plan item; retry after the linked-work-item read succeeds.',
+        };
+      }
     }
   }
 

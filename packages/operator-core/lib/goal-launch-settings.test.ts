@@ -830,7 +830,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     },
   };
 
-  it('assembles ordered plan state, queue/fleet truth, continuity, and actionable priorities', async () => {
+  it('assembles ordered plan state while keeping drain and TEST activity out of plan placement', async () => {
     const seen: string[] = [];
     const brief = await readGoalPortfolioBrief({
       workspaceId: WS,
@@ -852,7 +852,21 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
           counts: { todo: 2, wip: 0, blocked: 0, needsHuman: 0, done: 1 },
           placement: {
             state: 'unplaced',
-            reconciliation: { consistent: false, action: 'acquire-plan-lane' },
+            reconciliation: {
+              consistent: false,
+              action: 'launch-plan-fleet',
+              toolCall: {
+                tool: 'fleet:launch-on-plan',
+                args: {
+                  name: 'papercusp-alpha-plan-fleet',
+                  plan: 'alpha',
+                  harness: 'papercusp',
+                  count: 1,
+                  leader: 'spawn',
+                  headless: true,
+                },
+              },
+            },
           },
         },
       ],
@@ -865,7 +879,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
     expect(brief?.priorities).toEqual([
       'Report 1 owner-walled queue item(s) with exact asks.',
-      'Reconcile plan:papercusp/alpha: Acquire the P-002 plan-item lease before fleet admission.',
+      expect.stringContaining('Reconcile plan:papercusp/alpha: Launch the independently led plan fleet'),
       'Triage 1 blocked/cursed queue item(s) and remove stranded blockers.',
       'Grade or route 2 pending Blender idea(s).',
     ]);
@@ -878,6 +892,11 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
     expect(rendered).toContain('1. plan:papercusp/alpha [active; placement=unplaced] next=P-002');
     expect(rendered).toContain('Queue: total=7; terminal=2; in-flight=2; blocked=1; needs-human=1');
+    expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
+    expect(rendered).toContain(
+      'Call fleet:launch-on-plan exactly once with {"name":"papercusp-alpha-plan-fleet","plan":"alpha","harness":"papercusp","count":1,"leader":"spawn","headless":true}.',
+    );
+    expect(rendered).toContain('Do not claim its plan item from the GOAL session');
     expect(rendered).toContain('CURRENT ACTION PRIORITIES');
 
     const portfolioSql = seen.find((statement) => statement.includes('WITH goal_row AS')) ?? '';
@@ -885,10 +904,18 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(portfolioSql).toContain("cp.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
     expect(portfolioSql).toContain('count(DISTINCT member_presence.owner_id)');
     expect(portfolioSql).toContain("END)->>'plan' = p.plan_slug");
+    expect(portfolioSql).toContain("END)->>'harness' = p.harness_slug");
+    const placementFleetSql = portfolioSql.slice(
+      portfolioSql.indexOf("'fleet', ("),
+      portfolioSql.indexOf('FROM jsonb_array_elements_text', portfolioSql.indexOf("'fleet', (")),
+    );
+    expect(placementFleetSql).toContain('FROM harness_shared.agent_fleets af');
+    expect(placementFleetSql).not.toMatch(/agent_modes|session_briefs|goal_role|drain_fleet/);
   });
 
   it('compiles every placement state and one deterministic repair from existing ledgers', () => {
     const base = {
+      plan: { harness: 'papercusp', slug: 'alpha', ambiguousMatches: 1 },
       status: 'active',
       itemStatuses: ['done', 'todo'],
       actionableItemId: 'P-002',
@@ -917,11 +944,27 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
 
     expect(compileGoalPlanPlacement({ ...base, source: {} })).toMatchObject({
       state: 'unplaced',
-      reconciliation: { action: 'acquire-plan-lane' },
+      reconciliation: {
+        action: 'launch-plan-fleet',
+        toolCall: {
+          tool: 'fleet:launch-on-plan',
+          args: {
+            name: 'papercusp-alpha-plan-fleet',
+            plan: 'alpha',
+            harness: 'papercusp',
+            count: 1,
+            leader: 'spawn',
+            headless: true,
+          },
+        },
+      },
     });
     expect(compileGoalPlanPlacement({ ...base, source: { claims: [lane] } })).toMatchObject({
       state: 'admitting',
-      reconciliation: { action: 'launch-spawned-leader' },
+      reconciliation: {
+        action: 'launch-spawned-leader',
+        toolCall: { tool: 'fleet:launch-on-plan' },
+      },
     });
     expect(
       compileGoalPlanPlacement({
@@ -930,6 +973,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
           claims: [lane],
           fleet: {
             ...fleet,
+            slug: 'legacy-alpha',
             launchTransaction: {
               transactionId: 'tx-partial',
               state: 'partial',
@@ -941,7 +985,23 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     ).toMatchObject({
       state: 'admitting',
       launchTransaction: { retryOwnerIds: ['su-retry'] },
-      reconciliation: { action: 'resume-partial-launch', reason: 'retry only su-retry' },
+      reconciliation: {
+        action: 'resume-partial-launch',
+        reason: 'retry only su-retry',
+        toolCall: { tool: 'fleet:launch-on-plan', args: { name: 'legacy-alpha' } },
+      },
+    });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        source: { claims: [lane], fleet: { ...fleet, slug: 'legacy-alpha', leaderLive: false } },
+      }),
+    ).toMatchObject({
+      state: 'admitting',
+      reconciliation: {
+        action: 'restore-spawned-leader',
+        toolCall: { tool: 'fleet:launch-on-plan', args: { name: 'legacy-alpha' } },
+      },
     });
     expect(
       compileGoalPlanPlacement({
@@ -961,7 +1021,10 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         ...base,
         source: { claims: [{ ...lane, holderLive: false }], fleet },
       }),
-    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'reconcile-plan-lane-holder' } });
+    ).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'reconcile-plan-lane-holder', toolCall: null },
+    });
     expect(
       compileGoalPlanPlacement({
         ...base,
@@ -969,7 +1032,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         actionableItemId: null,
         source: { claims: [lane], fleet },
       }),
-    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-blockers' } });
+    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-blockers', toolCall: null } });
     expect(
       compileGoalPlanPlacement({
         ...base,
@@ -978,12 +1041,16 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         actionableItemId: null,
         source: { claims: [lane], fleet },
       }),
-    ).toMatchObject({ state: 'terminal', reconciliation: { action: 'none', consistent: true } });
+    ).toMatchObject({
+      state: 'terminal',
+      reconciliation: { action: 'none', consistent: true, toolCall: null },
+    });
   });
 
   it('ignores an expired actionable lease instead of compiling a false placement', () => {
     expect(
       compileGoalPlanPlacement({
+        plan: { harness: 'papercusp', slug: 'alpha', ambiguousMatches: 1 },
         status: 'active',
         itemStatuses: ['todo'],
         actionableItemId: 'P-001',
@@ -999,7 +1066,40 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
           ],
         },
       }),
-    ).toMatchObject({ state: 'unplaced', activeLane: null, reconciliation: { action: 'acquire-plan-lane' } });
+    ).toMatchObject({
+      state: 'unplaced',
+      activeLane: null,
+      reconciliation: { action: 'launch-plan-fleet', toolCall: { tool: 'fleet:launch-on-plan' } },
+    });
+  });
+
+  it('blocks launch deterministically when the worklist plan identity is unresolved', () => {
+    const base = {
+      status: 'active',
+      itemStatuses: ['todo'],
+      actionableItemId: 'P-001',
+      now: NOW,
+      source: {},
+    };
+
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        plan: { harness: null, slug: 'alpha', ambiguousMatches: 1 },
+      }),
+    ).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-identity', toolCall: null },
+    });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        plan: { harness: 'papercusp', slug: 'alpha', ambiguousMatches: 2 },
+      }),
+    ).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-identity', toolCall: null },
+    });
   });
 
   it('returns an explicit degraded snapshot instead of dropping a failed canonical read', async () => {

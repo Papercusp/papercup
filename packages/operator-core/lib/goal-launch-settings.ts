@@ -459,12 +459,25 @@ export type GoalPlanPlacementState =
 
 export type GoalPlanPlacementRepairAction =
   | 'none'
-  | 'acquire-plan-lane'
+  | 'launch-plan-fleet'
   | 'launch-spawned-leader'
   | 'resume-partial-launch'
   | 'restore-spawned-leader'
   | 'reconcile-plan-lane-holder'
+  | 'resolve-plan-identity'
   | 'resolve-plan-blockers';
+
+export interface GoalPlanPlacementToolCall {
+  tool: 'fleet:launch-on-plan';
+  args: {
+    name: string;
+    plan: string;
+    harness: string;
+    count: 1;
+    leader: 'spawn';
+    headless: true;
+  };
+}
 
 /**
  * The compiled placement truth for one worklist plan. This is deliberately a
@@ -499,6 +512,7 @@ export interface GoalPlanPlacement {
     consistent: boolean;
     action: GoalPlanPlacementRepairAction;
     reason: string;
+    toolCall: GoalPlanPlacementToolCall | null;
   };
 }
 
@@ -608,6 +622,7 @@ const portfolioJsonObject = (value: unknown): Record<string, unknown> | null => 
 
 /** Pure compiler over the canonical records already assembled by the portfolio read. */
 export function compileGoalPlanPlacement(args: {
+  plan: { harness: string | null; slug: string; ambiguousMatches: number };
   status: string | null;
   itemStatuses: readonly string[];
   actionableItemId: string | null;
@@ -671,6 +686,34 @@ export function compileGoalPlanPlacement(args: {
     normalizedStatus === 'superseded' ||
     (normalizedItems.length > 0 && normalizedItems.every((status) => status === 'done' || status === 'dropped'));
   const blocked = !terminal && args.actionableItemId == null;
+  const planHarness = args.plan.harness?.trim() || null;
+  const planSlug = args.plan.slug.trim();
+  const planIdentityProblem =
+    args.plan.ambiguousMatches > 1
+      ? `The worklist plan ${planSlug} is ambiguous across ${args.plan.ambiguousMatches} harnesses; qualify its plan ref before launch.`
+      : !planHarness
+        ? `The worklist plan ${planSlug} has no resolved harness; repair its plan ref before launch.`
+        : !planSlug
+          ? 'The worklist entry has no resolved plan slug; repair it before launch.'
+          : null;
+  const planFleetToolCall: GoalPlanPlacementToolCall | null =
+    planIdentityProblem || !planHarness
+      ? null
+      : {
+          tool: 'fleet:launch-on-plan',
+          args: {
+            // Initial placement gets one deterministic name. Recovery must use
+            // the correlated fleet row's actual slug: launch-on-plan keys its
+            // durable transaction/idempotency guard by that name-derived slug,
+            // so synthesizing a new name here would fork a second fleet.
+            name: fleet?.slug ?? `${planHarness}-${planSlug}-plan-fleet`,
+            plan: planSlug,
+            harness: planHarness,
+            count: 1,
+            leader: 'spawn',
+            headless: true,
+          },
+        };
 
   let state: GoalPlanPlacementState;
   let action: GoalPlanPlacementRepairAction;
@@ -683,10 +726,17 @@ export function compileGoalPlanPlacement(args: {
     state = 'blocked';
     action = 'resolve-plan-blockers';
     reason = 'The plan has non-terminal work but no dependency-free todo item.';
+  } else if (planIdentityProblem) {
+    state = 'blocked';
+    action = 'resolve-plan-identity';
+    reason = planIdentityProblem;
   } else if (!activeLane) {
     state = 'unplaced';
-    action = 'acquire-plan-lane';
-    reason = `Acquire the ${args.actionableItemId} plan-item lease before fleet admission.`;
+    action = 'launch-plan-fleet';
+    reason =
+      `Launch the independently led plan fleet in one call. fleet:launch-on-plan owns promotion, ` +
+      `plan-lane admission, the scheduler claim spec, and spawned leadership for ${args.actionableItemId}; ` +
+      'the GOAL holder must not claim the plan item itself.';
   } else if (!fleet) {
     state = 'admitting';
     action = 'launch-spawned-leader';
@@ -719,7 +769,18 @@ export function compileGoalPlanPlacement(args: {
     fleet,
     activeLane,
     launchTransaction,
-    reconciliation: { consistent: action === 'none', action, reason },
+    reconciliation: {
+      consistent: action === 'none',
+      action,
+      reason,
+      toolCall:
+        action === 'launch-plan-fleet' ||
+        action === 'launch-spawned-leader' ||
+        action === 'resume-partial-launch' ||
+        action === 'restore-spawned-leader'
+          ? planFleetToolCall
+          : null,
+    },
   };
 }
 
@@ -729,6 +790,8 @@ function parsePortfolioWorklist(raw: unknown, now: Date): GoalPortfolioBrief['wo
     const ref = portfolioString(row?.ref);
     const slug = portfolioString(row?.slug);
     if (!row || !ref || !slug) return [];
+    const harness = portfolioString(row.harness);
+    const ambiguousMatches = portfolioNumber(row.ambiguousMatches);
     const items = portfolioArray(row.items)
       .map(portfolioObject)
       .filter((item): item is Record<string, unknown> => item !== null)
@@ -764,14 +827,15 @@ function parsePortfolioWorklist(raw: unknown, now: Date): GoalPortfolioBrief['wo
       {
         ref,
         ordinal: portfolioNumber(row.ordinal),
-        harness: portfolioString(row.harness),
+        harness,
         slug,
         title: portfolioString(row.title),
         status: portfolioString(row.status),
         next,
         counts,
-        ambiguousMatches: portfolioNumber(row.ambiguousMatches),
+        ambiguousMatches,
         placement: compileGoalPlanPlacement({
+          plan: { harness, slug, ambiguousMatches },
           status: portfolioString(row.status),
           itemStatuses: items.map((item) => portfolioString(item.status) ?? 'todo'),
           actionableItemId: laneRow ? (portfolioString(laneRow.id) ?? 'unknown') : null,
@@ -796,6 +860,8 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
   const priorities = brief.priorities.length
     ? brief.priorities.map((p, i) => `${i + 1}. ${p}`).join('\n')
     : '1. Re-read the goal before any write.';
+  const mandatoryPlacement = brief.worklist.find((plan) => plan.placement.reconciliation.toolCall !== null);
+  const mandatoryToolCall = mandatoryPlacement?.placement.reconciliation.toolCall ?? null;
   return [
     `GOAL PORTFOLIO SNAPSHOT — assembled ${brief.assembledAt} (schema v${brief.schemaVersion})`,
     `Goal: ${brief.goal.status ?? 'unknown'}; worklist: ${plans}`,
@@ -807,6 +873,14 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
     `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
     ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
+    ...(mandatoryPlacement && mandatoryToolCall
+      ? [
+          'MANDATORY NEXT PLAN PLACEMENT',
+          `${mandatoryPlacement.ref} is the highest-priority eligible worklist plan; placement=${mandatoryPlacement.placement.state}; repair=${mandatoryPlacement.placement.reconciliation.action}.`,
+          `Call ${mandatoryToolCall.tool} exactly once with ${JSON.stringify(mandatoryToolCall.args)}.`,
+          'Do not claim its plan item from the GOAL session; the one-call fleet door owns promotion, admission, scheduler custody, and spawned leadership.',
+        ]
+      : []),
     'CURRENT ACTION PRIORITIES',
     priorities,
     'This snapshot is orientation, not write authority: refresh the targeted canonical read immediately before each mutation.',
@@ -1138,7 +1212,9 @@ export async function readGoalPortfolioBrief(args: {
     else if (!fleetRaw || portfolioNumber(fleetRaw.live) === 0)
       priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
     if (queue.needsHuman > 0) priorities.push(`Report ${queue.needsHuman} owner-walled queue item(s) with exact asks.`);
-    const repairPlan = worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
+    const executablePlacement = worklist.find((plan) => plan.placement.reconciliation.toolCall !== null);
+    const repairPlan =
+      executablePlacement ?? worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
     if (repairPlan) priorities.push(`Reconcile ${repairPlan.ref}: ${repairPlan.placement.reconciliation.reason}`);
     if ((claimable ?? 0) > 0)
       priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);

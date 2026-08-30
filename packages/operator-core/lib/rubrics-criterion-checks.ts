@@ -25,7 +25,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -175,8 +175,8 @@ export function validateCriterionCheckPaths(
     if (c.check?.kind === 'cargo') {
       const rawPaths = [c.check.manifestPath, ...c.check.sourceFiles];
       const absoluteIndexes = rawPaths.flatMap((path, index) => (isAbsolute(path) ? [index] : []));
+      checked += rawPaths.length;
       for (const index of absoluteIndexes) {
-        checked++;
         failures.push({
           criterionKey: c.key,
           path: rawPaths[index]!,
@@ -188,7 +188,6 @@ export function validateCriterionCheckPaths(
       if (relativePaths.length === 0) continue;
       const resolution = normalizeTestFilePaths([...relativePaths], root);
       if (!resolution.ok) {
-        checked += relativePaths.length;
         failures.push({
           criterionKey: c.key,
           path: resolution.path,
@@ -203,16 +202,10 @@ export function validateCriterionCheckPaths(
         isAbsolute(path) ? path : normalizedRelative[relativeIndex++]!,
       );
       let valid = absoluteIndexes.length === 0;
-      for (const [index, path] of normalizedPaths.entries()) {
-        checked++;
+      for (const path of normalizedPaths) {
         if (isAbsolute(path)) continue;
         const candidate = resolve(root, path);
-        let isFile = false;
-        try {
-          isFile = isInsideRoot(root, candidate) && statSync(candidate).isFile();
-        } catch {
-          isFile = false;
-        }
+        const isFile = isRegularFileInsideRoot(root, candidate);
         if (!isFile) {
           valid = false;
           failures.push({
@@ -222,9 +215,6 @@ export function validateCriterionCheckPaths(
             checkKind: 'cargo',
           });
         }
-        // The manifest and source paths are deliberately checked as one list so
-        // a later source failure cannot leave a partially persisted binding.
-        void index;
       }
       if (valid) {
         normalizedCargoByKey[c.key] = {
@@ -259,7 +249,8 @@ export function validateCriterionCheckPaths(
     const normalized: string[] = [];
     for (const f of resolution.files) {
       checked++;
-      if (!existsSync(resolve(root, f))) {
+      const candidate = resolve(root, f);
+      if (!isRegularFileInsideRoot(root, candidate)) {
         failures.push({ criterionKey: c.key, path: f, reason: 'does not resolve against the live tree' });
         continue;
       }
@@ -470,7 +461,22 @@ const CARGO_DEFAULT_TIMEOUT_MS = 15 * 60_000;
 function isInsideRoot(root: string, candidate: string): boolean {
   const rootAbs = resolve(root);
   const candidateAbs = resolve(candidate);
-  return candidateAbs === rootAbs || candidateAbs.startsWith(`${rootAbs}${sep}`);
+  if (!(candidateAbs === rootAbs || candidateAbs.startsWith(`${rootAbs}${sep}`))) return false;
+  try {
+    const rootReal = realpathSync(rootAbs);
+    const candidateReal = realpathSync(candidateAbs);
+    return candidateReal === rootReal || candidateReal.startsWith(`${rootReal}${sep}`);
+  } catch {
+    return false;
+  }
+}
+
+function isRegularFileInsideRoot(root: string, candidate: string): boolean {
+  try {
+    return isInsideRoot(root, candidate) && statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function cargoBinary(): string {
@@ -489,11 +495,11 @@ function cargoBinary(): string {
 function cargoResultNames(output: string): { name: string; outcome: 'ok' | 'FAILED' | 'ignored' }[] {
   const normalized = output.replace(CARGO_ANSI_RE, '');
   const results: { name: string; outcome: 'ok' | 'FAILED' | 'ignored' }[] = [];
+  const resultRe = new RegExp(CARGO_RESULT_RE.source, 'gm');
   let match: RegExpExecArray | null;
-  while ((match = CARGO_RESULT_RE.exec(normalized)) !== null) {
+  while ((match = resultRe.exec(normalized)) !== null) {
     results.push({ name: match[1]!, outcome: match[2] as 'ok' | 'FAILED' | 'ignored' });
   }
-  CARGO_RESULT_RE.lastIndex = 0;
   return results;
 }
 
@@ -523,6 +529,7 @@ export function runCargoCriterionCheck(opts: {
   root: string;
   test?: string;
   timeoutMs?: number;
+  managedSpawnFn?: typeof managedSpawn;
 }): Promise<CriterionCargoRunResult> {
   const runId = randomUUID();
   const startedAt = Date.now();
@@ -542,87 +549,52 @@ export function runCargoCriterionCheck(opts: {
   };
 
   return new Promise((resolveResult) => {
-    let stdout = '';
-    let stderr = '';
+    let output = '';
     let outputTruncated = false;
     let timedOut = false;
     let settled = false;
+    let closeObserved = false;
+    let child: ChildProcess | null = null;
+    let timer: NodeJS.Timeout | undefined;
     let escalation: NodeJS.Timeout | undefined;
 
-    const append = (current: string, chunk: string): string => {
-      const next = current + chunk;
-      if (next.length <= CARGO_RUN_OUTPUT_LIMIT) return next;
+    const append = (chunk: string): void => {
+      const next = output + chunk;
+      if (next.length <= CARGO_RUN_OUTPUT_LIMIT) {
+        output = next;
+        return;
+      }
       outputTruncated = true;
-      return next.slice(-CARGO_RUN_OUTPUT_LIMIT);
+      output = next.slice(-CARGO_RUN_OUTPUT_LIMIT);
     };
     const finish = (result: CriterionCargoRunResult): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (escalation) clearTimeout(escalation);
       resolveResult(result);
     };
 
-    let child: ChildProcess;
-    const start = managedSpawn(
-      cargoBinary(),
-      args,
-      {
-        class: 'build',
-        title: `scorecards cargo check (${opts.manifestPath})`,
-        argv: [cargoBinary(), ...args],
-        cwd: opts.root,
-        launchedBy: 'scorecards:emit',
-        runtimeMaxSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
-        detail: { rubricCheck: 'cargo', manifestPath: opts.manifestPath, sourceFiles: opts.sourceFiles },
-      },
-      {
-        spawnOptions: {
-          cwd: opts.root,
-          env,
-          detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        },
-      },
-    );
-
-    start.catch((error) => {
-      finish({
-        passed: 0,
-        failed: 0,
-        ignored: 0,
-        runId,
-        durationMs: Date.now() - startedAt,
-        error: `spawn_error: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    });
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      if (child) killCargoTree(child, 'SIGTERM');
-      escalation = setTimeout(() => killCargoTree(child, 'SIGKILL'), 15_000);
+    const kill = (signal: NodeJS.Signals): void => {
+      if (child) killCargoTree(child, signal);
+    };
+    const scheduleEscalation = (): void => {
+      if (escalation || settled || !child) return;
+      escalation = setTimeout(() => kill('SIGKILL'), 15_000);
       escalation.unref();
-    }, timeoutMs);
-    start.then((managed) => {
-      child = managed.child;
-      child.stdout?.on('data', (chunk: Buffer | string) => {
-        stdout = append(stdout, chunk.toString());
-      });
-      child.stderr?.on('data', (chunk: Buffer | string) => {
-        stderr = append(stderr, chunk.toString());
-      });
-      child.on('error', (error) => {
-        finish({
-          passed: 0,
-          failed: 0,
-          ignored: 0,
-          runId,
-          durationMs: Date.now() - startedAt,
-          error: `spawn_error: ${error.message}`,
-        });
-      });
-      child.on('close', (code) => {
-      const output = `${stdout}\n${stderr}`;
+    };
+    const requestTermination = (): void => {
+      timedOut = true;
+      if (!child) {
+        finishFromClose(null, null);
+        return;
+      }
+      kill('SIGTERM');
+      scheduleEscalation();
+    };
+    const finishFromClose = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (settled) return;
+      closeObserved = true;
       const results = cargoResultNames(output);
       const passed = results.filter((r) => r.outcome === 'ok').length;
       const failed = results.filter((r) => r.outcome === 'FAILED').length;
@@ -655,8 +627,88 @@ export function runCargoCriterionCheck(opts: {
       } else {
         finish(common);
       }
+    };
+    const handleStartError = (error: unknown): void => {
+      finish({
+        passed: 0,
+        failed: 0,
+        ignored: 0,
+        runId,
+        durationMs: Date.now() - startedAt,
+        error: `spawn_error: ${error instanceof Error ? error.message : String(error)}`,
       });
-    });
+    };
+
+    timer = setTimeout(() => {
+      // managedSpawn may still be settling its admission/ledger work when this
+      // deadline expires. Remember the timeout and kill the payload immediately
+      // once the child handle arrives; never leave a late child running because
+      // the timeout callback raced the async spawn handshake.
+      requestTermination();
+    }, timeoutMs);
+
+    const spawnTask = opts.managedSpawnFn ?? managedSpawn;
+    let start: Promise<Awaited<ReturnType<typeof managedSpawn>>>;
+    try {
+      start = spawnTask(
+        cargoBinary(),
+        args,
+        {
+          class: 'build',
+          title: `scorecards cargo check (${opts.manifestPath})`,
+          argv: [cargoBinary(), ...args],
+          cwd: opts.root,
+          launchedBy: 'scorecards:emit',
+          runtimeMaxSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
+          detail: { rubricCheck: 'cargo', manifestPath: opts.manifestPath, sourceFiles: opts.sourceFiles },
+        },
+        {
+          spawnOptions: {
+            cwd: opts.root,
+            env,
+            detached: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        },
+      );
+    } catch (error) {
+      handleStartError(error);
+      return;
+    }
+
+    void start.then((managed) => {
+      child = managed.child;
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        append(chunk.toString());
+      });
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        append(chunk.toString());
+      });
+      child.once('error', (error) => {
+        finish({
+          passed: 0,
+          failed: 0,
+          ignored: 0,
+          runId,
+          durationMs: Date.now() - startedAt,
+          error: `spawn_error: ${error.message}`,
+        });
+      });
+      child.once('close', finishFromClose);
+      if (timedOut) requestTermination();
+
+      // A very short-lived child may have emitted both `exit` and `close` before
+      // managedSpawn finished its async ledger work. ChildProcess retains its
+      // exitCode/signalCode, so schedule one fallback check rather than hanging
+      // until the rubric timeout after the close event was legitimately missed.
+      if (child.exitCode != null || child.signalCode != null) {
+        setImmediate(() => {
+          if (!settled && !closeObserved) {
+            finishFromClose(child?.exitCode ?? null, child?.signalCode ?? null);
+          }
+        });
+      }
+    }, handleStartError);
   });
 }
 

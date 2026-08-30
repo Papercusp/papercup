@@ -98,17 +98,17 @@ it('publishes one reconciled, privacy-safe stage timeline through /stats and the
   expect(timeline.admission.provider).toMatchObject({
     queued: expect.objectContaining({
       priority: expect.any(Number),
-      tier: expect.any(Number),
+      tier: null,
       running: expect.any(Number),
       queued: expect.any(Number),
       maxConcurrent: expect.any(Number),
-      tier1Reserve: expect.any(Number),
-      tierInFlight: expect.any(Number),
-      tierQueued: expect.any(Number),
+      tier1Reserve: null,
+      tierInFlight: null,
+      tierQueued: null,
     }),
     admitted: expect.objectContaining({
       priority: expect.any(Number),
-      tier: expect.any(Number),
+      tier: null,
       running: expect.any(Number),
       queued: expect.any(Number),
       maxConcurrent: expect.any(Number),

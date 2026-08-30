@@ -72,6 +72,7 @@ import {
   executeGatewayRequestKernel,
   GatewayRequestKernelError,
   type GatewayKernelAdmissionController,
+  type GatewayKernelAttemptContext,
 } from './request-kernel';
 import {
   createCodexBearerKernelAdapter,
@@ -88,6 +89,17 @@ import {
   type CodexCliResponseMetadata,
   type CodexCliRouteValue,
 } from './codex-cli-kernel-adapter';
+import {
+  createClaudeKernelAdapter,
+  type ClaudeChunk,
+  type ClaudeClassifyInput,
+  type ClaudeFetchResponse,
+  type ClaudePreparedAttempt,
+  type ClaudeResponseClassification,
+  type ClaudeResponseMetadata,
+  type ClaudeRouteReason,
+  type ClaudeRouteValue,
+} from './claude-kernel-adapter';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -4011,7 +4023,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // and return a GOOD response itself rather than forwarding the wall (the account-routing-fault the
       // owner flags: a $0 bee while idle accounts sit unused). A transient/bare 429 is NOT looped here —
       // the bee's CLI retries those, and the next request lands on the failover-rotated active().
-      let attempt = 0;
       let transientWaitedMs = 0; // total time spent WAITING out short transient throttles (budget #2)
       // Did this request ROTATE to a different account (⇒ the pool has a serviceable ALTERNATIVE)? Gates the
       // stall-absorb (#2): a lone permanently-dead proxy (no alternative) must shed FAST; only a multi-account
@@ -4040,48 +4051,1104 @@ export function createInferenceGateway(deps: GatewayDeps) {
         effAbsorbMs = interactiveAbsorbMs;
       }
       const absorbDeadlineAt = effAbsorbMs > 0 ? Date.now() + effAbsorbMs : 0;
-      for (;;) {
-        // Bound the OAuth token refresh (2026-06-20 token-hang wedge). active.token() does a deadline-less
-        // network refresh AND runs before the per-attempt stall-guard below, so a stalled refresh used to
-        // pin this admission slot forever (every slot hung here → manual-restart-only recovery). On
-        // timeout/failure: penalize THIS account out of rotation (the per-request selector routes the
-        // bee's retry to a healthy account) and return a retryable 503. The finally releases the slot, so
-        // one stalled credential can never wedge the pool.
-        let token: string;
-        stageSpan?.beginStage('auth');
-        try {
-          token = await withDeadline(active.token(), tokenTimeoutMs, `token refresh '${active.accountId}'`);
-        } catch (e) {
-          upstreamErrors++;
-          // TRANSPORT-vs-real-penalty split (2026-07-01, root-cause of "API errors across all accounts,
-          // penaltyCount inflating on a genuinely QUIET account" — same class of bug account-pool-store.ts's
-          // `if (ev.source === 'transport') return` guard exists for, but this call site never set the flag).
-          // withDeadline throws its OWN distinct "... timed out after Nms" Error when the DEADLINE fires
-          // (see withDeadline above) vs re-throwing active.token()'s own rejection when the refresh itself
-          // failed fast. A deadline timeout means the network round-trip to refresh the OAuth token didn't
-          // complete in tokenTimeoutMs — a TRANSPORT symptom (a flaky egress proxy / transient network blip),
-          // not evidence the account's quota or credential is bad. Without this split every such timeout hit
-          // `gov.penalize()` with the default (non-transport) source, so account-pool-store counted it toward
-          // `sustainedPenaltyThreshold` and eventually parked an account with 0% utilization — the exact
-          // failure mode the 2026-06-22 aviynw incident's transport-exemption was built for, just reached via
-          // a different call site that this account's flaky proxy also happens to go through for token
-          // refresh. A genuine active.token() rejection (e.g. a revoked/invalid credential) is NOT a timeout
-          // message, so it keeps the real (non-transport) penalty — that account really is broken.
-          const isTimeout = /timed out after \d+ms$/.test((e as Error).message ?? '');
+
+      /*
+       * KERNEL ADOPTION — plan `gateway-kernel-adoption-2026-08-29`, P-006.
+       *
+       * What used to be one ~1,050-line hand-rolled ladder is now an OUTER loop
+       * whose every pass makes exactly ONE `executeGatewayRequestKernel` call.
+       *
+       * THE KERNEL + ADAPTER own the inner ladder: per-attempt token resolution,
+       * egress selection, the upstream call, the TTFB-then-body-idle deadlines,
+       * the sibling-egress retry, the 529 backoff, and account rotation.
+       *
+       * THE CALLER (this loop) keeps the four things that RESET a budget, none of
+       * which the kernel has any concept of: the absorb release-and-re-acquire,
+       * the bounded transient WAIT, the wedge-prevention shed, and the last-resort
+       * opus→sonnet downgrade. Each hands the request a fresh attempt budget and a
+       * fresh `retryDeadlineAt`, which is precisely why they cannot live inside a
+       * single kernel call.
+       *
+       * THREE SEAMS CARRY LIVE BEHAVIOUR THE OBVIOUS WIRING WOULD DROP:
+       *
+       *  1. D-013 — three retry branches are decided from the response BODY, and
+       *     `observeAttempt` is handed `{context,response,error}` with no body. So
+       *     `classifyResponse` classifies in the adapter (which holds the body) and
+       *     every SIDE EFFECT still fires from `observeAttempt` (D-012 c1).
+       *
+       *  2. D-014 — `retryDeadlineAt` is a wall-clock bound the kernel does not
+       *     model. It reaches the kernel as `policy.ttfbCapMs` (so each attempt's
+       *     headers wait gets only what the budget has LEFT, not a fresh full
+       *     deadline) and the adapter as `retryBudgetExhausted` (so route
+       *     selection stops at the deadline). An attempt COUNT is not a substitute.
+       *
+       *  3. Two side effects are conditional on a decision the ADAPTER now owns —
+       *     the AIMD throttle record (fires only for a 429 that was NOT routed
+       *     around) and the account-level egress circuit (opens only when the
+       *     sibling-IP retry was NOT taken). Neither can fire from `observeAttempt`,
+       *     which runs BEFORE the route is chosen. Both are stashed and resolved
+       *     against the next route's `reason` — read from the adapter's answer,
+       *     never recomputed, so there stays exactly one decision-maker.
+       */
+
+      /** Adapt a WHATWG response body to the byte-iterable the adapter consumes,
+       *  keeping an explicit `cancel` so a discarded attempt tears the socket down
+       *  instead of leaking it — the live `peekedRest?.destroy()`. */
+      const toClaudeKernelBody = (web: Response['body']): ClaudeFetchResponse['body'] => {
+        if (!web) return null;
+        const node = Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
+        const iterable = node as unknown as AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void };
+        iterable.cancel = () => {
+          node.destroy();
+        };
+        return iterable;
+      };
+
+      // Downstream cancellation. The kernel relays through `downstream.write`, so a
+      // vanished client must abort the request rather than leave that await hanging
+      // — the same wiring P-004 proved on the codex-oauth lane.
+      const abortRequest = (reason: string) => {
+        if (!reqAbort.signal.aborted) reqAbort.abort(new Error(reason));
+      };
+      req.once('aborted', () => abortRequest('claude downstream request aborted'));
+      res.once('close', () => abortRequest('claude downstream response closed'));
+
+      // ── per-request bookkeeping the kernel deliberately does not own ─────────
+      // Carried ACROSS passes: the live `attempt` counter bounds rotations for the
+      // WHOLE request, not per ladder entry, so each pass gets only what is left.
+      let attemptsUsed = 0;
+      let curEgressKey = egressCacheKey(active.accountId, undefined);
+      let lastTransportHadProxy = false;
+      let shedRecorded = false;
+      // D-015: the G1 suppression counter's only increment lived in the deleted
+      // ladder. Guarded per pass so a repeated `canRotate` consult cannot inflate it.
+      let rotateSuppressRecorded = false;
+      let cacheProbe: PassThrough | null = null;
+      const endCacheProbe = () => {
+        if (!cacheProbe) return;
+        cacheProbe.end();
+        cacheProbe = null;
+      };
+      // Reset per ATTEMPT, exactly as the live loop re-declares them each iteration.
+      let suppressBareBurstRotate = false;
+      let shape429Suffix = '';
+      let throttled429AccountId = active.accountId;
+      /**
+       * WI-3150. The internal-retry line used to be emitted by the caller's `wait`
+       * intercept branch, because the caller owned the rotation. The KERNEL now
+       * rotates internally, so a request that fails over A→B and succeeds never
+       * re-enters that branch and the line was silently lost — the failover still
+       * works, but it stopped being observable.
+       *
+       * It cannot simply be logged at the 429 site either: at that moment we do not
+       * yet know a retry will follow, and the old line only ever described a retry
+       * that actually happened. So the line is BUILT here, while the throttled
+       * account and ITS `shape429Suffix` are still current (`prepareAttempt` clears
+       * the suffix at the top of every attempt), and FLUSHED from `observeAttempt`
+       * on attempt N>1 — which by construction only runs when the kernel really did
+       * retry.
+       */
+      let pendingRetryLog: string | null = null;
+      // The live `internalRetry.exhaustResetAt` — when the account this attempt hit
+      // is expected to be serviceable again. Drives the transient-vs-hard-wall split.
+      let lastExhaustResetAt = 0;
+
+      // ── the deferred pair (seam 3) ───────────────────────────────────────────
+      let pendingThrottle = false;
+      let pendingTransport: { account: ActiveAccount; egressKey: string; stalled: boolean } | null = null;
+
+      /** The live account-level egress circuit (gateway.ts pre-migration :4222-4257). */
+      const openEgressCircuit = (failed: { account: ActiveAccount; stalled: boolean }) => {
+        const id = failed.account.accountId;
+        const streak = (egressFailStreak.get(id) ?? 0) + 1;
+        egressFailStreak.set(id, streak);
+        const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
+        let openMs = EGRESS_CIRCUIT_OPEN_MS;
+        if (circuitOpen) {
+          const nowMs = Date.now();
+          const stableFor = nowMs - (egressLastOpenAt.get(id) ?? 0);
+          // C2: only a DEAD proxy (connect error) escalates the flap backoff. A TTFB
+          // stall hits every account during a hold-storm; doubling would exile a
+          // budget-healthy account that recovers in seconds.
+          const reopen =
+            !failed.stalled && stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(id) ?? 0) + 1 : 0;
+          egressReopenCount.set(id, reopen);
+          egressLastOpenAt.set(id, nowMs);
+          openMs = Math.min(EGRESS_CIRCUIT_OPEN_MS * 2 ** reopen, EGRESS_CIRCUIT_OPEN_MAX_MS);
+        }
+        const pauseMs = circuitOpen ? openMs : TRANSIENT_429_BACKOFF_MS;
+        const resetAt = Date.now() + pauseMs;
+        // transport:true — this pauses the account ONLY to route around its bad egress
+        // PROXY. It is not a rate/budget signal, so the exhaustion observer and the
+        // fleet AIMD must not count it against a quota-healthy account.
+        governorForAccount(model, id).penalize({ retryAfterMs: pauseMs, resetAt, transport: true });
+        if (circuitOpen) {
+          egressCircuitOpens++;
+          egressPauseUntil.set(id, resetAt);
+          const reopen = egressReopenCount.get(id) ?? 0;
           log(
-            'error',
-            `inference-gateway: token refresh ${isTimeout ? 'TIMED OUT (transport)' : 'failed'} on '${active.accountId}': ${(e as Error).message} — penalizing account + 503`,
+            'warn',
+            `inference-gateway: EGRESS CIRCUIT OPEN for '${id}' (${streak} consecutive transport failures${reopen > 0 ? `, flap×${reopen}` : ''}) — out of rotation ≤${Math.round(pauseMs / 1000)}s; half-open probe readmits after ${EGRESS_PROBE_READMIT_STREAK} stable probes`,
           );
-          gov.penalize({
-            retryAfterMs: bare429FailoverBackoffMs,
-            resetAt: Date.now() + bare429FailoverBackoffMs,
-            ...(isTimeout ? { transport: true } : {}),
+          scheduleEgressProbe(failed.account, governorForAccount(model, id), resetAt);
+        }
+      };
+
+      /**
+       * Settle the effects that were waiting on the adapter's routing decision.
+       * `nextReason` is the reason of the route the adapter chose next, or null when
+       * this pass produced no further attempt.
+       */
+      const resolvePending = (nextReason: ClaudeRouteReason | null) => {
+        if (pendingThrottle) {
+          pendingThrottle = false;
+          // Fix B: a 429 we successfully routed around is a ROUTING event, not
+          // pool-wide over-drive, and must stay invisible to global AIMD. A next
+          // attempt of ANY reason is exactly the live `routedAround` — both the
+          // cross-account rotate and the sibling-IP retry set it.
+          if (nextReason === null) providerAdmission.recordThrottle('claude');
+        }
+        const transport = pendingTransport;
+        if (transport) {
+          pendingTransport = null;
+          // The live circuit sits in the ELSE of the sibling-egress retry: taking a
+          // sibling IP skips it entirely, while a rotate still opens it.
+          if (nextReason !== 'sibling-egress') openEgressCircuit(transport);
+        }
+      };
+
+      /** D-014: the wedge-prevention deadline, asked as a question by both selection
+       *  hooks. The shed ledger fires HERE — the one moment a retry that would
+       *  otherwise have happened is actually blocked — and at most once per pass. */
+      const retryBudgetExhausted = () => {
+        if (Date.now() < retryDeadlineAt) return false;
+        if (!shedRecorded) {
+          shedRecorded = true;
+          shedAllThrottled++;
+          recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'internal-retry deadline' });
+          log(
+            'warn',
+            `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`,
+          );
+        }
+        return true;
+      };
+
+      /** D-013: the Anthropic predicates stay HERE, where they already live; the
+       *  adapter contributes only the peek, the replay and the branch. */
+      const classifyClaudeResponse = (input: ClaudeClassifyInput): ClaudeResponseClassification => {
+        if (input.status === 529) return { kind: 'overload' };
+        if (input.status === 429) {
+          // A 429 may be a hard usage/session CAP, which ONLY the body names —
+          // util can read 0 on a capped account because the cap is a different
+          // meter — so the body is checked before the header-derived shapes.
+          if (classifyHttpError({ status: undefined, message: input.body }, 'anthropic').class === 'usage_limit') {
+            return {
+              kind: 'usage-cap',
+              resetAt: parseUsageReset(input.body)?.atMs ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS,
+            };
+          }
+          const reset = parseRateReset(input.headers);
+          const unifiedRejected = gov.snapshot().unified?.rejected === true;
+          // `x-should-retry: true` is Anthropic's authoritative per-request signal
+          // that capacity exists; it OVERRIDES a stale `unified.rejected` latch.
+          const shouldRetry = String(input.headers['x-should-retry'] ?? '').toLowerCase() === 'true';
+          const bare =
+            reset.retryAfterMs === undefined && reset.resetAt === undefined && (!unifiedRejected || shouldRetry);
+          return bare ? { kind: 'bare-429' } : { kind: 'rate-429' };
+        }
+        if (input.status === 403 && ORG_DISALLOWED_RE.test(input.body)) {
+          return { kind: 'org-disallowed', resetAt: Date.now() + ORG_DISALLOW_PAUSE_MS };
+        }
+        return { kind: 'forward' };
+      };
+
+      // ── the caller's interception seam ───────────────────────────────────────
+      // The kernel relays whatever response it settles on, so a retryable failure
+      // the ladder gave up on would reach the client before the caller could absorb
+      // it. `downstream.start` therefore DECIDES first and throws to intercept —
+      // which `pumpResponse` handles by discarding the body, exactly as the live
+      // handler's `peekedRest?.destroy()` did. The decision is read from a flag
+      // rather than the error's identity so no error-normalisation can lose it.
+      const INTERCEPT = new Error('claude gateway: caller intercepted before relay');
+      type Intercept = {
+        action: 'wait' | 'absorb' | 'downgrade';
+        status: number;
+        outHeaders: Record<string, string>;
+        peeked: string;
+        waitMs: number;
+        backoffMs: number;
+        /**
+         * Whether the throttle behind this intercept is one we could wait out. Carried
+         * on the intercept because the last-resort downgrade guard is evaluated in the
+         * CATCH — reachable both from the `downgrade` action and from an absorb that
+         * gave up — while `transient` is computed inside `downstream.start`.
+         */
+        transient: boolean;
+      };
+      // Held behind a ref rather than a bare `let`, and touched ONLY through the two
+      // helpers below. The ref alone is not enough: the sole writer is the
+      // `downstream.start` closure the kernel invokes, which control-flow analysis
+      // cannot see, so a `interception.taken = null` reset written INLINE narrows the
+      // property to `null` for the rest of the pass — the catch below then reads
+      // `null`, `if (taken)` narrows to `never`, and every field access is TS2339.
+      // An explicit annotation at the read site does NOT repair that: a declaration's
+      // type only constrains assignability, while the binding still takes the
+      // initializer's NARROWED type. Routing both the clear and the read through
+      // function calls is what actually fixes it — CFA does not track assignments
+      // across a call boundary, so no narrowing is ever established.
+      const interception: { taken: Intercept | null } = { taken: null };
+      const clearIntercept = (): void => {
+        interception.taken = null;
+      };
+      /** Read the pass's interception and clear it in one step. */
+      const takeIntercept = (): Intercept | null => {
+        const taken = interception.taken;
+        interception.taken = null;
+        return taken;
+      };
+      let sseForward = false;
+
+      /** The forwarded head, byte-for-byte with the live path. */
+      const buildOutHeaders = (metadata: ClaudeResponseMetadata): Record<string, string> => {
+        const outHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(metadata.headers)) {
+          if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
+        }
+        // Detectability: name the account this request ACTUALLY egressed on, so a
+        // silent fallback off a pin is visible to the caller rather than invisible.
+        outHeaders[ROUTED_ACCOUNT_HEADER] = metadata.accountId;
+        if (pinned && !hardPin && metadata.accountId !== pinned.accountId) {
+          outHeaders[PIN_YIELDED_HEADER] = `${pinned.accountId}->${metadata.accountId}`;
+        }
+        if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
+        return outHeaders;
+      };
+
+      /** P-005 structured mid-stream failure: an SSE stream gets a final Anthropic
+       *  `error` event (which the SDK parses as overloaded_error and retries) rather
+       *  than a bare socket reset the bee reads as an opaque "API Error". */
+      const endStreamWithError = (reason: string): void => {
+        if (res.writableEnded || res.destroyed) return;
+        // EI-7168: this request was admitted, got a 2xx, already recorded its
+        // optimistic success, and then died mid-relay — the expensive failure.
+        // Correct that record with an immediate hard clamp, once.
+        providerAdmission.recordHardFailure('claude');
+        if (!sseForward) {
+          try {
+            res.destroy();
+          } catch {
+            /* already torn down */
+          }
+          return;
+        }
+        try {
+          res.write(
+            `\nevent: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: upstream stream ${reason} on '${active.accountId}' — retry` }, gateway: true })}\n\n`,
+          );
+          res.end();
+        } catch {
+          try {
+            res.destroy();
+          } catch {
+            /* already torn down */
+          }
+        }
+      };
+
+      for (;;) {
+        clearIntercept();
+        // A caller-level wait/absorb logs its own retry line, so a line left pending
+        // by the previous pass must not be flushed against this one.
+        pendingRetryLog = null;
+        shedRecorded = false;
+        rotateSuppressRecorded = false;
+        let attemptsThisPass = 0;
+
+        const kernelAdapter = createClaudeKernelAdapter({
+          // D-010: `proxy` spent this request's one `pool.active()` across the ~500
+          // lines of selection above, and `active()` ADVANCES the round-robin. The
+          // adapter replays the resolved account so a double-advance is structurally
+          // impossible rather than merely avoided.
+          initialAccount: active,
+          pool: hardPin ? undefined : pool,
+          upstreamUrl: `${upstreamBase}${url}`,
+          method: req.method ?? 'POST',
+          baseHeaders,
+          body: bodyBuf.length ? new Uint8Array(bodyBuf) : null,
+          streaming: isStream,
+          tokenTimeoutMs,
+          failoverBackoffMs: bare429FailoverBackoffMs,
+          overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+          pickEgress: (account, at) => {
+            const picked = pickEgress(account, at);
+            return { entry: picked.entry, key: picked.key };
+          },
+          siblingEgressAvailable: (account, at, currentKey) => siblingEgressAvailable(account, at, currentKey),
+          dispatcherFor: (account, entry) => dispatcherFor(account, entry as AccountEgress | undefined),
+          rateReset: (headers) => {
+            const parsed = parseRateReset(headers);
+            return { resetAt: parsed.resetAt ?? null, retryAfterMs: parsed.retryAfterMs ?? null };
+          },
+          // G1 (WI-649): a FLEET-WIDE bare burst means rotating A→B→C finds no
+          // capacity and merely sustains the storm. Safe to read here because
+          // `observeAttempt` fires BEFORE `chooseNextRoute`, so the flag this
+          // attempt set is the one this attempt's rotation decision sees.
+          canRotate: () => {
+            if (!suppressBareBurstRotate) return true;
+            // D-015: the live ladder incremented this at exactly this moment — the one
+            // point a rotate that would otherwise have happened is BLOCKED. It cannot
+            // fire from `observeAttempt` (which runs BEFORE the route is chosen), so it
+            // belongs here, the same seam `retryBudgetExhausted` uses for its shed.
+            if (!rotateSuppressRecorded) {
+              rotateSuppressRecorded = true;
+              bareBurstRotateSuppressed++;
+            }
+            return false;
+          },
+          retryBudgetExhausted,
+          classifyResponse: classifyClaudeResponse,
+          // The live peek set exactly: only these three statuses have a
+          // body-derived branch, so nothing else pays for a peek.
+          shouldPeek: (status) => status === 429 || status === 529 || status === 403,
+          peekBytes: USAGE_LIMIT_PEEK_BYTES,
+          // The peek reader is not wired to the attempt abort, so an
+          // acknowledged-but-undelivered error body must not hold the slot.
+          peekTimeoutMs: upstreamBodyIdleTimeoutMs,
+          fetch: async (target, init) => {
+            const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
+            if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+            if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
+            const upstream = await doFetch(target, fetchInit as RequestInit);
+            return {
+              status: upstream.status,
+              headers: upstream.headers,
+              body: toClaudeKernelBody(upstream.body),
+            };
+          },
+        });
+
+        const adapter = {
+          ...kernelAdapter,
+          // Sync the caller's view of the route BEFORE the attempt runs, so
+          // `classifyResponse` and `observeAttempt` both read the account that is
+          // actually being hit rather than the previous one.
+          prepareAttempt: async (context: GatewayKernelAttemptContext<ClaudeRouteValue>) => {
+            const routeAccount = context.route.value.account;
+            curEgressKey = context.route.value.egress.key;
+            suppressBareBurstRotate = false;
+            shape429Suffix = '';
+            if (routeAccount.accountId !== active.accountId) {
+              // Count failovers by ACCOUNT change, never by route key: every
+              // same-account re-attempt changes the egress key, so counting keys
+              // would inflate this lane's failover count on every sibling retry.
+              failovers++;
+              stageSpan?.recordFailover();
+              everRotated = true;
+              active = routeAccount;
+              gov = governorForAccount(model, active.accountId);
+            }
+            const prepared = await kernelAdapter.prepareAttempt(context);
+            // Counted only once the token resolved — a token stall never reached
+            // the proxy and must not count as an egress attempt.
+            egressAttemptsByAccount.set(
+              active.accountId,
+              (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1,
+            );
+            return prepared;
+          },
+        };
+
+        try {
+          await executeGatewayRequestKernel<
+            ClaudeRouteValue,
+            ClaudePreparedAttempt,
+            ClaudeChunk,
+            ClaudeResponseMetadata
+          >({
+            request: {
+              lane: providerAdapters.claude.lane,
+              // Already read, normalized and cache-rewritten above — and rewritten
+              // again by the opus→sonnet downgrade, which is why it is re-read from
+              // `bodyBuf` on every pass rather than captured once.
+              body: (async function* () {
+                yield bodyBuf;
+              })(),
+              ownerId: wantOwner ?? null,
+              pin: pinned ? { accountId: pinned.accountId, mode: hardPin ? 'hard' : 'soft' } : null,
+              signal: reqAbort.signal,
+            },
+            policy: {
+              maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+              bodyReadTimeoutMs: requestCeilingMs,
+              requestCeilingMs,
+              // Decided ABOVE the kernel cut (it also picked the request's shape),
+              // so a scalar rather than D-007's resolver — parsing the body a second
+              // time here is precisely the drift D-007 exists to prevent.
+              ttfbTimeoutMs: isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs,
+              // D-014. Without this each attempt would arm the FULL headers deadline
+              // — for a non-streaming request 300s, six times over — instead of the
+              // ~60s the wedge-prevention ladder allows the whole request.
+              ttfbCapMs: () => retryDeadlineAt - Date.now(),
+              bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
+              downstreamIdleTimeoutMs: downstreamIdleMs,
+              // The live `attempt` bounds rotations for the WHOLE request, so a pass
+              // gets only the remainder — and a budget RESET restores the full count.
+              maxAttempts: Math.max(1, INTERNAL_RETRY_MAX_ATTEMPTS - attemptsUsed),
+            },
+            telemetry: requestStageTelemetry,
+            // D-008: adopt the span this HTTP request already opened, or the kernel
+            // would begin a SECOND one and double-count the request.
+            span: stageSpan,
+            admission: {
+              // PASS-THROUGH: this request already holds its slot from the
+              // `gov.acquire` above, so re-admitting would deadlock on itself.
+              run: (_context, task) => task(),
+              observeAttempt: ({ context, response, error }) => {
+                // Settle the previous attempt's deferred effects now that the
+                // adapter's routing answer is visible on THIS attempt's route.
+                if (context.attempt > 1) resolvePending(context.route.value.reason);
+                // WI-3150: reaching attempt N>1 IS the proof that the kernel retried,
+                // so this is where the previous attempt's retry line becomes true.
+                // It names the THROTTLED account and carries ITS util headers — the
+                // whole point of WI-3150 — rather than the rotated-to account we are
+                // about to hit.
+                if (context.attempt > 1 && pendingRetryLog) {
+                  log('warn', pendingRetryLog);
+                  pendingRetryLog = null;
+                }
+                attemptsThisPass = context.attempt;
+                const account = context.route.value.account;
+                const egressKey = context.route.value.egress.key;
+
+                if (error) {
+                  upstreamErrors++;
+                  // The adapter's STATUS discriminates a token failure (503) from a
+                  // transport failure (502); a TTFB timeout surfaces as its own code
+                  // and classifies with transport, as the live catch did.
+                  if (error.status === 503 && error.code === 'upstream-error') {
+                    // TRANSPORT-vs-real-penalty split: a DEADLINE timeout means the
+                    // refresh round-trip did not complete — a transport symptom, not
+                    // evidence the credential or quota is bad. Only a genuine
+                    // rejection keeps the real penalty.
+                    const isTimeout = /timed out after \d+ms$/.test(error.message ?? '');
+                    log(
+                      'error',
+                      `inference-gateway: token refresh ${isTimeout ? 'TIMED OUT (transport)' : 'failed'} on '${account.accountId}': ${error.message} — penalizing account + 503`,
+                    );
+                    governorForAccount(model, account.accountId).penalize({
+                      retryAfterMs: bare429FailoverBackoffMs,
+                      resetAt: Date.now() + bare429FailoverBackoffMs,
+                      ...(isTimeout ? { transport: true } : {}),
+                    });
+                    lastTransportHadProxy = false;
+                    return;
+                  }
+                  const stalled = error.code === 'ttfb-timeout' || error.code === 'cancelled';
+                  log(
+                    'error',
+                    `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${account.accountId}': ${error.message}`,
+                  );
+                  // SCOPING: only an account WITH an http proxy can have a DEAD
+                  // proxy. A no-proxy account that transport-fails is an
+                  // Anthropic/network-side stall, which keeps the fast 502 and must
+                  // NOT penalize a healthy account.
+                  // The entry the adapter actually dialed, carried on the route —
+                  // not re-derived from the key, which is a cache key rather than
+                  // an identifier an egress entry exposes.
+                  const usedEg = (context.route.value.egress.entry as AccountEgress | undefined) ?? account.egress;
+                  const hasEgressProxy = !!usedEg?.proxyUrl && /^https?:\/\//i.test(usedEg.proxyUrl);
+                  lastTransportHadProxy = hasEgressProxy;
+                  if (!hasEgressProxy) return;
+                  egressFailsByAccount.set(
+                    account.accountId,
+                    (egressFailsByAccount.get(account.accountId) ?? 0) + 1,
+                  );
+                  // ESCALATING per-IP cooldown: a FIXED one re-admitted a
+                  // permanently-dead egress on a constant cycle forever, so a
+                  // hard-down host got no worse treatment than a one-off blip.
+                  const ipStreak = (ipTransportFailStreak.get(egressKey) ?? 0) + 1;
+                  ipTransportFailStreak.set(egressKey, ipStreak);
+                  coolIp(
+                    egressKey,
+                    Math.min(IP_TRANSPORT_COOLDOWN_MS * 2 ** (ipStreak - 1), IP_TRANSPORT_COOLDOWN_MAX_MS),
+                  );
+                  checkEgressProxyHealthAlarm(account);
+                  // The ACCOUNT-level circuit is deferred: it opens only if the
+                  // adapter does not take a sibling IP (seam 3).
+                  pendingTransport = { account, egressKey, stalled };
+                  return;
+                }
+                if (!response) return;
+
+                const hobj = response.metadata.headers;
+                const status = response.status;
+                const accountGov = governorForAccount(model, account.accountId);
+                accountGov.recordResponse(hobj);
+                deps.onResponse?.(hobj, status, model, account.accountId);
+
+                // Transport succeeded for THIS account — its egress proxy works, so
+                // clear the transport-failure streaks. A 429 still means the proxy
+                // WORKED (just throttled), which is the 429 path's job, not the
+                // egress circuit's.
+                egressFailStreak.delete(account.accountId);
+                lastEgressOkAt.set(account.accountId, Date.now());
+                proactiveProbeFailStreak.delete(account.accountId);
+                // A proven-live IP must rejoin rotation NOW, not sit out the
+                // remainder of an escalated cooldown it just disproved.
+                ipTransportFailStreak.delete(egressKey);
+                ipCooldownUntil.delete(egressKey);
+                checkEgressProxyHealthAlarm(account);
+
+                const classification = response.metadata.classification;
+                const peeked = response.metadata.peekedBody ?? '';
+                lastExhaustResetAt = 0;
+
+                if (status === 429 || status === 529) {
+                  upstream429++;
+                  throttled429AccountId = account.accountId;
+                  const reset = parseRateReset(hobj);
+                  const unifiedRejected = accountGov.snapshot().unified?.rejected === true;
+                  const shouldRetry = String(hobj['x-should-retry'] ?? '').toLowerCase() === 'true';
+                  const kind = classification?.kind ?? null;
+                  if (status === 429) {
+                    // Hard-evidence 429 shape: bare-burst means CAPACITY EXISTS
+                    // (transient), usage-cap is a real per-account wall. Surfacing
+                    // util5h/util7d at the 429 site lets the capacity-vs-routing read
+                    // come from data rather than a guess.
+                    const shape429 = classify429Shape({
+                      status,
+                      isUsageCap: kind === 'usage-cap',
+                      bare: kind === 'bare-429',
+                      hasWindowReset: reset.retryAfterMs !== undefined || reset.resetAt !== undefined,
+                      unifiedRejected,
+                    });
+                    const u5 =
+                      hobj['anthropic-ratelimit-unified-5h-utilization'] ??
+                      hobj['anthropic-ratelimit-unified-utilization'] ??
+                      '-';
+                    const u7 = hobj['anthropic-ratelimit-unified-7d-utilization'] ?? '-';
+                    shape429Suffix = ` [429-shape=${shape429} x-should-retry=${shouldRetry} retry-after=${reset.retryAfterMs ?? '-'}ms util5h=${u5} util7d=${u7}]`;
+                    if (shape429 === 'bare-burst') {
+                      // WI-650/G2: a bare-burst is a SHARED edge/infra throttle, not
+                      // a per-account wall, so name WHO threw it — a Cloudflare edge
+                      // carries `server`/`cf-ray`, an Anthropic app-layer 429 carries
+                      // `request-id`/`anthropic-organization-id`.
+                      const origin = (
+                        [
+                          ['server', hobj['server']],
+                          ['cf-ray', hobj['cf-ray']],
+                          ['via', hobj['via']],
+                          ['req-id', hobj['request-id'] ?? hobj['x-request-id']],
+                          ['org', hobj['anthropic-organization-id']],
+                          ['unified-status', hobj['anthropic-ratelimit-unified-status']],
+                        ] as const
+                      )
+                        .filter(([, v]) => v !== undefined)
+                        .map(([k, v]) => `${k}=${v}`)
+                        .join(' ');
+                      shape429Suffix += ` [bare-burst-origin ${origin || 'no-provenance-headers'}]`;
+                    }
+                    // WI-3151 cold-rest causation probe — pure observability, never
+                    // a routing input.
+                    const msSinceReadmit = pool.msSinceReadmit?.(throttled429AccountId);
+                    const util5hNum = Number(u5);
+                    const coldRestCause = classifyColdRest429({
+                      shape: shape429,
+                      msSinceReadmit,
+                      windowMs: COLD_REST_CAUSATION_WINDOW_MS,
+                      utilization5h: Number.isFinite(util5hNum) ? util5hNum : undefined,
+                      highUtil: COLD_REST_HIGH_UTIL,
+                    });
+                    if (coldRestCause !== 'not-cold-rest') {
+                      shape429Suffix += ` [cold-rest-cause=${coldRestCause} since-readmit=${msSinceReadmit ?? '-'}ms]`;
+                    }
+                    // Deferred: an AIMD throttle is recorded only for a 429 that
+                    // could NOT be routed around (seam 3).
+                    pendingThrottle = true;
+                  }
+
+                  if (status === 529) {
+                    // SERVER overload — not account budget. No penalty, no rotation.
+                    lastExhaustResetAt = 0;
+                  } else if (kind === 'usage-cap') {
+                    // A hard cap on THIS account: pause it to its reset so the pin
+                    // yields and the selector skips it, then rotate.
+                    const capResetAt = classification?.resetAt ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
+                    accountGov.penalize({ resetAt: capResetAt });
+                    lastExhaustResetAt = capResetAt;
+                  } else if (!unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
+                    // A per-minute/burst RATE 429 → AIMD-decrease this account's
+                    // learned rpm so future requests are paced under its real rate.
+                    accountGov.penalize({ ...reset, rateLimited: true });
+                    lastExhaustResetAt =
+                      reset.resetAt ??
+                      Date.now() + Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, 5 * 60 * 1000);
+                  } else if (kind === 'bare-429') {
+                    // A bare-burst is a Cloudflare per-IP EDGE throttle on whatever
+                    // IP this attempt used, NOT the account budget — so if the SAME
+                    // account has another usable IP, cool this one and let the
+                    // adapter retry the same credential on the sibling, with NO
+                    // whole-account pause. Only a lone-IP account falls through to
+                    // the per-account circuit.
+                    if (siblingEgressAvailable(account, Date.now(), egressKey)) {
+                      const ipStreak = (ipBare429Streak.get(egressKey) ?? 0) + 1;
+                      ipBare429Streak.set(egressKey, ipStreak);
+                      const ipCoolMs = Math.min(
+                        bare429FailoverBackoffMs * 2 ** (ipStreak - 1),
+                        IP_COOLDOWN_MAX_MS,
+                      );
+                      coolIp(egressKey, ipCoolMs);
+                      lastExhaustResetAt = Date.now() + bare429FailoverBackoffMs;
+                      log(
+                        'warn',
+                        `inference-gateway: bare-burst 429 on egress IP ${egDesc((context.route.value.egress.entry as AccountEgress | undefined) ?? account.egress)} for '${account.accountId}' (cloudflare per-IP throttle) — cooling that IP ${Math.round(ipCoolMs / 1000)}s + rotating to a sibling IP on the SAME account (egress-ip-pool)`,
+                      );
+                    } else {
+                      // BARE-429 PERSISTENCE CIRCUIT: a brief burst is paced, but a
+                      // SUSTAINED streak is an edge throttle that is not clearing →
+                      // escalate so the pool routes AROUND this IP rather than
+                      // re-hammering it forever.
+                      const streak = (bare429Streak.get(account.accountId) ?? 0) + 1;
+                      bare429Streak.set(account.accountId, streak);
+                      const circuitOn = BARE429_CIRCUIT_THRESHOLD > 0 && streak >= BARE429_CIRCUIT_THRESHOLD;
+                      const pauseMs = circuitOn
+                        ? Math.min(
+                            bare429FailoverBackoffMs * 2 ** (streak - BARE429_CIRCUIT_THRESHOLD + 1),
+                            BARE429_CIRCUIT_MAX_MS,
+                          )
+                        : bare429FailoverBackoffMs;
+                      accountGov.penalize({ retryAfterMs: pauseMs, resetAt: Date.now() + pauseMs, rateLimited: true });
+                      lastExhaustResetAt = Date.now() + pauseMs;
+                      if (circuitOn) {
+                        log(
+                          'warn',
+                          `inference-gateway: BARE-429 CIRCUIT for '${account.accountId}' (${streak} consecutive bare-429s — persistent per-IP edge throttle, not a brief burst) → pausing ${Math.round(pauseMs / 1000)}s so the pool routes around this IP`,
+                        );
+                      }
+                      // G1: with ≥half the pool out of rotation, rotating finds no
+                      // capacity and merely multiplies upstream load.
+                      suppressBareBurstRotate =
+                        isFleetWideBareBurst() || noteRecentBareBurstCluster(account.accountId);
+                    }
+                  } else {
+                    // unifiedRejected: recordResponse already set a BOUNDED re-probe
+                    // pause, so do not penalize to the full multi-hour reset.
+                    lastExhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000;
+                  }
+                  if (status === 429) {
+                    // Keep the edge signal live even when a sibling IP lets this
+                    // request succeed: the account stays serviceable, but operators
+                    // must still see why a pinned route degraded.
+                    bare429PauseUntil.set(
+                      account.accountId,
+                      Math.max(bare429PauseUntil.get(account.accountId) ?? 0, lastExhaustResetAt),
+                    );
+                  }
+                  // WI-3150: built LAST in this branch, so it captures every suffix
+                  // the branches above appended (bare-burst origin, cold-rest cause).
+                  // Flushed only if the kernel actually goes on to retry.
+                  pendingRetryLog = `inference-gateway: upstream ${status} → internal retry attempt=${attemptsUsed + context.attempt} wait=${transientWaitedMs}ms on '${throttled429AccountId}'${shape429Suffix}`;
+                } else if (status === 403 && classification?.kind === 'org-disallowed') {
+                  // Account-level org/subscription DISQUALIFICATION, not a throttle:
+                  // forwarding it hard-fails the bee AND, when this account is
+                  // active(), 403-blocks the whole fleet.
+                  const resetAt = classification.resetAt ?? Date.now() + ORG_DISALLOW_PAUSE_MS;
+                  accountGov.penalize({ resetAt });
+                  lastExhaustResetAt = resetAt;
+                  // The pause is IN-MEMORY and resets on every gateway restart, which
+                  // kept re-exposing a permanently dead account. On a short streak,
+                  // fire the persistent-deactivate side-channel ONCE.
+                  const orgStreak = (orgDisallowedStreak.get(account.accountId) ?? 0) + 1;
+                  orgDisallowedStreak.set(account.accountId, orgStreak);
+                  if (orgDisallowedDeactivateThreshold > 0 && orgStreak === orgDisallowedDeactivateThreshold) {
+                    log(
+                      'error',
+                      `inference-gateway: account '${account.accountId}' PERMANENTLY org/subscription-disallowed (${orgStreak} consecutive 403s) → deactivating it from the pool + failover`,
+                    );
+                    try {
+                      // EI-15153: name the LIVE sessions that were routing through
+                      // this account when it died, so the alert says WHICH sessions
+                      // to check instead of an untargeted notice.
+                      const affectedOwners = selectAffectedOwners(
+                        [...ownerLedger.entries()].map(([ownerId, e]) => ({
+                          ownerId,
+                          lastAccount: e.lastAccount,
+                          lastAt: e.lastAt,
+                        })),
+                        account.accountId,
+                        Date.now(),
+                      );
+                      deps.onOrgDisallowed?.({
+                        accountId: account.accountId,
+                        consecutive: orgStreak,
+                        affectedOwners,
+                      });
+                    } catch {
+                      /* fire-and-forget: this must NEVER throw into the request hot path */
+                    }
+                  } else {
+                    log(
+                      'warn',
+                      `inference-gateway: account '${account.accountId}' org/subscription-disallowed (403) → pausing ${Math.round(ORG_DISALLOW_PAUSE_MS / 3600000)}h + failover (org-disallowed streak ${orgStreak}/${orgDisallowedDeactivateThreshold})`,
+                    );
+                  }
+                } else if (status === 401) {
+                  // Drop + refresh the cached token. CREDENTIAL-HEALTH: a DEAD
+                  // credential 401s AGAIN after the refresh yields the same invalid
+                  // credential, silently breaking spawns with no fleet alert.
+                  account.invalidateToken?.();
+                  const streak = (credential401Streak.get(account.accountId) ?? 0) + 1;
+                  credential401Streak.set(account.accountId, streak);
+                  if (classifyCredential401Streak(streak, credential401DeadThreshold)) {
+                    log(
+                      'error',
+                      `inference-gateway: credential for '${account.accountId}' is DEAD — ${streak} consecutive 401s despite token refresh; firing credential-health alert`,
+                    );
+                    try {
+                      deps.onCredentialDead?.({ accountId: account.accountId, consecutive401s: streak });
+                    } catch {
+                      /* fire-and-forget: the alert side-channel must never throw here */
+                    }
+                  }
+                }
+
+                if (status >= 200 && status < 300) {
+                  // AIMD clean signal: a forwarded 2xx means this account had real
+                  // capacity — drain throttle pressure and nudge admission back up.
+                  providerAdmission.recordSuccess('claude');
+                  // A 2xx is a successful auth, so clear the streaks that would
+                  // otherwise carry a stale escalation into a false alert.
+                  credential401Streak.delete(account.accountId);
+                  orgDisallowedStreak.delete(account.accountId);
+                  bare429Streak.delete(account.accountId);
+                  bare429PauseUntil.delete(account.accountId);
+                  ipBare429Streak.delete(egressKey);
+                  ipCooldownUntil.delete(egressKey);
+                }
+                if (peeked.length && classification && classification.kind !== 'forward') {
+                  log(
+                    'warn',
+                    `inference-gateway: upstream ${status} classified ${classification.kind} on '${account.accountId}'${shape429Suffix}`,
+                  );
+                }
+              },
+            },
+            adapter,
+            // The old handler registered in `inFlightReg` itself, above the try, and
+            // D-003 forbids folding a behaviour change into an extraction.
+            inFlight: { register: () => ({ unregister: () => undefined }) },
+            downstream: {
+              start: ({ status, metadata }) => {
+                // The ladder has settled: no further attempt is coming.
+                resolvePending(null);
+                attemptsUsed += attemptsThisPass;
+                const outHeaders = buildOutHeaders(metadata);
+                const classification = metadata.classification;
+                const retryIntent = classification !== null && classification.kind !== 'forward';
+
+                if (retryIntent) {
+                  // A genuinely transient throttle resets within the recovery cap; a
+                  // usage cap or org pause is hours out and is never waited on.
+                  const transient =
+                    lastExhaustResetAt > 0 &&
+                    lastExhaustResetAt - Date.now() <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS;
+                  const waitMs = Math.min(
+                    Math.max(0, lastExhaustResetAt - Date.now()),
+                    ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                    // Never wait PAST the wedge-prevention deadline.
+                    Math.max(0, retryDeadlineAt - Date.now()),
+                  );
+                  const base: Omit<Intercept, 'action' | 'waitMs' | 'backoffMs'> = {
+                    status,
+                    outHeaders,
+                    peeked: metadata.peekedBody ?? '',
+                    transient,
+                  };
+                  // (1) BOUNDED TRANSIENT WAIT. Rotation could not help, but the
+                  // throttle is SHORT and capacity exists — wait the penalty out and
+                  // retry the recovered account on this same slot.
+                  if (
+                    transient &&
+                    waitMs > 0 &&
+                    transientWaitedMs + waitMs <= TRANSIENT_TOTAL_WAIT_BUDGET_MS &&
+                    Date.now() < retryDeadlineAt
+                  ) {
+                    interception.taken = { ...base, action: 'wait', waitMs, backoffMs: 0 };
+                    throw INTERCEPT;
+                  }
+                  // (2) EXTENDED ABSORPTION. Release the slot (the wait below holds
+                  // NONE, so it cannot wedge), wait the throttle out, re-acquire on
+                  // the pool's current best, and retry — so the caller WAITS and
+                  // succeeds instead of receiving an error.
+                  if (absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt && !res.headersSent) {
+                    interception.taken = {
+                      ...base,
+                      action: 'absorb',
+                      waitMs: 0,
+                      // A 529 does not rate-pause the account, so its re-acquire
+                      // would return immediately → back off first. A rate-429's
+                      // re-acquire already waits out the account's penalty.
+                      backoffMs: status === 529 ? OVERLOAD_529_BACKOFF_MS : 0,
+                    };
+                    throw INTERCEPT;
+                  }
+                  // (3) LAST-RESORT OPUS→SONNET DOWNGRADE (WI-1073). Rotation, wait
+                  // and absorb have all failed on a HARD opus wall, so opus is
+                  // exhausted pool-wide. An opus-floored critical role would
+                  // otherwise hard-fail here; sonnet-vs-nothing wins.
+                  if (!opusDowngraded && !transient && (status === 403 || status === 429) && model.includes('opus')) {
+                    interception.taken = { ...base, action: 'downgrade', waitMs: 0, backoffMs: 0 };
+                    throw INTERCEPT;
+                  }
+                }
+
+                // ── forwarding for real ──────────────────────────────────────────
+                if (status >= 200 && status < 300) {
+                  // Cache instrumentation: a PASSIVE observer tallying this
+                  // request's prompt-cache read/write from `message_start`, without
+                  // touching the client pipe. A retry means the request failed over
+                  // off its initially-selected account, so a miss is routing-induced.
+                  cacheProbe = new PassThrough();
+                  cacheProbe.on('data', () => undefined);
+                  cacheProbe.on('error', () => undefined);
+                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1);
+                } else if (status === 429 || status === 529) {
+                  // The DOMINANT "nothing goes through" exit. Record a stall so the
+                  // stall-waker re-wakes an IDENTIFIED bee when this account recovers
+                  // — without it the bee simply dies and /admin/stalls sits empty.
+                  if (wantOwner) {
+                    recordStall(
+                      wantOwner,
+                      metadata.accountId,
+                      Math.max(governorForAccount(model, metadata.accountId).state.pausedUntil, Date.now() + 30_000),
+                    );
+                  }
+                }
+                if (outHeaders[PIN_YIELDED_HEADER]) {
+                  recordOwnerOutcome(wantOwner, 'pin_yield', {
+                    account: metadata.accountId,
+                    detail: outHeaders[PIN_YIELDED_HEADER],
+                  });
+                }
+                recordRoute(wantOwner, metadata.accountId, model);
+                recordOwnerOutcome(
+                  wantOwner,
+                  status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
+                  { account: metadata.accountId, status },
+                );
+                sseForward = (outHeaders['content-type'] ?? '').includes('text/event-stream');
+                res.writeHead(status, outHeaders);
+              },
+              write: async (chunk) => {
+                cacheProbe?.write(chunk);
+                // Honour downstream backpressure exactly as the old `pipe(res)` did.
+                if (!res.write(chunk)) {
+                  await new Promise<void>((resolve) => {
+                    const settle = () => {
+                      res.off('drain', settle);
+                      res.off('close', settle);
+                      res.off('error', settle);
+                      resolve();
+                    };
+                    res.once('drain', settle);
+                    res.once('close', settle);
+                    res.once('error', settle);
+                  });
+                }
+              },
+              end: () => {
+                endCacheProbe();
+                res.end();
+              },
+            },
           });
-          if (!res.headersSent) {
+          return;
+        } catch (error) {
+          // A pass that threw settled without relaying, so any deferred effect is
+          // final now.
+          resolvePending(null);
+          attemptsUsed += attemptsThisPass;
+
+          // Read-and-clear through the helper (see its declaration): going through a
+          // call is what keeps control-flow analysis from having narrowed this to
+          // `null` at the pass reset, which would make every field access below TS2339.
+          const taken = takeIntercept();
+          if (taken) {
+            if (taken.action === 'wait') {
+              transientWaitedMs += taken.waitMs;
+              log(
+                'warn',
+                `inference-gateway: all accounts transiently throttled on ${model} → wait ${taken.waitMs}ms + retry (wait-budget ${transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
+              );
+              await new Promise<void>((r) => {
+                const t = setTimeout(r, taken.waitMs);
+                t.unref?.();
+              });
+              log(
+                'warn',
+                `inference-gateway: upstream ${taken.status} → internal retry attempt=${attemptsUsed} wait=${transientWaitedMs}ms on '${throttled429AccountId}'${shape429Suffix}`,
+              );
+              continue;
+            }
+            // Set when the absorb rung ran and could not re-acquire, so the shared
+            // forward below still emits the routing/outcome records that path owes.
+            let absorbGaveUp = false;
+            if (taken.action === 'absorb') {
+              // Free the slot NOW — the wait below admits nothing until an account
+              // has serviceable budget, so it cannot wedge.
+              release();
+              release = () => {};
+              if (taken.backoffMs > 0) {
+                await new Promise<void>((r) => {
+                  const t = setTimeout(r, Math.min(taken.backoffMs, Math.max(0, absorbDeadlineAt - Date.now())));
+                  t.unref?.();
+                });
+              }
+              // GRACEFUL RE-ROUTING: pick the NEXT round-robin account for the
+              // re-acquire instead of re-holding the one we were just throttled on.
+              // Under a fleet-wide bare burst the inner rotate is suppressed, so
+              // without this the held caller stays pinned to one throttled account
+              // for the whole absorb and never lands.
+              if (!hardPin) {
+                const reCand = pool.active();
+                if (reCand.accountId !== active.accountId) {
+                  stageSpan?.recordFailover();
+                  everRotated = true;
+                  active = reCand;
+                  gov = governorForAccount(model, active.accountId);
+                  log(
+                    'warn',
+                    `inference-gateway: absorb-retry re-routed to '${active.accountId}' instead of re-holding the throttled account`,
+                  );
+                }
+              }
+              const reacq = await gov.acquire(est, {
+                maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()),
+                allowSoftPaused: serveSoft,
+                signal: reqAbort.signal, // a reclaim/ceiling truly cancels this parked re-acquire
+              });
+              if (reacq) {
+                release = reacq;
+                retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget
+                attemptsUsed = 0;
+                transientWaitedMs = 0; // the absorb is a SEPARATE outer budget
+                log(
+                  'warn',
+                  `inference-gateway: absorb-retry on '${active.accountId}' — holding the caller instead of forwarding a ${taken.status} (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`,
+                );
+                continue;
+              }
+              // The re-acquire timed out within the absorb budget. Do NOT forward from
+              // here: rotation, the transient wait and the absorb have now ALL failed,
+              // which is EXACTLY the precondition the last-resort downgrade documents.
+              // The live ladder fell THROUGH to it at this point rather than
+              // returning (`re-acquire timed out within the absorb budget → fall
+              // through to forward`, gateway.ts@00cc8cc6cc:4879), and porting that
+              // fall-through as a `return` is what made an opus wall hard-fail the
+              // caller with a 403 instead of downgrading it (WI-1073's own test).
+              absorbGaveUp = true;
+            }
+            // (3) LAST-RESORT OPUS→SONNET DOWNGRADE (WI-1073). Reached two ways, and
+            // both mean rotation + wait + absorb are exhausted: `downstream.start`
+            // chose it outright, or the absorb above gave up. The guard therefore
+            // lives HERE rather than only at the decision site — `!transient` = a
+            // usage cap / org-disallow 403 / unified-window rejection we cannot wait
+            // out, and (403|429) excludes a 529 server-overload, where sonnet is
+            // overloaded too and downgrading would not help. At-most-once, and it
+            // reuses the same bounded machinery with reset budgets — exactly a fresh
+            // request's bound — so a failure of this net degrades to the forward it
+            // replaced and cannot wedge.
+            if (
+              !opusDowngraded &&
+              !taken.transient &&
+              (taken.status === 403 || taken.status === 429) &&
+              model.includes('opus')
+            ) {
+              const sonnetBody = rewriteRequestModel(bodyBuf, LAST_RESORT_SONNET_MODEL);
+              if (sonnetBody) {
+                opusDowngraded = true;
+                opusToSonnetDowngrades++;
+                bodyBuf = sonnetBody;
+                model = LAST_RESORT_SONNET_MODEL;
+                stageSpan?.setModel(model);
+                if (!hardPin) active = pool.active(); // spread the sonnet retry; a hard pin stays put
+                gov = governorForAccount(model, active.accountId); // rebind pacing to the sonnet bucket
+                attemptsUsed = 0;
+                transientWaitedMs = 0;
+                retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
+                log(
+                  'warn',
+                  `inference-gateway: opus exhausted pool-wide (hard wall, status ${taken.status}) → LAST-RESORT downgrade opus→${LAST_RESORT_SONNET_MODEL} for '${wantOwner ?? 'unpinned'}' on '${active.accountId}' (WI-1073) so the loop runs on available capacity`,
+                );
+                continue;
+              }
+            }
+            // Nothing rescued it. The body was discarded when we intercepted, so
+            // forward the peeked head alone — byte-for-byte what the live handler
+            // sent on this same path.
+            if (!res.headersSent && !reqAbort.signal.aborted) {
+              // An absorb that gave up still routed and still owes its outcome
+              // record; a downgrade-rung forward never recorded one.
+              if (absorbGaveUp) {
+                recordRoute(wantOwner, active.accountId, model);
+                recordOwnerOutcome(
+                  wantOwner,
+                  taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
+                  { account: active.accountId, status: taken.status },
+                );
+              }
+              res.writeHead(taken.status, taken.outHeaders);
+              if (taken.peeked.length) res.write(taken.peeked);
+              res.end();
+            }
+            return;
+          }
+
+          endCacheProbe();
+          const failure =
+            error instanceof GatewayRequestKernelError
+              ? error
+              : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+                  code: 'gateway-error',
+                  outcome: 'gateway-error',
+                  status: 500,
+                  cause: error,
+                });
+
+          if (failure.code === 'request-ceiling') {
+            log(
+              'error',
+              `inference-gateway: request hit the ${requestCeilingMs}ms hard ceiling on '${active.accountId}' — force-terminating`,
+            );
+            try {
+              res.destroy();
+            } catch {
+              /* already torn down */
+            }
+            return;
+          }
+          // The relay had already begun, so there is no status left to send — give an
+          // SSE client a parseable final error instead of a bare reset.
+          if (res.headersSent) {
+            endStreamWithError(failure.code === 'upstream-body-idle' ? 'stalled (aborted)' : 'errored');
+            return;
+          }
+          if (reqAbort.signal.aborted) {
+            try {
+              res.destroy();
+            } catch {
+              /* already torn down */
+            }
+            return;
+          }
+
+          // A TOKEN failure: penalized per-attempt above. Shed a retryable 503 and
+          // record the stall so the stall-waker re-wakes an identified bee when this
+          // account recovers.
+          if (failure.code === 'upstream-error' && failure.status === 503) {
             beeTokenStall++;
-            recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'token stall 503' }); // P-008 ledger
-            // P-002 autowake-coverage (2026-06-22): record a stall so the stall-waker re-wakes an IDENTIFIED bee
-            // when this account recovers, instead of the bee just dying on a retryable 503 with nobody retrying.
+            recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'token stall 503' });
             recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
             sendJson(
               res,
@@ -4096,202 +5163,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
               },
               { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
             );
+            return;
           }
-          return;
-        } finally {
-          stageSpan?.endStage('auth');
-        }
-        const headers: Record<string, string> = { ...baseHeaders, authorization: `Bearer ${token}` };
 
-        // Per-attempt abort + stall deadline: aborts THIS upstream call (headers or body) if it
-        // stalls, converting a permanent hang into a reject → the finally releases the admission slot.
-        const ac = new AbortController();
-        currentAc = ac; // expose this attempt's controller to the hard-ceiling backstop
-        const armStall = (ms: number) => {
-          clearStall();
-          stallTimer = setTimeout(() => ac.abort(new Error(`upstream stall: no activity for ${ms}ms`)), ms);
-          stallTimer.unref?.();
-        };
-        let up: Response;
-        // Per-attempt egress IP selected from the account's pool (egress-ip-pool) — declared at loop-body
-        // scope so the transport-failure catch + the 429 handler cool/rotate the EXACT IP this attempt used.
-        let curEgressEntry: AccountEgress | undefined;
-        let curEgressKey = egressCacheKey(active.accountId, undefined);
-        try {
-          // Per-account egress ATTEMPT tally (denominator for egressFailsByAccount → /stats egressFailRateByAccount).
-          // Counted here (token refresh already succeeded, so the egress proxy is about to be dialed) — a token
-          // stall above never reached the proxy and must not count as an egress attempt.
-          egressAttemptsByAccount.set(active.accountId, (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1);
-          const init: FetchInit = { method: req.method ?? 'POST', headers, signal: ac.signal };
-          if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
-          // Per-account IP routing: forward this account's request through the egress IP selected from its
-          // pool this attempt (egress-ip-pool round-robin); absent ⇒ default (shared) egress.
-          const picked = pickEgress(active, Date.now());
-          curEgressEntry = picked.entry;
-          curEgressKey = picked.key;
-          const dispatcher = await dispatcherFor(active, curEgressEntry);
-          if (dispatcher) init.dispatcher = dispatcher;
-          // Wait for response HEADERS under the headers deadline; once they arrive, switch to the
-          // per-chunk body-idle deadline (reset on each streamed byte below).
-          // WEDGE-PREVENTION LADDER: while waiting for headers the request has made NO progress, so it may
-          // not hold its admission slot past the retry deadline — cap the headers wait by the remaining
-          // deadline (Math.max floor so an at-deadline retry still gets a brief attempt, not a 0ms abort).
-          // This bounds even the generous 5-min non-streaming headers timeout under an upstream stall storm.
-          // NB: only the HEADERS wait is deadline-capped; once headers arrive we arm body-idle (below), which
-          // is NOT deadline-bounded — a healthy long STREAM keeps its slot as long as bytes flow (progress
-          // resets body-idle), so this never aborts a legitimately-streaming response.
-          const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
-          armStall(Math.max(1, Math.min(headersStallMs, retryDeadlineAt - Date.now())));
-          stageSpan?.recordAttempt();
-          stageSpan?.beginStage('upstreamTtfb');
-          up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
-          stageSpan?.endStage('upstreamTtfb');
-          armStall(upstreamBodyIdleTimeoutMs);
-          // Transport succeeded for THIS account (response headers arrived) — its egress proxy works, so
-          // clear its transport-failure streak. A 429/5xx still means the proxy WORKED (just throttled —
-          // that's the 429 path's job, not the egress circuit's).
-          egressFailStreak.delete(active.accountId);
-          lastEgressOkAt.set(active.accountId, Date.now()); // real traffic proved the route — the proactive prober skips it
-          proactiveProbeFailStreak.delete(active.accountId);
-          // EI-18791887279744938 (defect A): a real transport success on THIS exact egress IP means it is
-          // no longer hard-down — clear its escalating streak (so a LATER isolated blip re-opens at the base
-          // cooldown, not the escalated exile a chronic streak would otherwise inherit) AND its cooldown
-          // itself (a proven-live IP must rejoin rotation now, not sit out the remainder of an escalated
-          // cooldown it just disproved — mirrors the bare-429 success clear a few hundred lines below).
-          if (ipTransportFailStreak.has(curEgressKey)) ipTransportFailStreak.delete(curEgressKey);
-          if (ipCooldownUntil.has(curEgressKey)) ipCooldownUntil.delete(curEgressKey);
-          checkEgressProxyHealthAlarm(active); // defect B: a recovered IP may clear a standing "all proxies down" alarm
-        } catch (e) {
-          stageSpan?.endStage('upstreamTtfb');
-          clearStall();
-          upstreamErrors++;
-          const stalled = ac.signal.aborted;
-          log(
-            'error',
-            `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${active.accountId}': ${(e as Error).message}`,
-          );
-          // TRANSPORT-FAILURE EGRESS CIRCUIT BREAKER (B-GW-EGRESS, 2026-06-20 dead-proxy wedge) — SCOPED
-          // to accounts that egress through an HTTP PROXY. A fetch that STALLS (a dead/half-dead proxy
-          // CONNECT-hangs → the stall-guard aborts) or fails to connect never reaches Anthropic, so —
-          // unlike a 429 — it carries NO HTTP status and never fed account health. A DEAD egress proxy
-          // therefore accrued ZERO penalty: the router kept scoring it "healthiest", routed the MOST
-          // traffic to it, AND overrode session pins onto it ("yields to liveness") — one half-dead
-          // Rayobyte squid (aviynw6/216.41.233.249, 60s CONNECT hangs) wedged the whole gateway into a
-          // restart storm. Fix: feed the transport failure into the SAME gov.pausedUntil lever the 429
-          // hard-cap uses (so the existing pin-yield + cross-account selector route around it), escalate
-          // a consecutive STREAK to a longer OPEN circuit, and ROTATE + retry rather than 502-ing the bee.
-          //   SCOPING: only an account WITH an http proxy can have a DEAD proxy. An account with NO proxy
-          //   that transport-fails is an Anthropic/network-side stall (the proxy can't be the fault), so
-          //   it keeps the existing fast-502 — the bee's CLI retries, the next request lands on the
-          //   failover-rotated active(), and AIMD shrinks concurrency under a sustained Anthropic stall —
-          //   and its healthy account is NOT penalized. (Mirrors dispatcherFor's http(s)-proxy check.)
-          const usedEg = curEgressEntry ?? active.egress;
-          const hasEgressProxy = !!usedEg?.proxyUrl && /^https?:\/\//i.test(usedEg.proxyUrl);
-          if (hasEgressProxy) {
-            egressFailsByAccount.set(active.accountId, (egressFailsByAccount.get(active.accountId) ?? 0) + 1);
-            // PER-IP egress rotation (egress-ip-pool): cool the IP that just transport-failed; if the SAME
-            // account still has another off-cooldown egress IP, retry on it (same credential — honors hard
-            // pins) instead of opening the whole-account circuit. Falls through to the account-level circuit
-            // below only when ALL of the account's IPs are cooled (the 0/1-IP case → byte-identical).
-            //   ESCALATING (EI-18791887279744938 defect A): a FIXED cooldown here re-admitted a permanently-
-            // dead egress into rotation on a constant cycle FOREVER — a hard-down host got no worse treatment
-            // than a one-off blip, so roughly half of upstream attempts against a 2-entry pool kept re-dialing
-            // it (each burning a full transport timeout, ~12s measured). Mirror ipBare429Streak's doubling
-            // escalation: a genuinely-flapping IP still recovers at the base pace (a real success above clears
-            // the streak), but a hard-down one backs off toward effectively-removed instead.
-            const ipTransportStreak = (ipTransportFailStreak.get(curEgressKey) ?? 0) + 1;
-            ipTransportFailStreak.set(curEgressKey, ipTransportStreak);
-            const ipTransportCoolMs = Math.min(
-              IP_TRANSPORT_COOLDOWN_MS * 2 ** (ipTransportStreak - 1),
-              IP_TRANSPORT_COOLDOWN_MAX_MS,
-            );
-            coolIp(curEgressKey, ipTransportCoolMs);
-            checkEgressProxyHealthAlarm(active); // defect B: this failure may be the LAST reachable proxy entry
-            if (
-              siblingEgressAvailable(active, Date.now(), curEgressKey) &&
-              attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 &&
-              Date.now() < retryDeadlineAt
-            ) {
-              attempt++;
-              log(
-                'warn',
-                `inference-gateway: egress IP ${egDesc(usedEg)} for '${active.accountId}' transport-${stalled ? 'stalled' : 'failed'} — cooled ${Math.round(ipTransportCoolMs / 1000)}s (streak ${ipTransportStreak}); rotating to a sibling IP on the SAME account (egress-ip-pool)`,
-              );
-              continue;
-            }
-            const streak = (egressFailStreak.get(active.accountId) ?? 0) + 1;
-            egressFailStreak.set(active.accountId, streak);
-            const circuitOpen = streak >= EGRESS_FAIL_CIRCUIT_THRESHOLD;
-            // FLAPPING BACKOFF: a proxy that reopens within EGRESS_FLAP_RESET_MS of its last open is chronic —
-            // double its open each time (capped) so we stop thrashing it; one stable for longer resets to base.
-            let openMs = EGRESS_CIRCUIT_OPEN_MS;
-            if (circuitOpen) {
-              const now = Date.now();
-              const stableFor = now - (egressLastOpenAt.get(active.accountId) ?? 0);
-              // C2: only ESCALATE the flap backoff for a DEAD proxy (connect-error). A TTFB STALL (Anthropic
-              // holding) hits every account repeatedly during a hold-storm; doubling its open would exile a
-              // budget-healthy account up to EGRESS_CIRCUIT_OPEN_MAX_MS when it recovers in seconds — keep stalls
-              // at the BASE open so they rejoin fast (the absorb + half-open probe carry the recovery).
-              const reopen =
-                !stalled && stableFor < EGRESS_FLAP_RESET_MS ? (egressReopenCount.get(active.accountId) ?? 0) + 1 : 0;
-              egressReopenCount.set(active.accountId, reopen);
-              egressLastOpenAt.set(active.accountId, now);
-              openMs = Math.min(EGRESS_CIRCUIT_OPEN_MS * 2 ** reopen, EGRESS_CIRCUIT_OPEN_MAX_MS);
-            }
-            const pauseMs = circuitOpen ? openMs : TRANSIENT_429_BACKOFF_MS;
-            const resetAt = Date.now() + pauseMs;
-            // take-MAX (recordPenalty) → this never SHORTENS a legitimate longer 429/usage-cap pause.
-            // transport:true — this pauses the account ONLY to route around its bad egress PROXY (pin-yield reads
-            // pausedUntil); it is NOT a rate/budget signal, so the account-pool exhaustion/scale-out observer +
-            // the fleet AIMD must NOT count it (a flaky proxy must never mark a quota-healthy account "exhausted").
-            gov.penalize({ retryAfterMs: pauseMs, resetAt, transport: true });
-            if (circuitOpen) {
-              egressCircuitOpens++;
-              egressPauseUntil.set(active.accountId, resetAt); // mark the TRANSPORT pause so the probe can lift exactly it on recovery
-              const reopen = egressReopenCount.get(active.accountId) ?? 0;
-              log(
-                'warn',
-                `inference-gateway: EGRESS CIRCUIT OPEN for '${active.accountId}' (${streak} consecutive transport failures${reopen > 0 ? `, flap×${reopen}` : ''}) — out of rotation ≤${Math.round(pauseMs / 1000)}s; half-open probe readmits after ${EGRESS_PROBE_READMIT_STREAK} stable probes`,
-              );
-              scheduleEgressProbe(active, gov, resetAt);
-            }
-            // ROUTE AROUND IT: rotate to a healthy account + retry on the same admission slot (like the
-            // usage-cap path). pool.onExhausted also marks this account out of the round-robin until
-            // resetAt and hands back the next account with budget.
-            // WEDGE-PREVENTION LADDER: only rotate+retry while still WITHIN the slot-hold deadline. Under an
-            // Anthropic-WIDE stall storm (every proxy account TTFB-stalls — not a dead proxy), this branch
-            // would otherwise chain INTERNAL_RETRY_MAX_ATTEMPTS × ~60s stalls and squat the slot for minutes
-            // (past the 75s self-heal / 120s watchdog → the restart storm). Past the deadline → fall through
-            // to the fast retryable 503 below, freeing the slot so the bee's CLI retries against a recovered pool.
-            if (!hardPin && attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && Date.now() < retryDeadlineAt) {
-              const next = pool.onExhausted(active.accountId, resetAt);
-              if (next && next.accountId !== active.accountId) {
-                failovers++;
-                stageSpan?.recordFailover();
-                everRotated = true;
-                active = next;
-                gov = governorForAccount(model, active.accountId);
-                attempt++;
-                log(
-                  'warn',
-                  `inference-gateway: transport ${stalled ? 'stall' : 'failure'} on egress proxy → failover to '${active.accountId}' (attempt ${attempt})`,
-                );
-                continue;
-              }
-            }
-            // STALL ABSORPTION (#2, su-3650b incident): the DOMINANT failure under an Anthropic-wide stall storm
-            // dies HERE (every proxy account TTFB-stalls → rotation exhausted). The 429-absorb can't help (no
-            // 429). So before sheding the retryable 503, if absorb budget remains, HOLD the caller: release the
-            // slot (the re-acquire's wait holds NO slot → cannot wedge), re-acquire on the pool's current-best
-            // account (gov.acquire waits for a circuit-OPEN account's transport-pause to lift via the half-open
-            // probe), and retry — so the caller WAITS through the storm and succeeds instead of erroring. Kill-
-            // switch PAPERCUSP_GATEWAY_ABSORB_STALLS=0.
-            //   everRotated GUARD (wires up the documented purpose of `everRotated` decl'd above): only a
-            //   MULTI-account storm (we actually rotated → the pool HAS flapping/recovering alternatives) is
-            //   worth holding the caller for. A LONE permanently-dead proxy (everRotated false → no alternative)
-            //   must shed FAST — re-acquiring on the SAME dead account would just re-stall for the whole absorb
-            //   budget (8–60s), the bug the egress-circuit "LONE dead proxy sheds FAST" / "N consecutive
-            //   failures → 503" / autowake-503 / streak-reset tests assert against.
+          const stalled = failure.code === 'ttfb-timeout' || failure.code === 'upstream-body-idle';
+          if (lastTransportHadProxy) {
+            // STALL ABSORPTION: the DOMINANT failure under an Anthropic-wide stall
+            // storm dies here (every proxy account TTFB-stalls, so rotation is
+            // exhausted and the 429-absorb cannot help — there is no 429). Hold the
+            // caller through it rather than shedding a 503.
+            //   everRotated GUARD: only a MULTI-account storm — alternatives that
+            //   flap and recover — is worth holding for. A LONE permanently-dead
+            //   proxy must shed FAST, since re-acquiring on the same dead account
+            //   would just re-stall for the whole absorb budget.
             if (
               ABSORB_STALLS_ON &&
               everRotated &&
@@ -4307,19 +5191,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 cand = pool.active();
                 candGov = governorForAccount(model, cand.accountId);
               } catch {
-                /* pool empty / all-exhausted → keep the current account; the re-acquire still waits for recovery */
+                /* pool empty / all-exhausted → keep the current account; the re-acquire still waits */
               }
               const reacq = await candGov.acquire(est, {
                 maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()),
                 allowSoftPaused: serveSoft,
-                signal: reqAbort.signal, // H12: a reclaim/ceiling truly cancels this parked re-acquire
+                signal: reqAbort.signal,
               });
               if (reacq) {
                 release = reacq;
                 active = cand;
                 gov = candGov;
-                retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
-                attempt = 0;
+                retryDeadlineAt = Date.now() + internalRetryDeadlineMs;
+                attemptsUsed = 0;
                 transientWaitedMs = 0;
                 log(
                   'warn',
@@ -4327,763 +5211,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 );
                 continue;
               }
-              // re-acquire timed out within the budget → fall through to the retryable 503 (release is the no-op → finally safe)
+              // re-acquire timed out → fall through to the retryable 503
             }
-            // No healthy account left / rotation budget spent — return a RETRYABLE 503 (the bee's CLI
-            // retries; the next request lands on the failover-rotated active()), never a terminal 502.
-            if (!res.headersSent) {
-              beeEgressExhausted++;
-              recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'egress exhausted 503' }); // P-008 ledger
-              // P-002 autowake-coverage (2026-06-22): the dominant bee-facing-503 exit. Record a stall so the
-              // stall-waker re-wakes an IDENTIFIED bee once this account/proxy recovers — without this the bee
-              // just dies (the gateway's biggest "nothing goes through" path went unrecorded → /admin/stalls empty).
-              recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
-              sendJson(
-                res,
-                503,
-                {
-                  type: 'error',
-                  error: {
-                    type: 'overloaded_error',
-                    message: `inference-gateway: egress proxy ${stalled ? 'stall' : 'transport error'} on '${active.accountId}'; retry shortly`,
-                  },
-                  gateway: true,
+            // No healthy account left / rotation budget spent — a RETRYABLE 503 (the
+            // bee's CLI retries; the next request lands on the failover-rotated
+            // active()), never a terminal 502.
+            beeEgressExhausted++;
+            recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'egress exhausted 503' });
+            recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
+            sendJson(
+              res,
+              503,
+              {
+                type: 'error',
+                error: {
+                  type: 'overloaded_error',
+                  message: `inference-gateway: egress proxy ${stalled ? 'stall' : 'transport error'} on '${active.accountId}'; retry shortly`,
                 },
-                { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
-              );
-            }
+                gateway: true,
+              },
+              { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: active.accountId },
+            );
             return;
           }
-          // No egress proxy → an Anthropic/network-side stall, not a dead proxy: preserve the existing
-          // fast-502 (the bee's CLI retries those; the next request lands on the failover-rotated
-          // active()). The upstream stall-guard already aborted the hang; do not penalize a healthy account.
-          // (Deliberate: NOT absorbed — absorbing a no-proxy stall would hold callers through a persistent
-          // Anthropic-side stall storm, the 2026-06-19 deadlock the HEADERS-stall + chaos tests guard against.)
+          // No egress proxy → an Anthropic/network-side stall, not a dead proxy:
+          // keep the fast 502 and do NOT penalize a healthy account. Deliberately
+          // NOT absorbed — absorbing a no-proxy stall would hold callers through a
+          // persistent Anthropic-side storm, the 2026-06-19 deadlock.
           sendJson(res, 502, {
             type: 'error',
             error: {
               type: 'api_error',
-              message: `inference-gateway upstream ${stalled ? 'stall timeout' : 'error'}: ${(e as Error).message}`,
+              message: `inference-gateway upstream ${stalled ? 'stall timeout' : 'error'}: ${failure.message}`,
             },
             gateway: true,
           });
           return;
         }
-
-        const hobj = headersToObject(up.headers);
-        gov.recordResponse(hobj);
-        deps.onResponse?.(hobj, up.status, model, active.accountId);
-
-        // A peeked NON-200 body, kept so it can be FORWARDED if we end up not retrying. Successful 200
-        // streams are NEVER peeked — the hot path keeps zero added latency + no false-positive risk.
-        let peekedHead: Buffer | null = null;
-        let peekedRest: Readable | null = null;
-        // When set, the gateway re-attempts (usually on a rotated account) before responding — absorbing
-        // a transient throttle / routing past a usage cap so the bee never sees the error.
-        let internalRetry: { rotate: boolean; backoffMs: number; exhaustResetAt: number; ipRotate?: boolean } | null =
-          null;
-        // G1 (WI-649): set in the bare-429 branch when ≥half the pool is out of rotation — suppresses the
-        // cross-account rotate-retry below so a fleet-wide storm doesn't fan out ~2.4 upstream calls/request.
-        let suppressBareBurstRotate = false;
-        // Hard-evidence 429-shape suffix for the retry log (set inside the 429 block where the headers are in
-        // scope; empty for non-429). Makes the capacity-vs-routing read come from data, not a guess.
-        let shape429Suffix = '';
-        // WI-3150: the account that ACTUALLY threw this 429 — captured BEFORE the failover branch below may
-        // reassign `active` to a rotated-to account. `shape429Suffix` (util5h/util7d + provenance) is built
-        // from THIS attempt's response headers, so the retry log MUST name this same account or the util
-        // headers get attributed to the wrong account (the shuffle that made a bare-burst on a healthy account
-        // read as weekly exhaustion on the account we rotated TO). Declared in the outer scope (like
-        // shape429Suffix) because the retry-log site lives past the 429 block's close; assigned just below.
-        let throttled429AccountId = active.accountId;
-
-        if (up.status === 429 || up.status === 529) {
-          upstream429++;
-          throttled429AccountId = active.accountId;
-          // AIMD signal (B-GW-1, refined 2026-06-21 budget-aware routing): a 429 shrinks GLOBAL admission
-          // concurrency ONLY when it's genuine pool-wide over-drive — i.e. we could NOT route it around to a
-          // healthy account. recordThrottle() is therefore DEFERRED to the failover decision below: a
-          // per-account quota/throttle 429 that successfully fails over to a healthy account is a ROUTING
-          // event, NOT global pressure, so it must not shrink concurrency. (The bug it fixes: every 429 —
-          // incl. quota-429s from the 98-99%-maxed accounts the round-robin kept hitting — recorded a
-          // throttle, collapsing effective→AIMD-floor while 5/8 accounts sat at 55-91% headroom, so 34
-          // requests queued behind a 4-wide gate and timed out → the owner-reported bee "API errors".)
-          // 529 is server-overload (not per-IP RPM) and never counts.
-          const reset = parseRateReset(hobj);
-          const unifiedRejected = gov.snapshot().unified?.rejected === true;
-          // Anthropic's AUTHORITATIVE per-request signal: `x-should-retry: true` on a 429 means a SHORT
-          // TRANSIENT burst-throttle (capacity exists, retry), NOT quota/5h exhaustion (which sets
-          // x-should-retry:false + window/retry-after headers). This OVERRIDES a stale governor
-          // `unified.rejected` latch: a single past 5h-window rejection used to mis-mark every later
-          // transient opus 429 as "5h-exhausted", so the gateway rotated through ALL accounts treating
-          // each as dead and forwarded the retryable 429 (the owner-reported "accounts aren't saturated
-          // but the gateway 429s" bug, 2026-06-18). Trust x-should-retry over the latched flag.
-          const shouldRetry = String(hobj['x-should-retry'] ?? '').toLowerCase() === 'true';
-          // A BARE 429: rate_limit_error with NO window headers — a transient burst throttle (the
-          // aviynw10 stuck-loop, 2026-06-17). A 429 may ALSO be a hard usage/session CAP — the BODY names
-          // it ("hit your session limit"); util can be 0 on a capped account (a DIFFERENT meter than the
-          // rolling window), so only the body reveals it. Peek the tiny error body to tell them apart.
-          const bare429 =
-            up.status === 429 &&
-            reset.retryAfterMs === undefined &&
-            reset.resetAt === undefined &&
-            (!unifiedRejected || shouldRetry);
-          let usageCapResetAt: number | undefined;
-          if (up.body) {
-            let peek: { head: Buffer; rest: Readable | null };
-            try {
-              peek = await withDeadline(
-                peekBody(up.body, USAGE_LIMIT_PEEK_BYTES),
-                upstreamBodyIdleTimeoutMs,
-                'peekBody',
-              );
-            } catch {
-              // BOUNDED peek (2026-06-22 audit F3): peekBody's reader isn't wired to ac.abort, so a non-200 body
-              // that's ACK'd but never arrives would hold the slot past the stall deadline. Cap it + treat as
-              // un-peekable (empty head → no usage-cap/org classification → forwarded as a normal error).
-              try {
-                await up.body.cancel();
-              } catch {
-                /* drain the stalled body */
-              }
-              peek = { head: Buffer.alloc(0), rest: null };
-            }
-            peekedHead = peek.head;
-            peekedRest = peek.rest;
-            const text = peek.head.toString('utf8');
-            if (classifyHttpError({ status: undefined, message: text }, 'anthropic').class === 'usage_limit') {
-              // Instant only: this path pauses the ACCOUNT, not a loop's re-arm, so it is not a
-              // consumer of the re-arm precision tiers (EI-20544023385610622). Its own bound is
-              // the parser's 35d `USAGE_RESET_MAX_HORIZON_MS`, and the separate account-pause
-              // clamp is `WEEKLY_CAP_MAX_PAUSE_MS` above — deliberately left as they were.
-              usageCapResetAt = parseUsageReset(text)?.atMs ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
-            }
-          }
-          // Hard-evidence 429-shape suffix (gateway-429-shape-observability): everything needed is in scope here
-          // (headers + the bare/usage-cap classification). bare-burst = CAPACITY EXISTS (transient) — an account at
-          // util5h/util7d ≪ 1 that 429s here is NOT a quota wall; usage-cap = a real per-account wall. Surfacing
-          // util5h/util7d at the 429 site lets a capacity-vs-routing read come from data, not a guess.
-          if (up.status === 429) {
-            const shape429 = classify429Shape({
-              status: up.status,
-              isUsageCap: usageCapResetAt !== undefined,
-              bare: bare429,
-              hasWindowReset: reset.retryAfterMs !== undefined || reset.resetAt !== undefined,
-              unifiedRejected,
-            });
-            const u5 =
-              hobj['anthropic-ratelimit-unified-5h-utilization'] ??
-              hobj['anthropic-ratelimit-unified-utilization'] ??
-              '-';
-            const u7 = hobj['anthropic-ratelimit-unified-7d-utilization'] ?? '-';
-            shape429Suffix = ` [429-shape=${shape429} x-should-retry=${shouldRetry} retry-after=${reset.retryAfterMs ?? '-'}ms util5h=${u5} util7d=${u7}]`;
-            // BARE-BURST ORIGIN CAPTURE (WI-650/G2): a bare-burst is the unexplained throttle the fleet hits at
-            // util≪1 — and the G2 experiment proved it is NOT a per-account rate/concurrency wall (one account
-            // sustains ≥64 concurrent opus with zero bare-bursts), so it is a SHARED edge/infra-layer throttle.
-            // On THAT shape, append the provenance headers that say WHO threw it: a Cloudflare/edge throttle
-            // carries `server: cloudflare` + `cf-ray` (and usually NO Anthropic request-id); an Anthropic
-            // app-layer 429 carries `request-id`/`anthropic-organization-id`. Captured into the same suffix so
-            // every production bare-burst self-classifies in journald — "Anthropic or CDN edge?" reads from data.
-            if (shape429 === 'bare-burst') {
-              const origin = (
-                [
-                  ['server', hobj['server']],
-                  ['cf-ray', hobj['cf-ray']],
-                  ['via', hobj['via']],
-                  ['req-id', hobj['request-id'] ?? hobj['x-request-id']],
-                  ['org', hobj['anthropic-organization-id']],
-                  ['unified-status', hobj['anthropic-ratelimit-unified-status']],
-                ] as const
-              )
-                .filter(([, v]) => v !== undefined)
-                .map(([k, v]) => `${k}=${v}`)
-                .join(' ');
-              shape429Suffix += ` [bare-burst-origin ${origin || 'no-provenance-headers'}]`;
-            }
-            // COLD-REST CAUSATION PROBE (WI-3151): if THIS account rejoined rotation from a cold rest
-            // moments ago and is 429ing anyway, name whether the rest failed because of the account's own
-            // budget (`account-still-latched`) or a shared edge/IP throttle (`edge-not-account`). Pure
-            // observability appended to the same journald suffix — never a routing input (see the const).
-            const msSinceReadmit = pool.msSinceReadmit?.(throttled429AccountId);
-            const util5hNum = Number(u5);
-            const coldRestCause = classifyColdRest429({
-              shape: shape429,
-              msSinceReadmit,
-              windowMs: COLD_REST_CAUSATION_WINDOW_MS,
-              utilization5h: Number.isFinite(util5hNum) ? util5hNum : undefined,
-              highUtil: COLD_REST_HIGH_UTIL,
-            });
-            if (coldRestCause !== 'not-cold-rest') {
-              shape429Suffix += ` [cold-rest-cause=${coldRestCause} since-readmit=${msSinceReadmit ?? '-'}ms]`;
-            }
-          }
-          if (up.status === 529) {
-            // SERVER overload — NOT account budget; don't penalize/rotate the account, just back off + retry.
-            internalRetry = { rotate: false, backoffMs: OVERLOAD_529_BACKOFF_MS, exhaustResetAt: 0 };
-          } else if (usageCapResetAt !== undefined) {
-            // Hard cap on THIS account → pause it to its reset (the pin yields to liveness + the selector
-            // skips it), then rotate + retry immediately (the bee classifies usage_limit as a no-retry wall).
-            gov.penalize({ resetAt: usageCapResetAt });
-            internalRetry = { rotate: true, backoffMs: 0, exhaustResetAt: usageCapResetAt };
-          } else {
-            // A transient/bare/unified-window 429 — account-specific. Pace this account, then rotate to a
-            // fresh one + retry after a short backoff (a different account usually sidesteps the throttle),
-            // so the bee's SMALL CLI retry budget never exhausts ("Server is temporarily limiting requests"
-            // → $0 rc=1). NB: a unified rolling-window rejection already had its BOUNDED re-probe pause set
-            // by recordResponse — do NOT penalize to the full multi-hour reset (the stale-pause bug).
-            let exhaustResetAt: number;
-            let bareIpRotate = false; // egress-ip-pool: retry the SAME account on a sibling egress IP (bare-burst 429)
-            if (!unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
-              // rateLimited:true — this is a per-minute/burst RATE 429 → AIMD-decrease this account's learned rpm
-              // (predict→wait→learn→retry, 2026-06-22) so decideRate paces future requests under its real rate.
-              gov.penalize({ ...reset, rateLimited: true });
-              exhaustResetAt =
-                reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, 5 * 60 * 1000);
-            } else if (bare429) {
-              // PER-IP egress rotation (egress-ip-pool): a bare-burst 429 is a Cloudflare per-IP EDGE throttle on
-              // the egress IP (util5h/7d headers absent), NOT the account budget. If the SAME account has another
-              // off-cooldown egress IP, cool THIS IP (escalating with its per-IP streak) + retry the same account
-              // /credential on the sibling IP — honoring hard pins, with NO whole-account pause. Only when the
-              // account has no other usable IP do we fall through to the per-account BARE-429 circuit (today's path).
-              // A bare-burst 429 is a Cloudflare per-IP throttle on WHATEVER IP this attempt used (a proxy
-              // OR the box-default IP) — so rotate to any sibling IP regardless of the current IP's kind
-              // (unlike the transport circuit, which is proxy-scoped because a no-proxy stall is Anthropic-side).
-              const usedEg = curEgressEntry ?? active.egress;
-              if (siblingEgressAvailable(active, Date.now(), curEgressKey)) {
-                const ipStreak = (ipBare429Streak.get(curEgressKey) ?? 0) + 1;
-                ipBare429Streak.set(curEgressKey, ipStreak);
-                const ipCoolMs = Math.min(bare429FailoverBackoffMs * 2 ** (ipStreak - 1), IP_COOLDOWN_MAX_MS);
-                coolIp(curEgressKey, ipCoolMs);
-                bareIpRotate = true;
-                exhaustResetAt = Date.now() + bare429FailoverBackoffMs;
-                log(
-                  'warn',
-                  `inference-gateway: bare-burst 429 on egress IP ${egDesc(usedEg)} for '${active.accountId}' (cloudflare per-IP throttle) — cooling that IP ${Math.round(ipCoolMs / 1000)}s + rotating to a sibling IP on the SAME account (egress-ip-pool)`,
-                );
-              } else {
-                // BARE-429 PERSISTENCE CIRCUIT (auto-route-around): a brief burst is paced 15s, but a SUSTAINED
-                // streak = a per-IP edge throttle that isn't clearing → escalate the pause (double per step, capped)
-                // so the pool routes AROUND this IP to healthy accounts instead of re-hammering it every 15s forever.
-                const streak = (bare429Streak.get(active.accountId) ?? 0) + 1;
-                bare429Streak.set(active.accountId, streak);
-                const circuitOn = BARE429_CIRCUIT_THRESHOLD > 0 && streak >= BARE429_CIRCUIT_THRESHOLD;
-                const pauseMs = circuitOn
-                  ? Math.min(
-                      bare429FailoverBackoffMs * 2 ** (streak - BARE429_CIRCUIT_THRESHOLD + 1),
-                      BARE429_CIRCUIT_MAX_MS,
-                    )
-                  : bare429FailoverBackoffMs;
-                gov.penalize({ retryAfterMs: pauseMs, resetAt: Date.now() + pauseMs, rateLimited: true });
-                exhaustResetAt = Date.now() + pauseMs;
-                if (circuitOn) {
-                  log(
-                    'warn',
-                    `inference-gateway: BARE-429 CIRCUIT for '${active.accountId}' (${streak} consecutive bare-429s — persistent per-IP edge throttle, not a brief burst) → pausing ${Math.round(pauseMs / 1000)}s so the pool routes around this IP`,
-                  );
-                }
-                // G1 (WI-649): a bare-burst is a TRANSIENT throttle (capacity exists) — distinct from the usage-cap
-                // wall handled above. If ≥half the pool is already out of rotation, rotating onto "another" account
-                // finds no capacity and just sustains the storm → suppress the rotate-retry so this request falls
-                // through to the bounded transient-wait / absorb / fail-fast-shed (≈1 upstream call, not ~2.4).
-                suppressBareBurstRotate = isFleetWideBareBurst() || noteRecentBareBurstCluster(active.accountId);
-              }
-            } else {
-              exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
-            }
-            internalRetry = {
-              rotate: !bareIpRotate,
-              backoffMs: bareIpRotate ? 0 : TRANSIENT_429_BACKOFF_MS,
-              exhaustResetAt,
-              ipRotate: bareIpRotate,
-            };
-            // Keep the edge signal live even when a sibling IP lets this request succeed. The account
-            // remains serviceable in that case, but operators must see why a pinned route degraded.
-            bare429PauseUntil.set(
-              active.accountId,
-              Math.max(bare429PauseUntil.get(active.accountId) ?? 0, exhaustResetAt),
-            );
-          }
-        } else if (up.status === 403) {
-          // Account-level org/subscription DISQUALIFICATION (not a transient throttle): the account's
-          // Anthropic org disabled OAuth API access, or Claude Code for the subscription. Forwarding the
-          // 403 hard-fails the bee AND, when this account is active(), 403-blocks the WHOLE fleet
-          // (avi-storewolf, 2026-06-18). Treat it like a hard cap: pause this account out of rotation +
-          // fail over to a healthy one. A DIFFERENT 403 (not org/subscription) is forwarded unchanged.
-          if (up.body) {
-            let peek: { head: Buffer; rest: Readable | null };
-            try {
-              peek = await withDeadline(
-                peekBody(up.body, USAGE_LIMIT_PEEK_BYTES),
-                upstreamBodyIdleTimeoutMs,
-                'peekBody',
-              );
-            } catch {
-              // BOUNDED peek (2026-06-22 audit F3): peekBody's reader isn't wired to ac.abort, so a non-200 body
-              // that's ACK'd but never arrives would hold the slot past the stall deadline. Cap it + treat as
-              // un-peekable (empty head → no usage-cap/org classification → forwarded as a normal error).
-              try {
-                await up.body.cancel();
-              } catch {
-                /* drain the stalled body */
-              }
-              peek = { head: Buffer.alloc(0), rest: null };
-            }
-            peekedHead = peek.head;
-            peekedRest = peek.rest;
-            if (ORG_DISALLOWED_RE.test(peek.head.toString('utf8'))) {
-              const resetAt = Date.now() + ORG_DISALLOW_PAUSE_MS;
-              gov.penalize({ resetAt });
-              internalRetry = { rotate: true, backoffMs: 0, exhaustResetAt: resetAt };
-              // PERMANENT disqualification, NOT a transient throttle: this 6h pause is IN-MEMORY, so it resets on
-              // every gateway restart, re-exposing the dead account (aviynw org-disabled its OAuth 2026-07-01; the
-              // pause cleared on each bg-host restart so the next bee kept hitting "subscription disabled"). On a
-              // short consecutive streak, fire the persistent-deactivate side-channel ONCE so the launch layer
-              // removes it from the pool for good. The streak resets on the next 2xx for this account (below).
-              const orgStreak = (orgDisallowedStreak.get(active.accountId) ?? 0) + 1;
-              orgDisallowedStreak.set(active.accountId, orgStreak);
-              if (orgDisallowedDeactivateThreshold > 0 && orgStreak === orgDisallowedDeactivateThreshold) {
-                log(
-                  'error',
-                  `inference-gateway: account '${active.accountId}' PERMANENTLY org/subscription-disallowed (${orgStreak} consecutive 403s) → deactivating it from the pool + failover`,
-                );
-                try {
-                  // EI-15153: name the LIVE sessions that were routing through this account when it
-                  // died (their last route was it + they were recently active — they did not fail
-                  // over off it, so they are at risk of a cold orphan). Computed from the per-owner
-                  // ledger the gateway already keeps; passed to the disable side-channel so the alert
-                  // says WHICH sessions to check instead of an untargeted "account removed" notice.
-                  const affectedOwners = selectAffectedOwners(
-                    [...ownerLedger.entries()].map(([ownerId, e]) => ({
-                      ownerId,
-                      lastAccount: e.lastAccount,
-                      lastAt: e.lastAt,
-                    })),
-                    active.accountId,
-                    Date.now(),
-                  );
-                  deps.onOrgDisallowed?.({ accountId: active.accountId, consecutive: orgStreak, affectedOwners });
-                } catch {
-                  /* fire-and-forget: the deactivate side-channel must NEVER throw into the request hot path */
-                }
-              } else {
-                log(
-                  'warn',
-                  `inference-gateway: account '${active.accountId}' org/subscription-disallowed (403) → pausing ${Math.round(ORG_DISALLOW_PAUSE_MS / 3600000)}h + failover (org-disallowed streak ${orgStreak}/${orgDisallowedDeactivateThreshold})`,
-                );
-              }
-            }
-          }
-        } else if (up.status === 401) {
-          // Drop+refresh the cached token (unchanged request semantics — a STALE cached token recovers
-          // on the next request's refresh). CREDENTIAL-HEALTH (#5 PART A): a DEAD/expired credential 401s
-          // AGAIN after the refresh yields the same invalid credential — silently breaking spawns/evals
-          // with no fleet alert. Count consecutive 401s per account; the FIRST tick the streak crosses the
-          // dead threshold, fire the loud alert side-channel ONCE (fire-and-forget — never block/throw the
-          // request path). The streak resets on the next 2xx for this account (success path below).
-          active.invalidateToken?.();
-          const streak = (credential401Streak.get(active.accountId) ?? 0) + 1;
-          credential401Streak.set(active.accountId, streak);
-          if (classifyCredential401Streak(streak, credential401DeadThreshold)) {
-            log(
-              'error',
-              `inference-gateway: credential for '${active.accountId}' is DEAD — ${streak} consecutive 401s despite token refresh; firing credential-health alert`,
-            );
-            try {
-              deps.onCredentialDead?.({ accountId: active.accountId, consecutive401s: streak });
-            } catch {
-              /* fire-and-forget: the alert side-channel must NEVER throw into the request hot path */
-            }
-          }
-        }
-
-        // Internal retry with TWO SEPARATE budgets, so a fleet-wide transient burst is waited out without
-        // burning the rotation budget:
-        //   (1) INTERNAL_RETRY_MAX_ATTEMPTS bounds ROTATIONS across accounts (+ 529 server-overload back-offs).
-        //   (2) TRANSIENT_TOTAL_WAIT_BUDGET_MS bounds WAITING for a SHORT transient throttle to clear.
-        // The bug this fixes (owner-reported, 2026-06-18): with N accounts ALL transiently throttled on
-        // opus at once (x-should-retry:true — capacity exists), the old single-budget loop rotated through
-        // a few accounts, hit the attempt cap BEFORE exhausting the pool, and forwarded the retryable 429
-        // — which an in-process caller (scout/gym, no CLI retry budget) can't absorb → $0 no-ideas.
-        // Now: rotate while fresh accounts remain AND the rotation budget holds; otherwise, if the throttle
-        // is SHORT (exhaustResetAt within the recovery cap — NOT a multi-hour usage cap) and the wait budget
-        // holds, WAIT the soonest account's penalty out + retry the recovered `active`. Both budgets bound
-        // total latency, so a request can never hang. A usage cap / multi-hour reset is forwarded, not waited.
-        if (internalRetry) {
-          let proceed = false;
-          // Fix B (budget-aware routing): did this per-account 429 successfully fail over to a HEALTHY,
-          // different account? If so it's a routing event, not global over-drive — AIMD must ignore it.
-          let routedAround = false;
-          let backoff = internalRetry.backoffMs;
-          // A genuinely transient throttle resets within the recovery cap; a usage cap / org pause is hours out.
-          const transient =
-            internalRetry.exhaustResetAt > 0 &&
-            internalRetry.exhaustResetAt - Date.now() <= ALL_THROTTLED_RECOVERY_WAIT_CAP_MS;
-          if (attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
-            if (internalRetry.rotate && suppressBareBurstRotate) {
-              // G1 (WI-649): FLEET-WIDE bare-burst — ≥half the pool is out of rotation, so rotating A→B→C finds
-              // no capacity and just multiplies upstream load, sustaining the storm. SUPPRESS the rotate-retry:
-              // leave proceed=false so we fall through to the bounded transient-WAIT / absorb / fail-fast-shed
-              // below (≈1 upstream call/request instead of ~2.4). recordThrottle still fires below (routedAround
-              // stays false) — an un-routable bare-burst IS genuine pool-wide saturation, so AIMD shrinks admission.
-              bareBurstRotateSuppressed++;
-            } else if (internalRetry.rotate && hardPin) {
-              // HARD PIN: a per-account 429 must NOT rotate off the pin. Leave proceed=false so we fall through
-              // to the bounded transient-WAIT (waits on THIS same account + retries) / absorb / forward below —
-              // a transient throttle is waited out on the pin; a usage cap is forwarded. We never fail over.
-            } else if (internalRetry.rotate) {
-              const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
-              if (next && next.accountId !== active.accountId) {
-                failovers++;
-                stageSpan?.recordFailover();
-                everRotated = true;
-                active = next;
-                gov = governorForAccount(model, active.accountId);
-                attempt++;
-                proceed = true;
-                routedAround = true; // routed a per-account quota-429 to a healthy account → NOT global pressure
-              }
-            } else if (internalRetry.ipRotate) {
-              // egress-ip-pool: retry the SAME account on a sibling egress IP — the bare-burst was a per-IP
-              // Cloudflare throttle, not pool saturation. A ROUTING event, so AIMD must NOT shrink admission.
-              attempt++;
-              proceed = true;
-              routedAround = true;
-            } else {
-              // 529 server-overload: back off + retry the SAME account (no penalty/rotation).
-              attempt++;
-              proceed = true;
-            }
-          }
-          if (!proceed && transient) {
-            // Rotation can't help (no fresh account, or rotation budget spent) but the throttle is SHORT
-            // and capacity exists — wait the soonest account's penalty out + retry. `active`'s penalty
-            // expires during the wait, so the retry re-hits the recovered account. Bounded by the wait budget.
-            const waitMs = Math.min(
-              Math.max(0, internalRetry.exhaustResetAt - Date.now()),
-              ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
-              Math.max(0, retryDeadlineAt - Date.now()), // never wait PAST the wedge-prevention deadline
-            );
-            if (waitMs > 0 && transientWaitedMs + waitMs <= TRANSIENT_TOTAL_WAIT_BUDGET_MS) {
-              transientWaitedMs += waitMs;
-              backoff = waitMs;
-              proceed = true;
-              log(
-                'warn',
-                `inference-gateway: all accounts transiently throttled on ${model} → wait ${waitMs}ms + retry (wait-budget ${transientWaitedMs}/${TRANSIENT_TOTAL_WAIT_BUDGET_MS}ms)`,
-              );
-            }
-          }
-          // WEDGE-PREVENTION LADDER: regardless of remaining rotation/wait budget, never keep retrying (and
-          // squatting this admission slot) past the deadline. Shed now — fall through to forward the upstream
-          // 429 (retryable) so the slot frees BEFORE the self-heal valve (75s) / watchdog (120s) would reclaim
-          // it. This caps total slot-hold time, which is what stops the frozen-while-saturated wedge from
-          // forming at the AIMD floor under a slow-upstream storm.
-          if (proceed && Date.now() >= retryDeadlineAt) {
-            proceed = false;
-            shedAllThrottled++;
-            recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'internal-retry deadline' }); // P-008 ledger
-            log(
-              'warn',
-              `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`,
-            );
-          }
-          // AIMD throttle signal (Fix B): record a throttle ONLY for a 429 we could NOT route around to a
-          // healthy account — the genuine pool-wide-saturation signal (we waited / shed / will forward it).
-          // A routed-around per-account quota-429 stays invisible to global AIMD, so one account hitting its
-          // quota can no longer choke the whole gateway's admission concurrency.
-          if (up.status === 429 && !routedAround) providerAdmission.recordThrottle('claude');
-          if (proceed) {
-            clearStall(); // this attempt is done; the next iteration arms a fresh deadline
-            peekedRest?.destroy(); // discard the throttled/capped account's body
-            if (backoff > 0) {
-              await new Promise<void>((r) => {
-                const t = setTimeout(r, backoff);
-                t.unref?.();
-              });
-            }
-            // HARD-EVIDENCE 429 SHAPE (gateway-429-shape-observability): `shape429Suffix` names WHICH kind of 429
-            // this was (computed in the 429 block where the headers are in scope), so "is the pool actually out of
-            // capacity?" reads from the journal instead of a guess — bare-burst = CAPACITY EXISTS (transient), usage-cap
-            // = a real per-account wall, with the account's live util5h/util7d at the 429 site.
-            log(
-              'warn',
-              // WI-3150: name the account that THREW the 429 (throttled429AccountId), NOT `active` — which the
-              // rotate branch above may have already reassigned to the retry target. shape429Suffix's util
-              // headers belong to throttled429AccountId, so the two must match for the log to attribute correctly.
-              `inference-gateway: upstream ${up.status} → internal retry attempt=${attempt} wait=${transientWaitedMs}ms on '${throttled429AccountId}'${shape429Suffix}`,
-            );
-            continue;
-          }
-          // EXTENDED ABSORPTION (env-gated, requestAbsorbMs): we are about to FORWARD a retryable failure to the
-          // caller — rotation + the transient wait-budget are exhausted (proceed=false). If it is a TRANSIENT
-          // rate-429 (capacity returns soon — `transient` excludes a multi-hour usage cap) OR a 529 SERVER-OVERLOAD
-          // (Anthropic-side, retryable), and absorb budget remains, RELEASE the admission slot (the wait below holds
-          // NO slot → it CANNOT wedge), wait the throttle/overload out, re-acquire, and retry — so the caller WAITS
-          // and succeeds instead of erroring. Role-agnostic: any caller, not just a bee. absorbDeadlineAt=0 ⇒ off.
-          if (!proceed && absorbDeadlineAt > 0 && Date.now() < absorbDeadlineAt) {
-            clearStall();
-            peekedRest?.destroy();
-            // We consumed the error body's head for classification. If absorb re-acquire times out below,
-            // the fallback forward path must not try to pipe a stream we deliberately destroyed here.
-            peekedRest = null;
-            release(); // free the slot NOW — the wait below admits nothing until an account has serviceable budget
-            release = () => {}; // guard the `finally` against a double-release if the re-acquire below fails
-            // A 529 does NOT rate-pause the account (server overload, not per-account budget), so the re-acquire
-            // below would return IMMEDIATELY → back off first (the 529's retry-after) to avoid hammering the
-            // overload. A rate-429's re-acquire instead WAITS out the account's penalty pause, so it needs no extra
-            // backoff here — keeping the validated 429 path byte-identical.
-            if (up.status === 529 && backoff > 0) {
-              await new Promise<void>((r) => {
-                const t = setTimeout(r, Math.min(backoff, Math.max(0, absorbDeadlineAt - Date.now())));
-                t.unref?.();
-              });
-            }
-            // GRACEFUL RE-ROUTING (absorb-retry-restuck-on-throttled-account 2026-06-30): pick the NEXT
-            // round-robin account (`pool.active()` skips out-of-rotation ones) for the re-acquire instead of
-            // re-holding the SAME account we were just throttled on. Under a FLEET-WIDE bare-burst the inner
-            // rotate is suppressed (above), so without this the held caller stays pinned to one throttled
-            // account for the whole absorb and never lands — even when a SIBLING account has budget right now
-            // (the Scout's opus ideator: $0/0-ideas/180s-timeout while bees land ~50% by happening to route to
-            // a healthy account). O(1) and adds NO upstream attempts (the absorb already retries N times) — it
-            // just spreads them across accounts, so each absorb iteration cycles toward a working one. Honors
-            // hard pins (never routes off the pin); a same-account pick (single-account pool) is a no-op =
-            // unchanged wait-it-out behavior.
-            if (!hardPin) {
-              const reCand = pool.active();
-              if (reCand.accountId !== active.accountId) {
-                stageSpan?.recordFailover();
-                everRotated = true;
-                active = reCand;
-                gov = governorForAccount(model, active.accountId);
-                log(
-                  'warn',
-                  `inference-gateway: absorb-retry re-routed to '${active.accountId}' instead of re-holding the throttled account`,
-                );
-              }
-            }
-            const reacq = await gov.acquire(est, {
-              maxWaitMs: Math.max(0, absorbDeadlineAt - Date.now()),
-              allowSoftPaused: serveSoft,
-              signal: reqAbort.signal,
-            }); // H12: reclaim/ceiling cancels this parked re-acquire
-            if (reacq) {
-              release = reacq;
-              retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the retry
-              attempt = 0;
-              transientWaitedMs = 0; // the absorb is a SEPARATE outer budget from the in-retry transient wait
-              log(
-                'warn',
-                `inference-gateway: absorb-retry on '${active.accountId}' — holding the caller instead of forwarding a ${up.status} (${Math.round((absorbDeadlineAt - Date.now()) / 1000)}s budget left)`,
-              );
-              continue;
-            }
-            // re-acquire timed out within the absorb budget → fall through to forward (release is the no-op → finally safe)
-          }
-          // LAST-RESORT OPUS→SONNET DOWNGRADE (WI-1073). Rotation + transient-wait + absorb all failed
-          // (`proceed` is false here) on a HARD opus wall: `!transient` = a usage cap / org-disallow 403 /
-          // unified-window rejection we cannot wait out, and (403|429) excludes a 529 server-overload
-          // (sonnet is overloaded server-side too — downgrading wouldn't help). So opus is exhausted
-          // POOL-WIDE. The opus-budget governor sheds background/normal opus proactively, but an opus-
-          // FLOORED critical role (Queen/su/reviewer — never shed, EI-7/EI-286) lands here and hard-fails
-          // ("Queen can't run"). Sonnet-vs-nothing: rewrite the model to the fleet sonnet id + retry ONCE
-          // on a fresh account. An opus-SPECIFIC cap (403 opus-disallow, or the 7d opus weekly cap) leaves
-          // sonnet room so this succeeds; a shared 5h exhaustion makes the sonnet try futile-but-harmless
-          // (it forwards as today). At-most-once (`opusDowngraded`) + reuses the same bounded rotation
-          // machinery (reset budgets = one more bounded pass, exactly a fresh request's bound), so a
-          // failure of this net degrades to today's forward — it cannot wedge. The fleet's recurring loops
-          // then always run on available capacity instead of dying when opus is gone.
-          if (!opusDowngraded && !transient && (up.status === 403 || up.status === 429) && model.includes('opus')) {
-            const sonnetBody = rewriteRequestModel(bodyBuf, LAST_RESORT_SONNET_MODEL);
-            if (sonnetBody) {
-              opusDowngraded = true;
-              opusToSonnetDowngrades++;
-              bodyBuf = sonnetBody;
-              model = LAST_RESORT_SONNET_MODEL;
-              stageSpan?.setModel(model);
-              if (!hardPin) active = pool.active(); // spread the sonnet retry (a hard pin stays on its own credential)
-              gov = governorForAccount(model, active.accountId); // rebind pacing to the sonnet bucket
-              attempt = 0;
-              transientWaitedMs = 0;
-              retryDeadlineAt = Date.now() + internalRetryDeadlineMs; // fresh slot-hold budget for the one downgraded pass
-              clearStall();
-              peekedRest?.destroy(); // discard the walled opus attempt's body (peekedHead resets next iteration)
-              log(
-                'warn',
-                `inference-gateway: opus exhausted pool-wide (hard wall, status ${up.status}) → LAST-RESORT downgrade opus→${LAST_RESORT_SONNET_MODEL} for '${wantOwner ?? 'unpinned'}' on '${active.accountId}' (WI-1073) so the loop runs on available capacity`,
-              );
-              continue;
-            }
-          }
-        }
-
-        // AIMD clean signal (B-GW-1): a forwarded 2xx means this account had real capacity — drain the
-        // throttle pressure + nudge admission concurrency back up toward the cap. A forwarded non-2xx
-        // (a 4xx client error, or a 429 we chose not to retry) is neither throttle nor clean-capacity,
-        // so it neither shrinks nor grows the limit (a 429 already recorded its throttle above).
-        if (up.status >= 200 && up.status < 300) {
-          providerAdmission.recordSuccess('claude');
-          // CREDENTIAL-HEALTH (#5 PART A): a 2xx is a SUCCESSFUL auth for this account's credential — clear
-          // its consecutive-401 streak so a later dead-credential episode re-arms a fresh alert (and a
-          // recovered-but-previously-flapping credential never carries a stale streak into a false alert).
-          if (credential401Streak.has(active.accountId)) credential401Streak.delete(active.accountId);
-          if (orgDisallowedStreak.has(active.accountId)) orgDisallowedStreak.delete(active.accountId);
-          // BARE-429 PERSISTENCE CIRCUIT: a 2xx means this account's egress IP is serving again → clear its
-          // bare-429 streak so a recovered IP rejoins rotation at the base 15s pace (no stale escalation).
-          if (bare429Streak.has(active.accountId)) bare429Streak.delete(active.accountId);
-          bare429PauseUntil.delete(active.accountId);
-          // egress-ip-pool: the EXACT egress IP this attempt used just served a 2xx → clear its per-IP bare-429
-          // streak + cooldown so a recovered IP rejoins the account's rotation immediately at the base pace.
-          ipBare429Streak.delete(curEgressKey);
-          ipCooldownUntil.delete(curEgressKey);
-        }
-        // P-002 autowake-coverage (2026-06-22): a FORWARDED retryable rate-limit (a 429/529 the gateway could not
-        // retry away) to an IDENTIFIED bee → record a stall so the stall-waker re-wakes it when this account
-        // recovers. This is the DOMINANT "nothing goes through" exit (a forwarded upstream 429) that previously
-        // recorded nothing → /admin/stalls sat empty while the whole pool was throttled.
-        else if ((up.status === 429 || up.status === 529) && wantOwner) {
-          recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
-        }
-
-        const outHeaders: Record<string, string> = {};
-        up.headers.forEach((v, k) => {
-          if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
-        });
-        // Detectability: name the account this request ACTUALLY egressed on, so a silent fallback
-        // off a pin (unknown id / paced-account failover) is visible to the caller, not invisible.
-        outHeaders[ROUTED_ACCOUNT_HEADER] = active.accountId;
-        // P-003: a soft pin served by a sibling is a STRUCTURED signal, not a silent divert — the pinned
-        // owner can distinguish "my pin is capped/paused/failed-over" from ordinary routing. Computed from
-        // the FINAL serving account so every divergence path (unserviceable-pin yield, paused-pin routing,
-        // mid-retry failover) is covered, not just the ones that remember to set a flag.
-        if (pinned && !hardPin && active.accountId !== pinned.accountId) {
-          outHeaders[PIN_YIELDED_HEADER] = `${pinned.accountId}->${active.accountId}`;
-          recordOwnerOutcome(wantOwner, 'pin_yield', {
-            account: active.accountId,
-            detail: `${pinned.accountId}->${active.accountId}`,
-          });
-        }
-        // WI-1073: surface a last-resort opus→sonnet downgrade to the caller (silent model substitution
-        // is otherwise invisible). Set on ANY forwarded response after a downgrade — a 2xx means sonnet
-        // served the walled-opus request; a non-2xx means even the sonnet retry failed.
-        if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
-        recordRoute(wantOwner, active.accountId, model); // per-owner last-routed → GET /admin/route (statusline)
-        // P-008 ledger: the forwarded outcome — a 2xx is the ok path; a forwarded 429/5xx is what the bee
-        // experiences as an "api error" (post-retry-ladder), exactly what owner_report must show.
-        recordOwnerOutcome(wantOwner, up.status < 400 ? 'ok' : up.status === 429 ? 'upstream_429' : 'upstream_error', {
-          account: active.accountId,
-          status: up.status,
-        });
-        res.writeHead(up.status, outHeaders);
-        if (isStream) stageSpan?.beginStage('stream');
-        // P-005 (structured mid-stream failure): when the upstream body stalls/errors mid-relay, a bare
-        // res.destroy() surfaces to the bee as a raw connection reset — an opaque "API Error" it may not
-        // retry. For an SSE stream we can do better: append a final Anthropic-shaped `error` event (the
-        // SDK parses it as overloaded_error and auto-retries) then end cleanly. Non-SSE bodies keep the
-        // destroy (no in-band channel). Best-effort — any write failure falls back to destroy.
-        const isSse = (outHeaders['content-type'] ?? '').includes('text/event-stream');
-        const endStreamWithError = (reason: string): void => {
-          if (res.writableEnded || res.destroyed) return;
-          // EI-7168 (asymmetric AIMD caution): this request was ADMITTED and got a 2xx status — it already
-          // recorded aimd.recordSuccess() above (line ~3243) — then died mid-relay. That is the EXPENSIVE
-          // failure this ticket describes (billed input read, wasted concurrency slot), unlike a cheap
-          // at-the-door 429 that recordThrottle() already handles with its own sustained-pressure buffer.
-          // Correct the earlier optimistic recordSuccess() with an immediate hard clamp — every genuine
-          // mid-stream death funnels through this one function (stream error, idle-stall abort), so this is
-          // the single wiring point. Guarded by the early-return above: fires at most once per request.
-          providerAdmission.recordHardFailure('claude');
-          if (!isSse) {
-            try {
-              res.destroy();
-            } catch {
-              /* already torn down */
-            }
-            return;
-          }
-          try {
-            res.write(
-              `\nevent: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: upstream stream ${reason} on '${active.accountId}' — retry` }, gateway: true })}\n\n`,
-            );
-            res.end();
-          } catch {
-            try {
-              res.destroy();
-            } catch {
-              /* already torn down */
-            }
-          }
-        };
-        if (peekedHead !== null) {
-          // We already consumed this body via peekBody — write the peeked head, then stream any remainder.
-          if (peekedHead.length) res.write(peekedHead);
-          if (peekedRest) {
-            peekedRest.on('data', () => armStall(upstreamBodyIdleTimeoutMs)); // reset idle deadline per chunk
-            peekedRest.pipe(res);
-            await new Promise<void>((resolve) => {
-              res.on('finish', () => resolve());
-              res.on('close', () => resolve());
-              res.on('error', () => resolve());
-              peekedRest!.on('error', () => {
-                endStreamWithError('errored');
-                resolve();
-              });
-              // Wedge-prevention (the stuck-stream slot leak): also force-resolve on the ceiling/self-heal
-              // abort so a half-open-client + hung-body stream can't pin its admission slot forever.
-              const onAbort = () => {
-                try {
-                  peekedRest!.destroy();
-                } catch {
-                  /* already torn down */
-                }
-                endStreamWithError('stalled (aborted)');
-                resolve();
-              };
-              if (ac.signal.aborted) onAbort();
-              else ac.signal.addEventListener('abort', onAbort, { once: true });
-            });
-          } else {
-            res.end();
-          }
-        } else if (up.body) {
-          const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
-          // Reset the body-idle deadline on every chunk so a legitimately long stream is never clipped —
-          // only a genuine mid-stream stall (no bytes for upstreamBodyIdleTimeoutMs) trips the abort,
-          // which surfaces as a stream 'error' below → resolve → finally releases the slot.
-          nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
-          // Cache instrumentation (#0): PASSIVE observer — tally this request's prompt-cache read/write from
-          // the message_start event WITHOUT touching the client pipe. `attempt > 0` ⇒ the request failed over
-          // off its initially-selected account, so a miss here is routing-induced.
-          observeCacheUsage(nodeStream, active.accountId, attempt > 0);
-          nodeStream.pipe(res);
-          await new Promise<void>((resolve) => {
-            res.on('finish', () => resolve());
-            res.on('close', () => resolve());
-            res.on('error', () => resolve());
-            nodeStream.on('error', () => {
-              endStreamWithError('errored');
-              resolve();
-            });
-            // Wedge-prevention — the 80-min stuck-stream slot leak (2026-06-21). This await previously
-            // listened ONLY to res/nodeStream events, so a stream where the CLIENT is half-open (never emits
-            // res 'close') AND the upstream body has ended-or-hung (never emits nodeStream 'error') pinned its
-            // admission slot FOREVER — surviving every self-heal reclaim AND the 20-min hard ceiling, because
-            // both abort `ac` (=currentAc) yet this await ignored that abort. (Observed: slot #178 held 4800s.)
-            // Make the abort ALSO force-tear-down both streams + resolve, so a reclaim/ceiling actually frees it.
-            const onAbort = () => {
-              try {
-                nodeStream.destroy();
-              } catch {
-                /* already torn down */
-              }
-              endStreamWithError('stalled (aborted)');
-              resolve();
-            };
-            if (ac.signal.aborted) onAbort();
-            else ac.signal.addEventListener('abort', onAbort, { once: true });
-          });
-        } else {
-          res.end();
-        }
-        clearStall();
-        return;
       }
     } finally {
       clearStall();
@@ -6555,7 +6719,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // resident memory and the receipt can be executed after this socket is gone. A client that
     // already spooled its own payload passes the ref explicitly and is left alone.
     const clientPayloadRef = (opts.req.headers['x-papercusp-payload-ref'] as string | undefined)?.trim() || undefined;
-    const spooledPayloadRef = clientPayloadRef ?? (await spoolRequestBodyForAdmission(opts.req));
+    let spooledPayloadRef = clientPayloadRef;
+    if (!clientPayloadRef) {
+      span?.admissionQueued('payloadSpool');
+      try {
+        spooledPayloadRef = await spoolRequestBodyForAdmission(opts.req);
+      } finally {
+        // A failed spool still has a diagnostically useful duration. The
+        // surrounding catch classifies the request failure; this segment only
+        // attributes the pre-admission wall time.
+        span?.admissionAdmitted('payloadSpool');
+      }
+    }
     const request = gatewayAdmissionInputForLane({
       lane: opts.lane,
       idempotencyKey:
@@ -6582,8 +6757,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (spooledPayloadRef && spooledPayloadRef !== clientPayloadRef) {
       await payloadSpool?.retain(spooledPayloadRef).catch(() => undefined);
     }
+    const durableAdmissionObservation = { priority: request.priority ?? null };
+    span?.admissionQueued('durable', durableAdmissionObservation);
     try {
-      return await withGatewayAdmission(gatewayAdmissionGovernor, request, async () => execute());
+      return await withGatewayAdmission(gatewayAdmissionGovernor, request, async () => {
+        span?.admissionAdmitted('durable', durableAdmissionObservation);
+        return execute();
+      });
     } finally {
       if (spooledPayloadRef && spooledPayloadRef !== clientPayloadRef) {
         void payloadSpool?.release(spooledPayloadRef).catch(() => undefined);
@@ -7388,13 +7568,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const requestTierMap = providerId === 'codex' ? codexTierMap : tierMap;
     const tier = requestTierMap ? tierOf(priLabel, requestTierMap) : undefined;
     const admissionQueue = providerId === 'codex' ? codexQueue : queue;
+    const providerAdmissionObservation = () => ({
+      priority: pri,
+      tier: tier ?? null,
+      queue: admissionQueue.snapshot(),
+    });
+    const markProviderAdmitted = () => {
+      stageSpan?.admissionAdmitted('provider', providerAdmissionObservation());
+      stageSpan?.admitted();
+    };
     // Claude registers itself after parsing its request and acquiring its per-account governor. Codex has
     // no equivalent inner registration point, so wrap the whole admitted handler here. The shared self-heal
     // valve can now reclaim a wedged ChatGPT OAuth/bearer/CLI request instead of seeing an untracked held slot.
     const runHandler =
       providerId === 'codex'
         ? async (executor: GatewayLegacyEntryExecutorId) => {
-            stageSpan?.admitted();
+            markProviderAdmitted();
             const reqId = ++reqSeq;
             inFlightReg.set(reqId, {
               id: reqId,
@@ -7429,14 +7618,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
           }
         : async (executor: GatewayLegacyEntryExecutorId) => {
-            stageSpan?.admitted();
+            markProviderAdmitted();
             await legacyGatewayEntryExecutors[executor](req, res, url);
           };
     executeLegacyLaneTask({
       req,
       lane: providerAdapter.lane,
       admission: {
-        run: (_context, task) => admissionQueue.run(pri, task, tier !== undefined ? { tier } : undefined),
+        run: (_context, task) => {
+          stageSpan?.admissionQueued('provider', providerAdmissionObservation());
+          return admissionQueue.run(pri, task, tier !== undefined ? { tier } : undefined);
+        },
       },
       task: runHandler,
     }).catch((e) => {

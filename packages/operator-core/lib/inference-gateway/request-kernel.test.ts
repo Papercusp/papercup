@@ -511,6 +511,49 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     assertCompleteGatewayRequestTimeline(result.timeline);
   });
 
+  it('aborts the upstream BEFORE cooperative cleanup when the body stalls mid-stream (D-017)', async () => {
+    // REGRESSION GUARD. The attempt signal used to be `withDeadline`'s TTFB-scoped
+    // controller, whose `finally` unsubscribes from the request — so the instant
+    // headers arrived the upstream became permanently un-abortable. A mid-stream
+    // body-idle deadline could stop AWAITING the body but never tear it down, and
+    // the request wedged forever holding its admission slot.
+    //
+    // Why this needs its own test: the body-idle case below passes with or without
+    // the fix, because its `discard` fake resolves instantly. A REAL stalled upstream
+    // cannot be cancelled cooperatively — `discard`/`iterator.return()` wait on the
+    // very stream that stopped producing — so the only thing that can free it is the
+    // abort. Asserting the SIGNAL, and asserting it is already aborted by the time
+    // cleanup runs, is what makes that ordering falsifiable.
+    let attemptSignal: AbortSignal | undefined;
+    let abortedWhenCleanupRan: boolean | null = null;
+    const stalled = fixture(lane, {
+      executeAttempt: async (_prepared, context) => {
+        attemptSignal = context.signal;
+        return {
+          status: 200,
+          streaming: true,
+          transport: context.route.transport,
+          metadata: { contentType: 'text/event-stream' },
+          body: neverBody(),
+          discard: async () => {
+            abortedWhenCleanupRan = context.signal.aborted;
+          },
+        };
+      },
+      policy: { bodyIdleTimeoutMs: 5 },
+    });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(stalled.options));
+
+    expect(error).toMatchObject({ code: 'upstream-body-idle', outcome: 'upstream-error', status: 504 });
+    expect(attemptSignal?.aborted).toBe(true);
+    // Ordering is the whole point: aborting only AFTER cleanup would still leave a
+    // real stalled body hanging in the cleanup itself.
+    expect(abortedWhenCleanupRan).toBe(true);
+    // And the slot must come back — the wedge this guards against was a permanent leak.
+    expect(stalled.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
+  });
+
   it('enforces upstream body-idle and downstream backpressure deadlines', async () => {
     const bodyDiscard = vi.fn();
     const bodyIdle = fixture(lane, {

@@ -98,6 +98,10 @@ describe('GatewayRequestTelemetry', () => {
     });
     span.routeSelected();
 
+    span.admissionQueued('payloadSpool');
+    now += 5;
+    span.admissionAdmitted('payloadSpool');
+
     span.admissionQueued('durable', { priority: 20 });
     now += 12;
     span.admissionAdmitted('durable', { priority: 20 });
@@ -137,16 +141,21 @@ describe('GatewayRequestTelemetry', () => {
     const timeline = span.finish('ok', 200)!;
     assertCompleteGatewayRequestTimeline(timeline);
 
-    expect(timeline.durationsMs.queueWait).toBe(66_122);
+    expect(timeline.durationsMs.queueWait).toBe(66_127);
     expect(timeline.admission).toEqual({
+      payloadSpool: {
+        queued: expect.objectContaining({ offsetMs: 0 }),
+        admitted: expect.objectContaining({ offsetMs: 5 }),
+        waitMs: 5,
+      },
       durable: {
-        queued: expect.objectContaining({ offsetMs: 0, priority: 20 }),
-        admitted: expect.objectContaining({ offsetMs: 12, priority: 20 }),
+        queued: expect.objectContaining({ offsetMs: 5, priority: 20 }),
+        admitted: expect.objectContaining({ offsetMs: 17, priority: 20 }),
         waitMs: 12,
       },
       provider: {
         queued: {
-          offsetMs: 12,
+          offsetMs: 17,
           priority: 20,
           tier: 2,
           running: 849,
@@ -158,7 +167,7 @@ describe('GatewayRequestTelemetry', () => {
           tierQueued: 16,
         },
         admitted: {
-          offsetMs: 66_122,
+          offsetMs: 66_127,
           priority: 20,
           tier: 2,
           running: 850,

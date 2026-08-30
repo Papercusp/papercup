@@ -56,6 +56,7 @@ vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
 
 import { withPlanLock } from './with-plan-lock';
 const lockM = vi.mocked(withPlanLock);
+const { routedFollowUpConflict, routedWorkItemRefs } = await import('./set-status');
 const tool = (await import('./set-status')).default;
 
 type Out = { data: any };
@@ -79,6 +80,96 @@ beforeEach(() => {
 });
 
 describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
+  it('extracts only explicit routed/follow-up work-item references', () => {
+    expect(routedWorkItemRefs('ROUTED, UNPERFORMED TO WI-41495')).toEqual(['WI-41495']);
+    expect(routedWorkItemRefs('see WI-41495 for historical context')).toEqual([]);
+    expect(routedWorkItemRefs('follow-up WI-41495 and WI-835974')).toEqual(['WI-41495', 'WI-835974']);
+  });
+
+  it('identifies a non-terminal linked routed follow-up as a drop conflict', () => {
+    expect(
+      routedFollowUpConflict('ROUTED, UNPERFORMED TO WI-41495', [
+        { id: 'WI-41495', state: 'blocked' },
+        { id: 'WI-835974', state: 'open' },
+      ]),
+    ).toEqual({ id: 'WI-41495', state: 'blocked' });
+    expect(
+      routedFollowUpConflict('ROUTED, UNPERFORMED TO WI-835974', [
+        { id: 'WI-41495', state: 'blocked' },
+      ]),
+    ).toBeNull();
+  });
+
+  it('matches the reconciler safety rails: assigned or unproven issue rows survive the drop', () => {
+    expect(
+      routedFollowUpConflict('ROUTED TO WI-111', [
+        { id: 'WI-111', state: 'open', family: 'feature', assignee: 'su-live' },
+      ]),
+    ).toBeNull();
+    expect(
+      routedFollowUpConflict('ROUTED TO WI-112', [
+        { id: 'WI-112', state: 'open', family: 'issue', viaImplementsEdge: false },
+      ]),
+    ).toBeNull();
+    expect(
+      routedFollowUpConflict('ROUTED TO WI-113', [
+        { id: 'WI-113', state: 'open', family: 'issue', viaImplementsEdge: true },
+      ]),
+    ).toMatchObject({ id: 'WI-113', state: 'open' });
+  });
+
+  it('REFUSES a drop whose route note names a still-live linked work-item', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-41495', state: 'blocked' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-010']));
+    const b = await body({
+      slug: 'main-gate-qualification-transaction-acceleration-2026-08-25',
+      item: 'P-010',
+      status: 'dropped',
+      note: 'ROUTED, UNPERFORMED TO WI-41495; preserve the operational obligation.',
+    });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'routed_follow_up_conflict',
+      routedWorkItem: 'WI-41495',
+      routedWorkItemState: 'blocked',
+    });
+    expect(b.results[0].reason).toMatch(/would reconcile that obligation as stale residue/);
+    expect(lockM).not.toHaveBeenCalled();
+  });
+
+  it('allows a route to an independently unlinked follow-up', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-41495', state: 'blocked' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-010']));
+    const b = await body({
+      slug: 'main-gate-qualification-transaction-acceleration-2026-08-25',
+      item: 'P-010',
+      status: 'dropped',
+      note: 'ROUTED, UNPERFORMED TO WI-835974. WI-41495 is historical residue.',
+    });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].newStatus).toBe('dropped');
+    expect(lockM).toHaveBeenCalled();
+  });
+
+  it('allows a route whose named linked work-item is already terminal', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-41495', state: 'dropped' } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-010']));
+    const b = await body({
+      slug: 'main-gate-qualification-transaction-acceleration-2026-08-25',
+      item: 'P-010',
+      status: 'dropped',
+      note: 'ROUTED follow-up WI-41495 was already terminal; close the plan item.',
+    });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].newStatus).toBe('dropped');
+  });
+
   it('SKIPS a → dropped flip when another non-terminal work-item still covers the plan item', async () => {
     reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
       { id: 'WI-37457', state: 'open' } as never,
