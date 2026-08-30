@@ -22,6 +22,7 @@ import {
   foldEffectiveItemAudits,
   gitBlobSha,
   harnessCitationRepoRoot,
+  registeredCitationRepoRoots,
   selectHarnessCitationRepoRoot,
   planItemTextHash,
   prepareAuditPassEntries,
@@ -37,6 +38,8 @@ import {
 
 let workspaceRoot: string;
 let repoRoot: string;
+let registeredAppRoot: string;
+let registeredPointerRoot: string;
 
 const code = (p: string): AuditCitation => ({ kind: 'code', path: p });
 
@@ -110,6 +113,26 @@ beforeAll(() => {
   fs.writeFileSync(
     path.join(sibling, 'apps', 'web', 'src', 'SellerDock.tsx'),
     'export function SellerDock() { return null; }\n',
+  );
+
+  // A registered app checkout nested below the workspace state directory. This is
+  // intentionally not a direct sibling, so filesystem adjacency cannot admit it.
+  registeredAppRoot = path.join(workspaceRoot, '.papercusp', 'apps', 'email');
+  fs.mkdirSync(path.join(registeredAppRoot, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(registeredAppRoot, 'apps', 'desktop'), { recursive: true });
+  fs.writeFileSync(
+    path.join(registeredAppRoot, 'apps', 'desktop', 'main.ts'),
+    'export const emailDesktop = true;\n',
+  );
+
+  // A registered pointer-file worktree must not become evidence merely because the
+  // registry names its path.
+  registeredPointerRoot = path.join(workspaceRoot, '.papercusp', 'apps', 'email-checkpoint');
+  fs.mkdirSync(path.join(registeredPointerRoot, 'apps', 'desktop'), { recursive: true });
+  fs.writeFileSync(path.join(registeredPointerRoot, '.git'), 'gitdir: /tmp/email-checkpoint\n');
+  fs.writeFileSync(
+    path.join(registeredPointerRoot, 'apps', 'desktop', 'pointer-only.ts'),
+    'export const checkpoint = true;\n',
   );
 
   // A WORKTREE of the monorepo (`.git` is a pointer FILE) — a deploy artifact that
@@ -391,6 +414,89 @@ describe('repoCitationDeps — sibling repositories (EI-20430092702151575)', () 
     expect(
       resolveCitation({ kind: 'code', path: 'sidestage/marker.ts', symbol: 'fromRepo' }, deps),
     ).toEqual({ ok: true });
+  });
+});
+
+describe('repoCitationDeps — registered project roots (EI-21830530720187606)', () => {
+  it('admits a nested registered checkout without requiring workspace relocation', () => {
+    const deps = repoCitationDeps(repoRoot, [registeredAppRoot]);
+    expect(
+      resolveCitation(
+        { kind: 'code', path: 'apps/desktop/main.ts', symbol: 'emailDesktop' },
+        deps,
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it('keeps the selected root ahead of a registered root with the same relative path', () => {
+    fs.mkdirSync(path.join(repoRoot, 'apps', 'desktop'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoRoot, 'apps', 'desktop', 'main.ts'),
+      'export const canonicalDesktop = true;\n',
+    );
+    const deps = repoCitationDeps(repoRoot, [registeredAppRoot]);
+    expect(
+      resolveCitation(
+        { kind: 'code', path: 'apps/desktop/main.ts', symbol: 'canonicalDesktop' },
+        deps,
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      resolveCitation(
+        { kind: 'code', path: 'apps/desktop/main.ts', symbol: 'emailDesktop' },
+        deps,
+      ),
+    ).toMatchObject({ ok: false, reason: 'symbol_not_found' });
+  });
+
+  it('excludes registered pointer-file worktrees', () => {
+    const deps = repoCitationDeps(repoRoot, [registeredPointerRoot]);
+    const result = resolveCitation(code('apps/desktop/pointer-only.ts'), deps);
+    expect(result).toMatchObject({ ok: false, reason: 'file_not_found' });
+    expect((result as { detail: string }).detail).not.toContain(registeredPointerRoot);
+  });
+
+  it('reports registered roots in a miss after trying them', () => {
+    const deps = repoCitationDeps(repoRoot, [registeredAppRoot]);
+    const result = resolveCitation(code('apps/desktop/missing.ts'), deps);
+    expect(result).toMatchObject({ ok: false, reason: 'file_not_found' });
+    expect((result as { detail: string }).detail).toContain(repoRoot);
+    expect((result as { detail: string }).detail).toContain(registeredAppRoot);
+  });
+
+  it('derives only real registered checkout roots from ProjectEntry.path', () => {
+    expect(
+      registeredCitationRepoRoots({
+        projects: [
+          { slug: 'email', path: registeredAppRoot },
+          { slug: 'email-checkpoint', path: registeredPointerRoot },
+          { slug: 'state-only', path: path.join(workspaceRoot, '.papercusp', 'hives', 'email') },
+        ],
+      }),
+    ).toEqual([registeredAppRoot]);
+  });
+
+  it('lets root selection resolve a mixed citation set through registered roots', () => {
+    const registryRoot = path.join(workspaceRoot, 'registered-primary');
+    fs.mkdirSync(path.join(registryRoot, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(registryRoot, 'apps', 'operator'), { recursive: true });
+    fs.writeFileSync(
+      path.join(registryRoot, 'apps', 'operator', 'primary.ts'),
+      'export const primary = true;\n',
+    );
+    expect(
+      selectHarnessCitationRepoRoot(
+        { projects: [{ slug: 'email-harness', path: registryRoot }] },
+        'email-harness',
+        [
+          code('apps/operator/primary.ts'),
+          code('apps/desktop/main.ts'),
+        ],
+        [],
+        repoRoot,
+        [registeredAppRoot],
+      ),
+    ).toEqual({ root: registryRoot, source: 'registry' });
   });
 });
 
