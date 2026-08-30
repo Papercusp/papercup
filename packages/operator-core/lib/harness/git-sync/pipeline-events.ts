@@ -142,8 +142,31 @@ export interface PipelineWindowSummary {
     /** Every other produced status. Keeps the fold total; nonzero means "name me". */
     other: number;
   };
-  /** Auto-serve deploys (staging-branch-pipeline-2026-06-06): one row per attempt. */
-  deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
+  /**
+   * Auto-serve deploys (staging-branch-pipeline-2026-06-06): one row per attempt.
+   *
+   * EI-18835078701597295: these buckets are TOTAL over the produced status set, for the
+   * same reason `greenCheckpoint`'s are (EI-20702428259478130). They were NOT: production
+   * has emitted `stale-lock-reclaimed` (deploy-deps.ts `recordStaleLockReclaim`) and
+   * `certification-launched` / `certification-failed` (release-actions.ts) for a long time
+   * and every one of them landed in NO bucket — so `ok+rolledBack+failed+refused` silently
+   * undercounted against `total`, and a reader diffing them saw a gap with no name on it.
+   * `coalesced` (this item's new status) would have been the fourth. Any status without a
+   * bucket now lands in `other`; `other` being nonzero is the signal to come back and name it.
+   */
+  deploy: {
+    total: number;
+    ok: number;
+    rolledBack: number;
+    failed: number;
+    refused: number;
+    /** Yielded to a holder of the `release-deploy` single-flight lock (EI-13729). */
+    coalesced: number;
+    /** A dead holder's leaked lease was reclaimed (EI-18674647773291145). */
+    staleLockReclaimed: number;
+    /** Every other produced status. Keeps the fold total; nonzero means "name me". */
+    other: number;
+  };
 }
 
 export function emptyWindow(sinceMs: number): PipelineWindowSummary {
@@ -163,7 +186,16 @@ export function emptyWindow(sinceMs: number): PipelineWindowSummary {
       skipped: 0,
       other: 0,
     },
-    deploy: { total: 0, ok: 0, rolledBack: 0, failed: 0, refused: 0 },
+    deploy: {
+      total: 0,
+      ok: 0,
+      rolledBack: 0,
+      failed: 0,
+      refused: 0,
+      coalesced: 0,
+      staleLockReclaimed: 0,
+      other: 0,
+    },
   };
 }
 

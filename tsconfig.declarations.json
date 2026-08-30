@@ -272,6 +272,13 @@
     // detector modules no production path calls. Registered for this list's usual
     // reason: it is imported directly by module-reachability.test.ts, which would
     // otherwise pay a TS7016 absorbed into that file's permanent tsc baseline.
-    "scripts/lib/module-reachability.mjs"
+    "scripts/lib/module-reachability.mjs",
+    // WI-1257832 — the partial-install (hollow package / dangling symlink) detector.
+    // Registered for this list's FIRST reason: it is imported directly by
+    // partial-install-guard.test.ts. Unregistered it cost that file a TS7016 whose
+    // `any` then cascaded into two TS7006 implicit-any callback params, regressing
+    // operator-core lint:tsc by +3 against a baseline of 0 — one missing declaration
+    // surfacing as three errors, which is exactly the absorption this list prevents.
+    "scripts/check-partial-install.mjs"
   ]
 }

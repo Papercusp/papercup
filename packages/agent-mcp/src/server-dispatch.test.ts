@@ -133,6 +133,50 @@ describe('dispatch — control flow', () => {
     expect(res.error?.message).toBe('goal: too long — 412 chars over the 500-char limit; trim to 500.');
   });
 
+  it('too_big number → message states how far over + the usable ceiling (EI-21864057724720621)', async () => {
+    // Mirrors the string too_big case above: a numeric ceiling (e.g.
+    // work_items:get's threadLimit, capped at 10) gets the same "how far over,
+    // what to use instead" treatment rather than Zod's bare "Too big: expected
+    // number to be <=10", which named the ceiling but not the caller's actual
+    // value or how to fix it in one retry.
+    vi.mocked(standardValidate).mockResolvedValue({
+      ok: false,
+      issues: [
+        {
+          message: 'Too big: expected number to be <=10',
+          code: 'too_big',
+          origin: 'number',
+          maximum: 10,
+          path: ['threadLimit'],
+        },
+      ],
+    } as never);
+    const res = await dispatch({ toolName: 'test:echo', args: { threadLimit: 50 }, bearer: 'b' });
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('invalid_args');
+    expect(res.error?.message).toBe('threadLimit: too big — 40 over the 10 limit; use 10.');
+  });
+
+  it('too_big number without a numeric actual value → falls back to the bare ceiling message', async () => {
+    // Defensive: valueAtPath can return undefined/non-number (e.g. the raw
+    // input shape does not match the issue's path). The rendered message must
+    // still be well-formed, not compute a NaN/garbage delta.
+    vi.mocked(standardValidate).mockResolvedValue({
+      ok: false,
+      issues: [
+        {
+          message: 'Too big: expected number to be <=10',
+          code: 'too_big',
+          origin: 'number',
+          maximum: 10,
+          path: ['threadLimit'],
+        },
+      ],
+    } as never);
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res.error?.message).toBe('threadLimit: too big — over the 10 limit; use 10.');
+  });
+
   // EI-18889347809692710 — a failed union used to surface as a bare
   // `body: Invalid input`, naming neither the offending element nor the key. Zod
   // reports the union at its OWN path and buries every branch's real diagnosis in

@@ -149,13 +149,29 @@ function toIso(v: string | number | Date | null): string | null {
  * workspace while ledger rows carry the active one, so a workspace clause
  * here would silently strand every ref-keyed grade. Newest routed_at wins
  * if a ref was ever routed twice.
+ *
+ * EI-21864158051054483: an agent-review caller routinely holds only the
+ * BARE work-item id (`EI-19991080208681012`) — the id the review round
+ * itself is keyed by — not the canonical `wi:<id>` change-feed ref this
+ * function's docstring calls "the accepted reference format". A bare id
+ * passed as `routedRef` used to miss the exact-match query above and
+ * silently return `not-found`, even though the exact same bare-id
+ * tolerance already exists one function down for `ideaId`
+ * ({@link resolveIdeaIdFromKey}, EI-15389). This mirrors that fix for the
+ * `routedRef` path: try the exact ref first (so a real `plan:`/`wi:`/`gym:`
+ * ref never changes behavior), then fall back to the `wi:`/`gym:`-prefixed
+ * forms and a direct `idea_id` match for a bare id. Exact-ref match wins a
+ * tie; newest `routed_at` breaks any remaining tie.
  */
 async function resolveIdeaIdFromRef(routedRef: string): Promise<string | null> {
   const { sql } = getOrgPg();
   const rows = await sql<{ idea_id: string }[]>`
     SELECT idea_id FROM harness_shared.scout_routed_ideas
      WHERE routed_ref = ${routedRef}
-     ORDER BY routed_at DESC
+        OR routed_ref = ${`wi:${routedRef}`}
+        OR routed_ref = ${`gym:${routedRef}`}
+        OR idea_id = ${routedRef}
+     ORDER BY (routed_ref = ${routedRef}) DESC, routed_at DESC
      LIMIT 1`;
   return rows[0]?.idea_id ?? null;
 }

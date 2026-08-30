@@ -143,7 +143,17 @@ function valueAtPath(input: unknown, segs: PropertyKey[]): unknown {
  * `goal: too long — 412 chars over the 500-char limit; trim to 500.` so the agent
  * trims deterministically in ONE retry instead of blind-retrying the same value. A
  * telemetry audit traced ~1,000+ tool calls/14d failing purely on too-long args.
- * Generic over any field; non-too_big issues keep their original `path: message`.
+ *
+ * A `number` `too_big` issue gets the same treatment (EI-21864057724720621):
+ * Zod's raw message for a numeric ceiling — `Too big: expected number to be
+ * <=10` — names the ceiling but not the caller's actual value or how far past
+ * it they landed, so a caller retries blind instead of clamping in one step
+ * (measured recurring independently across 6+ sessions against
+ * `work_items:get`'s `threadLimit`, capped at 10). e.g.
+ * `threadLimit: too big — 40 over the 10 limit; use 10.`
+ *
+ * Generic over any field/tool; non-too_big issues keep their original
+ * `path: message`.
  */
 function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknown): string {
   const render = (issue: ValidationIssue, prefix: PropertyKey[], depth: number): string[] => {
@@ -171,6 +181,16 @@ function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknow
         over !== null && over > 0
           ? `too long — ${over} chars over the ${max}-char limit; trim to ${max}.`
           : `too long — over the ${max}-char limit; trim to ${max}.`;
+      return [path ? `${path}: ${detail}` : detail];
+    }
+    if (issue.code === 'too_big' && issue.origin === 'number' && typeof issue.maximum === 'number') {
+      const max = issue.maximum;
+      const actual = valueAtPath(input, segs);
+      const over = typeof actual === 'number' ? actual - max : null;
+      const detail =
+        over !== null && over > 0
+          ? `too big — ${over} over the ${max} limit; use ${max}.`
+          : `too big — over the ${max} limit; use ${max}.`;
       return [path ? `${path}: ${detail}` : detail];
     }
     return [path ? `${path}: ${issue.message}` : issue.message];

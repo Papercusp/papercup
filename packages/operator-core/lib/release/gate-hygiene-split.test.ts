@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  COVERAGE_CLASS_TEST_CASES,
   EXPLICIT_HYGIENE_GATE_SCRIPTS,
   classifyGateFailure,
   decidePromotion,
@@ -221,6 +222,94 @@ describe("gate-hygiene-split", () => {
         ctx,
       });
       expect(d.promote).toBe(true);
+    });
+  });
+
+  /* WI-41765 / D-010 — coverage-class test FILES.
+   *
+   * Driven off the REAL registry entry rather than a restated copy: a test that hardcodes
+   * the case name would keep passing after someone renamed the case, which is precisely
+   * the silent-stale mode this branch must not have. */
+  describe("coverage-class test files (the one admitted path exception)", () => {
+    const entry = COVERAGE_CLASS_TEST_CASES[0];
+    const withCases = (
+      byFile: Record<string, string[]>,
+    ): HygieneClassificationContext => ({
+      rootScripts,
+      failingCasesByFile: new Map(Object.entries(byFile)),
+    });
+
+    it("admits a file whose every failing case is registered coverage-class", () => {
+      const c = classifyGateFailure(
+        entry.file,
+        withCases({ [entry.file]: [entry.caseName] }),
+      );
+      expect(c.klass).toBe("hygiene");
+      expect(c.category).toBe("detector-coverage-drift");
+      // The remedy must never suggest lowering the floor — that converts a loud
+      // instrument failure into a quiet false-clean.
+      expect(c.remedy).toMatch(/never lower the floor/i);
+    });
+
+    it("promotes when a registered coverage case is the ONLY failure", () => {
+      const d = decidePromotion({
+        failures: [entry.file],
+        verdictRendered: true,
+        ctx: withCases({ [entry.file]: [entry.caseName] }),
+      });
+      expect(d.promote).toBe(true);
+    });
+
+    it("THE RULE THAT MATTERS: a file with ANY unregistered failing case stays product", () => {
+      // The substantive pin lives in a sibling case in this same file. If that one fails
+      // too, the file must hold `main` — admitting it here would switch off the pin, which
+      // is the D-008 hazard this whole design exists to avoid.
+      const c = classifyGateFailure(
+        entry.file,
+        withCases({
+          [entry.file]: [
+            entry.caseName,
+            "cuts the candidate from the LOCAL integration branch, and never fetches",
+          ],
+        }),
+      );
+      expect(c.klass).toBe("product");
+    });
+
+    it("stays product when the gate supplied no case attribution at all", () => {
+      // Byte-identical to the behaviour before this branch existed.
+      expect(classifyGateFailure(entry.file, ctx).klass).toBe("product");
+    });
+
+    it("stays product when the file failed with no parsed cases (a crash names nothing)", () => {
+      expect(
+        classifyGateFailure(entry.file, withCases({ [entry.file]: [] })).klass,
+      ).toBe("product");
+    });
+
+    it("stays product for an UNREGISTERED file even when its cases parsed cleanly", () => {
+      expect(
+        classifyGateFailure(
+          "lib/release/some-other.test.ts",
+          withCases({ "lib/release/some-other.test.ts": ["anything at all"] }),
+        ).klass,
+      ).toBe("product");
+    });
+
+    it("stays product for a bare workspace, which names a whole suite and not one case", () => {
+      expect(
+        classifyGateFailure(
+          "@papercusp/web",
+          withCases({ "@papercusp/web": [entry.caseName] }),
+        ).klass,
+      ).toBe("product");
+    });
+
+    it("CALIBRATION: the registered case name is REALLY in the file it points at", () => {
+      // Without this, every assertion above could be passing against a registry that
+      // matches nothing at gate time — green, and completely inert.
+      const source = readFileSync(join(REPO_ROOT, entry.repoPath), "utf8");
+      expect(source).toContain(entry.caseName);
     });
   });
 });
