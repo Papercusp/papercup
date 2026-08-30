@@ -223,6 +223,28 @@ function isOwnerTagPossibleMention(line: string): boolean {
   return OWNER_TAG_PLACEHOLDER_RE.test(line) || OWNER_TAG_MENTION_CONTEXT_RE.test(line);
 }
 
+/**
+ * EI-21918777703977266: a bare `[owner:…]` tag asserting that a DIALOG
+ * (an AskUserQuestion) was answered is a sharper, independently-reproduced
+ * failure shape than a generic owner-attribution tag — a session can die
+ * (auth expiry, crash) with the dialog still open, and a LATER carry-note can
+ * mis-describe that as "the owner answered", which then hardens into an
+ * owner directive over further compaction hops with no owner turn anywhere
+ * in the chain to falsify it. Recognized by naming the tool whose answer is
+ * being claimed (`AskUserQuestion`) or by "answered a/an/the dialog"
+ * phrasing — deliberately NOT by any specific tag-subtype WORD (e.g. a
+ * literal `dialog` token right after the owner separator), because that
+ * word would itself be indistinguishable from a captured PERSON NAME to
+ * check-no-owner-name-tags.mjs's `[owner:<name>]` scanner (WI-4419) — this
+ * detector must never introduce a NEW `[owner:<word>]` shape of its own.
+ */
+const DIALOG_ANSWER_CLAIM_RE = /\bAskUserQuestion\b|\banswered\s+(?:a|an|the)\s+dialog\b/i;
+
+/** Whether an owner-tag line specifically claims a DIALOG (AskUserQuestion) answer. */
+function isDialogAnswerClaim(line: string): boolean {
+  return DIALOG_ANSWER_CLAIM_RE.test(line);
+}
+
 /** Phrases that attribute a claim/imperative to the owner, or a bare "do not X
  *  until Y" gate/permission imperative — the two shapes EI-9091 found drifting
  *  (a block AND a permission can both be manufactured the same way). Kept to a
@@ -504,12 +526,18 @@ export interface ProvenanceLintMatch {
    *  rather than the tag: the comm verb's subject is a THIRD PARTY, so the line
    *  records a peer's action as a peer's action — attribution done right, not an
    *  unprovable claim about the author's own side-effects. Still second-hand and
-   *  still surfaced; just not accused. */
+   *  still surfaced; just not accused.
+   *  'unverified-dialog-answer-claim' (EI-21918777703977266) is the SHARPER
+   *  sibling of 'manual-owner-tag' for the one subtype independently
+   *  reproduced as a real drift incident: a bare owner tag specifically
+   *  claiming a DIALOG (AskUserQuestion) was answered. Never downgraded —
+   *  it is louder than the generic tag, not softer. */
   kind:
     | 'owner-attribution'
     | 'bare-gate-imperative'
     | 'peer-reported-action'
     | 'manual-owner-tag'
+    | 'unverified-dialog-answer-claim'
     | 'possible-owner-tag-mention'
     | 'quote-mismatch'
     | 'unverified-action-claim';
@@ -578,7 +606,14 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       }
       // P-014: a bare [owner:…] tag no longer clears the line — it asserts an
       // owner directive without a verifiable anchor. Nudge for a [turn:…] ref.
-      matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'manual-owner-tag' });
+      // EI-21918777703977266: a tag specifically claiming a DIALOG (AskUserQuestion)
+      // answer gets the sharper, incident-specific note — this exact shape has
+      // already manufactured a false owner directive from a session that died
+      // with the dialog still open.
+      matches.push({
+        line: line.slice(0, MATCH_LINE_CAP),
+        kind: isDialogAnswerClaim(line) ? 'unverified-dialog-answer-claim' : 'manual-owner-tag',
+      });
       continue;
     }
     if (SOURCE_TAG_RE.test(line)) continue; // [self-imposed]/[peer:]/[inferred] — not owner-authority
@@ -638,6 +673,25 @@ export const PROVENANCE_LINT_NOTE =
   'See WI-3532 / EI-9091 / EI-18226077402946717.';
 
 /**
+ * EI-21918777703977266: the sharper note for a bare `[owner:…]` tag that claims a
+ * DIALOG (AskUserQuestion) was answered. Unlike the generic directive-anchoring
+ * advice above, this names the exact reproduced failure — a session dying (auth
+ * expiry / crash) with the dialog still open, then a later carry-note describing
+ * that as an owner answer — because a reader who has seen the generic note fail
+ * to prevent this exact incident needs the sharper, cited version, not a repeat
+ * of the same words that already got waved off as a formatting nag.
+ */
+export const PROVENANCE_LINT_DIALOG_NOTE =
+  'provenance_lint: this line claims the OWNER answered a DIALOG (AskUserQuestion) with a bare [owner:…] tag and ' +
+  'no verifiable turn ref. This exact shape has already manufactured a false owner directive (EI-21918777703977266): ' +
+  'a session died with the dialog still unanswered, and a LATER carry-note asserted it had been answered — ' +
+  're-tagging the claim (without verifying it) is what let it survive further compaction hops undetected. Before ' +
+  "restating this, verify with sessions:search { session:'self', mode:'verbatim', query:'<the claimed answer text>' } " +
+  "that a REAL owner-typed turn (provenance verdict 'owner-typed' or 'owner-dialog', never 'agent-injected') " +
+  'actually answered it. If verified, anchor with [turn:<session>@<iso-ts>]; if NOT, write "UNANSWERED DIALOG: ' +
+  '<question>" instead of an owner tag. See WI-3532 / EI-9091 / EI-21918777703977266.';
+
+/**
  * The kinds that are SURFACED but not ACCUSED — a mention of the tag convention rather
  * than an attribution, or an action attributed to a peer rather than claimed as one's
  * own. Kept as data (not a boolean on each match) so the note selection below cannot
@@ -672,6 +726,14 @@ export function provenanceLintField(text: string | null | undefined):
   | undefined {
   const result = lintCarrySurfaceProvenance(text);
   if (!result.flagged) return undefined;
+  // EI-21918777703977266: the sharper, incident-specific dialog note takes priority
+  // over both other notes whenever it applies — it is the LOUDEST kind (never
+  // downgraded), so its presence alone means "not clean" regardless of what else
+  // matched, and its specificity is exactly the point of adding it.
+  const hasDialogClaim = result.matches.some((m) => m.kind === 'unverified-dialog-answer-claim');
+  if (hasDialogClaim) {
+    return { flagged: true, note: PROVENANCE_LINT_DIALOG_NOTE, matches: result.matches };
+  }
   // A single LOUD match makes the write accusable, so the softer note applies only when
   // EVERY match is downgraded — never let one real violation ride in under the FYI.
   const allDowngraded = result.matches.every((m) => DOWNGRADED_KINDS.has(m.kind));
