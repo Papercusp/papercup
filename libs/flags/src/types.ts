@@ -1971,7 +1971,8 @@ export const FLAGS = {
   // consult-min-max-and-rubric-vetting-2026-08-17 P-004: the VETTING half of the rubric
   // family. Before a NON-implementer grades the WORK, the acceptance-rubric AUTHOR vets
   // the RUBRIC against the meta-rubric ('meta-acceptance-rubric'): a get_feedback
-  // consult (min 1 / max 3 responders) critiques it, the author improves it, then
+  // consult bounded by the 'rubric-vetting' selection policy critiques it (the count is
+  // that registry's to state, never this comment's), the author improves it, then
   // attests via a meta-scorecard — scorecards:emit { rubricRef:'meta-acceptance-rubric',
   // subject:{ kind:'rubric', ref:<the acceptance rubric> }, vettingConsult:<the
   // consult's conversation_id> }. ON ⇒ evaluatePlanAcceptanceGate additionally refuses
