@@ -252,10 +252,20 @@ type HostSession = {
  * The channel index, discriminated so one `channelId` namespace covers both
  * planes — which is what makes the `channel_already_open` check and `relay.close`
  * dispatch uniform instead of two half-checks that can disagree.
+ *
+ * Deliberately carries no `role`: neither variant's role is ever read back off
+ * this index (grep confirms it — see EI-21856653660444838). The real,
+ * consulted role lives on `DesktopChannel.role` (used at open to pick the
+ * dial credential) and in the `pty.ready` wire reply; storing a second,
+ * never-read copy here reads as defence-in-depth that does not exist. Nothing
+ * enforces controller-only PTY writes host-side today — `CONTROLLER_ONLY` in
+ * `endpoint-route/hosted-workspace-session.ts` is the only gate — and the
+ * broker's `relay.role` message is intentionally unhandled by `accept()` for
+ * the same reason: there is nothing here for it to update.
  */
 type Channel =
-  | { kind: 'pty'; sessionKey: string; role: HostedHostTabRole }
-  | { kind: 'desktop'; desktopSessionId: string; role: HostedHostTabRole };
+  | { kind: 'pty'; sessionKey: string }
+  | { kind: 'desktop'; desktopSessionId: string };
 
 type DesktopChannel = {
   channelId: string;
@@ -659,7 +669,7 @@ export class HostedWorkspaceHostSessionAdapter {
       session.idleTimer = null;
     }
     session.channels.add(channelId);
-    this.channels.set(channelId, { kind: 'pty', sessionKey: key, role });
+    this.channels.set(channelId, { kind: 'pty', sessionKey: key });
     this.send(channelId, { type: 'pty.ready', resumed, role });
     const snapshot = await session.pty.snapshot();
     // Re-entrancy guard: the channel may have been detached — or reused by a
@@ -726,7 +736,7 @@ export class HostedWorkspaceHostSessionAdapter {
       closed: false,
       teardown: [],
     };
-    this.channels.set(channelId, { kind: 'desktop', desktopSessionId, role });
+    this.channels.set(channelId, { kind: 'desktop', desktopSessionId });
     this.desktopChannels.set(channelId, channel);
 
     try {
