@@ -33,7 +33,7 @@ import {
   type GcpImageInspection,
   type GcpImageScanEvidence,
 } from './gcp-image-family';
-import { evaluateImageScanPolicy } from './image-scan-policy';
+import { evaluateImageScanPolicy, GCP_IMAGE_SCAN_POLICY } from './image-scan-policy';
 import {
   IAP_TCP_FORWARDING_SOURCE_RANGE,
   iapSshRuleAdmits,

@@ -72,6 +72,30 @@ export interface ImageScanPolicy {
 export const WORKSPACE_HOST_IMAGE_SCAN_POLICY: ImageScanPolicy = Object.freeze({
   denyVulnerabilitiesAtOrAbove: 'high',
   maxSecretFindings: 0,
+  // FALSE because this shared constant still gates the AWS and Azure release paths,
+  // whose scanners measure no coverage at all. Requiring the proof here would
+  // fail-close two providers against a field neither has ever produced — a
+  // hardening that lands as an outage. Measured 2026-08-30: `mountedFilesystems`
+  // and `candidateRootProof` appear ZERO times in aws-ami-release.ts and
+  // azure-compute-gallery-release.ts. Their real fix is scanner parity, tracked
+  // separately; until then, silence about coverage is not a claim of coverage,
+  // it is an absence this constant declines to interpret.
+  requireCoverageProof: false,
+});
+
+/**
+ * The GCP-scoped policy: identical thresholds, but the scanner MUST prove it
+ * covered the image.
+ *
+ * Separate from the shared constant on purpose. The alternative — flipping
+ * `requireCoverageProof` on the one shared object — would silently arm the
+ * requirement for AWS and Azure too. The asymmetry is real (only the GCP scanner
+ * measures coverage), so it is expressed as two policies rather than one policy
+ * plus a comment asking the reader to remember which providers are safe.
+ */
+export const GCP_IMAGE_SCAN_POLICY: ImageScanPolicy = Object.freeze({
+  ...WORKSPACE_HOST_IMAGE_SCAN_POLICY,
+  requireCoverageProof: true,
 });
 
 /**
@@ -92,6 +116,8 @@ const SEVERITY_RANK: Readonly<Record<string, number>> = Object.freeze({
 });
 
 export type ImageScanPolicyFailureCode =
+  | 'coverage-proof-invalid'
+  | 'coverage-proof-missing'
   | 'invalid-policy'
   | 'malformed-severity-breakdown'
   | 'secret-threshold'
@@ -111,6 +137,20 @@ export interface ImageScanPolicyInput {
   vulnerabilityBySeverity: Readonly<Record<string, unknown>>;
   /** Total gitleaks findings, as reported by the scanner. */
   secretFindings: number;
+  /**
+   * How many filesystems the guest actually mounted off the candidate disk.
+   *
+   * Typed `unknown` rather than `number | undefined` deliberately: this value
+   * crosses a process boundary as JSON from a guest VM, so the type it is DECLARED
+   * as here is a claim about a wire payload, not a compiler-checked fact. Narrowing
+   * it is this module's job, not the caller's.
+   */
+  mountedFilesystems?: unknown;
+  /**
+   * Path to the file that proves an OS root was mounted (e.g. an `/etc/os-release`
+   * under the candidate mount). Same `unknown` reasoning as above.
+   */
+  candidateRootProof?: unknown;
 }
 
 export interface ImageScanPolicyVerdict {
@@ -154,12 +194,64 @@ export function evaluateImageScanPolicy(
   });
 
   const threshold = SEVERITY_RANK[policy.denyVulnerabilitiesAtOrAbove];
-  if (typeof threshold !== 'number' || !isSafeCount(policy.maxSecretFindings)) {
+  if (
+    typeof threshold !== 'number' ||
+    !isSafeCount(policy.maxSecretFindings) ||
+    typeof policy.requireCoverageProof !== 'boolean'
+  ) {
     failures.push({
       code: 'invalid-policy',
       message:
         `Policy is unusable: denyVulnerabilitiesAtOrAbove '${policy.denyVulnerabilitiesAtOrAbove}' ` +
-        `must be a known severity and maxSecretFindings '${policy.maxSecretFindings}' a non-negative integer.`,
+        `must be a known severity, maxSecretFindings '${policy.maxSecretFindings}' a non-negative integer, ` +
+        `and requireCoverageProof '${policy.requireCoverageProof}' a boolean.`,
+    });
+    return verdict(false, -1, -1);
+  }
+
+  // ── Scan coverage ────────────────────────────────────────────────────────────
+  // Checked BEFORE any finding count, because "did this scan cover the image" is
+  // prior to "what did it find". A scan that mounted nothing reports zero findings,
+  // and zero findings is the shape of a perfect result — the same dead-instrument
+  // failure the severity reconciliation below already defends against, one level up.
+  //
+  // Two rules, and the second applies to EVERY provider:
+  //   1. If the policy REQUIRES proof, absence is a denial.
+  //   2. If a value is PRESENT, it is validated regardless of the policy — so a
+  //      provider that starts emitting a malformed proof is caught the day it does,
+  //      not the day someone remembers to flip the flag on.
+  const hasMounted = input.mountedFilesystems !== undefined && input.mountedFilesystems !== null;
+  const hasRootProof = input.candidateRootProof !== undefined && input.candidateRootProof !== null;
+
+  if (policy.requireCoverageProof && (!hasMounted || !hasRootProof)) {
+    const absent = [!hasMounted ? 'mountedFilesystems' : null, !hasRootProof ? 'candidateRootProof' : null]
+      .filter(Boolean)
+      .join(' and ');
+    failures.push({
+      code: 'coverage-proof-missing',
+      message:
+        `Policy requires proof the scanner covered the image, but ${absent} ` +
+        `${absent.includes(' and ') ? 'are' : 'is'} absent. An unproven scan cannot be read as a clean one.`,
+    });
+    return verdict(false, -1, -1);
+  }
+
+  if (hasMounted && !(isSafeCount(input.mountedFilesystems) && (input.mountedFilesystems as number) >= 1)) {
+    failures.push({
+      code: 'coverage-proof-invalid',
+      message:
+        `mountedFilesystems must be a safe integer >= 1; received ${JSON.stringify(input.mountedFilesystems)}. ` +
+        `A scan that mounted no filesystem has measured nothing.`,
+    });
+    return verdict(false, -1, -1);
+  }
+
+  if (hasRootProof && !(typeof input.candidateRootProof === 'string' && input.candidateRootProof.trim() !== '')) {
+    failures.push({
+      code: 'coverage-proof-invalid',
+      message:
+        `candidateRootProof must be a non-empty string; received ${JSON.stringify(input.candidateRootProof)}. ` +
+        `Without it the scan cannot show it mounted an OS root rather than an empty or data-only partition.`,
     });
     return verdict(false, -1, -1);
   }
