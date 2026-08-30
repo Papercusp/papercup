@@ -82,6 +82,12 @@ import {
   createCodexOAuthKernelAdapter,
   type CodexOAuthFetchResponse,
 } from './codex-oauth-kernel-adapter';
+import {
+  createCodexCliKernelAdapter,
+  type CodexCliChunk,
+  type CodexCliResponseMetadata,
+  type CodexCliRouteValue,
+} from './codex-cli-kernel-adapter';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -102,6 +108,7 @@ import {
   runCodexCliCompletion,
   type CodexCliAccount,
   type CodexCliRunOpts,
+  type CodexCliSyntheticResponse,
   type CodexCliRunResult,
 } from './codex-cli-bridge';
 import {
@@ -5258,127 +5265,233 @@ export function createInferenceGateway(deps: GatewayDeps) {
       );
     };
     res.once('close', stopKeepalive);
+    /*
+     * gateway-kernel-adoption-2026-08-29 P-005 — this handler's attempt ladder now
+     * lives in `executeGatewayRequestKernel`, and the transport-owned half (the
+     * nested `codex exec` run, credential-death quarantine, rotation) in
+     * `createCodexCliKernelAdapter`. The hand-rolled loop, its per-attempt
+     * failover bookkeeping and its auth-quarantine branch are DELETED, not ported.
+     *
+     * WHY THE STREAM STILL OPENS BEFORE THE KERNEL RUNS: the kernel commits a
+     * response only after an attempt has been chosen as final (retry decisions
+     * all precede `downstream.start`). This transport must commit FIRST, because
+     * a buffered multi-minute `codex exec` would otherwise deliver no bytes until
+     * it finished and trip the client's idle deadline. Those are not in conflict:
+     * `downstream` belongs to the CALLER, so the SSE head and its keepalive are
+     * opened here and the kernel's `start()` is a no-op for an already-committed
+     * head. The ladder then runs underneath the open stream exactly as before —
+     * which is why a failover can still move the account after the routed-account
+     * header has been written, and why a terminal failure has to travel in-band.
+     */
+    const kernelAdapter = createCodexCliKernelAdapter({
+      // D-010: the caller already spent this request's one `codexCliPool.active()`
+      // call to resolve `cli`, and `active()` ADVANCES the round-robin. Hand the
+      // resolved account over rather than letting the adapter select again.
+      initialAccount: cli,
+      accounts: () => codexCliAccounts(),
+      pool: codexCliPool ?? null,
+      run: codexCliRun,
+      model,
+      effort,
+      prompt,
+      timeoutMs: requestCeilingMs,
+      authQuarantineMs: CODEX_CLI_AUTH_QUARANTINE_MS,
+      failoverBackoffMs: bare429FailoverBackoffMs,
+      isAuthFailure: isCodexAuthFailure,
+      hardPin: routing.hardPin,
+      pinnedAccountId: routing.pinned?.accountId ?? null,
+      // Once `openSse()` has committed the 200, a terminal failure is a GATEWAY
+      // error: we promised the client a response and then did not serve one.
+      responseCommitted: () => sseOpen,
+    });
+    let served: CodexCliSyntheticResponse | null = null;
     try {
-      for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
-        try {
-          // The CLI home already encapsulates its credential. Record the local selection seam
-          // separately from provider execution so auth remains explicit without inventing timing.
-          stageSpan?.beginStage('auth');
-          stageSpan?.endStage('auth');
-          stageSpan?.recordAttempt();
-          stageSpan?.beginStage('upstreamTtfb');
-          // Open the stream (and start the keepalive) BEFORE the await — the whole point.
-          if (wantsStream) openSse();
-          const r = await codexCliRun({
-            home: cli.home,
-            model,
-            effort,
-            prompt,
-            timeoutMs: requestCeilingMs,
-            signal: ac.signal,
-          });
-          stageSpan?.endStage('upstreamTtfb');
-          providerAdmission.recordSuccess('codex');
-          const headers: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
-          if (routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId) {
-            headers[PIN_YIELDED_HEADER] = `${routing.pinned.accountId}->${cli.accountId}`;
-            recordOwnerOutcome(routing.ownerId, 'pin_yield', {
-              account: cli.accountId,
-              detail: headers[PIN_YIELDED_HEADER],
+      // THE INVERSION THIS LANE DEPENDS ON, and the reason the kernel needed no
+      // change to host it. The kernel commits a response only once an attempt has
+      // been chosen as final; this transport must commit BEFORE the first attempt,
+      // because a buffered multi-minute `codex exec` would otherwise send no bytes
+      // until it finished and trip the client's idle deadline. `downstream` is the
+      // CALLER's, so the head and its keepalive open here and the kernel's
+      // `start()` finds them already committed — the ladder then runs underneath
+      // the open stream exactly as the hand-rolled loop's `openSse()`-before-`await`
+      // did. Consequence, unchanged from before: past this point the status code is
+      // spent, so a terminal failure has to travel in-band.
+      if (wantsStream) openSse();
+      await executeGatewayRequestKernel<
+        CodexCliRouteValue,
+        CodexCliRouteValue,
+        CodexCliChunk,
+        CodexCliResponseMetadata
+      >({
+        request: {
+          lane: providerAdapters.codex.lane,
+          // Already read and parsed above — the body is what SELECTS this transport
+          // (and, on the OAuth kill-switch path, was read by the caller), so it
+          // cannot be read inside the kernel.
+          body: (async function* () {
+            yield bodyBuf;
+          })(),
+          ownerId: routing.ownerId ?? null,
+          pin: routing.pinned
+            ? { accountId: routing.pinned.accountId, mode: routing.hardPin ? 'hard' : 'soft' }
+            : null,
+          signal: ac.signal,
+        },
+        policy: {
+          maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+          bodyReadTimeoutMs: requestCeilingMs,
+          requestCeilingMs,
+          // The nested run IS the whole request: the live handler passed
+          // `requestCeilingMs` straight to `codexCliRun` and armed no separate
+          // first-byte deadline, because a buffered subprocess has no TTFB.
+          ttfbTimeoutMs: requestCeilingMs,
+          bodyIdleTimeoutMs: requestCeilingMs,
+          downstreamIdleTimeoutMs: downstreamIdleMs,
+          maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+        },
+        telemetry: requestStageTelemetry,
+        span: stageSpan,
+        admission: {
+          // PASS-THROUGH: this handler already runs inside executeLegacyLaneTask's
+          // Governor.admit, so re-admitting would deadlock on its own slot.
+          run: (_context, task) => task(),
+          observeAttempt: ({ context, error }) => {
+            const account = context.route.accountId ?? cli.accountId;
+            // Follow the attempt, exactly as the old loop's `cli = nextCli` did: the
+            // terminal 502 must report the account LAST tried, not the first candidate.
+            cli = codexCliAccounts().find((a) => a.accountId === account) ?? cli;
+            // The CLI home encapsulates its own credential — there is no token to
+            // resolve — so the auth stage stays the zero-width seam it was.
+            if (!error) return;
+            codexUpstreamErrors++;
+            recordOwnerOutcome(routing.ownerId, 'upstream_error', { account, detail: 'cli-bridge' });
+            log('error', `inference-gateway: codex-cli bridge failed on '${account}': ${error.message}`);
+            // THE ONE HOOK THAT FIRES ON EVERY ATTEMPT. Credential death must park
+            // the account even on the LAST attempt, when no retry remains and the
+            // kernel therefore never consults `selectFailover`
+            // (EI-21618978789879488). `onExhausted` both parks AND returns the next
+            // account, so this is the single call site: `selectFailover` consumes
+            // the decision rather than making it again, which is what stops one
+            // failed attempt parking two accounts.
+            const outcome = kernelAdapter.noteAttemptFailure({
+              accountId: account,
+              attempt: context.attempt,
+              maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+              message: error.message,
+              aborted: ac.signal.aborted,
             });
-          }
-          recordRoute(routing.ownerId, cli.accountId, model);
-          recordOwnerOutcome(routing.ownerId, 'ok', { account: cli.accountId, status: 200 });
-          const response = codexCliResponsesBody({ model, ...r });
-          if (wantsStream) {
-            // `codex exec` always asks a Responses endpoint for SSE. The subscription bridge is
-            // itself buffered (it drives a nested codex CLI to completion), but that is an
-            // implementation detail: the completed result is adapted back onto the streaming
-            // wire contract instead of rejecting every gateway-routed agent. The stream is
-            // already open by here — this call only covers a run that somehow finished before
-            // the opener ran. Output-item/content events are required for Codex to materialize
-            // an agent_message; response.completed alone records usage but drops the text.
-            openSse();
-            stopKeepalive();
-            res.end(codexCliResponsesCompletionSse(response));
-            stageSpan?.endStage('stream');
-          } else if (!res.headersSent) {
-            sendJson(res, 200, response, headers);
-          }
-          return;
-        } catch (e) {
-          stageSpan?.endStage('upstreamTtfb');
-          codexUpstreamErrors++;
-          recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'cli-bridge' });
-          log('error', `inference-gateway: codex-cli bridge failed on '${cli.accountId}': ${(e as Error).message}`);
-          const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && !routing.hardPin && !ac.signal.aborted;
-          // A DEAD CREDENTIAL must leave selection even when no retry remains (EI-21618978789879488).
-          // The plain failure path only marks the account exhausted while `canRetry` holds, so on the
-          // last attempt a home whose auth.json cannot authenticate stayed fully selectable — and was
-          // re-chosen on the very next request, forever, because `available` only ever described quota.
-          // Auth-class failures are quarantined unconditionally, and for longer than a rate wall.
-          const authClass = isCodexAuthFailure((e as Error).message);
-          if (authClass) {
-            log(
-              'error',
-              `inference-gateway: codex-cli account '${cli.accountId}' has an UNUSABLE CREDENTIAL (not a quota wall) — ` +
-                `quarantining for ${Math.round(CODEX_CLI_AUTH_QUARANTINE_MS / 1000)}s; repair with \`codex login\` in its CODEX_HOME (${cli.home})`,
-            );
-          }
-          // Quarantine is unconditional for an auth-class failure (it must outlive THIS request);
-          // the in-request failover below stays gated on `canRetry`, because `continue` on the last
-          // attempt would leave the loop without ever sending a response.
-          const exhausted =
-            authClass && !routing.hardPin
-              ? (codexCliPool?.onExhausted(cli.accountId, Date.now() + CODEX_CLI_AUTH_QUARANTINE_MS) ?? null)
-              : canRetry
-                ? (codexCliPool?.onExhausted(cli.accountId, Date.now() + bare429FailoverBackoffMs) ?? null)
-                : null;
-          const next = canRetry ? exhausted : null;
-          const nextCli = next ? codexCliAccounts().find((a) => a.accountId === next.accountId) : undefined;
-          if (nextCli && nextCli.accountId !== cli.accountId) {
-            codexFailovers++;
-            stageSpan?.recordFailover();
-            cli = nextCli;
-            continue;
-          }
-          stopKeepalive();
-          if (!res.headersSent) {
-            sendJson(
-              res,
-              502,
-              {
-                type: 'error',
-                error: {
-                  type: 'api_error',
-                  message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}`,
-                },
-                gateway: true,
-              },
-              { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
-            );
-          } else if (sseOpen && !res.writableEnded) {
-            // The status line is already committed, so the failure has to travel in-band.
-            // Destroying the socket instead makes a real bridge error indistinguishable from a
-            // network drop — which is the shape a client retries blindly against.
-            //
-            // Telemetry has to be told, though: `classifyGatewayTelemetryOutcome` reads
-            // `res.statusCode`, which is the 200 `openSse()` already committed, so a request that
-            // FAILED for the client was finalized as `outcome:'ok'` — the same
-            // records-success-from-a-partial-signal shape the bridge's own
-            // `codexCliResponsesBody` comment documents. `gatewayError` outranks the status in
-            // that classifier, so marking it here is what keeps the span honest.
-            markRequestGatewayError(req);
-            stageSpan?.endStage('stream');
-            res.end(
-              `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}` }, gateway: true })}\n\ndata: [DONE]\n\n`,
-            );
-          } else {
-            res.destroy();
-          }
-          return;
-        }
+            if (outcome.authClass && outcome.parkedAccountId) {
+              log(
+                'error',
+                `inference-gateway: codex-cli account '${outcome.parkedAccountId}' has an UNUSABLE CREDENTIAL (not a quota wall) — ` +
+                  `quarantining for ${Math.round(CODEX_CLI_AUTH_QUARANTINE_MS / 1000)}s; repair with \`codex login\` in its CODEX_HOME (${cli.home})`,
+              );
+            }
+            if (outcome.nextAccountId) codexFailovers++;
+          },
+        },
+        adapter: kernelAdapter,
+        // The old handler never registered in `inFlightReg`, and D-003 forbids
+        // folding a behaviour change into an extraction.
+        inFlight: { register: () => ({ unregister: () => undefined }) },
+        downstream: {
+          start: ({ metadata }) => {
+            // Track the account that actually served, so the terminal error path
+            // and the response headers report it rather than the first candidate.
+            cli = codexCliAccounts().find((a) => a.accountId === metadata.accountId) ?? cli;
+            // RESTORE THE WIRE TRUTH. The kernel has just stamped the span from
+            // the UPSTREAM's shape (`request-kernel.ts:978`), which for this
+            // transport is a buffered subprocess and therefore `false`. That is
+            // the same mis-description the handler's opening comment documents:
+            // stamping `streaming:false` disarms `missingStages`, whose `stream`
+            // requirement is armed only when the span says the request streamed —
+            // so an SSE stream that opened and never terminated became
+            // indistinguishable from a correctly non-streaming request. The span
+            // must describe the WIRE, which is what the client actually got.
+            stageSpan?.setStreaming(wantsStream);
+            providerAdmission.recordSuccess('codex');
+            const headers: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
+            if (metadata.pinYieldedFrom) {
+              headers[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
+              recordOwnerOutcome(routing.ownerId, 'pin_yield', {
+                account: metadata.accountId,
+                detail: headers[PIN_YIELDED_HEADER],
+              });
+            }
+            recordRoute(routing.ownerId, metadata.accountId, model);
+            recordOwnerOutcome(routing.ownerId, 'ok', { account: metadata.accountId, status: 200 });
+            served = codexCliResponsesBody({ model, ...metadata.result });
+            // The response is finished HERE, not after the kernel returns, because
+            // the kernel finishes the span in a `finally` as it returns
+            // (`request-kernel.ts:1036`). An `endStage('stream')` after that point
+            // lands on an already-finished span and is silently dropped — the
+            // stream stage then reads count 0 and shows up in `missingStages`,
+            // which is the very signal this transport's opening comment exists to
+            // keep armed.
+            if (wantsStream) {
+              // `codex exec` always asks a Responses endpoint for SSE. The bridge is
+              // itself buffered (it drives a nested codex CLI to completion), but that
+              // is an implementation detail: the completed result is adapted back onto
+              // the streaming wire contract instead of rejecting every gateway-routed
+              // agent. The stream is already open by here — this call only covers a run
+              // that somehow finished before the opener ran. Output-item/content events
+              // are required for Codex to materialize an agent_message;
+              // response.completed alone records usage but drops the text.
+              openSse();
+              stopKeepalive();
+              res.end(codexCliResponsesCompletionSse(served));
+              stageSpan?.endStage('stream');
+            } else if (!res.headersSent) {
+              sendJson(res, 200, served, headers);
+            }
+          },
+          // The adapter returns no chunks: this transport's payload is a completed
+          // object the caller serializes, either as JSON above or as SSE below.
+          write: () => undefined,
+          end: () => undefined,
+        },
+      });
+
+      // Nothing to do on success: `downstream.start` already finished the response,
+      // deliberately, so every stage closes before the kernel finalizes the span.
+    } catch (e) {
+      // Every retryable path was already spent inside the kernel; reaching here means
+      // the ladder is exhausted, so this is only the terminal presentation. The
+      // adapter already wraps a run failure in the live message shape — re-prefixing
+      // a kernel-owned failure (ceiling, cancellation, downstream idle) keeps the one
+      // wire contract clients match on.
+      stopKeepalive();
+      const detail = (e as Error).message;
+      const message = detail.startsWith('inference-gateway: codex-cli bridge failed')
+        ? detail
+        : `inference-gateway: codex-cli bridge failed: ${detail}`;
+      if (!res.headersSent) {
+        sendJson(
+          res,
+          502,
+          { type: 'error', error: { type: 'api_error', message }, gateway: true },
+          { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
+        );
+      } else if (sseOpen && !res.writableEnded) {
+        // The status line is already committed, so the failure has to travel in-band.
+        // Destroying the socket instead makes a real bridge error indistinguishable from a
+        // network drop — which is the shape a client retries blindly against.
+        //
+        // Telemetry has to be told, though: `classifyGatewayTelemetryOutcome` reads
+        // `res.statusCode`, which is the 200 `openSse()` already committed, so a request that
+        // FAILED for the client was finalized as `outcome:'ok'` — the same
+        // records-success-from-a-partial-signal shape the bridge's own
+        // `codexCliResponsesBody` comment documents. `gatewayError` outranks the status in
+        // that classifier, so marking it here is what keeps the span honest.
+        markRequestGatewayError(req);
+        stageSpan?.endStage('stream');
+        res.end(
+          `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message }, gateway: true })}\n\ndata: [DONE]\n\n`,
+        );
+      } else {
+        res.destroy();
       }
+      return;
     } finally {
       res.removeListener('close', onGone);
       res.removeListener('close', stopKeepalive);

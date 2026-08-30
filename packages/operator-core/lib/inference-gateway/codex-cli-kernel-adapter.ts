@@ -112,6 +112,20 @@ export interface CodexCliKernelAdapterDeps {
    *  would strand the pin rather than route around it. */
   hardPin: boolean;
   pinnedAccountId: string | null;
+  /**
+   * Whether the downstream response has ALREADY been committed (the SSE head is
+   * open). When it has, a terminal failure is a GATEWAY error, not merely an
+   * upstream one: the client was told 200 and then not served, so finalizing the
+   * span as `upstream-error` would record it beside honest upstream failures and
+   * `ok` would be worse still. The kernel finalizes the span from the terminal
+   * error's own `outcome` (`request-kernel.ts:1036`, in a `finally` that runs
+   * before the caller's catch), so this has to be decided HERE — marking the
+   * request afterwards is a no-op against an already-finished span.
+   *
+   * Only ever read on the terminal failure; a mid-ladder failure that a later
+   * attempt recovers takes its outcome from the successful response instead.
+   */
+  responseCommitted?: () => boolean;
   now?: () => number;
 }
 
@@ -199,11 +213,14 @@ export function createCodexCliKernelAdapter(deps: CodexCliKernelAdapterDeps): Co
         // available is `selectFailover`'s answer, and whether one is attempted
         // at all is the kernel's. A hard pin is not consulted here for that
         // reason — the kernel suppresses the failover itself.
+        const committed = deps.responseCommitted?.() ?? false;
         throw new GatewayRequestKernelError(
           `inference-gateway: codex-cli bridge failed: ${(error as Error).message}`,
           {
             code: 'upstream-error',
-            outcome: 'upstream-error',
+            // `retryable` is unaffected by commitment — the ladder still runs
+            // underneath an open stream, exactly as the hand-rolled loop did.
+            outcome: committed ? 'gateway-error' : 'upstream-error',
             status: 502,
             retryable: true,
             cause: error,
