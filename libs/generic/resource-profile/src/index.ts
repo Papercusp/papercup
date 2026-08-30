@@ -25,8 +25,6 @@
  * connections, DBOS, file descriptors) can absorb.
  */
 
-import { createRequire } from 'node:module';
-
 /** Coarse host bucket, derived from effective core count. Drives nothing on its
  *  own — it's a label for diagnostics + a cheap switch consumers can branch on. */
 export type HostClass = 'laptop' | 'workstation' | 'server';
@@ -785,12 +783,11 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
  * (assume a dedicated DB unless told otherwise) and `hostRole: 'full'`.
  */
 export function detectResourceSignals(overrides?: ResourceProfileConfig): ResourceSignals {
-  // Lazy-load node:os via createRequire so node:os stays OUT of the static import
-  // graph (the pure derivation + types remain usable in a non-Node bundle) while
-  // still working under ESM: this package is "type": "module", so a bare CJS
-  // `require` is undefined in the ES module scope and crashed every tsx/ESM
-  // consumer of getResourceProfile (e.g. the external-bench launchers).
-  const os = createRequire(import.meta.url)('node:os') as typeof import('node:os');
+  // Node 22's synchronous built-in loader keeps node:os OUT of the static
+  // import graph (pure derivation/types remain usable in a non-Node bundle),
+  // works in ESM, and avoids createRequire's dynamic-require edge that webpack
+  // cannot statically analyze in server bundles.
+  const os = nodeBuiltin<typeof import('node:os')>('node:os');
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
   return {
     cores,
@@ -808,7 +805,13 @@ export function detectResourceSignals(overrides?: ResourceProfileConfig): Resour
  *  a container) or where detection fails — consumers treat it as 'ac' (full power). */
 export type PowerSource = 'ac' | 'battery' | 'unknown';
 
-type NodeRequireFn = ReturnType<typeof createRequire>;
+type NodeBuiltinLoader = <T extends object>(id: string) => T;
+
+function nodeBuiltin<T extends object>(id: string): T {
+  const loaded = process.getBuiltinModule(id);
+  if (!loaded) throw new Error(`node_builtin_unavailable:${id}`);
+  return loaded as T;
+}
 
 /**
  * Best-effort power-source detection (P5-3). I/O + platform-specific, so it lives
@@ -819,25 +822,25 @@ type NodeRequireFn = ReturnType<typeof createRequire>;
  * `configureResourceProfile({ onBattery: source === 'battery' })`.
  */
 export async function detectPowerSource(): Promise<PowerSource> {
-  let req: NodeRequireFn;
+  let load: NodeBuiltinLoader;
   let platform: NodeJS.Platform;
   try {
-    req = createRequire(import.meta.url);
-    platform = (req('node:os') as typeof import('node:os')).platform();
+    load = nodeBuiltin;
+    platform = load<typeof import('node:os')>('node:os').platform();
   } catch {
     return 'unknown';
   }
   try {
-    if (platform === 'linux') return await detectPowerSourceLinux(req);
-    if (platform === 'darwin') return await detectPowerSourceDarwin(req);
+    if (platform === 'linux') return await detectPowerSourceLinux(load);
+    if (platform === 'darwin') return await detectPowerSourceDarwin(load);
   } catch {
     /* fall through to unknown — best-effort only */
   }
   return 'unknown';
 }
 
-async function detectPowerSourceLinux(req: NodeRequireFn): Promise<PowerSource> {
-  const fsp = (req('node:fs') as typeof import('node:fs')).promises;
+async function detectPowerSourceLinux(load: NodeBuiltinLoader): Promise<PowerSource> {
+  const fsp = load<typeof import('node:fs')>('node:fs').promises;
   const base = '/sys/class/power_supply';
   let entries: string[];
   try {
@@ -869,9 +872,9 @@ async function detectPowerSourceLinux(req: NodeRequireFn): Promise<PowerSource> 
   return 'unknown';
 }
 
-async function detectPowerSourceDarwin(req: NodeRequireFn): Promise<PowerSource> {
-  const { execFile } = req('node:child_process') as typeof import('node:child_process');
-  const { promisify } = req('node:util') as typeof import('node:util');
+async function detectPowerSourceDarwin(load: NodeBuiltinLoader): Promise<PowerSource> {
+  const { execFile } = load<typeof import('node:child_process')>('node:child_process');
+  const { promisify } = load<typeof import('node:util')>('node:util');
   const { stdout } = await promisify(execFile)('pmset', ['-g', 'batt'], { timeout: 2000 });
   if (/AC Power/i.test(stdout)) return 'ac';
   if (/Battery Power/i.test(stdout)) return 'battery';

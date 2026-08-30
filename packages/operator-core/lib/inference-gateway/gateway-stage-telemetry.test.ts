@@ -90,15 +90,46 @@ it('publishes one reconciled, privacy-safe stage timeline through /stats and the
     missingStages: [],
   });
   expect(['unchanged', 'rewritten']).toContain(timeline.cacheRouting);
+  expect(timeline.admission.durable).toMatchObject({
+    queued: expect.objectContaining({ priority: expect.any(Number) }),
+    admitted: expect.objectContaining({ priority: expect.any(Number) }),
+    waitMs: expect.any(Number),
+  });
+  expect(timeline.admission.provider).toMatchObject({
+    queued: expect.objectContaining({
+      priority: expect.any(Number),
+      tier: expect.any(Number),
+      running: expect.any(Number),
+      queued: expect.any(Number),
+      maxConcurrent: expect.any(Number),
+      tier1Reserve: expect.any(Number),
+      tierInFlight: expect.any(Number),
+      tierQueued: expect.any(Number),
+    }),
+    admitted: expect.objectContaining({
+      priority: expect.any(Number),
+      tier: expect.any(Number),
+      running: expect.any(Number),
+      queued: expect.any(Number),
+      maxConcurrent: expect.any(Number),
+    }),
+    waitMs: expect.any(Number),
+  });
 
   const ownerResponse = await fetch(
     `http://127.0.0.1:${port}/admin/owner-report?owner=${encodeURIComponent(owner)}`,
   );
   const ownerReport = await ownerResponse.json() as {
-    stageTelemetry: { ownerId: string; finalized: number; outcomes: { ok: number }; recent: unknown[] };
+    stageTelemetry: {
+      ownerId: string;
+      finalized: number;
+      outcomes: { ok: number };
+      recent: Array<{ admission: typeof timeline.admission }>;
+    };
   };
   expect(ownerReport.stageTelemetry).toMatchObject({ ownerId: owner, finalized: 1, outcomes: { ok: 1 } });
   expect(ownerReport.stageTelemetry.recent).toHaveLength(1);
+  expect(ownerReport.stageTelemetry.recent[0]?.admission).toEqual(timeline.admission);
 
   const serialized = JSON.stringify({ stages, ownerReport });
   expect(serialized).not.toContain('PROMPT_SECRET_MUST_NOT_SURFACE');

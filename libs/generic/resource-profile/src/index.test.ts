@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   boundedOrgPoolMax,
   configureResourceProfile,
@@ -525,6 +525,17 @@ describe('detectResourceSignals — auto-fills physicalCores from os.cpus().leng
     const { detectResourceSignals } = await import('./index');
     const s = detectResourceSignals({ physicalCores: 999 });
     expect(s.physicalCores).toBe(999);
+  });
+
+  it('loads Node built-ins through the Node 22 ESM-safe loader', async () => {
+    const getBuiltinModule = vi.spyOn(process, 'getBuiltinModule');
+    try {
+      const { detectResourceSignals } = await import('./index');
+      expect(detectResourceSignals().cores).toBeGreaterThan(0);
+      expect(getBuiltinModule).toHaveBeenCalledWith('node:os');
+    } finally {
+      getBuiltinModule.mockRestore();
+    }
   });
 });
 
