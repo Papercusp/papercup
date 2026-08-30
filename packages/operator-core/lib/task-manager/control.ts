@@ -269,7 +269,10 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         taskId,
         action: 'kill',
         error: 'not_live',
-        detail: `state is ${row.state} — a residue or terminal row is never ours to signal`,
+        // EI-21895340816653497: name the unlock right here — a caller who hit
+        // this after an `incomplete` reply (the row aged to terminal between
+        // calls) has no other way to discover reapTerminalResidue exists.
+        detail: `state is ${row.state} — a residue or terminal row is never ours to signal by default. If this scope may still hold live processes (e.g. this row just aged out of an 'incomplete' kill reply), retry with reapTerminalResidue: true — it re-verifies the confined cgroup scope and, if it is not actually empty, signals it anyway.`,
       };
     }
     if (!row.confined || !row.scopeUnit) {
@@ -355,7 +358,12 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         taskId,
         action: 'kill',
         error: 'incomplete',
-        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''}${stopFallback ? `; systemd stop fallback ${stopFallback.ok ? 'also left the scope non-empty' : `failed${stopFallback.detail ? `: ${stopFallback.detail}` : ''}`}` : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it${residue ? describeResidue(residue) : ''}`,
+        // EI-21895340816653497: the row can age into a terminal state (e.g.
+        // `timed_out`) between this reply and a caller's retry, at which point
+        // a plain retry is refused `not_live` — an escalation path that reads
+        // as reachable but silently is not. Say so up front: `not_live` on a
+        // later retry means re-issue it with `reapTerminalResidue: true`.
+        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''}${stopFallback ? `; systemd stop fallback ${stopFallback.ok ? 'also left the scope non-empty' : `failed${stopFallback.detail ? `: ${stopFallback.detail}` : ''}`}` : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it, UNLESS the row has since aged into a terminal state (e.g. timed_out) — if a retry instead reports \`not_live\`, re-issue it with \`reapTerminalResidue: true\` to keep signalling the confirmed-live scope${residue ? describeResidue(residue) : ''}`,
       };
     }
     if (reapingResidue) {

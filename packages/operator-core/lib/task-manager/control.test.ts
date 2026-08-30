@@ -183,6 +183,10 @@ describe('killTask — confined path', () => {
     // with `not_live` — the reported "escape hatch closed too". A row that is
     // NOT actually dead must stay live so a retry (or processes:list) can find it.
     expect(store.closed).toHaveLength(0);
+    // EI-21895340816653497: the message must not promise a retry that a
+    // subsequent state transition (e.g. to `timed_out`) silently invalidates —
+    // it names the actual unlock (reapTerminalResidue) up front.
+    expect((out as { detail: string }).detail).toMatch(/reapTerminalResidue: true/);
   });
 
   it('falls back to a bounded unit stop when non-escalated SIGTERM leaves a survivor', async () => {
@@ -287,6 +291,11 @@ describe('killTask — reapTerminalResidue (WI-37521)', () => {
     expect(out).toMatchObject({ ok: false, error: 'not_live' });
     expect(kill).not.toHaveBeenCalled();
     expect(store.closed).toHaveLength(0);
+    // EI-21895340816653497: the exact refusal a caller hits after their prior
+    // `incomplete` reply's row aged into terminal must name the unlock here —
+    // this is the only place they land, and reapTerminalResidue's existence is
+    // otherwise undiscoverable from the refusal alone.
+    expect((out as { detail: string }).detail).toMatch(/reapTerminalResidue: true/);
   });
 
   it('reaps a terminal row whose scope is POSITIVELY re-verified to still hold processes', async () => {
