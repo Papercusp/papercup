@@ -28,14 +28,15 @@
 /** Matches a whole log line shaped like `EXIT=1` or `AFFECTED_EXIT=137`. */
 const CAPTURED_EXIT_RE = /^[ \t]*[A-Za-z_]*EXIT=(-?\d+)[ \t]*$/gm;
 
-/** The LAST captured-exit marker line in the log, or `null` if there is none. */
-function lastCapturedExit(log: string): number | null {
+/** The LAST captured-exit marker line in the log (parsed value + the exact
+ *  matched text, e.g. `EXIT=1` or `AFFECTED_EXIT=137`), or `null` if none. */
+function lastCapturedExit(log: string): { value: number; raw: string } | null {
   CAPTURED_EXIT_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
-  let last: number | null = null;
+  let last: { value: number; raw: string } | null = null;
   while ((match = CAPTURED_EXIT_RE.exec(log)) !== null) {
     const parsed = Number.parseInt(match[1]!, 10);
-    if (Number.isFinite(parsed)) last = parsed;
+    if (Number.isFinite(parsed)) last = { value: parsed, raw: match[0].trim() };
   }
   return last;
 }
@@ -53,15 +54,15 @@ export function capturedExitMismatch(job: {
   if (job.status === 'running') return null;
   if (job.exitCode === null) return null;
   const captured = lastCapturedExit(job.log);
-  if (captured === null || captured === job.exitCode) return null;
+  if (captured === null || captured.value === job.exitCode) return null;
   return {
-    headline: `exit_code (${job.exitCode}) disagrees with a captured EXIT marker in the log (${captured})`,
+    headline: `exit_code (${job.exitCode}) disagrees with a captured EXIT marker in the log (${captured.value})`,
     advice:
       `This job's reported exit_code (${job.exitCode}) is the shell's LAST command's status, which the log's ` +
-      `own captured marker shows disagrees with the real run (${captured}). This usually means the command ends ` +
-      `in \`echo\`/\`printf\` after capturing \`$?\` (e.g. \`cmd; echo "EXIT=$?"\`) — the echo's own exit status ` +
-      `(always 0) overwrites the shell's reported status the wrapper reads. Trust the log's captured marker ` +
-      `(${captured}) as this job's real verdict, not exit_code. For a rerun, capture the status BEFORE printing ` +
-      `it and re-exit it, e.g. \`cmd > /tmp/job.log 2>&1; rc=$?; echo "EXIT=$rc" >> /tmp/job.log; exit $rc\`.`,
+      `own captured marker (\`${captured.raw}\`) shows disagrees with the real run. This usually means the ` +
+      `command ends in \`echo\`/\`printf\` after capturing \`$?\` (e.g. \`cmd; echo "EXIT=$?"\`) — the echo's own ` +
+      `exit status (always 0) overwrites the shell's reported status the wrapper reads. Trust the log's captured ` +
+      `marker (\`${captured.raw}\`) as this job's real verdict, not exit_code. For a rerun, capture the status ` +
+      `BEFORE printing it and re-exit it, e.g. \`cmd > /tmp/job.log 2>&1; rc=$?; echo "EXIT=$rc" >> /tmp/job.log; exit $rc\`.`,
   };
 }
