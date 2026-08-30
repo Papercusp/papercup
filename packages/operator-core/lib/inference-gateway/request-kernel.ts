@@ -134,6 +134,32 @@ export interface GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata> {
   selectFailover(
     context: GatewayKernelRouteContext<TRoute, TChunk, TMetadata>,
   ): MaybePromise<GatewayKernelRoute<TRoute> | null>;
+  /**
+   * OPTIONAL re-attempt on the SAME account, tried BEFORE `selectFailover`.
+   *
+   * A failover changes ACCOUNT; a re-attempt keeps the account and changes only how
+   * it is reached — a refreshed OAuth token, a sibling egress IP. The live handlers
+   * treat those as different things and this hook preserves the distinction:
+   *
+   *  - it is consulted even under a HARD pin, because a hard pin forbids leaving the
+   *    pinned account, not re-attempting it (`rotateCli`/`rotateCodex` open with
+   *    `if (hardPin) return false`, but the 401-refresh at gateway.ts:5670 and the
+   *    sibling-egress retries at :5638/:5727/:4195/:4535 deliberately do not);
+   *  - it is tried FIRST, matching the live `siblingEgressAvailable(...) || rotate(...)`
+   *    ordering — exhaust the cheap same-account retry before parking the account;
+   *  - it is NOT counted as a failover, matching handlers that increment their
+   *    failover counter only inside the account-rotation helper.
+   *
+   * The returned route MUST carry the same `accountId` as the current route; the
+   * kernel throws `invalid-route` otherwise rather than letting a pin be silently
+   * escaped. Route-cycle rejection applies exactly as it does to a failover, so a
+   * re-attempt must present a NEW key (e.g. `oauth:acct#refresh1`).
+   *
+   * Adapters that do not implement it keep today's behaviour unchanged.
+   */
+  selectReattempt?(
+    context: GatewayKernelRouteContext<TRoute, TChunk, TMetadata>,
+  ): MaybePromise<GatewayKernelRoute<TRoute> | null>;
   /** Protocol/transport-owned parsing, auth, URL, header, model, and cache work. */
   prepareAttempt(context: GatewayKernelAttemptContext<TRoute>): MaybePromise<TPrepared>;
   /** Returns a response whose retryability/outcome has already been normalized at the boundary. */
@@ -478,6 +504,55 @@ function validateRoute<TRoute>(
   }
 }
 
+/**
+ * Same-account re-attempt selection. Unlike `selectFailover` this is NOT suppressed
+ * by a hard pin: the pin forbids changing account, and this cannot change it — the
+ * same-account check below is what enforces that, so the guarantee is preserved by
+ * construction rather than by refusing to ask.
+ */
+async function selectReattempt<TRoute, TPrepared, TChunk, TMetadata>(opts: {
+  adapter: GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata>;
+  base: GatewayKernelContext;
+  currentRoute: GatewayKernelRoute<TRoute>;
+  triedRouteKeys: Set<string>;
+  attempt: number;
+  pin: GatewayKernelAccountPin | null;
+  lastResponse: GatewayKernelUpstreamResponse<TChunk, TMetadata> | null;
+  lastError: GatewayRequestKernelError | null;
+}): Promise<GatewayKernelRoute<TRoute> | null> {
+  if (!opts.adapter.selectReattempt) return null;
+  const next = await abortable(
+    Promise.resolve(
+      opts.adapter.selectReattempt({
+        ...opts.base,
+        currentRoute: opts.currentRoute,
+        triedRouteKeys: [...opts.triedRouteKeys],
+        attempt: opts.attempt,
+        lastResponse: opts.lastResponse,
+        lastError: opts.lastError,
+      }),
+    ),
+    opts.base.signal,
+  );
+  if (!next) return null;
+  if (next.accountId !== opts.currentRoute.accountId) {
+    // An adapter bug, and the one that would silently escape a pin — fail loudly.
+    throw new GatewayRequestKernelError(
+      `gateway re-attempt must stay on account ${opts.currentRoute.accountId ?? '(none)'}, got ${next.accountId ?? '(none)'}`,
+      { code: 'invalid-route', outcome: 'gateway-error', status: 500 },
+    );
+  }
+  validateRoute(opts.base.lane, next, opts.pin, false);
+  if (opts.triedRouteKeys.has(next.key)) {
+    throw new GatewayRequestKernelError(`gateway re-attempt selected already-tried route ${next.key}`, {
+      code: 'route-cycle',
+      outcome: 'gateway-error',
+      status: 500,
+    });
+  }
+  return next;
+}
+
 async function selectFailover<TRoute, TPrepared, TChunk, TMetadata>(opts: {
   adapter: GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata>;
   base: GatewayKernelContext;
@@ -656,15 +731,22 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     startedAt: span.startedAt,
   };
   const triedRouteKeys = new Set<string>();
-  const chooseFailover = async (args: {
+  /**
+   * Pick the next route after a retryable failure. A SAME-account re-attempt is tried
+   * first (a refreshed token, a sibling egress IP), mirroring the live handlers'
+   * `siblingEgressAvailable(...) || rotate(...)` ordering — exhaust the cheap retry
+   * before parking the account. Only the account-changing branch is a `failover`, so
+   * the caller can keep counting the two apart the way the legacy ladders did.
+   */
+  const chooseNextRoute = async (args: {
     currentRoute: GatewayKernelRoute<TRoute>;
     attempt: number;
     lastResponse: GatewayKernelUpstreamResponse<TChunk, TMetadata> | null;
     lastError: GatewayRequestKernelError | null;
-  }): Promise<GatewayKernelRoute<TRoute> | null> => {
+  }): Promise<{ route: GatewayKernelRoute<TRoute>; kind: 'reattempt' | 'failover' } | null> => {
     span.beginStage('routeSelection');
     try {
-      return await selectFailover({
+      const selection = {
         adapter: opts.adapter,
         base,
         currentRoute: args.currentRoute,
@@ -673,10 +755,24 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         pin,
         lastResponse: args.lastResponse,
         lastError: args.lastError,
-      });
+      };
+      const reattempt = await selectReattempt(selection);
+      if (reattempt) return { route: reattempt, kind: 'reattempt' };
+      const failover = await selectFailover(selection);
+      return failover ? { route: failover, kind: 'failover' } : null;
     } finally {
       span.endStage('routeSelection');
     }
+  };
+
+  /** Adopt a chosen route; a re-attempt deliberately does not count as a failover. */
+  const adoptRoute = (chosen: { route: GatewayKernelRoute<TRoute>; kind: 'reattempt' | 'failover' }) => {
+    triedRouteKeys.add(chosen.route.key);
+    if (chosen.kind === 'failover') {
+      span.recordFailover();
+      failovers++;
+    }
+    return chosen.route;
   };
   let route: GatewayKernelRoute<TRoute> | null = null;
   let streaming = false;
@@ -780,17 +876,14 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               error: preparationFailure,
             });
             if (preparationFailure.retryable && attempt < opts.policy.maxAttempts) {
-              const next = await chooseFailover({
+              const next = await chooseNextRoute({
                 currentRoute,
                 attempt,
                 lastResponse: null,
                 lastError: preparationFailure,
               });
               if (next) {
-                route = currentRoute = next;
-                triedRouteKeys.add(next.key);
-                span.recordFailover();
-                failovers++;
+                route = currentRoute = adoptRoute(next);
                 continue;
               }
             }
@@ -826,17 +919,14 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               error: attemptFailure,
             });
             if (attemptFailure.retryable && attempt < opts.policy.maxAttempts) {
-              const next = await chooseFailover({
+              const next = await chooseNextRoute({
                 currentRoute,
                 attempt,
                 lastResponse: null,
                 lastError: attemptFailure,
               });
               if (next) {
-                route = currentRoute = next;
-                triedRouteKeys.add(next.key);
-                span.recordFailover();
-                failovers++;
+                route = currentRoute = adoptRoute(next);
                 continue;
               }
             }
@@ -859,9 +949,9 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             throw error;
           }
           if (response.retryable && attempt < opts.policy.maxAttempts) {
-            let next: GatewayKernelRoute<TRoute> | null;
+            let next: { route: GatewayKernelRoute<TRoute>; kind: 'reattempt' | 'failover' } | null;
             try {
-              next = await chooseFailover({
+              next = await chooseNextRoute({
                 currentRoute,
                 attempt,
                 lastResponse: response,
@@ -880,10 +970,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             }
             if (next) {
               await response.discard?.();
-              route = currentRoute = next;
-              triedRouteKeys.add(next.key);
-              span.recordFailover();
-              failovers++;
+              route = currentRoute = adoptRoute(next);
               continue;
             }
           }

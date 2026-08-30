@@ -657,6 +657,105 @@ describe('gateway request kernel contract guards', () => {
 });
 
 /**
+ * P-004 (plan `gateway-kernel-adoption-2026-08-29`). A hard pin means "never change
+ * ACCOUNT". It does not mean "never re-attempt the pinned account", but the kernel
+ * conflated the two: `selectFailover` returned null for `pin.mode === 'hard'` before
+ * the adapter was consulted at all, so an adapter could not express a same-account
+ * re-attempt on a hard-pinned request.
+ *
+ * Three live handlers depend on exactly that, and none of them gate it on the hard
+ * pin the way they gate account rotation (`rotateCli`/`rotateCodex` open with
+ * `if (hardPin) return false`):
+ *   - Codex OAuth 401 → refresh the token, retry the SAME account (gateway.ts:5670).
+ *   - Codex OAuth transport-fail / 429 → retry the SAME account on a sibling egress
+ *     IP before rotating (gateway.ts:5638, :5727).
+ *   - Claude transport-fail / bare-429 → the same sibling-IP retry (gateway.ts:4195,
+ *     :4535 — "rotating to a sibling IP on the SAME account").
+ *
+ * So this is a cross-lane gap binding P-004 and P-006, not an OAuth quirk, and the
+ * D-001 narrow-fix clause applies exactly as it did for D-007's TTFB resolver.
+ */
+describe('gateway request kernel same-account re-attempt under a hard pin', () => {
+  const reauthRoute = (from: GatewayKernelRoute<RouteValue>): GatewayKernelRoute<RouteValue> => ({
+    key: `${from.key}#reauth`,
+    accountId: from.accountId,
+    transport: from.transport,
+    value: { name: 'a-reauth' },
+  });
+
+  it('consults the adapter on a hard pin and accepts a SAME-account re-attempt', async () => {
+    const f = fixture(laneRegistry.openaiResponses, { pin: { accountId: 'account-a', mode: 'hard' } });
+    const selectReattempt = vi.fn(async () => reauthRoute(f.routeA));
+    f.options.adapter.selectReattempt = selectReattempt;
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    // The fixture's first attempt is a retryable 503; the re-attempt serves 200.
+    expect(result).toMatchObject({ status: 200, outcome: 'ok' });
+    expect(selectReattempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses to leave the pinned account, so the hard-pin guarantee is intact', async () => {
+    // The fixture's default `selectFailover` hands back routeB — a DIFFERENT account.
+    // Account ROTATION stays suppressed under a hard pin, so the retryable 503 is
+    // forwarded rather than routed around.
+    const f = fixture(laneRegistry.openaiResponses, { pin: { accountId: 'account-a', mode: 'hard' } });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({ status: 503 });
+    expect(f.events).not.toContain('execute:b');
+  });
+
+  it('rejects a re-attempt that tries to change account, so a pin cannot be escaped', async () => {
+    // The guard that makes consulting the adapter under a hard pin safe BY
+    // CONSTRUCTION rather than by refusing to ask.
+    const f = fixture(laneRegistry.openaiResponses, { pin: { accountId: 'account-a', mode: 'hard' } });
+    f.options.adapter.selectReattempt = vi.fn(async () => f.routeB);
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'invalid-route', outcome: 'gateway-error', status: 500 });
+    expect(f.events).not.toContain('execute:b');
+  });
+
+  it('fails closed when a re-attempt re-presents an already-tried route', async () => {
+    const f = fixture(laneRegistry.openaiResponses, { pin: { accountId: 'account-a', mode: 'soft' } });
+    f.options.adapter.selectReattempt = vi.fn(async () => f.routeA);
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'route-cycle', outcome: 'gateway-error', status: 500 });
+  });
+
+  it('does not count a same-account re-attempt as a failover', async () => {
+    // `rotateCli`/`rotateCodex` increment the failover counter only when the ACCOUNT
+    // changes. A refreshed token or a sibling egress IP is a re-auth/re-route on the
+    // same account, and the live handlers do not count it.
+    const f = fixture(laneRegistry.openaiResponses, { pin: { accountId: 'account-a', mode: 'soft' } });
+    f.options.adapter.selectReattempt = vi.fn(async () => reauthRoute(f.routeA));
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({ status: 200, outcome: 'ok' });
+    expect(result.failovers).toBe(0);
+    expect(f.counts().failoverCalls).toBe(0);
+  });
+
+  it('prefers a re-attempt over a failover, matching the live sibling-IP-then-rotate order', async () => {
+    const f = fixture(laneRegistry.openaiResponses, { pin: null });
+    f.options.adapter.selectReattempt = vi.fn(async () => reauthRoute(f.routeA));
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({ status: 200, outcome: 'ok' });
+    // The account-rotation branch was never reached.
+    expect(f.counts().failoverCalls).toBe(0);
+    expect(f.events).not.toContain('execute:b');
+  });
+});
+
+/**
  * D-007 (plan `gateway-kernel-adoption-2026-08-29`). Every cloud handler picks
  * a SHORT TTFB deadline for a streaming request and a generous one otherwise,
  * deciding by parsing `stream: true` out of the REQUEST body — which is not
