@@ -25,7 +25,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // @ts-expect-error — plain-Node .mjs CLI, no declaration file (same convention as test-file-router.test.ts).
-import { publishPreemptReadyMarker } from '../../../../scripts/test-files.mjs';
+import { publishPreemptReadyMarker, reapPreemptMarkerDebris } from '../../../../scripts/test-files.mjs';
 
 let dir: string;
 let marker: string;
@@ -148,5 +148,159 @@ describe('publishPreemptReadyMarker — never steals a live barrier', () => {
     backdate(marker, 60);
     expect(() => publishPreemptReadyMarker(marker)).not.toThrow();
     expect(ownerPidOf(marker)).toBe(process.pid);
+  });
+});
+
+/**
+ * Guards for the directory sweep (EI-21883357870313468).
+ *
+ * The publisher above only ever reclaims the ONE path it needs, so markers left
+ * by killed runs under different names accumulated forever — pc-heavy names the
+ * monitor as the cleanup backstop, but the monitor is itself killed with the
+ * process group it is backing up, so the backstop shares a fate with the thing
+ * it backs up. The sweep is the missing fate-independent reclamation path: a
+ * later, unrelated, demonstrably-alive process does the tidying.
+ *
+ * Because it judges OTHER runs' files, every bound here is deliberately more
+ * conservative than the publisher's: a false positive steals a live peer's
+ * barrier, while a false negative merely leaves a byte of debris for next time.
+ */
+describe('reapPreemptMarkerDebris — removes abandoned markers', () => {
+  const write = (name: string, body: string, secondsAgo?: number) => {
+    const path = join(dir, name);
+    writeFileSync(path, body, { mode: 0o600 });
+    if (secondsAgo !== undefined) backdate(path, secondsAgo);
+    return path;
+  };
+
+  it('removes a marker whose recorded owner is DEAD', () => {
+    const abandoned = write('ready.aaaaaa', `${deadPid()}\n`, 300);
+    expect(reapPreemptMarkerDebris(dir)).toEqual(['ready.aaaaaa']);
+    expect(existsSync(abandoned)).toBe(false);
+  });
+
+  it('removes a long-stale zero-length marker that provenance can never identify', () => {
+    // Killed between open(O_CREAT|O_EXCL) and write(2): nothing was ever recorded
+    // in it, so age is the only signal that exists. Observed at 20 HOURS old.
+    const abandoned = write('ready.bbbbbb', '', 7200);
+    expect(reapPreemptMarkerDebris(dir)).toEqual(['ready.bbbbbb']);
+    expect(existsSync(abandoned)).toBe(false);
+  });
+
+  it('sweeps the finalization family too, not just ready markers', () => {
+    // Both families are allocated by pc-heavy into this same directory and both
+    // leak by the same mechanism; covering only one would leave half the debris.
+    const abandoned = write('finalization.cccccc', `${deadPid()}\n`, 300);
+    expect(reapPreemptMarkerDebris(dir)).toEqual(['finalization.cccccc']);
+    expect(existsSync(abandoned)).toBe(false);
+  });
+});
+
+describe('reapPreemptMarkerDebris — never steals a live barrier', () => {
+  const write = (name: string, body: string, secondsAgo?: number) => {
+    const path = join(dir, name);
+    writeFileSync(path, body, { mode: 0o600 });
+    if (secondsAgo !== undefined) backdate(path, secondsAgo);
+    return path;
+  };
+
+  it('PRESERVES a marker with a live owner however old it is', () => {
+    const live = write('ready.dddddd', `${process.pid}\n`, 86_400);
+    expect(reapPreemptMarkerDebris(dir)).toEqual([]);
+    expect(existsSync(live)).toBe(true);
+    expect(ownerPidOf(live)).toBe(process.pid);
+  });
+
+  it('PRESERVES anything younger than the age floor, even with a dead owner', () => {
+    // The floor is what makes the sweep unable to interfere with a run starting
+    // right now — including pc-heavy's own mktemp window, which briefly leaves a
+    // zero-length file behind before deleting it.
+    const young = write('ready.eeeeee', `${deadPid()}\n`, 5);
+    expect(reapPreemptMarkerDebris(dir)).toEqual([]);
+    expect(existsSync(young)).toBe(true);
+  });
+
+  it('is falsifiable: the SAME dead-owner marker is kept young and removed once aged', () => {
+    // Pins the age floor as a real discriminator rather than letting both
+    // outcomes pass for unrelated reasons.
+    const path = write('ready.ffffff', `${deadPid()}\n`, 5);
+    expect(reapPreemptMarkerDebris(dir)).toEqual([]);
+    expect(existsSync(path)).toBe(true);
+    backdate(path, 300);
+    expect(reapPreemptMarkerDebris(dir)).toEqual(['ready.ffffff']);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('PRESERVES an aged EMPTY marker until the generous empty bound passes', () => {
+    // The publisher may use a 5s bound for the one path it needs; the sweep must
+    // not, because it is judging files it knows nothing about.
+    const path = write('ready.gggggg', '', 300);
+    expect(reapPreemptMarkerDebris(dir)).toEqual([]);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('never removes the caller\'s own marker', () => {
+    const own = write('ready.hhhhhh', `${deadPid()}\n`, 300);
+    // Deliberately a path the rules WOULD otherwise reap, so this proves the
+    // self-exclusion rather than passing because nothing matched.
+    expect(reapPreemptMarkerDebris(dir)).toEqual(['ready.hhhhhh']);
+    writeFileSync(own, `${deadPid()}\n`, { mode: 0o600 });
+    backdate(own, 300);
+    expect(reapPreemptMarkerDebris(dir, { self: own })).toEqual([]);
+    expect(existsSync(own)).toBe(true);
+  });
+
+  it('ignores files that are not pc-heavy markers', () => {
+    // The directory is shared; anything not matching the shape pc-heavy itself
+    // allocates belongs to something we know nothing about.
+    const foreign = write('some-other-tool.lock', `${deadPid()}\n`, 86_400);
+    const nested = write('ready.TOOLONGNAME', `${deadPid()}\n`, 86_400);
+    expect(reapPreemptMarkerDebris(dir)).toEqual([]);
+    expect(existsSync(foreign)).toBe(true);
+    expect(existsSync(nested)).toBe(true);
+  });
+});
+
+describe('reapPreemptMarkerDebris — cannot fail a run', () => {
+  it('returns [] instead of throwing when the directory does not exist', () => {
+    expect(reapPreemptMarkerDebris(join(dir, 'no-such-dir'))).toEqual([]);
+  });
+
+  it('bounds how many entries it will examine', () => {
+    for (let i = 0; i < 12; i += 1) {
+      const path = join(dir, `ready.b${String(i).padStart(5, '0')}`);
+      writeFileSync(path, `${deadPid()}\n`, { mode: 0o600 });
+      backdate(path, 300);
+    }
+    // Every one of these is reapable; the cap, not their contents, is what stops
+    // the sweep — so this run must remove strictly fewer than all of them.
+    expect(reapPreemptMarkerDebris(dir, { maxEntries: 5 })).toHaveLength(5);
+  });
+});
+
+describe('publishing sweeps the directory it publishes into', () => {
+  it('reaps abandoned neighbours, keeps live ones, and reports the count', () => {
+    const abandoned = join(dir, 'ready.iiiiii');
+    writeFileSync(abandoned, `${deadPid()}\n`, { mode: 0o600 });
+    backdate(abandoned, 300);
+
+    const live = join(dir, 'ready.jjjjjj');
+    writeFileSync(live, `${process.pid}\n`, { mode: 0o600 });
+    backdate(live, 300);
+
+    const cleanup = publishPreemptReadyMarker(marker);
+    expect(cleanup).toBeTypeOf('function');
+
+    // Our own publication succeeded, the debris is gone, the live peer is intact.
+    expect(ownerPidOf(marker)).toBe(process.pid);
+    expect(existsSync(abandoned)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+    // Barrier churn stays visible rather than silent.
+    expect(loggedLines()).toContain('reaped-abandoned-markers count=1');
+  });
+
+  it('does not claim a reap when the directory was already clean', () => {
+    publishPreemptReadyMarker(marker);
+    expect(loggedLines()).not.toContain('reaped-abandoned-markers');
   });
 });
