@@ -70,6 +70,13 @@ import {
   derivationBannerLines,
 } from "./lib/changed-path-provenance.mjs";
 import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
+// Deliberately imported from lib/, NOT from scripts/test-files.mjs: that module
+// runs top-level side effects (ensurePapercuspTmpdir, applyWorkerCapEnv) which
+// must not be dragged onto the gate's runner (EI-21884510946030513).
+import {
+  createPreemptMarkerExclusive,
+  reapPreemptMarkerDebris,
+} from "./lib/preempt-markers.mjs";
 import {
   TEST_CERTIFIED_REF,
   resolveTestCertifiedBase,
@@ -355,16 +362,46 @@ function cleanupPreemptFinalizationMarker() {
     preemptFinalizationPublished = false;
   }
 }
+/**
+ * Sweep abandoned markers out of the directory we just published into.
+ *
+ * Pure hygiene, and swallowed whole: our own barrier is already published by the
+ * time this runs, so a misbehaving sweep cannot cost this run its protection,
+ * and failing to tidy must never fail a gate run.
+ *
+ * @param {string} marker the marker this process owns — never judged
+ * @param {string} label log prefix
+ */
+function reapPreemptMarkerNeighbours(marker, label) {
+  try {
+    const reaped = reapPreemptMarkerDebris(dirname(marker), { self: marker });
+    if (reaped.length > 0) {
+      logLine(label + " reaped-abandoned-markers count=" + reaped.length + "\n");
+    }
+  } catch {
+    // Hygiene is never worth failing a run over.
+  }
+}
 function publishPreemptReadyMarker() {
   if (!preemptReadyFile) return;
   try {
-    // wx is deliberate: the wrapper owns a unique absent path. If that
-    // invariant is violated, fail closed instead of treating an unrelated
-    // marker as proof that this run is ready.
-    writeFileSync(preemptReadyFile, String(process.pid) + "\n", {
-      flag: "wx",
-      mode: 0o600,
-    });
+    // wx is deliberate: the wrapper owns a unique absent path, and an inherited
+    // or accidentally shared marker must not be mistaken for this run's barrier.
+    //
+    // But a collision is only PROTECTING something when a LIVE owner holds the
+    // path. Treating every EEXIST as fatal aborted the whole run with exit 75 —
+    // and because this is `test:affected`, an abort means zero files were
+    // measured, so infra debris read as a genuine red on the runner the
+    // green-checkpoint gate itself invokes. `test-files.mjs` was fixed for this
+    // in EI-21882371330313535; the copy here kept the fatal rule until
+    // EI-21884510946030513. The asymmetric rule now lives in one place:
+    // dead or long-stale debris is reclaimed, a live owner still wins, and
+    // every ambiguous case resolves to LIVE.
+    if (createPreemptMarkerExclusive(preemptReadyFile) === "reclaimed") {
+      logLine(
+        "PC_HEAVY_PREEMPT_READY reclaimed-stale-marker pid=" + process.pid + "\n",
+      );
+    }
     preemptReadyPublished = true;
     logLine("PC_HEAVY_PREEMPT_READY pid=" + process.pid + "\n");
   } catch (error) {
@@ -375,16 +412,22 @@ function publishPreemptReadyMarker() {
     );
     process.exit(75);
   }
+  reapPreemptMarkerNeighbours(preemptReadyFile, "PC_HEAVY_PREEMPT_READY");
 }
 function publishPreemptFinalizationMarker() {
   if (!preemptFinalizationFile || preemptFinalizationPublished) return;
   try {
-    // pc-heavy owns this unique, absent path. wx keeps an inherited or
-    // accidentally shared marker from being mistaken for this run's handoff.
-    writeFileSync(preemptFinalizationFile, String(process.pid) + "\n", {
-      flag: "wx",
-      mode: 0o600,
-    });
+    // Same asymmetric rule as the after-ready marker above: pc-heavy owns this
+    // unique absent path, so a collision is debris far more often than it is a
+    // live peer — and aborting the finalization phase loses the verdict for a
+    // run whose tests have all already completed.
+    if (createPreemptMarkerExclusive(preemptFinalizationFile) === "reclaimed") {
+      logLine(
+        "PC_HEAVY_PSI_FINALIZATION reclaimed-stale-marker pid=" +
+          process.pid +
+          "\n",
+      );
+    }
     preemptFinalizationPublished = true;
     logLine("PC_HEAVY_PSI_FINALIZATION pid=" + process.pid + "\n");
   } catch (error) {
@@ -395,6 +438,10 @@ function publishPreemptFinalizationMarker() {
     );
     process.exit(75);
   }
+  reapPreemptMarkerNeighbours(
+    preemptFinalizationFile,
+    "PC_HEAVY_PSI_FINALIZATION",
+  );
 }
 // Counters for the abort path, read through a swappable closure because the real
 // bindings (`tasks`, `failed`, …) are declared ~1500 lines below: a closure over a
