@@ -2,7 +2,7 @@ import type { AccountPool } from './provider-contracts';
 import { CODEX_ORIGINATOR, CODEX_OPENAI_BETA } from './codex-oauth-proxy';
 
 export type GatewayProviderId = 'claude' | 'codex' | 'omp';
-export type GatewayProviderProtocol = 'anthropic' | 'openai-compatible' | 'unsupported';
+export type GatewayProviderProtocol = 'anthropic' | 'openai-compatible' | 'unsupported' | 'multi';
 
 /** The launcher/runtime making a request. This is NOT the wire protocol. */
 export type GatewayClientBackend = 'claude' | 'codex' | 'omp';
@@ -453,19 +453,21 @@ export function makeGatewayProviderAdapters(opts: {
     // (providerForGatewayRequest), never by this entry, and an OMP SESSION's
     // provider is not decided here at all.
     //
-    // ⚠ Do NOT read this row as "OMP is always Claude-pinned". OpenAI-account-pinned
+    // ⚠ Do NOT read `pool`/`upstreamBase`/`lane` below as "OMP is always Claude-pinned"
+    // — they are a representative default, not a routing target. OpenAI-account-pinned
     // OMP is IMPLEMENTED, not a follow-up: `ompGatewayModelFromSpec`
     // (orchestrator/omp-gateway-config.ts:78) resolves an `openai`/`openai-codex`
     // selector to { gatewayProvider:'openai', accountProvider:'codex' }; spawn-env.ts:307
     // adopts that accountProvider and :354 filters the pool to an account of that
     // provider; the models.yml then targets the /v1 root with `api: openai-responses`
     // (omp-gateway-config.ts:34-35, :127). Pinned by omp-models-config.test.ts:41 and :97.
-    // The stale form of this comment is what made the OMP follow-up look outstanding
-    // long after it had shipped (gateway-kernel-adoption-2026-08-29 D-029).
+    // `label`/`protocol` DO reflect this (protocol:'multi'); `gatewayProviderStatuses`
+    // also reports `configured` as claude-OR-codex, since an OMP session can be served
+    // by either even when the other pool is absent (EI-21891944321682303).
     omp: {
       id: 'omp',
-      label: 'OMP (via Claude / Anthropic)',
-      protocol: 'anthropic',
+      label: 'OMP (multi-provider — routes to Claude or Codex per session model spec)',
+      protocol: 'multi',
       upstreamBase: opts.anthropicUpstreamBase,
       pool: opts.claudePool,
       unavailableMessage: null,
@@ -523,14 +525,14 @@ export function providerForGatewayRequest(
 }
 
 export function gatewayProviderStatuses(adapters: GatewayProviderAdapters): GatewayProviderStatus[] {
-  return (['claude', 'codex', 'omp'] as const).map((id) => {
-    const adapter = adapters[id];
+  const statusFor = (adapter: GatewayProviderAdapter, configuredOverride?: boolean): GatewayProviderStatus => {
     const cliAccountCount = adapter.cliAccountCount?.() ?? 0;
     // Configured = the provider can actually serve: a bearer pool OR out-of-pool CLI-bridge
     // accounts. Codex ChatGPT-subscription accounts have NO API bearer (they are deliberately
     // filtered out of the bearer pool — launch.ts buildBearerEntries), so `pool !== null`
     // alone reported a working all-CLI codex deployment as unconfigured (WI-3068).
-    const configured = (adapter.pool !== null || cliAccountCount > 0) && adapter.upstreamBase !== null;
+    const configured =
+      configuredOverride ?? ((adapter.pool !== null || cliAccountCount > 0) && adapter.upstreamBase !== null);
     return {
       id: adapter.id,
       label: adapter.label,
@@ -541,5 +543,13 @@ export function gatewayProviderStatuses(adapters: GatewayProviderAdapters): Gate
       unavailableMessage: configured ? null : adapter.unavailableMessage,
       laneId: adapter.lane.id,
     };
-  });
+  };
+  const claude = statusFor(adapters.claude);
+  const codex = statusFor(adapters.codex);
+  // OMP delegates PER-SESSION to whichever of these two the model spec resolves to (see the
+  // comment on `omp:` in makeGatewayProviderAdapters), so it is servable whenever EITHER
+  // backing provider is configured — not only when the Claude pool this row's diagnostics
+  // fields default to happens to be present (EI-21891944321682303).
+  const omp = statusFor(adapters.omp, claude.configured || codex.configured);
+  return [claude, codex, omp];
 }
