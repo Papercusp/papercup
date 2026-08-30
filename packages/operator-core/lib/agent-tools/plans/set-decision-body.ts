@@ -20,6 +20,7 @@ import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-prov
 import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { hardText, softText, clampText, LIMITS } from '../limits';
+import { neutralizeToolCallTags } from '../../text-safety';
 
 /**
  * Replace a decision's body. Locates the `### D-NNN` head line against the
@@ -128,7 +129,15 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
-  async handler(args, ctx) {
+  async handler(rawArgs, ctx) {
+    // EI-21915372335188454: the same tool-call-lookalike neutralization
+    // plans:add-decision applies, for the same reason — this is the sibling
+    // decision-body writer on the same durable governance surface, so guarding
+    // only the append leaves the edit path free to reintroduce the exact same
+    // absorbed-`<parameter>`/dropped-refs corruption (including via the very
+    // repair call this editor is used to make). Non-destructive (cosmetic
+    // full-width `＜` swap) — the edit still lands.
+    const args = { ...rawArgs, body: neutralizeToolCallTags(rawArgs.body) };
     // WI-42142 — the same decision-provenance leg plans:add-decision runs, for the
     // same reason: this tool overwrites the very body that tool appends, so guarding
     // only the append is a guard an agent clears by recording a clean decision and

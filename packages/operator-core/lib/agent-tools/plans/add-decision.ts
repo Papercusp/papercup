@@ -36,6 +36,7 @@ import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
 import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-provenance';
+import { neutralizeToolCallTags } from '../../text-safety';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -407,7 +408,23 @@ async function decisionContext(
  *  in-lock allocate → append → bump, the revision capture, the P-070 usage ledger,
  *  the plan-event emit, AND the cross-plan `affects` propagation. The new decisionId
  *  rides the result; not_found / legacy_plan / busy map to this item's failure. */
-async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+  // EI-21915372335188454: a client-side tool-call serializer that mis-closes a
+  // `<parameter name="body">` block (e.g. `</body>` instead of `</parameter>`)
+  // has been observed leaking the literal tool-call XML for every argument AFTER
+  // the mismatch into this `body` string — silently dropping `refs` and, worse,
+  // planting live-looking `<invoke>`/`<parameter>` markup in a durable governance
+  // record a later agent could misread as its own tool-call transcript (the exact
+  // risk EI-9267 already defends against for work-item text and facts:assert).
+  // `plans:add-decision` had no such guard. Neutralize (cosmetic full-width `＜`
+  // swap, non-destructive, idempotent) rather than refuse — same choice
+  // facts:assert makes: the decision was still substantively authored and must
+  // not be lost outright over a malformed closing tag.
+  const it: NewDecision = {
+    ...rawIt,
+    title: neutralizeToolCallTags(rawIt.title),
+    body: neutralizeToolCallTags(rawIt.body),
+  };
   // WI-42142 — decision provenance, resolved BEFORE the plan lock (the helper's
   // header carries the full rationale and the measurement behind enforced-vs-advisory).
   const { fields: provenance, anchors } = await decisionProvenance(`${it.title}\n${it.body}`, ctx);
