@@ -65,6 +65,6 @@ export default defineTool({
       },
       Date.now(),
     );
-    return { ok: true, unit: args.unit, record };
+    return { data: { ok: true, unit: args.unit, record } };
   },
 });
