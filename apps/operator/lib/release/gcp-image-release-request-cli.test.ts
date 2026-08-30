@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,6 +36,12 @@ const SIGNING_PUBLIC_KEY =
 /** The bundle cannot initialize a workspace without this entrypoint, so the gate requires it. */
 const INITIALIZER_PATH = "bin/papercusp-remote-initializer";
 const INITIALIZER_BODY = "#!/usr/bin/env node\n// fixture stand-in for the remote initializer\n";
+const PUI_PATH = "bin/pui";
+const PUI_BODY = "#!/usr/bin/env bash\nexit 0\n";
+const PUI_COMPANION_PATH = "pui-companion.wasm";
+const PUI_COMPANION_BODY = "fixture pui companion";
+const PUI_MANIFEST_PATH = "pui-install.json";
+const PUI_MANIFEST_BODY = '{"schemaVersion":1}\n';
 const BOOTSTRAP_SCRIPT_SHA = "216345ddd771dd1d653c597ee5aaa285181374414a4e80551d1bc9a0d9b9f667";
 
 const roots: string[] = [];
@@ -95,7 +101,13 @@ function inputDocument(overrides: Record<string, unknown> = {}): Record<string, 
     source: { repository: "https://github.com/Papercusp/papercusp.git", revision: "daf63630615e9266fe9cee27d388ff44aa42366f" },
     baseImage: { reference: BASE_IMAGE, architecture: "x86_64", sha256: BASE_SHA },
     builder: { templatePath: "infra/images/workspace-host.pkr.hcl" },
-    materials: [{ path: "template.pkr.hcl", executable: false }, { path: INITIALIZER_PATH, executable: true }],
+    materials: [
+      { path: "template.pkr.hcl", executable: false },
+      { path: INITIALIZER_PATH, executable: true },
+      { path: PUI_PATH, executable: true },
+      { path: PUI_COMPANION_PATH },
+      { path: PUI_MANIFEST_PATH },
+    ],
     cleanRoom: { zone: "us-central1-a", serviceAccountEmail: "papercusp-vm@example.iam.gserviceaccount.com", subnetwork: "pc-p046-rel-subnet" },
     compatibilityRequest: {
       action: "install",
@@ -153,6 +165,10 @@ async function fixture(
   await writeFile(join(root, "template.pkr.hcl"), TEMPLATE_BODY, "utf8");
   await mkdir(join(root, "bin"), { recursive: true });
   await writeFile(join(root, INITIALIZER_PATH), INITIALIZER_BODY, "utf8");
+  await writeFile(join(root, PUI_PATH), PUI_BODY, "utf8");
+  await chmod(join(root, PUI_PATH), 0o755);
+  await writeFile(join(root, PUI_COMPANION_PATH), PUI_COMPANION_BODY, "utf8");
+  await writeFile(join(root, PUI_MANIFEST_PATH), PUI_MANIFEST_BODY, "utf8");
   const manifestPath = join(root, "manifest.json");
   await writeFile(manifestPath, JSON.stringify(publication), "utf8");
   const inputPath = join(root, "input.json");
