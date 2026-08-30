@@ -1139,8 +1139,9 @@ export function formatUntrackedShellBackgroundAdvice(diagnostic: UntrackedShellB
  */
 export function formatBufferingPipelineAdvice(stage: string, context: 'launch' | 'tracking-lost'): string {
   const redirect =
-    `For a rerun, redirect output to a file you own (for example \`cmd > /tmp/job.log 2>&1; echo "EXIT=$?" >> /tmp/job.log\`)` +
-    ` instead of piping through \`${stage}\``;
+    `For a rerun, redirect output to a file you own (for example \`cmd > /tmp/job.log 2>&1; rc=$?; echo "EXIT=$rc" >> /tmp/job.log; exit $rc\`` +
+    ` — capture \`$?\` into a variable and re-exit it, since a command ending in \`echo\` reports the echo's own ` +
+    `exit status (always 0), not \`cmd\`'s) instead of piping through \`${stage}\``;
   if (context === 'tracking-lost') {
     return (
       `This job's last pipeline stage pipes through \`${stage}\`, which BUFFERS its output. ` +
