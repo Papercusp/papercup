@@ -123,6 +123,19 @@ export interface SiblingManagedTimers {
 }
 
 /**
+ * EI-19454206016477347: the shape `/api/internal/managed-timers` carries when the
+ * responding worker's `cluster-managed-timers-sync.ts` cache holds a snapshot pushed
+ * by its true-cluster PRIMARY. Optional on the wire — omitted entirely by a
+ * single-process host, or a worker whose cache has not received a first beat yet.
+ */
+interface PrimaryManagedTimersWireShape {
+  pid?: unknown;
+  role?: unknown;
+  timers?: unknown;
+  dbosSchedules?: unknown;
+}
+
+/**
  * This process's own role, as reported by `/api/internal/managed-timers` and used
  * to label federated rows. Kept deliberately coarse — `bg-host` vs `operator` — and
  * always paired with the port, so the label is unambiguous (`operator:3170` is the
@@ -229,15 +242,61 @@ function degraded(s: SiblingOperator, error: string, elapsedMs: number): Sibling
 }
 
 /**
+ * EI-19454206016477347: build the second federated row from a worker's optional
+ * `primary` payload field — the true-cluster PRIMARY's own registries, pushed to the
+ * answering worker over cluster IPC (`cluster-managed-timers-sync.ts`) because the
+ * primary never itself serves this route (SO_REUSEPORT always lands the HTTP request
+ * on a worker). `null` when the field is absent (single-process host, or a worker
+ * whose cache has not received a first beat) or malformed (an older sibling build, or
+ * a corrupt cache) — never fabricated.
+ *
+ * The row is labelled `${role}(primary via :${port})` rather than `${role}:${port}` so
+ * a reader can tell at a glance this is NOT a process actually listening on that port —
+ * it was reached only because the worker relayed it.
+ */
+function primaryRowFromWire(
+  s: SiblingOperator,
+  primary: PrimaryManagedTimersWireShape | null | undefined,
+  elapsedMs: number,
+): SiblingManagedTimers | null {
+  if (
+    !primary ||
+    typeof primary.pid !== 'number' ||
+    typeof primary.role !== 'string' ||
+    !Array.isArray(primary.timers)
+  ) {
+    return null;
+  }
+  return {
+    port: s.port,
+    pid: primary.pid,
+    label: `${primary.role}(primary via :${s.port})`,
+    process: primary.role,
+    ok: true,
+    timers: primary.timers as ManagedEntry[],
+    dbosSchedules: Array.isArray(primary.dbosSchedules)
+      ? (primary.dbosSchedules as RegisteredSchedule[])
+      : [],
+    elapsedMs,
+  };
+}
+
+/**
  * Probe ONE sibling. NEVER rejects — every failure (timeout, refused connection,
- * non-2xx, malformed body) becomes an `ok: false` row. That invariant is what lets
- * the caller `Promise.all` these without a rejection path, and what lets the outer
- * budget race abandon them without producing an unhandled rejection.
+ * non-2xx, malformed body) becomes a single `ok: false` row. That invariant is what
+ * lets the caller `Promise.all` these without a rejection path, and what lets the
+ * outer budget race abandon them without producing an unhandled rejection.
+ *
+ * Returns 1 or 2 rows: the answering WORKER's own registries, plus — when its response
+ * carries a `primary` field (EI-19454206016477347) — a second row for its true-cluster
+ * PRIMARY, federated over the worker's cluster-IPC cache. A degraded (unreachable)
+ * probe can only ever produce the single worker-shaped row: there is no primary to
+ * relay when the worker itself never answered.
  */
 export async function probeSibling(
   s: SiblingOperator,
   opts: { timeoutMs?: number; fetchImpl?: FetchLike } = {},
-): Promise<SiblingManagedTimers> {
+): Promise<SiblingManagedTimers[]> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_SIBLING_PROBE_TIMEOUT_MS;
   const doFetch = (opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike));
   const startedAt = Date.now();
@@ -249,8 +308,13 @@ export async function probeSibling(
       signal: AbortSignal.timeout(timeoutMs),
       headers: { accept: 'application/json' },
     });
-    if (!res.ok) return degraded(s, `HTTP ${res.status}`, Date.now() - startedAt);
-    const body = (await res.json()) as { process?: unknown; timers?: unknown; dbosSchedules?: unknown };
+    if (!res.ok) return [degraded(s, `HTTP ${res.status}`, Date.now() - startedAt)];
+    const body = (await res.json()) as {
+      process?: unknown;
+      timers?: unknown;
+      dbosSchedules?: unknown;
+      primary?: unknown;
+    };
     const proc = typeof body?.process === 'string' && body.process ? body.process : null;
     const timers = Array.isArray(body?.timers) ? (body.timers as ManagedEntry[]) : [];
     // A sibling running a build that predates the dbosSchedules slice simply omits
@@ -258,7 +322,8 @@ export async function probeSibling(
     const dbosSchedules = Array.isArray(body?.dbosSchedules)
       ? (body.dbosSchedules as RegisteredSchedule[])
       : [];
-    return {
+    const elapsedMs = Date.now() - startedAt;
+    const workerRow: SiblingManagedTimers = {
       port: s.port,
       pid: s.pid,
       label: `${proc ?? 'operator'}:${s.port}`,
@@ -266,10 +331,16 @@ export async function probeSibling(
       ok: true,
       timers,
       dbosSchedules,
-      elapsedMs: Date.now() - startedAt,
+      elapsedMs,
     };
+    const primaryRow = primaryRowFromWire(
+      s,
+      body?.primary as PrimaryManagedTimersWireShape | null | undefined,
+      elapsedMs,
+    );
+    return primaryRow ? [workerRow, primaryRow] : [workerRow];
   } catch (e) {
-    return degraded(s, e instanceof Error ? e.message : String(e), Date.now() - startedAt);
+    return [degraded(s, e instanceof Error ? e.message : String(e), Date.now() - startedAt)];
   }
 }
 
@@ -309,15 +380,19 @@ export async function collectSiblingManagedTimers(
   if (!siblings.length) return [];
 
   // probeSibling never rejects, so a probe abandoned by the budget race settles
-  // unobserved rather than surfacing as an unhandled rejection.
-  return await Promise.all(
+  // unobserved rather than surfacing as an unhandled rejection. Each settles to 1 or 2
+  // rows (EI-19454206016477347: a worker row, plus an optional federated primary row) —
+  // flattened here so every caller keeps seeing a flat SiblingManagedTimers[], same
+  // shape as before this change.
+  const perSibling = await Promise.all(
     siblings.map((s) =>
       Promise.race([
         probeSibling(s, { timeoutMs, fetchImpl: opts.fetchImpl }),
-        budgetExpiry(budgetMs, () =>
+        budgetExpiry(budgetMs, () => [
           degraded(s, `probe budget ${budgetMs}ms exceeded`, budgetMs),
-        ),
+        ]),
       ]),
     ),
   );
+  return perSibling.flat();
 }

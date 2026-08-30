@@ -81,7 +81,7 @@ describe('listSiblingOperators', () => {
 });
 
 describe('probeSibling', () => {
-  it('returns BOTH per-process registries and a self-identified label', async () => {
+  it('returns BOTH per-process registries and a self-identified label, as a single-element array', async () => {
     const got = await probeSibling(sibling(), {
       fetchImpl: okFetch({
         process: 'bg-host',
@@ -91,42 +91,108 @@ describe('probeSibling', () => {
         ],
       }),
     });
-    expect(got.ok).toBe(true);
-    expect(got.label).toBe('bg-host:3271');
-    expect(got.timers).toHaveLength(1);
+    expect(got).toHaveLength(1);
+    expect(got[0].ok).toBe(true);
+    expect(got[0].label).toBe('bg-host:3271');
+    expect(got[0].timers).toHaveLength(1);
     // The durable slice is the one that carries the sweeps this whole change exists
     // for — a federation that returned only `timers` would miss its own case.
-    expect(got.dbosSchedules).toHaveLength(1);
+    expect(got[0].dbosSchedules).toHaveLength(1);
   });
 
   it('tolerates a sibling on an older build that omits the dbosSchedules slice', async () => {
     const got = await probeSibling(sibling(), {
       fetchImpl: okFetch({ process: 'bg-host', timers: [] }),
     });
-    expect(got).toMatchObject({ ok: true, dbosSchedules: [] });
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({ ok: true, dbosSchedules: [] });
   });
 
-  it('NEVER rejects — a throwing/refusing/non-2xx probe degrades to ok:false', async () => {
+  /**
+   * EI-19454206016477347: a worker's response can carry an optional `primary` field —
+   * its true-cluster PRIMARY's own registries, relayed over the worker's cluster-IPC
+   * cache because the primary never itself serves this route. When present, probeSibling
+   * returns a SECOND row for it, labelled distinctly so a reader can tell it was reached
+   * only via relay, not because that process itself listens on the probed port.
+   */
+  it('adds a SECOND row for a federated primary when the worker response carries one', async () => {
+    const got = await probeSibling(sibling(), {
+      fetchImpl: okFetch({
+        process: 'operator',
+        timers: [{ name: 'worker-own-timer' }],
+        dbosSchedules: [],
+        primary: {
+          pid: 621668,
+          role: 'operator',
+          timers: [{ name: 'git-sync' }, { name: 'dbos-executor-reaper' }],
+          dbosSchedules: [
+            { name: 'PeriodicWorkflows.attentionReconcileUnanswerable', crontab: '0 20 * * * *', mode: 'x', queueName: null },
+          ],
+          sentAt: 123,
+          staleMs: 456,
+        },
+      }),
+    });
+    expect(got).toHaveLength(2);
+    expect(got[0]).toMatchObject({ ok: true, label: 'operator:3271', timers: [{ name: 'worker-own-timer' }] });
+    expect(got[1]).toMatchObject({
+      ok: true,
+      pid: 621668,
+      port: 3271,
+      label: 'operator(primary via :3271)',
+      process: 'operator',
+      timers: [{ name: 'git-sync' }, { name: 'dbos-executor-reaper' }],
+      dbosSchedules: [
+        { name: 'PeriodicWorkflows.attentionReconcileUnanswerable', crontab: '0 20 * * * *', mode: 'x', queueName: null },
+      ],
+    });
+  });
+
+  it('omits the primary row when `primary` is absent, empty-ish, or malformed', async () => {
+    const absent = await probeSibling(sibling(), {
+      fetchImpl: okFetch({ process: 'operator', timers: [] }),
+    });
+    expect(absent).toHaveLength(1);
+
+    const malformed = await probeSibling(sibling(), {
+      fetchImpl: okFetch({
+        process: 'operator',
+        timers: [],
+        primary: { pid: 'not-a-number', role: 'operator', timers: [] },
+      }),
+    });
+    expect(malformed).toHaveLength(1); // pid wrong type — never fabricated
+
+    const missingTimers = await probeSibling(sibling(), {
+      fetchImpl: okFetch({ process: 'operator', timers: [], primary: { pid: 1, role: 'operator' } }),
+    });
+    expect(missingTimers).toHaveLength(1); // timers not an array
+  });
+
+  it('NEVER rejects — a throwing/refusing/non-2xx probe degrades to a single ok:false row', async () => {
     const refused = await probeSibling(sibling(), {
       fetchImpl: async () => {
         throw new Error('ECONNREFUSED');
       },
     });
-    expect(refused.ok).toBe(false);
-    expect(refused.error).toContain('ECONNREFUSED');
+    expect(refused).toHaveLength(1);
+    expect(refused[0].ok).toBe(false);
+    expect(refused[0].error).toContain('ECONNREFUSED');
     // The label still identifies WHICH process is unknown, so a degraded row is
     // actionable rather than anonymous.
-    expect(refused.label).toBe('operator:3271');
+    expect(refused[0].label).toBe('operator:3271');
 
     const http500 = await probeSibling(sibling(), {
       fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
     });
-    expect(http500).toMatchObject({ ok: false, error: 'HTTP 500', timers: [], dbosSchedules: [] });
+    expect(http500).toHaveLength(1);
+    expect(http500[0]).toMatchObject({ ok: false, error: 'HTTP 500', timers: [], dbosSchedules: [] });
 
     const garbage = await probeSibling(sibling(), {
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => 'not-an-object' }),
     });
-    expect(garbage).toMatchObject({ ok: true, timers: [] });
+    expect(garbage).toHaveLength(1);
+    expect(garbage[0]).toMatchObject({ ok: true, timers: [] });
   });
 });
 
