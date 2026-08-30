@@ -452,15 +452,35 @@ build {
     inline = [
       "set -Eeuo pipefail",
       "apt-get update -qq",
-      # Patch the base image BEFORE installing the pinned tools. Measured on the 0.0.18 candidate
-      # (scan evidenceRef gcp-image-scan:…:5f9c040e34c0bed9b3afcfb1acfad4c3): 3939 grype matches,
-      # of which 247 Critical + 1567 High are at or above the ratified deny threshold and 3829
-      # carry an available fix. Those 3829 exist purely because this build never upgraded the
-      # base image's package versions — it only ever ran `update` and `install`.
+      # Patch the base image BEFORE installing the pinned tools. Correct hygiene — but do NOT
+      # expect it to move the release gate, and do not remove it expecting the gate to notice.
+      #
+      # ⚠ THIS COMMENT PREVIOUSLY ASSERTED A CAUSE THAT HAS SINCE BEEN MEASURED FALSE. It said the
+      # 3829 fixable findings "exist purely because this build never upgraded the base image's
+      # package versions". That was a plausible inference from a total, never a measurement of the
+      # population, and it is wrong. Recorded as D-195.
+      #
+      # Measured on the 0.0.18 candidate by ecosystem (grype `.matches[].artifact.type`, grouped
+      # with no filter; both breakdowns reconcile exactly to the 3938/3828 totals):
+      #     linux-kernel 2389 (fixable 2320) | go-module 1318 (1306) | binary 177 (148) | python 54 (54)
+      # There are ZERO `deb` findings, and zero `npm`. `dist-upgrade` upgrades deb packages, so it
+      # can only ever reach an ecosystem that contributes nothing here. The before/after confirms
+      # it: 3829 fixable before this line existed, 3828 after — a one-finding delta.
+      #
+      # Two traps this comment used to walk into, both worth keeping in mind:
+      #   • "fixable" is grype's `fix.state == "fixed"`, meaning an upstream fixed version of the
+      #     MODULE exists. It does NOT mean an apt upgrade delivers it. A Go binary embeds its
+      #     whole vendored dependency tree, so each vulnerable module is reported individually and
+      #     stays reported until the vendor rebuilds the binary — no distro action clears it.
+      #     `google-guest-agent` in the pinned list below is exactly such a Go binary.
+      #   • the dominant term is `linux-kernel` (61%), which tracks the base image's kernel and is
+      #     not addressable by userland patching at all.
+      # So real posture reduction is base-image/kernel selection plus removing or replacing
+      # vendored Go binaries — not a package-manager step. See D-195 and D-197.
       #
       # `unattended-upgrades` is installed later and does patch, but only AFTER first boot, while
       # the release gate scans the image BEFORE it ever boots. So runtime patching cannot satisfy
-      # the gate, and only a build-time upgrade can.
+      # the gate. That part stands; it is only the attribution above that was wrong.
       #
       # Ordering is load-bearing: this runs BEFORE the pinned install so that `install` still
       # settles each pinned tool at its declared version and the assertion below stays meaningful.
