@@ -38,6 +38,7 @@ const leaderDispatchAdmission = vi.hoisted(() => ({
   resolveFleetScopeContext: vi.fn(),
   fleetControlWindDownRefusal: vi.fn(),
   leaderDispatchedAdmission: vi.fn(),
+  selfFiledFalloutAdmission: vi.fn(),
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -54,6 +55,7 @@ vi.mock('./scheduler/fleet-scope-admission', () => ({
   resolveFleetScopeContext: (...args: unknown[]) => leaderDispatchAdmission.resolveFleetScopeContext(...args),
   fleetControlWindDownRefusal: (...args: unknown[]) => leaderDispatchAdmission.fleetControlWindDownRefusal(...args),
   leaderDispatchedAdmission: (...args: unknown[]) => leaderDispatchAdmission.leaderDispatchedAdmission(...args),
+  selfFiledFalloutAdmission: (...args: unknown[]) => leaderDispatchAdmission.selfFiledFalloutAdmission(...args),
 }));
 
 const wi = await import('./work-items');
@@ -92,6 +94,7 @@ async function seedIssue(
     takenBy?: string | null;
     origin?: string;
     assignedBy?: string | null;
+    createdBy?: string | null;
     admission?: string | null;
     // work-item-status-full-unify: the substrate author key. A row whose author is one this
     // workspace ALSO wrote locally is OUR own-node work even when it round-trips federation as
@@ -99,9 +102,14 @@ async function seedIssue(
     authorPubkey?: string | null;
   } = {},
 ) {
-  const payload = opts.assignedBy === undefined
+  const payload = opts.assignedBy === undefined && opts.createdBy === undefined
     ? null
-    : JSON.stringify({ _ei: { assigned_by: opts.assignedBy } });
+    : JSON.stringify({
+        _ei: {
+          ...(opts.assignedBy !== undefined ? { assigned_by: opts.assignedBy } : {}),
+          ...(opts.createdBy !== undefined ? { created_by: opts.createdBy } : {}),
+        },
+      });
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, author_pubkey, payload, admission)
@@ -155,6 +163,7 @@ beforeEach(async () => {
   leaderDispatchAdmission.resolveFleetScopeContext.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.fleetControlWindDownRefusal.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.leaderDispatchedAdmission.mockReset().mockResolvedValue(false);
+  leaderDispatchAdmission.selfFiledFalloutAdmission.mockReset().mockReturnValue(false);
 });
 
 describe('work_items claim — atomic `in` (D-004, real PG)', () => {
@@ -243,6 +252,97 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
           FROM harness_shared.work_items
          WHERE feature_id = 'EI-leader-dispatch-pending'`)[0];
       expect(row).toEqual({ taken_by: 'su-member', admission: 'pending' });
+    });
+
+    it('claims an admission-pending bug filed by the target member via a server-derived capability', async () => {
+      await seedIssue('EI-self-filed-pending', {
+        admission: 'pending',
+        createdBy: 'su-member',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+      leaderDispatchAdmission.selfFiledFalloutAdmission.mockReturnValue(true);
+
+      const claimed = await wi.claimWorkItem('EI-self-filed-pending', 'su-member', { harness: H });
+
+      expect(claimed?.assignee).toBe('su-member');
+      const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = 'EI-self-filed-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'su-member', admission: 'pending' });
+    });
+
+    it('keeps a pending bug filed by a peer refused without the self-filed capability', async () => {
+      await seedIssue('EI-peer-filed-pending', {
+        admission: 'pending',
+        createdBy: 'su-peer',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+
+      expect(await wi.claimWorkItem('EI-peer-filed-pending', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-peer-filed-pending'`)[0];
+      expect(row.taken_by).toBeNull();
+    });
+
+    it('keeps a self-filed pending non-bug refused instead of widening by provenance alone', async () => {
+      await seedIssue('EI-self-filed-change-pending', {
+        kind: 'change',
+        admission: 'pending',
+        createdBy: 'su-member',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+
+      expect(await wi.claimWorkItem('EI-self-filed-change-pending', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-self-filed-change-pending'`)[0];
+      expect(row.taken_by).toBeNull();
+    });
+
+    it('keeps a self-filed pending bug refused while the target fleet is winding down', async () => {
+      await seedIssue('EI-self-filed-paused', {
+        admission: 'pending',
+        createdBy: 'su-member',
+      });
+      leaderDispatchAdmission.resolveFleetScopeContext.mockResolvedValue({
+        ownerId: 'su-member',
+        fleetSlug: 'dispatch-fleet',
+        fleetRole: 'member',
+        workspaceId: 'default',
+        record: { source: 'fleet' },
+      });
+      leaderDispatchAdmission.fleetControlWindDownRefusal.mockResolvedValue({
+        allowed: false,
+        scoped: true,
+        code: 'fleet_winding_down',
+        scope: {},
+        reason: 'fleet winding down',
+      });
+      leaderDispatchAdmission.selfFiledFalloutAdmission.mockReturnValue(true);
+
+      expect(await wi.claimWorkItem('EI-self-filed-paused', 'su-member', { harness: H })).toBeNull();
+      const row = (await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-self-filed-paused'`)[0];
+      expect(row.taken_by).toBeNull();
+      expect(leaderDispatchAdmission.selfFiledFalloutAdmission).not.toHaveBeenCalled();
     });
 
     it('keeps an ordinary admission-pending issue refused without the leader capability', async () => {

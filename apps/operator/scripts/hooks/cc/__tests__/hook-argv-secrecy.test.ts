@@ -27,7 +27,12 @@ const AUTH_HOOKS = [
   'posttoolbatch-locks-release.sh',
   'posttooluse-activity-report.sh',
   'posttooluse-locks-release.sh',
-  'posttooluse-objective-title.sh',
+  // posttooluse-objective-title.sh deliberately LEFT this family (EI-21878207678671047):
+  // coord-hook-fold-load-repair-2026-08-30 P-002 made it cache-only, so it never contacts
+  // the operator and carries no bearer at all. Do not "restore" it here — re-add it only if
+  // it starts reading the superuser token again, which is what the discovery scan below
+  // detects. The equality assertion is a CLOSED set on purpose: that is what makes a hook
+  // silently dropping the token marker (and thus leaving the audited family) a loud failure.
   'pretooluse-activity-report.sh',
   'pretooluse-bash-resource-gate.sh',
   'pretooluse-locks-acquire.sh',

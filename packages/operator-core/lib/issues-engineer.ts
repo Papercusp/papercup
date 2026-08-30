@@ -118,6 +118,40 @@ export function isLeaderDispatchAdmission(value: unknown): value is LeaderDispat
 }
 
 /**
+ * EI-218293: a member's own newly-filed bug is the second narrow exception to the
+ * born-pending admission floor. The fleet-scope admission seam already admits that
+ * server-attributed fallout bug, but the subsequent claimIssue UPDATE used to have no
+ * capability carrying that decision into the SQL predicate.
+ *
+ * This is intentionally separate from leader dispatch. A self-filed bug must not
+ * inherit leader authority, and the SQL claim keeps the durable created_by value in
+ * its predicate so a row changed after minting cannot inherit this exception.
+ */
+export interface SelfFiledFalloutAdmission {
+  readonly itemId: string;
+  readonly target: string;
+  readonly workspaceId: string;
+  readonly createdBy: string;
+}
+
+const selfFiledFalloutAdmissions = new WeakSet<object>();
+
+function mintSelfFiledFalloutAdmission(args: {
+  itemId: string;
+  target: string;
+  workspaceId: string;
+  createdBy: string;
+}): SelfFiledFalloutAdmission {
+  const admission = Object.freeze({ ...args });
+  selfFiledFalloutAdmissions.add(admission);
+  return admission;
+}
+
+export function isSelfFiledFalloutAdmission(value: unknown): value is SelfFiledFalloutAdmission {
+  return typeof value === 'object' && value !== null && selfFiledFalloutAdmissions.has(value);
+}
+
+/**
  * Derive the internal leader-dispatch capability for a by-id claim. This keeps
  * the exception server-derived and preserves the existing fleet admission
  * ordering: winding-down and the default claim spec still refuse before the
@@ -145,6 +179,39 @@ export async function deriveLeaderDispatchAdmission(
       target,
       workspaceId,
       assignedBy: item.assignedBy,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Derive the internal self-filed-fallout capability for a by-id claim. This mirrors
+ * admitWorkItemForFleetTarget's existing selfFiledFalloutAdmission predicate, but
+ * mints a private capability for the later claimIssue UPDATE. A scheduler/fleet-store
+ * failure fails closed, and the winding-down refusal keeps precedence.
+ */
+export async function deriveSelfFiledFalloutAdmission(
+  item: Pick<EngineerIssue, 'id' | 'kind' | 'createdBy'>,
+  target: string,
+  workspaceId: string,
+): Promise<SelfFiledFalloutAdmission | null> {
+  if (item.kind !== 'bug' || !item.createdBy) return null;
+  try {
+    const {
+      resolveFleetScopeContext,
+      fleetControlWindDownRefusal,
+      selfFiledFalloutAdmission,
+    } = await import('./scheduler/fleet-scope-admission');
+    const scope = await resolveFleetScopeContext(target, workspaceId);
+    if (!scope) return null;
+    if (await fleetControlWindDownRefusal(scope, workspaceId)) return null;
+    if (!selfFiledFalloutAdmission(item, scope)) return null;
+    return mintSelfFiledFalloutAdmission({
+      itemId: item.id,
+      target,
+      workspaceId,
+      createdBy: item.createdBy,
     });
   } catch {
     return null;
@@ -2623,6 +2690,12 @@ export async function claimIssue(
      * admission check, and still CASes the durable assigned_by provenance.
      */
     leaderDispatchAdmission?: LeaderDispatchAdmission;
+    /**
+     * EI-218293: private capability minted by deriveSelfFiledFalloutAdmission.
+     * It is deliberately not caller-supplied; claimIssue validates object identity
+     * and CASes the durable created_by provenance.
+     */
+    selfFiledFalloutAdmission?: SelfFiledFalloutAdmission;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
@@ -2634,6 +2707,13 @@ export async function claimIssue(
     opts.leaderDispatchAdmission.target === assignee &&
     opts.leaderDispatchAdmission.workspaceId === ws
       ? opts.leaderDispatchAdmission
+      : null;
+  const selfFiledFalloutAdmission =
+    isSelfFiledFalloutAdmission(opts.selfFiledFalloutAdmission) &&
+    opts.selfFiledFalloutAdmission.itemId === id &&
+    opts.selfFiledFalloutAdmission.target === assignee &&
+    opts.selfFiledFalloutAdmission.workspaceId === ws
+      ? opts.selfFiledFalloutAdmission
       : null;
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
@@ -2656,17 +2736,22 @@ export async function claimIssue(
        )
        -- Born-pending admission is orthogonal to lifecycle status. A named claim
        -- cannot jump the promoter any more than scheduler:get_next can, EXCEPT
-       -- for the one server-derived current-leader dispatch capability. Keep the
-       -- assigned_by CAS in the exception so a row changed after capability
-       -- derivation cannot inherit the old leader's authorization.
+       -- for the two server-derived capabilities: current-leader dispatch and
+       -- self-filed fallout. Keep each durable provenance CAS in its exception so
+       -- a row changed after capability derivation cannot inherit old authorization.
        AND ${
-         leaderDispatchAdmission
+         leaderDispatchAdmission || selfFiledFalloutAdmission
            ? sql`(
                ${admittedWhereSql(sql)}
-               OR (
+               ${leaderDispatchAdmission ? sql`OR (
                  admission = 'pending'
                  AND assigned_by = ${leaderDispatchAdmission.assignedBy}
-               )
+               )` : sql``}
+               ${selfFiledFalloutAdmission ? sql`OR (
+                 admission = 'pending'
+                 AND kind = 'bug'
+                 AND created_by = ${selfFiledFalloutAdmission.createdBy}
+               )` : sql``}
              )`
            : admittedWhereSql(sql)
        }

@@ -63,6 +63,11 @@ function fakeLease(display: string) {
     // P-005: a fixture enrols nothing in the task ledger — the honest
     // "unenrolled" value.
     taskId: null,
+    // WI-1105361: no apps are launched here, so the honest diagnostic set is
+    // empty. Added to the fixture rather than made optional on SandboxDesktop —
+    // the field is required so a desktop cannot silently under-report a failed
+    // app launch.
+    appDiagnostics: () => [],
     release: async () => {},
   }));
 }
