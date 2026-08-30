@@ -560,6 +560,67 @@ function runScript(
  * (Structural mirror of green-checkpoint.ts's `CheckpointResult` — operator-core must not import
  * from apps/operator, so the shape is restated here, same convention as the result MARKERs above.)
  */
+export interface CheckpointEvidence {
+  logPath?: string;
+  runId?: string;
+  integrationRoot?: string;
+}
+
+export interface CheckpointTypecheckDiagnostic {
+  file: string | null;
+  line: number | null;
+  column: number | null;
+  code: string;
+  category: 'error' | 'warning';
+  message: string;
+}
+
+export interface CheckpointTypecheckPreflight {
+  status: 'failed';
+  checkedFiles: string[];
+  failingFiles: string[];
+  diagnostics: CheckpointTypecheckDiagnostic[];
+}
+
+function boundedCheckpointEvidence(
+  evidence?: CheckpointEvidence | null,
+): CheckpointEvidence | undefined {
+  if (!evidence) return undefined;
+  const logPath = typeof evidence.logPath === 'string' ? evidence.logPath.trim() : '';
+  const runId = typeof evidence.runId === 'string' ? evidence.runId.trim() : '';
+  const integrationRoot =
+    typeof evidence.integrationRoot === 'string' ? evidence.integrationRoot.trim() : '';
+  if (!logPath && !runId && !integrationRoot) return undefined;
+  return {
+    ...(logPath ? { logPath: logPath.slice(0, 1000) } : {}),
+    ...(runId ? { runId: runId.slice(0, 128) } : {}),
+    ...(integrationRoot ? { integrationRoot: integrationRoot.slice(0, 1000) } : {}),
+  };
+}
+
+function boundedTypecheckPreflight(
+  preflight?: CheckpointTypecheckPreflight | null,
+): CheckpointTypecheckPreflight | undefined {
+  if (!preflight) return undefined;
+  return {
+    status: 'failed',
+    checkedFiles: preflight.checkedFiles
+      .slice(0, 100)
+      .map((file) => file.slice(0, 1000)),
+    failingFiles: preflight.failingFiles
+      .slice(0, 100)
+      .map((file) => file.slice(0, 1000)),
+    diagnostics: preflight.diagnostics.slice(0, 100).map((diagnostic) => ({
+      file: diagnostic.file?.slice(0, 1000) ?? null,
+      line: diagnostic.line,
+      column: diagnostic.column,
+      code: diagnostic.code.slice(0, 32),
+      category: diagnostic.category,
+      message: diagnostic.message.slice(0, 500),
+    })),
+  };
+}
+
 export interface CheckpointVerdict {
   reason: string;
   green?: boolean | null;
@@ -599,6 +660,10 @@ export interface CheckpointVerdict {
   /** WI-4957: the full-suite output log this run wrote (structural mirror of
    *  CheckpointResult.logPath), when produced. */
   logPath?: string;
+  /** Exact producing-run identity, so responders never select a concurrent harness log. */
+  checkpointEvidence?: CheckpointEvidence;
+  /** Structured files/compiler diagnostics from an early changed-file typecheck abort. */
+  typecheckPreflight?: CheckpointTypecheckPreflight;
   /** EI-203121: structural mirror of CheckpointResult.postSuiteLegs. The producer and
    *  this storage boundary both cap the collection and every free-text field. */
   postSuiteLegs?: Array<{
@@ -737,6 +802,38 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   // full output directly, instead of only the de-noised failing-test names.
   if (v.runId) detail.runId = v.runId;
   if (v.logPath) detail.logPath = v.logPath;
+  if (v.checkpointEvidence) {
+    detail.checkpointEvidence = {
+      ...(v.checkpointEvidence.logPath
+        ? { logPath: v.checkpointEvidence.logPath.slice(0, 1000) }
+        : {}),
+      ...(v.checkpointEvidence.runId
+        ? { runId: v.checkpointEvidence.runId.slice(0, 128) }
+        : {}),
+      ...(v.checkpointEvidence.integrationRoot
+        ? { integrationRoot: v.checkpointEvidence.integrationRoot.slice(0, 1000) }
+        : {}),
+    };
+  }
+  if (v.typecheckPreflight) {
+    detail.typecheckPreflight = {
+      status: 'failed',
+      checkedFiles: v.typecheckPreflight.checkedFiles
+        .slice(0, 100)
+        .map((file) => file.slice(0, 1000)),
+      failingFiles: v.typecheckPreflight.failingFiles
+        .slice(0, 100)
+        .map((file) => file.slice(0, 1000)),
+      diagnostics: v.typecheckPreflight.diagnostics.slice(0, 100).map((diagnostic) => ({
+        file: diagnostic.file?.slice(0, 1000) ?? null,
+        line: diagnostic.line,
+        column: diagnostic.column,
+        code: diagnostic.code.slice(0, 32),
+        category: diagnostic.category,
+        message: diagnostic.message.slice(0, 500),
+      })),
+    };
+  }
   if (v.postSuiteLegs?.length) {
     detail.postSuiteLegs = v.postSuiteLegs.slice(0, 32).map((leg) => ({
       id: leg.id.slice(0, 128),
