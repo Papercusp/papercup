@@ -216,8 +216,8 @@ describe('gateway provider adapters', () => {
     expect(Object.keys(adapters).sort()).toEqual(['claude', 'codex', 'omp'] satisfies GatewayProviderId[]);
     expect(adapters.claude).toMatchObject({ id: 'claude', protocol: 'anthropic', upstreamBase: 'https://anthropic.test' });
     expect(adapters.codex).toMatchObject({ id: 'codex', protocol: 'openai-compatible', upstreamBase: 'https://openai.test' });
-    // OMP reuses the Anthropic adapter (Claude-account pinning) — diagnostics row, not a routing target.
-    expect(adapters.omp).toMatchObject({ id: 'omp', protocol: 'anthropic', upstreamBase: 'https://anthropic.test' });
+    // OMP is multi-provider (delegates per-session to Claude or Codex) — diagnostics row, not a routing target.
+    expect(adapters.omp).toMatchObject({ id: 'omp', protocol: 'multi', upstreamBase: 'https://anthropic.test' });
     expect(adapters.omp.lane).toBe(adapters.claude.lane);
     expect(adapters.codex.lane.id).toBe('openai-responses');
     expect(adapters.omp.unavailableMessage).toBeNull();
@@ -298,7 +298,7 @@ describe('gateway provider adapters', () => {
     expect(gatewayProviderStatuses(adapters)).toEqual([
       expect.objectContaining({ id: 'claude', configured: true, protocol: 'anthropic', laneId: 'anthropic-messages' }),
       expect.objectContaining({ id: 'codex', configured: false, protocol: 'openai-compatible', laneId: 'openai-responses', unavailableMessage: expect.stringMatching(/no Codex account pool/i) }),
-      expect.objectContaining({ id: 'omp', configured: true, protocol: 'anthropic', laneId: 'anthropic-messages' }),
+      expect.objectContaining({ id: 'omp', configured: true, protocol: 'multi', laneId: 'anthropic-messages' }),
     ]);
   });
 
