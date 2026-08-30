@@ -214,7 +214,19 @@ function defaultControls(): CodexSuSessionControls {
       return { ok: true };
     },
     async interrupt({ ownerId }) {
-      return (await interruptViaPty(ownerId, 'sigint'))
+      // Esc, NOT Ctrl-C. Codex's TUI binds Ctrl-C (\x03) to QUIT — its own
+      // footer string reads "Ctrl+C to exit" — so 'sigint' made the product's
+      // interrupt command END the session it was asked to interrupt. Measured
+      // (EI-21908787009967815): injecting \x03 into a READY managed session
+      // closed adv 21340 six seconds later (ended_by='self', exit_code=0,
+      // ended_signal=null, three op.dispatch.shutdown lines in its
+      // codex-tui.log), while idle controls 21328/21333 — same create+launch
+      // path, nothing injected — lived 130.6s and 120s. Esc is codex's cancel
+      // key and is inert at an idle prompt: the SAME interruptViaPty call
+      // carrying \x1b left adv 21341 alive for the full 90s watch with zero
+      // shutdown lines, which is what exonerates the injection path and pins
+      // the defect to the payload. Pinned by su-session-interrupt-key.test.ts.
+      return (await interruptViaPty(ownerId, 'esc'))
         ? { ok: true }
         : refused('interrupt_unavailable', 'Codex runtime could not be interrupted');
     },

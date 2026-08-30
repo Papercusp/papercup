@@ -858,9 +858,22 @@ export function injectIntoHost(
  * Force-interrupt a live psu-hosted INTERACTIVE session by injecting a control
  * byte into its pty (turn-lifecycle-control Phase 4 pty-force leg, D-007). The
  * byte lands IMMEDIATELY (raw mode bypasses the wake idle-gate) — the
- * mid-thinking Ctrl-C semantics force requires. `'sigint'` = Ctrl-C (\x03,
- * ends the current turn, session stays resumable); `'esc'` = Esc (\x1b, the
- * claude/omp TUI's stop-generating key).
+ * mid-thinking Ctrl-C semantics force requires. `'sigint'` = Ctrl-C (\x03);
+ * `'esc'` = Esc (\x1b).
+ *
+ * ⚠ THIS IS A KEYSTROKE, NOT A SIGNAL, so what it MEANS is decided by the
+ * receiving TUI — it is not a portable "end the turn, session stays
+ * resumable" primitive, and choosing the wrong key for a backend ENDS the
+ * session instead of interrupting it. Pick per-TUI, and measure before
+ * assuming:
+ *   - codex  → 'esc'. Ctrl-C is codex's QUIT key (its own footer reads
+ *     "Ctrl+C to exit"); \x03 into a READY managed session closed adv 21340
+ *     in 6s with a graceful TUI shutdown, where \x1b left adv 21341 alive
+ *     for a full 90s watch (EI-21908787009967815).
+ *   - claude / omp → 'sigint' today; their stop-generating key is Esc, and
+ *     neither has been measured against this hazard (a single Ctrl-C at an
+ *     idle claude prompt is believed to arm-then-exit rather than exit
+ *     outright, but that is UNVERIFIED here — see EI-21908787009967815).
  *
  * EI-12460: retries once after a socket-write miss, re-reading the owner-scoped
  * discovery record before giving up — the SAME re-verify-after-miss pattern
