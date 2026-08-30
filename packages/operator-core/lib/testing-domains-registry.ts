@@ -1662,6 +1662,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rust-path-remap.selftest.sh'], label: 'Rust build-box path remap: every build entry point sets it itself + is idempotent (EI-20075266271803900)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/disk-preflight.selftest.sh'], label: 'Build disk preflight: refuses ENOSPC(28) up front, fails open when unmeasurable, and every staging entry point calls it (EI-20090527288494606)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh'], label: 'macOS fresh-install state isolation: trap-restores both Papercusp roots across PASS/FAIL/TERM and refuses stale backups (EI-20332777704574867)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/streak-escalation.selftest.sh'], label: 'live-federation-gate streak escalation: a run of consecutive non-GREEN verdicts computes its own streak length and escalates, instead of going quiet because each repeat reason was already filed (WI-39354)' },
       ],
     },
   ],

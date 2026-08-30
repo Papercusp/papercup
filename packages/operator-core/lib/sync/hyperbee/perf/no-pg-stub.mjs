@@ -57,10 +57,12 @@ const stub = (name) => {
 // no-pg-stub-covers-db-org-imports.test.ts — do not prune by hand.
 export const _resetForTests = stub('_resetForTests');
 export const _resetStoreIdentityForTests = stub('_resetStoreIdentityForTests');
+export const buildConnectionOptions = stub('buildConnectionOptions');
 export const consumeEvents = stub('consumeEvents');
 export const createDedicatedOrgPg = stub('createDedicatedOrgPg');
 export const createGoal = stub('createGoal');
 export const DbCallDeadlineError = stub('DbCallDeadlineError');
+export const DEFAULT_DB_CALL_DEADLINE_MS = stub('DEFAULT_DB_CALL_DEADLINE_MS');
 export const DEFAULT_TX_ACQUIRE_DEADLINE_MS = stub('DEFAULT_TX_ACQUIRE_DEADLINE_MS');
 export const deleteRoutine = stub('deleteRoutine');
 export const describeStoreIdentityMismatch = stub('describeStoreIdentityMismatch');
@@ -91,6 +93,7 @@ export const ObservedStoreIdentity = stub('ObservedStoreIdentity');
 export const orgPg = stub('orgPg');
 export const parseStoreIdentity = stub('parseStoreIdentity');
 export const PG_BIGINT_AS_NUMBER_TYPES = stub('PG_BIGINT_AS_NUMBER_TYPES');
+export const pgbouncerEnabled = stub('pgbouncerEnabled');
 export const pinOrVerifyStoreIdentity = stub('pinOrVerifyStoreIdentity');
 export const poolIdleTimeoutSec = stub('poolIdleTimeoutSec');
 export const potsForGoal = stub('potsForGoal');

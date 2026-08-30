@@ -211,16 +211,26 @@ export function probeSystemIdentifier(opts: {
       return;
     }
 
-    let out = '';
+    // Chunk-safe accumulation (WI-6728): decoding each 'data' chunk on its own
+    // turns a multi-byte character split across two events into replacement
+    // chars. Hold the raw Buffers and decode ONCE at close instead. This package
+    // deliberately has no dependencies — operator-core depends on it, so the
+    // shared `createTextCollector` helper would be a dependency cycle — hence
+    // the local form rather than the usual import.
+    const chunks: Buffer[] = [];
+    let outBytes = 0;
     child.stdout?.on('data', (c: Buffer) => {
       // Bound the buffer: this reads one integer, and an unexpected torrent
       // (a wrong -c, a chatty wrapper) must not accumulate unboundedly.
-      if (out.length < 4096) out += c.toString();
+      if (outBytes < 4096) {
+        chunks.push(c);
+        outBytes += c.length;
+      }
     });
     child.on('error', () => done(null));
     child.on('close', (code) => {
       if (code !== 0) return done(null);
-      const id = out.trim().split(/\s+/)[0] ?? '';
+      const id = Buffer.concat(chunks).toString().trim().split(/\s+/)[0] ?? '';
       done(/^\d+$/.test(id) ? id : null);
     });
   });
