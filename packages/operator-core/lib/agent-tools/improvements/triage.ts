@@ -14,12 +14,23 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readImprovementItems } from '../../harness/improvements/read-items';
+import { readImprovementItems, countImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import { readOwnerFullAutonomyGrant } from '../../harness/improvements/full-autonomy-grant';
 import { applyHumanQueueRanking, humanQueueRankerSpec, type RankedHumanQueueItem } from '../../queue-ranker/human-queue';
 import { triageIdea, summarizeTriages, type IdeaType, type TriageDecision } from '../../harness/improvements/triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
+
+/**
+ * How many open ideas one triage invocation reads.
+ *
+ * This is a WINDOW, not the corpus. It was previously an unnamed `100` inline in the
+ * read, which is how `retriage-all` came to describe itself as a pass over "EVERY open
+ * idea" while only ever reaching the first {@link TRIAGE_WINDOW} rows. Every mode now
+ * stamps a `coverage` block derived from this constant plus the real `COUNT(*)`, so the
+ * bound travels with the result instead of living only here.
+ */
+const TRIAGE_WINDOW = 100;
 
 export default defineTool({
   name: 'improvements:triage',
@@ -28,7 +39,7 @@ export default defineTool({
     'Mug-turn triage: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
   guidance: {
     when:
-      'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Mug\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
+      'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Mug\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
     chaining: "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding.",
     seeAlso: [
@@ -155,14 +166,35 @@ export default defineTool({
     // lane ranked by the ONE queue ranker (frontier P-040/P-045, D-005) — the
     // Queen's triage walk follows the same order the digest, the tab, and the
     // owner inbox show, with each item carrying its rank.features breakdown.
-    const items = await readImprovementItems({ state: 'open', limit: 100, harnessSlug: args.harnessSlug });
+    const readOpts = { state: 'open' as const, limit: TRIAGE_WINDOW, harnessSlug: args.harnessSlug };
+    // D2 (EI-18790490225750395), propagated here from `improvements:digest`: the TRUE
+    // corpus total — a real COUNT(*), never bounded by `limit`. Without it `buildDigest`
+    // falls back to `total = candidates.length`, so this tool reported its own 100-row
+    // WINDOW as the backlog size AND set `windowed:false`, which reads as a positive
+    // assertion that nothing was truncated. Best-effort exactly as in digest.ts: a count
+    // failure degrades to `undefined` (prior behaviour) rather than sinking the triage.
+    const [items, corpusTotal] = await Promise.all([
+      readImprovementItems(readOpts),
+      countImprovementItems(readOpts).catch(() => undefined),
+    ]);
     // The OWNER FULL-AUTONOMY grant (Phase 2): the Queen's recorded triage must match the
     // live dispatch — when ON, protected-surface kind=bugs route to the auto-implement lane.
     const { activeWorkspaceId } = await import('../../workspace-registry');
     const principalWs = ctx?.principal?.workspaceId;
     const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
     const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ws);
-    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy }), { candidates: items });
+    const digest = await applyHumanQueueRanking(
+      buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy, corpusTotal }),
+      { candidates: items },
+    );
+    // The window/corpus framing every mode below stamps onto its result, so a count
+    // computed over a capped fetch can never be read as a corpus-wide verdict.
+    const coverage = {
+      window: TRIAGE_WINDOW,
+      examined: items.length,
+      corpusTotal: corpusTotal ?? null,
+      windowed: digest.windowed,
+    };
 
     // Summary mode: just show the breakdown
     if (!args.mode || args.mode === 'summary') {
@@ -181,6 +213,10 @@ export default defineTool({
                 autoEligible: digest.autoEligible.length,
                 humanQueue: digest.humanQueue.length,
               },
+              // The breakdown below is computed over `coverage.examined` rows, NOT the
+              // corpus: `triageSummary.total` is a floor. Read `coverage` before quoting
+              // any of these counts as a backlog-wide figure.
+              coverage,
               triageSummary: summary,
               // The one ranker's registry as data (P-040/D-005) — name/weight/
               // description per feature, the inspectable half of rank.features.
@@ -227,19 +263,33 @@ export default defineTool({
             text: JSON.stringify({
               ok: true,
               mode: 'triage-all',
+              coverage,
               decisions,
-              note: 'Mug, review the decisions above. Use triage-one to record each decision you choose to apply.',
+              note:
+                'Mug, review the decisions above. Use triage-one to record each decision you choose to apply. ' +
+                'PREVIEW ONLY — this mode persists nothing. `decisions` covers the first ' +
+                `${coverage.examined} open idea(s)` +
+                (coverage.windowed ? ` of ${coverage.corpusTotal ?? 'an unknown number of'} in the corpus.` : '.'),
             }),
           },
         ],
       };
     }
 
-    // Retriage-all (consume-edges P-021): one deterministic pass over EVERY open
-    // idea — already-triaged included (triaged→triaged is a valid transition) — so
-    // a taxonomy change re-routes the standing backlog instead of only new items.
+    // Retriage-all (consume-edges P-021): one deterministic pass over the open-idea
+    // WINDOW — already-triaged included (triaged→triaged is a valid transition) — so a
+    // taxonomy change re-routes standing items rather than only new ones.
     // Decisions are persisted (by='improvement-retriage'); the Queen/owner can
     // still re-take any of them via triage-one.
+    //
+    // ⚠ This reaches the first TRIAGE_WINDOW open ideas, NOT the whole corpus. This
+    // comment used to claim "EVERY open idea", which is the dangerous reading: after a
+    // taxonomy change an operator sees `scanned: 100 / applied: 100`, concludes the
+    // standing backlog was re-routed, and never learns the remainder kept its stale
+    // routing — a silent partial that looks exactly like success. The result now carries
+    // `coverage` + `complete` so the bound is impossible to miss. Widening the WRITE to
+    // the full corpus is deliberately NOT done here: that turns a reporting fix into a
+    // bulk mutation of every open idea and needs its own decision.
     if (args.mode === 'retriage-all') {
       const all = [...digest.humanQueue, ...digest.autoEligible];
       const byDecision: Record<TriageDecision, number> = { place: 0, gate: 0, gym: 0, reject: 0 };
@@ -278,6 +328,12 @@ export default defineTool({
               mode: 'retriage-all',
               scanned: all.length,
               applied,
+              // `scanned`/`applied` count the WINDOW, never the corpus. `complete` is the
+              // one field that answers "did this re-route the standing backlog?" — false
+              // means ideas outside the window kept their previous routing.
+              coverage,
+              complete: !coverage.windowed,
+              remaining: coverage.corpusTotal === null ? null : Math.max(0, coverage.corpusTotal - all.length),
               byDecision,
               byType,
               failures: failures.slice(0, 10),

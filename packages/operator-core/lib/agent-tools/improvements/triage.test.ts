@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { readImprovementItems } from '../../harness/improvements/read-items';
+import { readImprovementItems, countImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import triageTool from './triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
@@ -32,12 +32,17 @@ vi.mock('../../queue-ranker/human-queue', () => ({
 }));
 
 const mockReadImprovementItems = vi.mocked(readImprovementItems);
+const mockCountImprovementItems = vi.mocked(countImprovementItems);
 const mockBuildDigest = vi.mocked(buildDigest);
 const mockApplyTriageDecision = vi.mocked(applyTriageDecision);
 
 describe('improvements:triage tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The corpus COUNT(*) is read alongside the windowed item read. Without an explicit
+    // resolved value the automock returns `undefined` (not a promise), so the handler's
+    // `.catch(...)` throws — give it a default every test inherits.
+    mockCountImprovementItems.mockResolvedValue(0);
     mockApplyTriageDecision.mockImplementation(async (input) => ({
       ok: true,
       id: input.id,
@@ -92,6 +97,65 @@ describe('improvements:triage tool', () => {
     diagnosisClusters: { clusters: [], considered: 0, unshaped: 0, ritualExcluded: 0 },
     headline: 'test digest',
     ...p,
+  });
+
+  // WI-1206660 — the window must never be reported as the corpus.
+  //
+  // This tool reads a fixed 100-row window. Before this guard it called buildDigest with
+  // NO corpusTotal, so `total` fell back to candidates.length and `windowed` came back
+  // FALSE — an affirmative "nothing was truncated" on a backlog orders of magnitude
+  // larger. `improvements:digest` had already fixed exactly this (EI-18790490225750395
+  // D2) and the sibling never adopted it.
+  describe('corpus total vs window (WI-1206660)', () => {
+    it('reads the TRUE corpus COUNT with the SAME filter as the windowed read and threads it into buildDigest', async () => {
+      const items = [mockItem({ id: '1' })];
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockCountImprovementItems.mockResolvedValue(4321);
+      mockBuildDigest.mockReturnValue(mockDigest({ total: 4321, returned: 1, windowed: true, open: 1 }));
+
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler({ mode: 'summary' }, ctx)) as any;
+      const response = JSON.parse(result.content[0].text);
+
+      // Same filter on both legs — a count over a DIFFERENT filter is not this tool's total.
+      expect(mockCountImprovementItems.mock.calls[0]?.[0]).toEqual(mockReadImprovementItems.mock.calls[0]?.[0]);
+      expect(mockBuildDigest.mock.calls[0]?.[1]).toMatchObject({ corpusTotal: 4321 });
+      // The bound travels with the result, so a floor cannot be quoted as a total.
+      expect(response.coverage).toMatchObject({ window: 100, examined: 1, corpusTotal: 4321, windowed: true });
+    });
+
+    it('degrades to the prior behaviour when the corpus COUNT fails, rather than sinking the triage', async () => {
+      mockReadImprovementItems.mockResolvedValue([mockItem({ id: '1' })] as unknown as ImprovementCandidate[]);
+      mockCountImprovementItems.mockRejectedValue(new Error('count blew up'));
+      mockBuildDigest.mockReturnValue(mockDigest({ total: 1, returned: 1, open: 1 }));
+
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler({ mode: 'summary' }, ctx)) as any;
+      const response = JSON.parse(result.content[0].text);
+
+      expect(response.ok).toBe(true);
+      expect(mockBuildDigest.mock.calls[0]?.[1]).toMatchObject({ corpusTotal: undefined });
+      expect(response.coverage.corpusTotal).toBeNull();
+    });
+
+    it('retriage-all reports complete:false when it only re-routed the window', async () => {
+      const items = [mockItem({ id: '1' }), mockItem({ id: '2' })];
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockCountImprovementItems.mockResolvedValue(900);
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ total: 900, returned: 2, windowed: true, open: 2, autoEligible: items }),
+      );
+
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler({ mode: 'retriage-all' }, ctx)) as any;
+      const response = JSON.parse(result.content[0].text);
+
+      // `scanned` counts the window; `complete` is the field that answers whether the
+      // standing backlog was actually re-routed.
+      expect(response.scanned).toBe(2);
+      expect(response.complete).toBe(false);
+      expect(response.remaining).toBe(898);
+    });
   });
 
   it('has correct tool metadata', () => {
