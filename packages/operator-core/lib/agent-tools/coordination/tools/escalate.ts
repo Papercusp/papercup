@@ -53,6 +53,10 @@ export interface EscalationPredicate {
   value?: unknown;
 }
 
+export type NormalizedEscalationPredicate = EscalationPredicate & {
+  args: Record<string, unknown>;
+};
+
 export type EscalationPredicateValidationStatus = 'satisfied' | 'contradicted' | 'unknown';
 
 export interface EscalationPredicateValidation {
@@ -80,7 +84,7 @@ const escalationPredicateSchema = z.object({
 });
 
 /** Normalize the persisted predicate so every recheck has an explicit args bag. */
-export function normalizeEscalationPredicate(input: EscalationPredicate): EscalationPredicate {
+export function normalizeEscalationPredicate(input: EscalationPredicate): NormalizedEscalationPredicate {
   return { ...input, args: input.args ?? {} };
 }
 
