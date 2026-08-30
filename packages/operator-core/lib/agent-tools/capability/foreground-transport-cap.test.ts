@@ -82,6 +82,21 @@ describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-607
     expect(foregroundTimeoutHint('failed', FOREGROUND_TIMEOUT_CEILING_MS, RERUN)).toBe('');
     expect(foregroundTimeoutHint('killed', FOREGROUND_TIMEOUT_CEILING_MS, RERUN)).toBe('');
   });
+
+  // EI-21903653840648934 — a /proc IO-counter scan piped through a final `sort` stage was
+  // killed at the foreground cap and returned LITERALLY ZERO output, which read as "the
+  // capture is broken" rather than "the pipeline's own last stage never got to emit anything".
+  // Reproduced directly: `for i in ...; do echo ...; sleep .5; done | sort -rn` under a 3s
+  // foreground cap returns `(no output)` even though six lines were produced upstream of the
+  // buffering `sort`. The hint now names the actual mechanism so the NEXT agent restructures
+  // the pipeline instead of filing this as a capture defect a fourth time.
+  it('names the end-of-pipeline BUFFERING trap that can make partial output look like NO output', () => {
+    const h = foregroundTimeoutHint('timed_out', FOREGROUND_TIMEOUT_CEILING_MS, RERUN);
+    expect(h).toMatch(/BUFFERS until/);
+    expect(h).toMatch(/EOF/);
+    expect(h).toMatch(/sort/);
+    expect(h).toMatch(/read time, never launch time/i);
+  });
 });
 
 describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-21570021207351896)', () => {

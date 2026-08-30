@@ -87,6 +87,12 @@ export function foregroundTimeoutHint(status: string, timeoutMs: number, rerunAs
       MCP_TRANSPORT_CAP_MS / 1000
     ).toFixed(0)}s MCP transport limit so this returns a hint instead of an opaque request_timeout). ` +
     `The command and its whole process tree were KILLED at the cap — nothing is still running server-side. ` +
-    `This is too slow to run inline — re-run detached: ${rerunAs}, then poll capability:bash_output.`
+    `This is too slow to run inline — re-run detached: ${rerunAs}, then poll capability:bash_output. ` +
+    `⚠ If the output above (and any partial-output log) is EMPTY despite the command running the ` +
+    `whole ${(timeoutMs / 1000).toFixed(0)}s, check whether its LAST pipeline stage BUFFERS until ` +
+    `EOF (\`sort\`, \`uniq -c\`, an accumulating \`awk\`, \`jq -s\`, \`column\`) — killed before EOF, ` +
+    `that stage never got to emit a single row, so empty output here does NOT mean the command did ` +
+    `nothing. Restructure to emit incrementally (drop the buffering stage, or read straight from the ` +
+    `unfiltered log — same rule as filtering a BACKGROUND job's output at read time, never launch time).`
   );
 }
