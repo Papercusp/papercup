@@ -54,7 +54,31 @@ import {
 /** The watchdog-ledger source key for this sweep's 24h escalation debounce. */
 const WATCHDOG_SOURCE = 'dead-target-reaper' as const;
 
-/** Kill switch. `PAPERCUSP_DEAD_TARGET_REAPER=0` disables the sweep entirely. */
+/**
+ * The PRIMARY gate: the registered feature flag (`FLAGS.DEAD_TARGET_REAPER`, default ON).
+ *
+ * This is the switch an operator reaches for — flippable from `/admin/features` and effective
+ * within one tick, with no restart, which matters for a sweep whose job is to DISABLE other
+ * people's routines. The repo has one source for feature gates (`libs/flags/src/types.ts`);
+ * the env var below is deliberately NOT that source, it is the escape hatch beneath it.
+ *
+ * A read failure is treated as OFF, matching the sibling reaper (`idle-session-reaper.ts`) and
+ * this file's fail-closed posture: if we cannot establish that parking is enabled, we do not
+ * park. The cost of that choice is one skipped tick; the cost of the other is disabling a live
+ * install because a flag lookup timed out.
+ */
+async function reaperFlagOn(): Promise<boolean> {
+  return await getFlag(FLAGS.DEAD_TARGET_REAPER, 'system').catch(() => false);
+}
+
+/**
+ * Process-level EMERGENCY OVERRIDE, beneath the flag: `PAPERCUSP_DEAD_TARGET_REAPER=0`.
+ *
+ * Kept as a second, independent gate (the double-gated pattern `IDLE_SESSION_REAPER_TERMINATE`
+ * uses) rather than replaced by the flag, so a host whose flag store is unreachable — the exact
+ * condition under which `reaperFlagOn` degrades to OFF and an operator most wants certainty —
+ * can still be pinned off without a working database. Both gates must be open to sweep.
+ */
 export function reaperEnabled(): boolean {
   const raw = process.env.PAPERCUSP_DEAD_TARGET_REAPER;
   if (raw === undefined || raw === '') return true;
