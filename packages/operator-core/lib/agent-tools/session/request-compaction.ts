@@ -40,6 +40,7 @@ import {
 } from '../../enforcement-gate';
 import { runFlushGate } from '../../enforcement-gate-io';
 import { markRespawnExpected } from '../../carry-respawn-marker';
+import { releaseOwnerHookFileLocks } from '../locks/release-hook-locks';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
