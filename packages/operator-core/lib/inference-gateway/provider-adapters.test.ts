@@ -3,7 +3,6 @@ import {
   assertGatewayLaneCapability,
   gatewayLaneConformanceMatrix,
   gatewayProviderStatuses,
-  legacyEntryRouteForGatewayLane,
   legacyExecutorForGatewayTransport,
   makeGatewayLaneRegistry,
   makeGatewayProviderAdapters,
@@ -37,7 +36,6 @@ describe('gateway provider adapters', () => {
     expect(Object.keys(lanes)).toEqual(['anthropicMessages', 'openaiResponses', 'localOpenAiChat']);
     expect(lanes.anthropicMessages).toMatchObject({
       protocol: 'anthropic-messages',
-      legacyEntryExecutor: 'proxy',
       clients: ['claude', 'omp'],
       upstreams: ['anthropic-api'],
       admissionProfile: 'claude',
@@ -45,12 +43,16 @@ describe('gateway provider adapters', () => {
     });
     expect(lanes.openaiResponses).toMatchObject({
       protocol: 'openai-responses',
-      legacyEntryExecutor: 'proxyOpenAi',
       clients: ['codex', 'omp'],
       upstreams: ['openai-api', 'chatgpt-codex'],
       admissionProfile: 'codex',
       rateLimitDialect: 'codex-windows',
     });
+    // P-008 / D-028: there is no `legacyEntryExecutor` field left to assert on — the whole
+    // lane-entry concept was deleted with the strangler bridge, so re-adding one to a lane no
+    // longer type-checks. That is a STRUCTURAL guarantee, which is why the explicit
+    // "declares no entry executor" assertions that stood here through P-011 are gone rather
+    // than merely passing: the compiler now enforces what they were watching for.
     expect(lanes.openaiResponses.transports).toEqual([
       expect.objectContaining({
         id: 'bearer-http',
@@ -79,12 +81,6 @@ describe('gateway provider adapters', () => {
       retryPolicy: 'local-backend-failover',
       accountPool: null,
     });
-    // P-011 / D-022: this lane is RE-HOMED — entered directly through
-    // `withDurableGatewayAdmission`, not the strangler bridge — so it declares NO entry
-    // executor. Asserted explicitly because the ABSENCE is the load-bearing state: it is what
-    // keeps the lane out of `bridgeAdmitted` in lane-kernel-conformance. `toMatchObject`
-    // ignores absent keys, so dropping the old assertion alone would not have tested this.
-    expect(lanes.localOpenAiChat.legacyEntryExecutor).toBeUndefined();
     // The local-http TRANSPORT still names its handler; only the LANE ENTRY went away.
     expect(lanes.localOpenAiChat.transports).toEqual([
       expect.objectContaining({ id: 'local-http', legacyExecutor: 'proxyLocal' }),
@@ -99,19 +95,10 @@ describe('gateway provider adapters', () => {
       openaiUpstreamBase: 'https://openai.test',
     });
 
-    expect(legacyEntryRouteForGatewayLane(lanes.anthropicMessages)).toEqual({
-      executor: 'proxy',
-      transport: 'oauth-http',
-    });
-    expect(legacyEntryRouteForGatewayLane(lanes.openaiResponses)).toEqual({
-      executor: 'proxyOpenAi',
-      transport: 'bearer-http',
-    });
-    // P-011 / D-022: a RE-HOMED lane resolves no bridge route at all — it fails CLOSED with a
-    // message naming the real reason, rather than reporting a missing transport.
-    expect(() => legacyEntryRouteForGatewayLane(lanes.localOpenAiChat)).toThrow(
-      /declares no legacy entry executor/,
-    );
+    // P-008 / D-028: the LANE-ENTRY half of this contract is gone — no lane is entered through
+    // the strangler bridge any more, so `legacyEntryExecutor` and `legacyEntryRouteForGatewayLane`
+    // were deleted with it. What remains under test is the TRANSPORT half, which is not
+    // scaffolding: the Codex lane still resolves a chosen transport to its handler at runtime.
     expect(legacyExecutorForGatewayTransport(lanes.openaiResponses, 'oauth-http')).toBe(
       'serveCodexOAuthProxy',
     );
@@ -121,16 +108,11 @@ describe('gateway provider adapters', () => {
     expect(() => legacyExecutorForGatewayTransport(lanes.anthropicMessages, 'cli-exec')).toThrow(
       /does not support transport 'cli-exec'/,
     );
-
-    // MUST be built from a lane that STILL declares an entry executor. This fixture used to
-    // spread `localOpenAiChat`; at P-011 that lane re-homed, which would have silently moved
-    // this case onto the "declares no legacy entry executor" branch above — still throwing, so
-    // still green, while no longer testing the missing-transport failure it is named for.
-    const malformed = {
-      ...lanes.anthropicMessages,
-      transports: [],
-    };
-    expect(() => legacyEntryRouteForGatewayLane(malformed)).toThrow(/has no declared transport/);
+    // A lane with NO transports at all still fails closed on the transport lookup rather than
+    // returning undefined — the fail-open regression this case has always been about.
+    expect(() =>
+      legacyExecutorForGatewayTransport({ ...lanes.anthropicMessages, transports: [] }, 'oauth-http'),
+    ).toThrow(/does not support transport 'oauth-http'/);
   });
 
   it('generates an exhaustive backend/protocol/transport conformance matrix from the registry', () => {
