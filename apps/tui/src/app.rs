@@ -1697,6 +1697,11 @@ pub struct App {
     /// Optional launch-time posture for the next fresh SU session. The menu is
     /// projected from the server's canonical mode registry.
     pub chat_mode: Option<String>,
+    /// Fleet/seat context inherited from the PUI process launch. A remote PUI
+    /// uses these on every fresh SU session so bootstrap-su consumes the same
+    /// delegated seat a remote psu launch would.
+    pub su_launch_fleet: Option<String>,
+    pub su_launch_seat: Option<String>,
     pub account_rows: Vec<crate::session_config::AccountRow>,
     /// What the last picker action actually did — the SETTER's own report, never
     /// an echo of what was picked.
@@ -2232,6 +2237,8 @@ impl App {
             chat_effort: None,
             chat_account: None,
             chat_mode: None,
+            su_launch_fleet: None,
+            su_launch_seat: None,
             account_rows: Vec::new(),
             session_note: None,
             active_harness: Arc::new(Mutex::new("papercup".to_string())),
@@ -3934,6 +3941,8 @@ impl App {
         crate::su_session::SuSessionLaunchOptions {
             plan_slug,
             feature_id: None,
+            fleet: self.su_launch_fleet.clone(),
+            seat: self.su_launch_seat.clone(),
             model: self.chat_model.clone(),
             effort: self.chat_effort.clone(),
             // launch-su must always receive an account value: psu without
@@ -15140,6 +15149,8 @@ mod tests {
 
         a.chat_model = Some("gpt-5.6-sol".into());
         a.chat_effort = Some("high".into());
+        a.su_launch_fleet = Some("fed-drill".into());
+        a.su_launch_seat = Some("sonnet:high:auto".into());
         a.open_account_picker();
         assert_eq!(
             a.session_picker.as_ref().unwrap().options[1].id,
@@ -15162,6 +15173,8 @@ mod tests {
             } => {
                 assert_eq!(harness, "papercup");
                 assert_eq!(launch.plan_slug.as_deref(), Some("plan-a"));
+                assert_eq!(launch.fleet.as_deref(), Some("fed-drill"));
+                assert_eq!(launch.seat.as_deref(), Some("sonnet:high:auto"));
                 assert_eq!(launch.model.as_deref(), Some("gpt-5.6-sol"));
                 assert_eq!(launch.effort.as_deref(), Some("high"));
                 assert_eq!(launch.account.as_deref(), Some("default"));
