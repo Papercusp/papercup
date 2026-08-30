@@ -159,6 +159,7 @@ async function fixture(
   input: Record<string, unknown> = inputDocument(),
   publication: Record<string, unknown> = publicationManifest(),
   report?: Record<string, unknown>,
+  credentialRef?: string,
 ): Promise<{ root: string; args: ReturnType<typeof parseGcpImageReleaseRequestCliArgs> }> {
   const root = await mkdtemp(join(tmpdir(), "gcp-image-request-"));
   roots.push(root);
@@ -191,6 +192,9 @@ async function fixture(
   } else {
     argv.push("--emit", "artifact");
   }
+  // Threaded through the REAL parse rather than spread onto the returned args, so a compose-side
+  // assertion actually exercises the flag → parse → connection path end to end.
+  if (credentialRef !== undefined) argv.push("--credential-ref", credentialRef);
   return { root, args: parseGcpImageReleaseRequestCliArgs(argv) };
 }
 
@@ -211,6 +215,55 @@ describe("parseGcpImageReleaseRequestCliArgs", () => {
 
   it("rejects an unsupported emit mode", () => {
     expect(() => parseGcpImageReleaseRequestCliArgs(["--input-file", "a.json", "--emit", "yaml"])).toThrow(/--emit must be one of/);
+  });
+
+  it("defaults the credential chain to the gcloud active user when --credential-ref is absent", () => {
+    // The default is what every existing caller gets, so it is the one value that must not drift:
+    // changing it would silently re-point which identity performs a release.
+    // --emit artifact so the clean-room-report requirement (which `request`, the default, imposes)
+    // cannot short-circuit the parse before it ever reaches the credential default.
+    expect(
+      parseGcpImageReleaseRequestCliArgs(["--input-file", "a.json", "--emit", "artifact"]).credentialRef,
+    ).toBe("gcloud://active-user");
+  });
+
+  it("accepts an explicitly selected adc:// chain", () => {
+    expect(
+      parseGcpImageReleaseRequestCliArgs([
+        "--input-file",
+        "a.json",
+        "--emit",
+        "artifact",
+        "--credential-ref",
+        "adc://default",
+      ]).credentialRef,
+    ).toBe("adc://default");
+  });
+
+  it("refuses an unsupported credential chain AT PARSE, not later at the composition seam", () => {
+    // Refusing here is the whole point of the flag validating against the seam's own predicate:
+    // otherwise the operator pays for artifact measurement and clean-room report reading before
+    // the release dies at `connectionCredentialRef` for a reason known at argv time.
+    expect(() =>
+      parseGcpImageReleaseRequestCliArgs([
+        "--input-file",
+        "a.json",
+        "--emit",
+        "artifact",
+        "--credential-ref",
+        "hosted://papercusp/gcp",
+      ]),
+    ).toThrow(/--credential-ref must be gcloud:\/\/active-user or adc:\/\//);
+    expect(() =>
+      parseGcpImageReleaseRequestCliArgs([
+        "--input-file",
+        "a.json",
+        "--emit",
+        "artifact",
+        "--credential-ref",
+        "env:GOOGLE_APPLICATION_CREDENTIALS",
+      ]),
+    ).toThrow(/--credential-ref must be/);
   });
 });
 
@@ -369,6 +422,25 @@ describe("composeRequest", () => {
     expect(composed.connection).toMatchObject({
       target: "gcp",
       cloudCredentialRef: { kind: "cloud", ref: "gcloud://active-user" },
+      scope: { kind: "project", id: PROJECT },
+    });
+  });
+
+  it("carries an explicitly selected adc:// chain through to the emitted connection", async () => {
+    // The counterpart of the default test above: selection is EXPLICIT, never a silent fallback.
+    // The composition seam strips GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_OAUTH_ACCESS_TOKEN /
+    // CLOUDSDK_AUTH_ACCESS_TOKEN from every child env precisely so a release cannot quietly drop
+    // to ambient ADC, so the emitted request has to keep NAMING which identity released.
+    const { args } = await fixture(
+      inputDocument(),
+      publicationManifest(),
+      cleanRoomReport(`projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`),
+      "adc://default",
+    );
+    const composed = await composeRequest(args);
+    expect(composed.connection).toMatchObject({
+      target: "gcp",
+      cloudCredentialRef: { kind: "cloud", ref: "adc://default" },
       scope: { kind: "project", id: PROJECT },
     });
   });
