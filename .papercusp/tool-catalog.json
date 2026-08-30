@@ -25314,7 +25314,7 @@
           "POST"
         ]
       },
-      "description": "Inspect or explicitly retire the operator-home green-checkpoint frozen repair queue. This is workspace-global: omit harness/workspace from the payload because the target is derived from the active workspace operator home. get returns normalized phase/age/fixer/reservation/decision diagnostics. retire is dry-run unless confirm:true, refuses a live or unknown fixer and an active dispatch reservation, and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.",
+      "description": "Inspect, converge, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. get returns phase/age/fixer/reservation/decision diagnostics. converge is THE sanctioned route for landing a gate-red fix on the judged lineage: it fast-forwards the movable repairHead to the staging tip while that is still safe, never touches the immutable candidate, and with paths reports whether the judged sha carries your fix. retire is dry-run unless confirm:true and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.",
       "capabilities": [
         "operator:write"
       ],
@@ -25332,9 +25332,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A release read reports repair-in-progress, a fossil/blocked repair queue, or a queue whose fixer is definitely dead. Call get first; retire only after independently establishing that this exact queue is terminal.",
-        "notWhen": "Do not pass harness or workspace in this tool payload: release:repair-queue is workspace-global and derives the operator-home target internally; scope belongs to the outer session/transport. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify/promote work, or merely to make the gate move. This does not launch a checkpoint or deploy.",
-        "chaining": "release:repair-queue{op:get} → verify the returned exact identity + retireAllowed → retire with those exact fields and confirm:true → let the ordinary scheduled green-checkpoint fire."
+        "when": "You fixed a gate red and need it on the judged sha — call converge{paths}. Or a release read reports repair-in-progress, a fossil/blocked queue, or a definitely-dead fixer.",
+        "notWhen": "Do not pass harness or workspace: this tool is workspace-global and derives the operator-home target internally. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify work, or merely to make the gate move. Never re-cut a fresh candidate for a phantom red. Does not launch a checkpoint or deploy.",
+        "chaining": "Landing a fix: converge{paths} → read verdict + containment → re-call confirm:true if it says would-converge. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true."
       }
     },
     {

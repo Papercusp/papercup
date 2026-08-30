@@ -171,6 +171,147 @@ describe('runFlushGate ladder', () => {
   });
 });
 
+// EI-21874665446367942: the flush gate's evidence for the 'cold-successor-no-progress'
+// tripwire (real agent tool calls since the loop carry-note was written) is resolved
+// via an injectable seam (countAgentToolCallsFn) so this never opens a real Postgres
+// connection, and is only PAID when detectFlushTripwires's own gate would actually use
+// it (an active COLD loop with a note timestamp) — asserted via call-count below.
+function coldLoopBrief(over: Partial<NonNullable<CarryBrief['loop']>> = {}): CarryBrief {
+  return brief({
+    loop: {
+      harness: 'papercusp',
+      active: true,
+      intervalSec: 60,
+      carry: 'cold',
+      goal: null,
+      carryNote: '## Next action\nRun the exact backlog recipe.',
+      carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+      ...over,
+    },
+  });
+}
+
+describe('runFlushGate — cold-successor-no-progress wiring', () => {
+  it('refuses, naming the next action, when the seam confirms zero tool calls since the note', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold',
+      workspaceId: '*',
+      sessionId: 'su-cold',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief(),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('refuse');
+    expect(out.tripwires).toHaveLength(1);
+    expect(out.tripwires[0].kind).toBe('cold-successor-no-progress');
+    expect(out.refusalText).toContain('Run the exact backlog recipe.');
+    // called with the note's timestamp as the window start, `nowMs` as the end
+    expect(countFn).toHaveBeenCalledWith('su-cold', NOW - 10 * 60_000, NOW);
+  });
+
+  it('clears when the seam reports real progress (>0 tool calls)', async () => {
+    const countFn = vi.fn(async () => 2);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold2',
+      workspaceId: '*',
+      sessionId: 'su-cold2',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief(),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+  });
+
+  it('clears (fail-open) when the seam reports evidence-unavailable (null)', async () => {
+    const countFn = vi.fn(async () => null);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold3',
+      workspaceId: '*',
+      sessionId: 'su-cold3',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief(),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+  });
+
+  it('clears (fail-open) when the seam throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const countFn = vi.fn(async () => {
+      throw new Error('pg unavailable');
+    });
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold4',
+      workspaceId: '*',
+      sessionId: 'su-cold4',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief(),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('never calls the seam for a WARM loop, even at "zero progress"', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-warm',
+      workspaceId: '*',
+      sessionId: 'su-warm',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({ carry: 'warm' }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(countFn).not.toHaveBeenCalled();
+    expect(out.verdict).toBe('clear');
+  });
+
+  it('never calls the seam when no loop is armed', async () => {
+    const countFn = vi.fn(async () => 0);
+    await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-noloop',
+      workspaceId: '*',
+      sessionId: 'su-noloop',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: brief(), // loop: null
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(countFn).not.toHaveBeenCalled();
+  });
+
+  it('never calls the seam when the loop carry-note has no timestamp', async () => {
+    const countFn = vi.fn(async () => 0);
+    await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-notime',
+      workspaceId: '*',
+      sessionId: 'su-notime',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({ carryNoteUpdatedAtMs: null }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(countFn).not.toHaveBeenCalled();
+  });
+});
+
 // EI-21861120616734083: the flush gate's tripwires are built from a snapshot brief;
 // a held item can go terminal between that read and the refusal reaching the agent,
 // who then hits work_items:checkpoint's own (correct) terminal_item refusal trying

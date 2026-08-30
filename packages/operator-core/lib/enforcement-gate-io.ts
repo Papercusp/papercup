@@ -146,6 +146,54 @@ export interface FlushGateOutcome {
   fallback?: FlushFallbackResult;
 }
 
+/** Test/host seam for {@link resolveAgentToolCallsSinceNote} — mirrors the real
+ *  `countAgentToolCallsInWindow`'s call shape so a unit test never opens a real
+ *  Postgres connection to exercise the 'cold-successor-no-progress' tripwire. */
+export type CountAgentToolCallsFn = (
+  ownerId: string,
+  sinceMs: number,
+  untilMs: number,
+) => Promise<number | null>;
+
+/** Lazy: `./harness/routines/loop` is a large module this file otherwise never
+ *  needs (mirrors `writeFlushFallback`'s dynamic imports of `turn-end-tracking-io`
+ *  / `carry-note` above) — only paid when {@link resolveAgentToolCallsSinceNote}'s
+ *  own gate actually matches (an active COLD loop with a note timestamp). */
+const defaultCountAgentToolCallsInWindow: CountAgentToolCallsFn = async (ownerId, sinceMs, untilMs) => {
+  const { countAgentToolCallsInWindow } = await import('./harness/routines/loop');
+  return countAgentToolCallsInWindow(ownerId, sinceMs, untilMs);
+};
+
+/**
+ * EI-21874665446367942: best-effort evidence for `detectFlushTripwires`'s
+ * 'cold-successor-no-progress' tripwire — how many real agent tool calls this
+ * owner made since its armed COLD loop's carry-note was last written.
+ *
+ * Mirrors `detectFlushTripwires`'s OWN gating condition (`loop.active &&
+ * loop.carry === 'cold'`) so a warm loop, no loop, or a loop with no note
+ * timestamp never pays for the extra query — it is cheap (an early `null`
+ * return) on the overwhelming majority of calls. Returns `null` — never `0` —
+ * on any non-match, missing timestamp, or query failure: `detectFlushTripwires`
+ * treats `null` as "evidence unavailable" and will not fire the tripwire on it,
+ * matching every other best-effort signal on this boundary (a transient query
+ * error must never manufacture a spurious refusal).
+ */
+async function resolveAgentToolCallsSinceNote(
+  brief: CarryBrief | null,
+  ownerId: string,
+  nowMs: number,
+  countFn: CountAgentToolCallsFn = defaultCountAgentToolCallsInWindow,
+): Promise<number | null> {
+  const loop = brief?.loop;
+  if (!loop || !loop.active || loop.carry !== 'cold' || loop.carryNoteUpdatedAtMs == null) return null;
+  try {
+    return await countFn(ownerId, loop.carryNoteUpdatedAtMs, nowMs);
+  } catch (e) {
+    console.warn('[enforcement-gate-io] resolveAgentToolCallsSinceNote failed (evidence unavailable):', e as Error);
+    return null;
+  }
+}
+
 /**
  * Run the flush gate at a boundary. Loads the caller's carry brief if one isn't
  * supplied, detects tripwires, and applies the {@link decideFlushGate} ladder:
@@ -166,6 +214,9 @@ export async function runFlushGate(input: {
   /** Test seam: override the live `getWorkItem` re-check `dropTerminalHeldTripwires`
    *  uses to see past a stale-brief race. Production callers omit it. */
   getWorkItemStateFn?: GetWorkItemStateFn;
+  /** Test seam: override {@link resolveAgentToolCallsSinceNote}'s real
+   *  `countAgentToolCallsInWindow` call. Production callers omit it. */
+  countAgentToolCallsFn?: CountAgentToolCallsFn;
 }): Promise<FlushGateOutcome> {
   const clear: FlushGateOutcome = { verdict: 'clear', tripwires: [] };
   if (!flushGateEnabled()) return clear;
@@ -243,6 +294,7 @@ async function runFlushGateInner(input: {
   brief?: CarryBrief | null;
   nowMs?: number;
   getWorkItemStateFn?: GetWorkItemStateFn;
+  countAgentToolCallsFn?: CountAgentToolCallsFn;
 }): Promise<FlushGateOutcome> {
   const nowMs = input.nowMs ?? Date.now();
   // Only FETCH when the caller didn't provide a brief at all (undefined). An
@@ -259,7 +311,13 @@ async function runFlushGateInner(input: {
   } else {
     brief = input.brief;
   }
-  const rawTripwires = detectFlushTripwires(brief, nowMs);
+  const agentToolCallsSinceNote = await resolveAgentToolCallsSinceNote(
+    brief,
+    input.ownerId,
+    nowMs,
+    input.countAgentToolCallsFn,
+  );
+  const rawTripwires = detectFlushTripwires(brief, nowMs, agentToolCallsSinceNote);
   const heldItemHarness = new Map<string, string | null>(
     (brief?.heldItems ?? []).map((h) => [h.id, h.harness ?? null]),
   );

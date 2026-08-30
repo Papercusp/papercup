@@ -40,18 +40,20 @@
       "@papercusp/operator-core/*": [
         "../../packages/operator-core/*"
       ]
-    },
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
+    }
   },
+  // EI-19467338750785149: Next is retired for this app (it declares no `next` dependency and
+  // the standalone Next server is not a supported run mode). The `.next/types/**` includes and
+  // the `next` language-service plugin are removed because they were a LATENT TRAP, not merely
+  // dead config. `.next/` is gitignored and was never committed here, so the includes matched
+  // nothing in a clean checkout — but if a stale Next build dir ever appeared, its generated
+  // `/// <reference types="next" />` files pull next/index.d.ts -> next/types/global.d.ts,
+  // which merges a REQUIRED `readonly NODE_ENV` into NodeJS.ProcessEnv. That manufactured ~93
+  // phantom errors on one agent's box that do not exist in a clean checkout, and nearly cost
+  // ~112 pointless `env:` retypes. Do not re-add these entries.
   "include": [
     "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    "**/*.tsx"
   ],
   "exclude": [
     "node_modules"

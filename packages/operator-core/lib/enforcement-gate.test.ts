@@ -98,6 +98,80 @@ describe('detectFlushTripwires', () => {
     );
     expect(t).toEqual([]);
   });
+
+  // EI-21874665446367942: an active COLD loop whose note already names a next
+  // action, but the caller supplies CONFIRMED zero real tool calls since the
+  // note was written.
+  const coldLoopWithNote = (): CarryBrief =>
+    brief({
+      loop: {
+        harness: 'papercusp',
+        active: true,
+        intervalSec: 60,
+        carry: 'cold',
+        goal: null,
+        carryNote: '## Next action\nRun the exact recipe on WI-9.',
+        carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+      },
+    });
+
+  it('emits cold-successor-no-progress when zero tool calls landed since the note', () => {
+    const t = detectFlushTripwires(coldLoopWithNote(), NOW, 0);
+    expect(t).toHaveLength(1);
+    expect(t[0]).toMatchObject({ kind: 'cold-successor-no-progress', subject: 'papercusp' });
+    expect(t[0].detail).toContain('Run the exact recipe on WI-9.');
+  });
+
+  it('does NOT fire cold-successor-no-progress when evidence is unavailable (undefined)', () => {
+    expect(detectFlushTripwires(coldLoopWithNote(), NOW)).toEqual([]);
+  });
+
+  it('does NOT fire cold-successor-no-progress when evidence is unavailable (null)', () => {
+    expect(detectFlushTripwires(coldLoopWithNote(), NOW, null)).toEqual([]);
+  });
+
+  it('does NOT fire cold-successor-no-progress when at least one real tool call landed', () => {
+    expect(detectFlushTripwires(coldLoopWithNote(), NOW, 1)).toEqual([]);
+    expect(detectFlushTripwires(coldLoopWithNote(), NOW, 3)).toEqual([]);
+  });
+
+  it('does NOT fire cold-successor-no-progress for a WARM loop even at zero tool calls', () => {
+    const t = detectFlushTripwires(
+      brief({
+        loop: {
+          harness: 'papercusp',
+          active: true,
+          intervalSec: 60,
+          carry: 'warm',
+          goal: null,
+          carryNote: '## Next action\ngo',
+          carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+        },
+      }),
+      NOW,
+      0,
+    );
+    expect(t).toEqual([]);
+  });
+
+  it('does NOT fire cold-successor-no-progress when the note names no next action', () => {
+    const t = detectFlushTripwires(
+      brief({
+        loop: {
+          harness: 'papercusp',
+          active: true,
+          intervalSec: 60,
+          carry: 'cold',
+          goal: null,
+          carryNote: '## Did\nsome investigation',
+          carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+        },
+      }),
+      NOW,
+      0,
+    );
+    expect(t).toEqual([]);
+  });
 });
 
 describe('decideFlushGate', () => {
@@ -127,6 +201,19 @@ describe('renderFlushRefusal', () => {
     expect(text).toContain('WI-2 (40m old)');
     expect(text).toContain('loop:checkpoint');
     expect(text).toContain('mechanical fallback');
+  });
+
+  it('includes the cold-successor-no-progress detail verbatim', () => {
+    const text = renderFlushRefusal('compaction', [
+      {
+        kind: 'cold-successor-no-progress',
+        subject: 'papercusp',
+        detail: 'your carry-note already names a next action ("do the thing") but you have made ZERO tool calls',
+      },
+    ]);
+    expect(text).toContain('Compaction is HELD');
+    expect(text).toContain('do the thing');
+    expect(text).toContain('ZERO tool calls');
   });
 
   it('labels the handoff boundary', () => {
