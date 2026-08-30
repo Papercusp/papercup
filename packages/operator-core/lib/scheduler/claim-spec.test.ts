@@ -228,6 +228,74 @@ describe('validateClaimSpec — invalid: filter vocabulary', () => {
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => e.includes('view.filter.all[0].any[0]'))).toBe(true);
   });
+
+  // EI-21906739799895413: the reporter measured `{ op:'any', of:[...] }` rejected with
+  // "unknown filter op 'any'" and concluded the DSL has no boolean composition at all.
+  // It does — `{ any: [...] }` (a combinator, not a leaf-with-an-any-op) has always
+  // validated (see the sibling describe block below) and IS how `buildFleetDependencyEscape`
+  // auto-widens a spec. This locks in the corrected error message so the mis-syntax is
+  // self-diagnosing instead of reading as a missing feature.
+  it('names the combinator syntax when an author mistakes "any"/"all"/"not" for a leaf op', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'combinator-confusion',
+      revision: 0,
+      view: {
+        filter: {
+          op: 'any',
+          of: [
+            { field: 'plan', op: 'in', value: ['plan-a'] },
+            { field: 'id', op: 'in', value: ['WI-1'] },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(r.ok).toBe(false);
+    const combinatorError = r.errors.find((e) => e.includes('is not a filter operator'));
+    expect(combinatorError).toBeDefined();
+    expect(combinatorError).toContain('top-level COMBINATOR key');
+    expect(combinatorError).toContain('{ any: [...] }');
+    expect(combinatorError.toLowerCase()).toContain('sibling');
+  });
+
+  it('accepts the actual combinator syntax the confused-op error points to (OR/AND/NOT already work)', () => {
+    const or = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'combinator-or',
+      revision: 0,
+      view: {
+        filter: {
+          any: [
+            { field: 'plan', op: 'in', value: ['plan-a'] },
+            { field: 'id', op: 'in', value: ['WI-1'] },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(or.ok).toBe(true);
+
+    const and = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'combinator-and',
+      revision: 0,
+      view: {
+        filter: { all: [{ field: 'kind', op: 'in', value: ['bug'] }, { field: 'plan', op: '=', value: 'plan-a' }] },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(and.ok).toBe(true);
+
+    const not = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'combinator-not',
+      revision: 0,
+      view: { filter: { not: { field: 'title', op: 'word', value: 'p2p' } } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(not.ok).toBe(true);
+  });
 });
 
 describe('validateClaimSpec — invalid: rank vocabulary', () => {

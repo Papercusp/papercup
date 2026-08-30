@@ -12,6 +12,7 @@
  */
 
 import { createResilientEventSource } from '@papercusp/sse';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { runCommand, runQuery, get } from './registry';
 import type { AgentId, CommandContext, CommandResult } from './types';
 
@@ -43,13 +44,41 @@ interface IncomingCommand {
 // budget being exhausted). Park the singleton on `globalThis` under a fixed
 // key instead, so every evaluation of this module — however many there
 // turn out to be — reads and writes the SAME live-stream handle.
-const ACTIVE_KEY = '__papercuspLeaderBridgeActive__';
 interface ActiveStream { close: () => void }
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis['__papercuspLeaderBridgeActive__']` pair. Hand-rolling still fixed
+// the correctness problem described above, but the key was invisible to
+// listModuleDuplications(), which then reports a confident `[]` while this very
+// module is split — i.e. the blindness was worst exactly where this pin matters
+// (EI-19479108855357092).
+//
+// pinModuleState is called ONCE here, at module scope, and deliberately NOT
+// inside the accessors below: it counts every call as a module evaluation, so
+// pinning inside a per-call accessor would manufacture a false duplication in
+// the very report this migration exists to make honest.
+const __leaderBridgeState = pinModuleState<{ active: ActiveStream | null }>(
+  '@papercusp/operator-core.leaderBridgeActive',
+  () => ({ active: null }),
+);
 function getActiveStream(): ActiveStream | null {
-  return (globalThis as Record<string, unknown>)[ACTIVE_KEY] as ActiveStream | null ?? null;
+  return __leaderBridgeState.active;
 }
 function setActiveStream(next: ActiveStream | null): void {
-  (globalThis as Record<string, unknown>)[ACTIVE_KEY] = next;
+  __leaderBridgeState.active = next;
+}
+
+/**
+ * Reset the live-stream singleton between tests THROUGH the module's own seam.
+ *
+ * Do NOT `delete globalThis['__papercuspLeaderBridgeActive__']` in a test: that
+ * targets the old storage LOCATION rather than this module's state, so it keeps
+ * compiling and silently resets NOTHING now that the state has moved. Both
+ * leader-bridge tests still PASS with a stream leaked across cases, so that
+ * breakage would be vacuous rather than red — which is why the reset has to go
+ * through here (EI-19479108855357092).
+ */
+export function resetLeaderBridgeForTest(): void {
+  __leaderBridgeState.active = null;
 }
 
 export function startLeaderBridge(opts: BridgeOptions): () => void {

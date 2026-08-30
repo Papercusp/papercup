@@ -815,6 +815,41 @@ describe('immutable dependency generation', () => {
     expect(result.stderr).toContain('no prewarmed dependency generation');
   });
 
+  it('keeps a completed prewarm when live lockfiles drift mid-build, indexing the pre-build inputs', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate');
+
+    // The candidate's own git-content key: the value this generation has to end
+    // up indexed under for the exact-ref re-open to bind it.
+    const exact = fingerprintRef(integration, candidate);
+    expect(exact.status, exact.stderr).toBe(0);
+    const exactInput = /\binput=([0-9a-f]{64})\b/.exec(exact.stdout)?.[1];
+    expect(exactInput).toBeTruthy();
+
+    // A peer edits a lockfile DURING the copy. node_modules cannot move here —
+    // every build caller holds npm-install-safe's --exec-under-lock reader
+    // mutex — but lockfiles are ordinary tracked files that mutex does not
+    // cover, so this is the drift that a live/live bracket used to read as a
+    // torn build and discard a ~24-minute published generation over.
+    const result = ensureRef(integration, candidate, {
+      DG_TEST_LOCK: join(integration, 'package-lock.json'),
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
+        'printf \'{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/peer-drift":{}}}\\n\' > "$DG_TEST_LOCK"',
+    });
+
+    // The build completed and stayed published rather than aborting rc75.
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(
+      'live dependency inputs changed during generation prewarm',
+    );
+    expect(result.stderr).not.toContain('refusing a stale selector');
+
+    // Load-bearing: indexed under the PRE-build inputs the copied trees
+    // actually reflect (which here equal the candidate's), never the drifted
+    // lockfile state that was never reified into them.
+    expect(publishedInputFingerprint(result.stdout)).toBe(exactInput);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-41491: refuses a selector whose immutable generation token changed after prewarm', () => {
     const integration = makeIntegration();
     const published = publish(integration);
@@ -1425,7 +1460,7 @@ describe('immutable dependency generation', () => {
         ),
       ),
     ).toBe(false);
-  });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('protects a live exact-identity selector lease and reclaims it after the reader is gone', () => {
     const integration = makeIntegration();

@@ -19,6 +19,13 @@
  * `globalThis` / independent-module-scope shape a real dual-bundle produces.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Reset through the module's OWN seam, never by deleting a globalThis key: the
+// state is realm-pinned via pinModuleState, so a key-delete would target the
+// storage LOCATION and silently reset nothing (EI-19479108855357092). This
+// statically-imported instance's reset mutates the SAME shared object that
+// every dynamically re-imported instance below reads — which is exactly the
+// property the pin provides, so importing it once up here is sufficient.
+import { resetLeaderBridgeForTest } from './leader-bridge';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -43,19 +50,17 @@ class FakeEventSource {
   }
 }
 
-const ACTIVE_KEY = '__papercuspLeaderBridgeActive__';
-
 describe('startLeaderBridge — cross-module-instance dedupe', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
     (globalThis as Record<string, unknown>).EventSource = FakeEventSource;
-    delete (globalThis as Record<string, unknown>)[ACTIVE_KEY];
+    resetLeaderBridgeForTest();
     vi.resetModules();
   });
 
   afterEach(() => {
     delete (globalThis as Record<string, unknown>).EventSource;
-    delete (globalThis as Record<string, unknown>)[ACTIVE_KEY];
+    resetLeaderBridgeForTest();
   });
 
   it('closes a stream opened by a PRIOR module instance instead of leaving it live', async () => {

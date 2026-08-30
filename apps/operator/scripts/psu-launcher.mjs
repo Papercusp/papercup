@@ -1102,6 +1102,11 @@ export function ompModelCompatibilityNotice(model) {
 const OMP_OX_ALPHA_MODEL_RE =
   /^(?:openrouter\/)?stealth\/ox-alpha(?::(?:low|medium|high|xhigh|max))?$/i;
 
+// Safe, known-working default for a session whose inherited modelRoles.default
+// resolves to a retired model with no explicit --model to fall back to
+// (writeOmpSessionConfigDir, EI-21919040934117285).
+const OMP_GATEWAY_FALLBACK_MODEL = "papercusp-gateway/claude-sonnet-4-6";
+
 /**
  * Disable OMP's provider-backed automatic title request for every managed psu
  * session.
@@ -3857,12 +3862,35 @@ export function writeOmpSessionConfigDir(
     // live in config.yml (NOT agent/config.json — verified against the omp bundle's settings
     // loader, which migrates legacy settings.json INTO config.yml). Same remove-then-append
     // surgery as `eval` above; hosted-model sessions keep the copied config untouched.
-    const effModel =
-      model ||
+    const cfgDefaultModel =
       cfg
         .match(/modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*([^\s#]+)/)?.[1]
-        ?.trim() ||
-      null;
+        ?.trim() || null;
+    let effModel = model || cfgDefaultModel;
+    // EI-21919040934117285: modelRoles.default is copied VERBATIM from the user's
+    // global ~/.omp/agent/config.yml above, so a session that omits --model silently
+    // inherits whatever that default names — including a model RETIRED upstream
+    // (verified: openrouter/stealth/ox-alpha now 404s "Thank you for participating
+    // in the Stealth Ox Alpha testing period"). Check the COPIED CFG's default
+    // directly (never effModel — that already prefers opts.model, so it would never
+    // see a retired default an explicit --model happens to mask) and rewrite it to
+    // the model THIS launch actually selected when one was passed, or — when none
+    // was and the inherited default is the known-retired one — to the same
+    // papercusp-gateway route used elsewhere as the safe fallback (see
+    // ompDefaultModelAdvisory's /model suggestion below). Fails loud at
+    // config-materialization time instead of a silent 404 ~3s into the session.
+    if (OMP_OX_ALPHA_MODEL_RE.test(cfgDefaultModel || "")) {
+      const replacement = model || OMP_GATEWAY_FALLBACK_MODEL;
+      console.error(
+        `psu: CONFIG ERROR — modelRoles.default (${cfgDefaultModel}) is a RETIRED upstream model that 404s; ` +
+          `rewriting this session's copy to ${replacement}. Fix your global ~/.omp/agent/config.yml.`,
+      );
+      cfg = cfg.replace(
+        /^([ \t]*modelRoles:[\s\S]*?\n[ \t]+default:[ \t]*)([^\s#]+)/m,
+        `$1${replacement}`,
+      );
+      effModel = replacement;
+    }
     const localModel = isWeakOmpModel(effModel);
     // WI-5047: OMP classifies generic provider HTTP 500 / "internal error" responses as
     // transient and retries them (10 attempts by default). A local llama-server CUDA
@@ -4088,7 +4116,7 @@ export function ompDefaultModelAdvisory(home = homedir()) {
       return (
         `psu: omp's default model is ${def} (a local model with a small context) — if your first turn ` +
         `errors with "exceeds the available context size", run /model to pick a larger one ` +
-        `(e.g. papercusp-gateway/claude-sonnet-4-6).`
+        `(e.g. ${OMP_GATEWAY_FALLBACK_MODEL}).`
       );
     }
   } catch {

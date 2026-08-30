@@ -582,6 +582,29 @@ function validateFilterNode(node: unknown, path: string, errors: string[]): void
   }
 
   if (typeof op !== 'string' || !FILTER_OP_SET.has(op)) {
+    // EI-21906739799895413: the single most common filter-authoring confusion —
+    // treating "any"/"all"/"not" as a leaf OPERATOR (`{ op:'any', of:[...] }`)
+    // instead of the actual top-level COMBINATOR key (`{ any: [...] }`, a sibling
+    // shape to a leaf, handled earlier in this function). The DSL has always
+    // supported OR/AND/NOT composition this way — this is a mis-syntax report,
+    // not a missing-feature one — but the prior generic "unknown filter op"
+    // message gave no hint that a combinator (rather than an operator) was what
+    // the author actually wanted. Name the correct shape explicitly so this
+    // exact confusion (measured live: an author who KNEW they needed OR
+    // semantics still could not find the working syntax from this message
+    // alone) resolves itself instead of reading as "no boolean composition
+    // exists".
+    if (op === 'all' || op === 'any' || op === 'not') {
+      errors.push(
+        `${path}: "${op}" is not a filter operator — "all"/"any"/"not" are top-level COMBINATOR keys, ` +
+          `not values of "op". Boolean composition already exists: write { ${op}: [...] } as a SIBLING shape ` +
+          'to a leaf (never nested inside one), e.g. ' +
+          '{ any: [ { field:"plan", op:"=", value:"<slug>" }, { field:"id", op:"in", value:[…] } ] } for OR, ' +
+          'or { all: [...] } for AND, or { not: <node> } for NOT. A leaf itself is always exactly ' +
+          `{field, op, value} with op one of: ${FILTER_OPS.join(', ')}.`,
+      );
+      return;
+    }
     errors.push(`${path}: unknown filter op ${JSON.stringify(op)} (allowed: ${FILTER_OPS.join(', ')})`);
     return; // op-dependent value checks below are meaningless without a known op
   }

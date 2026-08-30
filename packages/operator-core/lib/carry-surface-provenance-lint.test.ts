@@ -678,3 +678,66 @@ describe('EI-19988211953593959: near-miss owner-tag separator shapes (space/equa
     expect(r.matches.some((m) => m.kind === 'bare-gate-imperative')).toBe(false);
   });
 });
+
+describe('EI-21918777703977266: unverified dialog (AskUserQuestion) answer claims', () => {
+  it('flags a bare owner tag claiming an AskUserQuestion answer as the sharper kind, not the generic one', () => {
+    const r = lintCarrySurfaceProvenance(
+      '[owner:jane 2026-08-30] the owner answered an AskUserQuestion, route = "build it myself"',
+    );
+    expect(r.flagged).toBe(true);
+    expect(r.matches.some((m) => m.kind === 'unverified-dialog-answer-claim')).toBe(true);
+    expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(false);
+  });
+
+  it('flags a bare owner tag naming AskUserQuestion by tool name, any name in the tag', () => {
+    const r = lintCarrySurfaceProvenance('[owner:jane 2026-08-30] answered the AskUserQuestion with option 2');
+    expect(r.matches.some((m) => m.kind === 'unverified-dialog-answer-claim')).toBe(true);
+  });
+
+  it('flags "answered a/an/the dialog" phrasing under an owner tag', () => {
+    const r = lintCarrySurfaceProvenance('[owner:jane 2026-08-30] the owner answered the dialog: proceed');
+    expect(r.matches.some((m) => m.kind === 'unverified-dialog-answer-claim')).toBe(true);
+  });
+
+  it('a generic owner tag with NO dialog language still gets the ordinary manual-owner-tag kind', () => {
+    const r = lintCarrySurfaceProvenance('[owner:jane 2026-08-30] hold off on deploying until Friday');
+    expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(true);
+    expect(r.matches.some((m) => m.kind === 'unverified-dialog-answer-claim')).toBe(false);
+  });
+
+  it('a [turn:…] ref still clears a dialog-answer claim — the verifiable anchor is still the escape hatch', () => {
+    const r = lintCarrySurfaceProvenance(
+      '[owner:jane 2026-08-30] answered the AskUserQuestion [turn:claude:abcd1234@2026-08-30T10:00:00Z]',
+    );
+    expect(r.flagged).toBe(false);
+  });
+
+  it('a withdrawal ("NOT an owner directive") of a dialog claim is not flagged', () => {
+    const r = lintCarrySurfaceProvenance(
+      'This is [self-imposed] — I could NOT verify it against an owner turn; the AskUserQuestion was never answered.',
+    );
+    expect(r.matches.some((m) => m.kind === 'unverified-dialog-answer-claim')).toBe(false);
+    expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(false);
+  });
+
+  it('does not false-positive on ordinary prose mentioning "dialog" with no owner tag', () => {
+    const r = lintCarrySurfaceProvenance('the confirmation dialog closed without an answer');
+    expect(r.flagged).toBe(false);
+  });
+
+  it('provenanceLintField selects the sharper dialog note and cites the incident', () => {
+    const field = provenanceLintField('[owner:jane 2026-08-30] answered the AskUserQuestion, proceed with P-006');
+    expect(field?.flagged).toBe(true);
+    expect(field?.note).toContain('EI-21918777703977266');
+    expect(field?.note).toContain('AskUserQuestion');
+    expect(field?.note).not.toBe(PROVENANCE_LINT_NOTE);
+    expect(field?.note).not.toBe(PROVENANCE_LINT_DOWNGRADED_NOTE);
+  });
+
+  it('the dialog note takes priority even when a generic manual-owner-tag also matches elsewhere', () => {
+    const text =
+      '[owner:jane 2026-08-30] answered the AskUserQuestion\n' + '[owner:jane 2026-08-30] hold off until Friday';
+    const field = provenanceLintField(text);
+    expect(field?.note).toContain('EI-21918777703977266');
+  });
+});

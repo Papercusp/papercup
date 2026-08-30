@@ -49,7 +49,11 @@ export const harnessArg = z
       "Papercusp's own plans). 'all' is only valid in an unscoped (--all-workspaces) " +
       "session. A harness-scoped session supplies this automatically. Recovering an " +
       "EXACT plan slug without knowing its owner? On plans:get / plans:items you may " +
-      "omit `harness` entirely — the owning harness resolves from the slug.",
+      "omit `harness` entirely — but only an UNSCOPED session auto-resolves the owning " +
+      "harness from the slug; a session already scoped to a concrete harness (the common " +
+      "case) stays scoped to it, and a miss there reports which OTHER harness actually " +
+      "owns the slug instead of silently reading across harnesses — pass that harness " +
+      "explicitly to read it.",
   );
 
 /** True when a value is the explicit all/operator-scope sentinel. */

@@ -1,4 +1,10 @@
 import { SEVERITY_RANK as ARTIFACT_TRUST_SEVERITY_RANK, type VulnerabilitySeverity } from './artifact-trust';
+import {
+  applySecretAllowances,
+  WORKSPACE_HOST_SECRET_ALLOWANCES,
+  type ImageScanSecretAllowance,
+  type ImageScanSecretFinding,
+} from './image-scan-secret-allowances';
 
 /**
  * Policy evaluation for the workspace-host IMAGE scan, shared by every provider
@@ -43,6 +49,20 @@ export interface ImageScanPolicy {
   denyVulnerabilitiesAtOrAbove: Exclude<VulnerabilitySeverity, 'unknown'>;
   /** Maximum tolerated secret findings. */
   maxSecretFindings: number;
+  /**
+   * Per-finding written justifications for bundled secret findings. Empty (the default) means
+   * every bundled finding counts against `maxSecretFindings`.
+   *
+   * This is NOT a second threshold. `maxSecretFindings` still applies, unchanged, to whatever
+   * is left after justified findings are accounted for — so an unlisted finding denies exactly
+   * as before. It exists because an image can legitimately ship an upstream vendor's public
+   * client key or trip an entropy rule on minified code, and the only alternatives were moving
+   * the bar (D-172/174/175 forbid it) or narrowing the scan (D-204 forbids it).
+   *
+   * Only ever consulted on a scoped verdict, and only behind the completeness proof below: an
+   * allowlist applied to a partial finding list would silently excuse the findings it never saw.
+   */
+  secretAllowances?: readonly ImageScanSecretAllowance[];
   /**
    * Require the scanner to PROVE it covered the image before its findings are
    * believed: `mountedFilesystems >= 1` and a non-empty `candidateRootProof`.
@@ -168,7 +188,14 @@ function providerImageScanPolicy(evaluatedScope: ImageScanEvaluatedScope = 'all'
  * defaulted, so adding a provider never grants it a narrower subject by accident —
  * a new provider gets `'all'` until its scanner earns otherwise.
  */
-export const GCP_IMAGE_SCAN_POLICY: ImageScanPolicy = providerImageScanPolicy('papercusp-bundled');
+export const GCP_IMAGE_SCAN_POLICY: ImageScanPolicy = Object.freeze({
+  ...providerImageScanPolicy('papercusp-bundled'),
+  // Attached HERE and not on the baseline for the same reason `evaluatedScope` is passed
+  // explicitly: allowances are statements about one concrete bundle, measured against one
+  // concrete scanner. A provider that inherited them by default would be excusing findings in
+  // content nobody examined. AWS and Azure carry none until their bundles are triaged.
+  secretAllowances: WORKSPACE_HOST_SECRET_ALLOWANCES,
+});
 
 /**
  * AWS AMI scanners emit the coverage pair and must prove it at the release gate.
@@ -206,6 +233,14 @@ export type ImageScanPolicyFailureCode =
   | 'scope-attribution-invalid'
   | 'scope-attribution-missing'
   | 'scope-attribution-mismatch'
+  // The allowlist could not be applied SOUNDLY (incomplete or self-inconsistent evidence).
+  // Distinct from 'secret-unjustified' on purpose: this one says the instrument failed, not
+  // that the image is dirty, and the two need different repairs.
+  | 'secret-allowance-unusable'
+  // A justified file produced MORE findings than its entry accounts for.
+  | 'secret-allowance-overflow'
+  // A bundled finding matched no committed allowance.
+  | 'secret-unjustified'
   | 'secret-threshold'
   | 'severity-breakdown-mismatch'
   | 'unrecognized-severity'
@@ -253,6 +288,19 @@ export interface ImageScanPolicyInput {
   vulnerabilityCriticalHighByScope?: unknown;
   secretsByScope?: unknown;
   bundleCatalogedArtifacts?: unknown;
+  /**
+   * Every papercusp-bundled secret finding, as {rule, file, line} — and whether that list is
+   * the WHOLE bundled population or was cut by the scanner's cap.
+   *
+   * `unknown` for the same reason as the four above: guest JSON, narrowed here.
+   *
+   * These are what make a per-finding allowlist possible at all. Until they existed this module
+   * received bundled COUNTS and nothing else, so the only way to pass a bundle containing a
+   * justified finding would have been to move `maxSecretFindings` off zero — precisely the
+   * threshold move D-172/174/175 forbid.
+   */
+  secretBundledSample?: unknown;
+  secretBundledSampleComplete?: unknown;
 }
 
 export interface ImageScanPolicyVerdict {
@@ -338,6 +386,55 @@ function readScopeMap(value: unknown, field: string): ScopeMapReading {
     if (label === 'papercusp-bundled') bundled += rawCount;
   }
   return { ok: true, bundled, total };
+}
+
+type BundledFindingsReading =
+  | { ok: true; findings: readonly ImageScanSecretFinding[] }
+  | { ok: false; failure: ImageScanPolicyFailure };
+
+/**
+ * Narrow the guest's `secretBundledSample` into typed findings.
+ *
+ * Every malformed shape denies rather than being skipped. A dropped row here would shrink the
+ * population an allowlist is checked against, which is the false-GREEN direction: the finding
+ * that failed to parse is exactly the one nobody then judges.
+ */
+function readBundledFindings(value: unknown): BundledFindingsReading {
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      failure: {
+        code: 'secret-allowance-unusable',
+        message: `secretBundledSample must be an array of findings; received ${JSON.stringify(value)}.`,
+      },
+    };
+  }
+  const findings: ImageScanSecretFinding[] = [];
+  for (const [index, row] of value.entries()) {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+      return {
+        ok: false,
+        failure: {
+          code: 'secret-allowance-unusable',
+          message: `secretBundledSample[${index}] must be an object; received ${JSON.stringify(row)}.`,
+        },
+      };
+    }
+    const { rule, file } = row as { rule?: unknown; file?: unknown };
+    if (typeof rule !== 'string' || rule.length === 0 || typeof file !== 'string' || file.length === 0) {
+      return {
+        ok: false,
+        failure: {
+          code: 'secret-allowance-unusable',
+          message:
+            `secretBundledSample[${index}] must carry non-empty string 'rule' and 'file'; received ` +
+            `${JSON.stringify(row)}. A finding with no location cannot be matched against an allowance.`,
+        },
+      };
+    }
+    findings.push({ rule, file });
+  }
+  return { ok: true, findings };
 }
 
 /**
@@ -620,6 +717,83 @@ export function evaluateImageScanPolicy(
     violating = criticalHighByScope.bundled;
     tolerated = byScope.bundled - criticalHighByScope.bundled;
     judgedSecrets = secretsByScope.bundled;
+
+    // 6. Per-finding justification. Only reached when the policy actually carries allowances;
+    //    with none, `judgedSecrets` stays the raw bundled count and the bar behaves exactly as
+    //    it did before this block existed.
+    //
+    //    Every branch here DENIES rather than falling through to the unmodified count, because
+    //    the failure mode of an allowlist is a false GREEN: excuse a finding you never saw and
+    //    the gate reports clean on a bundle carrying a real credential. So the list has to be
+    //    provably complete before a single finding is excused.
+    //    NOTE ON DEGRADATION: when the allowlist cannot be applied soundly, this block records
+    //    WHY and then leaves `judgedSecrets` at the raw bundled count — it never returns early.
+    //    That way the mechanism can never make a verdict weaker OR differently-shaped than it was
+    //    before allowances existed: an unusable list degrades exactly to the old behaviour, and
+    //    the image still denies through `secret-threshold` on the honest number. Returning early
+    //    here would have replaced a true "this image exceeds the bar" with a narrower complaint
+    //    about the instrument, which is the less actionable of the two.
+    const allowances = policy.secretAllowances ?? [];
+    if (allowances.length > 0 && judgedSecrets > 0) {
+      const sample =
+        input.secretBundledSampleComplete === true
+          ? readBundledFindings(input.secretBundledSample)
+          : ({
+              ok: false,
+              failure: {
+                code: 'secret-allowance-unusable',
+                message:
+                  `Policy carries ${allowances.length} secret allowance(s), but the scanner did not ` +
+                  `report secretBundledSampleComplete === true (received ` +
+                  `${JSON.stringify(input.secretBundledSampleComplete)}). An allowlist applied to a ` +
+                  `partial finding list would excuse the findings it never saw, so none were applied ` +
+                  `and every bundled finding is judged.`,
+              },
+            } as const);
+
+      if (!sample.ok) {
+        failures.push(sample.failure);
+      } else if (sample.findings.length !== judgedSecrets) {
+        // The list and the census are two independent projections of the same scan. If they
+        // disagree, one of them is wrong and there is no safe way to tell which.
+        failures.push({
+          code: 'secret-allowance-unusable',
+          message:
+            `secretBundledSample holds ${sample.findings.length} finding(s) but secretsByScope reports ` +
+            `${judgedSecrets} in the '${policy.evaluatedScope}' scope. The enumeration and the census ` +
+            `disagree, so neither can be trusted to drive an allowlist; none were applied.`,
+        });
+      } else {
+        const outcome = applySecretAllowances(sample.findings, allowances);
+        for (const { allowance, matched } of outcome.overflowed) {
+          failures.push({
+            code: 'secret-allowance-overflow',
+            message:
+              `Allowance for '${allowance.rule}' at '${allowance.filePattern}' justifies ` +
+              `${allowance.maxFindings} finding(s) but ${matched} were found. The surplus is ` +
+              `unexplained: a new secret in an already-justified file is still a new secret.`,
+          });
+        }
+        if (outcome.overflowed.length === 0) {
+          // What survives is what the bar judges. Unjustified findings are named individually —
+          // a bare count would send the next reader back to a scan they may not be able to re-run.
+          judgedSecrets = outcome.unjustified.length;
+          if (outcome.unjustified.length > 0) {
+            const named = outcome.unjustified
+              .slice(0, 10)
+              .map((finding) => `${finding.rule} @ ${finding.file}`)
+              .join('; ');
+            failures.push({
+              code: 'secret-unjustified',
+              message:
+                `${outcome.unjustified.length} bundled secret finding(s) match no committed allowance: ` +
+                `${named}${outcome.unjustified.length > 10 ? '; …' : ''}. Each must be investigated and ` +
+                `either fixed or justified in writing — never waved through as a group.`,
+            });
+          }
+        }
+      }
+    }
   }
 
   if (violating > 0) {

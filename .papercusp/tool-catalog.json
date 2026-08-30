@@ -19994,7 +19994,7 @@
           "POST"
         ]
       },
-      "description": "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') to disambiguate or constrain the read. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+      "description": "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
       "capabilities": [
         "plans:read"
       ],
@@ -20270,7 +20270,7 @@
         "cup"
       ],
       "guidance": {
-        "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one exact plan's items. Use `item:\"P-NNN\"` (one, matching plans:get-item's convention) or `itemIds:[…]` (many) with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.",
+        "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one exact plan's items. Use `item:\"P-NNN\"` (one, matching plans:get-item's convention) or `itemIds:[…]` (many) with `slug` for exact item selection. An UNSCOPED session's exact-slug reads can auto-resolve their harness; a session already scoped to a concrete harness stays scoped to it (a miss names the actual owner). Cross-plan reads must name one.",
         "notWhen": "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
         "chaining": "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug, itemIds:[…] } for an exact subset of one auto-resolved plan."
       }

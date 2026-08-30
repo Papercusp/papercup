@@ -273,6 +273,22 @@ const TAB_CHROME_READS: Record<string, string> = {
     "header pause/resume chip + loop spend (WI-39501) — renders in the stage row " +
     "beside every view; the self-improvement routine GROUP and its spend rollup are " +
     "workspace-wide facts, not per-pot",
+  // The pot-chip rail (learning-pot-scope-gate P-006). It renders at
+  // LearningTab.tsx:894 — between the stage stepper and the view controls, and
+  // OUTSIDE LearningViewContent (:1017) — so it appears in every view's
+  // recording without belonging to any view.
+  //
+  // It must not take the pot lens, and this is the one case where scoping the
+  // read would be actively WRONG rather than merely unnecessary: the rail IS
+  // the lens selector. Its chips are what the user clicks to change the very
+  // `hive` this guard's scenarios vary, so filtering it to the selected pot
+  // would collapse it to a single chip and delete the affordance — the
+  // "you can only navigate to where you already are" shape. Contrast WI-6385,
+  // where scoping was both possible and correct because the leg REPORTED on
+  // the lens rather than choosing it.
+  "automation.catalog":
+    "pot-chip rail — the lens SELECTOR itself; it must enumerate every learning " +
+    "pot to be navigable, so a pot arg would collapse it to the current pot",
 };
 
 const scenarios = {
