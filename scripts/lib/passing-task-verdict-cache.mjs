@@ -209,11 +209,12 @@ export const CAPABILITY_BASH_SEAM_IDENTITY_ENV = Object.freeze([
  * process state made unchanged tasks rerun on every invocation; subtracting individual volatile
  * names merely moved the miss to the next undiscovered variable.
  *
- * Task semantics remain fail-closed in the other identity components:
+ * Task semantics remain fail-closed in the task-owned identity components:
  *   - `command` binds argv, cwd, and the package script text;
- *   - `gateConfig` binds static execution policy;
  *   - `implementationVersion` binds this proof mechanism; and
  *   - `dependencyHash` binds every related workspace, dependency, runner, and test-config file.
+ * Resolved execution policy is caller state too; the files that define that policy are already
+ * part of `dependencyHash`.
  *
  * A future task that intentionally depends on an environment value must declare it into one of
  * those task-owned inputs. Ambient inheritance is never an implicit reason to rerun every green
@@ -227,11 +228,11 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(_environment) {
 }
 
 /**
- * The gateConfig analogue of `passingTaskVerdictCrossRunIdentityEnvironment`: strip the fields
- * that describe HOW MUCH MACHINE/TIME a run was handed, keeping everything that describes what
- * the task exercises. Each field neutralised here is SELF-INVALIDATING — it moves on its own
- * between two runs over a byte-identical tree, so leaving it in makes cross-run reuse
- * structurally unable to hit rather than merely rare.
+ * The gateConfig analogue of `passingTaskVerdictCrossRunIdentityEnvironment`: resolved gate,
+ * retry, timeout, load, capture, and resource values describe HOW this invocation runs, not the
+ * command or related-file closure the passing proof covers. Several values are also
+ * SELF-INVALIDATING — they move between two runs over a byte-identical tree, so retaining any of
+ * them makes cross-run reuse structurally unable to hit rather than merely rare.
  *
  * - `affectedBase` is the SELECTION RADIUS: it decides which tasks get picked, never what a
  *   picked task exercises, and an unpinned local run derives it from the moving test-certified
@@ -244,14 +245,12 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(_environment) {
  *   from a clean first pass, so whether a failure WOULD have received an absorption retry cannot
  *   change what that pass proved; retaining it only makes load/caller drift invalidate the proof.
  *
- * Validity is decided by `dependencyHash` — the content sha256 of the task's whole dependency
- * closure — so none of this widens what a stored verdict is allowed to claim. FAIL-SAFE
- * DIRECTION: a task that exceeds its bound FAILS, and a failed task never stores a passing
- * verdict, so admitting a stored PASS under a different bound cannot turn a red into a green.
- *
- * The STATIC timeout policy (overrideMs/floorMs/headroomMultiplier/quantumMs/maxMs) is retained,
- * so a real config change still invalidates. `scheduler` is already neutralised upstream in the
- * shared identity spec.
+ * Validity is decided by `command`, `implementationVersion`, and `dependencyHash` — the latter is
+ * the content sha256 of the task's whole related-file closure, including the runner/config files
+ * that define these policies. Normalising the resolved object therefore does not widen what a
+ * stored verdict claims. FAIL-SAFE DIRECTION: a task that exceeds its bound FAILS, and a failed
+ * task never stores a passing verdict, so admitting a stored PASS under a different resolved
+ * bound cannot turn a red into a green.
  */
 export function passingTaskVerdictCrossRunGateConfig(_gateConfig) {
   // Resolved timeouts, worker budgets, retry/load policy, capture mode, and selection radius

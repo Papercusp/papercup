@@ -584,7 +584,14 @@ export async function main(argv = process.argv.slice(2)) {
         return cacheStatus;
       }
       console.log(`NPM_INSTALL_SAFE running: npm ${npmArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
-      const result = spawnSync('npm', npmArgs, { cwd: repoRoot, stdio: 'inherit' });
+      // Tell the root `preinstall` guard that THIS install is the sanctioned one — it holds the
+      // writer lock, so it cannot tear a green-checkpoint dependency copy. Without the marker the
+      // guard cannot distinguish us from the bare `npm install` it exists to refuse.
+      const result = spawnSync('npm', npmArgs, {
+        cwd: repoRoot,
+        stdio: 'inherit',
+        env: { ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1' },
+      });
       if (result.error) throw result.error;
       const status = result.status ?? 1;
       // A FAILED npm run reports its own error — never mask it with a dep verdict.
