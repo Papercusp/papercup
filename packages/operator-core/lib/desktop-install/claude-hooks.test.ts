@@ -18,7 +18,9 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     const cfg = mergeClaudeHookSettings({}, DEST, { isClaudeSettings: true });
 
     // PreToolUse: lock-acquire (Edit|Write|MultiEdit) + activity-pre (*) + bash-gate (Bash)
-    // + plans-read-guard (Read|Grep, P-003(b)) + ask-gate-mirror
+    // + plans-read-guard (Read|Grep, P-003(b)) + artifact-url-delivery-guard
+    // (durable-write verbs, EI-21890940999877469 — denies a checkpoint/plan/fact
+    // carrying an artifact id no Artifact call returned) + ask-gate-mirror
     // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001) + guard-operator-desktop
     // (browser-navigation MCP tools + Skill, EI-16981) + content-lint (Edit|Write|MultiEdit,
     // P-013, wired WI-5543) + secrets-guard (Edit|Write|MultiEdit, wired WI-5542) +
@@ -34,6 +36,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/pretooluse-activity-report.sh`,
       `${DEST}/pretooluse-bash-resource-gate.sh`,
       `${DEST}/pretooluse-plans-read-guard.sh`,
+      `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
       `${DEST}/guard-operator-desktop.mjs`,
       `${DEST}/pretooluse-content-lint.mjs`,
@@ -58,6 +61,19 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');
     expect(matcherOf('pretooluse-bash-resource-gate.sh')).toBe('Bash');
     expect(matcherOf('pretooluse-plans-read-guard.sh')).toBe('Read|Grep');
+
+    // EI-21890940999877469 — the durable-write allow-list mirror. The assertions
+    // that carry the weight are the NEGATIVE ones: this matcher must never grow to
+    // cover the Artifact tool or WebFetch. The guard's own block message tells the
+    // agent to verify the URL with exactly those calls, so denying them would turn
+    // the guard into a trap with no exit rather than a guard.
+    const artifactGuard = new RegExp(matcherOf('artifact-url-delivery-guard.mjs')!);
+    expect(artifactGuard.test('mcp__papercusp-su__work_items_checkpoint')).toBe(true);
+    expect(artifactGuard.test('mcp__papercusp-su__loop_checkpoint')).toBe(true);
+    expect(artifactGuard.test('mcp__papercusp-su__plans_add-decision')).toBe(true);
+    expect(artifactGuard.test('Artifact')).toBe(false);
+    expect(artifactGuard.test('mcp__papercusp-su__artifact')).toBe(false);
+    expect(artifactGuard.test('WebFetch')).toBe(false);
     expect(matcherOf('ask-gate-mirror.sh')).toBe('AskUserQuestion|ExitPlanMode');
     expect(matcherOf('guard-operator-desktop.mjs')).toBe(
       'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',

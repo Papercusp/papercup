@@ -2711,15 +2711,27 @@ export function mergeClaudeHookSettings(
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-turn-journal.sh'), {
       hooks: cmd('stop-turn-journal.sh'),
     });
-  // merge_artifact_url_delivery_guard_hook — EI-21844056581395228. Two branches of
-  // ONE script: PostToolUse (matcher scoped to the Artifact tool) harvests the ids
-  // that non-error calls actually returned into a session ledger; Stop (no matcher)
-  // blocks a final message citing an id that ledger never saw. Stop must be wired
-  // matcher-less because the failure lands in assistant PROSE, which no tool
-  // matcher can see. `stop_hook_active` bounds it to one bounce per turn.
+  // merge_artifact_url_delivery_guard_hook — EI-21844056581395228 (prose) and
+  // EI-21890940999877469 (durable surfaces). THREE branches of ONE script:
+  // PostToolUse (matcher scoped to the Artifact tool) harvests the ids that
+  // non-error calls actually returned into a session ledger; Stop (no matcher)
+  // blocks a final message citing an id that ledger never saw; PreToolUse denies a
+  // DURABLE write (checkpoint/plan/fact/coord:send) carrying an unverified id.
+  // Stop must be wired matcher-less because that failure lands in assistant PROSE,
+  // which no tool matcher can see. `stop_hook_active` bounds it to one bounce/turn.
+  //
+  // The PreToolUse matcher mirrors the script's DURABLE_WRITE_TOOLS allow-list
+  // (the script re-validates, so the matcher is only a spawn filter). It must
+  // never grow to cover the Artifact tool or WebFetch: those are how an agent
+  // VERIFIES a URL, and denying them would leave a blocked agent no way out.
   if (has('artifact-url-delivery-guard.mjs')) {
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('artifact-url-delivery-guard.mjs'), {
       matcher: 'Artifact|mcp__.*__[Aa]rtifact',
+      hooks: cmd('artifact-url-delivery-guard.mjs'),
+    });
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('artifact-url-delivery-guard.mjs'), {
+      matcher:
+        'mcp__.*__(work_items_(checkpoint|comment|complete|create|update)|loop_checkpoint|facts_assert|memory_remember|coord_send|improvements_capture|plans_(new|edit|add-item|add-decision|set-now))',
       hooks: cmd('artifact-url-delivery-guard.mjs'),
     });
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('artifact-url-delivery-guard.mjs'), {

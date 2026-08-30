@@ -13,11 +13,15 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  collectStrings,
+  evaluatePreToolUse,
   evaluateStop,
   extractArtifactIds,
   harvestLedgerIds,
   isArtifactTool,
+  isDurableWriteTool,
   lastAssistantText,
+  normalizeToolName,
   stripQuotedForScanning,
 } from '../artifact-url-delivery-guard.mjs';
 
@@ -136,5 +140,149 @@ describe('transcript extraction', () => {
     };
     expect(lastAssistantText('/missing', read as never)).toBe('');
     expect(lastAssistantText('', read as never)).toBe('');
+  });
+});
+
+/**
+ * The DURABLE-SURFACE arm (EI-21890940999877469). The first occurrence
+ * (EI-19944806095285549) never reached prose at all — the dead URL went into a
+ * work-item checkpoint and was inherited as fact — so the Stop branch above could
+ * not have caught it. These pin the arm that can.
+ */
+describe('durable surfaces are guarded', () => {
+  it('blocks the FIRST occurrence shape: a work-item checkpoint carrying a phantom URL', () => {
+    const verdict = evaluatePreToolUse({
+      toolName: 'mcp__papercusp-su__work_items_checkpoint',
+      toolInput: {
+        id: 'WI-37110',
+        checkpoint: `Report delivered.\nArtifact: https://claude.ai/code/artifact/${PHANTOM}\nSource: /home/x/report.html`,
+      },
+      ledger: new Set(),
+    });
+    expect(verdict).not.toBeNull();
+    expect(verdict!.unverified).toEqual([PHANTOM]);
+    expect(verdict!.reason).toContain('EI-19944806095285549');
+  });
+
+  it('blocks the other durable surfaces, not just checkpoints', () => {
+    for (const toolName of [
+      'mcp__papercusp-su__loop_checkpoint',
+      'mcp__papercusp-su__facts_assert',
+      'mcp__papercusp-su__coord_send',
+      'mcp__papercusp-su__plans_add-decision',
+      'mcp__papercusp-su__work_items_complete',
+    ]) {
+      const verdict = evaluatePreToolUse({
+        toolName,
+        toolInput: { body: `see https://claude.ai/code/artifact/${PHANTOM}` },
+        ledger: new Set(),
+      });
+      expect(verdict, `${toolName} should be guarded`).not.toBeNull();
+    }
+  });
+
+  it('finds a URL NESTED deep inside a structured completion payload', () => {
+    // work_items:complete nests evidence several levels down; a scanner that only
+    // looked at top-level strings would sail straight past the real vector.
+    const verdict = evaluatePreToolUse({
+      toolName: 'mcp__papercusp-su__work_items_complete',
+      toolInput: {
+        id: 'WI-1',
+        completion: {
+          summary: 'done',
+          verification: { coverage: { residue: [`published at https://claude.ai/code/artifact/${PHANTOM}`] } },
+        },
+      },
+      ledger: new Set(),
+    });
+    expect(verdict).not.toBeNull();
+    expect(verdict!.unverified).toEqual([PHANTOM]);
+  });
+
+  it('CONTROL: a top-level-only scanner misses that nested case — the assertion above has teeth', () => {
+    const topLevelOnlyScanner = (input: Record<string, unknown>) =>
+      extractArtifactIds(Object.values(input).filter((v): v is string => typeof v === 'string').join('\n'));
+    const nested = {
+      id: 'WI-1',
+      completion: { verification: { coverage: { residue: [`https://claude.ai/code/artifact/${PHANTOM}`] } } },
+    };
+    expect(topLevelOnlyScanner(nested)).toEqual([]); // the wrong implementation
+    expect(collectStrings(nested).join('\n')).toContain(PHANTOM); // ours
+  });
+});
+
+describe('the durable arm never denies its own remedy', () => {
+  // The block message tells the agent to VERIFY the URL. If the guard also denied
+  // the verifying call, a blocked agent would have no way out — a trap, not a guard.
+  it('never blocks the Artifact tool, even reading the phantom URL itself', () => {
+    for (const toolName of ['Artifact', 'mcp__papercusp-su__artifact']) {
+      expect(isDurableWriteTool(toolName)).toBe(false);
+      expect(
+        evaluatePreToolUse({
+          toolName,
+          toolInput: { action: 'read', url: `https://claude.ai/code/artifact/${PHANTOM}` },
+          ledger: new Set(),
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('never blocks WebFetch or an ordinary read tool', () => {
+    for (const toolName of ['WebFetch', 'mcp__papercusp-su__work_items_get', 'Read', 'Bash']) {
+      expect(
+        evaluatePreToolUse({
+          toolName,
+          toolInput: { url: `https://claude.ai/code/artifact/${PHANTOM}` },
+          ledger: new Set(),
+        }),
+      ).toBeNull();
+    }
+  });
+});
+
+describe('durable arm: no false positives', () => {
+  it('allows a verified id', () => {
+    expect(
+      evaluatePreToolUse({
+        toolName: 'mcp__papercusp-su__work_items_checkpoint',
+        toolInput: { checkpoint: `https://claude.ai/code/artifact/${REAL}` },
+        ledger: new Set([REAL]),
+      }),
+    ).toBeNull();
+  });
+
+  it('allows a QUOTED known-bad URL, so a post-mortem can be written', () => {
+    // This very suite, and the work-items describing the incident, must remain writable.
+    expect(
+      evaluatePreToolUse({
+        toolName: 'mcp__papercusp-su__improvements_capture',
+        toolInput: { body: `The dead URL was \`https://claude.ai/code/artifact/${PHANTOM}\` — never existed.` },
+        ledger: new Set(),
+      }),
+    ).toBeNull();
+  });
+
+  it('allows a durable write that cites no artifact URL at all', () => {
+    expect(
+      evaluatePreToolUse({
+        toolName: 'mcp__papercusp-su__facts_assert',
+        toolInput: { key: 'k', body: 'An ordinary conclusion with no links.' },
+        ledger: new Set(),
+      }),
+    ).toBeNull();
+  });
+});
+
+describe('tool-name normalization', () => {
+  it('treats the colon form and the client-mangled form as the same tool', () => {
+    expect(normalizeToolName('work_items:checkpoint')).toBe('work_items_checkpoint');
+    expect(normalizeToolName('mcp__papercusp-su__work_items_checkpoint')).toBe('work_items_checkpoint');
+    expect(isDurableWriteTool('work_items:checkpoint')).toBe(true);
+    expect(isDurableWriteTool('mcp__papercusp-su__work_items_checkpoint')).toBe(true);
+  });
+
+  it('preserves hyphenated verbs, which the client does not mangle', () => {
+    expect(normalizeToolName('mcp__papercusp-su__plans_add-decision')).toBe('plans_add-decision');
+    expect(isDurableWriteTool('plans:add-decision')).toBe(true);
   });
 });

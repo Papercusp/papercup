@@ -22,10 +22,24 @@
  * URL that does not exist) is an error response and is never harvested, so a
  * bad URL echoed back inside an error can never verify itself.
  *
- * TWO BRANCHES, ONE MECHANISM (matching the ask-gate-mirror precedent):
+ * THREE BRANCHES, ONE MECHANISM (matching the ask-gate-mirror precedent):
  *   PostToolUse(Artifact) → harvest returned ids into a session-scoped ledger.
  *   Stop                  → scan the final assistant text; block on any cited
  *                           id the ledger never saw.
+ *   PreToolUse(durable)   → scan the INPUT of a durable write (checkpoint, plan,
+ *                           fact, coord:send, …); deny on an unverified id.
+ *
+ * WHY THE PreToolUse BRANCH IS NOT REDUNDANT WITH Stop
+ * The Stop branch covers prose, which is how the SECOND occurrence reached the
+ * owner. But the FIRST (EI-19944806095285549) never appeared in prose at all: the
+ * dead URL was written into a work-item CHECKPOINT and inherited by a successor as
+ * settled fact. Those are different vectors and prose-scanning cannot see the
+ * second one — a durable write can happen in a turn whose final message never
+ * mentions the URL. The durable case is also the worse of the two: a claim in
+ * prose is read once by a human who might question it, while a claim in a
+ * checkpoint is re-injected into a successor's context already stated, where
+ * nothing re-checks it. See DURABLE_WRITE_TOOLS for why that branch is an
+ * allow-list rather than a pattern.
  *
  * SCANNING IS QUOTE-STRIPPED (the EI-19412167276099357 defect-3 lesson): code
  * fences, inline code and blockquotes are removed before scanning, so quoting a
@@ -355,6 +369,27 @@ async function main() {
 
     if (event === 'PostToolUse') {
       appendLedger(path, harvestLedgerIds(hook));
+      process.exit(0);
+    }
+
+    if (event === 'PreToolUse') {
+      const verdict = evaluatePreToolUse({
+        toolName: hook.tool_name ?? hook.toolName,
+        toolInput: hook.tool_input ?? hook.toolInput,
+        ledger: readLedger(path),
+      });
+      if (verdict) {
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: verdict.reason,
+            },
+          }) + '\n',
+        );
+        process.stderr.write(verdict.reason + '\n');
+      }
       process.exit(0);
     }
 
