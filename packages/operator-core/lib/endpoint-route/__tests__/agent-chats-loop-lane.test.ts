@@ -356,6 +356,8 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
 
     expect(mocks.assembleOperatorRolePrompt).toHaveBeenCalledWith({
       role: 'operator',
+      profile: 'pui-loop',
+      projectDir: '/tmp/proj',
       toolNames: [
         'capability:read',
         'capability:bash',
