@@ -18,7 +18,7 @@
  * filesystem access in tests; no database or rubric store is imported here.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 
 export interface AcceptanceRubricCitationCriterion {
@@ -81,6 +81,8 @@ interface TextAnchor {
   kind: AcceptanceRubricCitationAnchorKind;
   start: number;
   end: number;
+  /** Set when a `symbol-level` phrase names the path explicitly. */
+  path?: string;
 }
 
 /**
@@ -89,7 +91,7 @@ interface TextAnchor {
  * prose, not a file citation that this guard can validate.
  */
 const SOURCE_FILE_PATH_RE =
-  /\b((?:packages|apps|libs|scripts)\/[A-Za-z0-9._@~+%=-]+(?:\/[A-Za-z0-9._@~+%=-]+)*\.[A-Za-z0-9][A-Za-z0-9._+-]*)(?=[:#]\d+)?/g;
+  /\b((?:packages|apps|libs|scripts)\/[A-Za-z0-9._@~+%=-]+(?:\/[A-Za-z0-9._@~+%=-]+)*\.[A-Za-z][A-Za-z0-9]*)(?=[:#]\d+|$|[\s'"`)\]}:,. ;])/g;
 
 const QUOTED_TEST_CASE_RE =
   /\b(?:describe|it|test)\s*\(\s*(['"`])([\s\S]*?)\1/g;
@@ -137,7 +139,7 @@ function isInsideRoot(root: string, absolute: string): boolean {
   const rootReal = realpathSoft(root);
   const absoluteReal = realpathSoft(absolute);
   const rel = relative(rootReal, absoluteReal);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${dirname(rootReal).slice(-1)}`) && !isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function realpathSoft(path: string): string {
@@ -215,6 +217,7 @@ function explicitAnchors(text: string): TextAnchor[] {
       kind: 'symbol',
       start: subjectStart,
       end: pathOffset,
+      path,
     });
   }
 
@@ -222,18 +225,9 @@ function explicitAnchors(text: string): TextAnchor[] {
 }
 
 function sameCitationClause(text: string, left: number, right: number): string {
-  const start = Math.max(
-    text.lastIndexOf('\n', left),
-    text.lastIndexOf('.', left),
-    text.lastIndexOf(';', left),
-  );
-  const endCandidates = [
-    text.indexOf('\n', right),
-    text.indexOf('.', right),
-    text.indexOf(';', right),
-  ].filter((offset) => offset >= 0);
-  const end = endCandidates.length > 0 ? Math.min(...endCandidates) : text.length;
-  return text.slice(start + 1, end);
+  const start = text.lastIndexOf('\n', left);
+  const end = text.indexOf('\n', right);
+  return text.slice(start + 1, end === -1 ? text.length : end);
 }
 
 /**
@@ -243,12 +237,24 @@ function sameCitationClause(text: string, left: number, right: number): string {
  */
 function anchorsForPath(text: string, path: PathMention, anchors: TextAnchor[]): TextAnchor[] {
   const candidates = anchors.filter((anchor) => {
+    if (anchor.path && anchor.path !== path.path) return false;
+    // A named describe()/it()/test() case is a test-file anchor.  Do not let
+    // a later optional probe script inherit the nearest case name merely
+    // because both appear in one long replication paragraph.
+    if (
+      anchor.kind === 'test-case' &&
+      !/\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(path.path)
+    ) {
+      return false;
+    }
     const clause = sameCitationClause(text, Math.min(path.start, anchor.start), Math.max(path.end, anchor.end));
     return clause.includes(path.path);
   });
   if (candidates.length === 0) return [];
   const nearest = Math.min(...candidates.map((anchor) => Math.abs(anchor.start - path.start)));
-  return candidates.filter((anchor) => Math.abs(anchor.start - path.start) === nearest);
+  const nearestAnchors = candidates.filter((anchor) => Math.abs(anchor.start - path.start) === nearest);
+  if (nearestAnchors.length > 1) return [];
+  return nearestAnchors;
 }
 
 function failure(
