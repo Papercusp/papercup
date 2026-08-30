@@ -1,1 +1,0 @@
-function r(t){const e=t.ref;switch(e.kind){case"work-item-needs-human":case"work-item-blocked":return typeof e.workItemId=="string"?e.workItemId:null;case"improvement":return typeof e.issueId=="string"?e.issueId:null;case"owner-wall":return typeof e.wallRef=="string"&&/^(?:WI|EI|F)-\d+$/i.test(e.wallRef)?e.wallRef.toUpperCase():null;default:return null}}export{r as t};

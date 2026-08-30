@@ -1,1 +1,0 @@
-import{o as e}from"./chunk-a1a4177d.js";import{t as i}from"./react-ea1d8b8b.js";import{r as a}from"./perf-marks-f532b820.js";var f=e(i());function p(r,t,o=!0){(0,f.useEffect)(()=>{t&&o&&a(r)},[r,t,o])}export{p as t};

@@ -146,8 +146,10 @@
 #   0  the probe reached its expected verdict (default: the mutant was CAUGHT)
 #   1  the probe reached the opposite verdict — your guard is weaker than you think
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
-#      whitespace-only mutation, a mutant that no longer PARSES,
-#      a failing baseline, or a harness error while running the mutant)
+#      whitespace-only mutation, a mutant that no longer PARSES, a guard run
+#      whose own output shows a known runner-MISUSE marker — e.g. "no test
+#      files found" — instead of an assertion failure, a failing baseline, or
+#      a harness error while running the mutant)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
 #
 # READING THE VERDICT
@@ -648,6 +650,23 @@ run_guard() {
   return "$rc"
 }
 
+# EI-21882388979504012 (2026-08-30): a test runner that cannot COLLECT its
+# subject exits nonzero for MISUSE (e.g. vitest's "No test files found,
+# exiting with code 1"), and that nonzero is indistinguishable by exit code
+# alone from a genuine assertion failure. The reproduced case is copy-out
+# mode: the mutated copy lives under a scratch dir a project's test-file
+# include globs usually cannot reach, so the runner never ran a single
+# assertion yet the script scored guard_exit=1 as "MUTANT CAUGHT". Historical
+# mode's frozen-snapshot paths are exposed to the identical failure shape, so
+# both verdict computations below consult this one detector. Extend the
+# pattern set if a new runner's misuse message surfaces the same way; keep
+# additions narrow (a literal runner diagnostic, not a word that could appear
+# in genuine test output) so this cannot false-flag a real catch.
+RUNNER_MISUSE_ERE='No test files found|Unknown option|: command not found'
+detect_runner_misuse() {
+  grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
+}
+
 if [ "$HISTORICAL_MODE" -eq 1 ]; then
   # Hand each child a fresh copy of a frozen snapshot. A guard/calibration
   # suite that writes its subject must not rewrite the reference used by the
@@ -714,6 +733,24 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     HISTORICAL_RC=$?
   fi
 
+  HISTORICAL_MISUSE_HITS="$(detect_runner_misuse "$HISTORICAL_GUARD_LOG")"
+  if [ "$HISTORICAL_RC" -eq 1 ] && [ -n "$HISTORICAL_MISUSE_HITS" ]; then
+    log "the historical guard's own output shows a runner-MISUSE marker, not an assertion failure: ${HISTORICAL_MISUSE_HITS}"
+    printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s runner_misuse=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "${HISTORICAL_MISUSE_HITS// /,}"
+    die "the historical guard run never reached its assertions — it failed for a RUNNER-MISUSE reason, not because the historical source was caught.
+
+      Matched misuse marker(s): ${HISTORICAL_MISUSE_HITS}
+
+      MOST COMMON CAUSE: the frozen historical snapshot lives under a scratch
+      directory, and your --test command's runner cannot COLLECT a file there
+      (a project's test-file include globs are usually relative to the repo
+      root). Make --test able to run against an arbitrary path directly (e.g.
+      \`npx vitest run {}\`) rather than relying on the runner's own
+      project-relative file-discovery globs.
+
+      Inspect the captured guard output above for the exact runner message."
+  fi
   if [ "$HISTORICAL_RC" -eq 1 ]; then
     VERDICT="caught"
     log "VERDICT: HISTORICAL SOURCE CAUGHT (guard exited $HISTORICAL_RC) — the guard is falsifiable against the selected before-fix source ✓"
@@ -939,6 +976,31 @@ TEST_RC=$?
 # them is its own error class. Exit 1 is the test/guard failure convention;
 # exit 2 (for example, a shell syntax error) and every other nonzero status
 # mean the harness did not produce a trustworthy verdict.
+MUTANT_MISUSE_HITS="$(detect_runner_misuse "$MUTANT_LOG")"
+if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
+  log "the mutant guard's own output shows a runner-MISUSE marker, not an assertion failure: ${MUTANT_MISUSE_HITS}"
+  printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s runner_misuse=%s\n' \
+    "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "${MUTANT_MISUSE_HITS// /,}"
+  die "the mutant guard run never reached its assertions — it failed for a RUNNER-MISUSE reason, not because the mutation was detected.
+
+      Matched misuse marker(s): ${MUTANT_MISUSE_HITS}
+
+      MOST COMMON CAUSE (copy-out mode): the mutated COPY lives under a
+      scratch directory (e.g. /tmp/mutation-probe.XXXXXX), and your --test
+      command's runner cannot COLLECT a file there — a project's test-file
+      include globs are usually relative to the repo root, so a path outside
+      it silently matches nothing. A command exiting 1 for 'no tests ran' is
+      INDISTINGUISHABLE by exit code alone from a genuine assertion failure,
+      so this script refuses to score it as MUTANT CAUGHT.
+
+      FIX: make --test able to run against an ARBITRARY path directly (e.g.
+      \`npx vitest run {}\` rather than a bare \`npm test\` that globs from the
+      project root), or point the runner's config/root at the scratch
+      directory for this one invocation.
+
+      Inspect the captured guard output above for the exact runner message."
+fi
+
 if [ "$TEST_RC" -eq 1 ]; then
   VERDICT="caught"
   log "VERDICT: MUTANT CAUGHT (guard exited $TEST_RC) — the guard is falsifiable ✓"

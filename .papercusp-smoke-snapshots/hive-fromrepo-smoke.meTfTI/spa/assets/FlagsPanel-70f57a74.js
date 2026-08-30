@@ -1,1 +1,0 @@
-import{t as e}from"./jsx-runtime-660d4162.js";import{t}from"./FeaturesAdmin-79e54af6.js";var r=e();function i(){return(0,r.jsx)("div",{className:"pcdar-embed",children:(0,r.jsx)(t,{})})}export{i as default};
