@@ -430,6 +430,13 @@ const cfg: ReleaseConfig = releaseConfig({
   releaseRef: "ready",
   integrationBranch: "main",
   checkpointLogDir: tmpLogDir,
+  // EI-20203883939710354 — DELIBERATELY FAKE, and deliberately set rather than defaulted.
+  // Left unset this resolves to the real `@papercusp/operator-vite`, and the SPA-build
+  // narration this suite drives then lands in the shared run log naming the real SPA
+  // workspace — indistinguishable, to a grep, from a genuine "holding the gate" verdict
+  // about it. Setting it also makes the build assertions below prove the build honours
+  // cfg.spaBuildWorkspace instead of a hardcoded name, which is the stronger property.
+  spaBuildWorkspace: "@example/fixture-spa",
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
@@ -1035,7 +1042,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
   it("classifies a post-suite ENOSPC red before publishing failing-file evidence", async () => {
     const lowSpaceOutput =
-      ">>> @papercusp/operator-core :: npm run test\n" +
+      ">>> @example/fixture-pkg :: npm run test\n" +
       "Error: ENOSPC: no space left on device, open '/tmp/pcv/worker.json'\n" +
       "Error: ENOSPC: no space left on device, write '/tmp/pcv/reporter.json'\n";
     const healthy = {
@@ -1231,7 +1238,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   it("EI-20336874238055183: GATE_HELD_BY uses the final authoritative break set, not stale retry rows", async () => {
     const before = new Set(readdirSync(tmpLogDir));
     const staleRowsThenAuthoritativeEmptyFiles = [
-      ">>> @papercusp/operator-core :: npm run test",
+      ">>> @example/fixture-pkg :: npm run test",
       " FAIL  lib/stale-first.test.ts > stale retry output",
       " ❯ lib/stale-second.test.ts (1 test | 1 failed) 10ms",
       "",
@@ -1682,7 +1689,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(r.summary).toContain("control byte");
     // …but the EXPENSIVE leg is still short-circuited: 3 calls, no SPA build.
     expect(calls).toHaveLength(3);
-    expect(calls.some((c) => c.args.includes("@papercusp/operator-vite"))).toBe(
+    expect(calls.some((c) => c.args.includes("@example/fixture-spa"))).toBe(
       false,
     );
   });
@@ -1780,7 +1787,11 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(calls[1].opts?.cwd).toBe(cpTree);
     // (3) the SPA build ran third, in the same tree (P-005 — build is part of green).
     expect(calls[2].cmd).toBe("npm");
-    expect(calls[2].args).toContain("@papercusp/operator-vite");
+    // the BUILD COMMAND follows cfg.spaBuildWorkspace (a per-hive subject builds its own
+    // SPA). Note the deliberate asymmetry with `r.failingTests` below, which stays the
+    // hardcoded `@papercusp/operator-vite` sentinel: that one is the release-fixer's DEDUP
+    // key (checkpointFailureSignature), not a workspace reference, so it is NOT cfg-driven.
+    expect(calls[2].args).toContain("@example/fixture-spa");
     expect(calls[2].args).toContain("build");
     expect(calls[2].opts?.cwd).toBe(cpTree);
   });
@@ -1841,8 +1852,21 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   // load-flake-isolation-2026-06-23: the real-path wiring of the isolation re-run —
   // a red suite whose failing FILES (parsed from the affected-runner output) re-run
   // GREEN at single concurrency is a load-flake, so runGreen reports green + the suspects.
+  // EI-20203883939710354 — the workspace name here is DELIBERATELY FAKE; do not "fix" it
+  // back to a real one. This suite drives real `runGreen`, so production narrates real log
+  // lines and vitest captures them verbatim into the shared run log. WI-7274 tagged those
+  // lines `[green-checkpoint:TEST-FIXTURE]`, which tells them apart ONCE YOU READ THE TAG —
+  // but a triaging agent's first move is `grep <my-workspace> <log>`, and a fixture naming a
+  // REAL workspace answers that grep with a perfect description of a failure that never
+  // happened. Measured: an agent nearly reported one as the root cause of a fleet-blocking
+  // gate red. A fake workspace makes the collision impossible instead of relying on a reader
+  // parsing a marker correctly under time pressure. Every fake workspace in this file uses
+  // the `@example/` scope, never `@papercusp/` — see the guard in
+  // green-checkpoint-log-marker-fixtures.test.ts, which enforces exactly that.
+  // The assertions echoing this name are testing a ROUND TRIP (the workspace parsed out of
+  // this output is the one re-run), so they hold identically for any name.
   const RED_OUTPUT =
-    ">>> @papercusp/operator-core :: npm run test\n" +
+    ">>> @example/fixture-pkg :: npm run test\n" +
     " FAIL  lib/llm-testing/__tests__/runner-aggregate.test.ts > aggregates\n" +
     " ❯ lib/scout/scheduler-workspace-scope.test.ts (12 tests | 1 failed) 21034ms\n" +
     "2 non-quarantined task(s) failed.";
@@ -1860,8 +1884,8 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
     expect(r.green).toBe(true); // absorbed: both files passed in isolation
     expect(r.flakeSuspects).toEqual([
-      "@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts",
-      "@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts",
+      "@example/fixture-pkg::lib/llm-testing/__tests__/runner-aggregate.test.ts",
+      "@example/fixture-pkg::lib/scout/scheduler-workspace-scope.test.ts",
     ]);
     // WI-6053: the suite + 2 isolation re-runs + the post-suite legs the absorption now
     // pays for (cpTree declares no lint scripts, so that is the conflict-marker grep and
@@ -1880,7 +1904,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
       "run",
       "test",
       "--workspace",
-      "@papercusp/operator-core",
+      "@example/fixture-pkg",
     ]);
     expect(calls[3].args).toContain(
       "lib/llm-testing/__tests__/runner-aggregate.test.ts",
@@ -1906,7 +1930,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         "run",
         "test",
         "--workspace",
-        "@papercusp/operator-core",
+        "@example/fixture-pkg",
       ]);
       expect(c.args).toContain("--no-file-parallelism");
       expect(c.opts?.cwd).toBe(cpTree);
@@ -1981,7 +2005,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
       if (i === 1)
         return {
           code: 1,
-          stdout: ">>> @papercusp/x :: npm run test\n FAIL  lib/a.test.ts > c",
+          stdout: ">>> @example/fixture-x :: npm run test\n FAIL  lib/a.test.ts > c",
           stderr: "",
         };
       throw new Error("vitest spawn ENOMEM"); // the isolation re-run itself errors
@@ -1997,10 +2021,10 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   // FAIL lines, so the per-file isolation absorber finds nothing. The workspace re-run at
   // reduced concurrency decides load-crash flake vs real break.
   const CRASH_OUTPUT =
-    ">>> @papercusp/operator-core :: npm run test\n" +
+    ">>> @example/fixture-pkg :: npm run test\n" +
     "Error: [vitest-pool]: Worker forks emitted error.\n" +
     "Caused by: Error: Worker exited unexpectedly\n" +
-    "npm error workspace @papercusp/operator-core@0.1.0\n" +
+    "npm error workspace @example/fixture-pkg@0.1.0\n" +
     "npm error command sh -c vitest run --passWithNoTests\n" +
     "1 non-quarantined task(s) failed.";
 
@@ -2014,7 +2038,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
     expect(r.green).toBe(true); // absorbed: the crashed workspace passed on the re-run
     expect(r.flakeSuspects).toEqual([
-      "@papercusp/operator-core (worker-pool crash)",
+      "@example/fixture-pkg (worker-pool crash)",
     ]);
     // WI-6053: the suite + 1 workspace re-run + the post-suite legs the absorption now pays
     // for (marker grep + SPA build). Previously `toHaveLength(2)` — the worker-crash
@@ -2031,7 +2055,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
       "run",
       "test",
       "--workspace",
-      "@papercusp/operator-core",
+      "@example/fixture-pkg",
       "--",
       `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
     ]);
@@ -2053,7 +2077,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
   it("worker-crash: re-run reveals a REAL failure → stays NOT green", async () => {
     const realFail =
-      ">>> @papercusp/operator-core :: npm run test\n FAIL  lib/x.test.ts > c\nAssertionError";
+      ">>> @example/fixture-pkg :: npm run test\n FAIL  lib/x.test.ts > c\nAssertionError";
     const { exec } = makeExec([
       { code: 1, stdout: CRASH_OUTPUT },
       { code: 1, stdout: realFail },
@@ -2149,8 +2173,8 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
       expect(r.green).toBe(true);
       expect(r.flakeSuspects).toEqual([
-        "@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts",
-        "@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts",
+        "@example/fixture-pkg::lib/llm-testing/__tests__/runner-aggregate.test.ts",
+        "@example/fixture-pkg::lib/scout/scheduler-workspace-scope.test.ts",
       ]);
       expect(calls).toHaveLength(7);
       expect(calls[4].args).toEqual(["run", "lint:tsc"]);
@@ -3186,7 +3210,7 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
   });
 
   const RED_TWO_FILES =
-    ">>> @papercusp/operator-core :: npm run test\n" +
+    ">>> @example/fixture-pkg :: npm run test\n" +
     " FAIL  lib/a.test.ts > alpha\n" +
     " FAIL  lib/b.test.ts > beta\n" +
     "2 non-quarantined task(s) failed.";
@@ -3246,7 +3270,7 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
 
   it("the worker-pool-crash workspace re-run passes it", async () => {
     const crash =
-      ">>> @papercusp/operator-core :: npm run test\n" +
+      ">>> @example/fixture-pkg :: npm run test\n" +
       "Error: [vitest-pool]: Worker forks emitted error.\n" +
       "Caused by: Error: Worker exited unexpectedly\n" +
       "1 non-quarantined task(s) failed.";
@@ -3268,7 +3292,7 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     const { exec, calls } = makeExec([]);
     const deps = realCheckpointDeps(cfg, exec);
     await deps.runTestsAtRef?.("deadbeef", [
-      { workspace: "@papercusp/operator-core", file: "lib/a.test.ts" },
+      { workspace: "@example/fixture-pkg", file: "lib/a.test.ts" },
     ]);
 
     const testRun = calls.find(

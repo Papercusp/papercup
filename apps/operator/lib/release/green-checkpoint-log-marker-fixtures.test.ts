@@ -1,6 +1,14 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import { parseCheckpointCandidates } from '@papercusp/operator-core/lib/release-checkpoint-launch';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- untyped shared .mjs helper, reached the same way green-checkpoint.ts reaches
+// scripts/lib/vitest-summary.mjs. Deliberately NOT re-implemented here: a copy-pasted
+// comment stripper is the phantom-offender root cause (EI-19991116787260658).
+import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
   CAPTURED_RESULT_MARKER_PLACEHOLDER,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -216,5 +224,57 @@ describe('WI-7274: orchestrator narration cannot impersonate a verdict', () => {
     // (EI-19327704778173646) depends on being true.
     const mixedLog = [realTranscriptLine, taggedFixture, realStdoutLine].join('\n');
     expect(parseCheckpointCandidates(mixedLog)).toEqual(['060ea000', '13d9c65d']);
+  });
+});
+
+/**
+ * EI-20203883939710354 — the THIRD leg of this class, and the one the first two leave open.
+ *
+ * WI-7274 (above) tagged the fixture LINE; EI-19395755190419540 taught the candidate parser to
+ * exclude it. Both fix a reader who has already noticed the tag. Neither helps the reader whose
+ * FIRST move is `grep <my-workspace> <the shared run log>` — because `green-checkpoint-real-deps`
+ * drives real `runGreen`, production narrates real lines, and vitest captures them verbatim.
+ *
+ * Measured on that suite's own stdout BEFORE this guard: 316 fixture-tagged narration lines, of
+ * which 23 named a REAL `@papercusp/*` workspace, in 11 distinct shapes — including
+ *   "...post-suite leg FAILED — holding the gate: @papercusp/operator-vite (SPA build)"
+ * which is a perfect description of an actionable failure that never happened. An agent triaging
+ * a fleet-blocking gate red hit exactly that line and nearly filed it as the root cause; the tag
+ * was present and still cost the wrong diagnosis, because a tag is only read AFTER the line has
+ * already been believed.
+ *
+ * So this guard removes the COLLISION rather than adding another marker to parse: fixtures name
+ * fake workspaces, and a grep for a real one cannot return them at all.
+ *
+ * ⚠ SCOPE, stated so it cannot read as covered (D-003): this guards the SIMULATED SUBPROCESS
+ * OUTPUT — the `>>> <ws> :: npm run test` headers production parses a workspace name out of and
+ * re-narrates. It deliberately does NOT forbid every `@papercusp/*` literal in that file: the
+ * `r.failingTests` assertions must keep naming `@papercusp/operator-vite`, because there it is
+ * the release-fixer's DEDUP SENTINEL (checkpointFailureSignature hardcodes it, and its stability
+ * is what makes a build break dedup by failure rather than by candidate sha) — not a workspace
+ * reference. Those never reach a narration line, so they cannot collide with a grep.
+ */
+describe('EI-20203883939710354: real-deps fixtures cannot collide with a real-workspace grep', () => {
+  const source: string = stripCommentsOnly(
+    readFileSync(
+      fileURLToPath(new URL('./green-checkpoint-real-deps.test.ts', import.meta.url)),
+      'utf8',
+    ),
+    'green-checkpoint-real-deps.test.ts',
+  );
+
+  it('⭐ every simulated `>>> <workspace> :: npm run test` header names a FAKE workspace', () => {
+    const workspaces = [...source.matchAll(/>>> (\S+) :: npm run test/g)].map((m) => m[1]);
+
+    // POSITIVE CONTROL. Without it a reformat that breaks this regex yields an empty list, and
+    // "no real workspaces found" would pass for the one reason that means the guard is blind.
+    expect(workspaces.length).toBeGreaterThan(0);
+    expect(workspaces.filter((w) => w.startsWith('@papercusp/'))).toEqual([]);
+  });
+
+  it('pins the SPA build workspace to a fake one, so the SPA narration cannot name the real SPA', () => {
+    // Left unset, releaseConfig defaults this to the real `@papercusp/operator-vite` and the
+    // "holding the gate: <ws> (SPA build)" narration names it — the exact reported line.
+    expect(source).toMatch(/spaBuildWorkspace:\s*['"]@example\//);
   });
 });
