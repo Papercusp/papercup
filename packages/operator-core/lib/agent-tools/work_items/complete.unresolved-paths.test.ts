@@ -113,6 +113,14 @@ describe('unresolvedPathsInCompletion — FIRES on a fabricated path', () => {
       'packages/operator-core/lib/agent-tools/scheduler/claim-spec.ts',
     ]);
   });
+
+  it('still FIRES on a genuinely missing path that merely wears the `<repoName>/` prefix — stripping is not blanket forgiveness (EI-21850619651553189)', () => {
+    const got = unresolvedPathsInCompletion(ev(['repo/totally/made/up/nowhere.ts']), probe);
+    expect(got?.missing).toHaveLength(1);
+    // The ORIGINAL declared path is reported, not the stripped candidate — a successor
+    // re-reading the completion must see exactly what the closer wrote.
+    expect(got?.missing[0]?.path).toBe('repo/totally/made/up/nowhere.ts');
+  });
 });
 
 describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)', () => {
@@ -161,6 +169,29 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
 
   it('admits an explicitly discovered Hive root without changing primary-root ordering', () => {
     expect(completionRepoRootsFromRegistry(ROOT, { projects: [] }, [SIDESTAGE_ROOT])).toEqual([ROOT, SIDESTAGE_ROOT]);
+  });
+
+  it('resolves the conventional `<repoName>/`-prefixed cross-repo form against its OWN root (EI-21850619651553189)', () => {
+    // The measured incident shape: an agent naturally writes `email/packages/contracts/…`
+    // (matching prose/plan-title convention) rather than a path already relative to that
+    // repo's own root. `resolve(root, declaredPath)` can never escape ANY root for a plain
+    // relative path, so before this fix the escape-check silently degraded this to a
+    // permanent miss under every candidate — including the repo the prefix actually names.
+    expect(
+      unresolvedPathsInCompletion(ev(['repo/packages/operator-core/lib/issues-engineer.ts']), probe),
+    ).toBeUndefined();
+  });
+
+  it('resolves the sibling-prefixed form against the SIBLING root, not the primary one, among multiple registered roots', () => {
+    const roots = completionRepoRootsFromRegistry(ROOT, {
+      projects: [
+        { slug: 'papercusp', path: ROOT, harness_kind: 'hive', self_repo: true },
+        { slug: 'sidestage', path: SIDESTAGE_ROOT },
+      ],
+    });
+    expect(
+      unresolvedPathsInCompletion(ev(['sidestage/apps/api/src/app.module.ts']), { ...probe, repoRoots: roots }),
+    ).toBeUndefined();
   });
 
   it('skips a GLOB — that describes many files, it does not claim one path exists', () => {

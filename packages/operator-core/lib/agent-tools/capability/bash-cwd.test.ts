@@ -34,7 +34,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
   capabilityExecSandboxEnabled: vi.fn(async () => false),
 }));
 
-import bashTool, { missingBashCwdError, resolveBashDefaultCwd } from './bash';
+import bashTool, { missingBashCwdError, resolveBashDefaultCwd, suggestExistingCwd } from './bash';
 import { runForeground } from './bash-jobs';
 
 type Tool = {
@@ -188,5 +188,55 @@ describe('capability:bash — missing-cwd preflight', () => {
   it('missingBashCwdError returns null for an existing directory', () => {
     expect(missingBashCwdError(root, false)).toBeNull();
     expect(missingBashCwdError(root, true)).toBeNull();
+  });
+});
+
+/**
+ * The "did you mean" repair (EI-21859036061097062): the measured incident shape is a
+ * near-miss transposition deep in an explicit cwd, e.g. `papercuspai-workspace` for the
+ * real `papercupai-workspace`. The bare preflight above named the failure with nothing
+ * to correct FROM; this reconstructs and verifies a corrected path before suggesting it.
+ */
+describe('capability:bash — cwd "did you mean" repair', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'capability-bash-cwd-suggest-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('suggests the real sibling for a one-letter-off ancestor segment, with the tail preserved', () => {
+    mkdirSync(join(root, 'papercupai-workspace', 'papercusp'), { recursive: true });
+    const typoed = join(root, 'papercuspai-workspace', 'papercusp');
+    expect(suggestExistingCwd(typoed)).toBe(join(root, 'papercupai-workspace', 'papercusp'));
+  });
+
+  it('surfaces the suggestion inside missingBashCwdError for an explicit cwd', () => {
+    mkdirSync(join(root, 'papercupai-workspace', 'papercusp'), { recursive: true });
+    const typoed = join(root, 'papercuspai-workspace', 'papercusp');
+    expect(missingBashCwdError(typoed, true)).toMatch(
+      new RegExp(`Did you mean '${join(root, 'papercupai-workspace', 'papercusp').replace(/[/\\]/g, '.')}'`),
+    );
+  });
+
+  it('says nothing when no sibling is a close match — never guesses', () => {
+    mkdirSync(join(root, 'completely-unrelated-name'));
+    expect(suggestExistingCwd(join(root, 'nonexistent-thing', 'sub'))).toBeUndefined();
+  });
+
+  it('says nothing when TWO siblings are equally close — ambiguity is not a guess', () => {
+    mkdirSync(join(root, 'papercupai-workspace'));
+    mkdirSync(join(root, 'papercuspai-workspacf')); // also one edit away from the typo below
+    expect(suggestExistingCwd(join(root, 'papercuspal-workspace', 'x'))).toBeUndefined();
+  });
+
+  it('says nothing when the reconstructed path still does not exist', () => {
+    // The ancestor segment matches, but the tail below it was never created — the
+    // rebuilt full path must be verified, not merely the matched segment.
+    mkdirSync(join(root, 'papercupai-workspace'));
+    expect(suggestExistingCwd(join(root, 'papercuspai-workspace', 'papercusp', 'nope'))).toBeUndefined();
   });
 });

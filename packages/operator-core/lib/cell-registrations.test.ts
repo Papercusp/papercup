@@ -1,4 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+// The tool catalog populates by SIDE-EFFECT IMPORT, and the wiring module is the only honest
+// way to fill it: importing just the doors the cells name today would make the WI-6528 walk
+// below fail with a false positive the moment a cell adopts a door this file forgot to import.
+// Same reason agent-tools/dev/pipeline_position.test.ts gives — "a test importing only the tool
+// would see an" incomplete catalog — and the same idiom as trimmed-contract.test.ts.
+import './agent-tools/index';
 import {
   validateCellSpec,
   getCell,
@@ -697,4 +704,111 @@ describe('P-009 / D-013: no registered cell declares a federation nobody transpo
     registerBuiltinCells();
     expect(listCellsUnchecked().length).toBe(BUILTIN_CELLS.length);
   });
+});
+
+/**
+ * WI-6528 — MAKE D-076 EXECUTABLE.
+ *
+ * D-076 (plan agent-state-plane-verification-2026-07-27) ruled that the cell layer is a
+ * PARALLEL projection and never a required path: "every registered cell shares its resolver
+ * with a NON-CELL surface agents already use, so state:read can never produce a behavioural
+ * delta". It proved that by READING the registry by hand, over the 6 cells that existed on
+ * 2026-07-28. The registry has since grown to 17. A hand-read proof does not survive growth.
+ *
+ * It is truer than D-076 argued, and for a better reason: `state:read` owns NO resolver of its
+ * own. `readCell` DISPATCHES the sibling door — `dispatchReadOnlyTool(spec.changeSignal.tool)`
+ * (cell-read.ts:749) — and projects `changeSignal.path` out of its reply. So the sibling
+ * relation is not a property of the registrations; it is what the read door IS.
+ *
+ * That makes `changeSignal.tool` load-bearing in a way nothing checks. `dispatchReadOnlyTool`
+ * throws `unknown_tool` for a name that does not resolve and `not_read_only` for a write-effect
+ * tool (predicate-watch.ts:581-588) — but BOTH fire at read time, per read. A cell registered
+ * with a typo'd, renamed, or write-effect tool therefore:
+ *   - passes the type (`changeSignal.tool` is a bare `string`),
+ *   - passes every `validateCellSpec` reject rule (none inspects the tool NAME), and
+ *   - passes cell-access-parity's LEG E, which walks all BUILTIN_CELLS but asserts only the
+ *     visibility gate — its own comment says "A poll cell would dispatch a real tool here, so
+ *     only the GATE is asserted".
+ * ...and then returns `unknown` at every read, forever. That failure is near-invisible:
+ * EI-21544761852770720 records five consecutive `unknown` readings being misread as a wedged
+ * resolver when the door was healthy. A cell that never worked looks identical.
+ *
+ * WHY A TEST RATHER THAN A REGISTRATION-TIME REFUSAL. The stronger fix is one line in
+ * `validateCellSpec`, which is what this gap's original finder proposed a month ago. It is not
+ * taken here because `cell-registry.ts` is imported broadly across operator-core while
+ * `lookupByMcpName` lives in `@papercusp/agent-mcp`, which projects operator-core's own tools —
+ * importing it into the registry core risks an import cycle for a check that a build-time test
+ * pins just as firmly. If that cycle is ever shown not to exist, promote this to the gate.
+ */
+describe('WI-6528 / D-076: every cell projects a REAL, read-only, NON-CELL door', () => {
+  /** The pulled projections themselves. A cell naming one of these is circular by definition. */
+  const CELL_DOORS = new Set(['state:read', 'state:subscribe']);
+
+  /**
+   * The whole judgement, as ONE predicate over a tool name, so the controls below can feed it
+   * inputs the real registry does not contain. Returns the DEFECT, or null when the door is
+   * sound — naming which of the three ways it broke, so a control cannot pass for the wrong one.
+   */
+  function siblingDoorDefect(tool: string): 'circular' | 'unknown-tool' | 'not-read-only' | null {
+    // Checked FIRST: state:read resolves and IS read-only, so the later checks would clear it.
+    if (CELL_DOORS.has(tool)) return 'circular';
+    const projected = lookupByMcpName(tool);
+    if (!projected) return 'unknown-tool';
+    // `effect` is not on the exported RoleToolDefinition surface (WI-38184 hit exactly this as a
+    // type error), so read it through a narrow cast rather than widening the type.
+    if ((projected as { effect?: string }).effect !== 'read') return 'not-read-only';
+    return null;
+  }
+
+  /**
+   * FALSIFIABILITY, permanently — not a one-shot mutation of the shared tree.
+   *
+   * CLAUDE.md's mutation-probe tiers put an imported PREDICATE at the top tier: keep a
+   * deliberately-wrong input in the test file rather than mutating production code, because the
+   * subject here is a pure function of a tool name and can simply be handed one. These three
+   * inputs are the three ways a cell's sibling door can be wrong, and each must be caught for a
+   * DISTINCT reason — asserting the specific defect is what stops one control from passing
+   * because a different check fired.
+   */
+  it('CONTROL: the predicate catches all three defects (so a green walk below means something)', () => {
+    expect(siblingDoorDefect('definitely:not-a-real-tool'), 'unresolvable door').toBe('unknown-tool');
+    expect(siblingDoorDefect('state:read'), 'the cell door itself').toBe('circular');
+    expect(siblingDoorDefect('state:subscribe'), 'the other cell door').toBe('circular');
+    // A real WRITE tool: dispatchReadOnlyTool refuses anything but effect==='read'.
+    expect(siblingDoorDefect('work_items:create'), 'a write-effect door').toBe('not-read-only');
+  });
+
+  it('CALIBRATION: the predicate CLEARS a door we know is good', () => {
+    // The other half of the control: a predicate that returned a defect for everything would
+    // make the walk below pass its controls and fail honestly on real cells — or vice versa.
+    expect(siblingDoorDefect('dev:pipeline_position')).toBeNull();
+  });
+
+  it('NON-VACUOUS: there are poll cells to check', () => {
+    const poll = BUILTIN_CELLS.filter((s) => s.changeSignal.kind === 'poll');
+    expect(poll.length).toBeGreaterThan(0);
+    // Measured 2026-08-30: all 17 built-in cells are poll-kind, zero event-kind. If an
+    // event-kind cell is ever added it is SKIPPED by the walk below (it declares an event key,
+    // not a door), so this records how much of the registry the walk actually covers.
+    expect(poll.length).toBe(BUILTIN_CELLS.length);
+  });
+
+  for (const spec of BUILTIN_CELLS) {
+    if (spec.changeSignal.kind !== 'poll') continue;
+    const tool = spec.changeSignal.tool;
+
+    it(`${spec.cell}: "${tool}" resolves, is read-only, and is not a cell door`, () => {
+      expect(
+        siblingDoorDefect(tool),
+        `${spec.cell} declares changeSignal.tool "${tool}".\n` +
+          '  unknown-tool  => readCell dispatches this name on EVERY read, so the cell is DEAD: it\n' +
+          '                  returns unknown/resolver-failed forever, which reads exactly like a\n' +
+          '                  slow or wedged resolver (EI-21544761852770720). Fix the name.\n' +
+          '  not-read-only => dispatchReadOnlyTool refuses any effect but "read", so every read fails.\n' +
+          '  circular      => the cell names a CELL DOOR as its own sibling. D-076 rules the cell\n' +
+          '                  layer is a PARALLEL projection and never a required path; a cell whose\n' +
+          '                  only door is state:read breaks that (and recurses through readCell).',
+      ).toBeNull();
+    });
+  }
 });

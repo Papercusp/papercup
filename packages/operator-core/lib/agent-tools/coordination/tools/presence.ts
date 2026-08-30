@@ -46,8 +46,11 @@ export default defineTool({
     // "no defect... wait, zero agents", which was then nearly reported to the owner as a
     // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
     // the two `active` keys at different nesting levels.
+    // EI-21845811145701209: the guess recurred (agents/rows/roster/live all tried, all
+    // silently []) despite the description above already naming `active` — so `agents`
+    // is now a real alias of `active` (same array, same reference), not just documented.
     returns:
-      "{ summary: { active: number (COUNT), byState, wakeable, ... }, active: AgentRow[] (the roster), activeTruncated?, self?, etag, as_of, scope }. A capped active[] cannot prove absence; target that owner instead. A since hit returns { unchanged:true, etag, as_of, scope, note }. Unless include_coupling:false, expanded[] appends reader-relative coupled peers without changing active; it is not etag-tracked. expanded.intent is declared intent, not a goal.",
+      "{ summary: { active: number (COUNT), byState, wakeable, ... }, active: AgentRow[] (the roster), agents: AgentRow[] (SAME array as `active` — an alias, kept for readers who guess this name; use either), activeTruncated?, self?, etag, as_of, scope }. A capped active[] cannot prove absence; target that owner instead. A since hit returns { unchanged:true, etag, as_of, scope, note }. Unless include_coupling:false, expanded[] appends reader-relative coupled peers without changing active — it is the NARROW coupled-peers subset, not the roster, and it is not etag-tracked. expanded.intent is declared intent, not a goal.",
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -468,6 +471,15 @@ export default defineTool({
       ...snapshot,
       ...(self ? { self } : {}),
       active,
+      // EI-21845811145701209: `agents` is the name readers reach for FIRST when
+      // guessing the roster key (the tool description already spells out
+      // `active` — see EI-13298 above — but the guess persists). Alias it to
+      // the SAME array rather than leaving a plausible key silently absent: a
+      // miss on this key would otherwise fall through `|| []` and read as "zero
+      // agents present" instead of "wrong key name", which is the exact
+      // silent-false-absence failure both incidents hit. Kept as a reference to
+      // `active`, never a second derivation, so the two can never diverge.
+      agents: active,
       ...coupling,
       ...(dispatch ? { dispatch } : {}),
     };

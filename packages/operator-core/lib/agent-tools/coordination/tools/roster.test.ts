@@ -228,6 +228,15 @@ describe('coord:roster', () => {
       expect(output.scope).toBe('workspace');
     });
 
+    it('EI-21845811145701209: aliases `agents` to the same rows as `active`', async () => {
+      const { output } = await call(
+        { view: 'live', scope: 'hive' },
+        { workspaceId: 'test-ws', harnessSlug: 'test-harness' },
+      );
+
+      expect(output.agents).toEqual(output.active);
+    });
+
     it('should support targeted owner lookup', async () => {
       const { output } = await call(
         { view: 'live', owner: 'agent-1' },
@@ -290,6 +299,11 @@ describe('coord:roster', () => {
           fleetRole: 'member',
         }),
       );
+    });
+
+    it('EI-21845811145701209: aliases `agents` to the same rows as `active`', async () => {
+      const { output } = await call({ view: 'members', scope: 'hive' }, { workspaceId: 'test-ws' });
+      expect(output.agents).toEqual(output.active);
     });
 
     it('caps an oversized explicit liveness page before the result door can corrupt JSON', async () => {

@@ -74,6 +74,8 @@ export default defineTool({
     when: 'Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who\'s on plan P (view=claims)? Historical who-was-ever-here (view=history). Just need live ownerIds? { view:"live", project:"liveness", states:["live"] } — ~99% smaller than the default read, and the only form that reliably fits one result.',
     notWhen: 'Being notified of future changes (subscribe fleet_assignment change-feed). Full message history (coord:inbox). Rate-limit telemetry (dev:rate_governor_status). NEVER hand-query coord_presence for liveness — sessionState is derived from six legs, two of which are not in Postgres, so no column holds it; use project/states here instead.',
     chaining: 'coord:roster { view } → read ONCE per turn; tail [coord+N] deltas for transitions. For history, use coord:catch-up after to refine by topic/plan.',
+    returns:
+      'view=live/members: { active: AgentRow[] (the roster), agents: AgentRow[] (SAME array — alias, use either), summary, self?, etag, ... }. view=claims: { agents: AgentGroup[] (claims-grouped, a DIFFERENT row shape), summary, orphaned, stalled }. view=history: { data: null, suggestion }.',
     seeAlso: [
       'coord:presence (view=live · members)',
       'fleet:assignments (view=claims)',
@@ -94,6 +96,12 @@ export default defineTool({
   // Safe for the other lenses by construction: shapeCoordPresence returns `data`
   // untouched unless `active[]` is an array, and view=claims emits `agents[]`
   // while view=history emits `data:null`.
+  //
+  // EI-21845811145701209: view=live/members now ALSO emits `agents[]`, as an
+  // alias of `active[]` (same reference, tier-shaped identically — see
+  // presence-shape.ts). That makes `agents` the correct key for EVERY view of
+  // this tool, closing the guess that used to silently read as "zero agents"
+  // on live/members while happening to be right on claims.
   //
   // ⚠ An EXPLICIT caller lens BEATS the automatic one. Rows the caller already
   // projected to { ownerId, sessionState } would be RE-WIDENED by the shaper
@@ -323,6 +331,12 @@ export default defineTool({
         view: view === 'live' ? 'live' : 'members',
         ...(self ? { self } : {}),
         active: emitted,
+        // EI-21845811145701209: alias `agents` to the SAME rows as `active` for
+        // view=live/members. Readers repeatedly guess `agents` first (it is also
+        // the correct key for view=claims below, so this makes the guess right
+        // across every view rather than right for one and silently [] for
+        // another). Never a second derivation — same reference as `active`.
+        agents: emitted,
         ...(lensed
           ? {
               projection: {

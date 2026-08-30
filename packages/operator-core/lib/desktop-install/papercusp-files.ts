@@ -893,6 +893,12 @@ export const CC_HOOK_FILES = [
   // pings journal:record-turn at each Stop; the server extracts the agent's
   // ⟦journal⟧ line (mechanical first-line fallback, flagged).
   'stop-turn-journal.sh',
+  // EI-21844056581395228 (a repeat of EI-19944806095285549): an artifact URL was
+  // twice reported to the owner as delivered when no artifact existed. The prompt
+  // rail was present both times, so this is the mechanical layer under it —
+  // PostToolUse(Artifact) ledgers the ids real calls RETURNED, and Stop blocks a
+  // final message citing one that was never returned. See the script's header.
+  'artifact-url-delivery-guard.mjs',
   // owner-inbox-single-pane-2026-07-17 P-001: the owner-gate CAPTURE + MIRROR layer —
   // PreToolUse/PostToolUse around AskUserQuestion/ExitPlanMode, a Notification
   // permission-wait capture, and a Stop `<ask>`-tag mirror + question-shaped-ending
@@ -2705,6 +2711,21 @@ export function mergeClaudeHookSettings(
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-turn-journal.sh'), {
       hooks: cmd('stop-turn-journal.sh'),
     });
+  // merge_artifact_url_delivery_guard_hook — EI-21844056581395228. Two branches of
+  // ONE script: PostToolUse (matcher scoped to the Artifact tool) harvests the ids
+  // that non-error calls actually returned into a session ledger; Stop (no matcher)
+  // blocks a final message citing an id that ledger never saw. Stop must be wired
+  // matcher-less because the failure lands in assistant PROSE, which no tool
+  // matcher can see. `stop_hook_active` bounds it to one bounce per turn.
+  if (has('artifact-url-delivery-guard.mjs')) {
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('artifact-url-delivery-guard.mjs'), {
+      matcher: 'Artifact|mcp__.*__[Aa]rtifact',
+      hooks: cmd('artifact-url-delivery-guard.mjs'),
+    });
+    hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('artifact-url-delivery-guard.mjs'), {
+      hooks: cmd('artifact-url-delivery-guard.mjs'),
+    });
+  }
   // merge_ask_gate_hook — PreToolUse + PostToolUse (matcher 'AskUserQuestion|ExitPlanMode')
   // + matcher-less Notification + Stop. owner-inbox-single-pane-2026-07-17 P-001: the
   // owner-gate CAPTURE + MIRROR layer (see the script's own header for the four branches).

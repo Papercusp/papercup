@@ -19,7 +19,9 @@
  * killed), NOT an orphan.
  */
 
+import { join } from 'node:path';
 import { backupHost } from './config';
+import { reapDeadDumpTempFiles } from './hook';
 
 /**
  * Default orphan threshold. A snapshot stuck in `running` for longer
@@ -31,6 +33,19 @@ const DEFAULT_ORPHAN_THRESHOLD_MS = 60 * 60_000; // 1 hour
 export interface SweepResult {
   swept: number;
   sweptIds: string[];
+  /**
+   * Dead-writer `.tmp` transaction files reaped as a side effect of this
+   * sweep (WI-1094233). A run whose whole process died mid-dump (OOM,
+   * hard kill) leaves its PID/sequence-scoped transaction file behind AND
+   * writes no further hook.log line, so the file previously sat unreaped
+   * until the workspace's NEXT scheduled hook run happened to call
+   * `reapDeadDumpTempFiles` at its own start — up to a full cadence period
+   * away, or never for an event-only/disabled workspace. The orphan sweep
+   * already runs every 5 minutes independent of any workspace's cadence,
+   * so reaping here as soon as a row is confirmed orphaned reclaims the
+   * disk headroom promptly instead of leaving it stranded.
+   */
+  reapedTempFiles: number;
 }
 
 /**
@@ -51,7 +66,7 @@ export async function sweepOrphanSnapshots(opts?: {
   const errorTag = `orphan-sweep: status='running' for >${minutes}min`;
 
   const sql = backupHost().getSql();
-  const rows = await sql<{ id: string }[]>`
+  const rows = await sql<{ id: string; workspace_id: string }[]>`
     UPDATE harness_shared.backup_snapshots AS snapshot
        SET status      = 'failed',
            finished_at = now(),
@@ -65,10 +80,41 @@ export async function sweepOrphanSnapshots(opts?: {
             AND event.snapshot_id = snapshot.id
             AND event.at >= ${cutoffIso}::timestamptz
        )
-     RETURNING snapshot.id::text AS id
+     RETURNING snapshot.id::text AS id, snapshot.workspace_id AS workspace_id
   `;
   const sweptIds = rows.map((r) => r.id);
-  return { swept: sweptIds.length, sweptIds };
+
+  // A row just confirmed orphaned is exactly the signal that its writer died
+  // without cleaning up its own transaction file. Reap each affected
+  // workspace's dead-writer temp files now rather than waiting on that
+  // workspace's next hook run to reach the same reaper at its own start.
+  const reapedTempFiles = await reapDeadWriterTempFilesFor(
+    [...new Set(rows.map((r) => r.workspace_id))],
+  );
+
+  return { swept: sweptIds.length, sweptIds, reapedTempFiles };
+}
+
+/**
+ * Best-effort: reap dead-writer `.tmp` transaction files for the given
+ * workspace ids. Mirrors the outPath construction `WorkspaceBackup` uses
+ * (`<workspacesRoot>/<workspaceId>/db-dumps/pg-embedded.sql.gz`) without
+ * depending on that class, keeping this sweep independent of any
+ * particular workspace's cadence/settings. A single workspace's failure
+ * (unreadable dir, races with a live writer) must never abort the sweep
+ * for the others.
+ */
+async function reapDeadWriterTempFilesFor(workspaceIds: string[]): Promise<number> {
+  let total = 0;
+  for (const workspaceId of workspaceIds) {
+    try {
+      const outPath = join(backupHost().workspacesRoot(), workspaceId, 'db-dumps', 'pg-embedded.sql.gz');
+      total += await reapDeadDumpTempFiles(outPath);
+    } catch {
+      // Best-effort cleanup; the next sweep or hook run retries.
+    }
+  }
+  return total;
 }
 
 /* Internal scheduler-side state — prevents overlapping sweeps. */

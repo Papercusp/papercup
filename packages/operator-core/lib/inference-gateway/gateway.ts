@@ -58,20 +58,16 @@ import { recordGatewayStall } from './gateway-stall-store';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   gatewayProviderStatuses,
-  legacyEntryRouteForGatewayLane,
   legacyExecutorForGatewayTransport,
   makeGatewayLaneRegistry,
   makeGatewayProviderAdapters,
   providerForGatewayRequest,
   type GatewayLaneDescriptor,
-  type GatewayLegacyEntryExecutorId,
   type GatewayLegacyExecutorId,
 } from './provider-adapters';
 import {
-  executeGatewayLegacyLane,
   executeGatewayRequestKernel,
   GatewayRequestKernelError,
-  type GatewayKernelAdmissionController,
   type GatewayKernelAttemptContext,
   type GatewayKernelContext,
 } from './request-kernel';
@@ -3295,8 +3291,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // SECOND one and double-count the request.
           span: stageSpan,
           admission: {
-            // PASS-THROUGH: `executeLegacyLaneTask` already crossed the canonical durable
-            // governor before this handler was entered, so re-admitting would self-deadlock.
+            // PASS-THROUGH: `withDurableGatewayAdmission` already crossed the canonical
+            // durable governor before this handler was entered, and that crossing is this
+            // lane's ONLY real admission — it has no queue of its own — so re-admitting
+            // here would self-deadlock on the slot the request already holds.
             run: (_context, task) => task(),
           },
           adapter: kernelAdapter,
@@ -3500,11 +3498,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
   }
 
-  async function proxy(
+  /**
+   * P-011 / D-027: the ADMITTED body of the `anthropic-messages` lane. Its caller
+   * (`proxy`) has already taken the lane's admission slot, which is why this function
+   * receives a PASS-THROUGH kernel admission and must never be entered directly.
+   *
+   * Why the slot is taken above this function rather than at the kernel's own
+   * `admission.run` seam: the seam lives INSIDE `executeGatewayRequestKernel`
+   * (request-kernel.ts:887) and this handler calls the kernel from inside the `for (;;)`
+   * internal-retry loop below, so a seam-placed slot would be taken PER PASS — a request
+   * that absorbs a 429 would surrender its queue slot and re-queue behind newcomers
+   * mid-flight — and it would sit inside the per-account governor hold acquired below,
+   * inverting queue→governor into governor→queue.
+   */
+  async function proxyAdmitted(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     url: string,
-    kernelAdmission: LegacyGatewayKernelAdmission,
+    kernelAdmission: GatewayLaneAdmission,
   ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('oauth-http');
@@ -5291,7 +5302,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   async function executeCodexLegacyTransport(
     executor: GatewayLegacyExecutorId,
     execution: CodexLegacyTransportExecution,
-    kernelAdmission: LegacyGatewayKernelAdmission,
+    kernelAdmission: GatewayLaneAdmission,
   ): Promise<void> {
     switch (executor) {
       case 'serveCodexOAuthProxy':
@@ -5327,7 +5338,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     cli: CodexCliAccount,
-    kernelAdmission: LegacyGatewayKernelAdmission,
+    kernelAdmission: GatewayLaneAdmission,
     preBody?: Buffer,
     routing: CodexLegacyRouting = { hardPin: false, pinned: null },
   ) {
@@ -5539,10 +5550,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
         telemetry: requestStageTelemetry,
         span: stageSpan,
         admission: {
-          // P-011 / D-023: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`.
-          // Pass-through while `openai-responses` is still bridge-admitted (this handler runs
-          // inside executeLegacyLaneTask's Governor.admit, so re-admitting would deadlock on
-          // its own slot); step (iv) swaps in the real controller at the top of that chain.
+          // P-011 / D-027: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`,
+          // and PASS-THROUGH by design rather than by transition. `proxyOpenAi` takes the
+          // `openai-responses` slot at its own entry, above the account resolution and the
+          // transport dispatch that reach this handler, so re-admitting here would deadlock on
+          // the slot this request already holds. It is also why the slot cannot move down to
+          // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, error }) => {
             const account = context.route.accountId ?? cli.accountId;
@@ -5703,7 +5716,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res: http.ServerResponse,
     cli: CodexCliAccount,
     url: string,
-    kernelAdmission: LegacyGatewayKernelAdmission,
+    kernelAdmission: GatewayLaneAdmission,
     routing: CodexLegacyRouting,
   ) {
     const stageSpan = requestSpan(req);
@@ -5920,10 +5933,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
         telemetry: requestStageTelemetry,
         span: stageSpan,
         admission: {
-          // P-011 / D-023: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`.
-          // Pass-through while `openai-responses` is still bridge-admitted (this handler runs
-          // inside executeLegacyLaneTask's Governor.admit, so re-admitting would deadlock on
-          // its own slot); step (iv) swaps in the real controller at the top of that chain.
+          // P-011 / D-027: threaded down from `proxyOpenAi` via `executeCodexLegacyTransport`,
+          // and PASS-THROUGH by design rather than by transition. `proxyOpenAi` takes the
+          // `openai-responses` slot at its own entry, above the account resolution and the
+          // transport dispatch that reach this handler, so re-admitting here would deadlock on
+          // the slot this request already holds. It is also why the slot cannot move down to
+          // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, response, error }) => {
             attemptsSeen = context.attempt;
@@ -6206,11 +6221,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  async function proxyOpenAi(
+  /**
+   * P-011 / D-027: the ADMITTED body of the `openai-responses` lane — see `proxyAdmitted`
+   * for the rule. Its caller (`proxyOpenAi`) owns the lane's admission slot, so everything
+   * this function does runs INSIDE it: account resolution, transport selection, and the
+   * ChatGPT-subscription transports it dispatches through `executeCodexLegacyTransport`.
+   *
+   * That placement is load-bearing for `serveCodexCliBridge`, which commits the 200 + SSE
+   * head BEFORE its kernel call (see the inversion it documents). Admitting at the kernel
+   * seam there would decide to shed a request whose response head was already on the wire.
+   */
+  async function proxyOpenAiAdmitted(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     url: string,
-    kernelAdmission: LegacyGatewayKernelAdmission,
+    kernelAdmission: GatewayLaneAdmission,
   ) {
     const stageSpan = requestSpan(req);
     const adapter = providerAdapters.codex;
@@ -6484,11 +6509,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // kernel would begin a SECOND span and double-count the request.
         span: stageSpan,
         admission: {
-          // P-011 / D-023: arrives from this executor's caller. Pass-through while
-          // `openai-responses` is still bridge-admitted — `proxyOpenAi` runs inside
-          // `executeLegacyLaneTask`'s Governor.admit, so re-admitting here would deadlock
-          // against the slot this request already holds. Step (iv) swaps in the real
-          // controller and drops the bridge's, so exactly one of the two admits.
+          // P-011 / D-027: arrives from this executor's caller and is PASS-THROUGH by design.
+          // `proxyOpenAi`'s entry wrapper already took the `openai-responses` slot around this
+          // whole body, so exactly one of the two admits and re-admitting here would deadlock
+          // against the slot this request already holds.
           run: (context, task) => kernelAdmission.run(context, task),
           observeAttempt: ({ context, response, error }) => {
             attemptsSeen = context.attempt;
@@ -6687,59 +6711,76 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }
 
   /**
-   * P-011 / D-023: the admission controller an entry executor threads down to its kernel
-   * call(s). This is the seam that lets a lane's REAL admission live at the kernel's own
-   * `admission.run` — where the kernel takes ONE slot per request around the WHOLE attempt
-   * loop (request-kernel.ts:886, loop at :928) and fires `span.admitted()` itself (:887) —
-   * instead of at the strangler bridge above it.
+   * P-011 / D-023 / D-027: a lane's admission controller — ONE slot per request, taken by the
+   * lane's entry handler around everything it does, and forwarded to that handler's kernel
+   * call(s) as a pass-through so exactly one of the two admits.
+   *
+   * D-027 corrected where this is invoked. It was introduced expecting to live at the kernel's
+   * own `admission.run`, but that seam is INSIDE `executeGatewayRequestKernel`
+   * (request-kernel.ts:887) and is therefore per-KERNEL-CALL — right only for a handler that
+   * calls the kernel once and does nothing admission-relevant first. Hence the name: a LANE
+   * admission, not a kernel one.
    *
    * `context` is deliberately `unknown`. Each kernel site parameterises the controller over
    * its OWN route type, and a lane controller closes over `pri`/`tier`/`stageSpan` rather
    * than reading kernel route internals; typing it `unknown` states that honestly and keeps
    * one shared seam usable at every site instead of one bespoke type per transport.
    */
-  type LegacyGatewayKernelAdmission = {
+  type GatewayLaneAdmission = {
     run<TResult>(context: unknown, task: () => Promise<TResult>): Promise<TResult>;
   };
 
   /**
-   * The `admission` parameter is REQUIRED, never optional. An optional one would let a
-   * re-homed lane silently fall back to pass-through and run UNQUEUED while every suite
-   * stayed green — the exact "green while testing nothing" failure step (ii) hit three
+   * The pass-through a handler hands its kernel call(s) once the lane's slot is already held
+   * by that handler's entry. Named rather than inlined so it reads as a STATEMENT — "this
+   * lane is admitted above, admitting again here would deadlock on its own slot" — at every
+   * site, rather than as an anonymous no-op someone later mistakes for an oversight.
+   *
+   * The `admission` parameter on every entry handler stays REQUIRED, never optional. An
+   * optional one would let a lane silently fall back to pass-through and run UNQUEUED while
+   * every suite stayed green — the exact "green while testing nothing" failure P-011 hit three
    * separate times (WI-1213880 breakages a/b/c). Required means a lane that forgets to pass
    * its controller fails to COMPILE.
    */
-  type LegacyGatewayEntryExecutor = (
+  const passThroughLaneAdmission: GatewayLaneAdmission = {
+    run: (_context, task) => task(),
+  };
+
+  /**
+   * P-011 / D-027 — the two remaining lanes' ENTRY seams. Each takes its lane's real
+   * admission slot ONCE, around everything the handler does, and hands the admitted body a
+   * pass-through kernel admission.
+   *
+   * A lane's admission belongs at its outermost PER-REQUEST boundary. The kernel's
+   * `admission.run` seam is per-KERNEL-CALL (request-kernel.ts:887), so it coincides with
+   * that boundary only for a handler that calls the kernel exactly once and does nothing
+   * admission-relevant first — measured, `proxyLocal` alone. `proxyAdmitted` loops over the
+   * kernel; `proxyOpenAiAdmitted` resolves accounts and can commit a response head before
+   * reaching one. Both therefore admit here.
+   *
+   * `undefined` is the context because a lane controller closes over `pri`/`tier`/`stageSpan`
+   * and reads no kernel route internals — the reason the seam types `context` as `unknown`.
+   */
+  async function proxy(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     url: string,
-    admission: LegacyGatewayKernelAdmission,
-  ) => Promise<void>;
+    laneAdmission: GatewayLaneAdmission,
+  ): Promise<void> {
+    return laneAdmission.run(undefined, () => proxyAdmitted(req, res, url, passThroughLaneAdmission));
+  }
 
-  /**
-   * The pass-through every site uses until its lane is re-homed. Named rather than inlined
-   * so a `grep` counts the REMAINING un-re-homed kernel sites — the ratchet P-011 shrinks.
-   */
-  const passThroughKernelAdmission: LegacyGatewayKernelAdmission = {
-    run: (_context, task) => task(),
-  };
+  async function proxyOpenAi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: string,
+    laneAdmission: GatewayLaneAdmission,
+  ): Promise<void> {
+    return laneAdmission.run(undefined, () => proxyOpenAiAdmitted(req, res, url, passThroughLaneAdmission));
+  }
 
-  // P-011 / D-022: `proxyLocal` is deliberately ABSENT — its lane is entered directly via
-  // `withDurableGatewayAdmission`. This map loses one entry per re-homed lane and disappears
-  // with the bridge; it is keyed by `GatewayLegacyEntryExecutorId`, which shrinks in step, so
-  // a lane removed here without narrowing that union fails to compile rather than rotting.
-  const legacyGatewayEntryExecutors: Record<GatewayLegacyEntryExecutorId, LegacyGatewayEntryExecutor> = {
-    proxy,
-    proxyOpenAi,
-  };
   const legacyAdmissionSignal = new AbortController().signal;
   let legacyAdmissionRequestSeq = 0;
-  const unqueuedLegacyAdmission: Pick<
-    GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>,
-    'run'
-  > = {
-    run: (_context, task) => task(),
-  };
 
   /**
    * The gateway's DURABLE admission crossing — D-004's pre-acceptance body spool, the
@@ -6846,48 +6887,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  /**
-   * STRANGLER BRIDGE — the LANE-level admission seam, layered on top of the durable
-   * crossing above. This is the half P-008 deletes: as each lane re-homes its real
-   * admission INSIDE `executeGatewayRequestKernel` it drops its `legacyEntryExecutor` and
-   * its entry in `LANES_ADMITTED_VIA_LEGACY_BRIDGE`; when that allowlist is empty, this
-   * function and `executeGatewayLegacyLane` go with it and
-   * `withDurableGatewayAdmission` stays.
-   *
-   * There is intentionally no lease or release callback: the queue releases only after
-   * `task` (including in-flight unregister) settles.
-   *
-   * `async` so a throw from `legacyEntryRouteForGatewayLane` surfaces as a REJECTED
-   * promise — every call site is `void executeLegacyLaneTask({...}).catch(...)`, which a
-   * synchronous throw would escape.
-   */
-  async function executeLegacyLaneTask<TResult>(opts: {
-    req: http.IncomingMessage;
-    lane: GatewayLaneDescriptor;
-    admission: Pick<GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>, 'run'>;
-    task(executor: GatewayLegacyEntryExecutorId): Promise<TResult>;
-  }): Promise<TResult> {
-    const entry = legacyEntryRouteForGatewayLane(opts.lane);
-    return withDurableGatewayAdmission({
-      req: opts.req,
-      lane: opts.lane,
-      task: (context) =>
-        executeGatewayLegacyLane({
-          context,
-          route: {
-            key: `${opts.lane.id}:${entry.executor}`,
-            value: entry.executor,
-            transport: entry.transport,
-          },
-          admission: opts.admission,
-          execute: () => opts.task(entry.executor),
-        }),
-    });
-  }
+  // P-008 / D-028: the STRANGLER BRIDGE that used to sit here — `executeLegacyLaneTask`, the
+  // `legacyGatewayEntryExecutors` string-keyed dispatch map and `unqueuedLegacyAdmission` — is
+  // DELETED. Every lane now takes its admission at its own entry (P-011 / D-027), so there is
+  // no bridge left to route through. The DURABLE crossing above (`withDurableGatewayAdmission`)
+  // is a different layer and deliberately stays: D-022 measured that fusing the two into one
+  // function is what made P-008's original deletion list wrong.
 
   /**
    * Keep a server-level admission lease around control/metadata handlers. Most
-   * `/v1/*` requests are admitted by `executeLegacyLaneTask`, but the cheap
+   * `/v1/*` requests are admitted by their lane's own entry, but the cheap
    * handlers below return before a lane executor is selected. They still need a
    * typed, auditable admission decision (an explicit registered bypass), and the
    * lease must remain live until any promise-backed handler has settled.
@@ -7606,9 +7615,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       span.setCacheRouting('not-applicable');
       span.routeSelected();
       const localUrl = url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions';
-      // P-011 / D-022: RE-HOMED — the first lane off the strangler bridge. Entered directly
-      // rather than through `executeLegacyLaneTask`, so this lane declares no
-      // `legacyEntryExecutor` and is out of `LANES_ADMITTED_VIA_LEGACY_BRIDGE`.
+      // P-011 / D-022: the FIRST lane off the strangler bridge, entered directly.
       //
       // `withDurableGatewayAdmission` still crosses the canonical durable governor before this
       // task runs, and that remains this lane's ONLY real admission — it has no queue of its
@@ -7643,14 +7650,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
       requestPath === '/v1/models' &&
       providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id === 'codex'
     ) {
-      void executeLegacyLaneTask({
+      // P-011 / D-027: entered directly. The /v1/models bypass is UNQUEUED by design (see the
+      // comment above) and now SAYS SO in the one place that decides it: it hands
+      // `proxyOpenAi` a PASS-THROUGH lane admission, so the entry takes no queue slot at all.
+      // `withDurableGatewayAdmission` still runs, and its registered bypass key for
+      // `GET /v1/models` is what keeps the durable governor out of a metadata probe's way.
+      void withDurableGatewayAdmission({
         req,
         lane: providerAdapters.codex.lane,
-        admission: unqueuedLegacyAdmission,
-        // The /v1/models bypass is UNQUEUED by design (see the comment above), so its kernel
-        // admission stays pass-through even after step (iv) re-homes the provider path that
-        // shares this lane — the bypass is the property being preserved, not scaffolding.
-        task: (executor) => legacyGatewayEntryExecutors[executor](req, res, url, passThroughKernelAdmission),
+        task: () => proxyOpenAi(req, res, url, passThroughLaneAdmission),
       }).catch((e) => {
         codexUpstreamErrors++;
         log('error', `codex models handler crashed: ${(e as Error).message}`);
@@ -7696,16 +7704,39 @@ export function createInferenceGateway(deps: GatewayDeps) {
       queue: admissionQueue.snapshot(),
     });
     const markProviderAdmitted = () => {
+      // D-023: `stageSpan?.admitted()` is deliberately NOT called here. The kernel fires
+      // `span.admitted()` itself as the first statement inside `admission.run`'s callback
+      // (request-kernel.ts:888) on THIS span, which every handler adopts via `requestSpan(req)`
+      // (D-008) — so marking it here as well double-marked one request. The identical duplicate
+      // was already removed on the local lane. `admissionAdmitted('provider', ...)` has no
+      // kernel equivalent and MUST stay.
       stageSpan?.admissionAdmitted('provider', providerAdmissionObservation());
-      stageSpan?.admitted();
     };
-    // Claude registers itself after parsing its request and acquiring its per-account governor. Codex has
-    // no equivalent inner registration point, so wrap the whole admitted handler here. The shared self-heal
-    // valve can now reclaim a wedged ChatGPT OAuth/bearer/CLI request instead of seeing an untracked held slot.
-    const runHandler =
-      providerId === 'codex'
-        ? async (executor: GatewayLegacyEntryExecutorId) => {
+    /**
+     * P-011 / D-023 / D-027 — the lane's REAL admission controller. It is handed to the entry
+     * handler, which invokes it ONCE around everything it does.
+     *
+     * The CONTROLLER, not the call site, owns what happens inside the slot: after re-homing
+     * the call site is OUTSIDE it. So `admissionQueued` is recorded before the queue is
+     * entered, and everything that must be true only of an ADMITTED request happens within
+     * `admissionQueue.run`.
+     *
+     * Claude registers itself in `inFlightReg` after parsing its request and acquiring its
+     * per-account governor. Codex has no equivalent inner registration point, so the whole
+     * admitted handler is wrapped here — which is what lets the shared self-heal valve reclaim
+     * a wedged ChatGPT OAuth/bearer/CLI request instead of seeing an untracked held slot.
+     * Registering OUTSIDE the slot would be worse than not registering at all: the valve reads
+     * `inFlightReg` for `oldestHeldSlotAgeMs` and for reclaim targeting, so a merely-QUEUED
+     * request there could be destroyed while holding no slot.
+     */
+    const providerLaneAdmission: GatewayLaneAdmission = {
+      run: (_context, task) => {
+        stageSpan?.admissionQueued('provider', providerAdmissionObservation());
+        return admissionQueue.run(
+          pri,
+          async () => {
             markProviderAdmitted();
+            if (providerId !== 'codex') return task();
             const reqId = ++reqSeq;
             inFlightReg.set(reqId, {
               id: reqId,
@@ -7730,7 +7761,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               },
             });
             try {
-              await legacyGatewayEntryExecutors[executor](req, res, url, passThroughKernelAdmission);
+              return await task();
             } finally {
               const entry = inFlightReg.get(reqId);
               if (entry) {
@@ -7738,21 +7769,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 if (!entry.reclaimed) lastDrainAt.codex = Date.now();
               }
             }
-          }
-        : async (executor: GatewayLegacyEntryExecutorId) => {
-            markProviderAdmitted();
-            await legacyGatewayEntryExecutors[executor](req, res, url, passThroughKernelAdmission);
-          };
-    executeLegacyLaneTask({
+          },
+          tier !== undefined ? { tier } : undefined,
+        );
+      },
+    };
+    // P-011 / D-027: the last two lanes left the strangler bridge together. They share one
+    // lane descriptor (`providerAdapters.codex.lane` IS `lanes.openaiResponses`), so re-homing
+    // covered the provider path and the `/v1/models` bypass in one atomic step (D-023); they
+    // were not independently shippable.
+    // Entered directly, exactly as `local-openai-chat` already is: `withDurableGatewayAdmission`
+    // still crosses the canonical durable governor (D-004's spool, deadline and payload pin),
+    // and the LANE-level slot is taken by `providerLaneAdmission` at the handler's own entry.
+    withDurableGatewayAdmission({
       req,
       lane: providerAdapter.lane,
-      admission: {
-        run: (_context, task) => {
-          stageSpan?.admissionQueued('provider', providerAdmissionObservation());
-          return admissionQueue.run(pri, task, tier !== undefined ? { tier } : undefined);
-        },
-      },
-      task: runHandler,
+      task: () =>
+        providerId === 'codex'
+          ? proxyOpenAi(req, res, url, providerLaneAdmission)
+          : proxy(req, res, url, providerLaneAdmission),
     }).catch((e) => {
       // D-003 permits a request to fail for invalid input or an inability to persist truthfully —
       // and for nothing else. These two branches are those cases; both happen BEFORE admission, so

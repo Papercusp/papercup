@@ -20219,7 +20219,7 @@
           "POST"
         ]
       },
-      "description": "Plan-item query across one or all plans. `itemIds:[…]` restricts results to exact P-NNN ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus=\"todo\"). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller's workspace. Cross-plan queries still require a concrete `harness`; `harness: 'all'` is valid only in an unscoped (--all-workspaces) session.",
+      "description": "Plan-item query across one or all plans. `item:\"P-NNN\"` (one) or `itemIds:[…]` (many, homogeneous) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus=\"todo\"). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller's workspace. Cross-plan queries still require a concrete `harness`; `harness: 'all'` is valid only in an unscoped (--all-workspaces) session.",
       "capabilities": [
         "plans:read"
       ],
@@ -20239,7 +20239,7 @@
         "cup"
       ],
       "guidance": {
-        "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one exact plan's items. Use `itemIds:[…]` with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.",
+        "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one exact plan's items. Use `item:\"P-NNN\"` (one, matching plans:get-item's convention) or `itemIds:[…]` (many) with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.",
         "notWhen": "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
         "chaining": "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug, itemIds:[…] } for an exact subset of one auto-resolved plan."
       }
@@ -28487,7 +28487,7 @@
       ],
       "guidance": {
         "when": "You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO (\"set a feature flag\", \"spawn a worker bee\").",
-        "notWhen": "The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global and accepts only `{ query, limit? }`; do not pass a per-call `harness` (session scope is applied automatically).",
+        "notWhen": "The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global; its scope is resolved from session context automatically, so a per-call `harness`/`workspace` is accepted but ignored — it never filters or narrows results.",
         "chaining": "tools:find(\"<intent>\") → call the top hit through tools:invoke in the SAME turn. `activated:true` means the server surface grew and requested a client refresh; it does not guarantee this client has materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work."
       }
     },

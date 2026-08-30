@@ -85,12 +85,32 @@ describe('tools:find tool registration', () => {
     expect(def.requirePrincipal).toBe(false);
     expect((def as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
     expect((def as { guidance?: { notWhen?: string } }).guidance?.notWhen).toContain(
-      'do not pass a per-call `harness` (session scope is applied automatically)',
+      'accepted but ignored — it never filters or narrows results',
     );
     // args schema accepts a query, rejects an empty one.
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);
     expect(def.args.safeParse({}).success).toBe(false);
+  });
+
+  it('EI-21854434860586936: accepts (and ignores) caller-supplied harness/workspace scope hints', () => {
+    const def = toolFind as unknown as ToolDef;
+    // Every other harness/workspace-scoped tool in the catalog accepts these
+    // keys, so callers naturally pass them here too — the strict schema must
+    // not reject them as unrecognized (that was the recurring caller-error).
+    expect(def.args.safeParse({ query: 'feature flag', harness: 'papercusp' }).success).toBe(true);
+    expect(def.args.safeParse({ query: 'feature flag', workspace: 'papercusp-workspace' }).success).toBe(true);
+    expect(
+      def.args.safeParse({ query: 'feature flag', harness: 'papercusp', workspace: 'papercusp-workspace' }).success,
+    ).toBe(true);
+    // Still rejects a genuinely unknown key.
+    expect(def.args.safeParse({ query: 'feature flag', bogus: 'nope' }).success).toBe(false);
+  });
+
+  it('EI-21854434860586936: caller-supplied harness/workspace hints do not change results (accept-and-ignore)', async () => {
+    const withoutHint = await callHandler({ query: 'feature flag' });
+    const withHint = await callHandler({ query: 'feature flag', harness: 'some-other-harness', workspace: 'some-other-workspace' });
+    expect(withHint.hits.map((h) => h.tool)).toEqual(withoutHint.hits.map((h) => h.tool));
   });
 });
 

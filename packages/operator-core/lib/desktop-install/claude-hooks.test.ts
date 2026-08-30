@@ -112,6 +112,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-tool-prompt-weight-nudge.mjs`,
       `${DEST}/posttooluse-mock-cast-escape-nudge.mjs`,
       `${DEST}/posttooluse-css-design-primitives-nudge.mjs`,
+      `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
@@ -126,7 +127,12 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PostToolUse[9].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight nudge
     expect(cfg.hooks.PostToolUse[10].matcher).toBe('Edit|Write|MultiEdit'); // mock-cast-escape nudge
     expect(cfg.hooks.PostToolUse[11].matcher).toBe('Edit|Write|MultiEdit'); // css-design-primitives nudge
-    expect(cfg.hooks.PostToolUse[13].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    // EI-21844056581395228: the ledger half of the artifact-URL delivery guard. It is
+    // scoped to the Artifact tool because it only harvests ids from that tool's own
+    // responses; the blocking half is matcher-less on Stop (assistant prose is not a
+    // tool call, so no matcher can reach it).
+    expect(cfg.hooks.PostToolUse[13].matcher).toBe('Artifact|mcp__.*__[Aa]rtifact');
+    expect(cfg.hooks.PostToolUse[14].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);
@@ -139,9 +145,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(commandsFor(cfg, 'Stop')).toEqual([
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/stop-turn-journal.sh`,
+      `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
-    expect(cfg.hooks.Stop[2].matcher).toBeUndefined(); // fires at every turn end
+    expect(cfg.hooks.Stop[3].matcher).toBeUndefined(); // fires at every turn end
+    // EI-21844056581395228: MUST be matcher-less. The failure it guards lands in the
+    // assistant's final PROSE, so a tool matcher here would leave it permanently inert
+    // while still looking wired — the exact dead-code shape guard-operator-desktop had.
+    expect(cfg.hooks.Stop[2].matcher).toBeUndefined();
 
     // Notification: ask-gate-mirror only (permission-wait capture, P-001).
     expect(commandsFor(cfg, 'Notification')).toEqual([`${DEST}/ask-gate-mirror.sh`]);

@@ -709,7 +709,7 @@ export default defineTool({
       'You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO ' +
       '("set a feature flag", "spawn a worker bee").',
     notWhen:
-      'The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global and accepts only `{ query, limit? }`; do not pass a per-call `harness` (session scope is applied automatically).',
+      'The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global; its scope is resolved from session context automatically, so a per-call `harness`/`workspace` is accepted but ignored — it never filters or narrows results.',
     chaining:
       'tools:find("<intent>") → call the top hit through tools:invoke in the SAME turn. `activated:true` ' +
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
@@ -734,6 +734,31 @@ export default defineTool({
     query: z.string().min(1).max(400),
     /** Max results (default 8). */
     limit: z.number().int().positive().max(25).optional(),
+    // EI-21854434860586936: every other harness/workspace-scoped tool in the
+    // catalog accepts a `harness` (and often `workspace`) arg, so callers
+    // naturally reach for the same shape here — but this tool is catalog-global
+    // and its scope is already resolved from ctx automatically. Rejecting the
+    // near-universal convention as `invalid_args` produced a recurring
+    // caller-error watchdog signal even after the guidance.notWhen text was
+    // added (2026-08-27) explicitly telling callers not to pass it — the text
+    // wasn't visible enough to prevent the mistake. Accept-and-ignore (the same
+    // "compatibility hint" pattern already used by rubrics:get's `harness` arg)
+    // removes the friction without changing behavior for anyone who was already
+    // calling correctly.
+    harness: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
+      ),
+    workspace: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Optional caller scope hint accepted for compatibility; ignored — tools:find is catalog-global and its scope is resolved from session context automatically.',
+      ),
   }),
   async handler(args, ctx) {
     const registry = {

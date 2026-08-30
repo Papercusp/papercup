@@ -107,6 +107,16 @@ const argsSchema = z.object({
     .max(200)
     .optional()
     .describe("Restrict the result to these items from the exact `slug` plan (homogeneous)."),
+  // EI-21588504660347963: two independent callers reached for the singular
+  // `item` (a P-NNN id) instead of the array-shaped `itemIds` and hit
+  // invalid_args — the same single/plural mismatch other tools in this catalog
+  // resolve with a compatibility alias (e.g. work_items:get's `id`/`ids`).
+  // Accept it as a one-item shorthand; `itemIds` wins when both are supplied.
+  item: z
+    .string()
+    .regex(/^P-\d{3,}$/, "P-NNN form required")
+    .optional()
+    .describe("Compatibility alias for itemIds (a single P-NNN id); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
   status: z
     .enum([...ITEM_STATUSES] as [string, ...string[]])
     .optional()
@@ -134,7 +144,7 @@ const argsSchema = z.object({
     ),
   harness: harnessArg,
 }).refine(
-  (args) => !args.itemIds || Boolean(args.slug),
+  (args) => !(args.itemIds || args.item) || Boolean(args.slug),
   "itemIds requires an exact plan slug; cross-plan item selection is not supported",
 );
 
@@ -166,9 +176,9 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Plan-item query across one or all plans. `itemIds:[…]` restricts results to exact P-NNN ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
+    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
-    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `itemIds:[…]` with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
+    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `item:"P-NNN"` (one, matching plans:get-item\'s convention) or `itemIds:[…]` (many) with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
     notWhen:
       "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
     chaining:
@@ -214,6 +224,9 @@ export default defineTool({
     }
     const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
+    // Resolve the singular `item` compatibility alias into the canonical
+    // `itemIds` array; an explicit `itemIds` always wins when both are given.
+    const itemIds = args.itemIds ?? (args.item ? [args.item] : undefined);
 
     // okf-frontmatter-adoption H(b). Read OUTSIDE the cached closure so the flag
     // is part of the cache KEY — flipping the kill-switch must change the answer
@@ -248,7 +261,7 @@ export default defineTool({
           needsHuman: args.needsHuman === true,
           includeArchived,
           limit: args.limit ?? null,
-          itemIds: args.itemIds ?? null,
+          itemIds: itemIds ?? null,
           harness: opts.harnessSlug,
           specTriad: specTriadFlag,
         },
@@ -337,7 +350,7 @@ export default defineTool({
           );
 
           for (const item of resolvedItems) {
-            if (args.itemIds && !args.itemIds.includes(item.id)) continue;
+            if (itemIds && !itemIds.includes(item.id)) continue;
             if (args.actionable && item.effectiveStatus !== "todo") continue;
             if (args.actionable && triad.gated) continue;
             // needsHuman keys on the DERIVED top band (B-12 / P-072), not the raw

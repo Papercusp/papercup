@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeNewApp, type NewAppArgs, type NewAppDeps } from './new-app';
+import { composeNewApp, ensureGitignore, type NewAppArgs, type NewAppDeps } from './new-app';
 import type { TemplateListing, TemplateGuide } from '../../cupboard/templates';
 
 const REF = 'papercusp-webapp';
@@ -500,5 +500,47 @@ describe('composeNewApp — libs/generic supply chain', () => {
       baseDeps({ resolveSupplyChain: withTree }),
     );
     expect(parse(result).supplyChain.root).toBe('/opt/install/dev-source/libs/generic');
+  });
+});
+
+/**
+ * EI-21854247573857420 recurrence guard: a materialized app tree MUST end up with a
+ * .gitignore covering dependency installs + framework build output — a missing one let
+ * the portal's own git track node_modules/ (535MB) + .next/ (314MB) and blow git-sync's
+ * 250MB peel limit. composeNewApp calls ensureGitignore(materialized.path); these pin
+ * its three documented behaviors so the class cannot silently return.
+ */
+describe('ensureGitignore (EI-21854247573857420 recurrence guard)', () => {
+  it('creates a .gitignore covering the incident class when the template ships none', async () => {
+    const root = join(scratch, 'app-no-gitignore');
+    mkdirSync(root, { recursive: true });
+    const result = await ensureGitignore(root);
+    expect(result.created).toBe(true);
+    expect(result.path).toBe(join(root, '.gitignore'));
+    const content = readFileSync(result.path, 'utf8');
+    // The exact patterns whose absence caused the portal peel incident.
+    expect(content).toMatch(/^node_modules\/$/m);
+    expect(content).toMatch(/^\.next\/$/m);
+    expect(content).toMatch(/^dist\/$/m);
+    expect(content).toMatch(/^coverage\/$/m);
+  });
+
+  it('preserves a template-provided .gitignore byte-identical', async () => {
+    const root = join(scratch, 'app-with-gitignore');
+    mkdirSync(root, { recursive: true });
+    const custom = '# template-owned\nvendor/\n';
+    writeFileSync(join(root, '.gitignore'), custom, 'utf8');
+    const result = await ensureGitignore(root);
+    expect(result.created).toBe(false);
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe(custom);
+  });
+
+  it('treats an existing-but-empty .gitignore as deliberate, not a broken artifact', async () => {
+    const root = join(scratch, 'app-empty-gitignore');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, '.gitignore'), '', 'utf8');
+    const result = await ensureGitignore(root);
+    expect(result.created).toBe(false);
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe('');
   });
 });

@@ -37,7 +37,7 @@ const clip = (s: unknown, n: number): string | null =>
 
 export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   const d = data as
-    | ({ active?: unknown[]; expanded?: unknown[] } & Record<string, unknown>)
+    | ({ active?: unknown[]; expanded?: unknown[]; agents?: unknown[] } & Record<string, unknown>)
     | null
     | undefined;
   if (!d || !Array.isArray(d.active)) return data;
@@ -126,6 +126,13 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   const baseData = { ...d };
   delete baseData.active;
   delete baseData.activeTruncated;
+  // EI-21845811145701209: `agents` is a raw alias of `active` set by the
+  // handlers (presence.ts / roster.ts) BEFORE tiering. Drop the raw
+  // (untrimmed, full-size) copy here and rebuild it below from the SAME
+  // tier-projected `rows` as `active` — otherwise a trimmed/standard read
+  // would leak the full untrimmed roster back in under this second key,
+  // defeating the whole point of tiering.
+  delete baseData.agents;
   const projectedRows = active.slice(0, c.rows).map(project);
   const serializeLength = (value: unknown): number => {
     try {
@@ -164,6 +171,10 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       ...(activeTruncated ? { activeTruncated } : {}),
       ...baseData,
       active: rows,
+      // Alias, same tier-projected rows as `active` (never a second
+      // derivation) — see the EI-21845811145701209 note above `delete
+      // baseData.agents`.
+      agents: rows,
       ...(expanded !== undefined ? { expanded: expandedRows.slice(0, shownExpanded) } : {}),
       ...(expandedBudgetTruncated
         ? {

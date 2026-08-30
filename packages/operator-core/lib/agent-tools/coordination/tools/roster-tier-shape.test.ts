@@ -117,6 +117,20 @@ describe('coord:roster payload-tier shape (WI-6662)', () => {
     expect(JSON.stringify(lensed).length).toBeLessThan(JSON.stringify(fullSnapshot(130)).length);
   });
 
+  it('EI-21845811145701209: aliases `agents` to the SAME tier-projected rows as `active`, never the raw untrimmed array', () => {
+    // Simulate the handler's raw output, which sets `agents` to the SAME
+    // (full-size, untrimmed) reference as `active` BEFORE tiering.
+    const input = fullSnapshot(130);
+    const raw = { ...input, agents: input.active };
+    const out = shape!.trimmed!(raw) as { active: unknown[]; agents: unknown[] };
+    // The alias must track the TRIMMED rows, not the 130-row raw array —
+    // otherwise a trimmed read would leak the full untrimmed roster back in
+    // under this second key, defeating the whole point of tiering.
+    expect(out.agents).toEqual(out.active);
+    expect(out.agents.length).toBeLessThanOrEqual(PRESENCE_TIER_CAPS.trimmed.rows + 1);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PRESENCE_RESPONSE_BUDGET_CHARS);
+  });
+
   it('passes view=claims through untouched (it has no active[])', () => {
     const claims = { view: 'claims', as_of: 'x', summary: { agents: 1 }, agents: [{ agentId: 'su-0' }] };
     expect(shape!.trimmed!(claims)).toBe(claims);

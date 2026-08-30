@@ -419,6 +419,38 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
+  it('resolves the conventional `<repoName>/`-prefixed cross-repo form against its own root (EI-21850619651553189)', () => {
+    // The measured incident shape: `sidestage/apps/web/...` (the prose/plan-title
+    // convention) rather than a path already relative to the sidestage checkout. A plain
+    // `resolve(root, declaredPath)` can never escape ANY root for a relative path, so this
+    // form used to resolve to a nonexistent subpath under every candidate — including the
+    // sidestage root itself (wrongly `/sidestage/sidestage/...`) — and the completion never
+    // reached authority:'committed'.
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: ['sidestage/apps/web/src/BuyerTab.thumbnail.test.tsx'] },
+        [OPERATOR_ROOT, SIDESTAGE_ROOT],
+        {
+          exists: (abs) => abs === '/sidestage/apps/web/src/BuyerTab.thumbnail.test.tsx',
+          readFile,
+        },
+      ),
+    ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
+  });
+
+  it('does NOT let a prefixed path resolve against an UNRELATED root merely because the prefix parses', () => {
+    // The stripped candidate exists nowhere (neither its plain nor stripped form), so this
+    // must stay a genuine zero-match tie — falling back to the primary root, never silently
+    // latching onto the sidestage root just because the string happens to start with its name.
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: ['sidestage/apps/web/src/does-not-exist.tsx'] },
+        [OPERATOR_ROOT, SIDESTAGE_ROOT],
+        { exists: () => false, readFile },
+      ),
+    ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
+  });
+
   it('stamps the owning checkout when filesChanged uses an absolute path', () => {
     const absolutePath = `${SIDESTAGE_ROOT}/apps/web/src/BuyerTab.thumbnail.test.tsx`;
     expect(

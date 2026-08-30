@@ -20,16 +20,13 @@ export type GatewayLegacyExecutorId =
   | 'serveCodexOAuthProxy'
   | 'serveCodexCliBridge'
   | 'proxyLocal';
-/**
- * The handlers still ENTERED through the strangler bridge. P-011 / D-022: this union SHRINKS
- * by one as each lane re-homes — `proxyLocal` left when `local-openai-chat` flipped — and it
- * disappears with the bridge itself.
- *
- * `GatewayLegacyExecutorId` above deliberately stays WIDE and still includes `proxyLocal`: a
- * transport strategy names the handler that serves it (local-http -> proxyLocal), which is a
- * different question from how a lane is entered.
- */
-export type GatewayLegacyEntryExecutorId = Extract<GatewayLegacyExecutorId, 'proxy' | 'proxyOpenAi'>;
+// P-008 / D-028: `GatewayLegacyEntryExecutorId` — the union of handlers still ENTERED through
+// the strangler bridge — is DELETED along with the bridge. It shrank to empty when the last
+// lane re-homed (P-011 / D-027).
+//
+// `GatewayLegacyExecutorId` above deliberately SURVIVES and stays wide: a transport strategy
+// names the handler that serves it (local-http -> proxyLocal), which is a different question
+// from how a lane is ENTERED — and only the entry half was scaffolding.
 export type GatewayRateLimitDialect = 'anthropic-unified' | 'codex-windows' | 'none';
 export type GatewayCachePolicyId = 'anthropic-cache-control' | 'openai-prompt-cache' | 'none';
 export type GatewayModelCatalogPolicy = 'upstream' | 'gateway-static' | 'local-registry';
@@ -58,21 +55,11 @@ export interface GatewayLaneCapabilities {
 export interface GatewayLaneDescriptor {
   id: 'anthropic-messages' | 'openai-responses' | 'local-openai-chat';
   label: string;
-  /**
-   * Top-level handler admitted for this lane through the STRANGLER BRIDGE. Transport-specific
-   * executors may be selected inside it (for example OAuth HTTP versus CLI rollback).
-   *
-   * OPTIONAL, and its ABSENCE is the meaningful state (P-011 / D-022): a lane that has
-   * re-homed its admission declares NO entry executor. `lane-kernel-conformance` derives
-   * "which lanes are still bridge-admitted" from exactly this field, so dropping it here is
-   * what advances the ratchet — and a stale allowlist entry left behind then FAILS the guard
-   * instead of letting the burn-down silently stop.
-   *
-   * Note this is the LANE's entry, not a transport's handler: a transport strategy keeps its
-   * own `legacyExecutor` (the local-http strategy still names `proxyLocal`), because that
-   * says which handler serves the transport, not how the lane is entered.
-   */
-  legacyEntryExecutor?: GatewayLegacyEntryExecutorId;
+  // P-008 / D-028: `legacyEntryExecutor` is GONE. It named the handler a lane was entered
+  // through by the strangler bridge; every lane now takes its admission at its own entry
+  // (P-011 / D-027), so there is no bridge and nothing to declare. A transport strategy still
+  // keeps its own `legacyExecutor` below — that says which handler serves the transport, a
+  // different question from how a lane is entered, and only the latter was scaffolding.
   clients: readonly GatewayClientBackend[];
   protocol: GatewayWireProtocol;
   upstreams: readonly GatewayUpstreamRoute[];
@@ -101,11 +88,6 @@ export interface GatewayLaneRegistry {
   anthropicMessages: GatewayLaneDescriptor;
   openaiResponses: GatewayLaneDescriptor;
   localOpenAiChat: GatewayLaneDescriptor;
-}
-
-export interface GatewayLegacyEntryRoute {
-  executor: GatewayLegacyEntryExecutorId;
-  transport: GatewayTransportId;
 }
 
 export type GatewayAccountPinMode = 'hard' | 'soft' | 'none';
@@ -176,8 +158,9 @@ export function makeGatewayLaneRegistry(opts: {
   return {
     anthropicMessages: {
       id: 'anthropic-messages',
+      // P-011 / D-027: entered directly through `withDurableGatewayAdmission` + `proxy`, whose
+      // entry takes this lane's admission slot before anything else it does.
       label: 'Anthropic Messages',
-      legacyEntryExecutor: 'proxy',
       clients: ['claude', 'omp'],
       protocol: 'anthropic-messages',
       upstreams: ['anthropic-api'],
@@ -209,8 +192,10 @@ export function makeGatewayLaneRegistry(opts: {
     },
     openaiResponses: {
       id: 'openai-responses',
+      // P-011 / D-027: entered directly through `withDurableGatewayAdmission` + `proxyOpenAi`
+      // on BOTH paths this one descriptor serves — the provider path and the `/v1/models`
+      // bypass (D-023), which passes a pass-through admission so it stays unqueued.
       label: 'OpenAI Responses',
-      legacyEntryExecutor: 'proxyOpenAi',
       clients: ['codex', 'omp'],
       protocol: 'openai-responses',
       upstreams: ['openai-api', 'chatgpt-codex'],
@@ -260,10 +245,9 @@ export function makeGatewayLaneRegistry(opts: {
     },
     localOpenAiChat: {
       id: 'local-openai-chat',
-      // P-011 / D-022: RE-HOMED — the first lane off the strangler bridge. It is entered
-      // directly through `withDurableGatewayAdmission` + `proxyLocal`, so it deliberately
-      // declares NO `legacyEntryExecutor`. That absence is load-bearing: it is what keeps this
-      // lane out of `bridgeAdmitted` in lane-kernel-conformance. Do not re-add one.
+      // P-011 / D-022: the FIRST lane off the strangler bridge. Entered directly through
+      // `withDurableGatewayAdmission` + `proxyLocal`, whose durable crossing is this lane's
+      // only real admission — it has no queue of its own.
       label: 'Local OpenAI-compatible chat/completions',
       clients: ['omp'],
       protocol: 'openai-chat',
@@ -297,26 +281,10 @@ export function makeGatewayLaneRegistry(opts: {
   };
 }
 
-/** Resolve the top-level strangler entry and prove that it is backed by one of
- * the lane's declared transport strategies. A malformed static descriptor fails
- * closed instead of falling back to a provider default. */
-export function legacyEntryRouteForGatewayLane(lane: GatewayLaneDescriptor): GatewayLegacyEntryRoute {
-  const entryExecutor = lane.legacyEntryExecutor;
-  // A RE-HOMED lane (P-011 / D-022) declares no entry executor at all. Fail closed and say
-  // exactly that, rather than letting `undefined` fall through to the no-matching-transport
-  // branch below — that message would blame a missing transport for what is really a lane
-  // that no longer enters through the bridge.
-  if (!entryExecutor) {
-    throw new Error(
-      `inference-gateway: lane '${lane.id}' declares no legacy entry executor — it is admitted through the kernel, not the strangler bridge`,
-    );
-  }
-  const strategy = lane.transports.find((candidate) => candidate.legacyExecutor === entryExecutor);
-  if (!strategy) {
-    throw new Error(`inference-gateway: lane '${lane.id}' entry executor '${entryExecutor}' has no declared transport`);
-  }
-  return { executor: entryExecutor, transport: strategy.id };
-}
+// P-008 / D-028: `legacyEntryRouteForGatewayLane` — which resolved a lane's strangler entry to
+// a declared transport — is DELETED with the bridge that called it (P-011 / D-027 re-homed the
+// last lane). `legacyExecutorForGatewayTransport` below is NOT scaffolding and stays: it
+// answers which handler serves a chosen TRANSPORT, which the Codex lane still asks at runtime.
 
 /** Resolve a concrete transport/auth strategy to its existing handler. */
 export function legacyExecutorForGatewayTransport(
