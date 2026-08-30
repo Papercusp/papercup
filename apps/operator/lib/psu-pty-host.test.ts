@@ -42,6 +42,7 @@ import {
   makeSubmitVerifier,
   submitVerificationFailureReason,
   verifyNativeTurnStartWithRetry,
+  carryTurnProofRequiresNativeId,
   signalNameFromCode,
   reapDetachedPtyScopeResidue,
   shouldReapDetachedPtyScopeResidue,
@@ -2007,6 +2008,32 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     });
     expect(waitForMarker).toHaveBeenCalledTimes(1);
     expect(writeCr).not.toHaveBeenCalled();
+  });
+
+  it('accepts Codex fresh-thread proof without a native id while other backends stay fail-closed', async () => {
+    const waitForMarker = vi.fn().mockResolvedValue({
+      persisted: true,
+      nativeRef: '/tmp/codex-fresh-thread.jsonl',
+    });
+    expect(carryTurnProofRequiresNativeId('codex')).toBe(false);
+    expect(carryTurnProofRequiresNativeId('claude')).toBe(true);
+    expect(carryTurnProofRequiresNativeId('omp')).toBe(true);
+    await expect(
+      verifyNativeTurnStartWithRetry({
+        agent: 'codex',
+        text: tagged,
+        sinceMs: 100,
+        nativeId: null,
+        requireNativeId: carryTurnProofRequiresNativeId('codex'),
+        waitForMarker,
+      }),
+    ).resolves.toEqual({
+      persisted: true,
+      nativeRef: '/tmp/codex-fresh-thread.jsonl',
+      retried: false,
+      reason: null,
+    });
+    expect(waitForMarker).toHaveBeenCalledWith(expect.objectContaining({ nativeId: null }));
   });
 
   it('retries one raw CR and accepts only the second native proof', async () => {
