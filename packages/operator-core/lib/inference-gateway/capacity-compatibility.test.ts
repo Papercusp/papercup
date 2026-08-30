@@ -6,7 +6,9 @@ import {
   INFERENCE_GATEWAY_CAPACITY_INVENTORY,
   INFERENCE_GATEWAY_CAPACITY_ROLLBACK_FORBIDDEN_VALUES,
   INFERENCE_GATEWAY_COMPATIBILITY_MATRIX_SCHEMA_VERSION,
+  TERMINAL_CAPACITY_COMPATIBILITY_DISPOSITIONS,
   compatibilityForInferenceGatewayWriter,
+  validateInferenceGatewayCapacityCompatibilityGroups,
   validateInferenceGatewayCapacityCompatibilityMatrix,
 } from './capacity-inventory';
 
@@ -88,5 +90,105 @@ describe('inference-gateway compatibility/deletion matrix (P-004)', () => {
     expect(findings).toContain('compatibility-missing:broken:docsRunbookConsumers');
     expect(findings).toContain('compatibility-rollback-cap-allowed:broken');
     expect(findings).toContain('compatibility-uncovered-writer:' + INFERENCE_GATEWAY_CAPACITY_INVENTORY[1].id);
+  });
+});
+
+describe('terminal disposition contract (P-015)', () => {
+  const liveGroup = INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS[0];
+
+  it('every family is terminal and carries dated, falsifiable evidence', () => {
+    expect(validateInferenceGatewayCapacityCompatibilityGroups()).toEqual([]);
+    for (const group of INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS) {
+      expect(TERMINAL_CAPACITY_COMPATIBILITY_DISPOSITIONS.has(group.disposition)).toBe(true);
+      const evidence = group.dispositionEvidence;
+      expect(evidence, group.id).toBeDefined();
+      // A recheck that names no probe is prose, not evidence — the whole point of the field is
+      // that a later reader can re-run it instead of taking the verdict on trust.
+      expect(evidence!.recheck.length, group.id).toBeGreaterThan(40);
+      expect(evidence!.measurement.length, group.id).toBeGreaterThan(40);
+    }
+  });
+
+  it('the group validator is FALSIFIABLE — controls for each way a disposition can lie', () => {
+    // Control 1: a family still parked on a pending gate after the last gate ran.
+    expect(
+      validateInferenceGatewayCapacityCompatibilityGroups([
+        { ...liveGroup, id: 'pending', disposition: 'remove-after-gate', dispositionEvidence: undefined },
+      ]),
+    ).toContain('compatibility-non-terminal:pending');
+
+    // Control 2: terminal, but asserted with no measurement behind it.
+    expect(
+      validateInferenceGatewayCapacityCompatibilityGroups([
+        { ...liveGroup, id: 'bare', disposition: 'readback-only', dispositionEvidence: undefined },
+      ]),
+    ).toContain('compatibility-evidence-missing:bare');
+
+    // Control 3: "deleted" claimed while the census still lists a live writer for the family.
+    expect(
+      validateInferenceGatewayCapacityCompatibilityGroups([
+        {
+          ...liveGroup,
+          id: 'ghost',
+          disposition: 'removed',
+          writerIds: ['gateway-aimd-floor'],
+          dispositionEvidence: {
+            verdict: 'deleted',
+            measuredAt: '2026-08-30',
+            measurement: 'x'.repeat(50),
+            recheck: 'y'.repeat(50),
+          },
+        },
+      ]),
+    ).toContain('compatibility-evidence-verdict-deleted-has-writers:ghost');
+
+    // Control 4: "non-capacity" claimed about a family that has no live writer left to measure.
+    expect(
+      validateInferenceGatewayCapacityCompatibilityGroups([
+        {
+          ...liveGroup,
+          id: 'phantom',
+          disposition: 'feedback-only',
+          writerIds: [],
+          dispositionEvidence: {
+            verdict: 'non-capacity',
+            measuredAt: '2026-08-30',
+            measurement: 'x'.repeat(50),
+            recheck: 'y'.repeat(50),
+          },
+        },
+      ]),
+    ).toContain('compatibility-evidence-verdict-live-has-no-writers:phantom');
+
+    // Control 5: an undated measurement — "this no longer binds" with no when is unfalsifiable.
+    expect(
+      validateInferenceGatewayCapacityCompatibilityGroups([
+        {
+          ...liveGroup,
+          id: 'undated',
+          disposition: 'readback-only',
+          dispositionEvidence: {
+            verdict: 'non-capacity',
+            measuredAt: 'recently',
+            measurement: 'x'.repeat(50),
+            recheck: 'y'.repeat(50),
+          },
+        },
+      ]),
+    ).toContain('compatibility-evidence-date:undated');
+  });
+
+  it('the matrix validator FOLDS IN the group contract, including zero-writer families', () => {
+    // gateway-codex-concurrency flattens to zero rows because P-010 deleted every writer in it,
+    // so the per-writer validator cannot see it. This is the check that it is still governed.
+    const codex = INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS.find(
+      (g) => g.id === 'gateway-codex-concurrency',
+    );
+    expect(codex?.writerIds).toEqual([]);
+    expect(CAPACITY_COMPATIBILITY_MATRIX.some((row) => row.groupId === 'gateway-codex-concurrency')).toBe(false);
+    expect(codex?.disposition).toBe('removed');
+    expect(codex?.dispositionEvidence?.verdict).toBe('deleted');
+    // The default-matrix call reaches the group contract; an explicit row list does not.
+    expect(validateInferenceGatewayCapacityCompatibilityMatrix()).toEqual([]);
   });
 });
