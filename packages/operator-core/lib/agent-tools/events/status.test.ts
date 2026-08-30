@@ -48,6 +48,7 @@ import {
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
+import type { DeliveryRow } from '../../events/await/types';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -56,12 +57,35 @@ const call = async (args: Record<string, unknown>) => {
 };
 
 const AWAIT_ROW = { id: 11, eventKey: 'lock:grant:t1', policy: 'wake', note: 'n', expiresTs: 'E', timeoutBehavior: 'wake', createdAt: 'C' };
-const DELIVERY_ROW = { id: 22, eventKey: 'lock:grant:t1', status: 'parked', channel: 'inbox', attempts: 2, lastError: 'boom', createdAt: 'C2', deliveredAt: null };
+// Typed as the real DeliveryRow (EI-21878602849246427) rather than a partial literal cast
+// `as never` at each use. The cast defeats vi.mocked()'s signature check, so a fixture that
+// goes stale when DeliveryRow gains a required field fails at RUNTIME in an unrelated file
+// instead of at compile time here — see testing/typed-mock.ts and WI-6673.
+const DELIVERY_ROW: DeliveryRow = {
+  id: 22,
+  workspaceId: 'ws-x',
+  awaitId: 11,
+  subscriberId: 'su-status',
+  eventKey: 'lock:grant:t1',
+  payload: null,
+  summary: null,
+  status: 'parked',
+  channel: 'inbox',
+  attempts: 2,
+  lastError: 'boom',
+  nextAttemptAt: 'C2',
+  createdAt: 'C2',
+  deliveredAt: null,
+  urgent: false,
+  minSleepSec: null,
+  coalescedCount: 1,
+  source: null,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
-  vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW] as never);
+  vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW]);
   vi.mocked(deliveryBacklogSummary).mockResolvedValue({
     total: 1,
     pending: 0,
@@ -147,9 +171,7 @@ describe('events:status projection', () => {
   });
 
   it('reports the full outstanding backlog even when recent_wakes hides older live rows', async () => {
-    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
-      { ...DELIVERY_ROW, id: 30, status: 'delivered' },
-    ] as never);
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([{ ...DELIVERY_ROW, id: 30, status: 'delivered' }]);
     vi.mocked(deliveryBacklogSummary).mockResolvedValueOnce({
       total: 134,
       pending: 118,
