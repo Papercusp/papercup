@@ -223,6 +223,43 @@ describe('pre-destructive snapshot intent lifecycle (EI-217072)', () => {
       77,
     ]));
   });
+
+  it('releases an acquired migration lock when downstream setup fails', async () => {
+    const queries: string[] = [];
+    const release = vi.fn(async () => {});
+    const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      if (text.includes('INSERT INTO harness_shared.backup_snapshots')) {
+        return Promise.resolve([{ id: 78 }]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+      acquireMigrationLock: async () => ({ release }),
+      scheduleInterval: () => ({ stop: vi.fn() }),
+    });
+    configureBackupStepRunner({
+      runStep: async <T>(_name: string, fn: () => Promise<T>): Promise<T> => fn(),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    vi.spyOn(w, 'ensureRepo').mockRejectedValue(new Error('ensure repo boom'));
+
+    await expect(w.snapshot('manual')).rejects.toThrow(/ensure repo boom/);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(
+      queries.some((text) =>
+        /UPDATE harness_shared\.backup_snapshots/.test(text) &&
+        /SET finished_at/.test(text) &&
+        /status/.test(text),
+      ),
+    ).toBe(true);
+  });
 });
 
 async function dirWith(p: string, marker: string): Promise<void> {
