@@ -11,6 +11,7 @@ import {
   BULK_JUDGE_MAX_OUTPUT_TOKENS,
   BULK_JUDGE_TOKENS_PER_PAIR,
 } from './work-items-admission-bulk-dedup';
+import { parsePromoterJudgements } from './work-items-admission-promoter';
 import type { PromoterItem, PromoterPair } from './work-items-admission-promoter';
 
 function item(id: string, title = id): PromoterItem {
@@ -157,5 +158,78 @@ describe('assertAdmissionCensusRatchet', () => {
 
   it('fails loudly on an injected rise', () => {
     expect(() => assertAdmissionCensusRatchet(2, 4)).toThrow('admission census ratchet violated: 2 -> 4 (+2)');
+  });
+});
+
+/**
+ * IS `r-finding-merge` REACHABLE AT ALL ON THE LIVE PATH?
+ *
+ * The d035-4 stage judged 1500 pairs and merged ZERO (verdicts={'r-related':1500}).
+ * That number is only a MEASUREMENT if the merge verdict is reachable in situ; if the
+ * real prompt/model/parse chain can never produce one, it is an unreachable branch
+ * wearing a measurement's clothes, and the bulk-ratchet criterion must not be rated on
+ * it. Two of the three legs were already proven — the code branch deterministically
+ * (promoter.test.ts: r-finding-merge judgements => action==='merge') and pair SELECTION
+ * empirically (it surfaced those 1500 pairs). The unproven leg was prompt -> model ->
+ * parse, and it was measured live rather than assumed.
+ *
+ * LIVE RESULT (2026-08-30, production LEARNING_MODEL_SPEC gpt-5.6-sol:xhigh, via the
+ * real buildBulkDedupPrompt): a same-finding/same-remedy pair came back `r-finding-merge`
+ * and a same-subsystem/different-finding pair came back `r-related`/`distinct` across two
+ * runs. So the verdict is reachable AND the model discriminates rather than rubber-stamping.
+ * 0-of-1500 is a real measurement about that corpus.
+ *
+ * What is pinned HERE is the deterministic half: the exact payload that live run returned
+ * must keep surviving the parser into a merge verdict. A schema/vocabulary change that
+ * silently stopped accepting `r-finding-merge` would restore the dead-branch condition
+ * while every count still read as a healthy zero — which is precisely the failure mode
+ * this plan exists to eliminate. The live half is deliberately NOT in the suite: it costs
+ * a model call and is nondeterministic.
+ */
+describe('r-finding-merge reachability (recorded live payload)', () => {
+  // Verbatim from the live control run — not hand-authored.
+  const RECORDED_LIVE_PAYLOAD = {
+    judgements: [
+      {
+        pairKey: 'WI-CTRL-A::WI-CTRL-B',
+        verdict: 'r-finding-merge',
+        reason:
+          'Same finding: unbounded 503 retry loop in the sync worker; same remedy of bounding attempts and surfacing the exhausted error.',
+      },
+      {
+        pairKey: 'WI-CTRL-A::WI-CTRL-C',
+        verdict: 'r-related',
+        reason: 'Different findings and remedies, but both concern upstream handling in the sync worker.',
+      },
+    ],
+  };
+
+  it('the parser still accepts the merge verdict the live model actually returned', () => {
+    const parsed = parsePromoterJudgements(RECORDED_LIVE_PAYLOAD);
+    expect(parsed.map((judgement) => judgement.verdict)).toEqual(['r-finding-merge', 'r-related']);
+  });
+
+  it('CONTROL: the parser is strict, so the case above is not green-by-permissiveness', () => {
+    // If the parser accepted anything, the assertion above would prove nothing about the
+    // merge code specifically. An invented verdict must be REJECTED.
+    expect(() =>
+      parsePromoterJudgements({
+        judgements: [{ pairKey: 'WI-CTRL-A::WI-CTRL-B', verdict: 'r-finding-merged', reason: 'typo' }],
+      }),
+    ).toThrow();
+  });
+
+  it('the prompt actually teaches the merge code, or the model could never emit it', () => {
+    const pair: PromoterPair = {
+      pairKey: 'WI-1::WI-2',
+      a: item('WI-1'),
+      b: item('WI-2'),
+      pendingIds: ['WI-1', 'WI-2'],
+      signals: ['cosine'],
+      cosine: 0.94,
+    };
+    const prompt = buildBulkDedupPrompt([pair], []);
+    expect(prompt.system).toContain('r-finding-merge');
+    expect(prompt.system).toContain('the only merge-safe code');
   });
 });
