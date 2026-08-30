@@ -85,7 +85,6 @@ const ALLOW = new Set([
   'libs/generic/sse/src/server/channel.ts',
   'libs/generic/tooldef/src/tool-projection.ts',
   'packages/operator-core/lib/pot/wake.ts',
-  'packages/operator-core/lib/search/embed-backfill.ts',
   'packages/operator-core/lib/sync-sse.ts',
 ]);
 
