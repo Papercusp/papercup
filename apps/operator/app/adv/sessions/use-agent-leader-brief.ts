@@ -217,6 +217,73 @@ export interface LeaderBriefCustomInvariant {
 }
 
 /**
+ * The canonical spec-scoped work snapshot carried by `fleet:leader-brief`.
+ *
+ * This deliberately mirrors only the fields the popup renders, and keeps them
+ * optional for the SPA/sidecar wire-skew contract at the top of this file. A
+ * consumer must validate the whole measured tuple before showing its count:
+ * remaining stock without population + spec revision + lifetime window + unit
+ * is an unlabeled number and therefore not renderable (fleet metrics D-005).
+ */
+export interface LeaderBriefFleetMetrics {
+  ok?: boolean;
+  schemaVersion?: string;
+  error?: string;
+  reason?: string;
+  recoverVia?: string;
+  requested?: {
+    fleet?: string;
+    harness?: string;
+    flowMode?: 'current-spec' | 'at-event-spec';
+    window?: 'fleet-lifetime';
+  };
+  snapshot?: {
+    schemaVersion?: string;
+    generatedAt?: string;
+    scope?: {
+      fleet?: string;
+      harness?: string;
+      window?: {
+        kind?: 'fleet-lifetime';
+        startAt?: string;
+        endAt?: string;
+        startInclusive?: boolean;
+        endExclusive?: boolean;
+      };
+      stock?: {
+        mode?: 'current-spec';
+        specId?: string;
+        revision?: number;
+        source?: 'cup' | 'fleet' | 'default';
+      };
+      population?: {
+        stock?: 'current-spec-work-items';
+      };
+    };
+    quality?: {
+      exactness?: {
+        status?: 'exact' | 'truncated';
+        sourceCap?: number | null;
+        fetched?: number;
+        reason?: string;
+        recoverVia?: string;
+      };
+      freshness?: {
+        status?: 'fresh' | 'stale';
+        measuredAt?: string;
+        staleAfterMs?: number;
+        reason?: string;
+        recoverVia?: string;
+      };
+    };
+    remaining?: {
+      total?: number;
+      unit?: 'distinct canonical issue-family work-item ids';
+    };
+  };
+}
+
+/**
  * The brief payload. `ok:false` is a real, renderable variant (the fleet could
  * not be resolved) — not an error to swallow.
  */
@@ -243,6 +310,8 @@ export interface LeaderBriefData {
    *  distinguishable from "my checks are not running". */
   customInvariants?: LeaderBriefCustomInvariant[];
   fleetPausedReason?: string;
+  /** Canonical work stock + the scope that gives the number meaning. */
+  fleetMetrics?: LeaderBriefFleetMetrics;
 }
 
 /** Mirrors `LeaderBriefDriftKind`. `presence-behind` = the registry says this
