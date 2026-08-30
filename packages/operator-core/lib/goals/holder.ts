@@ -40,17 +40,17 @@
  *
  * `liveness` is deliberately not a boolean:
  *
- *   held    — at least one holder resolves POSITIVELY alive.
+ *   held    — the elected holder resolves POSITIVELY alive.
  *   unheld  — no goal-mode row exists at all; it was never picked up.
- *   lost    — rows exist, every one resolved, and none is alive.
- *   unknown — rows exist but at least one could not be resolved.
+ *   lost    — an elected row exists and that holder is positively gone.
+ *   unknown — the elected holder could not be resolved.
  *
  * `unheld` and `lost` are kept apart because they call for different remedies
  * (never picked up vs dropped mid-flight) and collapsing them hides which is
  * happening.
  *
  * `unknown` is the one a later reader will be tempted to fold into `lost`. Do
- * not. `resolveSessionStates` OMITS an entry when its wakeability fetch
+ * not. `resolveSessionStates` OMITS the elected entry when its wakeability fetch
  * degrades, so treating a missing verdict as death converts a transient DB
  * hiccup into simultaneous false "abandoned" verdicts across every goal in the
  * workspace at once. An unresolvable holder means we do not know — and a system
@@ -107,6 +107,12 @@ export interface GoalHolderRow {
   setAtMs: number;
   /** Who set it (agent_modes.set_by), when the column is read. */
   setBy?: string | null;
+  /** GOAL effective-holder election epoch (migration 1031). */
+  goalLeaseEpoch?: number | null;
+  /** The one predecessor explicitly allowed to overlap this successor. */
+  goalHandoffFromOwnerId?: string | null;
+  /** ms epoch after which that predecessor overlap is a health failure. */
+  goalHandoffExpiresAtMs?: number | null;
 }
 
 /** One holder, with the oracle's verdict folded in. */
@@ -123,20 +129,36 @@ export interface ResolvedGoalHolder extends GoalHolderRow {
 
 export type GoalHolderLiveness = 'held' | 'unheld' | 'lost' | 'unknown';
 
+export type GoalHolderOverlapStatus = 'none' | 'handoff' | 'violation';
+
+export interface GoalHolderOverlap {
+  status: GoalHolderOverlapStatus;
+  liveOwnerIds: string[];
+  predecessorOwnerId: string | null;
+  successorOwnerId: string | null;
+  expiresAtMs: number | null;
+}
+
 /**
  * The answer to "who holds this goal".
  *
- * Multiple goal-mode rows are valid: this resolver does not elect an exclusive
- * winner. Every row remains visible, and a goal is `held` whenever at least one
- * holder resolves positively alive.
+ * Multiple goal-mode rows remain visible as audit/history, but only the highest
+ * election epoch is sovereign. Legacy rows with no epoch converge on newest
+ * setAtMs, then lowest owner id. `live` contains that elected holder only;
+ * `allLive` exists solely for handoff/overlap health.
  */
 export interface GoalHolders {
   goalId: string;
   workspaceId: string;
   /** EVERY goal-mode row pointing at this goal, dead holders included. */
   holders: ResolvedGoalHolder[];
-  /** Only the holders that resolved POSITIVELY alive. */
+  /** The elected effective holder, whether live, dead, or unresolved. */
+  elected: ResolvedGoalHolder | null;
+  /** Only the ELECTED holder when it resolves positively alive. */
   live: ResolvedGoalHolder[];
+  /** Every positively live historical/current row, for overlap diagnostics. */
+  allLive: ResolvedGoalHolder[];
+  overlap: GoalHolderOverlap;
   liveness: GoalHolderLiveness;
 }
 
@@ -157,6 +179,7 @@ export function resolveGoalHoldersFromRows(
   workspaceId: string,
   rows: readonly GoalHolderRow[],
   verdicts: ReadonlyMap<string, LivenessVerdict>,
+  nowMs: number = Date.now(),
 ): GoalHolders {
   const mine = rows.filter((r) => r.goalId === goalId && r.workspaceId === workspaceId);
   const holders: ResolvedGoalHolder[] = mine.map((r) => {
@@ -168,18 +191,41 @@ export function resolveGoalHoldersFromRows(
       live: v ? holderCountsAsAlive(v) : null,
     };
   });
-  const live = holders.filter((h) => h.live === true);
+  const elected = [...holders].sort((a, b) => {
+    const epochA = a.goalLeaseEpoch ?? Number.NEGATIVE_INFINITY;
+    const epochB = b.goalLeaseEpoch ?? Number.NEGATIVE_INFINITY;
+    return epochB - epochA || b.setAtMs - a.setAtMs || a.ownerId.localeCompare(b.ownerId);
+  })[0] ?? null;
+  const allLive = holders.filter((h) => h.live === true);
+  const live = elected?.live === true ? [elected] : [];
+
+  const extraLive = elected ? allLive.filter((h) => h.ownerId !== elected.ownerId) : allLive;
+  const predecessorOwnerId = elected?.goalHandoffFromOwnerId ?? null;
+  const expiresAtMs = elected?.goalHandoffExpiresAtMs ?? null;
+  const validHandoff =
+    elected?.live === true &&
+    extraLive.length === 1 &&
+    extraLive[0]?.ownerId === predecessorOwnerId &&
+    expiresAtMs != null &&
+    Number.isFinite(expiresAtMs) &&
+    expiresAtMs > nowMs;
+  const overlap: GoalHolderOverlap = {
+    status: extraLive.length === 0 ? 'none' : validHandoff ? 'handoff' : 'violation',
+    liveOwnerIds: allLive.map((holder) => holder.ownerId),
+    predecessorOwnerId,
+    successorOwnerId: elected?.ownerId ?? null,
+    expiresAtMs,
+  };
 
   let liveness: GoalHolderLiveness;
-  if (holders.length === 0) liveness = 'unheld';
-  else if (live.length > 0) liveness = 'held';
-  // At least one holder we could not resolve: we do not know, and must not say
-  // 'lost'. This branch is what stops a degraded oracle fetch from reading as a
-  // workspace-wide wave of abandonment.
-  else if (holders.some((h) => h.live === null)) liveness = 'unknown';
+  if (!elected) liveness = 'unheld';
+  else if (elected.live === true) liveness = 'held';
+  // Only the elected lease is sovereign. An unresolvable historical row can no
+  // longer suppress recovery for a positively dead elected owner.
+  else if (elected.live === null) liveness = 'unknown';
   else liveness = 'lost';
 
-  return { goalId, workspaceId, holders, live, liveness };
+  return { goalId, workspaceId, holders, elected, live, allLive, overlap, liveness };
 }
 
 /**
@@ -250,10 +296,23 @@ export async function readGoalHolderRows(
 ): Promise<GoalHolderRow[]> {
   if (opts.goalIds && opts.goalIds.length === 0) return [];
   const rows = await sql<
-    { workspace_id: string; subject: string; owner_id: string; set_ms: string; set_by: string | null }[]
+    {
+      workspace_id: string;
+      subject: string;
+      owner_id: string;
+      set_ms: string;
+      set_by: string | null;
+      goal_lease_epoch: string | null;
+      goal_handoff_from_owner_id: string | null;
+      goal_handoff_expires_ms: string | null;
+    }[]
   >`
-    SELECT workspace_id, subject, owner_id, set_by,
-           (extract(epoch FROM set_at) * 1000)::bigint AS set_ms
+    SELECT workspace_id, subject, owner_id, set_by, goal_lease_epoch,
+           goal_handoff_from_owner_id,
+           (extract(epoch FROM set_at) * 1000)::bigint AS set_ms,
+           CASE WHEN goal_handoff_expires_at IS NULL THEN NULL
+                ELSE (extract(epoch FROM goal_handoff_expires_at) * 1000)::bigint END
+             AS goal_handoff_expires_ms
       FROM harness_shared.agent_modes
      WHERE mode = ${GOAL_MODE}
        AND subject IS NOT NULL
@@ -268,6 +327,10 @@ export async function readGoalHolderRows(
     ownerId: r.owner_id,
     setAtMs: Number(r.set_ms),
     setBy: r.set_by,
+    goalLeaseEpoch: r.goal_lease_epoch == null ? null : Number(r.goal_lease_epoch),
+    goalHandoffFromOwnerId: r.goal_handoff_from_owner_id,
+    goalHandoffExpiresAtMs:
+      r.goal_handoff_expires_ms == null ? null : Number(r.goal_handoff_expires_ms),
   }));
 }
 

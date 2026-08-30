@@ -31,6 +31,7 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 
 const WS = 'ws-1';
 const G = 'goal-abc';
+const NOW = Date.parse('2026-08-30T07:30:00.000Z');
 
 function row(ownerId: string, over: Partial<GoalHolderRow> = {}): GoalHolderRow {
   return { goalId: G, workspaceId: WS, ownerId, setAtMs: 1_000, ...over };
@@ -116,7 +117,7 @@ describe('resolveGoalHoldersFromRows — the four verdicts', () => {
     expect(r.live.map((h) => h.ownerId)).toEqual(['a']);
   });
 
-  it('supports concurrent holders: keeps every row and stays held when any holder is alive', () => {
+  it('elects one effective legacy holder and marks unannounced live overlap as a violation', () => {
     const r = resolveGoalHoldersFromRows(
       G,
       WS,
@@ -125,11 +126,15 @@ describe('resolveGoalHoldersFromRows — the four verdicts', () => {
         verdict({ ownerId: 'first-claimant', sessionState: 'live' }),
         verdict({ ownerId: 'second-claimant', sessionState: 'live' }),
       ),
+      NOW,
     );
 
     expect(r.liveness).toBe('held');
     expect(r.holders.map((h) => h.ownerId)).toEqual(['first-claimant', 'second-claimant']);
-    expect(r.live.map((h) => h.ownerId)).toEqual(['first-claimant', 'second-claimant']);
+    expect(r.elected?.ownerId).toBe('first-claimant');
+    expect(r.live.map((h) => h.ownerId)).toEqual(['first-claimant']);
+    expect(r.allLive.map((h) => h.ownerId)).toEqual(['first-claimant', 'second-claimant']);
+    expect(r.overlap.status).toBe('violation');
   });
 
   /**
@@ -165,24 +170,111 @@ describe('resolveGoalHoldersFromRows — the four verdicts', () => {
     expect(r.holders[0].sessionState).toBeNull();
   });
 
-  it('unknown WINS over lost — one unresolvable holder suppresses the verdict', () => {
+  it('the elected unresolvable holder yields unknown even when a historical holder is dead', () => {
     const r = resolveGoalHoldersFromRows(
       G,
       WS,
-      [row('dead'), row('unresolvable')],
+      [row('dead'), row('unresolvable', { setAtMs: 2_000 })],
       verdicts(verdict({ ownerId: 'dead', sessionState: 'ended' })),
     );
     expect(r.liveness).toBe('unknown');
+    expect(r.elected?.ownerId).toBe('unresolvable');
   });
 
-  it('held WINS over unknown — one live holder is enough', () => {
+  it('an elected live holder wins; an unelected unresolvable row is only history', () => {
     const r = resolveGoalHoldersFromRows(
       G,
       WS,
-      [row('alive'), row('unresolvable')],
+      [row('alive', { setAtMs: 2_000 }), row('unresolvable')],
       verdicts(verdict({ ownerId: 'alive', sessionState: 'live' })),
     );
     expect(r.liveness).toBe('held');
+    expect(r.live.map((holder) => holder.ownerId)).toEqual(['alive']);
+  });
+
+  it('permits exactly the named predecessor during the bounded handoff window', () => {
+    const r = resolveGoalHoldersFromRows(
+      G,
+      WS,
+      [
+        row('predecessor', { goalLeaseEpoch: 1 }),
+        row('successor', {
+          setAtMs: 2_000,
+          goalLeaseEpoch: 2,
+          goalHandoffFromOwnerId: 'predecessor',
+          goalHandoffExpiresAtMs: NOW + 60_000,
+        }),
+      ],
+      verdicts(
+        verdict({ ownerId: 'predecessor', sessionState: 'live' }),
+        verdict({ ownerId: 'successor', sessionState: 'live' }),
+      ),
+      NOW,
+    );
+    expect(r.elected?.ownerId).toBe('successor');
+    expect(r.live.map((holder) => holder.ownerId)).toEqual(['successor']);
+    expect(r.overlap).toMatchObject({
+      status: 'handoff',
+      predecessorOwnerId: 'predecessor',
+      successorOwnerId: 'successor',
+      expiresAtMs: NOW + 60_000,
+    });
+  });
+
+  it('fails overlap after the handoff deadline, or immediately when a third holder is live', () => {
+    const successor = row('successor', {
+      setAtMs: 2_000,
+      goalLeaseEpoch: 2,
+      goalHandoffFromOwnerId: 'predecessor',
+      goalHandoffExpiresAtMs: NOW - 1,
+    });
+    const baseVerdicts = verdicts(
+      verdict({ ownerId: 'predecessor', sessionState: 'live' }),
+      verdict({ ownerId: 'successor', sessionState: 'live' }),
+      verdict({ ownerId: 'third', sessionState: 'live' }),
+    );
+    expect(
+      resolveGoalHoldersFromRows(
+        G,
+        WS,
+        [row('predecessor', { goalLeaseEpoch: 1 }), successor],
+        baseVerdicts,
+        NOW,
+      ).overlap.status,
+    ).toBe('violation');
+    expect(
+      resolveGoalHoldersFromRows(
+        G,
+        WS,
+        [
+          row('predecessor', { goalLeaseEpoch: 1 }),
+          { ...successor, goalHandoffExpiresAtMs: NOW + 60_000 },
+          row('third', { goalLeaseEpoch: 0 }),
+        ],
+        baseVerdicts,
+        NOW,
+      ).overlap.status,
+    ).toBe('violation');
+  });
+
+  it('binds loss to the elected lease even while an older historical holder is live', () => {
+    const r = resolveGoalHoldersFromRows(
+      G,
+      WS,
+      [
+        row('historical-live', { goalLeaseEpoch: 1 }),
+        row('elected-dead', { goalLeaseEpoch: 2, setAtMs: 2_000 }),
+      ],
+      verdicts(
+        verdict({ ownerId: 'historical-live', sessionState: 'live' }),
+        verdict({ ownerId: 'elected-dead', sessionState: 'ended' }),
+      ),
+      NOW,
+    );
+    expect(r.elected?.ownerId).toBe('elected-dead');
+    expect(r.liveness).toBe('lost');
+    expect(r.live).toEqual([]);
+    expect(r.allLive.map((holder) => holder.ownerId)).toEqual(['historical-live']);
   });
 
   it('scopes by BOTH goal id and workspace — a goal id is not globally unique', () => {

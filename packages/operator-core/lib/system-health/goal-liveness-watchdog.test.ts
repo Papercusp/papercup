@@ -161,10 +161,13 @@ describe('classifyGoalLiveness', () => {
     expect(alert?.holders).toEqual([]);
   });
 
-  it('stays silent while ANY holder is alive', () => {
+  it('stays silent while the elected holder is alive', () => {
     const alert = classifyGoalLiveness(
       goal(),
-      [holder({ ownerId: 'dead' }), holder({ ownerId: 'alive' })],
+      [
+        holder({ ownerId: 'dead', goalLeaseEpoch: 1 }),
+        holder({ ownerId: 'alive', goalLeaseEpoch: 2 }),
+      ],
       vmap(verdict('dead', 'ended'), verdict('alive', 'live')),
       NOW,
     );
@@ -202,11 +205,57 @@ describe('classifyGoalLiveness', () => {
   it('suppresses the alert when only SOME holders are unresolvable', () => {
     const alert = classifyGoalLiveness(
       goal(),
-      [holder({ ownerId: 'dead' }), holder({ ownerId: 'unknown' })],
+      [
+        holder({ ownerId: 'dead', goalLeaseEpoch: 1 }),
+        holder({ ownerId: 'unknown', goalLeaseEpoch: 2 }),
+      ],
       vmap(verdict('dead', 'ended')),
       NOW,
     );
     expect(alert).toBeNull();
+  });
+
+  it('allows the elected successor and named predecessor inside the handoff window', () => {
+    const alert = classifyGoalLiveness(
+      goal(),
+      [
+        holder({ ownerId: 'old', goalLeaseEpoch: 1 }),
+        holder({
+          ownerId: 'new',
+          goalLeaseEpoch: 2,
+          goalHandoffFromOwnerId: 'old',
+          goalHandoffExpiresAtMs: NOW + 60_000,
+        }),
+      ],
+      vmap(verdict('old', 'live'), verdict('new', 'live')),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  it('reports live holder overlap immediately after the elected handoff expires', () => {
+    const alert = classifyGoalLiveness(
+      goal(),
+      [
+        holder({ ownerId: 'old', goalLeaseEpoch: 1 }),
+        holder({
+          ownerId: 'new',
+          goalLeaseEpoch: 2,
+          goalHandoffFromOwnerId: 'old',
+          goalHandoffExpiresAtMs: NOW - 5_000,
+        }),
+      ],
+      vmap(verdict('old', 'live'), verdict('new', 'live')),
+      NOW,
+    );
+    expect(alert).toMatchObject({
+      reason: 'overlap',
+      darkMs: 5_000,
+      holders: [
+        { ownerId: 'old', sessionState: 'live' },
+        { ownerId: 'new', sessionState: 'live' },
+      ],
+    });
   });
 
   it('does not attribute another workspace\'s holder to this goal', () => {

@@ -21,6 +21,18 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { modeById, axisKeyFor, resolveImpliedModes, modeRequiresSubject, type ModeDef } from './registry';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
+import { GOAL_MODE } from './goal-session';
+
+/** The only permitted overlap between two effective GOAL sessions. */
+export const GOAL_HOLDER_HANDOFF_SECONDS = 120;
+
+export interface GoalModeElectionReceipt {
+  ownerId: string;
+  goalId: string;
+  epoch: number;
+  predecessorOwnerId: string | null;
+  handoffExpiresAt: string | null;
+}
 
 export interface ModeRow {
   workspaceId: string;
@@ -41,6 +53,10 @@ export interface ModeRow {
    * stamp", never to a failed write.
    */
   subject: string | null;
+  /** GOAL-only effective-holder election fields (migration 1031). */
+  goalLeaseEpoch?: number | null;
+  goalHandoffFromOwnerId?: string | null;
+  goalHandoffExpiresAt?: string | null;
 }
 
 export interface SetModeOpts {
@@ -118,6 +134,8 @@ export interface SetModeResult {
    * re-entry, which is deliberately how a missing implied row gets REPAIRED.
    */
   implied?: ImpliedModeOutcome[];
+  /** Present only when this write elected a new effective GOAL holder. */
+  goalElection?: GoalModeElectionReceipt;
   error?: string;
 }
 
@@ -136,6 +154,18 @@ function toRow(r: Record<string, unknown>): ModeRow {
     ownerDirected: Boolean(r.owner_directed),
     setAt: r.set_at instanceof Date ? r.set_at.toISOString() : String(r.set_at),
     subject: r.subject == null || r.subject === '' ? null : String(r.subject),
+    goalLeaseEpoch:
+      r.goal_lease_epoch == null || r.goal_lease_epoch === '' ? null : Number(r.goal_lease_epoch),
+    goalHandoffFromOwnerId:
+      r.goal_handoff_from_owner_id == null || r.goal_handoff_from_owner_id === ''
+        ? null
+        : String(r.goal_handoff_from_owner_id),
+    goalHandoffExpiresAt:
+      r.goal_handoff_expires_at == null || r.goal_handoff_expires_at === ''
+        ? null
+        : r.goal_handoff_expires_at instanceof Date
+          ? r.goal_handoff_expires_at.toISOString()
+          : String(r.goal_handoff_expires_at),
   };
 }
 
@@ -399,6 +429,126 @@ export async function reconcileImpliedModes(o: {
 }
 
 /**
+ * Write one mode row. A NEW GOAL subject assignment is also the election:
+ * one statement takes a workspace+goal advisory lock, reads the prior elected
+ * epoch, upserts the successor, and returns the bounded handoff receipt. The
+ * row can therefore never become visible as the new holder without its epoch.
+ *
+ * Same-owner/same-goal reason refreshes use the ordinary upsert so they retain
+ * their epoch and cannot steal sovereignty merely by reasserting the mode.
+ */
+async function writeModeRow(
+  sql: Sql,
+  o: {
+    workspaceId: string;
+    ownerId: string;
+    axisKey: string;
+    mode: string;
+    reason: string;
+    setBy: string;
+    ownerDirected: boolean;
+    subject: string | null;
+    electGoal: boolean;
+  },
+): Promise<GoalModeElectionReceipt | null> {
+  if (!o.electGoal || !o.subject) {
+    await sql`
+      INSERT INTO harness_shared.agent_modes
+        (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
+      VALUES (${o.workspaceId}, ${o.ownerId}, ${o.axisKey}, ${o.mode}, ${o.reason},
+              ${o.setBy}, ${o.ownerDirected}, now(), ${o.subject})
+      ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
+        mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
+        owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
+        subject = EXCLUDED.subject`;
+    return null;
+  }
+
+  const [row] = await sql<
+    Array<{
+      owner_id: string;
+      subject: string;
+      goal_lease_epoch: string | number;
+      goal_handoff_from_owner_id: string | null;
+      goal_handoff_expires_at: Date | string | null;
+    }>
+  >`
+    WITH input AS MATERIALIZED (
+      SELECT ${o.workspaceId}::text AS workspace_id,
+             ${o.ownerId}::text AS owner_id,
+             ${o.axisKey}::text AS axis_key,
+             ${o.mode}::text AS mode,
+             ${o.reason}::text AS reason,
+             ${o.setBy}::text AS set_by,
+             ${o.ownerDirected}::boolean AS owner_directed,
+             ${o.subject}::text AS subject,
+             ${GOAL_HOLDER_HANDOFF_SECONDS}::integer AS handoff_seconds
+    ),
+    goal_lock AS MATERIALIZED (
+      SELECT pg_advisory_xact_lock(
+               hashtextextended(input.workspace_id || chr(31) || input.subject, 0)
+             ) AS acquired
+        FROM input
+    ),
+    predecessor AS MATERIALIZED (
+      SELECT am.owner_id
+        FROM harness_shared.agent_modes am
+        CROSS JOIN input
+        CROSS JOIN goal_lock
+       WHERE am.workspace_id = input.workspace_id
+         AND am.mode = ${GOAL_MODE}
+         AND am.subject = input.subject
+         AND am.owner_id <> input.owner_id
+         AND am.goal_lease_epoch IS NOT NULL
+       ORDER BY am.goal_lease_epoch DESC, am.set_at DESC, am.owner_id ASC
+       LIMIT 1
+    ),
+    next_epoch AS MATERIALIZED (
+      SELECT COALESCE(MAX(am.goal_lease_epoch), 0) + 1 AS epoch
+        FROM harness_shared.agent_modes am
+        CROSS JOIN input
+        CROSS JOIN goal_lock
+       WHERE am.workspace_id = input.workspace_id
+         AND am.mode = ${GOAL_MODE}
+         AND am.subject = input.subject
+    )
+    INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject,
+       goal_lease_epoch, goal_handoff_from_owner_id, goal_handoff_expires_at)
+    SELECT input.workspace_id, input.owner_id, input.axis_key, input.mode, input.reason,
+           input.set_by, input.owner_directed, now(), input.subject,
+           next_epoch.epoch, predecessor.owner_id,
+           CASE WHEN predecessor.owner_id IS NULL THEN NULL
+                ELSE now() + make_interval(secs => input.handoff_seconds) END
+      FROM input
+      CROSS JOIN goal_lock
+      CROSS JOIN next_epoch
+      LEFT JOIN predecessor ON true
+    ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
+      mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
+      owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
+      subject = EXCLUDED.subject, goal_lease_epoch = EXCLUDED.goal_lease_epoch,
+      goal_handoff_from_owner_id = EXCLUDED.goal_handoff_from_owner_id,
+      goal_handoff_expires_at = EXCLUDED.goal_handoff_expires_at
+    RETURNING owner_id, subject, goal_lease_epoch,
+              goal_handoff_from_owner_id, goal_handoff_expires_at`;
+
+  if (!row) throw new Error(`GOAL holder election wrote no row for ${o.workspaceId}:${o.subject}`);
+  return {
+    ownerId: row.owner_id,
+    goalId: row.subject,
+    epoch: Number(row.goal_lease_epoch),
+    predecessorOwnerId: row.goal_handoff_from_owner_id,
+    handoffExpiresAt:
+      row.goal_handoff_expires_at == null
+        ? null
+        : row.goal_handoff_expires_at instanceof Date
+          ? row.goal_handoff_expires_at.toISOString()
+          : String(row.goal_handoff_expires_at),
+  };
+}
+
+/**
  * Apply one mode transition with the axis + sticky semantics. See module doc.
  * All-or-nothing per call; never throws for semantic refusals (returns
  * stickyConflict / error), only for infrastructure failures.
@@ -481,15 +631,23 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     }
   }
 
-  await sql`
-    INSERT INTO harness_shared.agent_modes
-      (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
-    VALUES (${opts.workspaceId}, ${opts.ownerId}, ${axisKey}, ${def.id}, ${opts.reason},
-            ${opts.setBy}, ${ownerDirected}, now(), ${nextSubject})
-    ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
-      mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
-      owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
-      subject = EXCLUDED.subject`;
+  const goalElection = await writeModeRow(sql, {
+    workspaceId: opts.workspaceId,
+    ownerId: opts.ownerId,
+    axisKey,
+    mode: def.id,
+    reason: opts.reason,
+    setBy: opts.setBy,
+    ownerDirected,
+    subject: nextSubject,
+    // A first assignment or a move to ANOTHER goal elects. A reason/sticky
+    // refresh on the same subject preserves the existing epoch and cannot
+    // silently take sovereignty back from a later successor.
+    electGoal:
+      def.id === GOAL_MODE &&
+      Boolean(nextSubject) &&
+      !(incumbent?.mode === GOAL_MODE && incumbent.subject === nextSubject),
+  });
   await audit(sql, {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
     oldMode: incumbent?.mode ?? null, newMode: def.id, reason: opts.reason, setBy: opts.setBy, ownerDirected,
@@ -506,5 +664,11 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
   // past, so this never fires on a re-assert that wrote nothing.
   await notifyAgentOrdersChanged(opts.ownerId);
   const switchedFrom = incumbent && incumbent.mode !== def.id ? incumbent.mode : null;
-  return { ok: true, mode: def, switchedFrom, ...(implied.length ? { implied } : {}) };
+  return {
+    ok: true,
+    mode: def,
+    switchedFrom,
+    ...(implied.length ? { implied } : {}),
+    ...(goalElection ? { goalElection } : {}),
+  };
 }

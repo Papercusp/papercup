@@ -22,6 +22,9 @@ interface Row {
      the column answers "subject: null" to every question, which is
      indistinguishable from the bug where the column is never written. */
   subject: string | null;
+  goal_lease_epoch: number | null;
+  goal_handoff_from_owner_id: string | null;
+  goal_handoff_expires_at: string | null;
 }
 
 /** In-memory agent_modes + agent_mode_changes behind a postgres.js-shaped tagged template. */
@@ -43,6 +46,7 @@ function mockSql() {
     if (text.includes('INSERT INTO harness_shared.agent_modes')) {
       const [ws, owner, axis, mode, reason, setBy, ownerDirected, subject] = vals as string[];
       const k = key(ws, owner, axis);
+      const existingRow = modes.get(k) ?? null;
       /* TWO different inserts hit this branch and they must NOT be modelled the
          same way (D-003). The primary write is ON CONFLICT DO UPDATE — an upsert
          that displaces the same-axis incumbent. The implication cascade is
@@ -55,7 +59,33 @@ function mockSql() {
          a successful insert as a conflict). Both errors are invisible from a
          green run — the row is there either way. */
       const doNothing = text.includes('DO NOTHING');
-      if (doNothing && modes.has(k)) return Promise.resolve([]); // PK conflict: no write, no row
+      if (doNothing && existingRow) return Promise.resolve([]); // PK conflict: no write, no row
+      const isGoalElection = text.includes('goal_lease_epoch');
+      const prior = isGoalElection
+        ? [...modes.values()]
+            .filter(
+              (r) =>
+                r.workspace_id === ws &&
+                r.mode === 'goal' &&
+                r.subject === subject &&
+                r.owner_id !== owner &&
+                r.goal_lease_epoch != null,
+            )
+            .sort(
+              (a, b) =>
+                (b.goal_lease_epoch ?? 0) - (a.goal_lease_epoch ?? 0) ||
+                a.owner_id.localeCompare(b.owner_id),
+            )[0] ?? null
+        : null;
+      const nextEpoch = isGoalElection
+        ? Math.max(
+            0,
+            ...[...modes.values()]
+              .filter((r) => r.workspace_id === ws && r.mode === 'goal' && r.subject === subject)
+              .map((r) => r.goal_lease_epoch ?? 0),
+          ) + 1
+        : null;
+      const handoffExpiresAt = prior ? '2026-07-05T00:02:00.000Z' : null;
       modes.set(k, {
         workspace_id: ws,
         owner_id: owner,
@@ -66,7 +96,25 @@ function mockSql() {
         owner_directed: Boolean(ownerDirected),
         set_at: '2026-07-05T00:00:00Z',
         subject: subject ?? null,
+        goal_lease_epoch: isGoalElection ? nextEpoch : (existingRow?.goal_lease_epoch ?? null),
+        goal_handoff_from_owner_id: isGoalElection
+          ? (prior?.owner_id ?? null)
+          : (existingRow?.goal_handoff_from_owner_id ?? null),
+        goal_handoff_expires_at: isGoalElection
+          ? handoffExpiresAt
+          : (existingRow?.goal_handoff_expires_at ?? null),
       });
+      if (isGoalElection) {
+        return Promise.resolve([
+          {
+            owner_id: owner,
+            subject,
+            goal_lease_epoch: nextEpoch,
+            goal_handoff_from_owner_id: prior?.owner_id ?? null,
+            goal_handoff_expires_at: handoffExpiresAt,
+          },
+        ]);
+      }
       return Promise.resolve(doNothing ? [{ mode }] : []); // RETURNING mode
     }
     // The cascade's "who holds this axis instead" report read.
@@ -540,6 +588,49 @@ describe('implication cascade (D-003)', () => {
     expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
   });
 
+  it('elects one GOAL holder epoch and records a bounded predecessor handoff', async () => {
+    const first = await enterGoal();
+    expect(first.goalElection).toEqual({
+      ownerId: ME,
+      goalId: 'g-1',
+      epoch: 1,
+      predecessorOwnerId: null,
+      handoffExpiresAt: null,
+    });
+
+    const second = await setMode({
+      workspaceId: WS,
+      ownerId: PEER,
+      modeId: 'goal',
+      enabled: true,
+      reason: 'bounded takeover',
+      setBy: PEER,
+      subject: 'g-1',
+      sql: m.sql,
+    });
+    expect(second.goalElection).toEqual({
+      ownerId: PEER,
+      goalId: 'g-1',
+      epoch: 2,
+      predecessorOwnerId: ME,
+      handoffExpiresAt: '2026-07-05T00:02:00.000Z',
+    });
+    const peerGoal = (await getModes(WS, PEER, m.sql)).find((row) => row.mode === 'goal')!;
+    expect(peerGoal).toMatchObject({
+      goalLeaseEpoch: 2,
+      goalHandoffFromOwnerId: ME,
+      goalHandoffExpiresAt: '2026-07-05T00:02:00.000Z',
+    });
+
+    // Reasserting the predecessor's unchanged row is a no-op repair, not a new
+    // election that silently steals sovereignty back from the successor.
+    const reasserted = await enterGoal();
+    expect(reasserted.noop).toBe(true);
+    expect(reasserted.goalElection).toBeUndefined();
+    const predecessor = (await getModes(WS, ME, m.sql)).find((row) => row.mode === 'goal')!;
+    expect(predecessor.goalLeaseEpoch).toBe(1);
+  });
+
   it('GRADE writes the AUTO row itself, so remediation never starts ask-first', async () => {
     const res = await setMode({
       workspaceId: WS,
@@ -761,6 +852,9 @@ describe('reconcileImpliedModes (WI-37856) — repairs the stored population, no
       owner_directed: o?.ownerDirected ?? false,
       set_at: '2026-08-10T07:05:19Z',
       subject: o?.subject ?? null,
+      goal_lease_epoch: mode === 'goal' ? 1 : null,
+      goal_handoff_from_owner_id: null,
+      goal_handoff_expires_at: null,
     });
   };
 
