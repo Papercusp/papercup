@@ -2214,6 +2214,34 @@ describe('runtime-owner map (EI-10895)', () => {
       expect(owners[0].host).toBe('bg-host');
     });
 
+    it('EI-21863351526928940: packages/backup/** classifies as dual-consumer (bg-host DBOS scheduled workflows AND operator-release MCP tools/HTTP routes), never bg-host-only', () => {
+      const backupHookPath = 'packages/backup/src/hook.ts';
+      const owners = classifyRuntimeOwners(backupHookPath)!;
+      expect(owners).toHaveLength(2);
+      expect(owners[0].host).toBe('bg-host');
+      expect(owners[0].releasePipelineApplies).toBe(false);
+      expect(owners[0].restartTarget).toBe('bg-host');
+      expect(owners[1].host).toBe('operator-release');
+      expect(owners[1].releasePipelineApplies).toBe(true);
+      expect(owners[1].restartTarget).toBe('staging');
+      // Legacy singular still returns bg-host first (back-compat), never throws.
+      expect(classifyRuntimeOwner(backupHookPath)!.host).toBe('bg-host');
+    });
+
+    it('EI-21863351526928940: gitPipelinePosition no longer reports blockedOn:"gate" / releasePipelineApplies:true-only for a packages/backup path — surfaces BOTH consumers', async () => {
+      const git = fakeGit({ pathCommit: 'bk0000001', contains: { HEAD: ['bk0000001'] } });
+      const res = await gitPipelinePosition(
+        { path: 'packages/backup/src/hook.ts' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.runtimes).toHaveLength(2);
+      expect(res.runtimes?.map((r) => r.host)).toEqual(['bg-host', 'operator-release']);
+      expect(res.runtime?.host).toBe('bg-host');
+      expect(res.summary).toContain('MULTIPLE CONSUMERS');
+      expect(res.summary).toContain('bg-host');
+      expect(res.summary).toContain('operator-release');
+    });
+
     it('gitPipelinePosition surfaces `runtimes` (plural) and flags the split in notes + summary', async () => {
       const git = fakeGit({ pathCommit: 'sm0000001', contains: { HEAD: ['sm0000001'] } });
       const res = await gitPipelinePosition(
