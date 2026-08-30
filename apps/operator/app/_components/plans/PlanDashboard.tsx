@@ -45,7 +45,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Button } from '@/app/harness/Button';
-import { bucketOf, usePlanList } from '@/app/admin/plans/plans-api';
+import { bucketOf, usePlan } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import SessionChatModal from '../chat/SessionChatModal';
 import {
@@ -53,7 +53,7 @@ import {
   CHAT_WORK_ITEM_POPUP_PARAM,
   encodeScopedRef,
 } from '../chat/chat-ref-popup-params';
-import { agoLabel, agoLabelMs, progressOf, WORK_HOT_MS } from './PlansPane';
+import { agoLabel, agoLabelMs, WORK_HOT_MS } from './PlansPane';
 import PlanCleanupEntryButton from './PlanCleanupEntryButton';
 import {
   PLAN_CLEANUP_RUN_PARAM,
@@ -107,6 +107,28 @@ function agoPhrase(label: string): string {
   return label === 'now' ? 'just now' : `${label} ago`;
 }
 
+/**
+ * Progress derived from a `plans:get` full-mode item list — this surface's
+ * targeted single-plan read carries `items` (plans-list-windowing-
+ * cardinality-fix-2026-08-30 P-003), not the pre-aggregated `itemCounts`
+ * histogram `PlansPane.progressOf` reads off the shared `plans.list` index.
+ * Mirrors that function's exact rule (done = `effectiveStatus === 'done'`;
+ * every item counts toward total) over the row list instead of a histogram —
+ * `plans:get` resolves `effectiveStatus` through the identical two-step
+ * (resolveEffectiveStatus + issue-block overlay) `plans:list` uses to build
+ * the histogram in the first place, so the two can't disagree.
+ */
+function progressOfItems(
+  items: Array<{ effectiveStatus?: string }> | undefined,
+): { done: number; total: number } | null {
+  if (!items || items.length === 0) return null;
+  let done = 0;
+  for (const it of items) {
+    if (it.effectiveStatus === 'done') done += 1;
+  }
+  return { done, total: items.length };
+}
+
 /** `su-5ae5fec0-…` → `su-5ae5f` — the short owner id the roster panes show. */
 export function shortOwnerId(ownerId: string): string {
   const m = /^([a-z]+)-([0-9a-f]{5})/i.exec(ownerId);
@@ -140,13 +162,19 @@ export default function PlanDashboard({
 }) {
   const workspaceId = useWorkspaceId();
 
-  // The plan row — the shared plans.list cache (warm from the sidebar).
-  const planList = usePlanList({});
-  const plan = useMemo(
-    () => (planList.data?.plans ?? []).find((p) => p.slug === planSlug) ?? null,
-    [planList.data, planSlug],
-  );
+  // The plan row — a TARGETED single-plan fetch (plans-list-windowing-
+  // cardinality-fix-2026-08-30 P-003), not the shared `plans.list` cache.
+  // That cache is a bounded/potentially-windowed harness-wide index; a plan
+  // simply absent from whatever slice it currently holds silently rendered
+  // this whole surface as if the plan didn't exist — real data made
+  // unreachable by a cache-shape coincidence, independent of any windowing
+  // decision (see D-004). `usePlan`'s live path requests `mode:'full'`,
+  // which also carries `items` — what progress is derived from below.
+  const planQuery = usePlan(planSlug, { live: true, harnessSlug });
+  const plan = planQuery.data;
   const harness = harnessSlug ?? plan?.harness ?? null;
+  const updatedAt =
+    typeof plan?.frontmatter?.updated === 'string' ? plan.frontmatter.updated : null;
 
   // Needs-you: decision-tier attention on THIS plan (the sidebar's own join).
   const { items: attentionItems } = useInboxAttention();
@@ -260,8 +288,10 @@ export default function PlanDashboard({
     onBack();
   }, [setOpenSessionOwner, onBack]);
 
-  const progress = plan ? progressOf(plan) : null;
-  const bucket = plan ? bucketOf(plan) : null;
+  const progress = progressOfItems(plan?.items);
+  const bucket = plan
+    ? bucketOf({ status: plan.status ?? 'draft', startStatus: plan.startStatus ?? undefined })
+    : null;
   const title = plan?.title ?? planSlug;
 
   return (
@@ -340,14 +370,14 @@ export default function PlanDashboard({
           <span
             className="plan-dash__t"
             title={
-              plan?.updated
-                ? `✎ Plan edited ${agoPhrase(agoLabel(plan.updated))} — ${new Date(Date.parse(plan.updated)).toLocaleString()}`
+              updatedAt
+                ? `✎ Plan edited ${agoPhrase(agoLabel(updatedAt))} — ${new Date(Date.parse(updatedAt)).toLocaleString()}`
                 : '✎ Plan edit time unknown'
             }
             data-testid="plan-dash-edit-t"
           >
             <Pencil size={11} aria-hidden="true" />
-            edited {agoLabel(plan?.updated)}
+            edited {agoLabel(updatedAt)}
           </span>
           <span
             className={`plan-dash__t${workHot ? ' plan-dash__t--hot' : lastWorkAtMs == null ? ' plan-dash__t--dim' : ''}`}

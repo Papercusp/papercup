@@ -24,6 +24,7 @@ import {
   summarizeFrozenRepairConvergence,
   buildFrozenRepairConvergenceGateHealth,
   parseFrozenRepairConvergence,
+  shouldConvergeRepairHead,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -1253,5 +1254,65 @@ describe('P-013 / D-007 — the gate_health.convergence PROJECTION', () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.converging).toBeNull();
     expect(parsed!.admissionRounds).toBe(1);
+  });
+});
+
+describe('EI-21036544613774607 — shouldConvergeRepairHead (repairHead converge-to-staging predicate)', () => {
+  it('converges when repairHead is a strict ancestor of a moved staging tip', () => {
+    expect(
+      shouldConvergeRepairHead({
+        repairHead: C,
+        stagingTip: C1,
+        repairHeadIsAncestorOfStaging: true,
+      }),
+    ).toEqual({ converge: true, newRepairHead: C1 });
+  });
+
+  it('does not converge when repairHead already equals the staging tip', () => {
+    // Ancestor-of-self is technically true for `merge-base --is-ancestor`, but converging
+    // to an identical sha would be a no-op write; the predicate short-circuits it.
+    expect(
+      shouldConvergeRepairHead({
+        repairHead: C,
+        stagingTip: C,
+        repairHeadIsAncestorOfStaging: true,
+      }),
+    ).toEqual({ converge: false, newRepairHead: null });
+  });
+
+  it('does NOT converge a diverged repairHead (a fixer commit exists, not an ancestor of staging)', () => {
+    // This is the historical repro's exact shape: repairHead carries a unique repair
+    // commit that never landed on staging, so it must be left completely untouched.
+    expect(
+      shouldConvergeRepairHead({
+        repairHead: C1,
+        stagingTip: C2,
+        repairHeadIsAncestorOfStaging: false,
+      }),
+    ).toEqual({ converge: false, newRepairHead: null });
+  });
+
+  it('fails closed (no converge) when the ancestor check is inconclusive (null)', () => {
+    // null means the git ancestor check itself errored or could not resolve — the
+    // predicate must default to "leave repairHead unchanged", never to a guess.
+    expect(
+      shouldConvergeRepairHead({
+        repairHead: C,
+        stagingTip: C1,
+        repairHeadIsAncestorOfStaging: null,
+      }),
+    ).toEqual({ converge: false, newRepairHead: null });
+  });
+
+  it('never returns a newRepairHead other than the observed staging tip', () => {
+    const result = shouldConvergeRepairHead({
+      repairHead: BASE,
+      stagingTip: C2,
+      repairHeadIsAncestorOfStaging: true,
+    });
+    expect(result.converge).toBe(true);
+    expect(result.newRepairHead).toBe(C2);
+    // Never the immutable `candidate` field, and never any sha not passed in as stagingTip.
+    expect(result.newRepairHead).not.toBe(C);
   });
 });

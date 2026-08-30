@@ -114,6 +114,7 @@ import {
   markFrozenRepairStagingMismatch,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
+  shouldConvergeRepairHead,
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
@@ -963,6 +964,21 @@ export interface CheckpointDeps {
   prepareFrozenRepairWorktree?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<void>;
+  /**
+   * EI-21036544613774607: fast-forward the queue's MOVABLE `repairHead` (never the
+   * immutable `candidate`) to the current staging tip when `repairHead` is still an
+   * ancestor of staging — i.e. before any fixer commit has diverged from it. This is
+   * what stops a repair worktree from branching off a stale frozen sha and re-failing
+   * on a bug staging already fixed (the exact evidence this bug was filed with:
+   * `prepareFrozenRepairWorktree` only ever builds the worktree ONCE per queue, at
+   * whatever `repairHead` was at that moment — see its worktree-exists early return).
+   * Absent, or on any git error, the queue is returned unchanged (fail-closed — worst
+   * case is today's behaviour). Must be called BEFORE `prepareFrozenRepairWorktree` so
+   * a first-time worktree build lands on the converged head.
+   */
+  convergeRepairHeadWithStaging?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<FrozenCandidateRepairQueue>;
   finalizeFrozenRepairWorktree?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<string | null>;
@@ -7962,6 +7978,14 @@ async function runGreenCheckpointInner(
     let fired: FrozenRepairDispatchResult | null = null;
     let dispatchError: unknown = null;
     try {
+      // EI-21036544613774607: converge the MOVABLE repairHead onto current staging
+      // BEFORE the worktree is built, so a first-time worktree build (the common case —
+      // prepareFrozenRepairWorktree is a no-op once the worktree already exists) never
+      // branches off a stale frozen sha that staging has already fixed. Fails closed to
+      // the unchanged queue on any error; never touches the immutable `candidate`.
+      dispatchQueue =
+        (await deps.convergeRepairHeadWithStaging?.(dispatchQueue)) ??
+        dispatchQueue;
       await deps.prepareFrozenRepairWorktree?.(dispatchQueue);
       await renewalChain;
       if (!reservationLost) {
@@ -13854,6 +13878,67 @@ export function realCheckpointDeps(
               queue,
               fired,
             );
+          },
+          async convergeRepairHeadWithStaging(
+            queue: FrozenCandidateRepairQueue,
+          ) {
+            // Fail-closed on ANY error here: a broken ancestor check must degrade to
+            // "leave repairHead exactly as it was" (today's behaviour), never to a guess,
+            // and it must never be able to wedge a dispatch that would otherwise have
+            // succeeded — see the CheckpointDeps doc on this hook.
+            let stagingTip: string;
+            let repairHeadIsAncestorOfStaging: boolean | null;
+            try {
+              stagingTip = await revParse(
+                cfg.integrationRoot,
+                cfg.integrationBranch,
+              );
+              repairHeadIsAncestorOfStaging = await isAncestor(
+                cfg.integrationRoot,
+                queue.repairHead,
+                stagingTip,
+              );
+            } catch (error) {
+              log(
+                `frozen repair repairHead-converge check failed — leaving repairHead ` +
+                  `${queue.repairHead.slice(0, 12)} unchanged: ${
+                    error instanceof Error ? error.message : error
+                  }`,
+              );
+              return queue;
+            }
+            const decision = shouldConvergeRepairHead({
+              repairHead: queue.repairHead,
+              stagingTip,
+              repairHeadIsAncestorOfStaging,
+            });
+            if (!decision.converge || !decision.newRepairHead) return queue;
+            const converged: FrozenCandidateRepairQueue = {
+              ...queue,
+              repairHead: decision.newRepairHead,
+            };
+            log(
+              `frozen repair repairHead converged ${queue.repairHead.slice(0, 12)} -> ` +
+                `${decision.newRepairHead.slice(0, 12)} (still an ancestor of staging tip ` +
+                `${cfg.integrationBranch}; no repair-fixer commits have diverged yet)`,
+            );
+            try {
+              const { writeFrozenCandidateRepairQueue } =
+                await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+              await writeFrozenCandidateRepairQueue(repairTarget, converged);
+            } catch (error) {
+              // Non-fatal: the in-memory converged queue still flows into
+              // prepareFrozenRepairWorktree/dispatchFrozenRepairFixer below. Only the
+              // durable persist failed, so a later re-read could observe the pre-converge
+              // value again — logged loudly rather than silently swallowed.
+              log(
+                `frozen repair repairHead-converge persist failed (proceeding with the ` +
+                  `in-memory converged value only): ${
+                    error instanceof Error ? error.message : error
+                  }`,
+              );
+            }
+            return converged;
           },
           async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
             if (existsSync(path.join(queue.worktreePath, ".git"))) return;

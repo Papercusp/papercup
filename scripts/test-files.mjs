@@ -1477,6 +1477,12 @@ export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
   const deltas = gitLineDeltas(unique, root, repositories);
   return {
     head: gitHeadSha(root),
+    // EI-19323399466378077 — the run-start ISO timestamp, captured at the moment THIS snapshot is
+    // taken (the pre-run call is the run's actual start). Without this a reader comparing a
+    // backgrounded log against the live tree has only filesystem mtime to go on, which git-sync's
+    // scheduled sweep makes unsound (the mtime/commit-time reflects when the sweep ran, not when
+    // the edit landed) — the exact ambiguity that cost a full re-run to disambiguate (WI-6951).
+    startedAt: new Date().toISOString(),
     entries: unique.map((absolute) => ({
       absolute,
       path: relative(root, absolute) || absolute,
@@ -1519,9 +1525,13 @@ export function formatProvenanceBanner(snapshot, phase) {
   const unreproducible = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked');
   const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN);
   const head = snapshot.head ?? PROVENANCE_UNKNOWN;
+  // EI-19323399466378077 — APPENDED, never inserted mid-line: a snapshot built by hand (this
+  // file's own unit tests) carries no `startedAt`, so the suffix is empty and the summary line
+  // stays byte-identical to what those tests already assert with `.toContain(...)`.
+  const startedAtSuffix = snapshot.startedAt ? ` startedAt=${snapshot.startedAt}` : '';
   const lines = [
     `TEST_FILE_PROVENANCE head=${head} testedPaths=${entries.length} ` +
-      `uncommitted=${unreproducible.length} unknown=${unknown.length} phase=${phase}`,
+      `uncommitted=${unreproducible.length} unknown=${unknown.length} phase=${phase}${startedAtSuffix}`,
     `  HEAD         : ${head}`,
   ];
   entries.forEach((entry, index) => {
@@ -1633,9 +1643,15 @@ export function provenanceResultFields(snapshot, diff) {
       : diff?.headMoved || snapshot?.head == null || unknown > 0
         ? PROVENANCE_UNKNOWN
         : 'stamped';
+  // EI-19323399466378077 — the run-start ISO timestamp, when the snapshot carries one (the real
+  // `main()` call site does, via `snapshotProvenance`; this function's own unit tests construct
+  // snapshots by hand without it, so their exact `.toBe(...)` assertions stay unaffected).
+  // APPENDED LAST so `head=`/`uncommittedPaths=`/`provenance=` keep their existing positions for
+  // every consumer already tokenising this line.
+  const startedAtSuffix = snapshot?.startedAt ? ` startedAt=${snapshot.startedAt}` : '';
   return (
     `head=${snapshot?.head ?? PROVENANCE_UNKNOWN} ` +
-    `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}`
+    `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}${startedAtSuffix}`
   );
 }
 
@@ -1707,6 +1723,47 @@ const SETSID_PATH = process.platform === 'linux'
   ? ['/usr/bin/setsid', '/bin/setsid'].find((candidate) => existsSync(candidate)) ?? null
   : null;
 
+/**
+ * EI-21903376339103215: read the cumulative wall-clock ms pc-heavy has spent SIGSTOPping the
+ * CURRENT admission, from the record file it persists at
+ * `${PC_HEAVY_ADMISSION_DIR}/${PC_HEAVY_ADMISSION_ID}.state` (pc-heavy.sh's `_psi_write_record`).
+ * A SIGSTOP freeze pauses this whole process tree without pausing wall clock, so a `Date.now()`
+ * budget inside a frozen subject (this router's own watchdog timers, or a deeper vitest test's
+ * own timeout logic) can report a confident timeout that the freeze — not a genuine defect —
+ * produced. Returns `null` when pc-heavy admission is not in play (the two env vars are pc-heavy's
+ * own export, present only when this process was launched under it) or the record is unreadable —
+ * kept distinct from `0`, which means pc-heavy IS in use and genuinely reports no freeze (yet).
+ * Callers diff two readings taken around one run to attribute freeze time to THAT run's own
+ * wall-clock window, since one pc-heavy admission can cover several sequential groups.
+ */
+function readPcHeavyFrozenTotalMs(env = process.env) {
+  const dir = env.PC_HEAVY_ADMISSION_DIR;
+  const id = env.PC_HEAVY_ADMISSION_ID;
+  if (!dir || !id) return null;
+  let raw;
+  try {
+    raw = readFileSync(join(dir, `${id}.state`), 'utf8');
+  } catch {
+    return null;
+  }
+  for (const line of raw.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq < 0 || line.slice(0, eq) !== 'frozen_total_ms') continue;
+    const value = Number(line.slice(eq + 1).trim());
+    return Number.isFinite(value) ? value : null;
+  }
+  return null;
+}
+
+/**
+ * Diff two `readPcHeavyFrozenTotalMs()` readings into "how much freeze time fell inside this
+ * window" — `0` whenever either side is unreadable (pc-heavy not in play, or the record vanished),
+ * never a negative number (a record reset between readings must not read as a negative freeze).
+ */
+function pcHeavyFreezeMsBetween(before, after) {
+  return before === null || after === null ? 0 : Math.max(0, after - before);
+}
+
 function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
   if (ownsProcessGroup) return killSpawnedProcessTree(child, signal);
   try {
@@ -1775,6 +1832,10 @@ export function runCapturedTestProcess(command, args, options = {}) {
   // PC_HEAVY_PSI_FINALIZATION_MAX_SEC, so a stuck marker cannot pin a slot.
   const runChild = (admissionContext, governedEnv, { inherited = false } = {}) => new Promise((resolveRun) => {
     const startedAt = Date.now();
+    // EI-21903376339103215: snapshot BEFORE spawning so the close handler below can diff against
+    // it and attribute only THIS run's own freeze time, not freeze time from an earlier group
+    // sharing the same pc-heavy admission.
+    const freezeMsAtStart = readPcHeavyFrozenTotalMs();
     const sampler = createGovernedProcessDemandSampler(plannedDemand);
     const child = spawnImpl(spawnCommand, spawnArgs, {
       cwd,
@@ -1942,6 +2003,11 @@ export function runCapturedTestProcess(command, args, options = {}) {
         actualDemand: sampler.stop({ diskBytes: capturedBytes }),
         admissionReceiptId: admissionContext?.receiptId ?? null,
         admissionInherited: inherited,
+        // EI-21903376339103215: ms of pc-heavy SIGSTOP freeze that fell inside this run's own
+        // wall-clock window (0 when pc-heavy is not in play or no freeze occurred). Callers use
+        // this to qualify a timeout-shaped failure/timedOut verdict as possibly-freeze-induced
+        // instead of reporting it as an unqualified clean red.
+        freezeMs: pcHeavyFreezeMsBetween(freezeMsAtStart, readPcHeavyFrozenTotalMs()),
       });
     });
   });
@@ -2310,6 +2376,16 @@ export async function main(
           'NOT MEASURED — no test-failure verdict was produced. Widen with ' +
           'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same npm run test:file command.',
       );
+      if (result.freezeMs > 0) {
+        console.error(
+          `TEST_FILE_FREEZE_QUALIFIER cwd=${cwdLabel} frozenMs=${result.freezeMs} — a pc-heavy PSI ` +
+            'freeze SIGSTOPped this run for part of its wall-clock window (wall clock kept running ' +
+            'while the process tree could not execute), so this timeout-shaped watchdog reap is ' +
+            'possibly-freeze-induced, not necessarily a genuine hang (EI-21903376339103215). Before ' +
+            're-attributing it to the code under test, re-run once PSI is not under pressure, or ' +
+            `widen PAPERCUSP_TEST_FILE_TIMEOUT_MS by at least ${result.freezeMs}ms.`,
+        );
+      }
     }
     if (result.error) {
       console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
@@ -2347,6 +2423,16 @@ export async function main(
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=not-measured`);
     } else if (groupFailed) {
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
+      if (result.freezeMs > 0) {
+        console.error(
+          `TEST_FILE_FREEZE_QUALIFIER cwd=${cwdLabel} frozenMs=${result.freezeMs} — a pc-heavy PSI ` +
+            'freeze SIGSTOPped this run for part of its wall-clock window (wall clock kept running ' +
+            'while the process tree could not execute), so any timeout/deadline-based failure in the ' +
+            'report above is possibly-freeze-induced, not necessarily a genuine defect ' +
+            '(EI-21903376339103215). Cross-check the specific failing test\'s own duration against ' +
+            'frozenMs before treating it as a clean red; a non-timeout assertion failure is unaffected.',
+        );
+      }
       if (looksLikeMidInstallCorruption(runOutput)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -2423,6 +2509,10 @@ export async function main(
       // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
       // silently read as a clean pass (that would hide a genuine resource-limit problem).
       timedOut: Boolean(result.timedOut),
+      // EI-21903376339103215: ms of pc-heavy freeze inside this group's own run window (0 when
+      // pc-heavy was not in play or no freeze occurred) — carried through so any consumer of the
+      // structured group result (not just the console.error qualifier above) can see it too.
+      freezeMs: result.freezeMs ?? 0,
     });
   }
 

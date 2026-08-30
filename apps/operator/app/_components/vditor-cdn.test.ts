@@ -70,6 +70,45 @@ describe('vditor cdn (WI-7088)', () => {
     expect(cdnArgs.length).toBe(entryPoints.length);
   });
 
+  it('every Vditor entry point pins math.engine to KaTeX', async () => {
+    // EI-19370965762703309. MathJax lazily loads speech-rule-engine from
+    // `cdn.jsdelivr.net/npm/speech-rule-engine@<ver>/lib/mathmaps` — the public
+    // internet, i.e. the exact egress this file exists to prevent. KaTeX is
+    // served from the local mirror, so pinning it keeps that path dead code.
+    //
+    // CORRECTING THE FILING'S PREMISE: the item worried that the unpinned
+    // warm-up render might FALL BACK to MathJax, and explicitly could not
+    // determine vditor's default. It is KaTeX. vditor's own types document
+    // `engine` as "默认值: 'KaTeX'" (dist/types/index.d.ts:495) and its bundled
+    // defaults read `math:{engine:"KaTeX",inlineDigit:!1,macros:{}}`. So an
+    // unset engine was never the live risk, and the warm-up was not one
+    // content-change away from egress.
+    //
+    // The invariant is still worth pinning, for the two reasons that survive:
+    //   1. an EXPLICIT `engine: 'MathJax'` at any entry point reopens the
+    //      egress — asserted directly below, since that is the real risk;
+    //   2. the KaTeX default belongs to vditor, not to us, so a future upgrade
+    //      could change it silently. Pinning per entry point makes the property
+    //      ours and hold by construction, as `cdn` and `transform` already do.
+    const src = stripComments(await readFile(MARKDOWN_EDITOR, 'utf8'));
+
+    const entryPoints = src.match(VDITOR_ENTRY_POINTS) ?? [];
+    const mathEngines = src.match(/math:\s*\{\s*engine:\s*'KaTeX'\s*\}/g) ?? [];
+
+    // The direct statement of the property: nothing may select MathJax. The
+    // count assertion below implies this today (a MathJax pin displaces a
+    // KaTeX one and breaks the count), but only indirectly and with a far
+    // worse failure message.
+    expect(src).not.toMatch(/engine:\s*'MathJax'/);
+
+    // Comment-stripping is load-bearing here, not cosmetic: the raw source
+    // carries 6 entry-point-shaped tokens, 3 of which are prose describing the
+    // call sites. Matching raw text would compare 2 against 6 and mis-report
+    // the gap's size.
+    expect(entryPoints.length).toBeGreaterThanOrEqual(3);
+    expect(mathEngines.length).toBe(entryPoints.length);
+  });
+
   it('no OTHER module constructs Vditor behind this guard\'s back', async () => {
     // The assertion above only inspects MarkdownEditor.tsx. A second module
     // constructing Vditor would be invisible to it — so enumerate every live

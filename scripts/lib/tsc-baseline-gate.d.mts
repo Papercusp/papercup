@@ -1026,7 +1026,7 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, routed?: boolean }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, filesUnchecked, routed, }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, filesUnchecked, routed, runStartIso, headSha, }: {
     label: string;
     scope: string;
     code: number;
@@ -1035,6 +1035,25 @@ export function formatLintTscResultMarker({ label, scope, code, nothingTypecheck
     filesUnchecked?: number;
     routed?: boolean;
 }): string;
+/**
+ * The pre-run stamp (EI-19323399466378077): what this run is about to judge, printed BEFORE the
+ * compile so a killed/hung run still leaves it on disk. Mirrors scripts/test-files.mjs's
+ * `TEST_FILE_PROVENANCE` banner (same item, same fix shape, two files) — the resolved file set
+ * lives here (a caller `| tail -N`ing the terminal line does not need it repeated there), while
+ * the run-start time + HEAD are ALSO appended to the terminal `LINT_TSC_RESULT` line above.
+ *
+ * @param {{ label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null }} input
+ * @returns {string}
+ */
+export function formatLintTscRunStamp({ label, runStartIso, headSha, scope, files }: {
+    label: string;
+    runStartIso: string;
+    headSha: string | null;
+    scope: string;
+    files: string[] | null;
+}): string;
+/** Short HEAD sha at call time, or null when git cannot answer (never a fabricated value). */
+export function gitHeadShaForLintTsc(root: any): string | null;
 export function runTscBaselineGate({ root, tscCommand, preTscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
     root: any;
     tscCommand: any;

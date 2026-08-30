@@ -9,12 +9,12 @@
 // nuqs is a seeded store (same seams as PlansPane.test.tsx).
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { PlanListRow } from '@/app/admin/plans/plans-api';
+import type { PlanGetResult, PlanItem } from '@/app/admin/plans/plans-api';
 
 const {
   nuqs,
   setters,
-  planListData,
+  planData,
   attentionItems,
   syncData,
   launchAgentSpy,
@@ -23,7 +23,11 @@ const {
 } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
-  planListData: { value: null as { plans: PlanListRow[] } | null },
+  // plans-list-windowing-cardinality-fix-2026-08-30 P-003: this surface reads
+  // its OWN plan via a targeted `usePlan(slug, {live:true})` fetch now, not a
+  // slice of the shared `plans.list` cache — so the fixture is a single
+  // `PlanGetResult`, not a `{ plans: [...] }` collection.
+  planData: { value: null as PlanGetResult | null },
   attentionItems: {
     value: [] as Array<{ planSlug: string | null; tier: string }>,
   },
@@ -72,9 +76,9 @@ vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => cleanupFlag.value }));
 // Keep bucketOf real — only stub the data hook.
 vi.mock('@/app/admin/plans/plans-api', async (orig) => ({
   ...(await orig<typeof import('@/app/admin/plans/plans-api')>()),
-  usePlanList: () => ({
-    data: planListData.value,
-    loading: planListData.value === null,
+  usePlan: () => ({
+    data: planData.value,
+    loading: planData.value === null,
     error: null,
     refresh: vi.fn(),
   }),
@@ -95,18 +99,52 @@ vi.mock('../chat/SessionChatModal', () => ({
 
 import PlanDashboard, { avatarColor, shortOwnerId } from './PlanDashboard';
 
-function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
+/** N stub `PlanItem`s per requested `effectiveStatus` — the `plans:get`
+ *  full-mode row list this surface derives progress from (P-003), in place
+ *  of the pre-aggregated `itemCounts` histogram the old `plans.list`-backed
+ *  fixture used. `{done:3, todo:6}` → 9 items, 3 of them `effectiveStatus:
+ *  'done'` — the same "3 of 9 items done" the header asserts. */
+function itemsOf(counts: Record<string, number>): PlanItem[] {
+  const out: PlanItem[] = [];
+  let i = 0;
+  for (const [status, n] of Object.entries(counts)) {
+    for (let k = 0; k < n; k++) {
+      i += 1;
+      out.push({
+        id: `P-${String(i).padStart(3, '0')}`,
+        storedStatus: status as PlanItem['storedStatus'],
+        effectiveStatus: status as PlanItem['effectiveStatus'],
+        text: `item ${i}`,
+      });
+    }
+  }
+  return out;
+}
+
+function plan(over: {
+  slug: string;
+  title?: string;
+  status?: PlanGetResult['status'];
+  startStatus?: PlanGetResult['startStatus'];
+  updated?: string;
+  harness?: string;
+  items?: PlanItem[];
+}): PlanGetResult {
   return {
     slug: over.slug,
     title: over.title ?? over.slug,
     status: over.status ?? 'active',
-    updated: over.updated ?? new Date(Date.now() - 2 * 60_000).toISOString(),
-    archived: false,
-    isLegacy: false,
-    itemCounts: over.itemCounts,
-    harness: over.harness ?? 'papercusp',
     startStatus: over.startStatus,
-  } as PlanListRow;
+    archived: false,
+    legacy: false,
+    harness: over.harness ?? 'papercusp',
+    // `updated` is a `## Now`-adjacent frontmatter field on `plans:get`, not a
+    // top-level `PlanGetResult` field (unlike `plans.list`'s `PlanListRow`) —
+    // mirror the real shape so PlanDashboard's `frontmatter?.updated` read is
+    // exercised, not bypassed.
+    frontmatter: { updated: over.updated ?? new Date(Date.now() - 2 * 60_000).toISOString() },
+    items: over.items ?? [],
+  };
 }
 
 const OWNER_A = 'su-76a83f00-1111-2222-3333-444455556666';
@@ -118,16 +156,12 @@ function seed(opts?: {
   needsYou?: boolean;
   worked?: boolean;
 }) {
-  planListData.value = {
-    plans: [
-      plan({
-        slug: 'p1',
-        title: 'Security posture closure',
-        startStatus: 'started',
-        itemCounts: { done: 3, todo: 6 },
-      }),
-    ],
-  };
+  planData.value = plan({
+    slug: 'p1',
+    title: 'Security posture closure',
+    startStatus: 'started',
+    items: itemsOf({ done: 3, todo: 6 }),
+  });
   attentionItems.value = opts?.needsYou
     ? [
         { planSlug: 'p1', tier: 'decision' },

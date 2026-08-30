@@ -190,6 +190,17 @@ export function preloadVditor(): Promise<void> {
       await Vditor.preview(warm, 'warm', {
         cdn: VDITOR_CDN,
         transform: neutralizePlantuml,
+        // Pinned even though 'warm' contains no math (EI-19370965762703309).
+        // NOT because the default is unsafe: vditor's own types document
+        // `engine` as "默认值: 'KaTeX'" and its bundled defaults literally read
+        // `math:{engine:"KaTeX",...}`, so an unset engine resolves to KaTeX,
+        // not MathJax. The egress risk is an EXPLICIT `engine: 'MathJax'` —
+        // MathJax pulls speech-rule-engine from cdn.jsdelivr.net — plus the
+        // fact that a library default is not ours to rely on across upgrades.
+        // Pinning here makes the property hold by construction and uniform
+        // across all three entry points, so the per-entry-point guard in
+        // vditor-cdn.test.ts can assert it without a special case.
+        math: { engine: 'KaTeX' },
         mode: 'dark',
         lang: 'en_US',
       } as never);

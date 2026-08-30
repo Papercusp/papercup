@@ -23,6 +23,7 @@ import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from "./_ctx-opts";
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from "../_harness-scope";
 import { recoverHarnessFromSlugs, slugScopeErrorResult } from "./slug-scope";
 import { resolveEffectiveStatus } from "./effective-status";
+import { reconcileStartStatus } from "./plan-start-state";
 import { hashPlanContent } from "./content-hash";
 import { DEFAULT_WORKSPACE_ID } from "../../workspace-registry";
 import {
@@ -699,11 +700,24 @@ export default defineTool({
 
             if (parsed.isLegacy) {
               const sections = splitSections(parsed.prose);
+              // plans-list-windowing-cardinality-fix-2026-08-30 P-001/P-002: mirror
+              // plans:list's `title`/`status`/`startStatus` triad here so a single-plan
+              // fetch is sufficient for any list-row-equivalent lookup (e.g.
+              // PlanDashboard's bucket derivation) without pulling the whole shared
+              // index. `row` already carries these columns (PlanRow.title/status/
+              // opStatus) for every plan including legacy ones — plans:list computes
+              // them identically (list.ts: `row.status ?? 'draft'` +
+              // `reconcileStartStatus(row.opStatus, status)`), so this is a projection
+              // of an already-fetched row, not new plumbing.
+              const legacyStatus = row.status ?? "draft";
               const legacyBase = {
                 slug: parsed.slug,
                 harness: row.harnessSlug,
                 archived,
                 legacy: true as const,
+                title: row.title,
+                status: legacyStatus,
+                startStatus: reconcileStartStatus(row.opStatus, legacyStatus),
                 contentHash: hashPlanContent(parsed.raw),
                 // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
                 // contentHash kept for callers that still pass expectedHash.
@@ -866,6 +880,13 @@ export default defineTool({
             // su-X" claim self-discloses instead of silently outliving the
             // agent it names. Best-effort; never mutates the stored plan.
             const decoratedNow = await decoratePlanNowBlock(parsed.now);
+            // plans-list-windowing-cardinality-fix-2026-08-30 P-001/P-002: same
+            // title/status/startStatus triad as the legacy branch above — see that
+            // comment for the full rationale. `status` here intentionally reads
+            // `row.status`, NOT `parsed.frontmatter.status`: `row` is the DB
+            // projection plans:list already reads from, so the two response shapes
+            // can never disagree on what "the plan's status" means.
+            const status = row.status ?? "draft";
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
@@ -877,6 +898,9 @@ export default defineTool({
               harness: row.harnessSlug,
               archived,
               legacy: false as const,
+              title: row.title,
+              status,
+              startStatus: reconcileStartStatus(row.opStatus, status),
               frontmatter: parsed.frontmatter,
               now: decoratedNow,
               contentHash: hashPlanContent(parsed.raw),

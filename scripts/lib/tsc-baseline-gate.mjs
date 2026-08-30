@@ -2266,6 +2266,13 @@ export function formatLintTscResultMarker({
   preflightFailed = false,
   filesUnchecked = 0,
   routed = false,
+  // EI-19323399466378077 — run-start stamp, OPTIONAL and APPENDED LAST. Every existing call site
+  // in this file's own test suite omits these two, so their exact `.toBe(...)` assertions on the
+  // full marker string stay byte-identical; only `runTscBaselineGate`'s real exit hook supplies
+  // them, mirroring the same additive-suffix convention scripts/test-files.mjs uses for its own
+  // TEST_FILE_RESULT/TEST_FILE_PROVENANCE lines (same item, same fix shape, two files).
+  runStartIso = null,
+  headSha = null,
 }) {
   // The refinement applies ONLY to the gate's own considered failure (exit 1). An abnormal
   // code — SIGTERM, OOM, a toolchain crash — means the run is UNMEASURED, and it must keep
@@ -2294,7 +2301,51 @@ export function formatLintTscResultMarker({
   // Reported on a REGRESSION too: "3 files regressed" and "2 more were never looked at" are
   // independent facts, and suppressing the second because the first is louder is how a caller
   // fixes the named files and ships the unexamined ones.
-  return unchecked > 0 ? `${marker} filesUnchecked=${unchecked}` : marker;
+  const withUnchecked = unchecked > 0 ? `${marker} filesUnchecked=${unchecked}` : marker;
+  // EI-19323399466378077 — a backgrounded run's log body is byte-identical whether it is 30
+  // seconds or three hours old, and filesystem mtime cannot disambiguate on a tree git-sync
+  // commits on a schedule (the commit time is when the SWEEP ran, not when the edit landed).
+  // Stamping the run-start time + the HEAD it judged ON THE TERMINAL LINE — not just a banner —
+  // is deliberate: it is the line a `| tail -N` reads and the one a caller pastes as evidence.
+  return runStartIso != null ? `${withUnchecked} at=${runStartIso} head=${headSha ?? 'unknown'}` : withUnchecked;
+}
+
+/**
+ * The pre-run stamp (EI-19323399466378077): what this run is about to judge, printed BEFORE the
+ * compile so a killed/hung run still leaves it on disk. Mirrors scripts/test-files.mjs's
+ * `TEST_FILE_PROVENANCE` banner (same item, same fix shape, two files) — the resolved file set
+ * lives here (a caller `| tail -N`ing the terminal line does not need it repeated there), while
+ * the run-start time + HEAD are ALSO appended to the terminal `LINT_TSC_RESULT` line above.
+ *
+ * @param {{ label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null }} input
+ * @returns {string}
+ */
+export function formatLintTscRunStamp({ label, runStartIso, headSha, scope, files }) {
+  const head = headSha ?? 'unknown';
+  const lines = [
+    `LINT_TSC_RUN_STAMP label=${label} at=${runStartIso} head=${head} scope=${scope} ` +
+      `files=${files && files.length > 0 ? files.length : 'all'}`,
+  ];
+  if (files && files.length > 0) {
+    files.forEach((f, index) => {
+      lines.push(`  ${index === 0 ? 'checked files :' : '              '} ${f}`);
+    });
+  }
+  return lines.join('\n');
+}
+
+/** Short HEAD sha at call time, or null when git cannot answer (never a fabricated value). */
+export function gitHeadShaForLintTsc(root) {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--short=10', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf-8',
+    });
+    const sha = out.trim();
+    return sha === '' ? null : sha;
+  } catch {
+    return null;
+  }
 }
 
 export async function runTscBaselineGate({
@@ -2349,6 +2400,12 @@ export async function runTscBaselineGate({
   // about the covered files and the marker must not let that read as coverage of all of them.
   let filesUnchecked = 0;
 
+  // EI-19323399466378077 — captured HERE, before anything else runs, so it is the run's actual
+  // start (not the compile's) and survives into the exit-hook closure below regardless of which
+  // branch this run takes or how long the compile itself runs.
+  const runStartIso = new Date().toISOString();
+  const headShaAtStart = gitHeadShaForLintTsc(root);
+
   process.on('exit', (code) => {
     console.log(
       formatLintTscResultMarker({
@@ -2359,6 +2416,8 @@ export async function runTscBaselineGate({
         preflightFailed,
         filesUnchecked,
         routed: autoRouted,
+        runStartIso,
+        headSha: headShaAtStart,
       }),
     );
   });
@@ -2376,6 +2435,19 @@ export async function runTscBaselineGate({
         })
       : parsedExplicitFiles;
   const mineFlag = argv.includes('--mine') || explicitFiles !== null;
+
+  // EI-19323399466378077 — the pre-run stamp: what this run is about to judge, printed before the
+  // compile so a killed/hung run still leaves it on disk (the terminal LINT_TSC_RESULT line only
+  // ever prints on a clean `process.on('exit')`, which SIGTERM/SIGKILL never reach).
+  console.log(
+    formatLintTscRunStamp({
+      label,
+      runStartIso,
+      headSha: headShaAtStart,
+      scope: lintTscScopeFromArgv(argv),
+      files: explicitFiles !== null ? [...explicitFiles] : null,
+    }),
+  );
 
   // EI-19341572300046923 — REFUSE to report a verdict about files this project never compiles.
   //

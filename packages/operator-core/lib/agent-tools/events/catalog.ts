@@ -189,11 +189,42 @@ export default defineTool({
           live_awaiters?: number;
         }>
       | undefined;
+    // EI-21907772459508454: an announced gate that exists but is NOT VISIBLE to this
+    // reader used to come back in the SAME SHAPE as one that was never declared —
+    // `count: 0`, or the `announced` key omitted entirely. That is the repo's
+    // absence-vs-not-measured rule violated on a coordination surface the playbook
+    // explicitly sends agents to ("verify the key against the catalog rather than
+    // hand-copying it from a chat message"). A fleet member followed that rule, read
+    // the silence as "my leader never declared the gate", and escalated wrongly.
+    //
+    // Visibility here is derived from PRESENCE (fleetSlug / currentPlanSlug), which
+    // agents very often have not set: measured 2026-08-30, of 124 agents with a
+    // heartbeat inside 30min, 76 carried a fleet_slug but only 30 carried a
+    // current_plan_slug — so 60 fleet members saw NONE of the 25 active plan-scoped
+    // gates. events:await resolves the same key BY KEY and answers correctly, so the
+    // two surfaces disagree and the lying one is the documented one.
+    //
+    // The fix is to make the omission SAYABLE, not to loosen the scope rule
+    // (announcementVisibleTo is correct): report what was withheld and why.
+    let announcedVisibility:
+      | {
+          total_active: number;
+          returned: number;
+          hidden_by_scope: number;
+          hidden_by_query: number;
+          hidden_by_cap: number;
+          reader_scope: { fleet: string | null; plan: string | null; harness: string | null };
+          reader_resolved: boolean;
+          note?: string;
+        }
+      | undefined;
+    let announcedSectionFailed = false;
     if (args.announced !== false) {
       try {
         const anns = await listActiveAnnouncements({ unfiredOnly: false, limit: 100 });
         if (anns.length > 0) {
           let reader: { fleetSlug?: string | null; planSlug?: string | null; harnessSlug?: string | null } = {};
+          let readerResolved = false;
           try {
             const identity = resolveAgentIdentity(ctx);
             const p = (await getPresence(identity.ownerId)) as
@@ -205,16 +236,48 @@ export default defineTool({
               planSlug: p?.currentPlanSlug ?? null,
               harnessSlug: typeof ctxHarnessRaw === 'string' && ctxHarnessRaw !== '*' ? ctxHarnessRaw : null,
             };
-          } catch { /* unresolvable reader → global-only visibility */ }
-          const visible = anns
-            .filter((a) => announcementVisibleTo(a, reader))
-            .filter((a) => {
-              if (!query) return true;
-              return [a.eventKey, a.logicalGateKey, a.note, a.scopeKind, a.scopeRef, a.subscriberId].some(
-                (value) => typeof value === 'string' && value.toLowerCase().includes(query),
-              );
-            })
-            .slice(0, 25);
+            readerResolved = true;
+          } catch { /* unresolvable reader → global-only visibility, REPORTED below */ }
+          const scopeVisible = anns.filter((a) => announcementVisibleTo(a, reader));
+          const queryVisible = scopeVisible.filter((a) => {
+            if (!query) return true;
+            return [a.eventKey, a.logicalGateKey, a.note, a.scopeKind, a.scopeRef, a.subscriberId].some(
+              (value) => typeof value === 'string' && value.toLowerCase().includes(query),
+            );
+          });
+          const visible = queryVisible.slice(0, 25);
+          const hiddenByScope = anns.length - scopeVisible.length;
+          const hiddenByCap = queryVisible.length - visible.length;
+          const notes: string[] = [];
+          if (hiddenByScope > 0) {
+            notes.push(
+              `${hiddenByScope} announced gate(s) exist but are OUT OF SCOPE for you — this is NOT proof they were never declared. Visibility comes from your PRESENCE (fleet=${reader.fleetSlug ?? 'null'}, plan=${reader.planSlug ?? 'null'}); a gate declared for a fleet/plan you are not recorded on is withheld here even though events:await on its exact key will still resolve it. If a leader told you a key, await it directly rather than concluding from this list that it does not exist.`,
+            );
+          }
+          if (!readerResolved) {
+            notes.push(
+              'READER SCOPE UNRESOLVED — presence lookup failed, so this list was narrowed to GLOBAL gates only. Treat any fleet/plan-scoped absence as UNMEASURED, not absent.',
+            );
+          }
+          if (hiddenByCap > 0) {
+            notes.push(
+              `${hiddenByCap} further visible gate(s) were cut by the fixed 25-row announced cap (the \`limit\` argument bounds FAMILY rows only, not this list). Narrow with \`q\` to see them.`,
+            );
+          }
+          announcedVisibility = {
+            total_active: anns.length,
+            returned: visible.length,
+            hidden_by_scope: hiddenByScope,
+            hidden_by_query: scopeVisible.length - queryVisible.length,
+            hidden_by_cap: hiddenByCap,
+            reader_scope: {
+              fleet: reader.fleetSlug ?? null,
+              plan: reader.planSlug ?? null,
+              harness: reader.harnessSlug ?? null,
+            },
+            reader_resolved: readerResolved,
+            ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+          };
           let counts: Map<string, number> | null = null;
           try {
             counts = await countActiveAwaitsByPrefixes(visible.map((a) => a.eventKey));
@@ -230,8 +293,23 @@ export default defineTool({
             expires_ts: a.expiresTs,
             ...(counts ? { live_awaiters: counts.get(a.eventKey) ?? 0 } : {}),
           }));
+        } else {
+          announcedVisibility = {
+            total_active: 0,
+            returned: 0,
+            hidden_by_scope: 0,
+            hidden_by_query: 0,
+            hidden_by_cap: 0,
+            reader_scope: { fleet: null, plan: null, harness: null },
+            reader_resolved: true,
+            note: 'No announced gates are active in this workspace at all.',
+          };
         }
-      } catch { /* best-effort — never break catalog discovery */ }
+      } catch {
+        // Best-effort — never break catalog discovery. But do NOT let the failure
+        // masquerade as "no gates are declared": say the section could not be read.
+        announcedSectionFailed = true;
+      }
     }
 
     const rowsOut: CatalogRow[] = rows;
@@ -246,11 +324,22 @@ export default defineTool({
             total: merged.entries.length,
             ...(installedCount > 0 ? { installed_families: installedCount } : {}),
             ...(announced && announced.length > 0 ? { announced } : {}),
+            // EI-21907772459508454: ALWAYS present when the announced section ran, even
+            // when `announced` itself is empty/omitted — an empty list and a withheld
+            // list must not read the same. This is the field that tells a caller whether
+            // a missing gate is genuinely undeclared or merely out of their scope.
+            ...(announcedVisibility ? { announced_visibility: announcedVisibility } : {}),
+            ...(announcedSectionFailed
+              ? {
+                  announced_unavailable:
+                    'The announced-gate section could not be read on this call. This is NOT evidence that no gate was declared — retry, or events:await the exact key your leader gave you (await resolves by key and does not depend on presence scope).',
+                }
+              : {}),
             // A REFUSED family declaration is reported, never swallowed — otherwise a
             // pack author debugs a family that "just doesn't appear" with no signal.
             ...(collisions.length > 0 ? { collisions } : {}),
             note:
-              `Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. ${CATALOG_SCOPE_NOTE}`,
+              `A gate MISSING from \`announced\` is not proof it was never declared — read \`announced_visibility\`: gates scoped to a fleet/plan you are not recorded on are withheld here, while events:await on the exact key still resolves them. Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. ${CATALOG_SCOPE_NOTE}`,
             families: rowsOut,
           }),
         },

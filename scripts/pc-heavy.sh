@@ -534,6 +534,14 @@ _pc_heavy_internal_preempt_run() {
   local _psi_retry_handle='' _psi_admitted_at='' _psi_child_start_ticks=''
   local _psi_cgroup_path='' _psi_memory_current_mib='' _psi_state='active'
   local _psi_frozen_since=0
+  # EI-21903376339103215: cumulative wall-clock ms this admission has spent SIGSTOPped, and how
+  # many freeze episodes contributed to it. Persisted via _psi_write_record so a child that
+  # inherits PC_HEAVY_ADMISSION_DIR/PC_HEAVY_ADMISSION_ID can read, after it thaws, how much of
+  # its own elapsed wall-clock budget was consumed by a freeze it could not run during — the
+  # signal a caller needs to qualify a timeout-shaped failure as possibly-freeze-induced rather
+  # than reporting it as a clean, unqualified red. Never reset mid-admission: a freeze earlier in
+  # a multi-group run must still be visible to a later group's post-hoc check.
+  local _psi_frozen_total_ms=0 _psi_frozen_episodes=0
   local _psi_next_sample=0 _psi_last_undetermined=''
   local _psi_finalization_seen_at='' _psi_finalization_expired=0
   local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
@@ -739,6 +747,8 @@ _pc_heavy_internal_preempt_run() {
       printf 'cgroup_path=%s\n' "${_psi_cgroup_path:-unknown}"
       printf 'memory_current_mib=%s\n' "${_psi_memory_current_mib:-unknown}"
       printf 'retry_handle=%s\n' "$_psi_retry_handle"
+      printf 'frozen_total_ms=%s\n' "${_psi_frozen_total_ms:-0}"
+      printf 'frozen_episodes=%s\n' "${_psi_frozen_episodes:-0}"
       printf 'updated_at=%s\n' "$(date +%s)"
     } > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$_psi_record_file" 2>/dev/null; then
       _psi_state="$_state"
@@ -881,6 +891,10 @@ _pc_heavy_internal_preempt_run() {
         # that lease expires, terminate its process group and return an
         # explicit undetermined result instead of leaving affected-tests
         # suspended until its much later outer watchdog fires.
+        # EI-21903376339103215: account the frozen wall-clock time for this episode before the
+        # state flips off `frozen` — _psi_frozen_since is only meaningful while state=frozen.
+        _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now - _psi_frozen_since) * 1000 ))
+        _psi_frozen_episodes=$(( _psi_frozen_episodes + 1 ))
         _psi_write_record expired || true
         _psi_emit expired memory-psi-high-timeout "$_sample" "$_psi_total_mib"
         _expire_frozen=1
@@ -940,6 +954,10 @@ _pc_heavy_internal_preempt_run() {
         _psi_scan_records frozen
         if [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = frozen ]; then
           if kill -CONT -- "-${_preempt_child_pid:-}" 2>/dev/null; then
+            # EI-21903376339103215: same accounting as the expire path above — record this
+            # episode's frozen duration before _psi_write_record flips state away from `frozen`.
+            _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now - _psi_frozen_since) * 1000 ))
+            _psi_frozen_episodes=$(( _psi_frozen_episodes + 1 ))
             _psi_write_record active || true
             rm -f "$_psi_recovery_file" 2>/dev/null || true
             _psi_emit thawed memory-psi-recovered "$_sample" "$_psi_total_mib"

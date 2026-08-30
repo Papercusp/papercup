@@ -132,13 +132,13 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
-  it("rejects stale plan/limit filters and accepts only declared filters", () => {
+  it("rejects stale plan filters and accepts the bounded window contract", () => {
     // The caller-facing contract is intentionally narrow: `plans:attention`
-    // filters by harness scope, not by one plan or a result limit. Keep this
+    // filters by harness scope and an explicit presentation window. Keep this
     // tool-specific guard next to the cache tests so a future schema edit
-    // cannot silently reintroduce the invalid_args incident.
+    // cannot silently reintroduce stale plan filtering.
     expect(tool.args.safeParse({ plan: "plan-1" }).success).toBe(false);
-    expect(tool.args.safeParse({ limit: 50 }).success).toBe(false);
+    expect(tool.args.safeParse({ limit: 50, offset: 50 }).success).toBe(true);
     expect(
       tool.args.safeParse({
         harness: "papercusp",
