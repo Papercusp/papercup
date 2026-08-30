@@ -58,6 +58,15 @@ export type ControlError =
   | 'not_live' // already ended, or a residue classification we do not own
   | 'identity_mismatch' // the pid now belongs to something else — REFUSED
   | 'no_target' // neither a scope nor a verifiable pid
+  // The target is verifiably ABSENT, so there is nothing left to signal: a well-formed
+  // managed scope systemd no longer knows (a transient unit is collected the moment its
+  // payload exits), or a scope that holds zero processes. Split out of `no_target` /
+  // `not_live` because those two also cover states where something is WRONG, and a caller
+  // cannot tell the cases apart from a detail string. Deliberately still `ok:false`:
+  // reconciliation asks "did you signal it?" and the honest answer is no. A caller whose
+  // contract is instead "make sure the subtree is DEAD" should read this as the goal state
+  // reached — see releaseDesktopProcesses, which stops warning on it and proceeds.
+  | 'already_gone'
   | 'unsupported' // e.g. freeze on an unconfined task
   | 'command_failed'
   | 'persistence_failed' // systemd accepted a change, but the ledger did not record it
@@ -213,6 +222,21 @@ async function scopeCgroupPath(
       { timeout: 10_000, maxBuffer: 64 * 1024 },
     );
     const cgroupPath = stdout.trim();
+    // EMPTY is a different answer from WRONG, and only one of them is a problem.
+    // `systemctl show` exits 0 with an empty value for a unit it does not know, which
+    // for a transient scope is the ordinary end of life: the payload exited and systemd
+    // collected the unit. No cgroup means no cgroup to hold processes, so the subtree is
+    // already gone and there is nothing to signal. Reporting that as `no_target` made a
+    // routine teardown indistinguishable from a lookalike-unit refusal (WI-1199802).
+    if (!cgroupPath) {
+      return {
+        ok: false,
+        error: 'already_gone',
+        detail: `scope ${scopeUnit} is no longer known to systemd — its transient scope was collected, so its process subtree is already gone`,
+      };
+    }
+    // A path that IS present but does not validate is the real refusal this guard exists
+    // for: a lookalike unit name resolving outside papercusp.slice. Keep it loud.
     if (!isManagedScopeCgroupPath(cgroupPath, scopeUnit)) {
       return {
         ok: false,
@@ -402,11 +426,14 @@ export async function killScopeUnit(
 
   const initial = countCgroupProcesses(resolved.cgroupPath, d);
   if (initial === 0) {
+    // The unit still exists but holds nothing — the same "nothing to signal" state as a
+    // collected scope, reached one step later. `already_gone` rather than `not_live` so a
+    // caller can tell it apart from a terminal-row classification we decline to own.
     return {
       ok: false,
       scopeUnit,
       action,
-      error: 'not_live',
+      error: 'already_gone',
       detail: `scope ${scopeUnit} is empty or already released; refusing to signal a stale handle`,
     };
   }

@@ -180,6 +180,52 @@ export function findUnacknowledgedExclusiveLock(sqlText: string): {
     hot: boolean;
 }[];
 /**
+ * The migration-721 class (EI-19320370563025481): a file that `ALTER TABLE <t>`
+ * and THEN `CREATE OR REPLACE VIEW <v>` where `<v>` selects from `<t>`, without
+ * first taking the lock on `<v>`.
+ *
+ * WHY THIS DEADLOCKS, AND WHY THE OBVIOUS FIX IS THE WRONG ONE. A reader of the
+ * view locks **view → base table**. This migration locks **table (ALTER) → view
+ * (CREATE OR REPLACE)**. That inversion is a textbook lock-order deadlock, and
+ * on a fleet-hot table there is ALWAYS a reader mid-way between the two objects:
+ *
+ *     Process A waits for AccessExclusiveLock on engineer_issues; blocked by B.
+ *     Process B waits for AccessShareLock      on work_items;      blocked by A.
+ *
+ * The failure actively misleads. Attempt 1's symptom is `canceling statement due
+ * to lock timeout`, which reads as "the table is busy, wait longer" — and the
+ * documented lever for that (`lock_timeout_sec`) makes it WORSE: a longer wait on
+ * ACCESS EXCLUSIVE queues the entire fleet behind you (FIFO), and on 721 it
+ * converted the timeout into a deadlock. Diagnosing pg_stat_activity/pg_locks
+ * first correctly rules out the documented long-holder case, which makes plain
+ * contention look even more like the answer. The real cause is in the file.
+ *
+ * The fix is two lines at the top of the transaction — take both locks up front,
+ * in READER order — after which 721 applied on attempt 1 under the same traffic
+ * that had just failed 7 attempts:
+ *
+ *     LOCK TABLE harness_shared.engineer_issues IN ACCESS EXCLUSIVE MODE;
+ *     LOCK TABLE harness_shared.work_items      IN ACCESS EXCLUSIVE MODE;
+ *
+ * PRECISION. Two shapes are deliberately NOT flagged, because neither can
+ * deadlock: (a) the view re-declared BEFORE the ALTER — that is already reader
+ * order; (b) a base table CREATEd in the same migration — a brand-new relation
+ * has no concurrent reader to invert against. Excluding (b) is what takes the
+ * measured population from 13 files to 11 (846 creates its tables in-file).
+ *
+ * Comments and string literals are masked (`maskLiveBodies`) while `$$` body CODE
+ * stays live, matching the exclusive-lock guard: DDL inside a DO block really
+ * executes, whereas prose describing the hazard must read clean.
+ *
+ * @param {string} sqlText raw migration text
+ * @returns {{ view: string, table: string, hot: boolean }[]}
+ */
+export function findViewLockOrderInversion(sqlText: string): {
+    view: string;
+    table: string;
+    hot: boolean;
+}[];
+/**
  * The migration-461/689 class: DROPPING a table's unique index in the SAME
  * migration that creates its replacement.
  *
@@ -370,3 +416,23 @@ export const EXCLUSIVE_LOCK_ENFORCED_FROM: 1022;
  * never seed a line matching this, or every migration is rubber-stamped.
  */
 export const EXCLUSIVE_LOCK_ACK: RegExp;
+/**
+ * Enforcement boundary for the VIEW LOCK-ORDER INVERSION check (below).
+ *
+ * Its OWN boundary, for the usual reason: 11 already-applied files carry the
+ * shape (136, 178, 374, 382, 418, 432, 485, 551, 554, 555, 677) — measured over
+ * all 875 files in the live dir, not estimated — and they are applied+ledgered,
+ * so editing one now would break its recorded sha256 without re-running it.
+ * 677 is the highest; enforcement starts at the next number. This stops the
+ * NEXT one.
+ *
+ * Bump this ONLY when deliberately re-grandfathering more applied history —
+ * NEVER to silence a genuinely new violation. Use the documented pragma for a
+ * swap that is actually safe (see findViewLockOrderInversion).
+ */
+export const VIEW_LOCK_ORDER_ENFORCED_FROM: 678;
+/**
+ * Opt-out pragma, same shape and contract as `allow-index-swap`: it forces the
+ * author to STATE why the inversion is safe here, not to prove it.
+ */
+export const VIEW_LOCK_ORDER_ACK: RegExp;

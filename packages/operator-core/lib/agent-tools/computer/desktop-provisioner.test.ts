@@ -112,6 +112,67 @@ describe('releaseDesktopProcesses — managed teardown', () => {
 
     expect(client.kill).not.toHaveBeenCalled();
   });
+
+  // WI-1199802. A scope systemd has already collected is the state this function exists to
+  // REACH, so it must not be reported as a refusal. Both consequences are asserted together
+  // because the old behaviour got both wrong at once: it warned (which vitest-fail-on-console
+  // then converted into red tests in suites that had actually passed), and it took the
+  // refusal's early return, skipping the client-handle sweep entirely.
+  it('treats an already-collected scope as success — no warning, and the client sweep still runs', async () => {
+    const events: string[] = [];
+    const client = {
+      kill: vi.fn((signal: NodeJS.Signals) => { events.push(`client:${signal}`); return true; }),
+    };
+    const killScopeUnit = vi.fn(async (scopeUnit: string) => ({
+      ok: false as const,
+      scopeUnit,
+      action: 'kill',
+      error: 'already_gone' as const,
+      detail: `scope ${scopeUnit} is no longer known to systemd — its transient scope was collected, so its process subtree is already gone`,
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await releaseDesktopProcesses([client], { ...root, ledgered: false }, {
+        killTask: vi.fn(),
+        killScopeUnit,
+        sleep: async () => {},
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(events).toEqual(['client:SIGTERM', 'client:SIGKILL']);
+  });
+
+  // The CONTROL for the test above: a genuine refusal must keep BOTH of the old behaviours.
+  // Without this, "stop warning on already_gone" could be over-applied to every !ok outcome
+  // and nothing here would notice — the lookalike-cgroup refusal is security-relevant.
+  it('still refuses loudly when the scope resolves to a foreign cgroup', async () => {
+    const client = { kill: vi.fn(() => true) };
+    const killScopeUnit = vi.fn(async (scopeUnit: string) => ({
+      ok: false as const,
+      scopeUnit,
+      action: 'kill',
+      error: 'no_target' as const,
+      detail: `systemd returned no validated Papercusp cgroup for scope ${scopeUnit}`,
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await releaseDesktopProcesses([client], { ...root, ledgered: false }, {
+        killTask: vi.fn(),
+        killScopeUnit,
+        sleep: async () => {},
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('leaving client handles untouched'));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(client.kill).not.toHaveBeenCalled();
+  });
 });
 
 describe('releaseDesktopResources — owned accessibility teardown', () => {

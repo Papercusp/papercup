@@ -13,12 +13,12 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadavg, availableParallelism } from 'node:os';
+import { loadavg, availableParallelism, tmpdir } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import {
   parseSummaryFailedCounts,
@@ -985,6 +985,172 @@ export function outputFilePathFrom(vitestArgs) {
   return trimmed === '' ? null : trimmed;
 }
 
+/**
+ * EI-19380376466745152 — A SKIPPED ASSERTION IS AN ABSENT MEASUREMENT WEARING A PASS.
+ *
+ * The measured incident: an agent fixed a real regression, ran the owning file, read
+ * `Tests  8 passed | 1 skipped (9)` plus `Test Files  1 passed (1)`, exit 0, and filed that as
+ * proof. A peer had landed `it.skip` on THE EXACT ASSERTION being fixed six minutes earlier. The
+ * eight passes were siblings that were already green before the fix existed; the fix was never
+ * once exercised by the thing cited as evidence for it. It was caught only because a different
+ * peer happened to un-skip the test later.
+ *
+ * Every signal in that run reads as success — file-level `1 passed`, exit 0, a skip count that is
+ * one token in a line whose expected shape is a pass, and a clean `git status` because the skip
+ * was already committed. This is the same class as the two traps already documented in this file
+ * (`-p .` typechecking zero files and reading as clean; a group re-run whose green means "did not
+ * ALL fail"): a verification whose SUBJECT was silently absent.
+ *
+ * The counting half is below; the naming half is `assertionOutcomesFromReport`. A COUNT alone
+ * would not have prevented the incident — the agent already had the count. What they lacked was
+ * the skipped test's NAME, which is the only thing that makes "one of these was skipped"
+ * distinguishable from "the one I was fixing was skipped".
+ *
+ * Three-state like its executed-counting sibling: `null` is UNREADABLE, never a measured zero.
+ *
+ * @param {string} output combined stdout+stderr of a `vitest run` invocation
+ * @returns {number | null} tests collected-but-not-run, or null when unreadable
+ */
+export function testsSkippedFrom(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
+  if (rows.length === 0) return null;
+  const body = rows[rows.length - 1][1];
+  if (/^\s*no tests\b/i.test(body)) return 0;
+  let skipped = null;
+  for (const seg of body.matchAll(/(\d+)\s+(skipped|todo)\b/g)) {
+    skipped = (skipped ?? 0) + Number(seg[1]);
+  }
+  if (skipped !== null) return skipped;
+  // A row carrying only passed/failed segments genuinely skipped nothing — vitest omits a
+  // zero-valued segment rather than printing `0 skipped`. That is a MEASURED zero, not an
+  // unreadable row, and reporting it as unreadable would make the common case permanently mute.
+  if (/\d+\s+(passed|failed)\b/.test(body)) return 0;
+  return null;
+}
+
+/** Report statuses that mean COLLECTED BUT NOT RUN. Vitest has used all three spellings. */
+const NOT_EXECUTED_STATUSES = new Set(['skipped', 'pending', 'todo', 'disabled']);
+
+/**
+ * Per-assertion outcomes (names included) from vitest's JSON report.
+ *
+ * The human reporter prints COUNTS ONLY — verified empirically against vitest 4.1.8: a file with
+ * one `it.skip` prints `✓ lib/voice-prefs.test.ts (5 tests | 1 skipped)` and
+ * `Tests  4 passed | 1 skipped (5)`, and nowhere names the skipped test. So the report is the
+ * only source for the half that actually matters, which is why `main` INJECTS a private json
+ * reporter when the caller supplied none (see `withInjectedJsonReport`).
+ *
+ * `null` — never an empty result — for anything unreadable, preserving this file's three-state
+ * convention: an absent report must degrade to "names unavailable", never to "nothing skipped".
+ *
+ * @param {string | null} reportPath value of `--outputFile`, if any
+ * @param {string} [cwd] the group's cwd — vitest resolves a relative --outputFile against it
+ * @returns {{ executed: string[], skipped: Array<{ name: string, file: string }> } | null}
+ */
+export function assertionOutcomesFromReport(reportPath, cwd) {
+  if (!reportPath) return null;
+  const resolved = isAbsolute(reportPath) ? reportPath : resolve(cwd ?? process.cwd(), reportPath);
+  let report;
+  try {
+    report = JSON.parse(readFileSync(resolved, 'utf8'));
+  } catch {
+    return null; // diagnostic only — an unreadable report must never fail a real run
+  }
+  if (!report || typeof report !== 'object' || !Array.isArray(report.testResults)) return null;
+  const executed = [];
+  const skipped = [];
+  for (const fileResult of report.testResults) {
+    const file = typeof fileResult?.name === 'string' ? fileResult.name : '';
+    for (const assertion of fileResult?.assertionResults ?? []) {
+      const name =
+        typeof assertion?.fullName === 'string' && assertion.fullName.trim() !== ''
+          ? assertion.fullName
+          : typeof assertion?.title === 'string'
+            ? assertion.title
+            : '';
+      if (name === '') continue;
+      if (NOT_EXECUTED_STATUSES.has(assertion?.status)) skipped.push({ name, file });
+      else executed.push(name);
+    }
+  }
+  return { executed, skipped };
+}
+
+/**
+ * Whether the caller already chose a reporter or a report path.
+ *
+ * Injection is only safe when they chose NEITHER. A caller that named a reporter has an opinion
+ * about stdout's format (`testing:run` passes `--reporter=json`, and its whole contract is that
+ * stdout IS the report), and one that named an `--outputFile` already has a report this runner
+ * reads. Widening past that would rewrite output somebody is parsing.
+ */
+export function callerChoseReporting(vitestArgs) {
+  const args = vitestArgs ?? [];
+  return args.some(
+    (arg) => arg === '--reporter' || arg.startsWith('--reporter=') || arg === '--outputFile' || arg.startsWith('--outputFile='),
+  );
+}
+
+/**
+ * Add a private json report ALONGSIDE the default human reporter.
+ *
+ * Verified against vitest 4.1.8 rather than assumed, because the whole feature rests on it:
+ * `vitest run --reporter=default --reporter=json --outputFile=<p> <file>` keeps the human
+ * `Tests  4 passed | 1 skipped (5)` row on stdout AND writes the machine report to `<p>`. Passing
+ * `--reporter=json` alone would replace stdout with JSON and silently break every human caller.
+ *
+ * Returns the args unchanged when the caller already chose reporting, so this can be applied
+ * unconditionally at the call site.
+ *
+ * @returns {{ args: string[], injectedReportPath: string | null }}
+ */
+export function withInjectedJsonReport(vitestArgs, reportPath) {
+  const args = vitestArgs ?? [];
+  if (!reportPath || callerChoseReporting(args)) return { args, injectedReportPath: null };
+  return {
+    args: [...args, '--reporter=default', '--reporter=json', `--outputFile=${reportPath}`],
+    injectedReportPath: reportPath,
+  };
+}
+
+/** `--require-ran=<substring>` — this router's own option, not vitest's. */
+export function requireRanFrom(ownArgs) {
+  const args = ownArgs ?? [];
+  let found = null;
+  for (const arg of args) {
+    if (arg.startsWith('--require-ran=')) found = arg.slice('--require-ran='.length);
+  }
+  const trimmed = typeof found === 'string' ? found.trim() : '';
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * The postcondition that closes the class: DID THE ASSERTION I AM VERIFYING ACTUALLY EXECUTE?
+ *
+ * An agent verifying a specific fix knows the name of the assertion that proves it. Everything
+ * else in a test run is a PROXY for that question (file passed, exit 0, count went up), and every
+ * proxy reads as success in the incident above. This turns it into a checked postcondition.
+ *
+ * Four verdicts, deliberately distinct — collapsing any two of them recreates a false green:
+ *   `ran`        — an executed assertion's full name contains the substring.
+ *   `skipped`    — it exists but was COLLECTED AND NOT RUN. The incident, caught.
+ *   `absent`     — no assertion by that name at all (a typo, a rename, or the wrong file).
+ *   `unverified` — no readable report, so the question was not answered. NOT a pass.
+ *
+ * @param {string | null} pattern
+ * @param {{ executed: string[], skipped: Array<{ name: string, file: string }> } | null} outcomes
+ */
+export function requireRanVerdict(pattern, outcomes) {
+  if (!pattern) return { status: 'not-requested', matches: [] };
+  if (!outcomes) return { status: 'unverified', matches: [] };
+  const ran = outcomes.executed.filter((name) => name.includes(pattern));
+  if (ran.length > 0) return { status: 'ran', matches: ran };
+  const skipped = outcomes.skipped.filter((entry) => entry.name.includes(pattern));
+  if (skipped.length > 0) return { status: 'skipped', matches: skipped.map((entry) => entry.name) };
+  return { status: 'absent', matches: [] };
+}
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -1001,6 +1167,16 @@ export function aggregateGroupResults(groupResults) {
   // Only a clean, fully-matched, fully-launchable run is `ok` — a launch error or ANY group's
   // partial/zero match still refuses the false-green, exactly as the single-group path always did.
   const ok = !launchError && !anyUnmatched;
+  // EI-19380376466745152: skipped tests are three-state for the same reason executed ones are —
+  // an unreadable count must never aggregate into "nothing was skipped", which is the reassuring
+  // reading and, in the incident this came from, the wrong one. A group that never ran (launch
+  // error, zero match) contributes `undefined` and counts as UNMEASURED, not as a clean zero.
+  const skipMeasured = groupResults.filter((g) => typeof g.testsSkipped === 'number');
+  const testsSkipped =
+    skipMeasured.length > 0 ? skipMeasured.reduce((sum, g) => sum + g.testsSkipped, 0) : null;
+  const skippedUnmeasuredGroups = groupResults.filter((g) => typeof g.testsSkipped !== 'number').length;
+  const skippedNames = groupResults.flatMap((g) => g.skippedNames ?? []);
+  const executedNames = groupResults.flatMap((g) => g.executedNames ?? []);
   return {
     ok,
     requested,
@@ -1008,6 +1184,10 @@ export function aggregateGroupResults(groupResults) {
     executed,
     testsExecuted,
     testsUnmeasuredGroups,
+    testsSkipped,
+    skippedUnmeasuredGroups,
+    skippedNames,
+    executedNames,
     anyUnmatched,
     anyFailed,
     launchError,
@@ -1425,8 +1605,13 @@ function parseCli(argv) {
   // Keep the explicit separator form, but also accept the way npm users naturally forward
   // options (`test:file -- file -t pattern`). Once the first option appears, the remainder is
   // Vitest's argv; `--dry` is this router's own option and may still appear before it.
+  // This router's OWN options must not be mistaken for the first vitest arg, or everything after
+  // them (including the file list) would be forwarded to vitest as argv. `--require-ran` takes the
+  // `=` form only, deliberately: a space-separated value would be indistinguishable from a test
+  // path in exactly this scan.
+  const isOwnOption = (arg) => arg === '--dry' || arg.startsWith('--require-ran=');
   const firstVitestArg = separator < 0
-    ? argv.findIndex((arg) => arg !== '--dry' && arg.startsWith('-'))
+    ? argv.findIndex((arg) => !isOwnOption(arg) && arg.startsWith('-'))
     : -1;
   const own = separator >= 0
     ? argv.slice(0, separator)
@@ -1439,11 +1624,12 @@ function parseCli(argv) {
       ? argv.slice(firstVitestArg)
       : [];
   const dry = own.includes('--dry');
-  const files = own.filter((arg) => arg !== '--dry');
+  const requireRan = requireRanFrom(own);
+  const files = own.filter((arg) => !isOwnOption(arg));
   // WI-39830: normalize the name filter to the joined form ONCE, here, so every downstream
   // consumer of `vitestArgs` gets it — the main `vitest run` spawn, the per-file fallback
   // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
-  return { dry, files, vitestArgs: joinNameFilterArgs(vitestArgs) };
+  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs) };
 }
 
 function run(command, args, options) {
@@ -1783,6 +1969,30 @@ export async function main(
     readyCleanup?.();
     finalizationCleanup?.();
   };
+  // EI-19380376466745152: a scratch dir for the private json reports injected below. Lazily
+  // created, owned by this run, and removed in the same finally as the preempt markers — an
+  // injected diagnostic must never leave litter in the tree or fail a real run, so every
+  // filesystem call here is guarded and degrades to "no report" rather than throwing.
+  let injectedReportDir = null;
+  const injectedReportDirFor = () => {
+    if (injectedReportDir !== null) return injectedReportDir;
+    try {
+      injectedReportDir = mkdtempSync(join(tmpdir(), 'papercusp-test-files-report-'));
+    } catch {
+      injectedReportDir = '';
+    }
+    return injectedReportDir === '' ? null : injectedReportDir;
+  };
+  const cleanupInjectedReports = () => {
+    const dir = injectedReportDir;
+    injectedReportDir = '';
+    if (!dir) return;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort — a leftover temp dir is not worth failing a green run over */
+    }
+  };
   const ensurePreemptReady = () => {
     if (cleanupPreemptReadyMarker) return true;
     try {
@@ -1922,7 +2132,16 @@ export async function main(
     }
     // EI-18822211427354845: each group writes its OWN report file when the run spans
     // several groups, so one group's report can never overwrite another's.
-    const groupVitestArgs = perGroupVitestArgs(vitestArgs, groupIndex, groups.length);
+    // EI-19380376466745152: and when the caller chose no reporting of their own, add a PRIVATE
+    // json report beside the human one, because skipped test NAMES exist nowhere else. Injected
+    // here (not into `vitestArgs`) so the per-file detail-recovery re-run below — which strips
+    // `--outputFile` but would keep `--reporter=json`, and would then print JSON where a human is
+    // meant to read a failure — never sees these args.
+    const injectedReportDir = injectedReportDirFor();
+    const { args: groupVitestArgs } = withInjectedJsonReport(
+      perGroupVitestArgs(vitestArgs, groupIndex, groups.length),
+      injectedReportDir ? join(injectedReportDir, `group-${groupIndex}.json`) : null,
+    );
     const requested = group.routes.map((route) => route.requested);
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`
     // entirely so Vitest auto-discovers its defaults from the package cwd, exactly as its own

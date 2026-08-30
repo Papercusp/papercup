@@ -54,9 +54,15 @@ import {
 import { provisionSandboxDesktop, type SandboxDesktop } from './desktop-provisioner';
 import { runComputerAction } from './computer';
 import { runObserve, runClickElement } from './observe';
+import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 
 const LIVE = process.env.PAPERCUSP_A11Y_LIVE === '1';
 const TIMEOUT = 120_000;
+
+// This suite drives the REAL runComputerAction, which reaches the resource governor's
+// org-admin pool — blocked by the unit layer's PAPERCUSP_FORBID_REAL_PG rail until this
+// opts out under the live gate. See the helper for why this is the sanctioned escape.
+allowRealPgForLiveSuite(LIVE);
 
 let desktop: SandboxDesktop | null = null;
 afterEach(async () => {

@@ -87,6 +87,10 @@ const getPresenceM = vi.hoisted(() => vi.fn(async (_ownerId?: string) => null as
 const writePresenceM = vi.hoisted(() =>
   vi.fn(async (_identity?: unknown, _input?: Record<string, unknown>, _harness?: unknown) => {}),
 );
+// EI-21834503221873518: the post-claim enrichment regression deliberately hangs this
+// dynamically imported recall seam. Keep the rest of the suite off real memory/PG I/O
+// and make the fake-timer test exercise the production timeout boundary directly.
+const buildClaimRecallBlockM = vi.hoisted(() => vi.fn(async () => null as string | null));
 // PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
 // presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
 // drops it and the mock fails at import time rather than in a test.
@@ -98,6 +102,9 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getFlag: getFlagM,
+}));
+vi.mock('../../memory/claim-port', () => ({
+  buildClaimRecallBlock: buildClaimRecallBlockM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
@@ -190,6 +197,7 @@ beforeEach(() => {
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
   writePresenceM.mockResolvedValue(undefined);
+  buildClaimRecallBlockM.mockResolvedValue(null);
   getClaimSpecRecordM.mockResolvedValue({
     source: 'default',
     spec: { specId: 'default', revision: 0 },
@@ -805,6 +813,55 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     getFlagM.mockResolvedValue(true);
     liveLockedPathsM.mockImplementation(() => new Promise(() => {}));
     await expectPreflightTimeout();
+  });
+});
+
+// EI-21834503221873518: the claim commits before advisory enrichment begins. A
+// post-claim read that never settles must therefore degrade to the compact,
+// committed receipt instead of leaving the caller to retry a destructive pull.
+describe('scheduler:get_next bounds post-claim enrichment (EI-21834503221873518)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns the committed claim receipt when claim-time recall hangs', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getNextM.mockResolvedValue({
+      workItem: { id: 'WI-218345032', title: 'post-claim enrichment stalls' },
+      claimedUnder: { specId: 'scheduler-spec', revision: 7 },
+    });
+    buildClaimRecallBlockM.mockImplementation(() => new Promise<string | null>(() => {}));
+
+    const pending = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      data?: unknown;
+      content?: Array<{ text?: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_TOTAL_BUDGET_MS + 100);
+
+    const out = await pending;
+    const body = handlerPayload(out);
+    expect(body).toMatchObject({
+      ok: true,
+      claimReceipt: {
+        committed: true,
+        workItemId: 'WI-218345032',
+        specId: 'scheduler-spec',
+        revision: 7,
+      },
+      workItem: { id: 'WI-218345032' },
+    });
+    expect(buildClaimRecallBlockM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'su-member',
+        workspaceId: 'ws-1',
+        items: [expect.objectContaining({ id: 'WI-218345032' })],
+      }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('scheduler:get_next:postClaimEnrichment exceeded'),
+    );
+    warnSpy.mockRestore();
   });
 });
 

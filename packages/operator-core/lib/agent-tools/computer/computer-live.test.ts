@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { afterAll, describe, expect, it } from 'vitest';
 import { runComputerAction } from './computer';
 import { ensureHiveDesktop, releaseHiveDesktop } from './desktop-lease';
+import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 
 const HIVE = 'computer-live-proof';
 const PNG_MAGIC = '89504e470d0a1a0a';
@@ -35,6 +36,10 @@ function hasBin(bin: string): boolean {
 const liveEnabled =
   process.env.PAPERCUSP_COMPUTER_LIVE === '1' &&
   ['Xvfb', 'xdotool', 'import', 'xdpyinfo', 'openbox'].every(hasBin);
+
+// runComputerAction reaches the resource governor's org-admin pool, which the unit layer's
+// PAPERCUSP_FORBID_REAL_PG rail blocks. Opt out under the live gate only — see the helper.
+allowRealPgForLiveSuite(liveEnabled);
 
 /** Where the X server says the pointer actually is — X's answer, not ours. */
 function mouseLocation(display: string): { x: number; y: number } {

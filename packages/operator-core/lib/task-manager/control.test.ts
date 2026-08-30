@@ -465,7 +465,34 @@ describe('killScopeUnit — explicit orphan-scope teardown', () => {
         stderr: '',
       })) as never,
     });
-    expect(empty).toMatchObject({ ok: false, error: 'not_live' });
+    // An existing-but-empty scope is `already_gone`, not `not_live`: nothing is wrong,
+    // there is simply nothing left to signal (WI-1199802).
+    expect(empty).toMatchObject({ ok: false, error: 'already_gone' });
+  });
+
+  // WI-1199802. "systemd has no cgroup for this unit" and "this unit's cgroup is foreign"
+  // both used to come back as `no_target`, so a caller could not tell an ordinary
+  // completed teardown from a lookalike-unit refusal without matching on a detail string.
+  // The first is the goal state; only the second deserves a warning.
+  it('distinguishes a COLLECTED scope from a LOOKALIKE one', async () => {
+    // `systemctl show` exits 0 with an EMPTY value for a unit it does not know — which for
+    // a transient scope is its ordinary end of life: the payload exited and systemd
+    // collected the unit. No cgroup means no cgroup to hold processes.
+    const collected = await killScopeUnit('pc-orphan123.scope', {
+      execFileAsync: (async () => ({ stdout: '\n', stderr: '' })) as never,
+    });
+    expect(collected).toMatchObject({ ok: false, error: 'already_gone' });
+    expect((collected as { detail: string }).detail).toMatch(/no longer known to systemd/);
+
+    // A cgroup path that IS present but resolves outside papercusp.slice is the refusal
+    // this guard exists for. It must stay `no_target`, and stay loud.
+    const lookalike = await killScopeUnit('pc-orphan123.scope', {
+      execFileAsync: (async () => ({
+        stdout: '/user.slice/user-1000.slice/user@1000.service/somebody-else.slice/pc-orphan123.scope\n',
+        stderr: '',
+      })) as never,
+    });
+    expect(lookalike).toMatchObject({ ok: false, error: 'no_target' });
   });
 
   it('accepts a validated Papercusp transient service unit', async () => {

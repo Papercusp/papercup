@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { runComputerAction } from './computer';
 import { ensureHiveDesktop, releaseHiveDesktop } from './desktop-lease';
+import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 import { __resetAllLedgersForTests } from './action-ledger';
 import { readRecording, startRecording, stopRecording } from './trajectory-recorder';
 import { createFfmpegExec, exportPointerLine, exportRecording } from './trajectory-export';
@@ -37,6 +38,10 @@ function hasBin(bin: string): boolean {
 const liveEnabled =
   process.env.PAPERCUSP_COMPUTER_LIVE === '1' &&
   ['Xvfb', 'xdotool', 'import', 'xdpyinfo', 'openbox', 'ffmpeg', 'ffprobe'].every(hasBin);
+
+// runComputerAction reaches the resource governor's org-admin pool, which the unit layer's
+// PAPERCUSP_FORBID_REAL_PG rail blocks. Opt out under the live gate only — see the helper.
+allowRealPgForLiveSuite(liveEnabled);
 
 /** Container duration in seconds, straight from ffprobe — not from our own model. */
 function probeDurationSec(path: string): number {
