@@ -3,8 +3,10 @@
  *
  * The contract under test: exclusions apply EVEN ABOVE-FLOOR (D-009 —
  * independence outranks familiarity); the menu is bounded by the SHARED
- * ACCEPTANCE_GRADING_POLICY (min 1 / max 2) rather than by a number written in
- * the module; below-floor MINIMUM-FILLS instead of minting a fresh session
+ * ACCEPTANCE_GRADING_POLICY rather than by a number written in the module (the
+ * bound itself is deliberately NOT restated here — the assertions below read it
+ * from the registry, so this comment cannot go stale when it moves);
+ * below-floor MINIMUM-FILLS instead of minting a fresh session
  * (unified-responder-selection-critique-and-grading-2026-08-30 D-002 [owner],
  * which SUPERSEDES D-009's floor asymmetry — the reversal is asserted here
  * explicitly, so re-introducing the old behaviour fails a test that names it);
