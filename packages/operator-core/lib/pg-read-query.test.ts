@@ -1681,6 +1681,29 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('checkpoint');
   });
 
+  it.each(['blocked_kind', 'blocked_ref', 'blocker_kind', 'blocker_ref'])(
+    'redirects the work-item dependency column %s to the canonical edge relation',
+    (missing) => {
+      const out = buildSchemaColumnRedirect(
+        `SELECT ${missing} FROM harness_shared.work_items WHERE workspace_id = 'ws'`,
+        `column "${missing}" does not exist`,
+      );
+      expect(out).toContain('harness_shared.work_item_deps');
+      expect(out).toContain(missing);
+      expect(out).toContain('workspace_id');
+      expect(out).toContain('work_items:get');
+    },
+  );
+
+  it('does not redirect a dependency-column miss when the canonical edge relation is already queried', () => {
+    expect(
+      buildSchemaColumnRedirect(
+        "SELECT blocked_kind FROM harness_shared.work_item_deps WHERE workspace_id = 'ws'",
+        'column "blocked_kind" does not exist',
+      ),
+    ).toBeNull();
+  });
+
   it('names install_slug for the routines table when harness_slug is guessed', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT harness_slug FROM harness_shared.routines WHERE workspace_id = 'ws'",
