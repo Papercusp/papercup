@@ -87,7 +87,33 @@ describe('classifyOriginSchedulerFetch', () => {
       classifyOriginSchedulerFetch('/api/files/download', {
         headers: { range: 'bytes=0-' },
       }),
-    ).toMatchObject({ schedule: false, reason: 'stream' });
+    ).toMatchObject({ schedule: false, reason: 'bulk' });
+    expect(classifyOriginSchedulerFetch('/api/updates/download')).toMatchObject({
+      schedule: false,
+      reason: 'bulk',
+    });
+    // `/events` is not a stream marker by itself: backups/events returns a
+    // bounded JSON history page and must share the finite origin queue.
+    expect(classifyOriginSchedulerFetch('/api/backups/events?limit=5')).toMatchObject({
+      schedule: true,
+      requestClass: 'foreground-read',
+    });
+    expect(classifyOriginSchedulerFetch('/api/agent-mcp/events')).toMatchObject({
+      schedule: false,
+      reason: 'stream',
+    });
+    expect(classifyOriginSchedulerFetch('/api/activity/stream')).toMatchObject({
+      schedule: false,
+      reason: 'stream',
+    });
+    expect(classifyOriginSchedulerFetch('/api/operator/state-snapshot')).toMatchObject({
+      schedule: false,
+      reason: 'stream',
+    });
+    expect(classifyOriginSchedulerFetch('/api/deploy/demo/frame-view')).toMatchObject({
+      schedule: false,
+      reason: 'stream',
+    });
     expect(classifyOriginSchedulerFetch('https://external.example/api/x')).toMatchObject({
       schedule: false,
       reason: 'not-operator-api',
@@ -222,4 +248,3 @@ describe('installOriginSchedulerFetch', () => {
     first?.uninstall();
   });
 });
-

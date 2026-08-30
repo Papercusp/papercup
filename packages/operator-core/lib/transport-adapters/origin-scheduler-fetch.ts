@@ -35,11 +35,34 @@ const REST_QUERY_SUFFIX = '/rest-query';
  * A fetch whose response is intentionally long-lived must not be held in the
  * finite request queue.  EventSource is handled by the SSE adapter, but fetch
  * is also used for POST-SSE and relay handshakes.  The explicit response hint
- * is the reliable discriminator; the small path suffix set covers the canonical
+ * is the reliable discriminator; the narrow path-pattern set covers canonical
  * control streams without classifying finite lifecycle endpoints such as
  * `/pty/spawn` as streams.
  */
-const STREAM_PATH_SUFFIXES = ['/sse', '/events', '/event-stream'] as const;
+// Path hints are only a fallback for callers that open a stream with `fetch`
+// and forget to advertise `Accept: text/event-stream`. Do not use a generic
+// `/events` suffix here: `/api/backups/events` is a finite JSON history query
+// and must still enter the origin scheduler. Keep this list aligned with the
+// route-owned stream contracts; response content-type remains the server's
+// authoritative signal once a request is actually opened.
+const STREAM_PATH_PATTERNS: readonly RegExp[] = [
+  /\/sse$/,
+  /\/stream$/,
+  /-stream$/,
+  /\/event-stream$/,
+  /\/state-snapshot$/,
+  /\/frame-view$/,
+  /\/admin\/run$/,
+  /\/session\/thinking$/,
+  /\/su-session\/events$/,
+  /\/agent-mcp\/events$/,
+  /\/plugins\/host\/events$/,
+  /\/hosted\/connectors\/events$/,
+];
+
+// Bulk/media traffic has a separate BYOC lane (P-021). It must not consume
+// the finite control queue, even when the caller uses a plain fetch.
+const BULK_PATH_PATTERNS: readonly RegExp[] = [/\/updates\/download$/];
 
 const SAFE_READ_METHODS = new Set(['GET', 'HEAD']);
 const NON_MUTATING_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -104,7 +127,12 @@ function isStreamRequest(url: URL, input: RequestInfo | URL, init?: RequestInit)
   const headers = headersOf(input, init);
   const accept = headers.get('accept')?.toLowerCase() ?? '';
   if (accept.includes('text/event-stream')) return true;
-  if (STREAM_PATH_SUFFIXES.some((suffix) => url.pathname.endsWith(suffix))) return true;
+  return STREAM_PATH_PATTERNS.some((pattern) => pattern.test(url.pathname));
+}
+
+function isBulkRequest(url: URL, input: RequestInfo | URL, init?: RequestInit): boolean {
+  const headers = headersOf(input, init);
+  if (BULK_PATH_PATTERNS.some((pattern) => pattern.test(url.pathname))) return true;
   // A range request or a streaming upload belongs to the bulk/reverse-
   // connector lane (P-021), not the finite control queue.
   if (headers.has('range')) return true;
@@ -139,6 +167,9 @@ export function classifyOriginSchedulerFetch(
   const method = methodOf(input, init);
   if (url.pathname.endsWith(REST_QUERY_SUFFIX)) {
     return { schedule: false, reason: 'sync-query', origin: url.origin, method };
+  }
+  if (isBulkRequest(url, input, init)) {
+    return { schedule: false, reason: 'bulk', origin: url.origin, method };
   }
   if (isStreamRequest(url, input, init)) {
     return { schedule: false, reason: 'stream', origin: url.origin, method };
@@ -216,4 +247,3 @@ export function installOriginSchedulerFetch(): InstallHandle | null {
     },
   };
 }
-
