@@ -3871,10 +3871,12 @@ function AdvConvStyles() {
       .pc-advfeed__loadolder:hover { color: var(--fg, #e7f7ff); border-color: var(--advconv-border-strong); background: var(--advconv-accent-soft); }
       .pc-advfeed__refresh { flex: 0 0 auto; }
       @media (max-width: 920px) {
-        /* Desktop master-detail is invariant at every supported window size:
-           selecting a row updates the right pane and never replaces the left
-           inbox. Narrow windows scroll horizontally instead of changing the
-           information architecture underneath the user. */
+        /* Master-detail still holds through this band: 920-761px reflows only
+           the CONTENTS of the two panes (stacked heads, denser feed rows) so
+           both stay readable side by side. The information architecture is
+           unchanged here. It changes exactly once, below 760px -- see the
+           drill-in block after this one -- at the width where a second pane
+           can no longer be seated at a usable size. */
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }

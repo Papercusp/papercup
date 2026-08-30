@@ -194,6 +194,7 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
       "papercusp-ops-pots:seam-round-trip",
       "papercusp-tauri-desktop-shell:boot-e2e",
       "papercusp-ui:components-integrated",
+      "papercusp-ui:theme-tokens",
     ]);
     // The old two-app stack carried composition-integrity TWICE (once for the
     // agentic root, once for the desktop base). One root ⇒ one.
