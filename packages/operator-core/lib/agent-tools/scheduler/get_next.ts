@@ -1399,262 +1399,262 @@ export default defineTool({
         });
       }
     }
-    // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
-    // D-006): on a hit, piggyback a targeted memory recall for the claimed
-    // item — deadline-bounded, epoch-deduped (port 'claim'), never-throws.
-    // This is THE live fleet-member self-pull surface, so it's the port that
-    // matters most. Dynamic import keeps the memory chain off the static graph.
+    /**
+     * EI-21834503221873518: every advisory read and idle->working side effect below runs
+     * AFTER the atomic claim has committed. Before this guard, a single post-claim read
+     * (memory, checkpoint/prior-work, or one of the parallel claim-time hints) could hang
+     * until the MCP client's ~60s dispatch deadline, leaving the caller unable to reconcile
+     * the committed claim and likely to retry a destructive self-select.
+     *
+     * Keep ONE remaining-deadline guard around the whole successful-claim tail, rather than
+     * stacking per-leg budgets: several individually "bounded" reads can still exceed the
+     * transport deadline in aggregate. `withBoundedTimeout` also swallows late rejection from
+     * the abandoned advisory promise, so the handler returns the committed claim receipt even
+     * when a backing read never settles. The enrichment variables intentionally remain
+     * fail-soft/nullable; a timed-out advisory tail only omits optional hints.
+     */
     let memory: string | null = null;
-    if (res?.workItem) {
-      const wi = res.workItem as { id?: string; title?: string; summary?: string; harness?: string | null };
-      memory = await import('../../memory/claim-port')
-        .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
-        .catch(() => null);
-    }
-    // EI-529: this is the primary self-pull surface (every fleet member / cup claims
-    // through it) — surface a prior holder's checkpoint AT CLAIM TIME so a re-dispatch
-    // after a dead/quiet session doesn't silently re-implement already-shipped work.
-    // Omitted entirely when null (the common case: no prior holder ever checkpointed).
     let checkpointHint: import('../../work-item-checkpoint').ClaimTimeCheckpointHint | null = null;
-    // WI-6737: a FAILED checkpoint read and a successful read that found nothing both leave
-    // `checkpointHint` null. Only the former must stop a claimant from treating the item as
-    // never-checkpointed, so keep the distinction instead of discarding it in the .catch.
     let checkpointReadFailed = false;
-    if (res?.workItem) {
-      const wi = res.workItem as { id: string; harness?: string | null };
-      checkpointHint = await import('../../work-item-checkpoint')
-        .then((m) =>
-          m.getClaimTimeCheckpointHint({
-            harness: wi.harness ?? null,
-            workItemId: wi.id,
-            workspaceId: ident.workspaceId ?? undefined,
-          }),
-        )
-        .catch(() => {
-          checkpointReadFailed = true;
-          return null;
-        });
-    }
-    // P-001/P-004 (fleet-leadership-continuity-and-actuation-2026-08-01): the prior-work banner,
-    // wired here too. P-001 named THREE surfaces — work_items:claim, work_items:get and THIS one —
-    // but only the first two got it, which left the biggest hole of the three: get_next is the
-    // primary SELF-PULL surface every fleet member and cup claims through, so an
-    // already-worked-but-checkpoint-less item was still indistinguishable from fresh work on the
-    // path most agents actually take. (P-004's cross-surface test is what surfaced the omission —
-    // it exists precisely because a guard wired into some-but-not-all read surfaces looks done.)
-    // Escalates its wording when NO checkpoint exists, since that is the case no other guard here
-    // can catch. Fail-soft + omitted entirely when null, exactly like the checkpoint hint above.
     let priorWorkHint: { priorWork: unknown; priorWorkWarning: string } | null = null;
-    if (res?.workItem) {
-      const wi = res.workItem as { id: string; harness?: string | null };
-      priorWorkHint = await import('../../work-item-prior-work')
-        .then(async (m) => {
-          const raw = await m.getClaimTimePriorWorkHint({
-            harness: wi.harness ?? null,
-            workItemId: wi.id,
-            workspaceId: ident.workspaceId ?? undefined,
-            currentClaimant: ident.ownerId,
-          });
-          if (!raw) return null;
-          const priorWork = {
-            ...raw,
-            // WI-6737: never assert absence from a read that never ran.
-            hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : checkpointHint != null,
-          };
-          const warning = m.priorWorkWarning(priorWork);
-          return warning ? { priorWork, priorWorkWarning: warning } : null;
-        })
-        .catch(() => null);
-    }
-    // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
-    // itself cites a background job/task as evidence — rather than growing the EI-529
-    // checkpointWarning below unconditionally (which would fire on every checkpointed claim,
-    // background job or not). See checkpoint-bg-job-claim.ts for why this can't be a live PID
-    // check here (a claimant may be on a different host/process than the checkpoint's writer).
-    const bgJobWarning = checkpointHint
-      ? await import('../../checkpoint-bg-job-claim')
-          .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
-          .catch(() => ({ detected: false as const }))
-      : { detected: false as const };
-    // agent-trap-guards-2026-07-26 P-003b: this is the primary self-pull surface, so
-    // it's the port that matters most for surfacing a plan's governing Decisions at
-    // CLAIM time — a cross-lane ruling recorded via plans:add-decision is auditable
-    // and re-readable, but only for a claimant who thinks to go look. Fail-soft +
-    // omitted entirely when null (no plan_item, unresolved slug, or zero decisions —
-    // the common case for most plans).
+    const bgJobWarning: { detected: boolean; reason?: string } = { detected: false };
     let planDecisions: import('../../plan-decisions-claim-port').ClaimTimePlanDecisionsBrief | null = null;
-    // Rendered alongside planDecisions (same fetch, same dynamic import) via the
-    // shared helper — EI-19387745408924340: extracted so this wording cannot
-    // drift from work_items:claim / claim_next's copies of the same note.
     let planDecisionsNote: string | null = null;
     let priorAttemptBrief: unknown = null;
-    // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the SAME seam, for
-    // the item's own load-bearing premises. planDecisions surfaces what OTHERS ruled;
-    // this surfaces what THIS item's text assumes — and an unverified absence premise
-    // is the measured way a claimant builds something that already exists.
     let premises: import('../../premises-claim-port').ClaimTimePremisesBrief | null = null;
     let retractionWarning: string | null = null;
     let authorshipRevalidationHint: {
       authorshipRevalidation: unknown;
       authorshipRevalidationWarning: string;
     } | null = null;
-    // WI-39498: the plan-says-done contradiction — the linked plan item is already
-    // terminal (often annotated "← <this id> completed") while the claimed row is still
-    // open, so the work may already be finished. This is the primary self-pull surface,
-    // so it is exactly where the zombie class burned agents (9 successive claimants on
-    // WI-36047 alone). Fail-soft + omitted entirely when null, like every sibling hint.
     let planContradictionHint: {
       planItemContradiction: unknown;
       planItemContradictionWarning: string;
     } | null = null;
-    // P-011: WHICH behavior clauses this claim puts the agent on the hook for, at
-    // WHICH revision. Advisory (D-017) — reported here, never enforced; P-013 owns
-    // any refusal. Same port the completion gate uses, so what a claimant is told
-    // cannot drift from what they will be held to.
     let behaviorContractHint: {
       behaviorContract: unknown;
       behaviorContractNote: string;
     } | null = null;
-    // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
-    // each moved to. Advisory: the claimant works from resolvedTo instead of taking
-    // a stale stored path literally and falling back to a repo-wide search.
     let pathHintsHint: {
       pathHints: unknown;
       pathHintsNote: string | null;
     } | null = null;
-    // EI-18713141708830049: the OTHER direction of the same ledger/tree drift as
-    // planContradictionHint above — the plan item is still open while a settled sibling
-    // already implements it. This is the primary self-pull surface, so it is where an
-    // agent is most likely to start re-investigating (or re-implementing) landed work.
     let planItemLandedHint: {
       planItemLanded: unknown;
       planItemLandedWarning: string;
     } | null = null;
-    if (res?.workItem) {
-      const wi = res.workItem as {
-        id?: string | null;
-        payload?: unknown;
-        harness?: string | null;
-        title?: string | null;
-        summary?: string | null;
-        sourcePlanSlug?: string | null;
-        sourcePlanItemIds?: string[] | null;
-      };
-      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint] =
-        await Promise.all([
-          import('../../plan-decisions-claim-port')
-            .then(async (m) => {
-              const brief = await m.getClaimTimePlanDecisions({
-                workItem: { payload: wi.payload },
-                harness: wi.harness ?? args.harness,
-                workspaceId: ident.workspaceId ?? undefined,
-              });
-              return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
-            })
-            .catch(() => [null, null] as const),
-          import('../../prior-attempt-context')
-            .then((m) =>
-              m.getClaimTimePriorAttemptBrief({
-                workItem: {
-                  ...(wi.id ? { id: wi.id } : {}),
-                  payload: wi.payload,
-                  harness: wi.harness,
-                  sourcePlanSlug: wi.sourcePlanSlug,
-                  sourcePlanItemIds: wi.sourcePlanItemIds,
-                },
-                harness: wi.harness ?? args.harness,
-              }),
-            )
-            .catch(() => null),
-          import('../../premises-claim-port')
-            .then((m) =>
-              m.getClaimTimePremises({
-                workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
-                harness: wi.harness ?? args.harness,
-                workspaceId: ident.workspaceId,
-              }),
-            )
-            .catch(() => null),
-          getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
-            .then((advisory) => advisory?.retractionWarning ?? null)
-            .catch(() => null),
-          import('../../work-item-prior-work')
-            .then(async (m) => {
-              const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
-                harness: wi.harness ?? args.harness,
-                workItemId: wi.id ?? '',
-                workspaceId: ident.workspaceId ?? undefined,
-              });
-              const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
-              return authorshipRevalidation && authorshipRevalidationWarning
-                ? { authorshipRevalidation, authorshipRevalidationWarning }
-                : null;
-            })
-            .catch(() => null),
-          import('../../work-item-plan-contradiction')
-            .then(async (m) => {
-              const hint = await m.getClaimTimePlanItemContradiction({
-                workItemId: wi.id ?? '',
-                payload: wi.payload,
-              });
-              const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
-              return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
-            })
-            .catch(() => null),
-          wi.id
-            ? import('../../behavior-contract-claim-port')
-                .then((m) =>
-                  m.getClaimTimeBehaviorContract(
-                    {
-                      id: wi.id as string,
-                      payload: wi.payload,
-                      harness: wi.harness,
-                      sourcePlanSlug: wi.sourcePlanSlug,
-                      sourcePlanItemIds: wi.sourcePlanItemIds,
-                    },
-                    wi.harness ?? args.harness,
-                  ),
-                )
-                .catch(() => null)
-            : Promise.resolve(null),
-          wi.payload
-            ? import('../../stale-path-hints-claim-port')
-                .then(async (m) => {
-                  const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
-                  return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
-                })
-                .catch(() => null)
-            : Promise.resolve(null),
-          wi.id
-            ? import('../../work-item-plan-item-landed')
-                .then(async (m) => {
-                  const hint = await m.getClaimTimePlanItemLanded({
-                    workItemId: wi.id as string,
+
+    const enrichSuccessfulClaim = async (): Promise<void> => {
+      // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
+      // D-006): on a hit, piggyback a targeted memory recall for the claimed
+      // item — deadline-bounded, epoch-deduped (port 'claim'), never-throws.
+      // This is THE live fleet-member self-pull surface, so it's the port that
+      // matters most. Dynamic import keeps the memory chain off the static graph.
+      if (res?.workItem) {
+        const wi = res.workItem as { id?: string; title?: string; summary?: string; harness?: string | null };
+        memory = await import('../../memory/claim-port')
+          .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
+          .catch(() => null);
+      }
+      // EI-529: this is the primary self-pull surface (every fleet member / cup claims
+      // through it) — surface a prior holder's checkpoint AT CLAIM TIME so a re-dispatch
+      // after a dead/quiet session doesn't silently re-implement already-shipped work.
+      // Omitted entirely when null (the common case: no prior holder ever checkpointed).
+      if (res?.workItem) {
+        const wi = res.workItem as { id: string; harness?: string | null };
+        checkpointHint = await import('../../work-item-checkpoint')
+          .then((m) =>
+            m.getClaimTimeCheckpointHint({
+              harness: wi.harness ?? null,
+              workItemId: wi.id,
+              workspaceId: ident.workspaceId ?? undefined,
+            }),
+          )
+          .catch(() => {
+            checkpointReadFailed = true;
+            return null;
+          });
+      }
+      // P-001/P-004 (fleet-leadership-continuity-and-actuation-2026-08-01): the prior-work banner,
+      // wired here too. P-001 named THREE surfaces — work_items:claim, work_items:get and THIS one —
+      // but only the first two got it, which left the biggest hole of the three: get_next is the
+      // primary SELF-PULL surface every fleet member and cup claims through, so an
+      // already-worked-but-checkpoint-less item was still indistinguishable from fresh work on the
+      // path most agents actually take. (P-004's cross-surface test is what surfaced the omission —
+      // it exists precisely because a guard wired into some-but-not-all read surfaces looks done.)
+      // Escalates its wording when NO checkpoint exists, since that is the case no other guard here
+      // can catch. Fail-soft + omitted entirely when null, exactly like the checkpoint hint above.
+      if (res?.workItem) {
+        const wi = res.workItem as { id: string; harness?: string | null };
+        priorWorkHint = await import('../../work-item-prior-work')
+          .then(async (m) => {
+            const raw = await m.getClaimTimePriorWorkHint({
+              harness: wi.harness ?? null,
+              workItemId: wi.id,
+              workspaceId: ident.workspaceId ?? undefined,
+              currentClaimant: ident.ownerId,
+            });
+            if (!raw) return null;
+            const priorWork = {
+              ...raw,
+              // WI-6737: never assert absence from a read that never ran.
+              hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : checkpointHint != null,
+            };
+            const warning = m.priorWorkWarning(priorWork);
+            return warning ? { priorWork, priorWorkWarning: warning } : null;
+          })
+          .catch(() => null);
+      }
+      // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
+      // itself cites a background job/task as evidence — rather than growing the EI-529
+      // checkpointWarning below unconditionally (which would fire on every checkpointed claim,
+      // background job or not). See checkpoint-bg-job-claim.ts for why this can't be a live PID
+      // check here (a claimant may be on a different host/process than the checkpoint's writer).
+      if (checkpointHint) {
+        Object.assign(
+          bgJobWarning,
+          await import('../../checkpoint-bg-job-claim')
+            .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
+            .catch(() => ({ detected: false as const })),
+        );
+      }
+      // agent-trap-guards-2026-07-26 P-003b: this is the primary self-pull surface, so
+      // it's the port that matters most for surfacing a plan's governing Decisions at
+      // CLAIM time — a cross-lane ruling recorded via plans:add-decision is auditable
+      // and re-readable, but only for a claimant who thinks to go look. Fail-soft +
+      // omitted entirely when null (no plan_item, unresolved slug, or zero decisions —
+      // the common case for most plans).
+      if (res?.workItem) {
+        const wi = res.workItem as {
+          id?: string | null;
+          payload?: unknown;
+          harness?: string | null;
+          title?: string | null;
+          summary?: string | null;
+          sourcePlanSlug?: string | null;
+          sourcePlanItemIds?: string[] | null;
+        };
+        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint] =
+          await Promise.all([
+            import('../../plan-decisions-claim-port')
+              .then(async (m) => {
+                const brief = await m.getClaimTimePlanDecisions({
+                  workItem: { payload: wi.payload },
+                  harness: wi.harness ?? args.harness,
+                  workspaceId: ident.workspaceId ?? undefined,
+                });
+                return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
+              })
+              .catch(() => [null, null] as const),
+            import('../../prior-attempt-context')
+              .then((m) =>
+                m.getClaimTimePriorAttemptBrief({
+                  workItem: {
+                    ...(wi.id ? { id: wi.id } : {}),
                     payload: wi.payload,
+                    harness: wi.harness,
                     sourcePlanSlug: wi.sourcePlanSlug,
                     sourcePlanItemIds: wi.sourcePlanItemIds,
-                    workspaceId: ident.workspaceId ?? undefined,
-                  });
-                  const warning = m.planItemLandedWarning(hint, wi.id as string);
-                  return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
-                })
-                .catch(() => null)
-            : Promise.resolve(null),
-        ]);
-    }
-    // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
-    // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
-    // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
-    // came from a leader-fed spec bump, not the await firing) otherwise keeps firing spurious ~30-min
-    // timeout wakes while the agent is busy. Best-effort + subscriber-scoped: a cancel failure must
-    // never break the claim path (fails soft, like the recall port above).
-    if (res?.workItem) {
+                  },
+                  harness: wi.harness ?? args.harness,
+                }),
+              )
+              .catch(() => null),
+            import('../../premises-claim-port')
+              .then((m) =>
+                m.getClaimTimePremises({
+                  workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
+                  harness: wi.harness ?? args.harness,
+                  workspaceId: ident.workspaceId,
+                }),
+              )
+              .catch(() => null),
+            getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
+              .then((advisory) => advisory?.retractionWarning ?? null)
+              .catch(() => null),
+            import('../../work-item-prior-work')
+              .then(async (m) => {
+                const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
+                  harness: wi.harness ?? args.harness,
+                  workItemId: wi.id ?? '',
+                  workspaceId: ident.workspaceId ?? undefined,
+                });
+                const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
+                return authorshipRevalidation && authorshipRevalidationWarning
+                  ? { authorshipRevalidation, authorshipRevalidationWarning }
+                  : null;
+              })
+              .catch(() => null),
+            import('../../work-item-plan-contradiction')
+              .then(async (m) => {
+                const hint = await m.getClaimTimePlanItemContradiction({
+                  workItemId: wi.id ?? '',
+                  payload: wi.payload,
+                });
+                const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
+                return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
+              })
+              .catch(() => null),
+            wi.id
+              ? import('../../behavior-contract-claim-port')
+                  .then((m) =>
+                    m.getClaimTimeBehaviorContract(
+                      {
+                        id: wi.id as string,
+                        payload: wi.payload,
+                        harness: wi.harness,
+                        sourcePlanSlug: wi.sourcePlanSlug,
+                        sourcePlanItemIds: wi.sourcePlanItemIds,
+                      },
+                      wi.harness ?? args.harness,
+                    ),
+                  )
+                  .catch(() => null)
+              : Promise.resolve(null),
+            wi.payload
+              ? import('../../stale-path-hints-claim-port')
+                  .then(async (m) => {
+                    const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
+                    return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+                  })
+                  .catch(() => null)
+              : Promise.resolve(null),
+            wi.id
+              ? import('../../work-item-plan-item-landed')
+                  .then(async (m) => {
+                    const hint = await m.getClaimTimePlanItemLanded({
+                      workItemId: wi.id as string,
+                      payload: wi.payload,
+                      sourcePlanSlug: wi.sourcePlanSlug,
+                      sourcePlanItemIds: wi.sourcePlanItemIds,
+                      workspaceId: ident.workspaceId ?? undefined,
+                    });
+                    const warning = m.planItemLandedWarning(hint, wi.id as string);
+                    return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
+                  })
+                  .catch(() => null)
+              : Promise.resolve(null),
+          ]);
+      }
+      // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
+      // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
+      // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
+      // came from a leader-fed spec bump, not the await firing) otherwise keeps firing spurious ~30-min
+      // timeout wakes while the agent is busy. Best-effort + subscriber-scoped: a cancel failure must
+      // never break the claim path (fails soft, like the recall port above).
       await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
       // EI-20099413453852234: the same idle -> working transition also makes the caller's
       // DECLARED INTENT stale, which peers read as "this holder isn't really working it".
       // Declared here rather than left to the agent, for the reasons on the helper. Same
       // fail-soft posture as the cancel above — the claim is already committed.
-      await declareIntentForClaim(ident, res.workItem, args.harness).catch(() => {});
+      await declareIntentForClaim(ident, res?.workItem, args.harness).catch(() => {});
+    };
+    if (res?.workItem) {
+      await withBoundedTimeout(enrichSuccessfulClaim, {
+        fallback: undefined,
+        timeoutMs: remainingBudgetMs(),
+        label: 'scheduler:get_next:postClaimEnrichment',
+      });
     }
     // EI-16057: on a MISS ONLY, resolve `harness` against the registry before deciding
     // between "genuinely drained" (fleetScopedMiss / missDiagnosis below) and "the
