@@ -445,6 +445,43 @@ async function delayBeforeAttempt(ms: number, signal: AbortSignal): Promise<void
   });
 }
 
+/**
+ * Bound a deadline-less promise: reject with `<label> timed out after <ms>ms` if it
+ * has not settled within `ms`.
+ *
+ * Distinct from the abort-based `withDeadline` below, which cancels work through an
+ * `AbortSignal`. This one is for awaits that have no signal to plumb — an OAuth token
+ * refresh, a bearer token read, a request-body drain — where the only lever is to stop
+ * waiting. Callers get the first settlement either way.
+ *
+ * ONE implementation on purpose. This helper previously existed as four byte-identical
+ * copies (three adapters plus gateway.ts), which is exactly the duplication this module
+ * exists to hold once: changing the timeout semantics meant editing four files, and the
+ * copies had already drifted in shape. Independent acceptance grading of
+ * gateway-kernel-adoption-2026-08-29 caught it (scorecard EI-21895157688674407).
+ *
+ * The timer is unref'd so a pending deadline never holds the event loop open, and it is
+ * cleared the moment `promise` settles. Note the handlers are ATTACHED to `promise`
+ * rather than racing it: if the deadline fires first and `promise` rejects later, that
+ * late rejection is still observed here instead of surfacing as an unhandledRejection.
+ */
+export function withPromiseDeadline<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 async function withDeadline<T>(opts: {
   parent: AbortSignal;
   timeoutMs: number;
