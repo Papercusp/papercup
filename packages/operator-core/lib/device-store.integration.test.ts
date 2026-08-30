@@ -59,7 +59,11 @@ describe('device-store (real PG + real RLS)', () => {
     db = await createOrgTestDb();
     h.appSql = db.appSql;
     h.adminSql = db.adminSql;
-  }, 120_000);
+    // EI-21863578695350444: 120s local floor, but honor the gate's higher
+    // VITEST_INTEGRATION_HOOK_TIMEOUT_MS (see vitest-config.ts + green-checkpoint.ts)
+    // when the schema-template cache is cold under fleet contention — see those
+    // comments for the measured mechanism (this was NOT a bug in this fixture).
+  }, Number(process.env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS) || 120_000);
 
   afterAll(async () => {
     await db?.cleanup();
