@@ -70,6 +70,24 @@
 #                         indefinitely. Set PC_HEAVY_PSI_ADMISSION=0 to disable
 #                         the controller entirely; 0 means expire on the next
 #                         high-PSI sample, not an unbounded wait.
+#   PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB
+#                         minimum own-cgroup memory (MiB) a candidate must hold
+#                         to be ELECTED for freezing (default 64). Global PSI is
+#                         a machine-wide signal, but only pc-heavy's OWN
+#                         admitted roots are eligible victims (a resident
+#                         non-admitted process, e.g. postgres, cannot be
+#                         elected even when it is the actual pressure source —
+#                         EI-21861205996181547). Freezing a candidate whose own
+#                         memory is negligible cannot relieve pressure it did
+#                         not cause, so it just throttles that candidate for no
+#                         benefit. Below this floor a candidate is excluded from
+#                         the ACTIVE (freeze) election only — never from the
+#                         FROZEN (thaw/expire) scan, so an already-frozen small
+#                         root still thaws/expires normally. If every active
+#                         candidate is below the floor, none is elected and
+#                         nothing freezes this tick — correct: this pool cannot
+#                         plausibly explain the observed pressure. Set to 0 to
+#                         restore the unconditional pre-fix election.
 #   PC_HEAVY_MEM_PSI_SAMPLE_SEC  post-admission sample cadence (default 2s).
 #   PC_HEAVY_MEM_PSI_OVERRIDE_FILE  dynamic test/operator override: its first
 #                         line is the numeric full-avg10 sample and takes
@@ -504,6 +522,7 @@ _pc_heavy_internal_preempt_run() {
   local _psi_recover="${PC_HEAVY_MEM_PSI_RECOVER:-2}"
   local _psi_recovery_sec="${PC_HEAVY_MEM_PSI_RECOVERY_SEC:-30}"
   local _psi_max_freeze_sec="${PC_HEAVY_MEM_PSI_MAX_FREEZE_SEC:-300}"
+  local _psi_min_victim_mib="${PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB:-64}"
   local _psi_sample_sec="${PC_HEAVY_MEM_PSI_SAMPLE_SEC:-2}"
   local _psi_priority="${PC_HEAVY_ADMISSION_PRIORITY:-10}"
   local _psi_admission_dir="${PC_HEAVY_ADMISSION_DIR:-${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}/psi-admissions}"
@@ -781,6 +800,23 @@ _pc_heavy_internal_preempt_run() {
         _psi_unreadable_count=$(( _psi_unreadable_count + 1 ))
       fi
       [ "$_state" = "$_wanted" ] || continue
+      # Trigger/victim-pool asymmetry (EI-21861205996181547): global PSI can be
+      # driven entirely by a resident non-admitted process (e.g. postgres),
+      # which never writes an admission record and so is structurally
+      # ineligible to be elected. Freezing a candidate whose own cgroup memory
+      # is negligible relative to this floor cannot relieve pressure it did
+      # not cause. Apply the floor ONLY to ACTIVE (freeze) election — an
+      # already-frozen record must remain electable by the FROZEN (thaw/
+      # expire) scan regardless of size, or a small root would freeze once and
+      # then never be found again to thaw or expire it. An unreadable memory
+      # value is left eligible here; the blanket _psi_unreadable_count check
+      # already blocks any freeze this tick when memory can't be read.
+      if [ "$_wanted" = active ] && [ "$_psi_min_victim_mib" -gt 0 ]; then
+        case "$_memory" in
+          ''|*[!0-9]*) : ;;
+          *) [ "$_memory" -ge "$_psi_min_victim_mib" ] || continue ;;
+        esac
+      fi
       if [ -z "$_best_id" ]; then
         _best_id="$_id"; _best_priority="$_priority"; _best_admitted="$_admitted"
         continue
@@ -929,6 +965,7 @@ _pc_heavy_internal_preempt_run() {
     case "$_psi_recover" in ''|*[!0-9]*) _psi_recover=2 ;; esac
     case "$_psi_recovery_sec" in ''|*[!0-9]*) _psi_recovery_sec=30 ;; esac
     case "$_psi_max_freeze_sec" in ''|*[!0-9]*) _psi_max_freeze_sec=300 ;; esac
+    case "$_psi_min_victim_mib" in ''|*[!0-9]*) _psi_min_victim_mib=64 ;; esac
     case "$_psi_finalization_max" in ''|*[!0-9]*) _psi_finalization_max=30 ;; esac
     [ "$_psi_finalization_max" -gt 0 ] || _psi_finalization_max=30
     case "$_psi_sample_sec" in ''|*[!0-9]*) _psi_sample_sec=2 ;; esac

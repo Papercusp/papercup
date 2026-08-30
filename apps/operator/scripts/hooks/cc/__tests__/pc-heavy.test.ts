@@ -2351,6 +2351,108 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
     }
   }, 15_000);
 
+  it('never elects a candidate whose own cgroup memory is negligible relative to the freeze floor (EI-21861205996181547)', async () => {
+    // Reproduces the reported defect directly: global PSI is high (as it would
+    // be while a resident non-admitted process such as postgres drives
+    // pressure), but the only admitted candidate's own cgroup uses far less
+    // than the default 64 MiB PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB floor — matching
+    // the filed 24 MiB symptom. Freezing it cannot relieve pressure it did not
+    // cause, so it must stay active/unstopped for the whole observation window.
+    const psiFile = join(dir, 'psi-full-avg10-below-floor');
+    const admissionDir = join(dir, 'psi-admissions');
+    const pidFile = join(dir, 'negligible-victim.pid');
+    writeFileSync(psiFile, '9\n');
+
+    const holder = spawn(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', `echo $$ > "${pidFile}"; trap 'exit 0' TERM INT HUP; while :; do sleep 0.05; done`],
+      {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_COALESCE: '0',
+          PC_HEAVY_GATE_RESERVE: '0',
+          PC_HEAVY_ADMISSION_ID: 'negligible-victim',
+          PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
+          PC_HEAVY_MEM_PSI_SAMPLE_SEC: '0',
+          PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+          // Below the default PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB=64 on purpose —
+          // the reported run measured 24 MiB.
+          PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '24',
+        }),
+        cwd: dir,
+        detached: true,
+      },
+    );
+    const holderErr = createTextCollector(holder.stderr);
+    try {
+      await waitFor('the below-floor candidate publishing its active admission record', () =>
+        existsSync(join(admissionDir, 'negligible-victim.state')) &&
+          admissionState('negligible-victim').includes('state=active'));
+      await waitFor('the isolated child identity being published', () => existsSync(pidFile));
+      const childPid = Number(readFileSync(pidFile, 'utf8').trim());
+      await waitFor('at least one PSI sample above backoff to be observed', () =>
+        holderErr.peek().includes('psiFullAvg10=9') ||
+          admissionState('negligible-victim').includes('memory_current_mib=24'));
+      // Give the controller several sample intervals to (wrongly) elect and
+      // freeze this candidate if the floor were not applied.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      expect(admissionState('negligible-victim')).toContain('state=active');
+      expect(admissionState('negligible-victim')).toContain('memory_current_mib=24');
+      expect(holderErr.peek()).not.toContain('PC_HEAVY_ADMISSION status=frozen');
+      expect(['T', 't']).not.toContain(processState(childPid));
+    } finally {
+      writeFileSync(psiFile, '0\n');
+      killGroup(holder);
+    }
+  }, 15_000);
+
+  it('PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB=0 restores the unconditional pre-fix election for the same negligible candidate', async () => {
+    // Companion to the test above: proves the floor — not some unrelated
+    // change — is what gated the freeze, and that the escape hatch documented
+    // in the tunable's header comment actually works.
+    const psiFile = join(dir, 'psi-full-avg10-floor-disabled');
+    const admissionDir = join(dir, 'psi-admissions');
+    const pidFile = join(dir, 'floor-disabled-victim.pid');
+    writeFileSync(psiFile, '9\n');
+
+    const holder = spawn(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', `echo $$ > "${pidFile}"; trap 'exit 0' TERM INT HUP; while :; do sleep 0.05; done`],
+      {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_COALESCE: '0',
+          PC_HEAVY_GATE_RESERVE: '0',
+          PC_HEAVY_ADMISSION_ID: 'floor-disabled-victim',
+          PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
+          PC_HEAVY_MEM_PSI_SAMPLE_SEC: '0',
+          PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+          PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '24',
+          PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB: '0',
+        }),
+        cwd: dir,
+        detached: true,
+      },
+    );
+    const holderErr = createTextCollector(holder.stderr);
+    try {
+      await waitFor('the isolated child identity being published', () => existsSync(pidFile));
+      const childPid = Number(readFileSync(pidFile, 'utf8').trim());
+      await waitFor('the floor-disabled candidate freezing under high PSI', () =>
+        existsSync(join(admissionDir, 'floor-disabled-victim.state')) &&
+          admissionState('floor-disabled-victim').includes('state=frozen'));
+      expect(holderErr.peek()).toContain(
+        'PC_HEAVY_ADMISSION status=frozen reason=memory-psi-high priority=10 psiFullAvg10=9 admittedCgroupMiB=24 admissionId=floor-disabled-victim retryHandle=psi-recovery:floor-disabled-victim',
+      );
+      await waitFor('the chosen process group reaching the stopped state', () =>
+        ['T', 't'].includes(processState(childPid)));
+    } finally {
+      writeFileSync(psiFile, '0\n');
+      killGroup(holder);
+    }
+  }, 15_000);
+
   it('protects a completed focused run while test-files finalizes its terminal evidence', async (ctx) => {
     const psiFile = join(dir, 'psi-full-avg10-finalization');
     const readyDir = join(dir, 'finalization-ready');
