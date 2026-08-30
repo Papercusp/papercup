@@ -30046,7 +30046,7 @@
           "POST"
         ]
       },
-      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature/chunk enter the harness queue. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member's claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes.",
+      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature/chunk enter the harness queue. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member's claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
       "capabilities": [
         "work_items:write"
       ],
