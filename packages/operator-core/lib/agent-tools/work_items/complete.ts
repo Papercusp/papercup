@@ -104,6 +104,7 @@ import {
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
   gatherFlatCompletion,
+  hoistMisplacedAssumptions,
 } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -3343,7 +3344,8 @@ export default defineTool({
   // requirement structurally while retaining per-item assumptions for bulk calls.
   args: z.preprocess(
     (raw, ctx) => {
-      const gathered = gatherFlatCompletion(raw);
+      const hoisted = hoistMisplacedAssumptions(raw);
+      const gathered = gatherFlatCompletion(hoisted);
       reportMalformedCompletionCoverage(gathered, (issue) => ctx.addIssue(issue));
       return gathered;
     },
