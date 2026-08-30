@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { makeReactTailwindRegistry, _CURATED_FOR_TESTS } from './registry';
+import { makeReactTailwindRegistry, _CURATED_FOR_TESTS, RETIRED_UI_IMPORT } from './registry';
 
 describe('makeReactTailwindRegistry', () => {
   const reg = makeReactTailwindRegistry({ sourcePaths: ['libs/papercusp'] });
@@ -46,7 +46,7 @@ describe('curated registry invariants', () => {
       const pointer = e.ecosystems['react-tailwind']?.sourcePointer.path ?? '';
       expect(pointer).not.toContain('/_retired/');
       expect(pointer).not.toContain('_retired/');
-      expect(e.ecosystems['react-tailwind']?.importHint ?? '').not.toContain('@papercusp/ui');
+      expect(e.ecosystems['react-tailwind']?.importHint ?? '').not.toMatch(RETIRED_UI_IMPORT);
     }
   });
 

@@ -3,6 +3,7 @@ import { createReactTailwindAdapter } from './index';
 import { _internal as tokensInternal } from './tokens';
 import { _internal as codeInternal } from './code-emit';
 import { assertAdapterConformant } from '../design-adapter';
+import { RETIRED_UI_IMPORT } from './registry';
 import type { UiIr } from '../design-ir';
 import { IR_VERSION } from '../design-ir';
 
@@ -176,7 +177,7 @@ describe('codeEmit surface', () => {
     const code = out[0].contents;
     expect(code).toContain('<ActionPrimary label="Accept" />');
     expect(code).toContain('TODO: import ActionPrimary via the react-tailwind registry importHints');
-    expect(code).not.toContain('@papercusp/ui');
+    expect(code).not.toMatch(RETIRED_UI_IMPORT);
   });
 
   it('renders kind="chart" with an inlined Plotly spec', async () => {
@@ -233,7 +234,7 @@ describe('codeEmit surface', () => {
       },
       components: [{ id: 'btn', registry: 'action.primary', props: { label: 'Accept' } }],
     });
-    expect(out[0].contents).not.toContain('@papercusp/ui');
+    expect(out[0].contents).not.toMatch(RETIRED_UI_IMPORT);
     expect(out[0].contents).not.toContain('_retired');
   });
 });

@@ -285,6 +285,13 @@ export interface McpProxyOptions {
    * recovery record, so it gets a bounded queue dwell rather than inheriting the generic zero.
    */
   loopCheckpointQueueWaitMs?: number;
+  /**
+   * WI-950869 — incident captures must fail before the client deadline when the continuation
+   * slot is occupied. Unlike the generic continuation lane, `improvements:capture` can be
+   * retried safely after an explicit not-forwarded response, so it gets a finite default dwell.
+   * Pass 0 to restore unbounded waiting for this tool specifically.
+   */
+  improvementsCaptureQueueWaitMs?: number;
   /** Per-waiter telemetry cadence (ms) for the critical-continuation FIFO. */
   criticalContinuationQueueWaitLogMs?: number;
   /**
@@ -1247,6 +1254,13 @@ export const DEFAULT_COORD_SEND_QUEUE_WAIT_MS = 20_000;
  * the generic zero/unbounded default because it is the fallback record for this boundary.
  */
 export const DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS = 20_000;
+/**
+ * WI-950869 — leave enough of the MCP client's deadline for `improvements:capture` to report
+ * an honest retryable result when its dedicated continuation socket is occupied. This is
+ * intentionally separate from the generic critical-continuation default, which remains 0 so
+ * durable checkpoint/completion writes do not become ambiguous by default.
+ */
+export const DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS = 20_000;
 const configuredCriticalContinuationQueueWaitLogMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
     5_000,
@@ -1822,6 +1836,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       : DEFAULT_COORD_SEND_QUEUE_WAIT_MS;
   const loopCheckpointQueueWaitMs =
     opts.loopCheckpointQueueWaitMs ?? DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS;
+  const configuredImprovementsCaptureQueueWaitMs =
+    opts.improvementsCaptureQueueWaitMs ??
+    DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS;
+  const improvementsCaptureQueueWaitMs =
+    Number.isFinite(configuredImprovementsCaptureQueueWaitMs) &&
+    configuredImprovementsCaptureQueueWaitMs >= 0
+      ? Math.floor(configuredImprovementsCaptureQueueWaitMs)
+      : DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS;
   const criticalContinuationQueueWaitLogMs =
     opts.criticalContinuationQueueWaitLogMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS;
@@ -2336,6 +2358,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               maxWaitMs: maxCriticalContinuationQueueWaitMs,
               coordSendMaxWaitMs: coordSendQueueWaitMs,
               loopCheckpointMaxWaitMs: loopCheckpointQueueWaitMs,
+              improvementsCaptureMaxWaitMs: improvementsCaptureQueueWaitMs,
               oldestAgeMs:
                 waitingCriticalContinuationRequests.length > 0
                   ? Math.max(
@@ -2833,12 +2856,24 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           )
             ? loopCheckpointQueueWaitMs
             : 0;
+          const improvementsCaptureWaitBound = criticalContinuationTools.some(
+            (tool) => improvementsCaptureContinuationTools.has(tool),
+          )
+            ? improvementsCaptureQueueWaitMs
+            : 0;
+          const improvementsCaptureExplicitlyUnbounded =
+            criticalContinuationTools.some(
+              (tool) => improvementsCaptureContinuationTools.has(tool),
+            ) && opts.improvementsCaptureQueueWaitMs === 0;
           const positiveQueueWaitBounds = [
             maxCriticalContinuationQueueWaitMs,
             loopCheckpointWaitBound,
+            improvementsCaptureWaitBound,
           ].filter((waitMs): waitMs is number => waitMs > 0);
           const effectiveQueueWaitMs = nonExpiring
             ? 0
+            : improvementsCaptureExplicitlyUnbounded
+              ? 0
             : positiveQueueWaitBounds.length > 0
               ? Math.min(...positiveQueueWaitBounds)
               : 0;
