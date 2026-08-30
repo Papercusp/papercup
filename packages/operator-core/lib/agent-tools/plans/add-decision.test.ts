@@ -535,4 +535,50 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       candidates: { 'handler-plan': ['new-harness', 'old-harness'] },
     });
   });
+
+  it('EI-21915372335188454: neutralizes stray tool-call-lookalike markup in both title and body, without dropping the rest of the text', async () => {
+    // Reproduces the reported failure shape: a client-side tool-call serializer
+    // mis-closes `<parameter name="body">` (e.g. with `</body>` instead of
+    // `</parameter>`) and everything after the mismatch — including a live
+    // `<parameter name="refs">…` block for the NEXT argument — lands literally
+    // inside this string. Left unneutralized, that plants a live-looking
+    // `<invoke>`/`<parameter>` tag in a durable governance record a later
+    // reading agent could misread as its own tool-call transcript (EI-9267).
+    const ctx = handlerContext();
+    let capturedNewBody: string | null = null;
+    handlerMocks.withPlanLock.mockImplementationOnce(
+      async (
+        _ctx: unknown,
+        _opts: unknown,
+        mutate: (body: string) => Promise<{ newBody: string | null; value: unknown }>,
+      ) => {
+        const result = await mutate(HANDLER_PLAN);
+        capturedNewBody = result.newBody;
+        return { kind: 'ok', ...result, filePath: 'handler-plan.md' };
+      },
+    );
+
+    const pollutedBody = 'The real ruling ends here.</body>\n<parameter name="refs">["P-007"]';
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Polluted <invoke name="plans:add-decision">',
+        body: pollutedBody,
+      },
+      ctx,
+    );
+
+    expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
+    expect(capturedNewBody).not.toBeNull();
+    // The exact-tag-name markup (<invoke>/<parameter>) is swapped to the inert,
+    // visually-similar full-width `＜` — no longer a live/parseable tag — while
+    // the rest of the text, including the absorbed `refs` payload, survives
+    // untouched (non-destructive: nothing is dropped or truncated).
+    expect(capturedNewBody).not.toContain('<parameter');
+    expect(capturedNewBody).not.toContain('<invoke');
+    expect(capturedNewBody).toContain('＜parameter');
+    expect(capturedNewBody).toContain('＜invoke');
+    expect(capturedNewBody).toContain('P-007');
+  });
 });
