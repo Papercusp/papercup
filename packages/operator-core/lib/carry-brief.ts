@@ -77,6 +77,25 @@ export interface CarryBriefHeldItem {
   sourcePlanItemIds?: string[] | null;
 }
 
+export type CarryBriefDeferredSource = 'created' | 'commented' | 'created-and-commented';
+
+/**
+ * A non-terminal work-item this session positively touched (filed or commented
+ * on) but does not currently hold. This is deliberately NOT the unclaimed
+ * backlog: the owner + current-session + non-terminal + unheld conjunction is
+ * what makes the row a useful deferred-work signal instead of queue noise.
+ */
+export interface CarryBriefDeferredItem {
+  id: string;
+  title: string | null;
+  /** The item's description body (uncapped here; renderers cap). */
+  body: string | null;
+  /** null for an operator-scoped item — never a guessed harness slug. */
+  harness: string | null;
+  kind: string;
+  source: CarryBriefDeferredSource;
+}
+
 export interface CarryBrief {
   ownerId: string;
   /** Armed AUTO loop + its carry-note (verbatim) — null when no loop routine exists. */
@@ -111,6 +130,9 @@ export interface CarryBrief {
   postNoteInbox?: { count: number; lines: string[] } | null;
   /** Held (assigned, non-terminal) work-items + their checkpoints. */
   heldItems: CarryBriefHeldItem[];
+  /** This session's non-terminal, unheld work-items that it filed or commented
+   *  on. Optional so legacy/injected CarryBrief literals remain valid. */
+  deferredItems?: CarryBriefDeferredItem[];
   /** Open OWNER DIRECTIVES (EI-11484): explicit owner orders recorded verbatim
    *  (orders:record), still awaiting disposition — the workspace's highest-priority
    *  carry class, rendered ABOVE everything else. */
@@ -169,6 +191,7 @@ export interface CarryBrief {
 // ── Bounds ────────────────────────────────────────────────────────────────────
 
 export const CARRY_BRIEF_MAX_HELD_ITEMS = 6;
+export const CARRY_BRIEF_MAX_DEFERRED_ITEMS = 6;
 export const CARRY_BRIEF_MAX_FACTS = 8;
 export const CARRY_BRIEF_MAX_AWAITS = 8;
 /** The /compact focus cap — mirrors session:request-compaction's schema cap. */
@@ -351,6 +374,251 @@ export async function readHeldWorkItems(
   return out;
 }
 
+// ── Deferred-work read (shared by carry surfaces and wind-down receipts) ──────
+
+export interface ReadDeferredWorkItemsOpts {
+  sql?: Sql;
+  limit?: number;
+  /**
+   * Test/host seam for the current session incarnation. `undefined` means read
+   * the latest unended adv_sessions row; `null` intentionally means that the
+   * session start could not be established, so no deferred-work claim is made.
+   */
+  sessionStartedAtMs?: number | null;
+  getCurrentSessionStartedAtMsFn?: (
+    ownerId: string,
+    workspaceId: string,
+  ) => Promise<number | null>;
+}
+
+function epochMs(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (value instanceof Date) {
+    const parsed = value.getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * Resolve the current session incarnation from the authoritative adv_sessions
+ * log. `started_at` is the latest activation boundary for this owner (resume
+ * re-activations update it); an absent/unreadable row is UNKNOWN, not proof
+ * that the owner filed nothing.
+ */
+export async function readCurrentSessionStartedAtMs(
+  ownerId: string,
+  workspaceId: string,
+  opts: Pick<ReadDeferredWorkItemsOpts, 'sql'> = {},
+): Promise<number | null> {
+  if (!ownerId) return null;
+  const sql = opts.sql ?? getOrgPg().sql;
+  const ws = resolveConcreteWorkspaceId(workspaceId);
+  try {
+    const rows = await sql<Array<{ started_at_ms: number | string | null }>>`
+      SELECT (extract(epoch FROM started_at) * 1000)::bigint AS started_at_ms
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${ws}
+         AND coord_owner_id = ${ownerId}
+         AND ended_at IS NULL
+       ORDER BY started_at DESC, id DESC
+       LIMIT 1
+    `;
+    return epochMs(rows[0]?.started_at_ms);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read this session's deliberately deferred work. The query is intentionally
+ * base-table + thread-store based:
+ *
+ * - issue-family rows carry authorship in payload._ei.created_by;
+ * - feature-family rows have no authorship column, so their positive signal is
+ *   a comment post authored by this owner;
+ * - both families' comment threads have stable ids/parent refs;
+ * - terminal and held rows are excluded in SQL, before the bounded result.
+ *
+ * A missing current-session boundary returns an empty result rather than
+ * claiming an arbitrary backlog row. All read failures are fail-soft for the
+ * boundary builders that consume this helper.
+ */
+export async function readDeferredWorkItems(
+  ownerId: string,
+  workspaceId: string,
+  opts: ReadDeferredWorkItemsOpts = {},
+): Promise<CarryBriefDeferredItem[]> {
+  if (!ownerId) return [];
+  const sql = opts.sql ?? getOrgPg().sql;
+  const ws = resolveConcreteWorkspaceId(workspaceId);
+  const sessionStartedAtMs =
+    opts.sessionStartedAtMs !== undefined
+      ? opts.sessionStartedAtMs
+      : await (opts.getCurrentSessionStartedAtMsFn ?? readCurrentSessionStartedAtMs)(
+          ownerId,
+          ws,
+          { sql },
+        );
+  if (sessionStartedAtMs == null || !Number.isFinite(sessionStartedAtMs)) return [];
+
+  const limit = Math.max(1, Math.floor(opts.limit ?? CARRY_BRIEF_MAX_DEFERRED_ITEMS));
+  const terminalStates = [...ANY_FAMILY_TERMINAL_STATES];
+  try {
+    const rows = await sql<
+      Array<{
+        id: string;
+        title: string | null;
+        body: string | null;
+        harness_slug: string | null;
+        kind: string | null;
+        created_this_session: boolean;
+        commented_this_session: boolean;
+      }>
+    >`
+      WITH touched AS (
+        SELECT wi.feature_id AS id,
+               wi.title,
+               wi.summary AS body,
+               wi.harness_slug,
+               wi.item_kind AS kind,
+               (
+                 wi.item_kind IN ('bug', 'change', 'task')
+                 AND NULLIF(wi.payload #>> '{_ei,created_by}', '') = ${ownerId}
+                 AND wi.created_ts >= ${Math.floor(sessionStartedAtMs)}
+               ) AS created_this_session,
+               EXISTS (
+                 SELECT 1
+                   FROM harness_shared.coord_thread_posts AS post
+                   JOIN harness_shared.coord_threads AS thread
+                     ON thread.workspace_id = post.workspace_id
+                    AND thread.thread_id = post.thread_id
+                  WHERE post.workspace_id = wi.workspace_id
+                    AND post.author_id = ${ownerId}
+                    AND post.created_at >= to_timestamp(${sessionStartedAtMs}::double precision / 1000.0)
+                    AND (
+                      (
+                        wi.item_kind IN ('bug', 'change', 'task')
+                        AND thread.parent_kind = 'issue'
+                        AND thread.parent_ref = wi.feature_id
+                      )
+                      OR (
+                        wi.item_kind IN ('feature', 'chunk')
+                        AND thread.parent_kind = 'feature'
+                        AND thread.parent_ref = wi.harness_slug || '#' || wi.feature_id
+                      )
+                    )
+               ) AS commented_this_session
+          FROM harness_shared.work_items AS wi
+         WHERE wi.workspace_id = ${ws}
+           AND (
+             wi.taken_by IS NULL
+             OR btrim(wi.taken_by) = ''
+             OR lower(btrim(wi.taken_by)) = 'unassigned'
+           )
+           AND (wi.status IS NULL OR wi.status <> ALL(${terminalStates}::text[]))
+      )
+      SELECT id,
+             title,
+             body,
+             harness_slug,
+             kind,
+             created_this_session,
+             commented_this_session
+        FROM touched
+       WHERE created_this_session OR commented_this_session
+       ORDER BY id DESC
+       LIMIT ${limit}
+    `;
+    return rows.map((row) => {
+      const created = row.created_this_session === true;
+      const commented = row.commented_this_session === true;
+      const source: CarryBriefDeferredSource =
+        created && commented ? 'created-and-commented' : created ? 'created' : 'commented';
+      const rawHarness = row.harness_slug?.trim() ?? '';
+      return {
+        id: row.id,
+        title: row.title ?? null,
+        body: row.body ?? null,
+        harness: rawHarness && !rawHarness.startsWith('operator:') ? rawHarness : null,
+        kind: row.kind?.trim() || 'work-item',
+        source,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+const IDLE_NOTE_CLAIM_RE =
+  /\b(?:nothing\s+(?:is\s+)?(?:in\s+flight|left|pending|outstanding|remains)|no\s+(?:work|items?)(?:\s+(?:is|are))?\s+(?:in\s+flight|left|pending|outstanding|to\s+do)|(?:queue|lane)\s+is\s+empty|pick\s+fresh\s+work|fresh\s+work\s+only)\b/i;
+
+export interface DeferredWorkIdleNoteGuard {
+  flagged: true;
+  trigger: string;
+  deferredIds: string[];
+  message: string;
+}
+
+/**
+ * Falsifiable guard for the exact dangerous universal: an idle-sounding
+ * carry-note while the same session has positively touched open work it does
+ * not hold. It is advisory; the returned ids are the falsifier, not a
+ * replacement for reading each item's current state.
+ */
+export function detectIdleNoteGuard(
+  note: string | null | undefined,
+  deferredItems: readonly CarryBriefDeferredItem[],
+): DeferredWorkIdleNoteGuard | null {
+  if (!note?.trim() || deferredItems.length === 0) return null;
+  const match = note.match(IDLE_NOTE_CLAIM_RE);
+  if (!match) return null;
+  const ids = deferredItems.map((item) => item.id);
+  return {
+    flagged: true,
+    trigger: match[0],
+    deferredIds: ids,
+    message:
+      `idle_note_guard: the carry-note says "${match[0]}", but this session filed or commented on ` +
+      `${ids.length} non-terminal unheld work-item(s) (${ids.join(', ')}). ` +
+      'That is not a clean idle verdict: re-check each item and either claim/checkpoint the intended remainder or deliberately settle it.',
+  };
+}
+
+function deferredSourceText(source: CarryBriefDeferredSource): string {
+  switch (source) {
+    case 'created':
+      return 'filed this session';
+    case 'commented':
+      return 'commented on this session';
+    default:
+      return 'filed and commented on this session';
+  }
+}
+
+/** Render deferred work as a bounded pointer list, shared by all carry readers. */
+export function renderDeferredWorkItems(
+  deferredItems: readonly CarryBriefDeferredItem[],
+): string {
+  if (deferredItems.length === 0) return '';
+  const lines = deferredItems.map((item) => {
+    const title = item.title?.trim() ? ` — ${cap(item.title, COLD_TITLE_CAP)}` : '';
+    const harness = item.harness ? `, harness: '${item.harness}'` : '';
+    return `  • ${item.id}${title} — ${deferredSourceText(item.source)} (${workItemFetchHint(item.id, item.harness)}${harness ? '' : ''})`;
+  });
+  return (
+    `⚠ DEFERRED, UNCLAIMED WORK — this session positively touched ${deferredItems.length} ` +
+    'non-terminal work-item(s) that it does not currently hold. Re-check before declaring the lane idle:\n' +
+    lines.join('\n')
+  );
+}
+
 // ── Build ─────────────────────────────────────────────────────────────────────
 
 export interface BuildCarryBriefOpts {
@@ -376,6 +644,7 @@ export interface BuildCarryBriefOpts {
     ownerId: string;
   }) => Promise<LoopCarryNoteWithMeta>;
   readHeldWorkItemsFn?: typeof readHeldWorkItems;
+  readDeferredWorkItemsFn?: typeof readDeferredWorkItems;
   listOwnerFactsFn?: (
     ownerId: string,
     workspaceId: string | undefined,
@@ -731,6 +1000,14 @@ export async function buildCarryBrief(
     /* section stays empty */
   }
 
+  try {
+    const readDeferred = opts.readDeferredWorkItemsFn ?? readDeferredWorkItems;
+    const deferredItems = await readDeferred(ownerId, workspaceId, { sql: opts.sql });
+    if (deferredItems.length > 0) brief.deferredItems = deferredItems;
+  } catch {
+    /* section stays empty */
+  }
+
   // EI-18807865001148074: hydrate AFTER held items so a bare P-NNN can be
   // qualified by the claimed work-item's canonical source-plan binding. This
   // remains an independent best-effort leg; a failed lookup never blanks carry.
@@ -943,6 +1220,11 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
       `held work-items ${ids} — keep the ids as POINTERS (their checkpoints are re-injected on pickup, do not copy them)`,
     );
   }
+  if ((brief.deferredItems ?? []).length > 0) {
+    parts.push(
+      `deferred unclaimed work ${(brief.deferredItems ?? []).map((item) => item.id).join(', ')} — this session filed/commented on it; keep the ids and re-check before declaring idle`,
+    );
+  }
   if (brief.loop) {
     const iv = brief.loop.intervalSec != null ? ` ${brief.loop.intervalSec}s` : '';
     parts.push(
@@ -1039,6 +1321,9 @@ export function renderCarryBriefColdExtras(
         .map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`)
         .join('\n')}`,
     );
+  }
+  if ((brief.deferredItems ?? []).length > 0) {
+    sections.push(renderDeferredWorkItems(brief.deferredItems ?? []));
   }
   if (brief.heldItems.length > 0) {
     // The excerpt must SAY it is an excerpt. This is the cold successor's entire
@@ -1236,6 +1521,8 @@ export function renderCarryBriefText(
       sections.push(`${head} No carry-note written.`);
     }
   }
+  const idleNoteGuard = detectIdleNoteGuard(brief.loop?.carryNote, brief.deferredItems ?? []);
+  if (idleNoteGuard) sections.push(idleNoteGuard.message);
   // Directives already rendered at the top — strip them so the extras call
   // (shared with the cold path, where they DO belong inside) can't double-render.
   const extras = renderCarryBriefColdExtras(directivesBlock ? { ...brief, directives: [] } : brief, {

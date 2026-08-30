@@ -1026,6 +1026,18 @@ export function issueClaimCandidateSubquery(
           wi.feature_order,
           wi.origin,
           wi.payload,
+          -- WI-524804: 'lane' is a STORED generated column (migration 721 / WI-6934) that the
+          -- observation-lane floor reads INSTEAD of detoasting payload. It must be projected
+          -- here because on the filterPushdown path the outer SELECT's FROM-source is the
+          -- 'filtered_claim_candidates wi' CTE, not the base table -- so a column this
+          -- projection omits genuinely does not exist for ok_observation below, and the
+          -- failure is silent (no type error, and ONLY on the pushdown path). Dropping it is
+          -- what produced "column wi.lane does not exist" in EI-21580597231511770, which was
+          -- then misdiagnosed as "the generated column was removed" and repaired by reverting
+          -- the floor to the slow payload form. The column was never removed. Any floor column
+          -- added below must be projected here too -- asserted by
+          -- claimability-snapshot-projection-covers-floors.test.ts.
+          wi.lane,
           wi.goal_id,
           wi.expected_cost_cents,
           wi.tags,

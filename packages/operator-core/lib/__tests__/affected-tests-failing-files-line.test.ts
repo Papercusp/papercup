@@ -79,6 +79,8 @@ function parseLine(line: string) {
     unattributed: json('unattributed') as Array<{ task: string; reason: string }> | null,
     transformCulpritCount: Number(scalar('transformCulpritCount')),
     transformCulprits: json('transformCulprits') as string[] | null,
+    attributionFallbackCount: Number(scalar('attributionFallbackCount') ?? 0),
+    attributionFallbacks: json('attributionFallbacks') as Array<{ task: string; source: string }> | null,
   };
 }
 
@@ -316,6 +318,50 @@ describe('attributeFailedTask — a red task never contributes nothing', () => {
     ]);
   });
 
+  it('falls back to the initial task output when a rowless retry replaces the result', () => {
+    const initial = [
+      ' ❯ lib/harness/routines/release-actions.test.ts (169 tests | 1 failed) 2723ms',
+      ' Test Files  1 failed | 1945 passed | 5 skipped (1953)',
+      ' Tests  1 failed | 29127 passed | 26 skipped | 3 todo (29166)',
+    ].join('\n');
+    const retry = [
+      'AFFECTED_TASK_PROGRESS state=governed-admission-error',
+      'durable receipt is not leaseable',
+    ].join('\n');
+    const a = attributeFailedTask({
+      workspace: '@papercusp/operator-core',
+      task: '@papercusp/operator-core :: test:lane-stateful',
+      captured: true,
+      output: retry,
+      fallbackOutput: initial,
+      fallbackSource: 'initial-task-output',
+    });
+
+    expect(a.entries).toEqual([
+      {
+        workspace: '@papercusp/operator-core',
+        file: 'lib/harness/routines/release-actions.test.ts',
+      },
+    ]);
+    expect(a.unattributed).toEqual([]);
+    expect(a.attributionSource).toBe('initial-task-output');
+  });
+
+  it('does not union stale initial rows when the final retry names a file', () => {
+    const a = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test',
+      captured: true,
+      output: ' ❯ lib/current.test.ts (1 test | 1 failed) 10ms',
+      fallbackOutput: ' ❯ lib/stale.test.ts (1 test | 1 failed) 10ms',
+      fallbackSource: 'initial-task-output',
+    });
+
+    expect(a.entries).toEqual([{ workspace: 'w', file: 'lib/current.test.ts' }]);
+    expect(a.attributionSource).toBeUndefined();
+    expect(a.unattributed).toEqual([]);
+  });
+
   it('every branch yields exactly one of files-or-a-reason — never silence', () => {
     const cases = [
       { workspace: 'w', task: 't', captured: true, output: REAL_FAILURE_OUTPUT },
@@ -530,6 +576,33 @@ describe('renderFailingFilesSummary — the block the red path actually prints',
     expect(parseLine(String(lines.at(-1))).coverage).toBe('unattributed');
   });
 
+  it('states when a secondary task-scoped output supplied the file attribution', () => {
+    const lines = renderFailingFilesSummary({
+      runToken: 't',
+      failedTaskCount: 2,
+      entries: [{ workspace: '@papercusp/operator-core', file: 'lib/x.test.ts' }],
+      unattributed: [{ task: 'w :: test:el-suite', reason: 'no-file-rows' }],
+      attributionFallbacks: [
+        {
+          task: '@papercusp/operator-core :: test:lane-stateful',
+          source: 'initial-task-output',
+        },
+      ],
+    });
+    const prose = lines.join('\n');
+    expect(prose).toContain('used a secondary attribution source');
+    expect(prose).toContain('@papercusp/operator-core :: test:lane-stateful (source=initial-task-output)');
+    const parsed = parseLine(String(lines.at(-1)));
+    expect(parsed.coverage).toBe('partial');
+    expect(parsed.attributionFallbackCount).toBe(1);
+    expect(parsed.attributionFallbacks).toEqual([
+      {
+        task: '@papercusp/operator-core :: test:lane-stateful',
+        source: 'initial-task-output',
+      },
+    ]);
+  });
+
   it('emits every line as a single log line, so an interleaved log stays parseable', () => {
     // The leading blank separator is deliberate; no OTHER line may carry an embedded newline.
     const lines = renderFailingFilesSummary({
@@ -607,6 +680,16 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
     expect(source).toContain('attributeFailedTask({');
     expect(source).toContain('failedFileEntries.push(...a.entries)');
     expect(source).toContain('unattributedTasks.push(...a.unattributed)');
+  });
+
+  it('keeps the initial task-scoped output when a retry replaces the in-memory result', () => {
+    expect(source).toContain(
+      "const initialTaskOutput = `${scheduled.value.stdout ?? ''}${scheduled.value.stderr ?? ''}`;",
+    );
+    expect(source).toContain('fallbackOutput: initialTaskOutput');
+    expect(source).toContain("fallbackSource: 'initial-task-output'");
+    expect(source).toContain('attributionFallbacks.push({');
+    expect(source).toContain('attributionFallbacks,');
   });
 
   it('uses batch-timeout only as the attributor fallback, never as a parser bypass', () => {

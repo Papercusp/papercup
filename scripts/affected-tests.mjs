@@ -4282,6 +4282,11 @@ const notCheckedTaskNames = [];
 // list must never be indistinguishable from "nothing failed".
 const failedFileEntries = [];
 const unattributedTasks = [];
+// A retry can replace the initial task result with a rowless governed-admission or spawn
+// failure. Keep the initial task-scoped bytes available for attribution, but use them only
+// when the final retry output names no file; unioning both attempts would retain files that
+// the fresh retry already proved passed.
+const attributionFallbacks = [];
 // WI-38300: failures that survived HARDEN-GATE absorption while the box was STILL loaded.
 // They stay counted in `failed` — this list only drives the extra attribution a triager needs
 // so nobody "fixes" tests that were never broken. See scripts/lib/load-suspect.mjs.
@@ -5176,6 +5181,7 @@ try {
 
 for (const scheduled of initialPool.results) {
   const { t, isQuarantined, guardArgs } = scheduled.task;
+  const initialTaskOutput = `${scheduled.value.stdout ?? ""}${scheduled.value.stderr ?? ""}`;
   outSync(
     `\n>>> ${t.ws.name} :: ${npmAvailable ? "npm " : ""}run ${t.script}${isQuarantined ? " [QUARANTINED]" : ""}`,
   );
@@ -5434,11 +5440,19 @@ for (const scheduled of initialPool.results) {
         task: `${t.ws.name} :: ${t.script}`,
         captured: captureOutput(),
         output: `${r.stdout ?? ""}${r.stderr ?? ""}`,
+        fallbackOutput: initialTaskOutput,
+        fallbackSource: "initial-task-output",
         fallbackReason: watchdogTimedOut ? "batch-timeout" : undefined,
       });
       failedFileEntries.push(...a.entries);
       unattributedTasks.push(...a.unattributed);
       transformCulpritPaths.push(...a.transformCulprits);
+      if (a.attributionSource) {
+        attributionFallbacks.push({
+          task: `${t.ws.name} :: ${t.script}`,
+          source: a.attributionSource,
+        });
+      }
       // EI-19332556961886184: surface a timeout signature right here, in the log a
       // triager reads, instead of letting it collapse into an indistinguishable red.
       // Only possible when the child's output was captured (a non-TTY / background
@@ -5676,6 +5690,7 @@ if (failed) {
     entries: failedFileEntries,
     unattributed: unattributedTasks,
     transformCulprits: transformCulpritPaths,
+    attributionFallbacks,
   })) {
     errSync(line);
   }

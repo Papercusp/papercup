@@ -39,6 +39,15 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  // Triage uses the issue helpers' own short-lived DB calls and never reads
+  // ctx.tx. In particular, triage-one must not hold the ambient workspace
+  // transaction while a queue-wide ranking pass is running under load.
+  skipWorkspaceTx: true,
+  // Queue-wide summary/retriage scans can legitimately sit behind the shared
+  // issue/ranking reads for longer than the generic 60s tool budget. The
+  // historical false-timeout reached 187s before the handler returned
+  // successfully; leave enough headroom for that bounded batch.
+  timeoutSec: 300,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     mode: z
@@ -57,6 +66,90 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
+
+    // Triage-one only needs the requested item's lifecycle write. The full
+    // digest/ranking prelude below is for queue views, not this targeted
+    // operation. Running it here made a single Blender/Mug triage call scan
+    // and rank 100 ideas before touching one item; under load that could
+    // outlive the 60s dispatcher deadline and return the misleading
+    // "handler returned but signal had aborted" timeout (EI-21826830445006528).
+    if (args.mode === 'triage-one') {
+      if (!args.ideaId) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'triage-one mode requires ideaId',
+              }),
+            },
+          ],
+        };
+      }
+
+      if (!args.decision || !args.reason) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'triage-one mode requires decision + reason',
+              }),
+            },
+          ],
+        };
+      }
+
+      // Persist the Queen's decision durably (learning-system-audit P-010):
+      // writes payload.ideaLifecycle (state machine validated), records
+      // payload.decidedReason + CLOSES the issue on reject (queue-as-memory —
+      // the next same-signature capture recalls "already decided: <reason>").
+      const result = await applyTriageDecision({
+        id: args.ideaId,
+        decision: args.decision as TriageDecision,
+        reason: args.reason,
+        by: 'Queen',
+      });
+      if (!result.ok) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify({ ok: false, error: result.error }) },
+          ],
+        };
+      }
+
+      // Generate guidance based on decision type (P-040: gym re-trigger)
+      let note = '';
+      if (args.decision === 'place') {
+        note = 'Decision persisted. Use work_items:create to assign and track the implementation.';
+      } else if (args.decision === 'gate') {
+        note = 'Decision persisted. Escalate for human review before proceeding.';
+      } else if (args.decision === 'gym') {
+        note = 'Decision persisted. Gym A/B dispatch for verification (P-040). Next: call cup:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
+      } else if (args.decision === 'reject') {
+        note = 'Decision persisted: issue CLOSED with decidedReason — the recall matcher surfaces it on the next same-signature capture.';
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              mode: 'triage-one',
+              ideaId: args.ideaId,
+              decision: args.decision,
+              reason: args.reason,
+              lifecycle: result.lifecycle,
+              closed: result.closed ?? false,
+              note,
+            }),
+          },
+        ],
+      };
+    }
 
     // Read all open ideas (P-010: filter by harnessSlug if provided), human
     // lane ranked by the ONE queue ranker (frontier P-040/P-045, D-005) — the

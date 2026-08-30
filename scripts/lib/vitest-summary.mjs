@@ -452,13 +452,21 @@ export const FAILING_FILES_LINE_MAX_ENTRIES = 400;
  *   entries?: Array<{ workspace: string, file: string }>,
  *   unattributed?: Array<{ task: string, reason: string }>,
  *   transformCulprits?: string[],
+ *   attributionFallbacks?: Array<{ task: string, source: string }>,
  * }} args
  * @returns {string}
  */
-export function formatFailingFilesLine({ runToken, entries = [], unattributed = [], transformCulprits = [] }) {
+export function formatFailingFilesLine({
+  runToken,
+  entries = [],
+  unattributed = [],
+  transformCulprits = [],
+  attributionFallbacks = [],
+}) {
   const files = [...entries];
   const unattr = [...unattributed];
   const culprits = [...new Set(transformCulprits)];
+  const fallbacks = [...attributionFallbacks];
   const coverage =
     files.length === 0 && unattr.length === 0
       ? 'none'
@@ -474,7 +482,10 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
     `fileCount=${files.length} unattributedCount=${unattr.length} truncated=${truncated} ` +
     `transformCulpritCount=${culprits.length} ` +
     `files=${JSON.stringify(shown)} unattributed=${JSON.stringify(unattr)} ` +
-    `transformCulprits=${JSON.stringify(culprits)}`
+    `transformCulprits=${JSON.stringify(culprits)}` +
+    (fallbacks.length > 0
+      ? ` attributionFallbackCount=${fallbacks.length} attributionFallbacks=${JSON.stringify(fallbacks)}`
+      : '')
   );
 }
 
@@ -748,6 +759,40 @@ export function hasRouteRefusal(output = '') {
 }
 
 /**
+ * Parse the failure-file formats spoken by this task's output.
+ *
+ * Kept as one helper so the primary and fallback capture paths cannot silently drift:
+ * a retry may replace the in-memory task result with a governed-admission error that has
+ * no child bytes, while the initial task result still carries the Vitest rows.
+ *
+ * @param {string} output
+ * @returns {{ files: string[], transformCulprits: string[] }}
+ */
+function parseAttributableTaskOutput(output = '') {
+  const transformCulprits = transformCulpritsFrom(output);
+  // ALL known runner formats (EI-20095409199430877, EI-20098997113620795). A union, never a
+  // fallback: `@papercusp/desktop`'s `test` chains three sub-steps across three DIFFERENT
+  // runners (`node --test`, `node --test`, then the bash selftest harness), so a single task's
+  // output can legitimately carry two formats at once and taking the first non-empty set would
+  // silently drop the other's files.
+  //
+  // ⚠ The set of runners this union must cover is not a matter of memory: it is asserted against
+  // what the repo ACTUALLY runs by attributor-runner-coverage.test.ts, which derives the runner
+  // classes from every workspace's task scripts. Adding a runner here without a fixture there, or
+  // a workspace adopting a fourth runner, fails that test rather than degrading to `no-file-rows`.
+  const files = [
+    ...new Set([
+      ...parseFailedTestFiles(output),
+      ...parseNodeTestFailedFiles(output),
+      ...parseBashSelftestFailedFiles(output),
+      ...parseAstroCheckFailedFiles(output),
+      ...parseDeclaredFailingFiles(output),
+    ]),
+  ];
+  return { files, transformCulprits };
+}
+
+/**
  * Attribute ONE failed task to the test files that broke it.
  *
  * Returns either files or a REASON it has none — never a bare empty list, because the
@@ -793,12 +838,22 @@ export function hasRouteRefusal(output = '') {
  * was built for.
  *
  * @param {{ workspace: string, task: string, captured: boolean, output?: string,
- *           fallbackReason?: string }} args
+ *           fallbackReason?: string, fallbackOutput?: string,
+ *           fallbackSource?: string }} args
  * @returns {{ entries: Array<{ workspace: string, file: string }>,
  *             unattributed: Array<{ task: string, reason: string }>,
- *             transformCulprits: string[] }}
+ *             transformCulprits: string[],
+ *             attributionSource?: string }}
  */
-export function attributeFailedTask({ workspace, task, captured, output = '', fallbackReason }) {
+export function attributeFailedTask({
+  workspace,
+  task,
+  captured,
+  output = '',
+  fallbackReason,
+  fallbackOutput = '',
+  fallbackSource = 'fallback-output',
+}) {
   if (!captured) {
     return {
       entries: [],
@@ -806,26 +861,25 @@ export function attributeFailedTask({ workspace, task, captured, output = '', fa
       transformCulprits: [],
     };
   }
-  const transformCulprits = transformCulpritsFrom(output);
-  // ALL known runner formats (EI-20095409199430877, EI-20098997113620795). A union, never a
-  // fallback: `@papercusp/desktop`'s `test` chains three sub-steps across three DIFFERENT
-  // runners (`node --test`, `node --test`, then the bash selftest harness), so a single task's
-  // output can legitimately carry two formats at once and taking the first non-empty set would
-  // silently drop the other's files.
-  //
-  // ⚠ The set of runners this union must cover is not a matter of memory: it is asserted against
-  // what the repo ACTUALLY runs by attributor-runner-coverage.test.ts, which derives the runner
-  // classes from every workspace's task scripts. Adding a runner here without a fixture there, or
-  // a workspace adopting a fourth runner, fails that test rather than degrading to `no-file-rows`.
-  const files = [
+  const primary = parseAttributableTaskOutput(output);
+  let selected = primary;
+  let attributionSource;
+  let fallback = null;
+  if (primary.files.length === 0 && fallbackOutput) {
+    fallback = parseAttributableTaskOutput(fallbackOutput);
+    if (fallback.files.length > 0) {
+      selected = fallback;
+      attributionSource =
+        String(fallbackSource ?? '').trim() || 'fallback-output';
+    }
+  }
+  const transformCulprits = [
     ...new Set([
-      ...parseFailedTestFiles(output),
-      ...parseNodeTestFailedFiles(output),
-      ...parseBashSelftestFailedFiles(output),
-      ...parseAstroCheckFailedFiles(output),
-      ...parseDeclaredFailingFiles(output),
+      ...primary.transformCulprits,
+      ...(fallback?.transformCulprits ?? []),
     ]),
   ];
+  const files = selected.files;
   if (files.length === 0) {
     return {
       entries: [],
@@ -837,13 +891,21 @@ export function attributeFailedTask({ workspace, task, captured, output = '', fa
           reason:
             transformCulprits.length > 0
               ? 'transform'
-              : (fallbackReason ?? (hasRouteRefusal(output) ? 'route-refusal' : 'no-file-rows')),
+              : (fallbackReason ??
+                (hasRouteRefusal(output) || hasRouteRefusal(fallbackOutput)
+                  ? 'route-refusal'
+                  : 'no-file-rows')),
         },
       ],
       transformCulprits,
     };
   }
-  return { entries: files.map((file) => ({ workspace, file })), unattributed: [], transformCulprits };
+  return {
+    entries: files.map((file) => ({ workspace, file })),
+    unattributed: [],
+    transformCulprits,
+    ...(attributionSource ? { attributionSource } : {}),
+  };
 }
 
 /**
@@ -868,6 +930,7 @@ export function attributeFailedTask({ workspace, task, captured, output = '', fa
  *   entries?: Array<{ workspace: string, file: string }>,
  *   unattributed?: Array<{ task: string, reason: string }>,
  *   transformCulprits?: string[],
+ *   attributionFallbacks?: Array<{ task: string, source: string }>,
  * }} args
  * @returns {string[]}
  */
@@ -877,6 +940,7 @@ export function renderFailingFilesSummary({
   entries = [],
   unattributed = [],
   transformCulprits = [],
+  attributionFallbacks = [],
 }) {
   const culprits = [...new Set(transformCulprits)];
   const lines = [];
@@ -899,6 +963,15 @@ export function renderFailingFilesSummary({
       `(the failed=${failedTaskCount} above counts TASKS, not files):`,
   );
   for (const e of entries) lines.push(`  - ${e.workspace} :: ${e.file}`);
+  if (attributionFallbacks.length) {
+    lines.push(
+      `${attributionFallbacks.length} failed task(s) used a secondary attribution source ` +
+        `after the primary task output named no files; coverage above includes those fallbacks:`,
+    );
+    for (const fallback of attributionFallbacks) {
+      lines.push(`  - ${fallback.task} (source=${fallback.source})`);
+    }
+  }
   if (unattributed.length) {
     lines.push(
       `${unattributed.length} failed task(s) could NOT be attributed to files — their ` +
@@ -906,7 +979,15 @@ export function renderFailingFilesSummary({
     );
     for (const u of unattributed) lines.push(`  - ${u.task} (${u.reason})`);
   }
-  lines.push(formatFailingFilesLine({ runToken, entries, unattributed, transformCulprits: culprits }));
+  lines.push(
+    formatFailingFilesLine({
+      runToken,
+      entries,
+      unattributed,
+      transformCulprits: culprits,
+      attributionFallbacks,
+    }),
+  );
   return lines;
 }
 

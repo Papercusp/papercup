@@ -547,6 +547,40 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     );
   });
 
+  it('does not suppress the legacy completion ladder for a non-delivered wake', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_status: 'failed',
+            lifecycle_completed_at: pgString(T0 + 2_000),
+            turn_journal_completed_at: pgString(T0 + 3_000),
+            last_loop_turn_at: null,
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 10_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({
+      id: 'rt-loop-origin',
+      via: 'lifecycle',
+      completedAt: T0 + 2_000,
+    });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-lifecycle',
+      'ok',
+    );
+  });
+
   it('keeps a recently active delivered turn in flight after delivery grace, not on the stale-wake retry path', async () => {
     const updates: unknown[][] = [];
     const res = await reconcile({
@@ -565,6 +599,68 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
 
     expect(res.rearmed).toBe(0);
     expect(updates).toHaveLength(0);
+  });
+
+  it('routes a post-grace delivered wake with no loop turn through the terminal guard before retrying', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const checkUnreachableTerminalGuard = vi.fn(async () => ({
+      breach: true,
+      reason: 'dead-owner: delivered wake never became a loop turn',
+    }));
+    const cancelInboxWake = vi.fn(async () => 1);
+    const escalateDeadLoop = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            lifecycle_completed_at: null,
+            turn_journal_completed_at: null,
+            last_loop_turn_at: null,
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 31 * 60_000, // past stuckParkMs(60s) = 30min
+      recordFire,
+      checkUnreachableTerminalGuard,
+      cancelInboxWake,
+      escalateDeadLoop,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(res.terminated).toEqual([
+      {
+        id: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        reason: 'dead-owner: delivered wake never became a loop turn',
+      },
+    ]);
+    expect(updates).toHaveLength(0);
+    expect(checkUnreachableTerminalGuard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        circuitOpen: false,
+      }),
+    );
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-terminal-unreachable',
+      'error',
+    );
+    expect(cancelInboxWake).toHaveBeenCalledWith('su-loop-origin', 'ws-papercusp');
+    expect(escalateDeadLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        reason: 'dead-owner: delivered wake never became a loop turn',
+      }),
+    );
   });
 
   it('preserves cron+loop and cold-loop ladders when the new discriminator fields are present', async () => {

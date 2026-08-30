@@ -52,6 +52,14 @@ describe('improvements:triage tool', () => {
     }));
   });
 
+  it('opts out of the ambient workspace transaction while doing its own issue reads/writes', () => {
+    expect((triageTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('allows queue-wide triage reads to outlive the generic 60s dispatcher budget', () => {
+    expect((triageTool as unknown as { timeoutSec?: number }).timeoutSec).toBe(300);
+  });
+
   const mockItem = (p: Partial<ScoredItem> & { id: string }): ScoredItem => ({
     kind: 'change',
     severity: 'minor',
@@ -183,6 +191,25 @@ describe('improvements:triage tool', () => {
   });
 
   describe('handler - triage-one mode', () => {
+    it('skips the queue-wide digest and ranking prelude for a targeted decision', async () => {
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler(
+        {
+          mode: 'triage-one',
+          ideaId: 'idea-target',
+          decision: 'place',
+          reason: 'Targeted triage should not scan the full queue',
+        },
+        ctx,
+      )) as any;
+
+      const response = JSON.parse(result.content[0].text);
+      expect(response.ok).toBe(true);
+      expect(response.mode).toBe('triage-one');
+      expect(mockReadImprovementItems).not.toHaveBeenCalled();
+      expect(mockBuildDigest).not.toHaveBeenCalled();
+    });
+
     it('requires ideaId and rejects without it', async () => {
       mockReadImprovementItems.mockResolvedValue([]);
       mockBuildDigest.mockReturnValue(mockDigest({}));

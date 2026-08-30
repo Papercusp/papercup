@@ -930,6 +930,7 @@ function completionSignal(
   row: LoopRow,
   lastFiredMs: number,
   nowMs: number,
+  options: { suppressOwnerWideSignals?: boolean } = {},
 ): { completedAt: number; via: Exclude<RebaseVia, 'stuck-backstop'> } | null {
   // ── COLD loop (carry:'cold') — settle requires evidence the ITERATION RAN ────────
   // A cold wake delivers a reset/recycle that restarts the session, so the signals mean
@@ -968,16 +969,11 @@ function completionSignal(
   if (strictLoopTurnAtMs != null) {
     return { completedAt: strictLoopTurnAtMs, via: 'loop-turn' };
   }
-  // EI-21743034835075378 — once a warm pure-loop wake is known to have been
-  // delivered, generic owner-wide lifecycle/journal/presence signals are not
-  // enough to prove THIS wake became a turn. Keep the row parked through the
-  // bounded delivery grace, then retry from the delivery clock if the strict
-  // loop-origin assistant clock is still absent/older.
-  const deliveredWakeState = deliveredWakeWithoutLoopTurn(row, lastFiredMs, nowMs);
-  if (deliveredWakeState?.kind === 'awaiting-turn') return null;
-  if (deliveredWakeState?.kind === 'retry') {
-    return { completedAt: deliveredWakeState.completedAt, via: deliveredWakeState.via };
-  }
+  // A delivered wake without its matching loop-origin turn is handled by the
+  // no-signal retry/terminal-guard path in reconcileLoopRoutines. Suppress the
+  // owner-wide lifecycle/journal/presence ladder here so those unrelated signals
+  // cannot settle the fire before that path gets a chance to run.
+  if (options.suppressOwnerWideSignals) return null;
   // ── WARM loop — the original two-layer ladder ────────────────────────────────────
   // 1. PRIMARY: the Stop-hook lifecycle 'ended' marker (already filtered > last_fired by
   //    the SQL window). COLD-RESET-BOUNDARY GUARD (su-cold-auto 2026-07-03): a COLD
@@ -1411,7 +1407,26 @@ export async function reconcileLoopRoutines(
       /** WI-36792: the withholding streak, captured for the 'gate-backoff' log line (the
        *  streak itself is block-scoped to the quiet-parked path below). */
       let gateBackoffErrors = 0;
-      const signal = completionSignal(row, lastFiredMs, nowMs);
+      // EI-21743034835075378: delivery is only an accepted handoff, not proof
+      // that this fire became a model turn. Keep the generic owner-wide signal
+      // ladder out of the way until the strict loop-origin clock catches up.
+      // The full delivered-wake classification runs in the no-signal branch so
+      // post-grace retries still pass through terminal-guard handling.
+      const loopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
+      const wakeAtMs = tsMs(row.last_wake_at);
+      const hasDeliveredWakeWithoutLoopTurn =
+        row.carry !== 'cold' &&
+        !row.is_cron &&
+        row.parked &&
+        Object.prototype.hasOwnProperty.call(row, 'last_wake_status') &&
+        Object.prototype.hasOwnProperty.call(row, 'last_loop_turn_at') &&
+        row.last_wake_status === 'delivered' &&
+        wakeAtMs != null &&
+        wakeAtMs > lastFiredMs &&
+        (loopTurnAtMs == null || loopTurnAtMs < wakeAtMs);
+      const signal = completionSignal(row, lastFiredMs, nowMs, {
+        suppressOwnerWideSignals: hasDeliveredWakeWithoutLoopTurn,
+      });
       // EI-13818: a 'lifecycle' signal means the Stop hook fired — the turn EXITED cleanly —
       // not that it SUCCEEDED. Re-classify its own text before trusting that as an 'ok'.
       //
@@ -1451,6 +1466,10 @@ export async function reconcileLoopRoutines(
           turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
         }
       } else {
+        const deliveredWakeState = deliveredWakeWithoutLoopTurn(row, lastFiredMs, nowMs);
+        if (deliveredWakeState?.kind === 'awaiting-turn') continue;
+        const deliveredWakeRetryAt =
+          deliveredWakeState?.kind === 'retry' ? deliveredWakeState.completedAt : null;
         // No healthy completion signal. A PARKED loop with NO post-fire activity is a
         // dead-or-stuck candidate — a legitimately long turn keeps producing activity, so its
         // last_active_at would be > last_fired and it is skipped here for free (no fire-state read).
@@ -1503,7 +1522,7 @@ export async function reconcileLoopRoutines(
         } else {
           const looksDeadOrStuck =
             row.parked && (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
-          if (!looksDeadOrStuck) {
+          if (deliveredWakeRetryAt == null && !looksDeadOrStuck) {
             continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
           }
         // Read the fire-state ONCE (only on this quiet-parked path, so healthy loops pay nothing):
@@ -1562,7 +1581,13 @@ export async function reconcileLoopRoutines(
         // early attempt, well before the classic dwell — see quickRetryEligible's doc above). A
         // circuit-open-but-not-breached loop that has reached neither is left untouched — the
         // fire-gate owns its cadence; re-arming it here would only fight the circuit's backoff.
-        if (!stuckParkElapsed && !quickRetryEligible) {
+        if (deliveredWakeRetryAt != null) {
+          // The wake was accepted but never became a loop-origin turn. Re-arm
+          // from the delivery clock after the bounded grace, while preserving
+          // the terminal guard decision above.
+          completedAt = deliveredWakeRetryAt;
+          via = 'delivered-wake-no-loop-turn';
+        } else if (!stuckParkElapsed && !quickRetryEligible) {
           // WI-36792: this `continue` was a SILENT HALT for a parked pure loop, and the comment
           // above states the false premise that made it look safe — "the fire-gate owns its
           // cadence". That is true for a cron/interval routine, which keeps being CLAIMED on
