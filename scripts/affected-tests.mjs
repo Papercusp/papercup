@@ -1611,6 +1611,31 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-18697393226276295 — `vi.useFakeTimers()` in an integration test whose path reaches
+    // unmocked real infra (PG/testcontainers/DBOS) stops that infra's own timers from ever
+    // firing, and the suite HANGS: no assertion failure, no error, no output. The original
+    // incident needed `kill -9` on the process tree. A failure with zero diagnostic signal
+    // cannot be triaged from output, so it has to be prevented at edit time.
+    //
+    // TRIGGER SCOPE — keyed to the policed surface itself. Unlike the environmental cases
+    // below, this damage IS introduced by a source edit (adding the call to a test file),
+    // so a changed-path predicate catches it exactly. Plain `*.test.ts` is deliberately NOT
+    // a trigger: 188 unit files fake timers correctly and must stay out of this.
+    //
+    // No hostSuiteRatchet. The operator suite proves the CLASSIFIER falsifiable
+    // (fake-timers-integration-guard.test.ts asserts hazards are flagged, the live
+    // clock-only call stays silent, and prose is not a call site), but it does not walk the
+    // tracked tree — that filesystem scan is this task's job, same as lint:tests.
+    workspace: "@papercusp/web",
+    script: "lint:no-fake-timers-in-integration",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "scripts/check-fake-timers-in-integration-tests.mjs" ||
+      f ===
+        "packages/operator-core/lib/__tests__/fake-timers-integration-guard.test.ts" ||
+      /\.(?:integration|browser)\.test\.[cm]?tsx?$/.test(f),
+  },
+  {
     // EI-20863794002653922 — a node_modules entry that EXISTS but is HOLLOW (no readable
     // package.json) is invisible to every other guard here, and surfaces only as an
     // ERR_MODULE_NOT_FOUND naming a path instead of a cause. That is what red-lined the
