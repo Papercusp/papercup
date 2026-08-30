@@ -66,6 +66,7 @@ import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   GatewayRequestKernelError,
+  withPromiseDeadline,
   type GatewayKernelAdapter,
   type GatewayKernelAttemptContext,
   type GatewayKernelRoute,
@@ -315,24 +316,6 @@ function headersToObject(headers: ClaudeFetchResponse['headers']): Record<string
   return out;
 }
 
-/** Bound the token read exactly as the live handler's `withDeadline` does. The
- *  kernel owns the TTFB and body-idle deadlines, but token work happens inside
- *  `prepareAttempt` and carries its own. */
-async function withTokenDeadline<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 /**
  * Pull up to `limit` bytes off the body for classification, then hand back a body
  * that REPLAYS them ahead of the remainder — the live handler's
@@ -540,7 +523,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       // loop body rather than once above it (gateway.ts:~4053).
       let token: string;
       try {
-        token = await withTokenDeadline(
+        token = await withPromiseDeadline(
           account.token(),
           opts.tokenTimeoutMs,
           `token refresh '${account.accountId}'`,
@@ -608,7 +591,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         let head = Buffer.alloc(0) as Uint8Array;
         if (body) {
           try {
-            const peeked = await withTokenDeadline(
+            const peeked = await withPromiseDeadline(
               peekBody(body, opts.peekBytes ?? 8192),
               opts.peekTimeoutMs ?? 30_000,
               'classification peek',
