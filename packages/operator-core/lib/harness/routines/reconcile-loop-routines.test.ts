@@ -431,6 +431,181 @@ describe('reconcileLoopRoutines — turn-journal completion signal (WI-6069)', (
   });
 });
 
+describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-21743034835075378)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  function deliveredWarmRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'rt-loop-origin',
+      target_owner_id: 'su-loop-origin',
+      interval_sec: 60,
+      parked: true,
+      is_cron: false,
+      install_slug: 'papercusp',
+      name: 'loop-su-loop-origin',
+      routine_workspace_id: 'ws-papercusp',
+      last_fired_at: pgString(T0),
+      fire_state_last_fired_at: null,
+      fire_state_last_withheld_at: null,
+      last_wake_at: pgString(T0 + 1_000),
+      last_wake_status: 'delivered',
+      last_loop_turn_at: null,
+      lifecycle_completed_at: pgString(T0 + 2_000),
+      turn_journal_completed_at: pgString(T0 + 3_000),
+      lifecycle_started_at: null,
+      carry: null,
+      armed_at: null,
+      note_updated_ts: null,
+      presence_last_active_at: pgString(T0 + 4_000),
+      last_assistant_text_after_fire: 'unrelated owner activity',
+      turns_ingest_watermark: pgString(T0 + 4_000),
+      payload_template: null,
+      monitor_delta_at: null,
+      ...overrides,
+    };
+  }
+
+  it('does not let owner-wide completion signals settle a delivered wake before its loop-origin turn is observed', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([deliveredWarmRow()], updates),
+      nowMs: T0 + 30_000, // inside the 2×interval delivery/turn grace
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(updates).toHaveLength(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('re-arms from the delivered wake after grace when the loop-origin clock is absent or stale', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            // A turn after the claim but before delivery is not proof for this wake.
+            last_loop_turn_at: pgString(T0 + 500),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000, // beyond the 120s delivery grace
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({
+      id: 'rt-loop-origin',
+      via: 'delivered-wake-no-loop-turn',
+      completedAt: T0 + 1_000,
+      nextFireAt: T0 + 61_000,
+    });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('uses a matching loop-origin assistant turn as the completion signal', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_loop_turn_at: pgString(T0 + 8_000),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 9_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({
+      id: 'rt-loop-origin',
+      via: 'loop-turn',
+      completedAt: T0 + 8_000,
+      nextFireAt: T0 + 68_000,
+    });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-loop-turn',
+      'ok',
+    );
+  });
+
+  it('keeps a recently active delivered turn in flight after delivery grace, not on the stale-wake retry path', async () => {
+    const updates: unknown[][] = [];
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            lifecycle_completed_at: null,
+            turn_journal_completed_at: null,
+            presence_last_active_at: pgString(T0 + 100_000),
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 130_000, // wake grace elapsed, but genuine activity was only 30s ago
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('preserves cron+loop and cold-loop ladders when the new discriminator fields are present', async () => {
+    const cronUpdates: unknown[][] = [];
+    const cron = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            is_cron: true,
+            last_loop_turn_at: null,
+            presence_last_active_at: null,
+          }),
+        ],
+        cronUpdates,
+      ),
+      nowMs: T0 + 10_000,
+    });
+    expect(cron.rearmed).toBe(1);
+    expect(cron.loops[0]).toMatchObject({ via: 'lifecycle', completedAt: T0 + 2_000 });
+
+    const coldUpdates: unknown[][] = [];
+    const cold = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            carry: 'cold',
+            lifecycle_completed_at: null,
+            turn_journal_completed_at: pgString(T0 + 5_000),
+            presence_last_active_at: pgString(T0 + 5_000),
+            note_updated_ts: null,
+          }),
+        ],
+        coldUpdates,
+      ),
+      nowMs: T0 + 10_000,
+    });
+    expect(cold.rearmed).toBe(0);
+    expect(coldUpdates).toHaveLength(0);
+  });
+});
+
 describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustness P0b)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
