@@ -95,7 +95,7 @@ export const CLAIM_LAPSE_ACTIVITY_GRACE_SEC =
   Number.isFinite(rawLapseGrace) && rawLapseGrace >= 0 ? Math.min(Math.floor(rawLapseGrace), 3600) : 600;
 
 /**
- * The authority-RPC op kinds for the three mutating claim ops (D-002). A claim op
+ * The authority-RPC op kinds for the mutating claim ops (D-002). A claim op
  * routed to a REMOTE authority carries one of these `kind`s + a serialisable payload
  * over the peer-RPC transport; the authority re-runs the matching `*Local` fn against
  * ITS store (registered via plan-item-claim-authority-ops.ts). Distinct from
@@ -105,6 +105,8 @@ export const PLAN_ITEM_CLAIM_OP_KINDS = {
   acquire: 'plan-item.claim.acquire',
   heartbeat: 'plan-item.claim.heartbeat',
   release: 'plan-item.claim.release',
+  forceRelease: 'plan-item.claim.force-release',
+  forceTakeover: 'plan-item.claim.force-takeover',
 } as const;
 
 /**
@@ -341,6 +343,25 @@ export interface ReleaseClaimParams {
   owner: string;
 }
 
+/**
+ * A checked force-release still carries the exact claim identity that the caller
+ * proved reclaimable. The authority must match BOTH claim_id and owner; a later
+ * holder cannot be deleted if the row changed between the liveness read and this
+ * mutation (EI-21618203307569668).
+ */
+export type ForceReleaseClaimParams = ReleaseClaimParams;
+
+/**
+ * A checked force-takeover replaces exactly one previously-read holder. This is
+ * deliberately separate from acquireClaim: force authorization belongs at the
+ * tool/policy layer, while this low-level op only provides the authority-routed
+ * exact CAS mutation.
+ */
+export interface ForceTakeoverClaimParams extends AcquireOpts {
+  expectedClaimId: string;
+  expectedOwner: string;
+}
+
 /** Release the caller's claim. Owner + claim_id checked. Returns whether a row was freed.
  *  Routed through the claim authority (runs `releaseClaimLocal` at the authority). */
 export async function releaseClaim(
@@ -360,6 +381,32 @@ export async function releaseClaim(
 
 /** The LOCAL (un-routed) release — raw SQL against THIS peer's PG. See `acquireClaimLocal`. */
 export async function releaseClaimLocal(p: ReleaseClaimParams): Promise<boolean> {
+  return deleteClaimLocal(p);
+}
+
+/**
+ * Force-release the exact claim the caller's policy guard inspected. The SQL is
+ * intentionally the same owner+claim_id CAS as ordinary release; the distinct
+ * routed verb makes the audited override explicit and prevents callers from
+ * treating a foreign-holder release as a normal voluntary release.
+ */
+export async function forceReleaseClaim(p: ForceReleaseClaimParams): Promise<boolean> {
+  return getClaimAuthority().route(p.harnessSlug, {
+    local: () => forceReleaseClaimLocal(p),
+    remote: {
+      kind: PLAN_ITEM_CLAIM_OP_KINDS.forceRelease,
+      payload: p,
+      decode: (raw) => raw as boolean,
+    },
+  });
+}
+
+/** The LOCAL exact-CAS force release against THIS peer's claim store. */
+export async function forceReleaseClaimLocal(p: ForceReleaseClaimParams): Promise<boolean> {
+  return deleteClaimLocal(p);
+}
+
+async function deleteClaimLocal(p: ReleaseClaimParams): Promise<boolean> {
   const { workspaceId, harnessSlug, planSlug, itemId, claimId, owner } = p;
   const { sql } = getOrgPg();
   const rows = await sql<{ item_id: string }[]>`
@@ -377,6 +424,86 @@ export async function releaseClaimLocal(p: ReleaseClaimParams): Promise<boolean>
     await notifyAgentOrdersChanged(owner);
   }
   return rows.length > 0;
+}
+
+/**
+ * Replace a foreign holder after a checked force decision. This is a single
+ * UPDATE keyed by the previously observed claim_id + owner, so a holder change
+ * between the guard read and this write fails closed instead of stealing the
+ * successor's newer claim.
+ */
+export async function forceTakeoverClaim(opts: ForceTakeoverClaimParams): Promise<AcquireResult> {
+  return getClaimAuthority().route(opts.harnessSlug, {
+    local: () => forceTakeoverClaimLocal(opts),
+    remote: {
+      kind: PLAN_ITEM_CLAIM_OP_KINDS.forceTakeover,
+      payload: opts,
+      decode: (raw) => raw as AcquireResult,
+    },
+  });
+}
+
+/** The LOCAL exact-CAS force takeover against THIS peer's claim store. */
+export async function forceTakeoverClaimLocal(opts: ForceTakeoverClaimParams): Promise<AcquireResult> {
+  const mode: LivenessMode = opts.livenessMode ?? 'availability';
+  const ttlSec = clampTtl(
+    opts.ttlSec ?? (mode === 'activity' ? DEFAULT_ACTIVITY_TTL_SEC : DEFAULT_AVAILABILITY_TTL_SEC),
+  );
+  const { sql } = getOrgPg();
+  const rows = await sql<ClaimDbRow[]>`
+    UPDATE harness_shared.plan_item_claims
+       SET claim_id         = gen_random_uuid(),
+           owner            = ${opts.owner},
+           owner_label      = ${opts.ownerLabel ?? null},
+           owner_name       = ${opts.ownerName ?? null},
+           intent           = ${opts.intent ?? ''},
+           liveness_mode    = ${mode},
+           ttl_sec          = ${ttlSec},
+           acquired_ts      = clock_timestamp(),
+           expires_ts       = clock_timestamp() + make_interval(secs => ${ttlSec}),
+           last_activity_ts = clock_timestamp()
+     WHERE workspace_id = ${opts.workspaceId}
+       AND harness_slug = ${opts.harnessSlug}
+       AND plan_slug = ${opts.planSlug}
+       AND item_id = ${opts.itemId}
+       AND claim_id = ${opts.expectedClaimId}::uuid
+       AND owner = ${opts.expectedOwner}
+    RETURNING workspace_id, harness_slug, plan_slug, item_id, claim_id, owner,
+           owner_label, owner_name, intent, liveness_mode, ttl_sec, acquired_ts, expires_ts,
+           last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
+  `;
+  if (rows[0]) {
+    const ref = planItemRef(opts.planSlug, opts.itemId);
+    if (ref && opts.expectedOwner !== opts.owner) {
+      clearGoalClaimedIfMatches(opts.expectedOwner, ref);
+    }
+    if (opts.expectedOwner !== opts.owner) {
+      await notifyAgentOrdersChanged(opts.expectedOwner);
+    }
+    await notifyAgentOrdersChanged(opts.owner);
+    return { ok: true, claim: claimFromDb(rows[0]) };
+  }
+
+  // The exact CAS lost. Return the current holder as a normal claim conflict so
+  // callers can distinguish a race from a successful takeover.
+  const current = await getClaim(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
+  return current
+    ? { ok: false, conflict: current }
+    : {
+        ok: false,
+        conflict: synthMissing({
+          workspaceId: opts.workspaceId,
+          harnessSlug: opts.harnessSlug,
+          planSlug: opts.planSlug,
+          itemId: opts.itemId,
+          owner: opts.owner,
+          ownerLabel: opts.ownerLabel,
+          ownerName: opts.ownerName,
+          intent: opts.intent,
+          livenessMode: mode,
+          ttlSec,
+        }),
+      };
 }
 
 /** Release every claim held by a session owner (session-end cleanup). Returns count. */
