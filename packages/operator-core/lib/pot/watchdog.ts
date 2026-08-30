@@ -255,6 +255,12 @@ export type WatchdogSource =
   // a longer window to decide whether a finding is a REPEAT (self-correction did
   // not take) and therefore worth the leader's attention.
   | 'intent-action-divergence'
+  // dead-target-routine-reaper-2026-08-30 P-004 (EI-19278517916030043): the dead-target
+  // reaper's per-install escalation. Fires once per 24h when an install's routines are
+  // auto-parked because its tree is structurally unreadable (root gone, or a corrupt git
+  // object store) — the condition that burned ~2,400 doomed git-sync attempts over 5 days
+  // on ei669-repro-su-b621d before a human noticed and paused them by hand.
+  | 'dead-target-reaper'
   // su-ideate-learning-substrate-2026-07-10 P-006: the ungraded su-filings grading
   // backstop — a debounced Mug-triage nudge when su-originated filings sit ungraded
   // past SU_IDEATE_UNGRADED_STALE_SEC (D-013: epoch-floored + batch-capped).

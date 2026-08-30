@@ -1311,6 +1311,31 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'autoloop-chronic-failure-sweep' },
   );
 
+  // dead-target-routine-reaper-2026-08-30 (EI-19278517916030043): the DEAD-TARGET reaper.
+  // The sweep above is error-streak driven and watches `autoloop_state` — it cannot see a
+  // durable routine firing against a tree that no longer exists. `ei669-repro-su-b621d` burned
+  // ~2,400 doomed git-sync attempts over 5 days that way (646 consecutive error ticks, which
+  // drove the fleet deploy panel to crit for 32h) and stopped only when a human paused it by
+  // hand. This probes each install's tree DIRECTLY and parks its routines when the tree is
+  // confirmed unreadable — twice, spaced apart, so a lazily-materialized or briefly-unmounted
+  // pot home is never parked (D-003). The home harness is excluded unconditionally (D-002).
+  await DBOS.runStep(
+    async () => {
+      const { deadTargetReaperSweep } = await import('../harness/routines/dead-target-sweep');
+      const results = await deadTargetReaperSweep();
+      for (const r of results) {
+        // `healthy` and `protected` are the overwhelming majority every tick (~25 installs
+        // carry active routines here) and carry no information — logging them would bury the
+        // rare rows that matter, which is how the original condition stayed invisible.
+        if (r.outcome === 'healthy' || r.outcome === 'protected' || r.outcome === 'inconclusive') continue;
+        const line = `[dead-target] ${r.outcome}: ${r.installSlug} (${r.state}) — ${r.reason.slice(0, 200)}`;
+        if (r.outcome === 'parked' || r.outcome === 'error') console.warn(line);
+        else console.info(line);
+      }
+    },
+    { name: 'dead-target-reaper-sweep' },
+  );
+
   // EI-19281872822982156: the CHRONIC sweep above is entirely error-streak-driven —
   // a role that stops firing while its OWN error bookkeeping still reads 'ok' (0
   // consecutive_errors) is never a candidate, no matter how long it sits dead (Kettle
