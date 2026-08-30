@@ -312,16 +312,48 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(source).toMatch(/outSync\(resultLine\('passed'\)\);/);
     });
 
-    it('counts a non-gating NOT CHECKED task as undetermined instead of passing', () => {
+    it('counts a NOT CHECKED task on a NON-GATING counter — it must not fail the run', () => {
       // A real non-zero guard run needs a specially staged clean/dirty fixture and is too
       // expensive for this suite. Pin the executable counter wiring here; the classifier
       // tests separately prove that this class remains non-retryable.
+      //
+      // 2026-08-30 — POLARITY DELIBERATELY REVERSED. This test previously asserted
+      // `undeterminedTasks++` here, i.e. that a NOT CHECKED guard keeps the run non-green.
+      // That contradicted the other half of the same contract: affected-tests.mjs registers
+      // these guards `notCheckedIsNonGating: true`, and
+      // affected-tests-repo-wide-invariant-guards.test.ts asserts that registration with the
+      // reason "registered without notCheckedIsNonGating, that answer reds the gate on every
+      // candidate". Both tests were green while the two halves said opposite things, because
+      // each only ever read its own side.
+      //
+      // The consumer was the wrong half. `classifyTaskExit` reaches this branch ONLY for a task
+      // whose registration declared that "I could not look" is its EXPECTED answer here — these
+      // guards read the WORKING DIFF, which is empty in a gate's clean checkout by construction.
+      // Incrementing `undeterminedTasks` (the counter the verdict gates on, via
+      // `hasFailures: Boolean(failed || undeterminedTasks)`) therefore red-pinned EVERY candidate
+      // on a guard that had explicitly declared it had no opinion. Measured on candidate
+      // 57483d0491: "NOT CHECKED (exit 2) — verdict is UNDETERMINED; ... keeping the
+      // affected-tests run non-green."
+      //
+      // The coverage gap is still reported LOUDLY (the branch's own line, plus the
+      // AFFECTED_TESTS_NOT_CHECKED marker) — it just no longer fails the run. A guard WITHOUT
+      // the flag never reaches this branch and still lands in `failed`.
       const notCheckedBlock = source.match(/else if \(exitClass === 'not-checked'\) \{[\s\S]*?\n    \}/)?.[0];
       expect(notCheckedBlock).toBeTruthy();
-      expect(notCheckedBlock).toContain('undeterminedTasks++;');
-      expect(notCheckedBlock).toContain('undeterminedTaskNames.push(taskName);');
+      expect(
+        notCheckedBlock,
+        'the not-checked branch must NOT touch undeterminedTasks — that is the gating counter',
+      ).not.toContain('undeterminedTasks++;');
+      expect(notCheckedBlock).toContain('notCheckedNonGating++;');
+      expect(notCheckedBlock).toContain('notCheckedTaskNames.push(taskName);');
       expect(notCheckedBlock).not.toContain('failed++;');
 
+      // The skipped coverage still has to be announced, or a green run would silently imply
+      // these invariants were checked when they were not.
+      expect(source).toContain('AFFECTED_TESTS_NOT_CHECKED tasks=${notCheckedNonGating}');
+
+      // The genuine 'undetermined' class (a child that never established a trustworthy verdict)
+      // is untouched by all of the above and MUST still gate.
       expect(source).toContain('AFFECTED_TESTS_UNDETERMINED tasks=${undeterminedTasks}');
       const undeterminedBlock = source.match(/if \(!failed && undeterminedTasks\) \{[\s\S]*?\n\}/)?.[0];
       expect(undeterminedBlock).toBeTruthy();
