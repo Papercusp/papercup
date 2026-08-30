@@ -20,15 +20,16 @@ import {
   mockReturnTyped,
 } from '../../../testing/typed-mock';
 
-const { getMessageByIdMock, resolveMessageRefMock } = vi.hoisted(() => {
+const { getMessageByIdMock, getWorkItemMock, resolveMessageRefMock } = vi.hoisted(() => {
   const getMessageByIdMock = vi.fn(async (_ref: string): Promise<any> => null);
+  const getWorkItemMock = vi.fn(async (_id: string, _harness?: string): Promise<any> => null);
   const resolveMessageRefMock = vi.fn(async (ref: string) => {
     const message = await getMessageByIdMock(ref);
     return message
       ? { status: 'found' as const, msgId: message.msg_id, message, resolvedFrom: 'exact' as const }
       : { status: 'not-found' as const, msgId: ref, looksTruncated: false };
   });
-  return { getMessageByIdMock, resolveMessageRefMock };
+  return { getMessageByIdMock, getWorkItemMock, resolveMessageRefMock };
 });
 
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
@@ -52,6 +53,10 @@ vi.mock('../messages', () => ({
   resolveMessageRef: resolveMessageRefMock,
   getUnresolvedAudienceSelectors: vi.fn(() => []),
 }));
+// The dispatch-advisory leg dynamically imports the work-item store only when
+// a directed action message names a WI-/EI- id. Keep this unit suite DB-free;
+// the production lookup is covered by the work-item store tests.
+vi.mock('../../../work-items', () => ({ getWorkItem: getWorkItemMock }));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
 // WI-41323: the relay resolver is real IO (coord log + session transcripts). No
 // test here passed relayOf/relayQuote before, so this mock is unreachable except
@@ -166,6 +171,7 @@ const premiseM = vi.mocked(resolvePremiseStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
+const getWorkItemM = vi.mocked(getWorkItemMock);
 const resolveRefM = vi.mocked(resolveMessageRef);
 const unresolvedAudienceM = vi.mocked(getUnresolvedAudienceSelectors);
 const resolveM = vi.mocked(resolveRecipients);
@@ -227,6 +233,7 @@ beforeEach(() => {
   // wake-on-reply flag ON by default; no original message by default
   mockResolvedTyped(flagM, true);
   mockResolvedTyped(getByIdM, null);
+  mockResolvedTyped(getWorkItemM, null);
   // P-001: no shared Hive in the workspace by default (un-scoped sends stay local)
   fedScopeM.mockResolvedValue({ kind: 'none' } as never);
   // P-007: no remote sessions by default
@@ -292,12 +299,16 @@ describe('coord:send handler (bulk keyed-array)', () => {
     }
   });
 
-  it('WI-37972: reports sender-visible body clipping instead of a misleading clean delivery', async () => {
+  it('WI-37972: reports sender-visible body clipping for an explicit FYI instead of a misleading clean delivery', async () => {
     const longBody = 'x'.repeat(2_260);
     const b = await body({
       to: ['bee-1'],
       summary: 'decision with branches',
-      expects: 'action',
+      // Load-bearing action bodies above the default inbox cap are now refused
+      // before persistence (EI-21826596284846555). Keep this regression on the
+      // explicit FYI path, where the sender has consciously accepted that a
+      // crowded inbox may need coord:read for the complete detail.
+      expects: 'none',
       body: [{ text: longBody, forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
     });
     expect(b.results[0]).toMatchObject({
@@ -314,6 +325,24 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.bodyDeliveryWarning).toMatch(/bodyDeliveredChars < bodyAuthoredChars/i);
     expect(b.bodyDeliveryWarning).toMatch(/m1 \(600\/2260 chars visible\)/i);
     expect(b.bodyDeliveryWarning).toMatch(/coord:read/i);
+  });
+
+  it('EI-21826596284846555: refuses an over-cap load-bearing body before persistence', async () => {
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'decision with branches',
+      expects: 'action',
+      body: [{ text: 'x'.repeat(601), forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
+    });
+
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 0, failed: 1 },
+      partial: true,
+      results: [{ ok: false, error: 'body_exceeds_inbox_cap' }],
+    });
+    expect(b.results[0].message).toMatch(/Nothing was sent/i);
+    expect(sendM).not.toHaveBeenCalled();
   });
 
   it('WI-37972: keeps short bodies explicitly intact', async () => {
@@ -1160,6 +1189,92 @@ describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', 
   });
 });
 
+describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
+  const actionBody = [{ text: 'please perform the acceptance step', forYouBecause: { relation: 'other' as const, note: 'you own this step' } }];
+
+  it('warns when an action message names an unassigned work-item', async () => {
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', assignee: null });
+
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Please grade WI-872411',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      dispatchAdvisory: {
+        workItemIds: ['WI-872411'],
+        recipientsNotHolding: ['bee-1'],
+        suggestedTool: 'coord:dispatch',
+        assignments: [{ workItemId: 'WI-872411', assignee: null }],
+      },
+    });
+    expect(b.results[0].dispatchAdvisory.note).toMatch(/coord:send only records\/delivers the request/i);
+    expect(b.results[0].dispatchAdvisory.note).toMatch(/coord:dispatch/);
+    expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays quiet when the directed target already holds the named work-item', async () => {
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', assignee: 'bee-1' });
+
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Continue WI-872411',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+  });
+
+  it('names the non-holder when a multi-recipient action includes the current holder', async () => {
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', assignee: 'bee-1' });
+
+    const b = await body({
+      to: ['bee-1', 'bee-2'],
+      summary: 'Please coordinate WI-872411',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(b.results[0].dispatchAdvisory).toMatchObject({
+      workItemIds: ['WI-872411'],
+      recipientsNotHolding: ['bee-2'],
+      assignments: [{ workItemId: 'WI-872411', assignee: 'bee-1' }],
+    });
+  });
+
+  it('keeps the existing send successful when the advisory lookup fails', async () => {
+    getWorkItemM.mockRejectedValueOnce(new Error('work-item store unavailable'));
+
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Please grade WI-872411',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+    expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not inspect historical references opted out with noBodyRefs', async () => {
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Historical WI-872411 routing',
+      expects: 'action',
+      body: actionBody,
+      noBodyRefs: true,
+    });
+
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+    expect(getWorkItemM).not.toHaveBeenCalled();
+  });
+});
+
 describe('coord:send expectEffect — DELIVERED vs ACTED-ON (P-013)', () => {
   // Drives the REAL handler, not a hand-built envelope. The whole point of the
   // feature is that the expectation survives to the persisted envelope, where the
@@ -1912,6 +2027,50 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' | ');
     expect(msg).toContain('body: [{ text:');
     expect(msg).toContain('couldNotDetermine');
+  });
+
+  it('REFUSES an over-cap body before load-bearing delivery, while preserving explicit FYI bodies', () => {
+    const overCap = 'x'.repeat(601);
+    for (const expects of ['ack', 'answer', 'action'] as const) {
+      const body =
+        expects === 'action' || expects === 'answer'
+          ? [{ text: overCap, forYouBecause: { relation: 'owns' as const, note: 'yours' } }]
+          : [{ text: overCap }];
+      const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, body });
+      expect(r.success, expects).toBe(false);
+      if (!r.success) {
+        const msg = r.error.issues.map((i) => i.message).join(' | ');
+        expect(msg).toContain('600-character default inbox cap');
+        expect(msg).toContain('Nothing was sent');
+      }
+    }
+
+    expect(
+      tool.args.safeParse({ to: ['bee-1'], summary: 'status detail', expects: 'none', body: [{ text: overCap }] })
+        .success,
+    ).toBe(true);
+  });
+
+  it('applies the same over-cap refusal to every items[] message', () => {
+    const r = tool.args.safeParse({
+      items: [
+        {
+          to: ['bee-1'],
+          summary: 'hi',
+          expects: 'action',
+          body: [
+            {
+              text: 'x'.repeat(601),
+              forYouBecause: { relation: 'owns' as const, note: 'yours' },
+            },
+          ],
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((issue) => issue.message.includes('600-character default inbox cap'))).toBe(true);
+    }
   });
 
   it('ACCEPTS the minimum section array — the shape is forced, the authored fields are not', () => {
