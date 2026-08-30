@@ -11,8 +11,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import {
+  CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS,
   DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS,
   candidateWorktreeSweepLogLines,
+  effectiveCandidateWorktreeMinAgeMs,
   executeCandidateWorktreeReap,
   isCandidateWorktreeName,
   planCandidateWorktreeReap,
@@ -303,6 +305,89 @@ function preservedAs(
   return { path: path.join(ROOT, name), reason };
 }
 
+/**
+ * WI-954677 — the pressure-aware age floor (gate-owner ruling: an OVERRIDE, never a lower
+ * static floor).
+ *
+ * The property that matters is narrow and easy to get wrong: pressure may shorten the AGE
+ * floor and nothing else. It must not widen which trees are eligible in kind, and it must
+ * not be able to lengthen the floor either.
+ */
+describe('effectiveCandidateWorktreeMinAgeMs', () => {
+  it('CALIBRATION: no pressure means the ordinary 6h floor', () => {
+    expect(effectiveCandidateWorktreeMinAgeMs({})).toBe(DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS);
+    expect(effectiveCandidateWorktreeMinAgeMs({ diskPressure: false })).toBe(
+      DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS,
+    );
+  });
+
+  it('shortens the floor under pressure', () => {
+    expect(effectiveCandidateWorktreeMinAgeMs({ diskPressure: true })).toBe(
+      CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS,
+    );
+    expect(CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS).toBeLessThan(
+      DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS,
+    );
+  });
+
+  it('NEVER lengthens the floor — pressure that would raise it is clamped', () => {
+    // Asking pressure to make the reaper MORE conservative inverts the override's purpose.
+    expect(
+      effectiveCandidateWorktreeMinAgeMs({
+        diskPressure: true,
+        minAgeMs: 60_000,
+        pressureMinAgeMs: 9_999_999,
+      }),
+    ).toBe(60_000);
+  });
+});
+
+describe('planCandidateWorktreeReap under disk pressure', () => {
+  const THIRTY_MIN = NOW - 30 * 60_000;
+
+  it('CONTROL: a 30-minute-old tree is preserved with no pressure', () => {
+    const p = plan([entry('green-candidate-papercusp-f369131625d4', THIRTY_MIN)]);
+    expect(p.reap).toEqual([]);
+    expect(p.preserved[0]?.reason).toBe('too-young');
+    expect(p.diskPressure).toBe(false);
+    expect(p.minAgeMsApplied).toBe(DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS);
+  });
+
+  it('reaps that SAME tree once the caller reports pressure', () => {
+    const p = plan([entry('green-candidate-papercusp-f369131625d4', THIRTY_MIN)], {
+      diskPressure: true,
+    });
+    expect(p.reap).toHaveLength(1);
+    expect(p.diskPressure).toBe(true);
+    expect(p.minAgeMsApplied).toBe(CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS);
+  });
+
+  it('still refuses a tree younger than the pressure floor — pressure is not "reap everything"', () => {
+    const p = plan([entry('green-candidate-papercusp-f369131625d4', NOW - 60_000)], {
+      diskPressure: true,
+    });
+    expect(p.reap).toEqual([]);
+    expect(p.preserved[0]?.reason).toBe('too-young');
+  });
+
+  it('SAFETY: pressure does NOT override the active-candidate guard', () => {
+    // The whole point of the override is that it spends the AGE margin only. If pressure
+    // could reach a live candidate it would destroy the running gate's own worktree — the
+    // single worst outcome available to this module.
+    const live = entry('green-candidate-papercusp-f369131625d4', THIRTY_MIN);
+    const p = plan([live], { diskPressure: true, activeWorktreePaths: [live.path] });
+    expect(p.reap).toEqual([]);
+    expect(p.preserved).toEqual([{ entry: live, reason: 'active-candidate' }]);
+  });
+
+  it('SAFETY: pressure does NOT override the namespace guard', () => {
+    const foreign = entry('some-operators-scratch-dir', THIRTY_MIN);
+    const p = plan([foreign], { diskPressure: true });
+    expect(p.reap).toEqual([]);
+    expect(p.preserved).toEqual([{ entry: foreign, reason: 'unrecognized-name' }]);
+  });
+});
+
 describe('summarizeCandidateWorktreePreservations', () => {
   it('counts each reason', () => {
     expect(
@@ -335,7 +420,7 @@ describe('candidateWorktreeSweepLogLines', () => {
     const lines = candidateWorktreeSweepLogLines(plan([young]), null);
 
     expect(lines).toEqual([
-      'candidate-worktree sweep: reaped 0, preserved 1 (too-young=1)',
+      'candidate-worktree sweep: reaped 0, preserved 1 (too-young=1) [floor=6h]',
     ]);
   });
 
@@ -370,7 +455,7 @@ describe('candidateWorktreeSweepLogLines', () => {
       prunedAdmin: true,
     });
     expect(lines).toEqual([
-      'candidate-worktree sweep: reaped 1, preserved 0: green-candidate-papercusp-aaaaaaaaaaaa',
+      'candidate-worktree sweep: reaped 1, preserved 0 [floor=6h]: green-candidate-papercusp-aaaaaaaaaaaa',
     ]);
   });
 
@@ -387,8 +472,16 @@ describe('candidateWorktreeSweepLogLines', () => {
       prunedAdmin: false,
     });
     expect(lines).toEqual([
-      'candidate-worktree sweep: reaped 0, preserved 0, failed 1',
+      'candidate-worktree sweep: reaped 0, preserved 0, failed 1 [floor=6h]',
       'warn: candidate-worktree sweep could not reclaim green-candidate-papercusp-aaaaaaaaaaaa: device or resource busy',
+    ]);
+  });
+
+  it('reports the PRESSURE floor, so a shortened sweep is never mistaken for the default', () => {
+    const young = entry('green-candidate-papercusp-f369131625d4', NOW - 5 * 60_000);
+    const lines = candidateWorktreeSweepLogLines(plan([young], { diskPressure: true }), null);
+    expect(lines).toEqual([
+      'candidate-worktree sweep: reaped 0, preserved 1 (too-young=1) [floor=20m under disk pressure]',
     ]);
   });
 
@@ -402,7 +495,7 @@ describe('candidateWorktreeSweepLogLines', () => {
       prunedAdmin: false,
     });
     expect(lines[0]).toBe(
-      'candidate-worktree sweep: reaped 0, preserved 1 (became-active-since-scan=1)',
+      'candidate-worktree sweep: reaped 0, preserved 1 (became-active-since-scan=1) [floor=6h]',
     );
   });
 });

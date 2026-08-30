@@ -73,6 +73,48 @@ export interface CandidateWorktreeReapPlan {
     entry: CandidateWorktreeEntry;
     reason: CandidateWorktreePreserveReason;
   }>;
+  /** The age floor this plan actually applied, so a refusal is explainable. */
+  minAgeMsApplied: number;
+  /** Whether the caller reported disk pressure, which selects the shorter floor. */
+  diskPressure: boolean;
+}
+
+/**
+ * Age floor applied when the CALLER reports disk pressure.
+ *
+ * WI-954677 — why an override rather than a lower static floor (gate-owner ruling,
+ * su-86df7de5 2026-08-30): the 6h floor is correct in the ordinary case and must stay. The
+ * defect is that it is UNCONDITIONAL. Candidate worktrees are created about hourly, so ~6
+ * coexist by design and every one is un-reapable precisely BECAUSE it is recent — meaning
+ * the sweep, whose whole purpose is to free space before the Cargo admission check, can
+ * never reclaim anything in the one situation where reclaiming matters.
+ *
+ * Lowering the static floor instead would trade a real safety property away in the 99% of
+ * passes that are not under pressure. Overriding keeps the conservative default and spends
+ * the safety margin only when the alternative is a blocked gate.
+ */
+export const CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS = 20 * 60 * 1000;
+
+/**
+ * Resolve the age floor for a sweep.
+ *
+ * NOTE the deliberate `Math.min`: disk pressure may only ever SHORTEN the floor. A caller
+ * passing a `pressureMinAgeMs` longer than the normal floor is asking pressure to make the
+ * reaper more conservative, which inverts the point of the override, so it is clamped
+ * rather than honoured.
+ *
+ * This function knows nothing about HOW pressure is detected. That rule lives in exactly one
+ * place — `assessCargoDiskAdmission` in scripts/lib/cargo-result.mjs — and re-deriving its
+ * thresholds here would be a second copy of a truth the code already owns.
+ */
+export function effectiveCandidateWorktreeMinAgeMs(opts: {
+  minAgeMs?: number;
+  diskPressure?: boolean;
+  pressureMinAgeMs?: number;
+}): number {
+  const normal = opts.minAgeMs ?? DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS;
+  if (!opts.diskPressure) return normal;
+  return Math.min(normal, opts.pressureMinAgeMs ?? CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS);
 }
 
 /**
@@ -102,15 +144,28 @@ export function planCandidateWorktreeReap(opts: {
   activeWorktreePaths?: readonly string[];
   nowMs: number;
   minAgeMs?: number;
+  /**
+   * Caller-reported disk pressure. Selects the shorter age floor — see
+   * CANDIDATE_WORKTREE_PRESSURE_MIN_AGE_MS. Never widens the set of trees that are
+   * ELIGIBLE in kind: the name, active-path and at-delete re-check guards are untouched,
+   * so pressure can only ever make an ALREADY-safe tree reapable sooner.
+   */
+  diskPressure?: boolean;
+  pressureMinAgeMs?: number;
 }): CandidateWorktreeReapPlan {
-  const minAgeMs = opts.minAgeMs ?? DEFAULT_CANDIDATE_WORKTREE_MIN_AGE_MS;
+  const minAgeMs = effectiveCandidateWorktreeMinAgeMs(opts);
   const active = new Set(
     (opts.activeWorktreePaths ?? [])
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map((p) => path.resolve(p)),
   );
 
-  const plan: CandidateWorktreeReapPlan = { reap: [], preserved: [] };
+  const plan: CandidateWorktreeReapPlan = {
+    reap: [],
+    preserved: [],
+    minAgeMsApplied: minAgeMs,
+    diskPressure: opts.diskPressure === true,
+  };
   for (const entry of opts.entries) {
     if (!isCandidateWorktreeName(entry.name, opts.pipeline)) {
       plan.preserved.push({ entry, reason: 'unrecognized-name' });
@@ -259,6 +314,14 @@ export async function executeCandidateWorktreeReap(
   return result;
 }
 
+/** Render an age floor compactly for a log line: 21600000 -> "6h", 1200000 -> "20m". */
+function formatAgeFloor(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return `${ms}ms`;
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
 /**
  * Compact `reason=count` histogram of a sweep's refusals, ordered by descending count then
  * reason name so the line is stable enough to diff across consecutive runs.
@@ -319,6 +382,10 @@ export function candidateWorktreeSweepLogLines(
   if (preserved.length > 0) {
     head += ` (${summarizeCandidateWorktreePreservations(preserved)})`;
   }
+  // Name the floor that produced the refusals. Without it a `too-young` line invites the
+  // reader to re-derive which floor was in force, which is the guesswork this whole change
+  // exists to remove.
+  head += ` [floor=${formatAgeFloor(plan.minAgeMsApplied)}${plan.diskPressure ? ' under disk pressure' : ''}]`;
   if (removed.length > 0) {
     head += `: ${removed.map((p) => path.basename(p)).join(', ')}`;
   }
@@ -344,6 +411,9 @@ export async function reapAbandonedCandidateWorktrees(opts: {
   activeWorktreePaths?: readonly string[];
   nowMs?: number;
   minAgeMs?: number;
+  /** See planCandidateWorktreeReap — selects the shorter floor, never a wider safety net. */
+  diskPressure?: boolean;
+  pressureMinAgeMs?: number;
   deps: CandidateWorktreeReapDeps;
 }): Promise<CandidateWorktreeReapResult | null> {
   const plan = planCandidateWorktreeReap({
@@ -352,6 +422,8 @@ export async function reapAbandonedCandidateWorktrees(opts: {
     activeWorktreePaths: opts.activeWorktreePaths,
     nowMs: opts.nowMs ?? Date.now(),
     minAgeMs: opts.minAgeMs,
+    diskPressure: opts.diskPressure,
+    pressureMinAgeMs: opts.pressureMinAgeMs,
   });
   const result =
     plan.reap.length === 0 ? null : await executeCandidateWorktreeReap(plan, opts.deps);
