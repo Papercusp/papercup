@@ -17,6 +17,7 @@ import {
   validateAcceptanceRubricCitationPaths,
   type AcceptanceRubricCitationCriterion,
 } from './rubrics-citation-checks';
+import { proposeRubric } from './rubrics';
 
 const root = mkdtempSync(join(tmpdir(), 'rubric-citations-test-'));
 const store = 'packages/operator-core/lib/events/await/store.ts';
@@ -107,7 +108,7 @@ describe('validateAcceptanceRubricCitationPaths — EI-21818117666341180', () =>
           kind: 'symbol',
         }),
         expect.objectContaining({
-          criterionKey: 'replication',
+          criterionKey: 'C6',
           path: executorTest,
           literal: 'rejects a registration and returns the compatible binding',
           kind: 'test-case',
@@ -165,6 +166,7 @@ describe('validateAcceptanceRubricCitationPaths — EI-21818117666341180', () =>
 
 describe('assertAcceptanceRubricCitationPathsResolve', () => {
   it('throws an invalid_args teaching error naming the criterion, path, and missing literal', () => {
+    writeFileSync(resolve(root, store), 'export function takeOverLineage() {}\n');
     expect(() => assertAcceptanceRubricCitationPathsResolve([c6()], { root, deps })).toThrowError(
       /invalid_args:.*C6.*store\.ts.*lineage check/s,
     );
@@ -177,5 +179,24 @@ describe('assertAcceptanceRubricCitationPathsResolve', () => {
         { root, deps },
       ),
     ).not.toThrow();
+  });
+});
+
+describe('proposeRubric integration wiring', () => {
+  it('rejects a misaddressed acceptance citation before checking its subject-plan link', async () => {
+    await expect(
+      proposeRubric({
+        rubricId: 'acceptance-citation-guard-wiring',
+        kind: 'acceptance',
+        // Deliberately absent: if the citation guard is removed or moved after
+        // the async link check, this different error would win instead.
+        subjectPlan: 'does-not-exist',
+        characteristic: 'citation-guard',
+        title: 'Citation guard wiring',
+        criteria: [{ ...c6(), title: 'Cross-lineage delivery' }],
+        checkPathRoot: root,
+        by: 'su-test',
+      }),
+    ).rejects.toThrowError(/literal .*lineage check.*does not appear|lineage check.*cited file/s);
   });
 });
