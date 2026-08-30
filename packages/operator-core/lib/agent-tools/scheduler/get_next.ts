@@ -161,6 +161,15 @@ export const GET_NEXT_TOTAL_BUDGET_MS = 45_000;
 export const GET_NEXT_ISSUE_DIAG_BUDGET_MS = 12_000;
 
 /**
+ * EI-21863190622583520: the budget for the OPTIONAL per-floor miss breakdown — applied to the
+ * caller (`withBoundedTimeout`) and to PostgreSQL (`statement_timeout`) from this single
+ * constant, so the two can never drift into a window where the database keeps computing a
+ * result the only consumer has already discarded. This breakdown is a diagnostic garnish on an
+ * already-decided miss, so exceeding it degrades to a plain miss rather than failing the pull.
+ */
+export const MISS_BREAKDOWN_BUDGET_MS = 1_500;
+
+/**
  * The fast, self-describing miss the tool returns when its DB path exceeds GET_NEXT_BUDGET_MS,
  * instead of hanging until the MCP client's 300s idle-timeout abort (EI-18167154191955470).
  * Distinct `error: 'timeout'` + `retryable: true` so a caller can distinguish it from a genuine
@@ -534,6 +543,13 @@ async function buildMissDiagnosis(args: {
     let breakdownSummary = '';
     if (ids.length === 0 && !diag.drained && diag.readyUnclaimed === 0) {
       const { aggregateIssueClaimExclusions } = await import('../../scheduler/get-next');
+      // EI-21863190622583520: ONE budget drives BOTH halves on purpose. `withBoundedTimeout`
+      // bounds only this caller — its docstring is explicit that the query "still runs to
+      // completion in the background even after a timeout degrades the caller" — so before the
+      // server-side cap below, every miss left the system's most expensive aggregate running
+      // unbounded on a pooled connection (measured >=180s) for a result this path had already
+      // thrown away at 1.5s. There is no value in letting the database outrun the deadline its
+      // only consumer abandons at, so the statement cap is the SAME number, not a larger one.
       const agg = await withBoundedTimeout(
         aggregateIssueClaimExclusions(
           (rec?.spec as { view?: { filter?: unknown } } | undefined)?.view?.filter as never,
@@ -542,9 +558,10 @@ async function buildMissDiagnosis(args: {
             states: effectiveStates,
             assignee: args.ownerId,
             rigAvailable: args.rigAvailable,
+            statementTimeoutMs: MISS_BREAKDOWN_BUDGET_MS,
           },
         ),
-        { fallback: null, timeoutMs: 1_500, label: 'get_next:missBreakdown' },
+        { fallback: null, timeoutMs: MISS_BREAKDOWN_BUDGET_MS, label: 'get_next:missBreakdown' },
       );
       if (agg.value) {
         excludedBreakdown = agg.value;
