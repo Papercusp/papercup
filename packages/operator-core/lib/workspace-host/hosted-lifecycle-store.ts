@@ -4,7 +4,6 @@ import type { Sql } from 'postgres';
 import { notifyAttentionOnce } from '../attention-notify';
 import {
   classifyHostedLifecycleJob,
-  evaluateHostedIdleStop,
   evaluateHostedLifecycleAdmission,
   type HostedBillingOwner,
   type HostedCostEstimate,
@@ -305,21 +304,25 @@ interface ReconciliationRow extends DirectoryRow {
   recovery_attempts: number;
 }
 
-interface IdleRow extends DirectoryRow {
-  observed_state: string;
-  last_activity_at: Date | string | null;
-  active_lifecycle_jobs: number;
-}
-
 export interface HostedLifecycleReconciliationResult {
   recoveryPending: string[];
   orphaned: string[];
   exhausted: string[];
-  idleStopsQueued: string[];
   notifications: string[];
 }
 
-/** Classify stale work, queue idle-stop jobs, and emit replay-safe owner notices. */
+/**
+ * Classify stale work and emit replay-safe owner notices.
+ *
+ * NOTE: this reconciler used to also queue idle-stop jobs by reading
+ * `customer_workspaces.idle_stop_after_minutes` / `.last_activity_at`. Those two columns have no
+ * production writer anywhere in this tree (only migration integration tests set them), so that
+ * WHERE clause could never match a row and the sweep was structurally inert — retired per
+ * EI-21900891864984654 rather than left as dead code that looks live and passes in tests. The
+ * pure policy decision (`evaluateHostedIdleStop`, including its P-014 desktop-viewer-signal
+ * input) is unchanged in `hosted-lifecycle-policy.ts` for whoever lands the real
+ * `customer_workspaces` provisioning writer to call from here.
+ */
 export async function reconcileHostedLifecycleJobs(
   workspaceId: string,
   now = new Date(),
@@ -327,7 +330,7 @@ export async function reconcileHostedLifecycleJobs(
   const notices: Array<{ key: string; title: string; body: string; operationId: string }> = [];
   const result = await transaction(required(workspaceId, 'workspace_id'), async (tx) => {
     const out: HostedLifecycleReconciliationResult = {
-      recoveryPending: [], orphaned: [], exhausted: [], idleStopsQueued: [], notifications: [],
+      recoveryPending: [], orphaned: [], exhausted: [], notifications: [],
     };
     const jobs = await tx<ReconciliationRow[]>`
       SELECT
@@ -401,83 +404,6 @@ export async function reconcileHostedLifecycleJobs(
       });
     }
 
-    const idle = await tx<IdleRow[]>`
-      SELECT
-        customer.organization_id, customer.id AS customer_workspace_id,
-        customer.workspace_host_id, host.target AS provider_target,
-        customer.state, host.observed_state,
-        customer.tenant_concurrency_limit, customer.provider_concurrency_limit,
-        customer.monthly_lifecycle_budget_cents,
-        customer.lifecycle_budget_period_started_at,
-        customer.billing_owner_kind, customer.billing_owner_id,
-        customer.idle_stop_after_minutes, customer.last_activity_at,
-        count(operation.id) FILTER (WHERE operation.status IN ('queued', 'running'))::int
-          AS active_lifecycle_jobs
-      FROM harness_shared.customer_workspaces customer
-      JOIN harness_shared.workspace_hosts host
-        ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
-      LEFT JOIN harness_shared.workspace_host_operations operation
-        ON operation.workspace_id = customer.workspace_id
-       AND operation.customer_workspace_id = customer.id
-      WHERE customer.workspace_id = ${workspaceId}
-        AND customer.state = 'active'
-        AND customer.idle_stop_after_minutes IS NOT NULL
-      GROUP BY customer.workspace_id, customer.id, customer.organization_id,
-               customer.workspace_host_id, host.target, host.observed_state,
-               customer.state, customer.tenant_concurrency_limit,
-               customer.provider_concurrency_limit, customer.monthly_lifecycle_budget_cents,
-               customer.lifecycle_budget_period_started_at,
-               customer.billing_owner_kind, customer.billing_owner_id,
-               customer.idle_stop_after_minutes, customer.last_activity_at
-      ORDER BY customer.id`;
-    for (const customer of idle) {
-      const decision = evaluateHostedIdleStop({
-        state: customer.state,
-        observedState: customer.observed_state,
-        lastActivityAt: customer.last_activity_at == null ? null : String(customer.last_activity_at),
-        idleStopAfterMinutes: customer.idle_stop_after_minutes,
-        activeLifecycleJobs: customer.active_lifecycle_jobs,
-      }, now.getTime());
-      if (!decision.due || !customer.billing_owner_kind || !customer.billing_owner_id) continue;
-      // P-014: this sweep has no desktop-viewer input yet, so every stop it queues is decided
-      // WITHOUT knowing whether a human is watching. Say so in the operation's own message rather
-      // than letting the absence look like a check that came back clear — the policy layer
-      // reports it for exactly this reason (see `desktopViewerSignal`).
-      const viewerNote = decision.desktopViewerSignal === 'observed'
-        ? ''
-        : ' (no desktop-viewer signal was available to this sweep)';
-      const activityKey = customer.last_activity_at == null
-        ? 'unknown'
-        : new Date(customer.last_activity_at).toISOString();
-      const operationId = `idle-stop:${customer.customer_workspace_id}:${activityKey}`;
-      const dedupeKey = `hosted-lifecycle:${workspaceId}:${operationId}:queued`;
-      const inserted = await tx<Array<{ id: string }>>`
-        INSERT INTO harness_shared.workspace_host_operations (
-          workspace_id, id, host_id, action, status, percent, message,
-          organization_id, customer_workspace_id, provider_target,
-          estimated_cost_cents, cost_currency, cost_estimate_source,
-          cost_estimate_ref, cost_estimated_at,
-          billing_owner_kind, billing_owner_id,
-          risk_tier, approval_status, heartbeat_at, owner_notification_dedupe_key, updated_at
-        ) VALUES (
-          ${workspaceId}, ${operationId}, ${customer.workspace_host_id}, 'stop', 'queued', 0,
-          ${`${decision.reason ?? 'Workspace idle-stop policy elapsed'}${viewerNote}`},
-          ${customer.organization_id}, ${customer.customer_workspace_id}, ${customer.provider_target},
-          0, 'USD', 'policy', ${`policy://idle-stop/${customer.customer_workspace_id}`}, ${now.toISOString()},
-          ${customer.billing_owner_kind}, ${customer.billing_owner_id},
-          'low', 'not-required', ${now.toISOString()}, ${dedupeKey}, now()
-        )
-        ON CONFLICT (workspace_id, id) DO NOTHING
-        RETURNING id`;
-      if (inserted.length === 0) continue;
-      out.idleStopsQueued.push(operationId);
-      notices.push({
-        key: dedupeKey,
-        operationId,
-        title: 'Hosted workspace queued for idle stop',
-        body: `${customer.customer_workspace_id} was idle beyond policy and a durable stop job was queued.`,
-      });
-    }
     return out;
   });
 
