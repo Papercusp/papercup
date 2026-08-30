@@ -20,6 +20,7 @@ const getFleetMock = vi.fn();
 const getFleetHeadcountTargetMock = vi.fn();
 const setFleetHeadcountTargetMock = vi.fn();
 const setFleetLeaderMock = vi.fn();
+const getPresenceMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
 const ensureFleetLeaderControlMock = vi.fn();
@@ -137,6 +138,7 @@ vi.mock('../../coordination/presence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../coordination/presence')>()),
   heartbeatPresence: (...args: unknown[]) => heartbeatPresenceMock(...args),
   setPresenceFleet: (...args: unknown[]) => setPresenceFleetMock(...args),
+  getPresence: (...args: unknown[]) => getPresenceMock(...args),
 }));
 
 vi.mock('../leader-control', () => ({
@@ -452,6 +454,8 @@ beforeEach(() => {
   });
   setFleetLeaderMock.mockReset();
   setFleetLeaderMock.mockResolvedValue({ leaderOwnerId: 'leader-1' });
+  getPresenceMock.mockReset();
+  getPresenceMock.mockResolvedValue({ ownerId: 'live-leader' });
   heartbeatPresenceMock.mockReset();
   heartbeatPresenceMock.mockResolvedValue(undefined);
   setPresenceFleetMock.mockReset();
@@ -713,6 +717,38 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       expect.objectContaining({ role: 'drain-fleet-leader' }),
     );
     expect(payload.message).toContain('ignored persisted GOAL launch slot role(s)');
+  });
+
+  it('omits a persisted fleet membership label from persona validation and psu commands', async () => {
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'legacy-member-role-fleet',
+      target: 1,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        headless: true,
+        role: 'member',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    spawnHeadlessMock.mockReset();
+    spawnHeadlessMock.mockReturnValue({ status: 'ok', terminal: 'headless-1', pid: 201, taskId: 'task-1' });
+
+    const res = await invokeLaunchHandler({ name: 'Legacy Member Role Fleet' } as never, {} as never, null);
+    const payload = JSON.parse((res as any).content[0].text);
+    const command = (spawnHeadlessMock.mock.calls[0][0] as any).envelope.greetingCmd as string;
+
+    expect(payload.ok).toBe(true);
+    expect(command).not.toContain('--role=member');
+    expect(assembleRolePromptMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'member' }),
+    );
+    expect(payload.headcountProfile.config).not.toHaveProperty('role');
   });
 
   it('uses the existing fleet live claim lane before stale saved-plan admission on an omitted top-up (EI-21577352340987493)', async () => {
@@ -1043,6 +1079,187 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     });
   });
 
+  it('protects a confirmed-live leader when leader:\'spawn\' is requested on an existing fleet', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        owner: 'other-caller',
+        leaderOwnerId: 'live-leader',
+        colorScheme: { name: 'Ocean' },
+      },
+      created: false,
+    });
+    getPresenceMock.mockResolvedValueOnce({ ownerId: 'live-leader' });
+
+    const res = await invokeLaunchHandler(
+      { name: 'Live Leader Protected', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(getPresenceMock).toHaveBeenCalledWith('live-leader');
+    expect(payload.leaderSpawnIgnored).toContain('already exists and is led by');
+    expect(payload.spawnedLeader).toBeNull();
+    expect(setFleetLeaderMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1); // ordinary member top-up only
+    expect(payload.callerMembership.enrolled).toBe(true);
+  });
+
+  it('fails closed when existing-leader liveness cannot be read', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { owner: 'other-caller', leaderOwnerId: 'unknown-leader', colorScheme: { name: 'Ocean' } },
+      created: false,
+    });
+    getPresenceMock.mockRejectedValueOnce(new Error('presence unavailable'));
+
+    const res = await invokeLaunchHandler(
+      { name: 'Unknown Leader', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.leaderSpawnIgnored).toContain('liveness could not be confirmed');
+    expect(payload.spawnedLeader).toBeNull();
+    expect(setFleetLeaderMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces an absent existing leader with a fresh delegated leader, keeping the caller outside', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        owner: 'other-caller',
+        leaderOwnerId: 'dead-leader',
+        colorScheme: { name: 'Ocean' },
+      },
+      created: false,
+    });
+    getPresenceMock.mockResolvedValueOnce(null);
+
+    const res = await invokeLaunchHandler(
+      { name: 'Absent Leader Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(getPresenceMock).toHaveBeenCalledWith('dead-leader');
+    expect(payload.callerMembership).toEqual({
+      enrolled: false,
+      role: 'delegator',
+      reason: 'leader-spawn-caller-excluded',
+    });
+    expect(payload.spawnedLeader).toMatchObject({ registered: true });
+    expect(setFleetLeaderMock).toHaveBeenCalledWith(
+      'ws-1',
+      'absent-leader-recovery',
+      payload.spawnedLeader.ownerId,
+      undefined,
+      'dead-leader',
+    );
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2); // leader first, then the member
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(payload.leaderSpawnIgnored).toBeNull();
+  });
+
+  it('recovers a leaderless existing fleet with a fresh delegated leader', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { owner: 'other-caller', leaderOwnerId: null, colorScheme: { name: 'Ocean' } },
+      created: false,
+    });
+
+    const res = await invokeLaunchHandler(
+      { name: 'Leaderless Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(getPresenceMock).not.toHaveBeenCalled();
+    expect(payload.spawnedLeader).toMatchObject({ registered: true });
+    expect(setFleetLeaderMock).toHaveBeenCalledWith(
+      'ws-1',
+      'leaderless-recovery',
+      payload.spawnedLeader.ownerId,
+      undefined,
+      null,
+    );
+    expect(payload.callerMembership.enrolled).toBe(false);
+  });
+
+  it('recovers the absent leader even when the existing member target is already full', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['member-1']);
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { owner: 'other-caller', leaderOwnerId: 'dead-leader', colorScheme: { name: 'Ocean' } },
+      created: false,
+    });
+    getPresenceMock.mockResolvedValueOnce(null);
+
+    const res = await invokeLaunchHandler(
+      { name: 'Full Fleet Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.spawnedLeader).toMatchObject({ registered: true });
+    expect(payload.opened).toEqual([]);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1); // leader only; target member already exists
+    expect(setFleetLeaderMock).toHaveBeenCalledWith(
+      'ws-1',
+      'full-fleet-recovery',
+      payload.spawnedLeader.ownerId,
+      undefined,
+      'dead-leader',
+    );
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  it('leaves the recorded dead leader untouched when delegated leader spawn fails', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { owner: 'other-caller', leaderOwnerId: 'dead-leader', colorScheme: { name: 'Ocean' } },
+      created: false,
+    });
+    getPresenceMock.mockResolvedValueOnce(null);
+    spawnConsoleMock.mockImplementationOnce(() => ({ status: 'error', terminal: '', pid: null, error: 'boot failed', code: 500 }));
+
+    const res = await invokeLaunchHandler(
+      { name: 'Failed Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const text = (res as any).content[0].text as string;
+
+    expect((res as any).isError).toBe(true);
+    expect(text).toContain('still records its prior absent leader `dead-leader`');
+    expect(setFleetLeaderMock).not.toHaveBeenCalled();
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overwrite a concurrent takeover when the delegated leader CAS loses', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { owner: 'other-caller', leaderOwnerId: 'dead-leader', colorScheme: { name: 'Ocean' } },
+      created: false,
+    });
+    getPresenceMock.mockResolvedValueOnce(null);
+    setFleetLeaderMock.mockResolvedValueOnce(null);
+
+    const res = await invokeLaunchHandler(
+      { name: 'CAS Race Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(setFleetLeaderMock).toHaveBeenCalledWith(
+      'ws-1',
+      'cas-race-recovery',
+      payload.spawnedLeader.ownerId,
+      undefined,
+      'dead-leader',
+    );
+    expect(payload.spawnedLeader).toMatchObject({ registered: false });
+    expect(payload.leaderSpawnRecoveryWarning).toContain('leadership changed concurrently');
+    expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
+    expect(payload.callerMembership.enrolled).toBe(false);
+  });
+
   it('keeps the caller outside on a same-owner spawned-leader retry', async () => {
     setClaimSpecMock.mockReset();
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 2 });
@@ -1278,7 +1495,7 @@ describe('memberLaunchCommand', () => {
       priorityTiers: {
         healthyAccounts: 1,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 4, inFlight: 0, queued: 0 }],
       },
     });
 
@@ -1306,7 +1523,7 @@ describe('memberLaunchCommand', () => {
       priorityTiers: {
         healthyAccounts: 2,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 4, inFlight: 0, queued: 0 }],
       },
     });
 
@@ -2839,7 +3056,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       priorityTiers: {
         healthyAccounts: 1,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 1, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 1, inFlight: 0, queued: 0 }],
       },
     });
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
@@ -2912,7 +3129,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       priorityTiers: {
         healthyAccounts: 0,
         tier1Reserve: 0,
-        tiers: [{ tier: 3, cap: 0, inFlight: 0, queued: 0 }],
+        tiers: [{ tier: 3, minShare: 0, inFlight: 0, queued: 0 }],
       },
     });
     const res = await invokeLaunchHandler(
@@ -3918,7 +4135,7 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
     priorityTiers: {
       healthyAccounts: 0,
       tier1Reserve: 0,
-      tiers: [{ tier: 3, cap: 13, inFlight: 0, queued: 0 }],
+      tiers: [{ tier: 3, minShare: 13, inFlight: 0, queued: 0 }],
     },
   };
 

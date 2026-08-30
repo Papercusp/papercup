@@ -88,6 +88,17 @@ describe('agent-names registry (PG)', () => {
     expect(await agentNameOwner(WS, 'ghost')).toBeNull();
   });
 
+  it('re-adopting a name under a different owner transfers durable ownership', async () => {
+    const first = await adoptAgentName(WS, 'su-owner-a', 'handoff-name', 'alice');
+    const second = await adoptAgentName(WS, 'su-owner-b', 'handoff-name', 'bob');
+
+    expect(first.ownerUser).toBe('alice');
+    expect(second.ownerUser).toBe('bob');
+    expect(await agentNameOwner(WS, 'handoff-name')).toBe('bob');
+    expect((await listNamesForOwner(WS, 'alice')).some((name) => name.agentName === 'handoff-name')).toBe(false);
+    expect((await listNamesForOwner(WS, 'bob')).some((name) => name.agentName === 'handoff-name')).toBe(true);
+  });
+
   it('registerAgentName is idempotent — re-registering keeps ONE row with a stable created_at', async () => {
     const first = await registerAgentName(WS, 'builder-1', 'alice');
     expect(first).toMatchObject({ agentName: 'builder-1', ownerUser: 'alice' });
