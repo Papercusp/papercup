@@ -33,7 +33,8 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sse', () => ({ getChannel: () => ({ onPublish: () => () => {}, publish: () => {} }) }));
-vi.mock('@papercusp/papercusp-shared/agent', () => ({
+vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/papercusp-shared/agent')>()),
   setGlobalConcurrencyCap: h.setGlobalConcurrencyCap,
   setGlobalConcurrencySeed: h.setGlobalConcurrencySeed,
   setGlobalConcurrencyFloor: () => {},

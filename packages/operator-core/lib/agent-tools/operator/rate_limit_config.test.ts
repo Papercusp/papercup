@@ -15,8 +15,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../rate-limit-config', () => ({
   RATE_LIMIT_SANITY_BOUND: 100_000,
-  // Mirrors the real export; the SUT imports it and the mock replaces the whole
-  // module, so it must be present (it lagged when rate-limit-config.ts added it).
+  // Mirrors the real export; this test intentionally replaces the persistence module so the
+  // handler stays isolated from rate-limit-config's PG/registration side effects.
   GOVERNOR_PROVIDERS: ['anthropic', 'openai', 'unknown'] as const,
   readRateLimitConfig: vi.fn(),
   writeRateLimitConfig: vi.fn(),

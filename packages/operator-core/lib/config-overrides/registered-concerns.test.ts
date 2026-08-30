@@ -31,14 +31,12 @@ vi.mock('../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   activeWorkspaceId: () => 'default',
 }));
-// rate-limit-config imports the governor host-seam + SSE bus at module load — stub them so the
-// import is side-effect-free in the test process.
-vi.mock('@papercusp/papercusp-shared/agent', () => ({
-  // The mock replaces the WHOLE module, so it must carry every named export the SUT
-  // (rate-limit-config.applyCached) imports — it lagged when governor-registry.ts
-  // grew the provider-floor + AIMD tuning surface (a missing-mock-export drift).
+// rate-limit-config imports the governor host-seam + SSE bus at module load — stub the
+// host seam while preserving the rest of the real module so new exports cannot drift.
+vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/papercusp-shared/agent')>()),
   setGlobalConcurrencyCap: vi.fn(),
-  // P-009 grew the surface again: applyCached now installs EITHER a hard cap or a growable seed.
+  // P-009: applyCached installs EITHER a hard cap or a growable seed.
   setGlobalConcurrencySeed: vi.fn(),
   setGlobalConcurrencyFloor: vi.fn(),
   setProviderFloorOverride: vi.fn(),
