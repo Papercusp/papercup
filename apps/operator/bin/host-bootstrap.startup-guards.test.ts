@@ -288,7 +288,19 @@ describe('host-bootstrap owns the packaged MCP proxy child lifecycle (EI-2110630
   })();
 
   it('tracks a non-detached child and registers a bounded graceful shutdown hook', () => {
-    expect(lifecycleSrc).toContain('let packagedMcpProxyProcess: ChildProcess | null = null');
+    // The child handle must live in state that survives a MODULE SPLIT, not a
+    // plain module-local. Both forms "track the child" on a single record, so
+    // the original `let packagedMcpProxyProcess` assertion could not tell them
+    // apart — but on a split the run-once guard stops the second record from
+    // bootstrapping, so whichever record spawned the child owns the only handle
+    // to it while `stopPackagedMcpProxy` can be reached on the OTHER record,
+    // see null, and orphan the proxy on :9071 with no error on any path.
+    // Asserted against bootSrc, not lifecycleSrc: the pin is declared above the
+    // slice window on purpose (see the comment on the timeout const).
+    expect(bootSrc).toContain("pinModuleState<{");
+    expect(bootSrc).toContain("'@papercusp/web.host-bootstrap'");
+    expect(bootSrc).toContain('packagedMcpProxyProcess: ChildProcess | null;');
+    expect(bootSrc).not.toContain('let packagedMcpProxyProcess');
     expect(lifecycleSrc).toContain('registerSidecarShutdownHooks({');
     expect(lifecycleSrc).toContain("label: 'packaged-mcp-proxy'");
     expect(lifecycleSrc).toContain("mode: 'async-with-exit'");
@@ -310,7 +322,9 @@ describe('host-bootstrap owns the packaged MCP proxy child lifecycle (EI-2110630
 
   it('does not spawn after shutdown wins the asynchronous health-probe race', () => {
     expect(lifecycleSrc).toContain('packagedMcpProxyShutdownRequested = true');
-    expect(lifecycleSrc.match(/if\s*\(\s*packagedMcpProxyShutdownRequested\s*\)/g) ?? []).toHaveLength(4);
+    expect(
+      lifecycleSrc.match(/if\s*\(\s*BOOTSTRAP_STATE\.packagedMcpProxyShutdownRequested\s*\)/g) ?? [],
+    ).toHaveLength(4);
   });
 });
 

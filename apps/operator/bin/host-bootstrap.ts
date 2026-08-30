@@ -72,8 +72,6 @@ import {
   governedExecutionRuntime,
 } from '@papercusp/operator-core/lib/resource-governor/execution';
 
-const PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS = 5_000;
-
 /**
  * All of this module's mutable state, pinned together at module scope ONCE.
  *
@@ -99,6 +97,11 @@ const BOOTSTRAP_STATE = pinModuleState<{
   packagedMcpProxyProcess: null,
   packagedMcpProxyShutdownRequested: false,
 }));
+
+// Declared AFTER the pin on purpose: host-bootstrap.startup-guards.test.ts slices
+// the proxy-lifecycle source from this const to the next `/**`, so a doc comment
+// between them would truncate that guard's window to nothing.
+const PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 // Injected by the esbuild host/desktop-sidecar recipes. It is absent under tsx/dev/test;
 // read through typeof so source boot and unit tests never evaluate an undeclared global.
