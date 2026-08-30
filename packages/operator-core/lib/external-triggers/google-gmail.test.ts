@@ -75,6 +75,10 @@ function syncDeps(fetchImpl: typeof fetch) {
         ref: 'user:owner',
         deliver: async () => undefined,
       })),
+      // Unconfigured for app delivery, stated explicitly: these cases are about
+      // paging and cursors. Registration coverage lives in
+      // app-data-producer/adapter-registration.test.ts.
+      createAppSink: vi.fn(async () => null),
       ingest: vi.fn(async (_sql, input) => {
         ingested.push(input as unknown as Record<string, unknown>);
         return { ok: true, event: {} as never, deliveries: [] };

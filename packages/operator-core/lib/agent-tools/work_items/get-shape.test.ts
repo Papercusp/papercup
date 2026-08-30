@@ -298,6 +298,147 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(compact.results[0].completionFreshness).toEqual(completionFreshness);
   });
 
+  it('keeps canonical completion evidence and exposes the result-level alias', () => {
+    const completion = {
+      summary: 'implemented the completion-evidence read path',
+      testsRun: 'npm run test:file -- get-shape.test.ts',
+      testResult: '47 passed',
+      verifiedHow: 'focused Vitest regression',
+      addedTests: true,
+      filesChanged: ['packages/operator-core/lib/agent-tools/work_items/get-shape.ts'],
+    };
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: {
+            id: 'WI-completion',
+            kind: 'bug',
+            state: 'done',
+            title: 'completion evidence',
+            terminalCompletionEvidence: completion,
+          },
+          checkpoint: null,
+        }),
+      ]),
+      'trimmed',
+    ) as Envelope;
+    const result = out.results[0];
+    const workItem = result.workItem as Record<string, unknown>;
+
+    expect(result.completion).toEqual(completion);
+    expect(result.hasCompletionEvidence).toBe(true);
+    expect(workItem.terminalCompletionEvidence).toEqual(completion);
+  });
+
+  it('keeps the evidence-presence bit when completion detail is clipped', () => {
+    const completion = {
+      summary: 'E'.repeat(1_200),
+      verifiedHow: 'V'.repeat(1_000),
+      testsRun: 'npm run test:file -- get-shape.test.ts',
+      testResult: 'passed',
+      filesChanged: ['packages/operator-core/lib/agent-tools/work_items/get-shape.ts'],
+    };
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: {
+            id: 'WI-clipped-completion',
+            kind: 'bug',
+            state: 'done',
+            title: 'clipped completion evidence',
+            terminalCompletionEvidence: completion,
+          },
+          checkpoint: null,
+        }),
+      ]),
+      'trimmed',
+    ) as Envelope;
+    const result = out.results[0];
+
+    expect(result.hasCompletionEvidence).toBe(true);
+    expect(result.completion).toBeDefined();
+    expect(String((result.completion as Record<string, unknown>).verifiedHow)).toMatch(/TRUNCATED/);
+    expect(out._shapeNote?.next).toMatch(/COMPLETION EVIDENCE EXISTS/);
+  });
+
+  it('preserves completion presence on an id-only bulk stub', () => {
+    const completion = {
+      summary: 'completed',
+      testsRun: 'npm test',
+      testResult: 'passed',
+      verifiedHow: 'unit',
+      filesChanged: ['get.ts'],
+    };
+    const rows = Array.from({ length: 100 }, (_, i) =>
+      row({
+        id: `WI-completion-${i}`,
+        workItem: {
+          id: `WI-completion-${i}`,
+          kind: 'bug',
+          state: 'done',
+          title: `completed ${i}`,
+          terminalCompletionEvidence: completion,
+        },
+        checkpoint: null,
+      }),
+    );
+    const out = shapeWorkItemsGet(envelope(rows), 'trimmed') as Envelope;
+    const stub = out.results.find((result) => result._stub) as Record<string, unknown> | undefined;
+
+    expect(stub).toBeDefined();
+    expect(stub?.hasCompletionEvidence).toBe(true);
+    expect(out._shapeNote?.next).toMatch(/COMPLETION EVIDENCE EXISTS/);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
+
+  it('retains completion presence and a bounded body at the exact single-item floor', () => {
+    const completion = {
+      summary: 'completed',
+      testsRun: 'npm test',
+      testResult: 'passed',
+      verifiedHow: 'unit',
+      filesChanged: ['get.ts'],
+    };
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: {
+            id: 'WI-floor-completion',
+            kind: 'bug',
+            family: 'issue',
+            harness: 'papercusp',
+            state: 'open',
+            title: 'large exact read',
+            summary: 'S'.repeat(40_000),
+            payload: { giant: 'P'.repeat(40_000) },
+            terminalCompletionEvidence: completion,
+          },
+          checkpoint: 'C'.repeat(40_000),
+          holder: {
+            goalRef: 'WI-floor-completion',
+            goalText: 'H'.repeat(40_000),
+            assumptions: { keys: ['hold'] },
+            agreement: 'sole',
+            competing: [],
+          },
+          lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
+          priorAttempts: { attempts: [{ text: 'A'.repeat(10_000) }] },
+          threadWindow: { posts: [{ body: 'T'.repeat(10_000) }] },
+        }),
+      ]),
+      'trimmed',
+    ) as Envelope;
+    const result = out.results[0];
+
+    expect(out._shapeNote?.singleItemFloor).toMatch(/reduced identity/);
+    expect(result.hasCompletionEvidence).toBe(true);
+    expect(result.completion).toMatchObject({
+      summary: 'completed',
+      testResult: 'passed',
+      verifiedHow: 'unit',
+    });
+  });
+
   it('preserves compact deployment positions and explicit unknown/truncation metadata', () => {
     const deploymentPosition = {
       paths: Array.from({ length: 10 }, (_, i) => ({

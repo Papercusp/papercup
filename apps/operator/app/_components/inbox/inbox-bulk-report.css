@@ -81,3 +81,28 @@
   color: var(--fg-mute);
   background: var(--bg);
 }
+
+@container (max-width: 420px) {
+  .inbox-bulk-report__hover-detail {
+    padding: 8px;
+  }
+
+  .inbox-bulk-report__detail-head,
+  .inbox-bulk-report__hover-detail .op-inbox__rec-why {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .inbox-bulk-report__hover-detail .op-inbox__rec {
+    min-width: 0;
+    margin-inline: 0;
+  }
+
+  .inbox-bulk-report__hover-detail .op-inbox__rec-actions {
+    flex-wrap: wrap;
+  }
+
+  .inbox-bulk-report__hover-detail .op-inbox__rec-spacer {
+    display: none;
+  }
+}

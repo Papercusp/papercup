@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 /** Grouped Inbox bulk-resolve report coverage (cleanup-report-flows P-008/P-011). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   cleanup,
   fireEvent,
@@ -100,6 +102,11 @@ import InboxBulkReport, {
   bulkRunItemToAttentionSnapshot,
   inboxBulkReviewConfidence,
 } from "./InboxBulkReport";
+
+const BULK_REPORT_CSS = readFileSync(
+  join(__dirname, "inbox-bulk-report.css"),
+  "utf8",
+);
 
 function attention(
   id: string,
@@ -488,6 +495,28 @@ describe("buildInboxBulkReviewGroups", () => {
 });
 
 describe("<InboxBulkReport>", () => {
+  it("keeps recommendation content and controls inside phone-width details", () => {
+    const phoneStart = BULK_REPORT_CSS.indexOf("@container (max-width: 420px)");
+    expect(phoneStart).toBeGreaterThan(-1);
+    const phoneCss = BULK_REPORT_CSS.slice(phoneStart);
+
+    expect(phoneCss).toMatch(
+      /\.inbox-bulk-report__hover-detail\s*\{[^}]*padding:\s*8px;/s,
+    );
+    expect(phoneCss).toMatch(
+      /\.inbox-bulk-report__detail-head,\s*\.inbox-bulk-report__hover-detail \.op-inbox__rec-why\s*\{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(phoneCss).toMatch(
+      /\.inbox-bulk-report__hover-detail \.op-inbox__rec\s*\{[^}]*min-width:\s*0;[^}]*margin-inline:\s*0;/s,
+    );
+    expect(phoneCss).toMatch(
+      /\.inbox-bulk-report__hover-detail \.op-inbox__rec-actions\s*\{[^}]*flex-wrap:\s*wrap;/s,
+    );
+    expect(phoneCss).toMatch(
+      /\.inbox-bulk-report__hover-detail \.op-inbox__rec-spacer\s*\{[^}]*display:\s*none;/s,
+    );
+  });
+
   it("ends the named page-relative report-open measure after the first committed render", async () => {
     beginInteraction(PERF_INTERACTIONS.inboxBulkReportOpen);
     render(

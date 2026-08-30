@@ -737,12 +737,21 @@ describe("OMP managed-session title isolation (WI-287139)", () => {
     }
   });
 
-  it("applies to fresh role, fresh SU wrapper, and resume argv with or without an explicit model", () => {
+  it("applies to fresh role, fresh SU launch, fresh SU wrapper, and resume argv with or without an explicit model", () => {
     const model = "papercusp-gateway/claude-sonnet-4-6";
     expect(
       roleLaunchArgs("omp", { promptFile: "/p.md", model }).args,
     ).toContain("--no-title");
     expect(suWrapperExtraArgs("omp", { model })).toContain("--no-title");
+    // suLaunchArgs is the INTERACTIVE fresh-SU launch, distinct from the
+    // suWrapperExtraArgs wrapper above, and it is the path WI-287139 actually
+    // found missing the flag. It was covered only incidentally by the exact-argv
+    // assertion further down, so this "every path funnels through the helper"
+    // guard could not catch the omission — which is precisely how it survived.
+    // It takes no model parameter, hence no with/without-model variant.
+    expect(
+      suLaunchArgs("omp", { promptFile: "/p.md" }).args,
+    ).toContain("--no-title");
     expect(
       resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }, {
         model,
@@ -2593,7 +2602,7 @@ describe("psu-launcher arg parsing", () => {
       resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }),
     ).toEqual({
       bin: "omp",
-      args: ["-r", "thr-1", "--approval-mode", "yolo", "--no-lsp"],
+      args: ["-r", "thr-1", "--approval-mode", "yolo", "--no-title", "--no-lsp"],
     });
     expect(
       resumeArgsFor(
@@ -2608,6 +2617,7 @@ describe("psu-launcher arg parsing", () => {
         "yolo",
         "-e",
         "/h/.papercusp/papercusp-coord.ts",
+        "--no-title",
         "--no-lsp",
       ],
     });
@@ -4717,6 +4727,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--no-lsp",
       "--append-system-prompt",
       "/lc/session-7.md",
+      "--no-title",
     ]);
   });
 
@@ -4728,6 +4739,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "yolo",
       "--append-system-prompt",
       "/lc/session-7.md",
+      "--no-title",
     ]);
   });
 
@@ -4742,6 +4754,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--no-lsp",
       "--append-system-prompt",
       "/lc/session-7.md",
+      "--no-title",
       "-e",
       "/h/.papercusp/papercusp-coord.ts",
     ]);
@@ -4833,6 +4846,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--no-lsp",
       "--system-prompt",
       "/lc/session-7.md",
+      "--no-title",
       "-e",
       "/h/coord.ts",
     ]);
@@ -5021,6 +5035,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--no-lsp",
       "--system-prompt",
       "/lc/session-9.md",
+      "--no-title",
       "-e",
       "/home/u/.papercusp/papercusp-coord.ts",
     ]);
@@ -5862,8 +5877,18 @@ describe("suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI
       "sonnet:xhigh",
       "vendor/model:7b",
     ]) {
+      // The adv-21150 title mitigation is scoped to the PSU launch paths
+      // (ompTitleMitigationArgs: "every managed psu session"), so
+      // suWrapperExtraArgs carries `--no-title` while applyRoleModel — the
+      // harness-invoke exec boundary in operator-core — deliberately does not.
+      // Strip it here: this guard's subject is the EI-7138 effort-drop class
+      // (verbatim `<model>:<effort>` passthrough), not the mitigation. Whether
+      // operator-spawned omp agents should ALSO carry it is a separate product
+      // question, filed rather than silently decided by this assertion.
       expect(appliedFlags("omp", spec), spec).toEqual(
-        normalize(suWrapperExtraArgs("omp", { model: spec })),
+        normalize(suWrapperExtraArgs("omp", { model: spec })).filter(
+          (a) => a !== "--no-title",
+        ),
       );
     }
   });
@@ -8034,9 +8059,17 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       ["codex", "gpt-5.5:max"],
       ["omp", "opus:low"],
     ] as const) {
-      expect(suWrapperExtraArgs(agent, { model: spec })).toEqual(
-        modelArgsFor(agent, spec),
-      );
+      // omp additionally carries the adv-21150 title mitigation
+      // (ompTitleMitigationArgs), which is NOT a model arg — suWrapperExtraArgs
+      // is a superset of modelArgsFor for that backend by design. Strip it
+      // before the delegation comparison so this guard keeps testing the
+      // effort-drop class it was written for (EI-7138) rather than silently
+      // becoming an assertion about the mitigation's presence.
+      expect(
+        suWrapperExtraArgs(agent, { model: spec }).filter(
+          (a) => a !== "--no-title",
+        ),
+      ).toEqual(modelArgsFor(agent, spec));
     }
   });
 
@@ -8116,6 +8149,7 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "yolo",
       "--model",
       "opus:high",
+      "--no-title",
     ]);
     // No model → byte-identical to the pre-WI-3758 args (the agent-default path).
     expect(

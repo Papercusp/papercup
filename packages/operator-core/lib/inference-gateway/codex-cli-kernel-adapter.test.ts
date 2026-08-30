@@ -22,7 +22,7 @@ import { executeGatewayRequestKernel, GatewayRequestKernelError } from './reques
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import { GatewayRequestTelemetry } from './request-stage-telemetry';
 import type { AccountPool } from './provider-contracts';
-import type { CodexCliAccount } from './codex-cli-bridge';
+import type { CodexCliAccount, CodexCliRunOpts } from './codex-cli-bridge';
 import { isCodexAuthFailure } from './codex-cli-bridge';
 
 const AUTH_QUARANTINE_MS = 15 * 60 * 1000;
@@ -346,7 +346,9 @@ describe('codex cli-exec kernel adapter', () => {
   });
 
   it('passes the caller-built prompt, model, effort and ceiling through to the run', async () => {
-    const seen = vi.fn(async () => ({ text: 'ok', inputTokens: 0, outputTokens: 0 }));
+    // Typed on the real run signature: an untyped `vi.fn(async () => …)` gives
+    // `mock.calls` an empty tuple type, so indexing it below is a compile error.
+    const seen = vi.fn(async (_opts: CodexCliRunOpts) => ({ text: 'ok', inputTokens: 0, outputTokens: 0 }));
     const { adapter } = makeAdapter({
       run: seen as never,
       model: 'gpt-5.4',

@@ -494,6 +494,23 @@ describe("rendering", () => {
     );
   });
 
+  it("gives expanded details the remaining row width in constrained layouts", () => {
+    const constrainedStart = REPORT_CSS.indexOf(
+      "@container (max-width: 760px)",
+    );
+    const phoneStart = REPORT_CSS.indexOf("@container (max-width: 420px)");
+    expect(constrainedStart).toBeGreaterThan(-1);
+    expect(phoneStart).toBeGreaterThan(constrainedStart);
+
+    const constrainedCss = REPORT_CSS.slice(constrainedStart, phoneStart);
+    expect(constrainedCss).toMatch(
+      /\.review-report__row-detail-slot\s*\{[^}]*grid-column:\s*2 \/ -1;/s,
+    );
+    expect(constrainedCss).not.toMatch(
+      /\.review-report__row-detail-slot,\s*\.review-report__row-error\s*\{[^}]*grid-column:\s*2 \/ 3;/s,
+    );
+  });
+
   it("uses pointer cursors for clickable rows and their details control", () => {
     expect(REPORT_CSS).toMatch(
       /\.review-report__row\s*\{[^}]*cursor: pointer;/s,
