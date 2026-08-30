@@ -13,9 +13,11 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
+import { pgbouncerEnabled, buildConnectionOptions } from '@papercusp/db-org';
 import {
   TXN_TIMEOUTS_DEFAULTS,
   txnTimeoutsConfig,
+  adminPoolStatementTimeoutMs,
   readTxnTimeoutsOverride,
   setTxnTimeoutsOverride,
   setTxnTimeoutsOverrideFull,
