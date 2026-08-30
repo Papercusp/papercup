@@ -493,9 +493,11 @@ export default defineTool({
             'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
             "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows " +
-            'up to the row cap — on overflow supplied rows win and evicted rows are named in ' +
+            'up to the row cap — on overflow the write REFUSES (naming the rows that would be evicted) unless ' +
+            "confirmRetire:true is also set, in which case supplied rows win and evicted rows are named in " +
             '`checksDropped`; PREDICTED yields before VERIFIED only while seats remain, so supplying ≥ the cap ' +
-            "evicts EVERY unmatched carried row; pass rowsMode:'replace' to retire them; [] clears under replace.",
+            "evicts EVERY unmatched carried row; pass rowsMode:'replace' + confirmRetire:true to retire them " +
+            'explicitly instead; [] clears under replace.',
         ),
       rowsMode: z
         .enum(['replace', 'merge'])
@@ -503,21 +505,26 @@ export default defineTool({
         .describe(
           "How a supplied walls/checks list combines with the carried set. 'merge' (default) — rows UPSERT by `id` " +
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
-            'row — but only UP TO THE ROW CAP. If the union overflows the cap, supplied rows win and the carried ' +
-            'rows that yield are named in `checksDropped`: merge is non-destructive while it fits, not ' +
-            'unconditionally. Within the yielding remainder PREDICTED rows go first; but supplied rows are placed ' +
-            'first overall, so a supplied list that alone fills the cap evicts every carried row, evidence or not. ' +
-            "'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
-            'no-op, never a clear.',
+            'row — but only UP TO THE ROW CAP: merge is non-destructive while the union fits, not unconditionally. ' +
+            'If the union would OVERFLOW the cap, the write is REFUSED (naming every carried row that would be ' +
+            "evicted in `checksDropped`/`wallsDropped`) unless `confirmRetire:true` is also set, in which case " +
+            'supplied rows win and PREDICTED rows yield before VERIFIED ones — a supplied list that alone fills ' +
+            "the cap evicts every carried row, evidence or not. 'replace' makes the list the new set and is the " +
+            "only way to retire rows WITHOUT re-sending an update; under 'merge' a [] list is a no-op, never a " +
+            'clear.',
         ),
       confirmRetire: z
         .boolean()
         .optional()
         .describe(
-          "rowsMode:'replace' safety (EI-21503907176334936): when the supplied lists would RETIRE carried rows, " +
-            'the write is REFUSED before anything is stored unless this is true — the refusal names every row ' +
-            'that would have been dropped. Set it only for a deliberate retirement (or a deliberate [] clear); ' +
-            "the default rowsMode:'merge' never needs it.",
+          "Confirms a deliberate row retirement. Under rowsMode:'replace' (EI-21503907176334936): when the " +
+            'supplied lists would RETIRE carried rows, the write is REFUSED before anything is stored unless this ' +
+            'is true — the refusal names every row that would have been dropped. Under rowsMode:\'merge\' ' +
+            '(EI-21849813048365808): when the union would exceed the durable row cap, the write is likewise ' +
+            'REFUSED (naming every row the cap would evict) unless this is true, in which case the cap\'s own ' +
+            'PREDICTED-before-VERIFIED eviction proceeds in this same call — a one-call alternative to a separate ' +
+            "rowsMode:'replace' resend. Set it only for a deliberate retirement/eviction (or a deliberate [] clear " +
+            "under replace); an ordinary merge that fits under the cap never needs it.",
         ),
       expectedHash: z
         .string()
@@ -934,7 +941,19 @@ export default defineTool({
               // to silently evict a healthy carried set.
               const normalizingLegacyChecks = legacyChecksOverCap > 0 && merged.droppedChecks.length > 0;
               if (normalizingLegacyChecks) legacyOverCapNormalization.checks = legacyChecksOverCap;
-              if (merged.droppedWalls.length > 0 || !normalizingLegacyChecks) {
+              // EI-21849813048365808: a caller doing a routine merge refresh near the cap
+              // (e.g. a monitor loop re-stating its no-delta checks each wake) hit this
+              // refusal on every single write once the carried set filled up, and the
+              // only advertised fix was a two-step dance — a plain rowsMode:'replace'
+              // resend of the FULL current set to retire rows, then retry the merge.
+              // Give confirmRetire:true the SAME meaning it already has under
+              // rowsMode:'replace': an explicit, one-call opt-in to let the row cap's
+              // own PREDICTED-before-VERIFIED yielding (computed above by
+              // mergeCarryRows/upsertOntoPrior) actually commit instead of refusing.
+              // The DEFAULT (confirmRetire omitted/false) is completely unchanged: a
+              // merge overflow still refuses and names every row it would have
+              // evicted, so an ordinary additive write is exactly as safe as before.
+              if (args.confirmRetire !== true && (merged.droppedWalls.length > 0 || !normalizingLegacyChecks)) {
                 throw new MergeWouldEvictError(merged.droppedWalls, merged.droppedChecks);
               }
             }
@@ -1036,8 +1055,10 @@ export default defineTool({
                 checksDropped: error.droppedChecks,
                 message:
                   "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above — " +
-                  "NOTHING was written. Retire rows you no longer need with rowsMode:'replace' and " +
-                  'confirmRetire:true, then retry the merge.',
+                  'NOTHING was written. Either retry this SAME call with confirmRetire:true to let the cap\'s own ' +
+                  'PREDICTED-before-VERIFIED eviction proceed (the rows above are exactly what would go), or ' +
+                  "retire rows you no longer need with a separate rowsMode:'replace' + confirmRetire:true write, " +
+                  'then retry the merge.',
               }),
             },
           ],
@@ -1511,13 +1532,13 @@ export default defineTool({
                           `rows first and evidence-bearing carried rows before predicted rows. This was legacy state, ` +
                           `not your mistake. Future additive writes that would exceed the cap are refused; retire ` +
                           `stale rows explicitly with rowsMode:'replace' and confirmRetire:true.`
-                        : `CAP EVICTION, not a replace: rowsMode:'merge' UNIONED your ${effectiveChecks?.length ?? 0} ` +
-                          `row(s) onto the carried set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
-                          `${droppedChecks.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
-                          `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
-                          `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate ` +
-                          `plain write (rowsMode:'replace'), then merge; or pass no \`checks\` at all to ` +
-                          `leave the stored rows untouched.`
+                        : `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
+                          `${effectiveChecks?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
+                          `${CARRY_NOTE_MAX_CHECKS}-row cap, and ${droppedChecks.length} CARRIED row(s) were ` +
+                          `evicted from the tail (supplied rows are kept first, PREDICTED rows yield before ` +
+                          `VERIFIED ones). This is EXACTLY what the pre-write refusal named and you confirmed. To ` +
+                          `avoid future evictions: retire rows you no longer need in a separate plain write ` +
+                          `(rowsMode:'replace'), or pass no \`checks\` at all to leave the stored rows untouched.`
                       : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
                         `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
                         `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
@@ -1533,12 +1554,12 @@ export default defineTool({
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   wallsDroppedNote:
                     rowsMode === 'merge'
-                      ? `CAP EVICTION, not a replace: rowsMode:'merge' UNIONED your ${effectiveWalls?.length ?? 0} ` +
-                        `row(s) onto the carried set, the union exceeded the ${CARRY_NOTE_MAX_WALLS}-row cap, and ` +
-                        `${droppedWalls.length} CARRIED owner-gated commitment(s) were evicted from the tail ` +
-                        `(supplied rows are kept first). Re-sending the full set CANNOT fix this — that set is over ` +
-                        `the cap and would be rejected as invalid_input. To keep them: RETIRE rows you no longer need ` +
-                        `in a separate plain write (rowsMode:'replace'), then merge; or pass no ` +
+                      ? `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
+                        `${effectiveWalls?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
+                        `${CARRY_NOTE_MAX_WALLS}-row cap, and ${droppedWalls.length} CARRIED owner-gated ` +
+                        `commitment(s) were evicted from the tail (supplied rows are kept first). This is EXACTLY ` +
+                        `what the pre-write refusal named and you confirmed. To avoid future evictions: retire ` +
+                        `rows you no longer need in a separate plain write (rowsMode:'replace'), or pass no ` +
                         '`walls` at all to leave the stored rows untouched.'
                       : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
                         `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
