@@ -58,15 +58,34 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_REL = join('papercusp-desktop', 'bin', 'two-instance-hive-from-repo-smoke.sh');
 
+// EI-21013367673615330: this MUST stop at the enclosing repository boundary (the first
+// directory carrying a `.git` — a directory in a normal checkout, a FILE in a git worktree)
+// and fail loudly if the smoke script isn't there, rather than silently climbing past it into
+// a parent/sibling checkout. Without the boundary check, running this file inside a worktree
+// whose papercusp-desktop submodule is uninitialized (an empty directory — the default for a
+// freshly-created worktree, including green-checkpoint's frozen-candidate repair worktrees)
+// walks up past the worktree root, finds the MAIN checkout's copy of the script instead, and
+// silently asserts against THAT file while appearing to test the worktree — a false GREEN in
+// a security-relevant guard (measured: .papercusp/worktrees/green-candidate-papercusp-495bb52c958a
+// reported 13/13 PASS while the candidate it was supposed to test genuinely failed 3 of them).
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 12; i++) {
     if (existsSync(join(dir, SCRIPT_REL))) return dir;
+    if (existsSync(join(dir, '.git'))) {
+      throw new Error(
+        `reached the repository boundary at ${dir} (found .git) without locating ${SCRIPT_REL} ` +
+          `there — refusing to climb into a parent/sibling checkout. This usually means the ` +
+          `papercusp-desktop submodule is uninitialized in this worktree; run ` +
+          `\`git submodule update --init papercusp-desktop\` (or PROBE_SCRIPT=<path> to point ` +
+          `this test at an explicit script) rather than letting it silently test a different tree.`,
+      );
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error(`could not locate repo root containing ${SCRIPT_REL}`);
+  throw new Error(`could not locate repo root containing ${SCRIPT_REL} within 12 parent levels`);
 }
 
 // PROBE_SCRIPT exists so falsifiability can be proven by tier-2 COPY-OUT (mutate a copy OUTSIDE
