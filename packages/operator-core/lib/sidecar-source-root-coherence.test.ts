@@ -47,8 +47,8 @@
  *   node scripts/test-files.mjs packages/operator-core/lib/sidecar-source-root-coherence.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +113,41 @@ function callResolver(
       killSignal: 'SIGKILL',
     },
   ).trim();
+}
+
+const GIT_ENV = {
+  GIT_AUTHOR_NAME: 'source-roots-guard',
+  GIT_AUTHOR_EMAIL: 'source-roots-guard@example.invalid',
+  GIT_COMMITTER_NAME: 'source-roots-guard',
+  GIT_COMMITTER_EMAIL: 'source-roots-guard@example.invalid',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...GIT_ENV },
+    // WI-41180 — see the note in callResolver() above.
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
+}
+
+/**
+ * Call the release-source assertion. Uses spawnSync rather than execFileSync because a
+ * REFUSAL is the expected outcome in most of these cases, and the exit code plus the
+ * operator-facing message are both part of the contract under test.
+ */
+function callAssert(root: string, pin: string): { code: number; err: string } {
+  const script = `set -euo pipefail\n. "$1"\npapercusp_assert_release_source_pinned "$2" "$3"\n`;
+  const r = spawnSync('bash', ['-c', script, 'source-roots-guard', HELPER_PATH, root, pin], {
+    encoding: 'utf8',
+    env: { ...process.env, ...GIT_ENV },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
+  return { code: r.status ?? -1, err: String(r.stderr ?? '') };
 }
 
 describe('EI-21832562420831737 — the sidecar build resolves ONE source root, and honours it everywhere', () => {
@@ -217,6 +252,123 @@ describe('EI-21832562420831737 — the sidecar build resolves ONE source root, a
         expect(producer, `expected the producer to still build from ${path}`).toContain(path);
       }
       expect(producer).toMatch(/--remap-path-prefix=\$REPO=/);
+    });
+  });
+
+  // ── 4. The vm-release source contract: tracked-clean AND on the pin ──────────
+  // Having DEMANDED an immutable PAPERCUSP_BUILD_SHA, the build never checked that the
+  // tree it was about to read actually was that sha, or held nothing else. Every
+  // artifact-side gate (release audit, SBOM, vulnerability scan) inspects the finished
+  // bundle, so a cut taken on the shared checkout baked peers' uncommitted bytes in and
+  // passed every one of them — the artifact agreed with itself.
+  describe('papercusp_assert_release_source_pinned — the source contract vm-release never had', () => {
+    let repo: string;
+    let pin: string;
+    let other: string;
+
+    beforeAll(() => {
+      repo = join(work, 'pinned-checkout');
+      mkdirSync(repo, { recursive: true });
+      execFileSync('git', ['init', '-q', '-b', 'staging', repo], {
+        env: { ...process.env, ...GIT_ENV },
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      writeFileSync(join(repo, 'serve.ts'), 'the source this release is pinned to\n');
+      git(repo, ['add', '-A']);
+      git(repo, ['commit', '-q', '-m', 'the pinned release source']);
+      pin = git(repo, ['rev-parse', 'HEAD']);
+
+      // A second commit that exists only to be a WRONG pin; the tree is rewound to `pin`.
+      writeFileSync(join(repo, 'serve.ts'), 'a later, different commit\n');
+      git(repo, ['add', '-A']);
+      git(repo, ['commit', '-q', '-m', 'a different commit']);
+      other = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, ['reset', '-q', '--hard', pin]);
+
+      expect(other, 'the fixture needs two distinct commits or it proves nothing').not.toBe(pin);
+      expect(git(repo, ['rev-parse', 'HEAD'])).toBe(pin);
+    });
+
+    it('PASSES on a tracked-clean tree sitting on the pin — the r15 pinned-worktree shape', () => {
+      const { code, err } = callAssert(repo, pin);
+      expect(err).toBe('');
+      expect(code).toBe(0);
+    });
+
+    it('PASSES when the caller pins a SHORT sha, as the release wrapper compares them', () => {
+      expect(callAssert(repo, pin.slice(0, 10)).code).toBe(0);
+    });
+
+    it('tolerates a whitespace-padded pin, matching the entry gate\'s normalisation', () => {
+      expect(callAssert(repo, `  ${pin}  `).code).toBe(0);
+    });
+
+    it('REFUSES a tree carrying uncommitted tracked changes, and names them', () => {
+      writeFileSync(join(repo, 'serve.ts'), 'a peer edit that would be baked into the bundle\n');
+      try {
+        const { code, err } = callAssert(repo, pin);
+        expect(code).not.toBe(0);
+        expect(err).toMatch(/uncommitted tracked changes/);
+        expect(err).toContain('serve.ts');
+        // The refusal must say what to do instead, or it just blocks the release.
+        expect(err).toMatch(/worktree add --detach/);
+      } finally {
+        git(repo, ['checkout', '--', 'serve.ts']);
+      }
+    });
+
+    it('CONTROL — an UNTRACKED file does NOT refuse (build outputs must not block a cut)', () => {
+      // A gate that trips on build outputs is unsatisfiable in exactly the situation it
+      // exists for, and an unsatisfiable gate gets bypassed rather than obeyed.
+      const scratch = join(repo, 'build-output.log');
+      writeFileSync(scratch, 'untracked build noise\n');
+      try {
+        expect(callAssert(repo, pin).code).toBe(0);
+      } finally {
+        rmSync(scratch, { force: true });
+      }
+    });
+
+    it('REFUSES when HEAD is not the pin, printing BOTH shas', () => {
+      const { code, err } = callAssert(repo, other);
+      expect(code).not.toBe(0);
+      expect(err).toMatch(/not on the pinned commit/);
+      expect(err).toContain(other);
+      expect(err).toContain(pin);
+    });
+
+    it('REFUSES a root that is not a git checkout rather than passing it through', () => {
+      const bare = join(work, 'not-a-checkout');
+      mkdirSync(bare, { recursive: true });
+      const { code, err } = callAssert(bare, pin);
+      expect(code).not.toBe(0);
+      expect(err).toMatch(/not a readable git checkout/);
+    });
+
+    it('WIRING — the producer runs it under vm-release, before any toolchain work', () => {
+      const producer = codeOnly(readFileSync(PRODUCER_PATH, 'utf8'));
+
+      expect(producer).toMatch(
+        /papercusp_assert_release_source_pinned\s+"\$REPO_ROOT"\s+"\$_vm_release_build_sha"/,
+      );
+
+      // Ordering is part of the contract this file already states for the pin gate above
+      // it ("refusing before toolchain work"): reading .nvmrc is the first thing the build
+      // does toward a toolchain, so the assertion must precede it.
+      const assertAt = producer.indexOf('papercusp_assert_release_source_pinned "$REPO_ROOT"');
+      const toolchainAt = producer.indexOf('PAPERCUSP_REQUIRED_NODE_MAJOR=');
+      expect(assertAt, 'the assertion call must be present').toBeGreaterThan(-1);
+      expect(toolchainAt, 'the .nvmrc read must be present').toBeGreaterThan(-1);
+      expect(assertAt).toBeLessThan(toolchainAt);
+    });
+
+    it('WIRING — a refusal actually exits, rather than being logged and ignored', () => {
+      const producer = codeOnly(readFileSync(PRODUCER_PATH, 'utf8'));
+      const call = producer.indexOf('papercusp_assert_release_source_pinned "$REPO_ROOT"');
+      // The refusal branch must reach an `exit` before the next top-level step. Bounded
+      // window: the wiring is an `if ! …; then … exit 2; fi`.
+      expect(producer.slice(call, call + 400)).toMatch(/\bexit\s+2\b/);
     });
   });
 });
