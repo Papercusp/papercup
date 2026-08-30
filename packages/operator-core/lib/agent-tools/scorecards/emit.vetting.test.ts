@@ -178,12 +178,24 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
-  it('allows a plain meta-rubric scorecard when it has no acceptance-rubric subject', async () => {
+  it('refuses a subject-less meta-rubric scorecard before it can file an unbound attestation', async () => {
     const res = await emitScorecard(
       { rubricRef: 'meta-acceptance-rubric', ratings: META_RATINGS } as never,
       EMIT_INPUT,
     );
-    expect(res.ok).toBe(true);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'meta_acceptance_subject_required',
+      error: expect.stringContaining("subject:{ kind:'rubric'"),
+    });
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('cannot attest a rubric');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('accepts a subject-backed meta-rubric attestation when the critique linkage is valid', async () => {
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res).toMatchObject({ ok: true, created: true });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
