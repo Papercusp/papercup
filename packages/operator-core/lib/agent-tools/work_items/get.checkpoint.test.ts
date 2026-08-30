@@ -80,6 +80,15 @@ it('documents and enforces the threadLimit 0–10 cap', () => {
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 11 })).toThrow(/<=10/);
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 10 })).not.toThrow();
 });
+
+it('EI-21885040199084336: accepts detail as the boolean-or-string-enum convention other :get tools use', () => {
+  expect((parse({ id: 'WI-detail', detail: 'full' }) as { detail?: boolean }).detail).toBe(true);
+  expect((parse({ id: 'WI-detail', detail: 'summary' }) as { detail?: boolean }).detail).toBe(false);
+  expect((parse({ id: 'WI-detail', detail: true }) as { detail?: boolean }).detail).toBe(true);
+  expect((parse({ id: 'WI-detail', detail: false }) as { detail?: boolean }).detail).toBe(false);
+  expect((parse({ id: 'WI-detail' }) as { detail?: boolean }).detail).toBeUndefined();
+  expect(() => parse({ id: 'WI-detail', detail: 'verbose' })).toThrow();
+});
 const env = async (x: unknown) => {
   const res = (await get.handler(parse(x) as never, ctx)) as Out;
   return res.data;

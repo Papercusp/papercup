@@ -72,7 +72,7 @@ export default defineTool({
   // to 1774 chars and breached the 1600 HARD CAP, reddening the fleet gate. It
   // is documentation of the RESPONSE, so `returns` is also where it belongs.
   description:
-    'Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.',
+    'Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` (or `detail:\'full\'`) remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.',
   guidance: {
     when: 'You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
@@ -108,10 +108,19 @@ export default defineTool({
         .optional()
         .describe('caller harness scope; do not copy a cross-hive row\'s canonical harness here'),
       detail: z
-        .boolean()
-        .optional()
+        .preprocess((v) => {
+          // EI-21885040199084336: many other `:get`-shaped tools in this catalog
+          // (harness:get, plans:get, ...) use a `detail: 'summary'|'full'` string
+          // enum. This tool's `detail` is boolean-only, and a caller carrying that
+          // convention over lands `detail:'full'` — a schema mismatch that wastes
+          // a whole goal turn. Accept the aliases at the door; boolean stays the
+          // fully-supported baseline for every other caller.
+          if (v === 'full') return true;
+          if (v === 'summary') return false;
+          return v;
+        }, z.boolean().optional())
         .describe(
-          "also return topics, thread posts (comments), outgoing links, `lifecycle` — the unified history (blocks, holds, reopens) with a coverage report saying what is NOT recorded — and `priorAttempts`, the bounded prior-attempt brief (what was already tried on this item's plan lane, and what the budget OMITTED)",
+          "also return topics, thread posts (comments), outgoing links, `lifecycle` — the unified history (blocks, holds, reopens) with a coverage report saying what is NOT recorded — and `priorAttempts`, the bounded prior-attempt brief (what was already tried on this item's plan lane, and what the budget OMITTED). Accepts `true`/`false`, or the aliases `'full'`/`'summary'` (some tools in this catalog use that string-enum convention instead).",
         ),
       priorAttemptRefs: z
         .array(z.string().min(1))
