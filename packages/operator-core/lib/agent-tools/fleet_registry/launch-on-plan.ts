@@ -83,7 +83,7 @@ import {
   setClaimSpec,
   getClaimSpec,
 } from '../../scheduler/claim-spec-store';
-import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
+import { getPresence, heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { startVerdictForRow } from '../plans/plan-start-gate';
@@ -97,6 +97,7 @@ import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
 import { ensureFleetLeaderControl, type LeaderControlOutcome } from './leader-control';
 import {
+  normalizePersistedFleetLaunchConfig,
   resolveLoadedSavedFleetLaunchSpec,
   resolveSavedFleetLaunchSpec,
 } from './saved-launch-spec';
@@ -2103,6 +2104,10 @@ export default defineTool({
       : null;
     let ignoredRoleDiagnostics: IgnoredPersistedGoalRoleDiagnostic[] = [];
     if (persistedHeadcountProfile) {
+      persistedHeadcountProfile = {
+        ...persistedHeadcountProfile,
+        config: normalizePersistedFleetLaunchConfig(persistedHeadcountProfile.config),
+      };
       const profile = persistedHeadcountProfile.config;
       const profileModel = composeModelSpec(profile.model, profile.effort);
       args.count ??= persistedHeadcountProfile.target;
@@ -2449,9 +2454,15 @@ export default defineTool({
     // Leaderless is the only state that is TRUE at this point, so it is the one to write.
     const wantsSpawnedLeader = args.leader === 'spawn';
     const spawnedLeaderOwnerId = wantsSpawnedLeader ? `su-${randomUUID()}` : null;
-    // Set when 'spawn' was asked for but the fleet ALREADY existed: it has a leader
-    // already, and installing a second one is not a top-up, it is a coup. Reported.
+    // Set when 'spawn' was asked for but the fleet already has a confirmed-live leader:
+    // installing a second one is a coup, so preserve the historical ignored/top-up path.
     let leaderSpawnSkipped: string | null = null;
+    // Existing fleets whose recorded leader is absent (or explicitly leaderless) may be
+    // recovered by a fresh delegated leader. Keep the observed registry value for the
+    // compare-and-set install after the new process opens; a concurrent takeover must win.
+    let delegatedSpawnReplacement = false;
+    let delegatedSpawnReplacementExpectedLeader: string | null | undefined;
+    let leaderSpawnRecoveryWarning: string | null = null;
     // A request-timeout/retry of the same spawned-leader launch races with the first call:
     // the fleet row already exists, but the caller still owns the row and the spawned leader
     // is already recorded. That retry must remain a delegator, not join the fleet as a member.
@@ -2478,17 +2489,39 @@ export default defineTool({
       freshFleetCreated = created;
       priorLaunchTransaction = record.lastLaunchTransaction ?? null;
       if (wantsSpawnedLeader && !created) {
-        // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
-        // mint a rival leader. Fall back to the ordinary join path for this call.
-        delegatedSpawnRetry =
-          record.owner === ownerId && record.leaderOwnerId != null && record.leaderOwnerId !== ownerId;
-        leaderSpawnSkipped = delegatedSpawnRetry
-          ? `\`leader:'spawn'\` retry recognized: fleet \`${fleetSlug}\` was already handed to spawned leader ` +
-            `\`${record.leaderOwnerId}\`; no second leader was spawned and the caller remains outside the fleet.`
-          : `\`leader:'spawn'\` was IGNORED: fleet \`${fleetSlug}\` already exists and is led by ` +
-            `\`${record.leaderOwnerId ?? 'nobody'}\`, so no second leader was spawned — this call ` +
-            `only tops up members. To replace the leader, use fleet:take-leadership (or let the ` +
-            `existing one keep leading); to get a spawned leader, launch under a NEW fleet name.`;
+        // A fresh delegated leader is safe ONLY when the recorded leader is absent. A
+        // confirmed-live leader remains authoritative; an unreadable liveness signal fails
+        // closed and keeps the ordinary ignored/top-up path (EI-210946 authority guard).
+        let recordedLeaderLive = record.leaderOwnerId != null;
+        let leaderReadFailed = false;
+        if (record.leaderOwnerId != null) {
+          try {
+            recordedLeaderLive = (await getPresence(record.leaderOwnerId)) !== null;
+          } catch {
+            leaderReadFailed = true;
+          }
+        }
+        if (!leaderReadFailed && !recordedLeaderLive) {
+          delegatedSpawnReplacement = true;
+          delegatedSpawnReplacementExpectedLeader = record.leaderOwnerId;
+          leaderSpawnSkipped = null;
+        } else {
+          // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
+          // mint a rival leader while the recorded leader is live or liveness is unknown.
+          delegatedSpawnRetry =
+            record.owner === ownerId && record.leaderOwnerId != null && record.leaderOwnerId !== ownerId;
+          leaderSpawnSkipped = delegatedSpawnRetry
+            ? `\`leader:'spawn'\` retry recognized: fleet \`${fleetSlug}\` was already handed to spawned leader ` +
+              `\`${record.leaderOwnerId}\`; no second leader was spawned and the caller remains outside the fleet.`
+            : leaderReadFailed
+              ? `\`leader:'spawn'\` was IGNORED: fleet \`${fleetSlug}\` already records leader ` +
+                `\`${record.leaderOwnerId ?? 'nobody'}\`, but its liveness could not be confirmed; ` +
+                `no replacement was spawned and this call only tops up members.`
+              : `\`leader:'spawn'\` was IGNORED: fleet \`${fleetSlug}\` already exists and is led by ` +
+                `\`${record.leaderOwnerId ?? 'nobody'}\`, so no second leader was spawned — this call ` +
+                `only tops up members. To replace the leader, use fleet:take-leadership (or let the ` +
+                `existing one keep leading); to get a spawned leader, launch under a NEW fleet name.`;
+        }
       }
       leaderRole = delegatedSpawnRetry ? 'delegator' : fleetRoleFor(record.leaderOwnerId, ownerId);
       await heartbeatPresence(identity);
@@ -2497,7 +2530,7 @@ export default defineTool({
       // not a participant — labelling it here is exactly the "you are leading a fleet you
       // asked not to lead" state this mode exists to prevent. Skipped only when a leader was
       // actually spawned; the ignored case above falls through to the normal join.
-      if ((wantsSpawnedLeader && created) || delegatedSpawnRetry) {
+      if ((wantsSpawnedLeader && created) || delegatedSpawnRetry || delegatedSpawnReplacement) {
         leaderRole = 'delegator';
       } else {
         await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
@@ -2528,7 +2561,7 @@ export default defineTool({
     }
     // True only when this call must actually open a leader terminal (asked for, and the
     // fleet was newly created rather than joined).
-    const spawningLeader = wantsSpawnedLeader && leaderSpawnSkipped === null;
+    const spawningLeader = wantsSpawnedLeader && (freshFleetCreated || delegatedSpawnReplacement);
     const callerExcludedFromFleet = spawningLeader || delegatedSpawnRetry;
     const callerMembership = {
       enrolled: !callerExcludedFromFleet,
@@ -2582,7 +2615,10 @@ export default defineTool({
       liveMemberOwnerIds = [];
       liveMembers = 0;
     }
-    if (liveMembers >= count) {
+    // A delegated dead-leader recovery still needs to open its leader even when the
+    // member target is already satisfied; suppressing the whole call here would leave
+    // a running fleet leaderless forever. Ordinary top-ups retain the no-op guard.
+    if (liveMembers >= count && !spawningLeader) {
       const lines = [
         `Fleet \`${fleetSlug}\` already has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'} — you asked for ${count}, so NO new terminals were opened.`,
         'Your fleet is running: monitor it, do not relaunch. Re-call this tool only after members have actually drained (their presence goes stale), or with a HIGHER count to top up.',
@@ -3249,7 +3285,7 @@ export default defineTool({
         hostMemoryAdmissionError = `host-memory telemetry unavailable (advisory only — launch NOT refused): ${e?.message ?? e}`;
       }
     }
-    if (openCount <= 0) {
+    if (openCount <= 0 && !spawningLeader) {
       // WI-41206: host memory can no longer produce this branch. The clamp is advisory
       // and never reduces openCount, so reaching 0 here means capacity or the live-member
       // deficit — never memory. Reporting it as a memory suppression would send the
@@ -3952,7 +3988,7 @@ export default defineTool({
     ) {
       const modelSpec = composeModelSpec(fleetDefaults.model, fleetDefaults.effort) ?? null;
       const split = splitModelSpec(modelSpec);
-      const config: FleetHeadcountConfig = {
+      const config = normalizePersistedFleetLaunchConfig({
         plan: planSlug!,
         harness,
         agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
@@ -3967,7 +4003,7 @@ export default defineTool({
         ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
         carry: args.carry ?? 'warm',
         ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
-      };
+      });
       try {
         await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });
         persistedHeadcountProfile = { target: count, config };
@@ -4169,14 +4205,34 @@ export default defineTool({
       // a caller-leader this agent has no human in front of it to switch it over.
       let leaderCtxPath: string | undefined;
       try {
+        const leaderRegistryNote = delegatedSpawnReplacement
+          ? [
+              'The fleet currently records a missing/dead leader. After your process opens, the',
+              'launcher will compare-and-set the registry to your pinned coord identity. If a',
+              'concurrent takeover wins that CAS, you are NOT the leader and must not steer the fleet.',
+            ]
+          : [
+              'The registry ALREADY records you as this',
+              "fleet's leader (your coord identity was pinned before the fleet row was written), so there is",
+            ];
+        const delegatedRecoveryAction = delegatedSpawnReplacement
+          ? [
+              '',
+              `Once coord:orient confirms the registry names you as leader, call fleet:resume { fleet: "${fleetSlug}", reason: "delegated dead-leader recovery" }.`,
+              'Do not call resume if orient shows another leader; that concurrent authority won the recovery race.',
+            ]
+          : [];
         const leaderBrief = [
           `You are the LEADER of fleet \`${fleetSlug}\`${planSlug ? ` on plan \`${planSlug}\`` : ''}.`,
           '',
           'You were LAUNCHED to lead it. The agent that called fleet:launch-on-plan delegated this to',
           'you and is deliberately NOT in this fleet — it is a portfolio manager, not your supervisor,',
-          'so do not wait on it for permission or direction. The registry ALREADY records you as this',
-          "fleet's leader (your coord identity was pinned before the fleet row was written), so there is",
-          'no leadership to claim — but there IS a monitor loop to arm, and nothing happens until you do.',
+          'so do not wait on it for permission or direction.',
+          ...leaderRegistryNote,
+          ...(delegatedSpawnReplacement
+            ? []
+            : ['no leadership to claim — but there IS a monitor loop to arm, and nothing happens until you do.']),
+          ...delegatedRecoveryAction,
           '',
           LEADER_AUTO_MODE_DIRECTIVE,
           ...LEADER_STANDING_JOB.map((point, i) => `  ${i + 1}. ${point}`),
@@ -4242,13 +4298,14 @@ export default defineTool({
         } catch {
           /* the guard self-heals when the window elapses */
         }
+        const registryTruth = delegatedSpawnReplacement
+          ? `Fleet \`${fleetSlug}\` still records its prior absent leader ` +
+            `\`${delegatedSpawnReplacementExpectedLeader ?? 'none'}\`; that value was not cleared or replaced.`
+          : `Fleet \`${fleetSlug}\` now exists and is LEADERLESS — no leader was recorded, because none launched.`;
         return err(
           `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
-            `opened (deliberately: an unled fleet is worse than none). Fleet \`${fleetSlug}\` now exists ` +
-            `and is LEADERLESS — no leader was recorded, because none launched. Recover by re-running ` +
-            `this call (the fleet exists now, so \`leader:'spawn'\` is reported as ignored and it only ` +
-            `tops up members — claim it yourself with fleet:take-leadership, or launch a leader onto it ` +
-            `with capability:launch-agent), or use a NEW fleet name to get a fresh spawned leader.`,
+            `opened (deliberately: an unled fleet is worse than none). ${registryTruth} ` +
+            `Recover by re-running this same leader:'spawn' call or taking leadership explicitly.`,
         );
       }
       leaderAdmissionContext = leaderResult.admissionContext;
@@ -4257,10 +4314,21 @@ export default defineTool({
       // Best-effort: a registry write failure must not orphan a leader that is already running,
       // and the fleet stays claimable via fleet:take-leadership if it does fail.
       let leaderRegistered = true;
+      let installedLeader: Awaited<ReturnType<typeof setFleetLeader>> = null;
       try {
-        await setFleetLeader(workspaceId, fleetSlug, spawnedLeaderOwnerId);
+        installedLeader = delegatedSpawnReplacement
+          ? await setFleetLeader(workspaceId, fleetSlug, spawnedLeaderOwnerId, undefined, delegatedSpawnReplacementExpectedLeader)
+          : await setFleetLeader(workspaceId, fleetSlug, spawnedLeaderOwnerId);
+        // A null CAS result means another actor changed leadership after our preflight;
+        // never claim registration or overwrite that concurrent leader.
+        if (!installedLeader) leaderRegistered = false;
       } catch {
         leaderRegistered = false;
+      }
+      if (!leaderRegistered && delegatedSpawnReplacement) {
+        leaderSpawnRecoveryWarning =
+          `Delegated leader \`${spawnedLeaderOwnerId}\` opened, but fleet \`${fleetSlug}\` leadership changed concurrently; ` +
+          'the concurrent registry leader was preserved and the spawned process was not reported as registered.';
       }
       if (leaderRegistered) {
         leaderControl = await ensureFleetLeaderControl({
@@ -4549,7 +4617,7 @@ export default defineTool({
       };
       return json(
         {
-          ok: opened.length > 0,
+          ok: opened.length > 0 || spawnedLeader?.registered === true,
           fleet: fleetSlug,
           leaderRole,
           callerMembership,
@@ -4557,6 +4625,7 @@ export default defineTool({
           leaderControl,
           spawnedLeader,
           leaderSpawnIgnored: leaderSpawnSkipped,
+          leaderSpawnRecoveryWarning,
           plan: planSlug,
           harness,
           agent: effAgent,
@@ -4581,12 +4650,13 @@ export default defineTool({
             (ignoredRoleNote ? `${ignoredRoleNote} ` : '') +
             `Use ${completionHandle.nextAction} to inspect the durable result before replaying.`,
         },
-        opened.length === 0,
+        opened.length === 0 && spawnedLeader?.registered !== true,
       );
     }
     const completionError = responseRace.value;
     const lines: string[] = [];
     if (ignoredRoleNote) lines.push(ignoredRoleNote);
+    if (leaderSpawnRecoveryWarning) lines.push(`⚠ ${leaderSpawnRecoveryWarning}`);
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
     // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
     // weekly-token-budget is merely tight (utilizationTight — advisory; members still launch).
@@ -4769,7 +4839,7 @@ export default defineTool({
         );
       }
     }
-    if (opened.length) {
+    if (opened.length || spawnedLeader) {
       if (seatPin) {
         lines.push(
           `Seats (P-005): ${opened.length} member${opened.length === 1 ? '' : 's'} launched FROM slot \`${seatPin.ref}\` — ${seatPin.consumedBefore} of ${seatPin.delegated} seat${seatPin.delegated === 1 ? '' : 's'} were already consumed; each member consumes one at boot (the cap re-checks there too).`,
@@ -4781,7 +4851,7 @@ export default defineTool({
       // paid a spawn to avoid, and (worse) it would then believe the fleet is supervised
       // by itself rather than by the agent that actually holds the role.
       if (callerExcludedFromFleet) {
-        if (spawnedLeader) {
+        if (spawnedLeader?.registered) {
           lines.push(
             `THIS FLEET IS LED BY A LAUNCHED AGENT, NOT BY YOU — \`${spawnedLeader.ownerId}\` was spawned to lead it ` +
               `and already holds the role in the registry. You are NOT in this fleet and you do NOT enter AUTO mode ` +
@@ -4792,6 +4862,12 @@ export default defineTool({
             `  ↳ Stay connected without polling: \`coord:couple { b: "${spawnedLeader.ownerId}" }\` makes its state ` +
               `visible to you, and \`coord:send\` reaches it directly. It is addressable NOW — the identity was pinned ` +
               `before the fleet row was written — even though it is still booting.`,
+          );
+        } else if (spawnedLeader) {
+          lines.push(
+            `THE DELEGATED LEADER PROCESS \`${spawnedLeader.ownerId}\` OPENED BUT DID NOT WIN REGISTRY AUTHORITY. ` +
+              `A concurrent leader change was preserved; you remain outside the fleet, and the spawned process ` +
+              `was briefed not to steer unless coord:orient names it as leader.`,
           );
         } else {
           lines.push(
@@ -4833,7 +4909,7 @@ export default defineTool({
     stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
     return json(
       {
-        ok: launchTransaction.verifiedMemberIds.length > 0,
+        ok: launchTransaction.verifiedMemberIds.length > 0 || spawnedLeader?.registered === true,
         fleet: fleetSlug,
         leaderRole,
         callerMembership,
@@ -4844,7 +4920,7 @@ export default defineTool({
         leaderControl,
         // goal-mode-hardening P-009 / D-013: the agent launched to lead this fleet
         // (null on an ordinary caller-led launch). `ownerId` is the PRE-PINNED coord
-        // identity already recorded as the fleet's leader, so it is addressable
+        // identity pre-pinned for this launch, so it is addressable
         // (coord:send / coord:presence / coord:couple) from the moment this returns —
         // before that agent has finished booting.
         spawnedLeader,
@@ -4852,6 +4928,7 @@ export default defineTool({
         // (the fleet already existed with a leader). Surfaced rather than silent: the
         // caller believes it is not leading, and on this path it may well be.
         leaderSpawnIgnored: leaderSpawnSkipped,
+        leaderSpawnRecoveryWarning,
         plan: planSlug,
         harness,
         agent: effAgent,
@@ -4945,7 +5022,7 @@ export default defineTool({
           : null,
         message: [...goalLaunchNotes, ...(pairedAnnouncement ?? []), ...lines].join('\n'),
       },
-      launchTransaction.verifiedMemberIds.length === 0,
+      launchTransaction.verifiedMemberIds.length === 0 && spawnedLeader?.registered !== true,
     );
   },
 });
