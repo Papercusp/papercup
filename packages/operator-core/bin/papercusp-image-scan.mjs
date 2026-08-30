@@ -259,6 +259,27 @@ vuln_by_ecosystem=\$(jq -c '[.matches[]?.artifact.type] | group_by(.) | map({key
 if [ "\$vuln_by_ecosystem" = "null" ]; then detail="vuln-ecosystem-parse-failed"; exit 1; fi
 vuln_fixable_by_ecosystem=\$(jq -c '[.matches[]? | select(.vulnerability.fix.state == "fixed") | .artifact.type] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
 if [ "\$vuln_fixable_by_ecosystem" = "null" ]; then detail="vuln-fix-ecosystem-parse-failed"; exit 1; fi
+# SEVERITY x ECOSYSTEM, crossed — the field that says whether a red gate is reachable AT ALL.
+# The two marginals above carry exactly the defect the fixable/severity pair was added to fix,
+# one axis over: 1566 High beside linux-kernel 2389 cannot answer "how many of the DENIED
+# findings are kernel", and that is the number separating "remove the vendored Go binaries and
+# pass" from "no userland change can ever pass, so the scan must be SCOPED instead". The
+# threshold is not the lever — D-172/174/175 forbid moving it — so an unreachable population
+# has to be PROVEN, and until this field existed it could only be assumed (WI-1182614).
+vuln_by_severity_ecosystem=\$(jq -c '[.matches[]? | (.vulnerability.severity + " @ " + .artifact.type)] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_by_severity_ecosystem" = "null" ]; then detail="vuln-severity-ecosystem-parse-failed"; exit 1; fi
+# WHICH ARTIFACTS carry the mass. A Go binary embeds its entire vendored dependency tree, so
+# every vulnerable module is reported individually and keeps being reported until the VENDOR
+# rebuilds the binary. Note "fixable" means an upstream fixed version EXISTS — never that any
+# apt action delivers it — so a fixable count is an upstream-existence census, not a remediation
+# plan. Ranked top-N: the distinct-artifact count is unbounded in principle.
+vuln_by_artifact=\$(jq -c '[.matches[]? | (.artifact.name + " " + (.artifact.version // "?"))] | group_by(.) | map({name:.[0], count:length}) | sort_by(-.count) | .[0:25] | map({key:.name, value:.count}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_by_artifact" = "null" ]; then detail="vuln-artifact-parse-failed"; exit 1; fi
+# The DENOMINATOR for the capped list above, emitted BESIDE it so a top-25 floor can never be
+# read as the whole population. A bounded measurement has to declare its boundedness on the
+# aggregate itself; a caveat that lives only in a comment is one the reader never sees.
+vuln_distinct_artifacts=\$(jq '[.matches[]? | (.artifact.name + " " + (.artifact.version // "?"))] | unique | length' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_distinct_artifacts" = "null" ]; then detail="vuln-artifact-census-parse-failed"; exit 1; fi
 
 # Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
 # emitted: this document is read back over SSH and lands in release logs and work-item
@@ -291,10 +312,13 @@ jq -n \\
   --argjson vulnerabilityFixableBySeverity "\$vuln_fixable_by_severity" \\
   --argjson vulnerabilityByEcosystem "\$vuln_by_ecosystem" \\
   --argjson vulnerabilityFixableByEcosystem "\$vuln_fixable_by_ecosystem" \\
+  --argjson vulnerabilityBySeverityAndEcosystem "\$vuln_by_severity_ecosystem" \\
+  --argjson vulnerabilityByArtifact "\$vuln_by_artifact" \\
+  --argjson vulnerabilityDistinctArtifacts "\$vuln_distinct_artifacts" \\
   --argjson secretsByArea "\$secrets_by_area" \\
   --argjson secretsByRule "\$secrets_by_rule" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
+  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, vulnerabilityByEcosystem:\$vulnerabilityByEcosystem, vulnerabilityFixableByEcosystem:\$vulnerabilityFixableByEcosystem, vulnerabilityBySeverityAndEcosystem:\$vulnerabilityBySeverityAndEcosystem, vulnerabilityByArtifact:\$vulnerabilityByArtifact, vulnerabilityDistinctArtifacts:\$vulnerabilityDistinctArtifacts, secretsByArea:\$secretsByArea, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -500,6 +524,30 @@ async function scan(input) {
       : {}),
     ...(isPlainObject(measurement.vulnerabilityFixableByEcosystem)
       ? { vulnerabilityFixableByEcosystem: measurement.vulnerabilityFixableByEcosystem }
+      : {}),
+    // SEVERITY x ECOSYSTEM. The two marginals above are independent, so neither answers the
+    // question that actually decides the gate: of the findings at/above the denied severity,
+    // how many are linux-kernel and therefore unreachable by ANY userland remediation? If the
+    // kernel alone clears the deny threshold, every plan to strip vendored Go binaries is
+    // wasted work, and the honest move is to SCOPE the scan rather than chase the count.
+    ...(isPlainObject(measurement.vulnerabilityBySeverityAndEcosystem)
+      ? {
+          vulnerabilityBySeverityAndEcosystem:
+            measurement.vulnerabilityBySeverityAndEcosystem,
+        }
+      : {}),
+    // WHICH artifacts carry the mass — a ranked top-25, paired ALWAYS with the distinct-artifact
+    // total below. The pair is the point: a capped list read as a whole population is how a
+    // floor becomes a confident wrong total, so the denominator ships beside the list, not in
+    // a comment the reader never sees.
+    ...(isPlainObject(measurement.vulnerabilityByArtifact)
+      ? { vulnerabilityByArtifact: measurement.vulnerabilityByArtifact }
+      : {}),
+    ...(Number.isSafeInteger(measurement.vulnerabilityDistinctArtifacts)
+      ? {
+          vulnerabilityDistinctArtifacts:
+            measurement.vulnerabilityDistinctArtifacts,
+        }
       : {}),
     ...(isPlainObject(measurement.secretsByRule)
       ? { secretsByRule: measurement.secretsByRule }

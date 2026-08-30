@@ -26,13 +26,33 @@ import { describe, expect, it } from 'vitest';
 const SCANNER_SOURCE = fileURLToPath(new URL('../../bin/papercusp-image-scan.mjs', import.meta.url));
 const ADAPTER_SOURCE = fileURLToPath(new URL('./gcp-image-family-adapter.ts', import.meta.url));
 
-/** Keys of the conditional `findings` projection: each appears as `{ X: measurement.X }`. */
+/**
+ * Keys of the conditional `findings` projection: each appears as `{ X: measurement.X }`.
+ *
+ * MATCHED WHITESPACE-INSENSITIVELY, AND THAT IS LOAD-BEARING. This pattern was once written
+ * to the single-line spelling with literal spaces, which silently excused any entry a
+ * formatter had wrapped:
+ *
+ *     ...(isPlainObject(measurement.vulnerabilityBySeverityAndEcosystem)
+ *       ? {
+ *           vulnerabilityBySeverityAndEcosystem:
+ *             measurement.vulnerabilityBySeverityAndEcosystem,
+ *         }
+ *       : {}),
+ *
+ * That is not an exotic spelling — it is exactly what Prettier produces once
+ * `X: measurement.X` passes the print width, so the fields most likely to escape the guard
+ * were the ones with the longest, most specific names. A field wrapped that way vanished
+ * from `emitted`, so its missing adapter reader was reported as compliance. The guard did
+ * not fail; it stopped looking, which is worse, because a green run is read as proof.
+ * Keep this tolerant of line breaks: the subject is the field set, never its formatting.
+ */
 function findingsFields(source: string): string[] {
   const block = source.match(/const findings = \{[\s\S]*?\n {2}\};/);
   if (!block) {
     throw new Error('could not locate the host `findings` projection — extraction is stale, not the subject');
   }
-  return [...block[0].matchAll(/\{ (\w+): measurement\.\1 \}/g)].map((match) => match[1]);
+  return [...block[0].matchAll(/\{\s*(\w+):\s*measurement\.\1\s*,?\s*\}/g)].map((match) => match[1]);
 }
 
 /** Keys of the object the host actually returns, including shorthand properties. */
