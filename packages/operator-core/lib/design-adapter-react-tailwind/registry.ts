@@ -232,3 +232,17 @@ export function makeReactTailwindRegistry(opts: { sourcePaths: string[] }): Regi
 
 /** Test-only export of the curated set for round-trip + integration tests. */
 export const _CURATED_FOR_TESTS = HANDCURATED;
+
+/**
+ * The RETIRED `@papercusp/ui` package, matched at a package boundary.
+ *
+ * The trailing `(?![\w-])` is load-bearing and must not be simplified back to a plain
+ * `.includes('@papercusp/ui')`: the LIVE `@papercusp/ui-primitives` package — which the
+ * curated registry deliberately points implementers at — contains that string as a prefix,
+ * so a substring test reports the live primitives package as retired UI (WI-1222525). This
+ * still matches '@papercusp/ui' and '@papercusp/ui/anything'.
+ *
+ * Exported so the registry and code-emit guards share ONE definition; two copies of a
+ * lookahead this subtle drift apart the first time the retired name changes.
+ */
+export const RETIRED_UI_IMPORT = /@papercusp\/ui(?![\w-])/;
