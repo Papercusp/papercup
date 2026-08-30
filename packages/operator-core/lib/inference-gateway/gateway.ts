@@ -90,6 +90,13 @@ import {
   type CodexCliRouteValue,
 } from './codex-cli-kernel-adapter';
 import {
+  createLocalKernelAdapter,
+  type LocalChunk,
+  type LocalFetchResponse,
+  type LocalResponseMetadata,
+  type LocalRouteValue,
+} from './local-kernel-adapter';
+import {
   createClaudeKernelAdapter,
   type ClaudeChunk,
   type ClaudeClassifyInput,
@@ -3224,176 +3231,166 @@ export function createInferenceGateway(deps: GatewayDeps) {
         coldStartError = await ensureOnDemandBackendForModel(model);
       }
 
-      const tried = new Set<string>();
-      let lastError: string | null = null;
-      let previousBackendId: string | null = null;
-      // At most ONE cold start per request (D-014). Bounds the blast radius of the rescue below:
-      // a backend that keeps answering 502 after a successful start is a real fault to report, not
-      // a reason to restart it again.
-      let coldStartAttempted = false;
-      for (let attempt = 0; attempt < LOCAL_BACKEND_MAX_ATTEMPTS; attempt++) {
+      // P-007: the hand-rolled attempt loop is GONE. `executeGatewayRequestKernel` owns
+      // attempt counting, failover bookkeeping, per-attempt deadlines, abort wiring, the
+      // stage spans and the response relay; `createLocalKernelAdapter` owns backend
+      // selection, the forward, and the on-demand cold-start rescue.
+      //
+      // D-015 side-effect difference over the deleted region: the only `X++` in it was the
+      // loop's own `attempt`, which the kernel now owns as `attemptsUsed`; every pool
+      // side effect (`recordStart`/`recordEnd`/`recordOutcome`) moved into the adapter's
+      // `executeAttempt`, and `recordFailover` is now the kernel's `adoptRoute`, which
+      // fires on exactly the same condition the ladder used — the backend CHANGING.
+      const localAttemptTimeoutMs = deps.localBackendTimeoutMs ?? DEFAULT_LOCAL_BACKEND_TIMEOUT_MS;
+      const kernelAdapter = createLocalKernelAdapter({
+        pool,
+        model,
         // P-028 slot affinity: the owner's last backend is preferred while eligible, so the
         // session's KV prefix survives across hops (a process switch = full re-prefill).
-        stageSpan?.beginStage('routeSelection');
-        const backend: LocalBackend | null = pool.select(model, tried, ownerId || undefined);
-        stageSpan?.endStage('routeSelection');
-        if (!backend) break;
-        if (previousBackendId !== null && previousBackendId !== backend.id) stageSpan?.recordFailover();
-        previousBackendId = backend.id;
-        tried.add(backend.id);
-        pool.recordStart(backend.id);
-        let settled = false;
-        try {
-          stageSpan?.recordAttempt();
-          stageSpan?.beginStage('upstreamTtfb');
-          const upstream = await doFetch(`${backend.baseUrl}${url}`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: bodyBuf,
-            signal: AbortSignal.timeout(deps.localBackendTimeoutMs ?? DEFAULT_LOCAL_BACKEND_TIMEOUT_MS),
-          } as RequestInit);
-          stageSpan?.endStage('upstreamTtfb');
-          settled = true;
-          pool.recordEnd(backend.id);
-          pool.recordOutcome(backend.id, upstream.ok || (upstream.status >= 400 && upstream.status < 500));
+        ownerId: ownerId || null,
+        url,
+        body: new Uint8Array(bodyBuf),
+        // Request-derived, parsed once above — the same one fact drives the span.
+        streaming: isStream,
+        attemptTimeoutMs: localAttemptTimeoutMs,
+        fetchImpl: (target, init) =>
+          doFetch(target, init as RequestInit) as unknown as Promise<LocalFetchResponse>,
+        isUpstreamUnreachable,
+        startableOnDemand,
+        ensureOnDemandBackend,
+        // The DEAD-END pre-flight already ran above; its result seeds the adapter so
+        // `state()` stays the single terminal-rendering source rather than a second copy.
+        initialColdStartError: coldStartError,
+        log,
+      });
 
-          // COLD START AT THE FORWARD (D-014) — the reachable half of P-008, which the dead-end
-          // pre-flight above cannot cover. A 502/503/504 from an ON-DEMAND backend is not an answer
-          // to relay: ornith sits behind a sanitizing proxy that turns a dead unit into a well-formed
-          // 502, so `catch` never fires and the pool's own health signal lags the stop by up to ~60s
-          // (a 30s probe tick x HEALTH_FAIL_THRESHOLD=2). Relaying it made the caller eat the 502 and
-          // merely demoted the backend for the NEXT request — two users paid before the pre-flight
-          // could ever engage. Start the unit and retry THIS request instead.
-          if (isUpstreamUnreachable(upstream.status) && startableOnDemand(backend) && !coldStartAttempted) {
-            coldStartAttempted = true;
-            lastError = `upstream ${upstream.status} from ${backend.baseUrl}`;
-            log(
-              'warn',
-              `inference-gateway: local backend '${backend.id}' answered ${upstream.status} (upstream unreachable) — attempting cold start and one retry`,
-            );
-            // Release the socket: we are NOT relaying this body, and an un-consumed response body
-            // holds the connection open until GC.
-            try {
-              await upstream.body?.cancel();
-            } catch {
-              /* already torn down */
-            }
-            coldStartError = await ensureOnDemandBackend(backend);
-            if (!coldStartError) {
-              // Retry THIS backend — it is the one we just started, and it is the only one serving
-              // the model in the single-backend case that motivates all of this.
-              tried.delete(backend.id);
-              continue;
-            }
-            break; // cold start failed — fall through to the 502 that NAMES the failure
-          }
-
-          const headers: Record<string, string> = {
-            'content-type': upstream.headers.get('content-type') ?? 'application/json',
-          };
-          res.writeHead(upstream.status, headers);
-          if (upstream.body) {
-            // GUARD the pipe (backend-reliability-100pct-2026-07-03 W2.2): an unhandled stream
-            // 'error' here (e.g. the AbortSignal.timeout above firing mid-body, or an upstream
-            // reset) is emitted with NO listener → Node throws it as an uncaughtException →
-            // whole-gateway crash. The Anthropic/Claude proxy paths (~gateway.ts:3258/3636) are
-            // already hardened this way; the local-backend path was the last unguarded pipe.
-            // Tear down both ends on error and never re-throw.
-            const nodeStream = Readable.fromWeb(upstream.body as import('stream/web').ReadableStream<Uint8Array>);
-            if (isStream) stageSpan?.beginStage('stream');
-            nodeStream.on('error', (e) => {
-              log(
-                'warn',
-                `inference-gateway: local backend '${backend.id}' stream error mid-body: ${(e as Error)?.message ?? String(e)}`,
-              );
-              try {
-                res.destroy();
-              } catch {
-                /* already torn down */
+      try {
+        await executeGatewayRequestKernel<LocalRouteValue, LocalRouteValue, LocalChunk, LocalResponseMetadata>({
+          request: {
+            lane: gatewayLaneRegistry.localOpenAiChat,
+            body: (async function* () {
+              yield bodyBuf;
+            })(),
+            ownerId: ownerId || null,
+            // The lane declares `accountPinning: 'none'`, so a pin is a 400 by contract.
+            pin: null,
+          },
+          policy: {
+            // Kernel adoption necessarily adds a request-body byte cap the hand-rolled
+            // path never had. Sized so it cannot bind on a local chat completion.
+            maxBodyBytes: Number(process.env.PAPERCUSP_GATEWAY_MAX_BODY_BYTES) || 64 * 1024 * 1024,
+            bodyReadTimeoutMs: localAttemptTimeoutMs,
+            // The ladder bounded each ATTEMPT and never the whole request, so this is set
+            // to the worst case that per-attempt budget already permits: deliberately
+            // non-binding, not a new shed policy folded into an extraction (D-003).
+            requestCeilingMs: localAttemptTimeoutMs * LOCAL_BACKEND_MAX_ATTEMPTS,
+            ttfbTimeoutMs: localAttemptTimeoutMs,
+            bodyIdleTimeoutMs: localAttemptTimeoutMs,
+            downstreamIdleTimeoutMs: localAttemptTimeoutMs,
+            maxAttempts: LOCAL_BACKEND_MAX_ATTEMPTS,
+          },
+          telemetry: requestStageTelemetry,
+          // Adopt the span this HTTP request already opened, or the kernel would begin a
+          // SECOND one and double-count the request.
+          span: stageSpan,
+          admission: {
+            // PASS-THROUGH: `executeLegacyLaneTask` already crossed the canonical durable
+            // governor before this handler was entered, so re-admitting would self-deadlock.
+            run: (_context, task) => task(),
+          },
+          adapter: kernelAdapter,
+          // Parity with the ladder, which never registered here either. Registering is a
+          // real improvement and belongs in its own change (D-003).
+          inFlight: { register: () => ({ unregister: () => undefined }) },
+          downstream: {
+            start: ({ status, metadata }) => {
+              res.writeHead(status, { 'content-type': metadata.contentType });
+            },
+            write: async (chunk) => {
+              // Honour downstream backpressure exactly as `nodeStream.pipe(res)` did.
+              // The old hand-rolled pipe needed an explicit 'error' guard because an
+              // unhandled stream error would crash the whole gateway; the kernel consumes
+              // the body by async iteration, so that failure is now a rejected promise it
+              // already owns rather than an unhandled event.
+              if (!res.write(chunk)) {
+                await new Promise<void>((resolve) => {
+                  const settle = () => {
+                    res.off('drain', settle);
+                    res.off('close', settle);
+                    res.off('error', settle);
+                    resolve();
+                  };
+                  res.once('drain', settle);
+                  res.once('close', settle);
+                  res.once('error', settle);
+                });
               }
-            });
-            res.on('error', () => {
-              try {
-                nodeStream.destroy();
-              } catch {
-                /* already torn down */
-              }
-            });
-            nodeStream.pipe(res);
-          } else {
-            res.end(await upstream.text().catch(() => ''));
+            },
+            end: () => {
+              res.end();
+            },
+          },
+        });
+        return;
+      } catch (kernelFailure) {
+        // The kernel ran out of routes — the ladder's fall-through past its loop. Once
+        // bytes are on the wire there is no status left to choose.
+        if (res.headersSent) {
+          try {
+            res.destroy();
+          } catch {
+            /* already torn down */
           }
           return;
-        } catch (e) {
-          stageSpan?.endStage('upstreamTtfb');
-          if (!settled) {
-            pool.recordEnd(backend.id);
-            pool.recordOutcome(backend.id, false, (e as Error).message);
-          }
-          lastError = (e as Error).message ?? String(e);
-          log(
-            'warn',
-            `inference-gateway: local backend '${backend.id}' (${backend.baseUrl}) failed for model '${model}': ${lastError} — trying another candidate`,
-          );
-
-          // D-014: the same rescue for a genuine TRANSPORT failure — a backend with no proxy in
-          // front of it refuses the connection outright instead of answering 502. `!settled` keeps
-          // this to CONNECT-time failures: a mid-body stream error means the backend was alive and
-          // already producing, so restarting it would be wrong.
-          if (!settled && startableOnDemand(backend) && !coldStartAttempted) {
-            coldStartAttempted = true;
-            coldStartError = await ensureOnDemandBackend(backend);
-            if (!coldStartError) {
-              tried.delete(backend.id);
-              continue;
-            }
-            break; // cold start failed — fall through to the 502 that NAMES the failure
-          }
         }
-      }
-      // Fell through the attempt loop with nothing forwarded. Distinguish RETRYABLE SATURATION (the
-      // model IS served by a healthy backend, but every slot is busy — select() returned null purely
-      // from being at capacity) from a genuine DEAD END (unmatched model / all-unhealthy / the
-      // backends we tried errored). D-010/D-012: saturation → 429 + Retry-After (backpressure a
-      // concurrent agent should wait-and-retry on, not a 502 it may treat as a hard failure / storm
-      // on); dead end → 502. Only saturation when we never got a backend to even try (tried.size ===
-      // 0, no transport error) — once a real backend error occurred, that's a 502.
-      if (tried.size === 0 && lastError === null && pool.saturatedFor(model)) {
-        // This is retryable backpressure from the measured backend state. The canonical durable
-        // admission lease remains the only request-level capacity authority; local routing does not
-        // maintain a second owner or backend policy cap.
-        sendJson(
-          res,
-          429,
-          {
-            type: 'error',
-            error: {
-              type: 'rate_limit_error',
-              message: `inference-gateway: local backend for model '${model}' is at capacity — retry shortly`,
+        void kernelFailure;
+        const state = kernelAdapter.state();
+
+        // Distinguish RETRYABLE SATURATION (the model IS served by a healthy backend, but
+        // every slot is busy — selection returned null purely from being at capacity) from a
+        // genuine DEAD END (unmatched model / all-unhealthy / the backends we tried errored).
+        // D-010/D-012: saturation → 429 + Retry-After (backpressure a concurrent agent should
+        // wait-and-retry on, not a 502 it may treat as a hard failure / storm on); dead end →
+        // 502. Only saturation when we never got a backend to even try (triedCount === 0, no
+        // transport error) — once a real backend error occurred, that's a 502.
+        if (state.triedCount === 0 && state.lastError === null && pool.saturatedFor(model)) {
+          // Retryable backpressure from the measured backend state. The canonical durable
+          // admission lease remains the only request-level capacity authority; local routing
+          // does not maintain a second owner or backend policy cap.
+          sendJson(
+            res,
+            429,
+            {
+              type: 'error',
+              error: {
+                type: 'rate_limit_error',
+                message: `inference-gateway: local backend for model '${model}' is at capacity — retry shortly`,
+              },
+              gateway: true,
             },
-            gateway: true,
+            { 'retry-after': String(LOCAL_BACKEND_SATURATION_RETRY_AFTER_SEC) },
+          );
+          return;
+        }
+        sendJson(res, 502, {
+          type: 'error',
+          // A FAILED COLD START outranks both generic readings (P-008/D-009): "we tried to start
+          // the backend that serves this model and could not" is a different operator problem
+          // from "none registered / all unhealthy", and reporting it as the latter hides the
+          // actual fault.
+          error: {
+            type: 'api_error',
+            message: `inference-gateway: no reachable local backend for model '${model}'${
+              state.coldStartError
+                ? ` (${state.coldStartError})`
+                : state.lastError
+                  ? ` (last error: ${state.lastError})`
+                  : ' (none registered / all unhealthy)'
+            }`,
           },
-          { 'retry-after': String(LOCAL_BACKEND_SATURATION_RETRY_AFTER_SEC) },
-        );
-        return;
+          gateway: true,
+        });
       }
-      sendJson(res, 502, {
-        type: 'error',
-        // A FAILED COLD START outranks both generic readings (P-008/D-009): "we tried to start the
-        // backend that serves this model and could not" is a different operator problem from "none
-        // registered / all unhealthy", and reporting it as the latter hides the actual fault.
-        error: {
-          type: 'api_error',
-          message: `inference-gateway: no reachable local backend for model '${model}'${
-            coldStartError
-              ? ` (${coldStartError})`
-              : lastError
-                ? ` (last error: ${lastError})`
-                : ' (none registered / all unhealthy)'
-          }`,
-        },
-        gateway: true,
-      });
     } catch (e) {
       // Keep an unexpected local proxy failure request-scoped after removing
       // the legacy per-client circuit's finally block.
