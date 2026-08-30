@@ -34,6 +34,7 @@ import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   GatewayRequestKernelError,
+  withPromiseDeadline,
   type GatewayKernelAdapter,
   type GatewayKernelAttemptContext,
   type GatewayKernelRoute,
@@ -197,26 +198,6 @@ function headersToObject(headers: CodexBearerFetchResponse['headers']): Record<s
   return out;
 }
 
-/**
- * Reject after `ms`. The kernel owns the TTFB and body-idle deadlines, but
- * token resolution happens inside `prepareAttempt` and so carries its own
- * bound — the same `tokenTimeoutMs` the live handler applies.
- */
-async function withTokenDeadline(promise: Promise<string>, ms: number, label: string): Promise<string> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions): CodexBearerKernelAdapter {
   const now = opts.now ?? (() => Date.now());
   // Which account the caller asked for, captured at initial selection so a
@@ -301,7 +282,7 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
       const body = shapeOnce(context).body;
       let token: string;
       try {
-        token = await withTokenDeadline(account.token(), opts.tokenTimeoutMs, `codex token '${account.accountId}'`);
+        token = await withPromiseDeadline(account.token(), opts.tokenTimeoutMs, `codex token '${account.accountId}'`);
       } catch (error) {
         // Token-read failure rotates to another account in the live handler;
         // `retryable` is what routes this to the kernel's failover path.
