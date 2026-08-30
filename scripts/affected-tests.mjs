@@ -1630,6 +1630,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     script: "lint:no-fake-timers-in-integration",
     appliesTo: (f) =>
       f === "package.json" ||
+      // apps/operator/package.json is @papercusp/web's manifest — the one that must
+      // DECLARE this script for the registry lookup above to find it. A root-only
+      // declaration made the guard silently unroutable (registered, never attached), so
+      // an edit to that manifest re-runs it.
+      f === "apps/operator/package.json" ||
       f === "scripts/check-fake-timers-in-integration-tests.mjs" ||
       f ===
         "packages/operator-core/lib/__tests__/fake-timers-integration-guard.test.ts" ||
