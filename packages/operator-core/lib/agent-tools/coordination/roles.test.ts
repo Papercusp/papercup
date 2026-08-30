@@ -93,6 +93,30 @@ describe('COORD_ROLES', () => {
   );
 
   test(
+    'the dedicated acceptance judge gets only the explicit read-only evidence tools',
+    { timeout: 60_000 },
+    async () => {
+      // The judge role is intentionally NOT a general coordination role. Its
+      // acceptance-rubric method needs these four read surfaces, but adding it
+      // to COORD_ROLES would also expose unrelated coordination tools.
+      const { default: workItemsGet } = await import('../work_items/get.js');
+      const { default: searchFulltext } = await import('../search/fulltext.js');
+      const { default: scorecardsEvaluate } = await import('../scorecards/evaluate.js');
+      const { default: pgQuery } = await import('../dev/pg_query.js');
+
+      for (const [name, tool] of [
+        ['work_items:get', workItemsGet],
+        ['search:fulltext', searchFulltext],
+        ['scorecards:evaluate', scorecardsEvaluate],
+        ['dev:pg_query', pgQuery],
+      ] as const) {
+        expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
+      }
+      expect(COORD_ROLES).not.toContain('judge');
+    },
+  );
+
+  test(
     'the fast↔deep delegation channel admits both papercup and papercup-deep (voice-release P-006)',
     // Same import-weight caveat as the test above: these pull the coord tool
     // modules' full transitive graph through vitest's transform. Same 60s

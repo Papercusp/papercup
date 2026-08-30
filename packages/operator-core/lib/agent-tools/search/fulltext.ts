@@ -22,7 +22,10 @@ import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
-const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle'] as const;
+// + judge (acceptance-rubric grading): the dedicated evaluator needs read-only
+// prose recall to follow the rubric's evidence method without gaining the
+// broader coordination/write surface.
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle', 'judge'] as const;
 
 export default defineTool({
   name: 'search:fulltext',

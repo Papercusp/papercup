@@ -185,7 +185,10 @@ export default defineTool({
   ignoreSessionPayloadTier: true,
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // The dedicated acceptance judge validates ratings and instrument evidence;
+  // keep its admission local to this read-only tool rather than widening
+  // COORD_ROLES (which would expose unrelated coordination writes).
+  agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEvaluateArgs,
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);

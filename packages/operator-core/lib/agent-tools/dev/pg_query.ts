@@ -166,7 +166,9 @@ export default defineTool({
   // which makes the machine-readable JSON invalid instead of returning a
   // parseable result that the caller can inspect or project.
   skipResultDoor: 'programmatic-caller',
-  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker'],
+  // Acceptance judges need the rubric method's ad-hoc, read-only evidence
+  // query surface; this does not widen any write-capable role set.
+  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker', 'judge'],
   // Keep the SQL and relation-description intents representable in the published
   // JSON Schema. A refinement would enforce the rule at runtime while still
   // advertising both fields as optional, which is exactly how callers ended up
