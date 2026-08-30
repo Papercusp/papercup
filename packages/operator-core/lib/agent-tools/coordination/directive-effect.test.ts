@@ -29,6 +29,9 @@ function row(over: Partial<DirectiveEffectRow> = {}): DirectiveEffectRow {
     harness_slug: 'papercusp',
     status: 'open',
     taken_by: null,
+    terminal_owner: null,
+    completion_authority: null,
+    completion_evidence: null,
     last_released_ms: null,
     closed_ts: null,
     updated_ts: null,
@@ -70,6 +73,81 @@ describe('resolveDirectiveEffect — checkpoint', () => {
       SENT,
     );
     expect(a.verdict).toBe('satisfied');
+  });
+
+  it('recognises committed terminal completion evidence as an alternative durable proof', () => {
+    const a = resolveDirectiveEffect(
+      { kind: 'checkpoint', itemId: 'WI-100' },
+      row({
+        status: 'done',
+        terminal_owner: 'su-closer',
+        completion_authority: 'committed',
+        completion_evidence: {
+          verifiedHow: 'unit',
+          testsRun: 'npm run test:file -- checkpoint.test.ts',
+          testResult: 'PASS',
+        },
+        closed_ts: String(BEFORE),
+      }),
+      SENT,
+    );
+    expect(a.verdict).toBe('pre-existing');
+    expect(a.alternativeProof).toBe('terminal-completion');
+    expect(a.evidence).toMatch(/no additional checkpoint write is possible or required/);
+  });
+
+  it('does not treat a proposed terminal record as durable checkpoint proof', () => {
+    const a = resolveDirectiveEffect(
+      { kind: 'checkpoint', itemId: 'WI-100' },
+      row({
+        status: 'done',
+        terminal_owner: 'su-closer',
+        completion_authority: 'proposed',
+        completion_evidence: {
+          verifiedHow: 'unit',
+          testsRun: 'npm run test:file -- checkpoint.test.ts',
+          testResult: 'PASS',
+        },
+      }),
+      SENT,
+    );
+    expect(a.verdict).toBe('not-yet');
+    expect(a.alternativeProof).toBeUndefined();
+  });
+
+  it('keeps terminal completion as pre-existing for generic effect attribution even when it closed later', () => {
+    const a = resolveDirectiveEffect(
+      { kind: 'checkpoint', itemId: 'WI-100' },
+      row({
+        status: 'done',
+        terminal_owner: 'su-closer',
+        completion_authority: 'committed',
+        completion_evidence: JSON.stringify({
+          verifiedHow: 'integration',
+          testsRun: 'npm run test:file -- checkpoint.test.ts',
+          testResult: 'PASS',
+        }),
+        closed_ts: String(AFTER),
+      }),
+      SENT,
+    );
+    expect(a.verdict).toBe('pre-existing');
+    expect(a.alternativeProof).toBe('terminal-completion');
+  });
+
+  it('rejects a committed row whose persisted evidence is insufficient', () => {
+    const a = resolveDirectiveEffect(
+      { kind: 'checkpoint', itemId: 'WI-100' },
+      row({
+        status: 'done',
+        terminal_owner: 'su-closer',
+        completion_authority: 'committed',
+        completion_evidence: { summary: 'closed' },
+      }),
+      SENT,
+    );
+    expect(a.verdict).toBe('not-yet');
+    expect(a.alternativeProof).toBeUndefined();
   });
 });
 

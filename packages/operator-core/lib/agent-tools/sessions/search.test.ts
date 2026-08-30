@@ -264,9 +264,9 @@ describe('sessions:search — a provenance-filtered zero must not read as a quer
     expect(parsed.zeroHitCaveat).toMatch(/owner_candidates:true/);
     expect(parsed.zeroHitCaveat).toMatch(/not-user-turn/);
     expect(parsed.zeroHitCaveat).toMatch(/drop the provenance filter|sessions:read/i);
-    // The candidate filter is already the recall path; do not tell callers to
-    // retry the same impossible classification with another text fragment.
-    expect(parsed.zeroHitCaveat).not.toMatch(/retrying with a different query fragment/i);
+    // The candidate filter is already the recall path; do not fall through to
+    // the generic QUERY-MATCH MISS framing for an impossible classification.
+    expect(parsed.zeroHitCaveat).not.toMatch(/QUERY-MATCH MISS/i);
   });
 
   it('stays silent when the provenance filter actually returned hits — nothing to explain', async () => {

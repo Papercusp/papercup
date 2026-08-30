@@ -27,13 +27,14 @@ export default defineTool({
       let state: 'ok' | 'stale' | 'failing' | 'disabled' | 'never_run' = 'ok';
       let ageSeconds: number | null = null;
       if (!settings.enabled) state = 'disabled';
+      else if (
+        stats.lastFailureAt &&
+        (!stats.lastSnapshotAt || new Date(stats.lastFailureAt) > new Date(stats.lastSnapshotAt))
+      ) state = 'failing';
       else if (!stats.lastSnapshotAt) state = 'never_run';
       else {
         ageSeconds = Math.round((Date.now() - new Date(stats.lastSnapshotAt).getTime()) / 1000);
         if (ageSeconds > STALE_THRESHOLD_SEC) state = 'stale';
-        if (stats.lastFailureAt && new Date(stats.lastFailureAt) > new Date(stats.lastSnapshotAt)) {
-          state = 'failing';
-        }
       }
 
       let freeDiskBytes: number | null = null;

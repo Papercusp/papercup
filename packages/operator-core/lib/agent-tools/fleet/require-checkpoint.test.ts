@@ -9,6 +9,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   listFleetAssignments: vi.fn(),
+  fetchDirectiveActuations: vi.fn(),
+  sendMessage: vi.fn(),
+  wakeRecipients: vi.fn(),
 }));
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -34,14 +37,14 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
   listFleetAssignments: h.listFleetAssignments,
   groupByAgent: (rows: unknown[]) => rows,
 }));
-vi.mock('../coordination/messages', () => ({ sendMessage: vi.fn() }));
+vi.mock('../coordination/messages', () => ({ sendMessage: h.sendMessage }));
 vi.mock('../coordination/inbox-wake', () => ({
-  wakeRecipients: vi.fn(async () => ({ woken: 0, staged: 0, stagedTargets: [] })),
+  wakeRecipients: h.wakeRecipients,
   reportIdleRecipients: vi.fn(async () => ({ idle: [], dormantScheduled: [], degraded: false })),
 }));
 vi.mock('../coordination/directive-effect', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../coordination/directive-effect')>()),
-  fetchDirectiveActuations: vi.fn(async () => []),
+  fetchDirectiveActuations: h.fetchDirectiveActuations,
 }));
 
 import requireCheckpointTool from './require-checkpoint';
@@ -72,6 +75,9 @@ describe('fleet:require-checkpoint dispatch timeout budget', () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.fetchDirectiveActuations.mockResolvedValue([]);
+  h.sendMessage.mockResolvedValue(undefined);
+  h.wakeRecipients.mockResolvedValue({ woken: 0, staged: 0, stagedTargets: [] });
   h.listFleetAssignments.mockImplementation(async (opts: { agent?: string; harness?: string }) =>
     opts.agent ? [presenceOnlyGroup(opts.agent)] : [],
   );
@@ -128,6 +134,33 @@ describe('fleet:require-checkpoint handler member resolution', () => {
     const out = await call('su-unknown');
 
     expect(out.data).toMatchObject({ ok: false, error: 'member_not_found', member: 'su-unknown' });
+  });
+
+  it('does not send a checkpoint directive for a committed terminal completion', async () => {
+    h.fetchDirectiveActuations.mockResolvedValue([
+      {
+        spec: { kind: 'checkpoint', itemId: 'WI-terminal' },
+        verdict: 'pre-existing',
+        alternativeProof: 'terminal-completion',
+        observedAtMs: 1_000,
+        evidence: 'WI-terminal is already terminal with committed structured completion evidence',
+      },
+    ]);
+
+    const out = (await requireCheckpointTool.handler(
+      { member: MEMBER, itemId: 'WI-terminal', workspace: 'ws-1', harness: 'papercusp' } as never,
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(out.data).toMatchObject({
+      ok: true,
+      member: MEMBER,
+      itemStateSafe: true,
+      directiveSent: false,
+      items: [{ itemId: 'WI-terminal', verdict: 'already-terminal' }],
+    });
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.wakeRecipients).not.toHaveBeenCalled();
   });
 });
 
@@ -269,6 +302,20 @@ describe('foldItemVerdict', () => {
     expect(out.verdict).toBe('unprovable');
     expect(out.evidence).toBe(a.evidence);
   });
+
+  it('terminal completion proof is safe without pretending a checkpoint was written', () => {
+    const out = foldItemVerdict(
+      {
+        ...actuation('pre-existing', 'WI-terminal', 1_000),
+        alternativeProof: 'terminal-completion',
+        evidence: 'terminal completion evidence is durable',
+      },
+      'not-running',
+      MEMBER,
+    );
+    expect(out.verdict).toBe('already-terminal');
+    expect(out.checkpointAt).toBe(new Date(1_000).toISOString());
+  });
 });
 
 describe('summarizeRequireCheckpoint', () => {
@@ -290,6 +337,13 @@ describe('summarizeRequireCheckpoint', () => {
     const s = summarizeRequireCheckpoint([outcome('landed', 'WI-1'), outcome('already-fresh', 'WI-2')]);
     expect(s.itemStateSafe).toBe(true);
     expect(s.nextAction).toBeNull();
+  });
+
+  it('terminal completion evidence is safe and called out separately', () => {
+    const s = summarizeRequireCheckpoint([outcome('already-terminal', 'WI-terminal')]);
+    expect(s.itemStateSafe).toBe(true);
+    expect(s.nextAction).toBeNull();
+    expect(s.summary).toMatch(/terminal completion/);
   });
 
   it('safe summary still scopes its claim to work-item state', () => {

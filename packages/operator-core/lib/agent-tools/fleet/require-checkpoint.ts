@@ -40,12 +40,13 @@
  * when the roster read failed and it honestly cannot tell.
  *
  * WHAT THE LEADER READS. `itemStateSafe` is true ONLY when every required item is
- * `already-fresh` or `landed` — never for `pending`, `staged`, `undeliverable`, or
- * `unprovable`. The one thing this tool must never do is let a leader read "safe" and
- * then destroy unsaved work, so every not-proven path states what is still unknown and
- * `nextAction` names the concrete lever. Its scope is deliberately narrow and SAID so:
- * work-item checkpoints. Session-level carry (`loop:checkpoint`) is a different ledger
- * and is not claimed here.
+ * `already-fresh`, `already-terminal`, or `landed` — never for
+ * `pending`, `staged`, `undeliverable`, or `unprovable`. The one thing this tool must
+ * never do is let a leader read "safe" and then destroy unsaved work, so every
+ * not-proven path states what is still unknown and `nextAction` names the concrete
+ * lever. Its scope is deliberately narrow and SAID so: work-item checkpoints.
+ * Session-level carry (`loop:checkpoint`) is a different ledger and is not claimed
+ * here.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -76,6 +77,7 @@ export const POLL_INTERVAL_MS = 2_000;
 
 export type CheckpointVerdict =
   | 'already-fresh'
+  | 'already-terminal'
   | 'landed'
   | 'pending'
   | 'staged'
@@ -97,7 +99,7 @@ export interface CheckpointItemOutcome {
   verdict: CheckpointVerdict;
   /** One line naming what was observed — and, when unproven, what would prove it. */
   evidence: string;
-  /** ISO of the observed checkpoint, when one is recorded. */
+  /** ISO of the observed durable evidence timestamp, when one is recorded. */
   checkpointAt: string | null;
 }
 
@@ -167,10 +169,11 @@ export function deliveryEvidence(outcome: DeliveryOutcome, member: string, dorma
 /**
  * PURE: fold one item's ledger actuation + the delivery outcome into the verdict.
  *
- * Ordering matters and is deliberate: a checkpoint that actually LANDED outranks every
- * delivery complaint. A member can be classified `not-running` a moment after it wrote
- * the checkpoint and exited — the state is durable, which is the only question asked,
- * so that must read `landed`, not `undeliverable`.
+ * Ordering matters and is deliberate: a checkpoint that actually LANDED, or a durable
+ * terminal completion that makes another checkpoint impossible, outranks every delivery
+ * complaint. A member can be classified `not-running` a moment after it wrote the
+ * checkpoint and exited — the state is durable, which is the only question asked, so
+ * that must read `landed`, not `undeliverable`.
  */
 export function foldItemVerdict(
   actuation: DirectiveActuation,
@@ -180,6 +183,14 @@ export function foldItemVerdict(
 ): CheckpointItemOutcome {
   const itemId = actuation.spec.itemId;
   const checkpointAt = actuation.observedAtMs ? new Date(actuation.observedAtMs).toISOString() : null;
+  if (actuation.alternativeProof === 'terminal-completion') {
+    return {
+      itemId,
+      verdict: 'already-terminal',
+      evidence: actuation.evidence,
+      checkpointAt,
+    };
+  }
   if (actuation.verdict === 'satisfied') {
     return { itemId, verdict: 'landed', evidence: actuation.evidence, checkpointAt };
   }
@@ -200,7 +211,11 @@ export function foldItemVerdict(
 }
 
 /** The verdicts that PROVE the item's state is durable. Nothing else counts. */
-const SAFE_VERDICTS: ReadonlySet<CheckpointVerdict> = new Set<CheckpointVerdict>(['already-fresh', 'landed']);
+const SAFE_VERDICTS: ReadonlySet<CheckpointVerdict> = new Set<CheckpointVerdict>([
+  'already-fresh',
+  'already-terminal',
+  'landed',
+]);
 
 export interface RequireCheckpointSummary {
   itemStateSafe: boolean;
@@ -227,12 +242,14 @@ export function summarizeRequireCheckpoint(outcomes: readonly CheckpointItemOutc
   const unsafe = outcomes.filter((o) => !SAFE_VERDICTS.has(o.verdict));
   if (unsafe.length === 0) {
     const landed = outcomes.filter((o) => o.verdict === 'landed').length;
-    const fresh = outcomes.length - landed;
+    const terminal = outcomes.filter((o) => o.verdict === 'already-terminal').length;
+    const fresh = outcomes.length - landed - terminal;
     return {
       itemStateSafe: true,
       nextAction: null,
       summary:
-        `All ${outcomes.length} item(s) have durable checkpoints (${landed} written on this directive, ${fresh} already fresh). ` +
+        `All ${outcomes.length} item(s) have durable item state (${landed} checkpoint(s) written on this directive, ${fresh} already fresh, ` +
+        `${terminal} terminal completion(s) already durable). ` +
         'Safe to stand down / reassign / advise compaction, as far as WORK-ITEM state goes — session-level carry (loop:checkpoint) is a separate ledger and was not checked.',
     };
   }
@@ -282,8 +299,9 @@ export default defineTool({
     "Force a fleet member to checkpoint its in-flight state and RETURN whether it landed — the pre-check before " +
     "standing a member down, killing it, reassigning its lane, or advising compaction. Skips the wake when a " +
     "checkpoint is already fresh (freshSec). The verdict is DERIVED from the checkpoint ledger (woken:1 is delivery, " +
-    "not compliance): itemStateSafe is true ONLY when every item is already-fresh or landed, with per-item verdicts " +
-    "(already-fresh|landed|pending|staged|undeliverable|unprovable), evidence, and a nextAction. { waitSec } blocks " +
+    "not compliance): itemStateSafe is true ONLY when every item is already-fresh, already-terminal, or landed, " +
+    "with per-item verdicts (already-fresh|already-terminal|landed|pending|staged|undeliverable|unprovable), " +
+    "evidence, and a nextAction. { waitSec } blocks " +
     "until it lands. Scope: work-item checkpoints only — session carry (loop:checkpoint) is a separate ledger.",
   guidance: {
     when:
@@ -432,11 +450,14 @@ export default defineTool({
     const needed: DirectiveEffectSpec[] = [];
     for (let i = 0; i < specs.length; i++) {
       const a = baseline[i];
-      if (a && a.verdict === 'satisfied') {
+      if (a && (a.verdict === 'satisfied' || a.alternativeProof === 'terminal-completion')) {
+        const terminal = a.alternativeProof === 'terminal-completion';
         alreadyFresh.push({
           itemId: specs[i].itemId,
-          verdict: 'already-fresh',
-          evidence: `checkpoint is already within the ${freshSec}s freshness window (${a.evidence}) — no directive sent.`,
+          verdict: terminal ? 'already-terminal' : 'already-fresh',
+          evidence: terminal
+            ? `${a.evidence} — no directive sent.`
+            : `checkpoint is already within the ${freshSec}s freshness window (${a.evidence}) — no directive sent.`,
           checkpointAt: a.observedAtMs ? new Date(a.observedAtMs).toISOString() : null,
         });
       } else {
@@ -520,7 +541,10 @@ export default defineTool({
     let actuations = await probe();
     if (waitSec > 0) {
       const deadline = Date.now() + waitSec * 1000;
-      while (actuations.some((a) => a.verdict !== 'satisfied') && Date.now() + POLL_INTERVAL_MS <= deadline) {
+      while (
+        actuations.some((a) => a.verdict !== 'satisfied' && a.alternativeProof !== 'terminal-completion') &&
+        Date.now() + POLL_INTERVAL_MS <= deadline
+      ) {
         await sleep(POLL_INTERVAL_MS);
         actuations = await probe();
       }

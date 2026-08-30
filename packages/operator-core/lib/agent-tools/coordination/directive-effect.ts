@@ -18,7 +18,9 @@
  *
  *   checkpoint    → harness_shared.carry_notes, scope `workitem:<harness>:<id>`,
  *                   `updated_ts` newer than the directive (the same join
- *                   listActiveClaimFreshnessForOwner uses for the flush gate)
+ *                   listActiveClaimFreshnessForOwner uses for the flush gate), or
+ *                   a committed/validated terminal completion record as a
+ *                   checkpoint-safety alternative
  *   claim-release → the item no longer has a live holder AND `last_released_at`
  *                   post-dates the directive
  *   terminal      → `status` in the terminal set, closed after the directive
@@ -46,6 +48,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { isTerminalStateInput } from '../../work-item-dispatch-states';
+import { CompletionVerificationEvidenceSchema } from '../../coord-lifecycle/records';
+import { isSufficientEvidence } from '../../work-item-completion-authority';
 
 /** The side effects a directive can name. Deliberately small: each one is a fact the
  *  platform already records, so none of them needs the recipient's cooperation to
@@ -63,10 +67,13 @@ export interface DirectiveEffectSpec {
 }
 
 export type DirectiveEffectVerdict = 'satisfied' | 'not-yet' | 'pre-existing' | 'unknown';
+export type DirectiveAlternativeProof = 'terminal-completion';
 
 export interface DirectiveActuation {
   spec: DirectiveEffectSpec;
   verdict: DirectiveEffectVerdict;
+  /** A durable terminal completion can prove checkpoint safety without being caused by this directive. */
+  alternativeProof?: DirectiveAlternativeProof;
   /** Epoch ms of the observed effect, when one is recorded. */
   observedAtMs: number | null;
   /** One line naming what was observed — and, for `unknown`, what WOULD prove it. */
@@ -82,12 +89,43 @@ export interface DirectiveEffectRow {
   harness_slug: string;
   status: string | null;
   taken_by: string | null;
+  terminal_owner: string | null;
+  completion_authority: string | null;
+  completion_evidence: unknown;
   /** epoch ms; bigint columns arrive as strings from postgres-js. */
   last_released_ms: string | number | null;
   closed_ts: string | number | null;
   updated_ts: string | number | null;
   /** max(carry_notes.updated_ts) for this item's checkpoint scope. */
   checkpoint_ms: string | number | null;
+}
+
+function persistedCompletionEvidence(value: unknown) {
+  let candidate = value;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  const parsed = CompletionVerificationEvidenceSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * A terminal item with a committed/validated, structured completion record has no
+ * in-flight item state left to checkpoint. This is an ALTERNATIVE proof for the
+ * checkpoint safety primitive, not a claim that the checkpoint directive itself
+ * caused the terminal close.
+ */
+function hasDurableTerminalCompletion(row: DirectiveEffectRow): boolean {
+  const status = String(row.status ?? '').trim();
+  if (!status || !isTerminalStateInput(status)) return false;
+  if (!String(row.terminal_owner ?? '').trim()) return false;
+  if (row.completion_authority !== 'committed' && row.completion_authority !== 'validated') return false;
+  const evidence = persistedCompletionEvidence(row.completion_evidence);
+  return evidence != null && isSufficientEvidence(evidence);
 }
 
 function toMs(v: string | number | null | undefined): number | null {
@@ -123,19 +161,43 @@ export function resolveDirectiveEffect(
   switch (spec.kind) {
     case 'checkpoint': {
       const ms = toMs(row.checkpoint_ms);
-      if (ms == null) {
-        return {
-          ...base,
-          verdict: 'not-yet',
-          evidence: `no checkpoint has ever been written for ${spec.itemId}.`,
-        };
-      }
-      if (ms >= sentAtMs) {
+      if (ms != null && ms >= sentAtMs) {
         return {
           spec,
           verdict: 'satisfied',
           observedAtMs: ms,
           evidence: `checkpoint written at ${iso(ms)}, after the directive (${iso(sentAtMs)}).`,
+        };
+      }
+      if (hasDurableTerminalCompletion(row)) {
+        const terminalMs = toMs(row.closed_ts) ?? toMs(row.updated_ts);
+        const status = String(row.status ?? '').trim();
+        const authority = row.completion_authority;
+        const timing =
+          terminalMs == null
+            ? 'with no close timestamp'
+            : terminalMs >= sentAtMs
+              ? `at ${iso(terminalMs)}, after the directive (${iso(sentAtMs)})`
+              : `at ${iso(terminalMs)}, before the directive (${iso(sentAtMs)})`;
+        return {
+          spec,
+          // This is an alternative proof for checkpoint SAFETY, not evidence that
+          // the named checkpoint effect happened. Keep the generic actuation
+          // contract honest: a checkpoint directive must not be marked acted-on
+          // merely because the item later reached a durable terminal close.
+          verdict: 'pre-existing',
+          alternativeProof: 'terminal-completion',
+          observedAtMs: terminalMs,
+          evidence:
+            `${spec.itemId} is already terminal (\`${status}\`) with ${authority} structured completion evidence ` +
+            `${timing}; the checkpoint directive is not attributable, but no additional checkpoint write is possible or required.`,
+        };
+      }
+      if (ms == null) {
+        return {
+          ...base,
+          verdict: 'not-yet',
+          evidence: `no checkpoint has ever been written for ${spec.itemId}.`,
         };
       }
       return {
@@ -291,6 +353,9 @@ export async function fetchDirectiveActuations(
              wi.harness_slug,
              wi.status,
              wi.taken_by,
+             wi.terminal_owner,
+             wi.authority AS completion_authority,
+             wi.payload -> '_completionEvidence' AS completion_evidence,
              (extract(epoch FROM wi.last_released_at) * 1000)::bigint AS last_released_ms,
              wi.closed_ts,
              wi.updated_ts,

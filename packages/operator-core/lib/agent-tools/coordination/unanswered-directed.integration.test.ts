@@ -302,7 +302,7 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
          terminal_owner, authority, created_ts, updated_ts, closed_ts)
       VALUES
         (${effectWorkspace}, 'papercusp', ${EFFECT_ITEM}, 'bug', ${`terminal fixture ${EFFECT_ITEM}`}, 'done',
-         ${payload}::jsonb, ${MEMBER.ownerId}, 'committed', ${closedAt - 1}, ${closedAt}, ${closedAt})
+         ${payload}::text::jsonb, ${MEMBER.ownerId}, 'committed', ${closedAt - 1}, ${closedAt}, ${closedAt})
     `;
 
     const actuations = await fetchDirectiveActuations(
