@@ -10,6 +10,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { admissionIdentity } from './harness/improvements/digest';
 import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
@@ -432,6 +433,44 @@ async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promis
 
 type BulkModelResponse = Awaited<ReturnType<PromoterLlmCall>>;
 
+/**
+ * Is this thrown model-call failure worth retrying the batch for?
+ *
+ * ASK THE CLASSIFIER THAT ALREADY RAN — do not re-parse the message. `llmCall`
+ * throws `LlmCallError(turn)` where `turn` is a `TurnError` from
+ * `classifyHttpError`, carrying a computed `retryable` (true for rate_limited /
+ * overloaded / timeout / transient_io, false for usage_limit / auth /
+ * context_overflow / permanent). Reading that structured verdict preserves the
+ * fail-fast on a walled account or bad token while retrying real blips.
+ *
+ * WHY THIS EXISTS (WI-882767, 2026-08-30): the message-regex path silently
+ * discarded a 2h34m run. undici surfaces a socket that dies mid-response as the
+ * bare word `terminated`, so the thrown message was `anthropic-direct error:
+ * terminated` — which matches NEITHER available network heuristic (the reaper's
+ * ECONNRESET/`socket hang up`/`fetch failed` set, nor loopback-fetch's, whose
+ * `UND_ERR_SOCKET` branch cannot fire here anyway because `LlmCallError` is built
+ * from a classified turn and does NOT preserve `.cause`). So the predicate
+ * returned false, batch #33 of ~37 was never retried, `judgeShard` rethrew, and
+ * the whole stage failed at ~90% having persisted nothing. The turn had said
+ * `transient_io`, `retryable: true`, the entire time.
+ *
+ * The network heuristic stays as the fallback for a non-LlmCallError throw (a
+ * raw fetch/socket failure from some future call path), where there is no turn
+ * to consult.
+ */
+export function isRetryableModelCallError(error: unknown): boolean {
+  if (isLlmCallError(error)) {
+    // `testing-shell`'s TurnError is a deliberately MINIMAL structural subset, so
+    // `retryable` is optional there even though every host classifier sets it. An
+    // explicit verdict wins; a MISSING one falls through to the heuristic below
+    // rather than reading as "not retryable" — an absent classification is not a
+    // negative one, and defaulting it to false is how this bug looked the first time.
+    const { retryable } = error.turn;
+    if (typeof retryable === 'boolean') return retryable;
+  }
+  return isTransientNetworkError(error);
+}
+
 async function callBulkModelBatchWithRetry<T>(
   call: () => Promise<BulkModelResponse>,
   validate: (response: BulkModelResponse) => T,
@@ -454,7 +493,7 @@ async function callBulkModelBatchWithRetry<T>(
     try {
       response = await call();
     } catch (error) {
-      if (!isTransientNetworkError(error) || retries >= opts.backoffsMs.length) throw error;
+      if (!isRetryableModelCallError(error) || retries >= opts.backoffsMs.length) throw error;
       await opts.delay(opts.backoffsMs[retries]!);
       retries += 1;
       continue;

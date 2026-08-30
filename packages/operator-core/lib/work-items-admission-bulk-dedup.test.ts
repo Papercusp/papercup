@@ -1,8 +1,12 @@
+import { LlmCallError } from '@papercusp/testing-shell/llm';
 import { describe, expect, it } from 'vitest';
+import { classifyHttpError } from './agent-chat-stream';
+import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import {
   assertAdmissionCensusRatchet,
   buildBulkDedupPrompt,
   bulkJudgeMaxTokens,
+  isRetryableModelCallError,
   maxPairsForOutputBudget,
   BULK_JUDGE_MAX_OUTPUT_TOKENS,
   BULK_JUDGE_TOKENS_PER_PAIR,
@@ -88,6 +92,60 @@ describe('bulk judge output-token budget', () => {
     // retuning the default must not silence this record of why the clamp exists
     expect(bulkJudgeMaxTokens(150)).toBeGreaterThan(BULK_JUDGE_MAX_OUTPUT_TOKENS);
     expect(150).toBeGreaterThan(maxPairsForOutputBudget());
+  });
+});
+
+/**
+ * A batch retry must be decided by the classifier that ALREADY RAN, not by
+ * re-parsing the error message.
+ *
+ * Measured on wi882767-bulkfix-d035-2 (2026-08-30): model call #33 of ~37 threw
+ * `anthropic-direct error: terminated` — undici's wording when a socket dies
+ * mid-response. No message heuristic in the tree matches the bare word
+ * `terminated`, so the batch was not retried, `judgeShard` rethrew, and a 2h34m
+ * stage died at ~90% having persisted nothing. `LlmCallError.turn` had said
+ * `transient_io` / `retryable: true` the whole time.
+ *
+ * These cases pin the SOURCE of the verdict (the turn) rather than any regex, so
+ * the provider can reword its transport errors without re-opening the bug.
+ */
+describe('isRetryableModelCallError', () => {
+  const asThrown = (message: string, status?: number) =>
+    new LlmCallError(classifyHttpError({ status, message }, 'anthropic'));
+
+  it('retries the transport termination that killed the d035-2 run', () => {
+    const error = asThrown('anthropic-direct error: terminated');
+    // the turn is the authority, and it classified this as a retryable blip
+    expect(error.turn.class).toBe('transient_io');
+    expect(isRetryableModelCallError(error)).toBe(true);
+  });
+
+  it('CONTROL: no message heuristic matches it — this is why the regex path could not retry', () => {
+    // Falsifiability: if this ever starts passing, the message path became
+    // capable on its own and the assertions above stop proving the fix.
+    // Deliberately the raw message, not an LlmCallError — that is the input the
+    // pre-fix predicate actually received.
+    expect(isTransientNetworkError(new Error('anthropic-direct error: terminated'))).toBe(false);
+  });
+
+  it('still FAILS FAST on a walled account or bad token — retrying those is futile', () => {
+    const auth = asThrown('invalid x-api-key', 401);
+    expect(auth.turn.retryable).toBe(false);
+    expect(isRetryableModelCallError(auth)).toBe(false);
+
+    const permanent = asThrown('malformed request', 400);
+    expect(isRetryableModelCallError(permanent)).toBe(false);
+  });
+
+  it('retries a rate limit / overload, which are transient by class', () => {
+    expect(isRetryableModelCallError(asThrown('slow down', 429))).toBe(true);
+    expect(isRetryableModelCallError(asThrown('overloaded_error', 529))).toBe(true);
+  });
+
+  it('falls back to the network heuristic when there is no turn to consult', () => {
+    // a raw socket failure from some non-LlmCallError call path
+    expect(isRetryableModelCallError(new Error('connect ECONNRESET 1.2.3.4:443'))).toBe(true);
+    expect(isRetryableModelCallError(new Error('JSON parse error'))).toBe(false);
   });
 });
 
