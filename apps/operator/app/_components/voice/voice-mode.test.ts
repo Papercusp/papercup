@@ -453,4 +453,51 @@ describe('always-on self-feedback guards (WI-4500)', () => {
     // Past the tail → the room is quiet again, real speech is trustworthy.
     expect(mod.isSelfAudioLikely(T0 + 1_500)).toBe(false);
   });
+
+  // WI-954890 — the defect the cooldown above could not see, and the reason it
+  // is now only a fail-closed fallback. isSelfAudioLikely is evaluated at
+  // DISPATCH, but it guards audio captured much earlier: end-of-speech detection
+  // costs 683ms on the shipped energy-VAD path and whisper's measured floor on
+  // the local server is a further ~827ms, so an echo transcript could not arrive
+  // in under ~1.5s — always past the 700ms window. These pin the replacement
+  // property: the verdict follows the AUDIO, so lateness cannot defeat it.
+  it('isSelfEchoCapture rejects audio recorded during playout REGARDLESS of dispatch time', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow(); // clears the playout ledger too
+    mod.__markPlayoutStarted(T0);
+    mod.__markPlayoutEnded(T0 + 3_000);
+
+    // The reply's final segment: recorded inside playout, transcribed ~1.5-3.8s
+    // later. Under the old guard this dispatched; the verdict here does not
+    // depend on when it is asked, so it cannot.
+    const finalSegment = { startedAtMs: T0 + 2_100, endedAtMs: T0 + 3_000 };
+    expect(mod.isSelfEchoCapture(finalSegment)).toBe(true);
+    // Asked again much later — same answer. This is the structural property.
+    expect(mod.isSelfEchoCapture(finalSegment)).toBe(true);
+  });
+
+  it('isSelfEchoCapture ACCEPTS user speech recorded after the room went quiet', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.__markPlayoutStarted(T0);
+    mod.__markPlayoutEnded(T0 + 1_000);
+    // Spoken well after playout + the acoustic tail — a real user turn.
+    expect(mod.isSelfEchoCapture({ startedAtMs: T0 + 2_000, endedAtMs: T0 + 3_500 })).toBe(false);
+  });
+
+  it('barge-in cancel closes the audible interval (it previously started no cooldown at all)', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.__markPlayoutStarted(T0);
+    // cancelAllSpeech() is the barge-in path; it used to clear isSynthSpeaking
+    // and leave the guard state untouched, so the cancelled reply's buffered
+    // audio was unguarded. An open interval must not be left open.
+    mod.cancelAllSpeech();
+    // Audio recorded during the cancelled playout is still ours.
+    expect(mod.isSelfEchoCapture({ startedAtMs: T0 + 100, endedAtMs: T0 + 500 })).toBe(true);
+    // …and the interval is genuinely closed, so later speech is trusted again.
+    expect(
+      mod.isSelfEchoCapture({ startedAtMs: Date.now() + 60_000, endedAtMs: Date.now() + 61_000 }),
+    ).toBe(false);
+  });
 });

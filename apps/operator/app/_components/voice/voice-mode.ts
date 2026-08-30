@@ -40,6 +40,7 @@ import {
 import { f32ToWav } from './f32-to-wav';
 import { transcribeChunk } from '@papercusp/operator-core/lib/voice-engines/whisper';
 import { startEnergyVadCapture } from './energy-vad-capture';
+import { PlayoutLedger, type CaptureWindow } from './capture-window';
 
 /**
  * Emit the voice-engagement signal the OperatorConversationProvider
@@ -1769,8 +1770,14 @@ async function runOneShotWhisperAfterWakeInner(): Promise<void> {
   const { startWhisperCapture } = await import('../../../app/_components/voice/stt-voicemode');
   let fired = false;
   whisperCapture = await startWhisperCapture('http://localhost:2022', {
-    onFinal: (text) => {
+    onFinal: (text, capture) => {
       if (fired) return;
+      // SAME GUARD ON THE WAKE-GATE PATH (WI-954890). This one-shot capture ran
+      // outside dispatchAlwaysOnUtterance and so had NO self-audio protection at
+      // all: papercup's own reply could be transcribed and dispatched as if the
+      // user had spoken it. The capture window makes the check one line, so close
+      // the hole here rather than leave it armed for the next reader.
+      if (isSelfEchoCapture(capture)) return;
       fired = true;
       setState({ lastTranscript: text });
       // Synthesize "operator <text>" so the wake-word strip doesn't drop it.
@@ -1853,7 +1860,7 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
       // P-004: always-on transcripts pass the wake-phrase gate — ambient room
       // speech is dropped; "hey papercup …" (or a follow-up inside the open
       // conversation window) dispatches to the brain.
-      onFinal: (text) => dispatchAlwaysOnUtterance(text),
+      onFinal: (text, capture) => dispatchAlwaysOnUtterance(text, capture),
     });
     setWakeListening(true);
   } catch {
@@ -1888,16 +1895,56 @@ let wakeConversationUntil = 0;
 const SELF_AUDIO_COOLDOWN_MS = 700;
 let synthQuietSince = 0; // wall-clock ms when TTS playout last ENDED; 0 = never spoke
 
-/** True while papercup is speaking, or within the AEC-settle tail after it stopped. Exported for tests. */
+/**
+ * WHY THIS IS NO LONGER THE PRIMARY GUARD (WI-954890).
+ *
+ * This asks "is playout happening NOW?" at DISPATCH time, but it is guarding
+ * audio captured much earlier, and the gap dwarfs the window: end-of-speech
+ * detection alone costs 683ms on the shipped energy-VAD path, and whisper's
+ * measured floor on the local server is a further ~827ms (≈2-3.8s for a normal
+ * reply). The 700ms cooldown had therefore always expired by the time an echo
+ * transcript arrived — the only branch below that ever fired on a real echo was
+ * `isSynthSpeaking`, which catches mid-reply segments but never the final one.
+ *
+ * The real guard is now the capture-window overlap test (`isSelfEchoCapture`).
+ * This is kept as the FAIL-CLOSED fallback for any caller that dispatches
+ * without a capture window, where the weak answer still beats none.
+ */
 export function isSelfAudioLikely(nowMs: number = Date.now()): boolean {
   if (isSynthSpeaking) return true;
   if (synthQuietSince > 0 && nowMs - synthQuietSince < SELF_AUDIO_COOLDOWN_MS) return true;
   return false;
 }
 
+/**
+ * When our own TTS was audible. Every playout start/stop is recorded here so a
+ * captured utterance can be tested for OVERLAP instead of against a clock.
+ */
+const playoutLedger = new PlayoutLedger();
+
+/**
+ * Was this audio recorded while papercup's own playout was audible?
+ *
+ * Note what is absent: a `now` argument. That is the fix — the verdict is a
+ * property of the recording, so it is the same whether the transcript arrives
+ * in 200ms or 20 seconds, and no future STT latency can outrun it. Exported for
+ * tests.
+ */
+export function isSelfEchoCapture(capture: CaptureWindow): boolean {
+  return playoutLedger.overlaps(capture);
+}
+
 /** Test seam: mark playout as just-ended (drives the cooldown branch). */
 export function __markSynthPlayoutEnded(atMs: number = Date.now()): void {
   synthQuietSince = atMs;
+}
+
+/** Test seams for the playout ledger. */
+export function __markPlayoutStarted(atMs: number = Date.now()): void {
+  playoutLedger.open(atMs);
+}
+export function __markPlayoutEnded(atMs: number = Date.now()): void {
+  playoutLedger.close(atMs);
 }
 
 // whisper.cpp on non-speech audio (silence, room tone, a TTS tail) does not only emit
@@ -1951,15 +1998,21 @@ export function gateAlwaysOnTranscript(
 export function resetWakeConversationWindow(): void {
   wakeConversationUntil = 0;
   synthQuietSince = 0;
+  playoutLedger.reset();
 }
 
-function dispatchAlwaysOnUtterance(text: string): void {
-  // HALF-DUPLEX GATE (WI-4500): never act on the mic while papercup is speaking (or
-  // in the AEC-settle tail after). Otherwise a spoken reply is re-heard, re-dispatched,
-  // and refreshes the conversation window — an unbreakable self-talk loop. This is the
-  // one chokepoint every always-on utterance passes through, and it must reject BEFORE
-  // gateAlwaysOnTranscript so the echo can't even refresh the window.
-  if (isSelfAudioLikely()) return;
+function dispatchAlwaysOnUtterance(text: string, capture?: CaptureWindow): void {
+  // HALF-DUPLEX GATE (WI-4500, repaired WI-954890): never act on the mic while
+  // papercup's own voice is in the recording. Otherwise a spoken reply is re-heard,
+  // re-dispatched, and refreshes the conversation window — an unbreakable self-talk
+  // loop. This is the one chokepoint every always-on utterance passes through, and it
+  // must reject BEFORE gateAlwaysOnTranscript so the echo can't even refresh the window.
+  //
+  // The test is on the AUDIO's own span, not on the clock at dispatch: the transcript
+  // arrives 1.5-3.8s after the audio it describes, so a dispatch-time cooldown was
+  // structurally unable to see the overlap it existed to catch. A caller with no
+  // capture window falls back to the old check — weaker, but fail-closed.
+  if (capture ? isSelfEchoCapture(capture) : isSelfAudioLikely()) return;
   // HALLUCINATION GUARD (WI-4500): whisper emits stable real-word hallucinations on
   // non-speech audio ("omid", "you", "thank you", …) that sail past isBlankTranscript
   // (it only catches bracketed markers). Drop them in always-on; PTT stays unfiltered.
@@ -1988,13 +2041,14 @@ async function startEnergyVadAlwaysOn(): Promise<void> {
   whisperCapture = await startEnergyVadCapture({
     onSpeechStart: () => setAudioReceiving(true),
     onSpeechEnd: () => setAudioReceiving(false),
-    onUtterance: async (pcm16k) => {
+    onUtterance: async (pcm16k, capture) => {
       // Drop sub-0.2s blips (16kHz → 3200 samples) that slipped the VAD.
       if (pcm16k.length < 3200) return;
       try {
         const text = (await transcribeChunk(VOICEMODE_WHISPER_URL, f32ToWav(pcm16k, 16000))).trim();
         // P-004: same wake-phrase gate as the Silero always-on path above.
-        if (!isBlankTranscript(text)) dispatchAlwaysOnUtterance(text);
+        // `capture` is the audio's own span, captured before this await — see WI-954890.
+        if (!isBlankTranscript(text)) dispatchAlwaysOnUtterance(text, capture);
       } catch { /* network blip / whisper down — drop this utterance */ }
     },
   });
@@ -2515,11 +2569,13 @@ function processSynthQueue(): void {
   const next = synthQueue.shift();
   if (!next) {
     isSynthSpeaking = false;
-    synthQuietSince = Date.now(); // playout ended — start the self-audio cooldown (WI-4500)
+    synthQuietSince = Date.now(); // legacy fallback cooldown (WI-4500)
+    playoutLedger.close(); // playout ended — close the audible interval (WI-954890)
     setState({ status: state.mode === 'off' ? 'off' : 'idle', speakingRole: null });
     return;
   }
   isSynthSpeaking = true;
+  playoutLedger.open(); // our voice is audible from here until the queue drains
   if (!next.preserveAwaitingResponse) endAwaitingResponse();
   setState({ status: 'speaking', speakingRole: next.role });
 
@@ -2653,6 +2709,13 @@ async function synthViaAdapter(text: string, role: string): Promise<void> {
 export function cancelAllSpeech(): void {
   synthQueue = [];
   isSynthSpeaking = false;
+  // BARGE-IN CLOSES THE INTERVAL TOO (WI-954890). The old code cleared
+  // isSynthSpeaking here and left synthQuietSince untouched, so a CANCELLED reply
+  // started no cooldown at all — the constant's own comment claimed "processSynthQueue
+  // / barge-in cancel" set it, but this half was never written. Audio already in the
+  // device buffer keeps playing for a moment after a cancel, so this is a real gap.
+  synthQuietSince = Date.now();
+  playoutLedger.close();
   if (typeof window !== 'undefined' && window.speechSynthesis) {
     try {
       window.speechSynthesis.cancel();
