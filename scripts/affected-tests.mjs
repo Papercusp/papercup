@@ -1611,6 +1611,35 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-20863794002653922 — a node_modules entry that EXISTS but is HOLLOW (no readable
+    // package.json) is invisible to every other guard here, and surfaces only as an
+    // ERR_MODULE_NOT_FOUND naming a path instead of a cause. That is what red-lined the
+    // gate in WI-39899: libs/generic/sse/node_modules lost the whole `typescript` package
+    // and 3 of vitest's files, so `@papercusp/sse :: test` died before a single test ran
+    // and read as a test failure it was not.
+    //
+    // TRIGGER SCOPE — deliberately narrow, and worth explaining because the obvious wider
+    // choice is wrong. The damage is ENVIRONMENTAL: the original incident changed no
+    // source file at all, so no appliesTo predicate over changed paths could have caught
+    // it, and widening this to "every source file" would buy nothing while adding a
+    // 144ms task to every change in the repo. What it CAN catch cheaply is the case where
+    // a dependency-shape change lands and the install that followed it went partial — so
+    // it is keyed to manifests, the lockfile, and this guard's own files. Catching the
+    // no-source-change case belongs in a gate PREFLIGHT (run `npm run lint:partial-install`
+    // directly), not in a changed-path predicate.
+    //
+    // No hostSuiteRatchet: this is a filesystem audit of the checkout, not a property the
+    // operator suite can assert for us.
+    workspace: "@papercusp/web",
+    script: "lint:partial-install",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "package-lock.json" ||
+      f === "scripts/check-partial-install.mjs" ||
+      f === "packages/operator-core/lib/__tests__/partial-install-guard.test.ts" ||
+      /(?:^|\/)package(?:-lock)?\.json$/.test(f),
+  },
+  {
     // capless-adaptive-resource-governor P-012 — the replacement for capacity-limit
     // lint scans every executable source lane in its inventory. A workspace-local
     // test cannot protect a new start added under apps/, packages/, or scripts/ when
