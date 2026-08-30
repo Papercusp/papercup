@@ -189,6 +189,27 @@ apps/operator/docs/plans/**/*.md
 .papercusp/dependency-generations/.build-pending-*/
 **/.papercusp/dependency-generations/.build-pending-*/
 
+# EI-21895919268589129 (2026-08-30): the `hive-fromrepo` smoke test snapshots a
+# WHOLE REPO COPY — including a ~100.7MB `bin/node` binary — into the tree and
+# does not clean up. Measured while git-sync freshness sat DEGRADED with 4 missed
+# 3-minute intervals (nothing committed fleet-wide for ~14 minutes): 486 of the
+# 496 dirty paths (98%) were this one abandoned 4.5GB directory, last written 4h
+# earlier. Its `bin/node` also exceeds the 95MB per-file limit, so every single
+# sweep re-hit the oversize-exclusion path on the same file.
+#
+# This is the THIRD instance of one failure mode — see the ~100.1MB node binary
+# from `sidecar.old.55111/` noted above, and WI-2911's 1.85GB below. Ignoring
+# directories one at a time after the fact treats the symptom; the durable fix is
+# for the smoke runner to snapshot OUTSIDE the repo. This pattern is the stopgap
+# that keeps git-sync's cadence from collapsing until it does.
+#
+# NOTE: gitignore never untracks. 5804 files / 245.8MB of this directory were
+# already committed into HEAD by an earlier sweep; removing those from the index
+# is a separate deliberate call, tracked on EI-21895919268589129 (WI-2911 is the
+# precedent for the index-only untrack).
+.papercusp-smoke-snapshots/
+**/.papercusp-smoke-snapshots/
+
 # npm-only repo — a pnpm/yarn install breaks the shared node_modules layout (2026-07-03 fleet incident)
 pnpm-lock.yaml
 yarn.lock
