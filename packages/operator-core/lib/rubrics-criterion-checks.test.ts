@@ -9,17 +9,22 @@
  * run × honest rating STAMPS) is its own falsifiability control — the verdict provably
  * depends on the rating–run PAIR, not on either alone.
  */
-import { afterAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import {
   validateCriterionCheckPaths,
   assertCriterionCheckPathsResolve,
   selectCriterionCheckRoot,
+  runCargoCriterionCheck,
+  evaluateCriterionCargoChecks,
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
   type CriterionCheckRunner,
+  type CriterionCargoCheckRunner,
   type CoverageMeasurement,
   type CoverageReader,
 } from './rubrics-criterion-checks';
@@ -37,9 +42,23 @@ import { isTestFilePath } from '../../../scripts/test-files.mjs';
 const root = mkdtempSync(join(tmpdir(), 'rubric-checks-test-'));
 mkdirSync(join(root, 'packages', 'x'), { recursive: true });
 writeFileSync(join(root, 'packages', 'x', 'real.test.ts'), 'export {};\n');
+mkdirSync(join(root, 'apps', 'tui', 'src'), { recursive: true });
+writeFileSync(join(root, 'apps', 'tui', 'Cargo.toml'), '[package]\nname = "pui"\nversion = "0.1.0"\n');
+writeFileSync(join(root, 'apps', 'tui', 'src', 'app.rs'), '#[test]\nfn app_test() {}\n');
+writeFileSync(join(root, 'apps', 'tui', 'src', 'ui.rs'), '#[test]\nfn ui_test() {}\n');
+const outside = mkdtempSync(join(tmpdir(), 'rubric-checks-outside-'));
+writeFileSync(join(outside, 'escape.rs'), '#[test]\nfn escape_test() {}\n');
+symlinkSync(join(outside, 'escape.rs'), join(root, 'apps', 'tui', 'src', 'escape.rs'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => rmSync(outside, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
+const cargoCheck = (manifestPath: string, sourceFiles: string[], test?: string) => ({
+  kind: 'cargo' as const,
+  manifestPath,
+  sourceFiles,
+  ...(test ? { test } : {}),
+});
 
 // WI-39848 fixtures: enough distinct resolving files to model a THOROUGH rubric — the
 // exact shape that used to be ungradeable, because each criterion cost its own vitest
@@ -52,9 +71,15 @@ describe('rubricCriterionCheckSchema (P-011 schema)', () => {
   it('accepts a tests check and an instrument check; refuses unknown fields and unknown kinds', () => {
     expect(rubricCriterionCheckSchema.safeParse(testsCheck(['a.test.ts'])).success).toBe(true);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'instrument', instrumentKey: 'gate-verdict' }).success).toBe(true);
+    expect(
+      rubricCriterionCheckSchema.safeParse(
+        cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/app.rs'], 'app::tests::renders'),
+      ).success,
+    ).toBe(true);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: ['a.test.ts'], extra: 1 }).success).toBe(false);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'vibes' }).success).toBe(false);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: [] }).success).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'cargo', manifestPath: 'apps/tui/Cargo.toml', sourceFiles: [] }).success).toBe(false);
   });
 
   it('rides the criterion schema as an optional field (absent = fuzzy, unchanged)', () => {
@@ -167,6 +192,43 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
     expect(() =>
       assertCriterionCheckPathsResolve([{ key: 'k', check: testsCheck(['packages/x/real.test.ts']) }], { root }),
     ).not.toThrow();
+  });
+
+  it('validates Cargo manifest + source files and reports the complete checked count once', () => {
+    const v = validateCriterionCheckPaths(
+      [{ key: 'native', check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs']) }],
+      { root },
+    );
+    expect(v.ok).toBe(true);
+    expect(v.checked).toBe(3);
+    expect(v.normalizedCargoByKey.native).toEqual({
+      manifestPath: 'apps/tui/Cargo.toml',
+      sourceFiles: ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs'],
+    });
+  });
+
+  it('REFUSES a Cargo source symlink that resolves outside the claimed tree', () => {
+    const v = validateCriterionCheckPaths(
+      [{ key: 'native', check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/escape.rs']) }],
+      { root },
+    );
+    expect(v.ok).toBe(false);
+    expect(v.checked).toBe(2);
+    expect(v.failures).toEqual([
+      expect.objectContaining({
+        criterionKey: 'native',
+        path: 'apps/tui/src/escape.rs',
+        checkKind: 'cargo',
+        reason: 'does not resolve to a regular file in the live tree',
+      }),
+    ]);
+    expect(v.normalizedCargoByKey.native).toBeUndefined();
+    expect(() =>
+      assertCriterionCheckPathsResolve(
+        [{ key: 'native', check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/escape.rs']) }],
+        { root },
+      ),
+    ).toThrow(/structured cargo-check manifest\/source paths.*escape\.rs/s);
   });
 });
 
@@ -352,6 +414,283 @@ describe('selectCriterionCheckRoot (WI-41394 phantom-root fallback)', () => {
     expect(res.ok).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.root).toBe(REPO_ROOT);
+  });
+});
+
+describe("evaluateCriterionCargoChecks (grading time)", () => {
+  const cargoCriteria = [
+    {
+      key: 'app',
+      check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/app.rs'], 'app::tests'),
+    },
+    {
+      key: 'ui',
+      check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/ui.rs'], 'app::tests'),
+    },
+  ];
+
+  it('groups one manifest/filter invocation and preserves each criterion source attribution', async () => {
+    const calls: Array<Parameters<CriterionCargoCheckRunner>[0]> = [];
+    const runner: CriterionCargoCheckRunner = async (opts) => {
+      calls.push(opts);
+      return {
+        passed: 5,
+        failed: 0,
+        ignored: 1,
+        runId: 'cargo-1',
+        durationMs: 125,
+      };
+    };
+    const res = await evaluateCriterionCargoChecks({
+      criteria: cargoCriteria,
+      ratings: { app: { rating: 'healthy' }, ui: { rating: 'healthy' } },
+      root,
+      runner,
+      nowIso: () => '2026-08-30T07:30:00.000Z',
+    });
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      manifestPath: 'apps/tui/Cargo.toml',
+      sourceFiles: ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs'],
+      test: 'app::tests',
+      root,
+    });
+    if (!res.ok) return;
+    expect(res.checkRuns.app).toMatchObject({
+      kind: 'cargo',
+      manifestPath: 'apps/tui/Cargo.toml',
+      sourceFiles: ['apps/tui/src/app.rs'],
+      test: 'app::tests',
+      verdict: 'pass',
+      passed: 5,
+      failed: 0,
+      ignored: 1,
+      runId: 'cargo-1',
+    });
+    expect(res.checkRuns.ui).toMatchObject({
+      kind: 'cargo',
+      sourceFiles: ['apps/tui/src/ui.rs'],
+    });
+  });
+
+  it('REFUSES a stale Cargo path before invoking the native runner', async () => {
+    let ran = false;
+    const runner: CriterionCargoCheckRunner = async () => {
+      ran = true;
+      return { passed: 1, failed: 0, ignored: 0, runId: 'cargo-1', durationMs: 1 };
+    };
+    const res = await evaluateCriterionCargoChecks({
+      criteria: [{ key: 'native', check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/deleted.rs']) }],
+      ratings: { native: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('check_path_unresolved');
+      expect(res.criterionKey).toBe('native');
+      expect(res.detail).toContain('deleted.rs');
+    }
+    expect(ran).toBe(false);
+  });
+
+  it('REFUSES a native run with no non-ignored tests instead of passing vacuously', async () => {
+    const runner: CriterionCargoCheckRunner = async () => ({
+      passed: 0,
+      failed: 0,
+      ignored: 3,
+      runId: 'cargo-empty',
+      durationMs: 4,
+    });
+    const res = await evaluateCriterionCargoChecks({
+      criteria: [{ key: 'native', check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/app.rs']) }],
+      ratings: { native: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('check_run_failed');
+      expect(res.detail).toContain('ZERO non-ignored');
+    }
+  });
+
+  it('REFUSES a pass-claiming rating when Cargo fails, while an honest rating is stamped', async () => {
+    const runner: CriterionCargoCheckRunner = async () => ({
+      passed: 2,
+      failed: 1,
+      ignored: 0,
+      runId: 'cargo-fail',
+      durationMs: 8,
+      failures: ['app::tests::renders'],
+    });
+    const checked = [{ key: 'native', check: cargoCheck('apps/tui/Cargo.toml', ['apps/tui/src/app.rs']) }];
+    const contradicted = await evaluateCriterionCargoChecks({
+      criteria: checked,
+      ratings: { native: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(contradicted.ok).toBe(false);
+    if (!contradicted.ok) {
+      expect(contradicted.error).toBe('check_contradicted');
+      expect(contradicted.detail).toContain('cargo-check');
+    }
+
+    const honest = await evaluateCriterionCargoChecks({
+      criteria: checked,
+      ratings: { native: { rating: 'broken' } },
+      root,
+      runner,
+    });
+    expect(honest.ok).toBe(true);
+    if (honest.ok) expect(honest.checkRuns.native).toMatchObject({ verdict: 'fail', failed: 1 });
+  });
+});
+
+function makeFakeCargoChild(opts: {
+  output?: string;
+  exitCode?: number | null;
+  emitCloseOnKill?: boolean;
+  synchronousOutput?: boolean;
+} = {}): {
+  child: import('node:child_process').ChildProcess;
+  killSignals: NodeJS.Signals[];
+} {
+  const child = new EventEmitter() as unknown as import('node:child_process').ChildProcess;
+  const killSignals: NodeJS.Signals[] = [];
+  const stdout = opts.synchronousOutput
+    ? (() => {
+        const stream = new EventEmitter();
+        const originalOn = stream.on.bind(stream);
+        stream.on = ((event: string, listener: (...args: unknown[]) => void) => {
+          if (event === 'data' && opts.output) listener(Buffer.from(opts.output));
+          return originalOn(event, listener);
+        }) as typeof stream.on;
+        return stream;
+      })()
+    : new PassThrough();
+  const stderr = new PassThrough();
+  child.stdout = stdout as unknown as PassThrough;
+  child.stderr = stderr;
+  const mutableChild = child as unknown as {
+    pid: number | undefined;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+  };
+  mutableChild.pid = undefined;
+  mutableChild.exitCode = opts.exitCode ?? null;
+  mutableChild.signalCode = null;
+  child.kill = ((signal?: NodeJS.Signals) => {
+    if (signal) killSignals.push(signal);
+    if (signal && opts.emitCloseOnKill) {
+      setImmediate(() => child.emit('close', null, signal));
+    }
+    return true;
+  }) as typeof child.kill;
+  return { child, killSignals };
+}
+
+function managedCargoResult(child: import('node:child_process').ChildProcess): never {
+  return {
+    taskId: 'task-cargo-test',
+    row: {} as never,
+    child,
+    scopeUnit: null,
+    confined: false,
+  } as never;
+}
+
+describe('runCargoCriterionCheck (native runner lifecycle)', () => {
+  const runnerOpts = {
+    root,
+    manifestPath: 'apps/tui/Cargo.toml',
+    sourceFiles: ['apps/tui/src/app.rs'],
+  };
+
+  it('distils Cargo result lines and does not leak the global regex cursor between runs', async () => {
+    const makeSpawn = (output: string) => {
+      const fake = makeFakeCargoChild({ output, exitCode: 0, synchronousOutput: true });
+      const managedSpawnFn = (async () => {
+        setImmediate(() => fake.child.emit('close', 0, null));
+        return managedCargoResult(fake.child);
+      }) as never;
+      return { fake, managedSpawnFn };
+    };
+    const first = makeSpawn('test app::tests::one ... ok\n');
+    const firstResult = await runCargoCriterionCheck({ ...runnerOpts, managedSpawnFn: first.managedSpawnFn });
+    const second = makeSpawn('test ui::tests::two ... FAILED\n');
+    const secondResult = await runCargoCriterionCheck({ ...runnerOpts, managedSpawnFn: second.managedSpawnFn });
+
+    expect(firstResult).toMatchObject({ passed: 1, failed: 0, ignored: 0 });
+    expect(firstResult.error).toBeUndefined();
+    expect(secondResult).toMatchObject({ passed: 0, failed: 1, ignored: 0 });
+    expect(secondResult.error).toBeUndefined();
+    expect(secondResult.failures).toEqual(['ui::tests::two']);
+  });
+
+  it('uses the child exitCode fallback when close fired before the listener was attached', async () => {
+    const fake = makeFakeCargoChild({
+      output: 'test app::tests::one ... ok\n',
+      exitCode: 0,
+      synchronousOutput: true,
+    });
+    const managedSpawnFn = (async () => managedCargoResult(fake.child)) as never;
+    const result = await runCargoCriterionCheck({ ...runnerOpts, managedSpawnFn });
+    expect(result).toMatchObject({ passed: 1, failed: 0, ignored: 0 });
+    expect(result.error).toBeUndefined();
+  });
+
+  it('settles the timeout before a slow spawn handshake and kills a late child when it arrives', async () => {
+    const fake = makeFakeCargoChild();
+    const managedSpawnFn = (() =>
+      new Promise((resolve) => {
+        setTimeout(() => resolve(managedCargoResult(fake.child)), 30);
+      })) as never;
+    const result = await runCargoCriterionCheck({
+      ...runnerOpts,
+      timeoutMs: 5,
+      managedSpawnFn,
+    });
+    expect(result.error).toBe('timeout after 5ms');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fake.killSignals).toContain('SIGTERM');
+  });
+
+  it('terminates a running child on timeout and returns the typed timeout refusal', async () => {
+    const fake = makeFakeCargoChild({ emitCloseOnKill: true });
+    const managedSpawnFn = (async () => managedCargoResult(fake.child)) as never;
+    const result = await runCargoCriterionCheck({
+      ...runnerOpts,
+      timeoutMs: 5,
+      managedSpawnFn,
+    });
+    expect(result.error).toBe('timeout after 5ms');
+    expect(fake.killSignals).toEqual(['SIGTERM']);
+  });
+
+  it('escalates an uncooperative child from SIGTERM to SIGKILL', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeCargoChild();
+      const managedSpawnFn = (async () => managedCargoResult(fake.child)) as never;
+      const promise = runCargoCriterionCheck({
+        ...runnerOpts,
+        timeoutMs: 5,
+        managedSpawnFn,
+      });
+      await vi.runAllTicks();
+      await vi.advanceTimersByTimeAsync(5);
+      expect(fake.killSignals).toEqual(['SIGTERM']);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(fake.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+      fake.child.emit('close', null, 'SIGKILL');
+      const result = await promise;
+      expect(result.error).toBe('timeout after 5ms');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
