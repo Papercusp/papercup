@@ -438,6 +438,47 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         'DBOS workflows / routines EXECUTE in bg-host, which runs `npx tsx bin/hono-host.ts` from THIS TREE (PAPERCUSP_BACKGROUND_WORKERS=1) — not from the release checkout. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. The :3070 deploy does not carry it.',
     },
   },
+  // EI-21863351526928940: packages/backup/** (the kopia per-workspace backup
+  // system) is consumed by TWO genuinely distinct hosts — confirmed by tracing
+  // every exported symbol's real importers, not by directory heuristic:
+  //   - bg-host: periodic-workflows.ts's `backupCadence` / `backupOrphanCleanup`
+  //     / `backupRecoveryDebrisCleanup` DBOS scheduled workflows call
+  //     runBackupSchedulerTick / sweepOrphanSnapshots / sweepRecoveryDebrisTick
+  //     directly, and dbos/backup-workflow.ts's own steps call workspaceBackupFor.
+  //   - operator-release: the `backup:*` MCP tools (agent-tools/backup/*.ts),
+  //     the `/api/backups/*` HTTP routes (endpoint-route/routes/backups/*.ts,
+  //     routes/admin/backup-orphan-cleanup.ts, routes/plugins/uninstall.ts,
+  //     credentials.ts, branch-actions.ts, cupboard/install-io.ts), and the
+  //     boot-time migration guards (db-boot-migrate.ts / agent-tools/db/migrate.ts,
+  //     which run in EVERY operator process, release and staging alike) all call
+  //     into this package directly too — served by :3070/:3170.
+  // The reported symptom's own file, `packages/backup/src/hook.ts`, is imported
+  // only by workspace-backup.ts and orphan-cleanup.ts INSIDE this package — but
+  // those feed straight into WorkspaceBackup / sweepOrphanSnapshots, which the
+  // trace above shows on BOTH routes. A bg-host-ONLY classification (the shape
+  // the filed bug proposed) would be the WI-6961 "opposite lie": it would tell
+  // an agent editing e.g. agent-tools/backup/snapshot_create.ts's dependency
+  // that a deploy can never carry it, when for that consumer it does. So this
+  // is the WI-5440 plural (dual-consumer) shape, not a bg-host-only rule.
+  {
+    match: /^packages\/backup\//,
+    own: [
+      {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation:
+          'The backup DBOS scheduled workflows (backupCadence / backupOrphanCleanup / backupRecoveryDebrisCleanup in periodic-workflows.ts, plus dbos/backup-workflow.ts) call directly into this package and only run when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). For THAT consumer it loads on RESTART: dev:restart { target: "bg-host", confirm: true } — a deploy never carries it (EI-21863351526928940).',
+      },
+      {
+        host: 'operator-release',
+        releasePipelineApplies: true,
+        restartTarget: 'staging',
+        activation:
+          'This package is ALSO called directly by operator-served surfaces: the `backup:*` MCP tools (agent-tools/backup/*.ts), the `/api/backups/*` HTTP routes, and boot-time migration guards (db-boot-migrate.ts / db:migrate). For THOSE consumers the ordinary staging→green-gate→deploy pipeline is the activation path (or dev:restart { target: "staging", confirm: true } to exercise it now on :3170).',
+      },
+    ],
+  },
   // EI-21458114771988888: Google Pub/Sub provisioning/pull/ack helpers are
   // imported only by the `google-gmail-poll` system action below the routine
   // boundary. The action is dispatched by routinesTick in bg-host, so this
