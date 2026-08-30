@@ -171,16 +171,26 @@ describe("PlanCleanupReportHost", () => {
     expect(screen.queryByTestId("plan-cleanup-report-takeover")).toBeNull();
   });
 
-  it("opens the finding's scoped plan only after closing the report takeover", async () => {
+  it("waits for the report URL close to settle before opening the finding's scoped plan", async () => {
     H.state.value = {
       run: { runId: "run-7", phase: "review" },
       findings: [],
       loading: false,
     };
-    H.param.close.mockResolvedValue(undefined);
+    let resolveClose!: () => void;
+    H.param.close.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveClose = resolve;
+        }),
+    );
     render(<PlanCleanupReportHost />);
 
     fireEvent.click(screen.getByTestId("cleanup-report-mock"));
+    await waitFor(() => expect(H.param.close).toHaveBeenCalledTimes(1));
+    expect(H.setDashboardPlan).not.toHaveBeenCalled();
+
+    resolveClose();
     await waitFor(() => expect(H.setDashboardPlan).toHaveBeenCalled());
     expect(H.param.close).toHaveBeenCalledTimes(1);
     expect(H.setDashboardPlan).toHaveBeenCalledWith("papercusp::p-one");

@@ -97,9 +97,9 @@ export interface ReportTakeoverParam {
   /** True only when this param owns the heavyweight report foreground. */
   foreground: boolean;
   /** Open the takeover with a value (a run ref, a phase, …). */
-  show: (value: string) => void;
+  show: (value: string) => Promise<URLSearchParams>;
   /** Clear the param — the routed page underneath resumes untouched. */
-  close: () => void;
+  close: () => Promise<URLSearchParams>;
 }
 
 export interface ReportTakeoverAvailability {
@@ -135,7 +135,7 @@ export function useReleaseMissingReportTakeover(
     }
     if (loading || available || releasedValueRef.current === value) return;
     releasedValueRef.current = value;
-    close();
+    void close();
   }, [available, close, enabled, foreground, loading, value]);
 }
 
@@ -166,18 +166,22 @@ export function useReportTakeoverParam(
       ? { [REPORT_TAKEOVER_OWNER_PARAM]: ownerAfterClose }
       : {};
 
+  // Return the nuqs promise deliberately: consumers may need to sequence a
+  // second URL-owned transition after this one (for example, closing the
+  // report before opening a plan dashboard). Masking it with `void` makes an
+  // `await report.close()` resolve before the URL update is applied.
   return {
     value,
     open: value !== null,
     foreground: value !== null && owner === paramKey,
     show: (nextValue: string) =>
-      void setParams(
+      setParams(
         paramKey === "opcln"
           ? { opcln: nextValue, [REPORT_TAKEOVER_OWNER_PARAM]: paramKey }
           : { opcbr: nextValue, [REPORT_TAKEOVER_OWNER_PARAM]: paramKey },
       ),
     close: () =>
-      void setParams(
+      setParams(
         paramKey === "opcln"
           ? { opcln: null, ...ownerPatch }
           : { opcbr: null, ...ownerPatch },

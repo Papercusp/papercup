@@ -9,6 +9,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
 } from "@testing-library/react";
@@ -118,6 +119,17 @@ describe("useReportTakeoverParam", () => {
       opcln: null,
       [REPORT_TAKEOVER_OWNER_PARAM]: null,
     });
+  });
+
+  it("returns the nuqs URL-update promise from show and close", () => {
+    const { result } = renderHook(() => useReportTakeoverParam("opcln"));
+
+    const showPromise = result.current.show("run-7");
+    expect(showPromise).toBe(setQueryStates.mock.results[0]?.value);
+
+    nuqs.opcln = "run-7";
+    const closePromise = result.current.close();
+    expect(closePromise).toBe(setQueryStates.mock.results[1]?.value);
   });
 
   it("keys are independent — one renderer per param, as with pdash/pplan", () => {
