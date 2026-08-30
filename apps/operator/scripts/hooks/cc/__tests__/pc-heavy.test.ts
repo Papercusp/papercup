@@ -4113,6 +4113,8 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
         expect(r.status).toBe(75);
         expect(r.stderr).toContain('REFUSING test:affected');
         expect(r.stderr).toContain(phase);
+        expect(r.stderr).toContain('bounded by the size of the failing set');
+        expect(r.stderr).not.toContain('It lasts minutes.');
         // It must tell the agent what to do INSTEAD — the whole point is that the
         // knowledge reaches the moment of action, not a doc they already read.
         expect(r.stderr).toContain('npm run test:file --');
