@@ -26,7 +26,9 @@ import {
   registerDesktopSession,
   markDesktopReady,
   closeDesktopSession,
+  resolveDesktopForScope,
 } from '../../desktop/desktop-session-registry';
+import { killTask } from '../../task-manager/control';
 
 type Provisioner = (opts?: ProvisionOptions) => Promise<SandboxDesktop>;
 
@@ -154,10 +156,43 @@ async function closeLeaseInRegistry(potSlug: string): Promise<void> {
   }
 }
 
+/** Outcome of {@link releaseHiveDesktop}: what, if anything, was actually torn down. */
+export interface ReleaseHiveDesktopResult {
+  released: boolean;
+  /** 'local' = this process held the lease. 'registry' = EI-21881587666157000 —
+   *  a SIBLING operator process provisioned it; this process has no in-memory
+   *  handle, so the registry row (cross-process by design) is the only way to
+   *  find and kill it. 'none' = genuinely nothing leased anywhere. */
+  via: 'local' | 'registry' | 'none';
+}
+
 /** Tear down a hive's desktop (call from pot:dissolve). Idempotent. */
-export async function releaseHiveDesktop(potSlug: string): Promise<void> {
+export async function releaseHiveDesktop(potSlug: string): Promise<ReleaseHiveDesktopResult> {
   const d = leases.get(potSlug);
-  if (!d) return;
+  if (!d) {
+    // EI-21881587666157000: `leases` only knows what THIS process provisioned.
+    // A desktop provisioned by a sibling operator process is invisible here even
+    // though it is very much alive — the registry, unlike `leases`, is
+    // deliberately cross-process. Fall back to it: resolve the row for this
+    // pot, kill its task via the SAME cross-process handle the idle-desktop
+    // governor already uses for this exact reason (P-005 in
+    // recordLeaseInRegistry above), then close the row. A miss here means
+    // there is genuinely nothing leased for this pot, anywhere.
+    const row = await resolveDesktopForScope({
+      workspaceId: activeWorkspaceId(),
+      scope: 'pot',
+      scopeRef: potSlug,
+    }).catch(() => undefined);
+    if (!row) return { released: false, via: 'none' };
+    if (row.taskId) {
+      // Best-effort: a kill failure still gets the row closed below so the
+      // registry (and computer:list_desktops) stop lying about it being ready,
+      // even if the orphaned Xvfb itself needs a human/processes:kill follow-up.
+      await killTask(row.taskId, { includeSubtree: true }).catch(() => {});
+    }
+    await closeDesktopSession(row.id, 'released').catch(() => {});
+    return { released: true, via: 'registry' };
+  }
   leases.delete(potSlug);
   // P-008: display numbers are recycled, so the next lease on `:110` would inherit
   // this one's step numbers and diagnostics history if the ledger were not dropped.
@@ -167,6 +202,7 @@ export async function releaseHiveDesktop(potSlug: string): Promise<void> {
   stopRecording(d.display, 'desktop-released');
   await closeLeaseInRegistry(potSlug);
   await d.release();
+  return { released: true, via: 'local' };
 }
 
 /** Hive slugs that currently hold a desktop lease (observability). */
