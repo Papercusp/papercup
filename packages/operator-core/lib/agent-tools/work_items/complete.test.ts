@@ -2882,6 +2882,44 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       ]);
     });
 
+    it('EI-21905322780107586: rejects a filesChanged entry that survived comma-splitting as prose, not a path', () => {
+      // Reproduces the reported shape: a scalar filesChanged string DESCRIBING several
+      // changes in one paragraph, comma-split by coerceFilesChanged's list rescue
+      // (EI-21471221125941096) into fragments that are not path-shaped.
+      const result = (
+        complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+      ).safeParse({
+        id: 'WI-1',
+        completion: {
+          summary: 'landed',
+          filesChanged:
+            'scripts/check-required-field-strands.mjs (collectExportedValueNames added, ' +
+            'diffSignatureBreaks gained the before-map walk, ...)',
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(JSON.stringify(result.error)).toContain('bare repo-relative paths, not prose');
+    });
+
+    it('still accepts a genuine comma-separated filesChanged path list (EI-21471221125941096, unaffected)', () => {
+      const result = (
+        complete.args as { safeParse: (value: unknown) => { success: boolean; data?: any } }
+      ).safeParse({
+        id: 'WI-2',
+        completion: {
+          summary: 'landed',
+          filesChanged: 'packages/operator-core/lib/a.ts, packages/operator-core/lib/b.ts',
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.completion.filesChanged).toEqual([
+        'packages/operator-core/lib/a.ts',
+        'packages/operator-core/lib/b.ts',
+      ]);
+    });
+
     it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
       const out = coerceCompletionShape({ summary: 's', tests: ['67 green', 'vitest'] }) as { tests: unknown };
       expect(out.tests).toBe('67 green; vitest');
