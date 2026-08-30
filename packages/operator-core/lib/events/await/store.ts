@@ -625,6 +625,10 @@ export async function cancelInboxWakeAwaits(subscriberId: string): Promise<numbe
        AND event_key LIKE 'coord:inbox-wake:%'
     RETURNING id
   `;
+  await settleQueuedDeliveriesForCancelledAwaits(
+    rows.map((row: any) => Number(row.id)),
+    'standing inbox-wake await cancelled before delivery',
+  );
   return rows.length;
 }
 
@@ -648,6 +652,10 @@ export async function cancelClaimableAwaits(subscriberId: string): Promise<numbe
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
+  await settleQueuedDeliveriesForCancelledAwaits(
+    rows.map((row: any) => Number(row.id)),
+    'claimable await cancelled after work was claimed',
+  );
   return rows.length;
 }
 
@@ -710,6 +718,10 @@ export async function cancelAwaitsForSubscribersOnKeys(
     },
     AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
   );
+  await settleQueuedDeliveriesForCancelledAwaits(
+    rows.map((row: any) => Number(row.id)),
+    'await cancelled by lifecycle/supersession cleanup',
+  );
   return rows.length;
 }
 
@@ -736,6 +748,10 @@ export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number>
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
+  await settleQueuedDeliveriesForCancelledAwaits(
+    rows.map((row: any) => Number(row.id)),
+    'await cancelled by exact-id cleanup',
+  );
   return rows.length;
 }
 
@@ -760,19 +776,28 @@ export async function cancelAwait(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const cancelReason = input.source === 'operator' ? 'operator' : null;
-  const rows = await sql`
-    UPDATE harness_shared.event_awaits
-       SET cancelled_at = now(), cancel_reason = ${cancelReason}
-     WHERE workspace_id = ${ws} AND id = ${input.awaitId}
-       AND subscriber_id = ${input.subscriberId}
-       -- Announcements share this table but are declarations, not awaits. They
-       -- have their own generation-guarded retireAnnouncement path; accepting
-       -- one here lets an await_id teardown silently retire a gate declaration.
-       AND policy <> 'announce'
-       AND fired_at IS NULL AND cancelled_at IS NULL
-    RETURNING id
-  `;
-  return rows.length > 0;
+  return sql.begin(async (tx) => {
+    const rows = await tx`
+      UPDATE harness_shared.event_awaits
+         SET cancelled_at = now(), cancel_reason = ${cancelReason}
+       WHERE workspace_id = ${ws} AND id = ${input.awaitId}
+         AND subscriber_id = ${input.subscriberId}
+         -- Announcements share this table but are declarations, not awaits. They
+         -- have their own generation-guarded retireAnnouncement path; accepting
+         -- one here lets an await_id teardown silently retire a gate declaration.
+         AND policy <> 'announce'
+         AND fired_at IS NULL AND cancelled_at IS NULL
+      RETURNING id
+    `;
+    await settleQueuedDeliveriesForCancelledAwaits(
+      rows.map((row: any) => Number(row.id)),
+      input.source === 'operator'
+        ? 'await cancelled by subscriber via events:cancel'
+        : 'await cancelled by internal lifecycle cleanup',
+      { client: tx },
+    );
+    return rows.length > 0;
+  });
 }
 
 export type RetireAnnouncementReason =
@@ -2117,16 +2142,48 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
 }
 
 /**
- * Settle claimed inbox-wake deliveries whose standing await was cancelled
- * after the delivery was queued but before the pump could execute it.
+ * Immediately retire delivery rows that have not crossed the pump's claim
+ * boundary when their source await is cancelled. This is the write-side half
+ * of cancellation: cancelling only event_awaits leaves its already-queued
+ * deliveries live, so a supposedly quiet session can still receive a backlog
+ * of wakes from machinery it explicitly retracted (WI-1062047).
  *
- * The pump claims a delivery by moving it to `delivering`; cancellation of the
- * standing await does not remove already-queued delivery rows. Re-checking the
- * joined await in this single UPDATE closes that race atomically and records a
- * no-turn `coalesced` settlement. The caller supplies only the rows it just
- * claimed, so an older or concurrently-owned delivery cannot be swept here.
+ * `delivering` is deliberately excluded here: the pump may already be inside
+ * the external wake handoff, which cannot be truthfully recalled. The pump
+ * re-check below catches a row that was claimed after cancellation; a row that
+ * crossed the handoff first remains an honest delivered wake.
  */
-export async function settleCancelledInboxWakeDeliveries(
+export async function settleQueuedDeliveriesForCancelledAwaits(
+  awaitIds: readonly number[],
+  reason: string,
+  opts: { client?: any } = {},
+): Promise<number> {
+  const ids = [...new Set(awaitIds.filter((id) => Number.isFinite(id)))];
+  if (ids.length === 0) return 0;
+  const sql = opts.client ?? getOrgPg().sql;
+  const ws = eventsWs();
+  const rows = await sql<Array<{ id: number }>>`
+    UPDATE harness_shared.event_wake_deliveries AS d
+       SET status = 'dropped',
+           last_error = ${`${reason} (WI-1062047)`}
+      FROM harness_shared.event_awaits AS a
+     WHERE d.workspace_id = ${ws}
+       AND d.await_id = ANY(${ids}::bigint[])
+       AND d.status IN ('pending', 'parked')
+       AND a.workspace_id = ${ws}
+       AND a.id = d.await_id
+       AND a.cancelled_at IS NOT NULL
+     RETURNING d.id
+  `;
+  return rows.length;
+}
+
+/**
+ * Settle delivery rows claimed by the pump after their source await had already
+ * been cancelled. Re-checking the joined await immediately after SKIP LOCKED
+ * claim closes the cancellation/claim race before any external wake executes.
+ */
+export async function settleCancelledAwaitDeliveries(
   deliveries: readonly Pick<DeliveryWork, 'id'>[],
 ): Promise<number[]> {
   const ids = [...new Set(deliveries.map((delivery) => delivery.id))];
@@ -2136,23 +2193,71 @@ export async function settleCancelledInboxWakeDeliveries(
   const ws = eventsWs();
   const rows = await sql<Array<{ id: number }>>`
     UPDATE harness_shared.event_wake_deliveries AS d
-       SET status = 'delivered',
-           channel = 'coalesced',
-           delivered_at = now(),
-           last_error = 'cancelled standing inbox-wake await before pump execution (EI-21183631307094531)'
+       SET status = 'dropped',
+           channel = NULL,
+           delivered_at = NULL,
+           last_error = 'source await cancelled before pump execution (WI-1062047)'
       FROM harness_shared.event_awaits AS a
      WHERE d.workspace_id = ${ws}
        AND d.id = ANY(${ids}::bigint[])
        AND d.status = 'delivering'
        AND a.workspace_id = ${ws}
        AND a.id = d.await_id
-       AND a.policy = 'wake'
-       AND a.once = false
-       AND a.event_key LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
        AND a.cancelled_at IS NOT NULL
      RETURNING d.id
   `;
   return rows.map((row) => Number(row.id));
+}
+
+export interface DeliveryBacklogSummary {
+  total: number;
+  pending: number;
+  parked: number;
+  delivering: number;
+  fromCancelledAwaits: number;
+  oldestCreatedAt: string | null;
+}
+
+/** Full-ledger outstanding delivery summary for events:status.
+ *
+ * listRecentDeliveries is intentionally capped at ten display rows. It cannot
+ * prove a subscriber is quiet: older pending rows can sit behind newer terminal
+ * rows. This aggregate reads the complete live-status population and names the
+ * especially actionable subset whose source await is already cancelled.
+ */
+export async function deliveryBacklogSummary(subscriberId: string): Promise<DeliveryBacklogSummary> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql<Array<{
+    total: number;
+    pending: number;
+    parked: number;
+    delivering: number;
+    from_cancelled_awaits: number;
+    oldest_created_at: string | Date | null;
+  }>>`
+    SELECT count(*)::int AS total,
+           count(*) FILTER (WHERE d.status = 'pending')::int AS pending,
+           count(*) FILTER (WHERE d.status = 'parked')::int AS parked,
+           count(*) FILTER (WHERE d.status = 'delivering')::int AS delivering,
+           count(*) FILTER (WHERE a.cancelled_at IS NOT NULL)::int AS from_cancelled_awaits,
+           min(d.created_at) AS oldest_created_at
+      FROM harness_shared.event_wake_deliveries AS d
+      LEFT JOIN harness_shared.event_awaits AS a
+        ON a.workspace_id = d.workspace_id AND a.id = d.await_id
+     WHERE d.workspace_id = ${ws}
+       AND d.subscriber_id = ${subscriberId}
+       AND d.status IN ('pending', 'parked', 'delivering')
+  `;
+  const row = rows[0];
+  return {
+    total: Number(row?.total ?? 0),
+    pending: Number(row?.pending ?? 0),
+    parked: Number(row?.parked ?? 0),
+    delivering: Number(row?.delivering ?? 0),
+    fromCancelledAwaits: Number(row?.from_cancelled_awaits ?? 0),
+    oldestCreatedAt: row?.oldest_created_at ? new Date(row.oldest_created_at).toISOString() : null,
+  };
 }
 
 /** Recent deliveries for a subscriber (events:status). */

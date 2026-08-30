@@ -39,6 +39,8 @@ const {
   clearOperatorCancelledAwaits,
   cancelAwaitsForSubscribersOnKeys,
   cancelAwaitsByIds,
+  deliveryBacklogSummary,
+  settleCancelledAwaitDeliveries,
   findAnnouncementsForKey,
   AwaitGenerationMismatchError,
   listActiveAnnouncements,
@@ -712,6 +714,45 @@ describe('await-event store (PG)', () => {
     const a = await registerAwait({ subscriberId: 'owner', eventKey: 'k:mine' });
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'not-owner' })).toBe(false); // cannot cancel a peer's
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner' })).toBe(true); // owner can
+  });
+
+  it('cancelling an await drops its queued backlog and the pump guard settles a claimed race', async () => {
+    const a = await registerAwait({ subscriberId: 'owner', eventKey: 'fleet:context-critical:f1', once: false });
+    await insertDeliveries({ awaits: [a], summary: 'pending' });
+    await insertDeliveries({ awaits: [a], summary: 'parked' });
+    await insertDeliveries({ awaits: [a], summary: 'claimed-race' });
+    const inserted = await rootSql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.event_wake_deliveries ORDER BY id`;
+    const [pending, parked, delivering] = inserted.map((row) => Number(row.id));
+    await rootSql`UPDATE harness_shared.event_wake_deliveries SET status = 'parked' WHERE id = ${parked}`;
+    await rootSql`UPDATE harness_shared.event_wake_deliveries SET status = 'delivering' WHERE id = ${delivering}`;
+
+    expect(await deliveryBacklogSummary('owner')).toMatchObject({
+      total: 3,
+      pending: 1,
+      parked: 1,
+      delivering: 1,
+      fromCancelledAwaits: 0,
+    });
+    expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner', source: 'operator' })).toBe(true);
+
+    const afterCancel = await rootSql<Array<{ id: number; status: string }>>`
+      SELECT id, status FROM harness_shared.event_wake_deliveries ORDER BY id`;
+    expect(afterCancel.map((row) => ({ ...row, id: Number(row.id) }))).toEqual([
+      { id: pending, status: 'dropped' },
+      { id: parked, status: 'dropped' },
+      { id: delivering, status: 'delivering' },
+    ]);
+    expect(await deliveryBacklogSummary('owner')).toMatchObject({
+      total: 1,
+      pending: 0,
+      parked: 0,
+      delivering: 1,
+      fromCancelledAwaits: 1,
+    });
+
+    expect(await settleCancelledAwaitDeliveries([{ id: delivering }])).toEqual([delivering]);
+    expect(await deliveryBacklogSummary('owner')).toMatchObject({ total: 0, fromCancelledAwaits: 0 });
   });
 
   it('never exposes or cancels an announcement through ordinary await ids', async () => {

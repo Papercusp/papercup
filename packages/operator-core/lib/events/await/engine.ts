@@ -49,7 +49,7 @@ import {
   markDeliveryParked,
   reopenDeliveredAfterResumeDeath,
   recoverStuckDeliveries,
-  settleCancelledInboxWakeDeliveries,
+  settleCancelledAwaitDeliveries,
   settleVerifiedAwaitTimeout,
 } from './store';
 import { payloadMatchesFilter } from './pattern';
@@ -886,7 +886,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
   try {
     const claimed = await claimDueDeliveries({ limit: 25 });
     stats.claimed = claimed.length;
-    const cancelledIds = await settleCancelledInboxWakeDeliveries(claimed);
+    const cancelledIds = await settleCancelledAwaitDeliveries(claimed);
     stats.cancelled = cancelledIds.length;
     const cancelled = new Set(cancelledIds);
     const executable = claimed.filter((delivery) => !cancelled.has(delivery.id));

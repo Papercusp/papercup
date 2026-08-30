@@ -18,7 +18,7 @@ const h = vi.hoisted(() => ({
     insertDeliveries: vi.fn(async () => 0),
     compactSupersededLoopDeliveries: vi.fn(async () => 0),
     claimDueDeliveries: vi.fn(async (): Promise<unknown[]> => []),
-    settleCancelledInboxWakeDeliveries: vi.fn(async (): Promise<number[]> => []),
+    settleCancelledAwaitDeliveries: vi.fn(async (): Promise<number[]> => []),
     markDeliveryDelivered: vi.fn(async () => {}),
     markDeliveriesCoalesced: vi.fn(async () => {}),
     lastWokenAtForSubscribers: vi.fn(async () => new Map<string, number>()),
@@ -167,7 +167,7 @@ beforeEach(() => {
   h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
   h.store.fireTimedOutAwaits.mockResolvedValue([]);
   h.store.claimDueDeliveries.mockResolvedValue([]);
-  h.store.settleCancelledInboxWakeDeliveries.mockResolvedValue([]);
+  h.store.settleCancelledAwaitDeliveries.mockResolvedValue([]);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
   // The engine logs wake outcomes deliberately (visible drops, D-004);
   // the suite-wide fail-on-console guard must not count those.
@@ -772,7 +772,7 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
-  it('settles claimed deliveries for cancelled standing inbox-wake awaits before grouping or execution', async () => {
+  it('settles claimed deliveries for any cancelled await before grouping or execution', async () => {
     const cancelled = workRow({
       id: 120,
       subscriberId: 'su-cancelled',
@@ -780,11 +780,11 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     });
     const live = workRow({ id: 121, subscriberId: 'su-live', eventKey: 'release:green:papercusp' });
     h.store.claimDueDeliveries.mockResolvedValueOnce([cancelled, live]);
-    h.store.settleCancelledInboxWakeDeliveries.mockResolvedValueOnce([cancelled.id]);
+    h.store.settleCancelledAwaitDeliveries.mockResolvedValueOnce([cancelled.id]);
 
     const stats = await pumpWakeDeliveries('ws-test');
 
-    expect(h.store.settleCancelledInboxWakeDeliveries).toHaveBeenCalledWith([cancelled, live]);
+    expect(h.store.settleCancelledAwaitDeliveries).toHaveBeenCalledWith([cancelled, live]);
     expect(h.executeWake).toHaveBeenCalledTimes(1);
     expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ id: live.id }), expect.anything());
     expect(h.executeWake).not.toHaveBeenCalledWith(expect.objectContaining({ id: cancelled.id }), expect.anything());

@@ -13,7 +13,13 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates, type LivenessVerdict } from '../coordination/liveness-oracle';
-import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
+import {
+  deliveryBacklogSummary,
+  inspectEventKey,
+  listActiveAwaits,
+  listRecentDeliveries,
+  wakeMeter,
+} from '../../events/await/store';
 import type { KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import { payloadMatchesFilter } from '../../events/await/pattern';
@@ -191,9 +197,10 @@ export default defineTool({
     // the result budget rendering this caller's unrelated await tree first —
     // under a busy fleet that list can hide the only requested evidence.
     const exactEvent = args.event != null;
-    const [awaits, recent, meter, composedRoots, eventHistory] = await Promise.all([
+    const [awaits, recent, backlog, meter, composedRoots, eventHistory] = await Promise.all([
       exactEvent ? Promise.resolve([]) : listActiveAwaits(identity.ownerId),
       exactEvent ? Promise.resolve([]) : listRecentDeliveries(identity.ownerId, 10),
+      exactEvent ? Promise.resolve(null) : deliveryBacklogSummary(identity.ownerId),
       args.meter ? wakeMeter() : Promise.resolve(null),
       exactEvent ? Promise.resolve([]) : listActiveComposedRoots(identity.ownerId),
       args.event ? inspectEventKey(args.event) : Promise.resolve(null),
@@ -346,6 +353,32 @@ export default defineTool({
                     created_at: d.createdAt,
                     delivered_at: d.deliveredAt,
                   })),
+                  outstanding_deliveries: {
+                    total: backlog?.total ?? 0,
+                    by_status: {
+                      pending: backlog?.pending ?? 0,
+                      parked: backlog?.parked ?? 0,
+                      delivering: backlog?.delivering ?? 0,
+                    },
+                    from_cancelled_awaits: backlog?.fromCancelledAwaits ?? 0,
+                    oldest_created_at: backlog?.oldestCreatedAt ?? null,
+                    recent_wakes_limit: 10,
+                    shown_in_recent_wakes: recent.filter((d) =>
+                      d.status === 'pending' || d.status === 'parked' || d.status === 'delivering'
+                    ).length,
+                    hidden_from_recent_wakes: Math.max(
+                      0,
+                      (backlog?.total ?? 0) - recent.filter((d) =>
+                        d.status === 'pending' || d.status === 'parked' || d.status === 'delivering'
+                      ).length,
+                    ),
+                    ...((backlog?.fromCancelledAwaits ?? 0) > 0
+                      ? {
+                          warning:
+                            'Outstanding wake deliveries still reference cancelled awaits; the pump should settle them before execution. Do not infer a quiet queue from recent_wakes alone.',
+                        }
+                      : {}),
+                  },
                 }),
             ...(meter ? { meter } : {}),
             ...(eventInspection ? { event_inspection: eventInspection } : {}),

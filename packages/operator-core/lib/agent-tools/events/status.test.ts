@@ -26,6 +26,7 @@ vi.mock('../coordination/liveness-oracle', () => ({
   resolveSessionStates: vi.fn(async () => new Map()),
 }));
 vi.mock('../../events/await/store', () => ({
+  deliveryBacklogSummary: vi.fn(),
   inspectEventKey: vi.fn(),
   listActiveAwaits: vi.fn(),
   listRecentDeliveries: vi.fn(),
@@ -37,7 +38,13 @@ vi.mock('../../events/await/compose-store', () => ({
 }));
 
 import status from './status';
-import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
+import {
+  deliveryBacklogSummary,
+  inspectEventKey,
+  listActiveAwaits,
+  listRecentDeliveries,
+  wakeMeter,
+} from '../../events/await/store';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
@@ -55,6 +62,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW] as never);
+  vi.mocked(deliveryBacklogSummary).mockResolvedValue({
+    total: 1,
+    pending: 0,
+    parked: 1,
+    delivering: 0,
+    fromCancelledAwaits: 0,
+    oldestCreatedAt: 'C2',
+  });
   vi.mocked(wakeMeter).mockResolvedValue({ total: 7 } as never);
   vi.mocked(inspectEventKey).mockResolvedValue({ announcements: [], waiters: [], deliveries: [], fireLatch: null } as never);
 });
@@ -131,6 +146,31 @@ describe('events:status projection', () => {
     });
   });
 
+  it('reports the full outstanding backlog even when recent_wakes hides older live rows', async () => {
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
+      { ...DELIVERY_ROW, id: 30, status: 'delivered' },
+    ] as never);
+    vi.mocked(deliveryBacklogSummary).mockResolvedValueOnce({
+      total: 134,
+      pending: 118,
+      parked: 0,
+      delivering: 16,
+      fromCancelledAwaits: 134,
+      oldestCreatedAt: '2026-08-30T04:00:00.000Z',
+    });
+
+    const out = await call({});
+
+    expect(out.outstanding_deliveries).toMatchObject({
+      total: 134,
+      by_status: { pending: 118, parked: 0, delivering: 16 },
+      from_cancelled_awaits: 134,
+      shown_in_recent_wakes: 0,
+      hidden_from_recent_wakes: 134,
+    });
+    expect(out.outstanding_deliveries.warning).toMatch(/cancelled awaits/);
+  });
+
   it('meter omitted unless meter:true (default call → wakeMeter NOT invoked, no meter key)', async () => {
     const out = await call({});
     expect(wakeMeter).not.toHaveBeenCalled();
@@ -149,6 +189,7 @@ describe('events:status projection', () => {
     await call({ meter: true });
     expect(listActiveAwaits).toHaveBeenCalledWith('su-status');
     expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 10);
+    expect(deliveryBacklogSummary).toHaveBeenCalledWith('su-status');
     expect(wakeMeter).toHaveBeenCalledTimes(1);
   });
 
@@ -229,6 +270,7 @@ describe('events:status projection', () => {
     expect(out).not.toHaveProperty('recent_wakes');
     expect(listActiveAwaits).not.toHaveBeenCalled();
     expect(listRecentDeliveries).not.toHaveBeenCalled();
+    expect(deliveryBacklogSummary).not.toHaveBeenCalled();
   });
 
   it('maps an expired current declaration to expired and preserves superseded precedence', async () => {
