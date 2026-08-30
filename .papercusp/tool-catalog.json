@@ -9358,7 +9358,8 @@
         "scoper",
         "reviewer",
         "validator",
-        "worker"
+        "worker",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26283,7 +26284,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
@@ -26430,7 +26432,8 @@
         "curator",
         "papercup",
         "papercup-deep",
-        "kettle"
+        "kettle",
+        "judge"
       ],
       "guidance": {
         "when": "User references prose past the chat history budget (\"remember when we decided pricing\", \"the X discussion from last week\"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:[\"work_item\"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.",
@@ -30211,7 +30214,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
@@ -30394,7 +30398,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "release-fixer"
+        "release-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

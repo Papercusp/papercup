@@ -18,6 +18,7 @@
  */
 
 import { Table, type TableColumn } from '@/app/harness/Table';
+import { Workflow } from 'lucide-react';
 import type { AutomationActivityItem } from './workflows-model';
 import { relativeTime } from './workflows-model';
 import type { LedgerRow } from './workflows-ledger-model';
@@ -54,6 +55,8 @@ export interface WorkflowsLedgerProps {
   hiddenCount?: number;
   selectedId: string | null;
   loading: boolean;
+  /** Short heading for the loaded empty state. */
+  emptyTitle: string;
   /** Rendered when `rows` is empty — the caller says WHY it is empty. */
   emptyLabel: string;
   onSelect: (row: LedgerRow) => void;
@@ -67,6 +70,7 @@ export default function WorkflowsLedger({
   hiddenCount = 0,
   selectedId,
   loading,
+  emptyTitle,
   emptyLabel,
   onSelect,
   onToggleArm,
@@ -128,13 +132,45 @@ export default function WorkflowsLedger({
   ];
 
   if (loading && rows.length === 0) {
-    return <div className="pc-wf__panel pc-wf__ledger"><p className="pc-wf__empty">Loading workflows…</p></div>;
+    return (
+      <div className="pc-wf__panel pc-wf__ledger" aria-busy="true">
+        <div className="pc-wf__loading" role="status" aria-label="Loading workflows">
+          <div className="pc-wf__loading-copy">
+            <strong>Loading workflow inventory</strong>
+            <span>Combining schedules, triggers, routines, and recent runs…</span>
+          </div>
+          <div className="pc-wf__loading-rows" aria-hidden>
+            {[0, 1, 2, 3, 4].map((index) => (
+              <span key={index} className="pc-wf__loading-row">
+                <i className="pc-wf__skeleton pc-wf__skeleton--dot" />
+                <i className="pc-wf__skeleton pc-wf__skeleton--name" />
+                <i className="pc-wf__skeleton pc-wf__skeleton--meta" />
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="pc-wf__panel pc-wf__ledger pc-wf__ledger--empty">
+        <div className="pc-wf__empty-state" role="status">
+          <span className="pc-wf__empty-icon" aria-hidden><Workflow size={19} /></span>
+          <div>
+            <strong>{emptyTitle}</strong>
+            <p>{emptyLabel}</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="pc-wf__panel pc-wf__ledger">
       <Table
-        className="pc-wf__table"
+        className="pc-wf__table pc-wf__table--ledger"
         columns={withLegibleStyles(columns)}
         rows={[...rows]}
         getRowKey={(row) => row.id}
@@ -142,7 +178,6 @@ export default function WorkflowsLedger({
         isRowSelected={(row) => row.id === selectedId}
         rowClassName={(row) => (row.id === selectedId ? 'is-selected' : undefined)}
         rowTestId={(row) => `wf-row:${row.id}`}
-        emptyLabel={emptyLabel}
       />
       {hiddenCount > 0 ? (
         <p className="pc-wf__more" data-testid="wf-ledger-more">
@@ -219,7 +254,7 @@ export function ActivityList({ activity, hiddenCount = 0, nowMs, onOpen }: Activ
   return (
     <div className="pc-wf__panel pc-wf__ledger">
       <Table
-        className="pc-wf__table"
+        className="pc-wf__table pc-wf__table--activity"
         columns={withLegibleStyles(columns)}
         rows={[...activity]}
         getRowKey={(row) => row.id}
