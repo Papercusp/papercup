@@ -454,7 +454,27 @@ export function completionTreeStampForEvidence(
 
   const candidateRoots = [...new Set([...roots, ...[...nestedOwners.values()].map(({ root }) => root)])];
 
-  const pathForRoot = (root: string, raw: string): { absolutePath: string; relativePath: string } | undefined => {
+  interface PathResolution {
+    absolutePath: string;
+    relativePath: string;
+    /**
+     * EI-21850619651553189: the SAME declared path re-resolved with a leading
+     * `<repoName>/` segment stripped, when that segment names `root` by its own
+     * directory basename — the conventional cross-repo form (`email/packages/...`,
+     * matching how the file is named in prose, plan titles, and everywhere else)
+     * rather than a path already relative to that repo's own root. Offered
+     * ALONGSIDE `absolutePath`/`relativePath` above, never instead of them: a
+     * plain relative path always resolves "inside" any root by construction
+     * (`resolve(root, 'a/b')` can never escape `root`), so the plain form alone
+     * cannot distinguish a real hit from a declared path that merely happens to
+     * share this root's name as its first segment — only EXISTENCE can, which is
+     * why this is a candidate for the caller to check, not a decision made here.
+     */
+    strippedAbsolutePath?: string;
+    strippedRelativePath?: string;
+  }
+
+  const pathForRoot = (root: string, raw: string): PathResolution | undefined => {
     const declaredPath = raw.trim();
     if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) return undefined;
     const nested = nestedOwners.get(declaredPath);
@@ -469,32 +489,25 @@ export function completionTreeStampForEvidence(
       };
     }
 
-    let absolutePath = nodePath.resolve(root, declaredPath);
-    if (absolutePath === root || absolutePath.startsWith(root + nodePath.sep)) {
-      return {
-        absolutePath,
-        relativePath: nodePath.relative(root, absolutePath).split(nodePath.sep).join('/'),
-      };
+    const absolutePath = nodePath.resolve(root, declaredPath);
+    if (absolutePath !== root && !absolutePath.startsWith(root + nodePath.sep)) return undefined;
+    const relativePath = nodePath.relative(root, absolutePath).split(nodePath.sep).join('/');
+
+    let strippedAbsolutePath: string | undefined;
+    let strippedRelativePath: string | undefined;
+    const prefix = `${nodePath.basename(root)}/`;
+    if (declaredPath.startsWith(prefix)) {
+      const stripped = declaredPath.slice(prefix.length);
+      if (stripped) {
+        const strippedAbs = nodePath.resolve(root, stripped);
+        if (strippedAbs === root || strippedAbs.startsWith(root + nodePath.sep)) {
+          strippedAbsolutePath = strippedAbs;
+          strippedRelativePath = nodePath.relative(root, strippedAbs).split(nodePath.sep).join('/');
+        }
+      }
     }
 
-    // EI-21850619651553189: a cross-repo completion naturally writes the conventional
-    // `<repoName>/packages/...` prefix (matching how the file is named in prose, plan
-    // titles, and everywhere else) rather than a path already relative to that repo's
-    // own root. Only tried when the unprefixed form escapes `root` above, so every
-    // existing single-repo resolution is byte-for-byte unchanged; and only for the ONE
-    // root whose own basename matches the prefix, so it can never redirect a path into
-    // an unrelated checkout.
-    const rootName = nodePath.basename(root);
-    const prefix = `${rootName}/`;
-    if (!declaredPath.startsWith(prefix)) return undefined;
-    const stripped = declaredPath.slice(prefix.length);
-    if (!stripped) return undefined;
-    absolutePath = nodePath.resolve(root, stripped);
-    if (absolutePath !== root && !absolutePath.startsWith(root + nodePath.sep)) return undefined;
-    return {
-      absolutePath,
-      relativePath: nodePath.relative(root, absolutePath).split(nodePath.sep).join('/'),
-    };
+    return { absolutePath, relativePath, strippedAbsolutePath, strippedRelativePath };
   };
 
   let selectedRoot = primaryRoot;
@@ -510,7 +523,9 @@ export function completionTreeStampForEvidence(
       const resolved = pathForRoot(repoRoot, declaredPath);
       if (!resolved) continue;
       try {
-        if (exists(resolved.absolutePath)) {
+        const plainExists = exists(resolved.absolutePath);
+        const strippedExists = !plainExists && resolved.strippedAbsolutePath && exists(resolved.strippedAbsolutePath);
+        if (plainExists || strippedExists) {
           matches += 1;
           // An absolute path can be physically contained by both a superproject and its
           // submodule. Prefer the deepest containing checkout so its HEAD/blob identity is
@@ -533,7 +548,19 @@ export function completionTreeStampForEvidence(
 
   const selectedFiles = declared.map((raw) => {
     const resolved = pathForRoot(selectedRoot, raw);
-    return resolved?.relativePath ?? normalizedRepoPath(selectedRoot, raw);
+    if (!resolved) return normalizedRepoPath(selectedRoot, raw);
+    // Mirror the scoring loop's own preference: the stripped candidate wins only when
+    // it is the one that actually exists and the plain form does not.
+    if (resolved.strippedRelativePath) {
+      try {
+        if (!exists(resolved.absolutePath) && exists(resolved.strippedAbsolutePath!)) {
+          return resolved.strippedRelativePath;
+        }
+      } catch {
+        /* fall through to the plain relativePath below */
+      }
+    }
+    return resolved.relativePath;
   });
   const validSelectedFiles = selectedFiles.filter((file): file is string => file !== undefined);
   if (validSelectedFiles.length !== selectedFiles.length) return undefined;
