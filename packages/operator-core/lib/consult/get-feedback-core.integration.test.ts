@@ -35,6 +35,7 @@ import {
   readVettingConsultCritique,
 } from './get-feedback-core';
 import { peersKnowLookup } from './peers-know';
+import { consultReplyCore } from './consult-verbs-core';
 
 /** Narrow the P-005 result union for the tests that expect success. */
 function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
@@ -1130,6 +1131,56 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(sel?.selected?.[1]).toMatchObject({ ownerId: 'live-low' });
     expect(res.remaining_candidates[0]?.ownerId).toBe('live-low');
     expect(res.hint).toContain('REVIVED');
+  });
+
+  it('persists the provisional responder before revival so its kickoff can reply on the first turn', async () => {
+    let revivedReply: Awaited<ReturnType<typeof consultReplyCore>> | undefined;
+    const { deps } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {
+      spawned: true,
+      verified: null,
+      detail: 'booting',
+    });
+    deps.revive = async ({ conversationId }) => {
+      // The real reviver returns after spawn/host registration, not after the
+      // resumed CLI's first turn. Simulate that first turn arriving before the
+      // revive seam resolves; it must see a durable consult_state row.
+      revivedReply = await consultReplyCore(
+        {
+          workspaceId: WS,
+          authorId: deadExpert.ownerId,
+          conversationId,
+          kind: 'answer',
+          body: 'the revived first-turn answer',
+          evidence: [{ session_id: 'sess-dead-x', turn_idx: 3 }],
+        },
+        {
+          getSql: () => rootSql,
+          post: async (input) => ({
+            post: {
+              id: 91_001,
+              thread_id: `thr-${input.conversation_id}`,
+              author_id: deadExpert.ownerId,
+              body: input.body,
+              created_ts: NOW.toISOString(),
+            },
+            delivered: 0,
+          }),
+          emitReplyEvent: async () => {},
+          now: () => NOW,
+        },
+      );
+      return { spawned: true, verified: null, detail: 'booting' };
+    };
+
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+
+    expect(revivedReply).toMatchObject({ ok: true, role: 'responder', state: 'active' });
+    expect(res.revival).toMatchObject({ ownerId: 'dead-x', spawned: true });
+    const row = await stateRow(res.conversation_id);
+    expect(row.state).toBe('active');
+    expect(row.responder_id).toBe('dead-x');
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', revived: true });
   });
 
   it('spawn-fail falls back to the pre-revival outcome — attempt still reported, nothing relabeled', async () => {
