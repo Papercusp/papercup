@@ -4306,7 +4306,14 @@ async function runRefAnnounceLeg(
        ORDER BY id ASC
        LIMIT 200
     `;
-    if (feRows.length === 0) return; // fast no-op — nothing new to receive
+    // Nothing new to receive. ⚠ NOT inherently a "fast no-op": the zero-row case is the
+    // one where the scan runs to completion having found nothing, so it is the MOST
+    // expensive outcome, not the cheapest — and since fed-events are rare relative to
+    // total surface='messages' traffic, it is also the COMMON one. It is cheap only when
+    // coord_event_log_fed_event_key_idx (migration 1038) is present to make it an index
+    // probe; without that index this is a full parallel seq scan on every git-sync tick.
+    // See EI-21893070865750886, which measured it at 1,408 buffers -> 3.
+    if (feRows.length === 0) return;
 
     const pending: { rowId: number; announcement: SignedRefAnnouncement }[] = [];
     let maxRowId = lastEventId;
@@ -5104,7 +5111,15 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
        ORDER BY id ASC
        LIMIT 200
     `;
-    if (feRows.length === 0) return; // fast no-op — nothing new to bridge
+    // Nothing new to bridge. ⚠ NOT inherently a "fast no-op" — same shape as the
+    // ref-announce reader above: zero rows is the case where the scan completes having
+    // found nothing, which is the most expensive outcome and the common one. This site
+    // also filters `repo_key`, which is why coord_event_log_fed_event_key_idx (migration
+    // 1038) carries repo_key as a TRAILING column after `id` — that lets this query
+    // discard non-matching rows in-index (measured 1,992 buffers -> 40) without
+    // disturbing the id-ordering the ref-announce readers depend on.
+    // See EI-21893070865750886.
+    if (feRows.length === 0) return;
 
     const pending: SignedStagingAdvance[] = [];
     /** Row id + age per PENDING entry, index-aligned with `pending` — the
