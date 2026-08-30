@@ -168,6 +168,10 @@ function fixture(): PhysicalPhaseAInput {
 }
 
 describe('P-505 fixed physical Phase A cold-join executor core', () => {
+  it('keeps the fixed canary on the registry-pinned self-hive repo key', () => {
+    expect(PHASE_A_REPO_KEY).toBe('gh-1303510992');
+  });
+
   it('accepts only a signed, absence-before-canonical-bootstrap two-store witness', () => {
     const verdict = validatePhysicalPhaseA(fixture());
     expect(verdict).toMatchObject({
