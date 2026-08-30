@@ -137,6 +137,54 @@ describe('detectNowItemContradictions', () => {
       expect.objectContaining({ id: 'P-001', status: 'done' }),
     ]);
   });
+
+  it('exempts a P-NNN mention explicitly prefixed by a DIFFERENT plan slug', () => {
+    // EI-21900747713795768: "Audited under <other-plan> P-001" cites the
+    // OTHER plan's P-001, not this plan's own (terminal) P-001 — even though
+    // the reference reads exactly like the action-oriented shape this guard
+    // otherwise flags.
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**Next:** Continue with P-002.',
+        '**Next:** Audited under pui-tui-ship-drive-2026-08-30 P-001.',
+      ),
+      { filePath: `${SLUG}.md` },
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('still flags a P-NNN mention prefixed by THIS plan\'s own slug', () => {
+    // The slug-prefix exemption is scoped to a genuinely DIFFERENT plan — a
+    // citation of this plan's own slug is not a foreign reference and must
+    // not silently defeat the guard.
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**Next:** Continue with P-002.',
+        `**Next:** Revisit ${SLUG} P-001 before continuing.`,
+      ),
+      { filePath: `${SLUG}.md` },
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
+
+  it('does not exempt a bare terminal-status word merely resembling a slug segment', () => {
+    // Guard against a regression that treats any hyphenated word before the
+    // id as a foreign-plan citation: without a trailing -YYYY-MM-DD date the
+    // prefix regex must not match at all, so ordinary action wording is
+    // still caught.
+    const proposed = parsePlan(
+      CURRENT.replace('**Next:** Continue with P-002.', '**Next:** re-revisit P-001 before continuing.'),
+      { filePath: `${SLUG}.md` },
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
 });
 
 describe('evaluateSetContent — Now/item contradiction guard', () => {
@@ -197,6 +245,21 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       CURRENT,
       'The consumer lane is now WI-41755/P-001 under D-081; its affected-radius verification remains in progress.',
       'Continue the affected-radius verification.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it('accepts a cross-plan P-NNN citation even when this plan has its own terminal item of the same number', () => {
+    // EI-21900747713795768's exact reproduction shape: citing another
+    // plan's item id by writing "<other-plan-slug> P-001" into a plan whose
+    // OWN P-001 happens to already be done must not be read as a
+    // contradiction about this plan's P-001.
+    const result = evaluateNowUpdate(
+      CURRENT,
+      'Audited under pui-tui-ship-drive-2026-08-30 P-001.',
+      'Continue with P-002.',
       SLUG,
     );
 
