@@ -275,3 +275,145 @@ describe('image scan guest script — ecosystem cataloger coverage', () => {
     expect(block).toContain('sbom-npm-parse-failed');
   });
 });
+
+/**
+ * SCOPE ATTRIBUTION — papercusp-bundled versus inherited base image.
+ *
+ * The scan measures the whole mounted image on purpose, but the release it reports on is only
+ * the content under /opt/papercusp. D-201 proved the difference decides whether the gate is
+ * reachable at all: linux-kernel alone carries 1054 findings at or above high, so no change to
+ * the release can ever green a gate that measures the whole mount, while D-202 showed the npm
+ * findings under the bundle are ours and 100% fixable. Two populations, opposite remediations.
+ *
+ * These are EVIDENCE fields — no policy reads them yet, by design (D-202 section 4 sequences the
+ * npm remediation before the gate changes what it accepts). What is pinned here is therefore not
+ * a verdict but the two properties that make the evidence trustworthy: that the split is actually
+ * computed for both legs, and that it fails CLOSED when it computes nothing.
+ */
+describe('image scan guest script — template integrity', () => {
+  it('contains no backtick inside the guest-script template literal', () => {
+    // Says the cause out loud, because the symptom does not.
+    //
+    // The whole guest script is a JS template literal, so ONE backtick in a shell comment
+    // terminates it early and the rest of the file stops parsing. The scanner's own source
+    // carries a warning about this ("Caught twice now by node --check"); it has now happened a
+    // third time — writing `find` in prose inside a comment, an entirely natural thing to type.
+    //
+    // Without this test the failure is already caught, but it presents as sixteen unrelated
+    // "SyntaxError: Unexpected identifier" failures across every test in the file, none of which
+    // names a backtick. The cause is a one-character edit and the symptom is a wall of noise, so
+    // the diagnosis costs far more than the fix. This turns that into one named assertion.
+    const source = readFileSync(SCANNER_SOURCE, 'utf8');
+    const lines = source.split('\n');
+    const open = lines.findIndex((line) => line.includes('return `#!/bin/bash'));
+    expect(open, 'could not locate the template opening — extraction is stale, not the subject')
+      .toBeGreaterThan(-1);
+    const close = lines.findIndex((line, i) => i > open && line === '`;');
+    expect(close, 'could not locate the template close — extraction is stale').toBeGreaterThan(open);
+
+    const offenders = lines
+      .slice(open + 1, close)
+      .map((line, i) => ({ line, n: open + 2 + i }))
+      .filter((row) => row.line.includes('`'));
+    expect(
+      offenders.map((row) => `${row.n}: ${row.line.trim()}`),
+      'a backtick inside the template terminates it early — the whole script stops parsing',
+    ).toEqual([]);
+  });
+});
+
+describe('image scan guest script — papercusp/inherited scope attribution', () => {
+  it('splits BOTH legs on the bundle path, matching the substring with both delimiters', () => {
+    const script = emitGuestScript();
+
+    // Both legs, because D-201 established they are one defect — a split that covered only
+    // vulnerabilities would leave the 275 secret findings exactly as unattributable as before.
+    expect(script).toContain('vuln_by_scope=');
+    expect(script).toContain('vuln_crit_high_by_scope=');
+    expect(script).toContain('secrets_by_scope=');
+
+    // The BOUNDING SLASHES are the assertion, not the bare path. syft and gitleaks disagree on
+    // whether a dir:-source path is absolute-on-guest or relative to the scan root, so the
+    // matcher is a substring test; without the trailing slash it would also match a sibling
+    // such as /opt/papercusp-old and silently over-attribute findings to us.
+    expect(script).toContain('contains("/opt/papercusp/")');
+    expect(script).not.toMatch(/startswith\("\/opt\/papercusp/);
+
+    // Every finding must land in exactly one of two buckets — an `else` branch, not a filter.
+    // A filter would drop the inherited population from the document entirely, which is the
+    // evidence D-201 depends on to prove the gate is unreachable.
+    expect(script).toContain('"inherited-base-image"');
+    expect(script).toContain('"papercusp-bundled"');
+  });
+
+  it('fails CLOSED when the bundle is on the image but the matcher attributed nothing to it', () => {
+    const script = emitGuestScript();
+
+    const guard = script.slice(script.indexOf('bundle_present='));
+    const block = guard.slice(0, guard.indexOf('# Secret DETAIL'));
+    expect(block, 'the scope attribution guard moved — extraction is stale, not the subject')
+      .toContain('scope-attribution-zero');
+    expect(block).toContain('exit 1');
+    expect(block).toContain('sbom-scope-parse-failed');
+  });
+
+  it('treats a MISSING bundle as a hard error, not as "nothing of ours to report"', () => {
+    const script = emitGuestScript();
+
+    const guard = script.slice(script.indexOf('bundle_present='));
+    const block = guard.slice(0, guard.indexOf('# Secret DETAIL'));
+
+    // A detector must not share its subject's single point of failure.
+    //
+    // `find` and the SBOM matcher both read the same bundle-path constant, so if that constant is
+    // WRONG they fail together: nothing is found on disk, nothing is attributed, and a guard
+    // written as "present AND NOT cataloged" never fires. Every finding would then be labelled
+    // inherited and the release would read as having no findings of its own — the precise
+    // fail-open this proof exists to prevent, reintroduced by the guard meant to catch it.
+    //
+    // The image is a papercusp workspace-host image by construction, so an absent bundle means
+    // either a mis-built image or a wrong constant, and both must red. Pinned because the
+    // conditional form is the one that LOOKS more careful.
+    expect(block).toContain('bundle-path-not-found');
+    expect(block, 'the missing-bundle check must be unconditional, not gated on bundle_present')
+      .toMatch(/bundle_present" -eq 0 \]; then detail="bundle-path-not-found"/);
+    expect(block, 'a "present AND NOT cataloged" conjunction re-opens the wrong-constant hole')
+      .not.toMatch(/bundle_present" -gt 0 \].*&&/);
+  });
+
+  it('keys the guard on CATALOGED PACKAGES, never on finding counts', () => {
+    const script = emitGuestScript();
+
+    const guard = script.slice(script.indexOf('bundle_present='));
+    const block = guard.slice(0, guard.indexOf('# Secret DETAIL'));
+
+    // This is the property most likely to be "simplified" into a bug, so it is pinned directly.
+    //
+    // A bundle carrying ZERO vulnerabilities is the SUCCESS state this whole effort is driving
+    // toward — D-202 says the npm findings are ours and every one has an upstream fix. So a
+    // guard keyed on a zero FINDING count would red the gate at exactly the moment the
+    // remediation finally worked, and the obvious response to that would be to delete the
+    // guard. Cataloged packages cannot legitimately fall to zero while the bundle exists
+    // (~291 npm packages under the path, per the D-200 measurement), so they are the honest
+    // denominator: they falsify a broken matcher without punishing a clean release.
+    expect(block, 'the guard must read the SBOM, not grype output').toContain('/tmp/sbom.json');
+    expect(block, 'keying the guard on findings reds a successfully remediated bundle')
+      .not.toContain('/tmp/vuln.json');
+    expect(block).toContain('.artifacts[]?');
+  });
+
+  it('never emits a matched secret value while attributing the secrets leg', () => {
+    const script = emitGuestScript();
+
+    const line = script.split('\n').find((l) => l.includes('secrets_by_scope='));
+    expect(line, 'the secrets scope projection moved — extraction is stale').toBeTruthy();
+
+    // Same non-disclosure rule the sample and area projections are held to: this document is
+    // read back over SSH into release logs and work-item evidence, so projecting gitleaks'
+    // own .Secret / .Match would turn a detection into a disclosure. Attribution needs the
+    // FILE path and nothing else.
+    expect(line).not.toContain('.Secret');
+    expect(line).not.toContain('.Match');
+    expect(line).toContain('.File');
+  });
+});
