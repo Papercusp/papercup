@@ -268,14 +268,31 @@ export default defineTool({
       : outcome?.status === 'skipped'
         ? {
             // A lock skip is terminal for THIS fire, but not for the requested
-            // synchronization. The action emits this signal after capturing the
-            // live holders, so callers can await a targeted retry instead of
-            // polling or treating the skip as a successful no-op.
-            completion_event: {
-              key: GIT_SYNC_LOCK_RETRY_EVENT,
-              payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
-            },
-            await_tool: 'events:await',
+            // synchronization. Whether a TARGETED retry signal is coming depends on
+            // the refusal CLASS, so only advertise an await that will actually fire.
+            //
+            // `held_exclusive` deliberately emits nothing: git-sync-action.ts guards
+            // the sole emitter with `reason !== 'held_exclusive'` (WI-209800 / D-104 —
+            // re-emitting would wake waiters into the same no-delta refusal while the
+            // peer still holds the row). Advertising GIT_SYNC_LOCK_RETRY_EVENT here
+            // handed callers an events:await on a key with no reachable emitter for
+            // this class, which is the most common one (it is what the system
+            // git-sync routine's own lock produces).
+            //
+            // Report live holders and promise NO completion event instead. Do not
+            // substitute git-sync:committed: `held_exclusive` does not imply the
+            // holder is the system routine — any peer may hold git-sync:<slug> (the
+            // documented mutation-probe recipe does exactly that) — so a commit event
+            // would be just as unreliable a promise.
+            ...(outcome.reason === 'held_exclusive'
+              ? {}
+              : {
+                  completion_event: {
+                    key: GIT_SYNC_LOCK_RETRY_EVENT,
+                    payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
+                  },
+                  await_tool: 'events:await',
+                }),
             progress_ref: {
               surface: 'agent_resource_locks',
               workspace_id: workspaceId,
@@ -299,8 +316,18 @@ export default defineTool({
         : outcome?.status === 'nothing'
           ? 'git-sync completed with status nothing; no repo changes were committed.'
           : outcome?.status === 'skipped'
-            ? `git-sync completed with status skipped (${outcome.reason}); await ${GIT_SYNC_LOCK_RETRY_EVENT} ` +
-              'for the next lock-retry signal and inspect continuation.progress_ref for live holder state.'
+            ? outcome.reason === 'held_exclusive'
+              ? // Deliberately does NOT name the lock-retry key: this class never emits it,
+                // and mentioning it — even to negate it — is what a skimming caller (or a
+                // substring match) turns back into the dead-drop await this branch exists
+                // to prevent.
+                `git-sync skipped: a peer holds ${outcome.blockedOn ?? 'the git-sync resource'} ` +
+                '(held_exclusive). NO targeted retry event fires for this class, and this result ' +
+                'deliberately carries no completion_event — do not wait on one. Your changes are ' +
+                'not lost: the next scheduled git-sync tick commits them. Inspect ' +
+                'continuation.progress_ref for live holder state, or wait for the holder to release.'
+              : `git-sync completed with status skipped (${outcome.reason}); await ${GIT_SYNC_LOCK_RETRY_EVENT} ` +
+                'for the next lock-retry signal and inspect continuation.progress_ref for live holder state.'
             : outcome?.status === 'conflict' || outcome?.status === 'error'
               ? `git-sync completed with status ${outcome.status}; inspect outcome errors/conflicts.`
               : 'git-sync returned no structured outcome; treat the result as unknown and inspect the routine log.';

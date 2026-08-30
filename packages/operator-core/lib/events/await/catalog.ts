@@ -369,8 +369,13 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'git-sync:lock-retry',
     params: [],
     describe:
-      'git-sync could not acquire a named resource lock and will retry after lock turnover; payload carries the resource, reason, and holder snapshots.',
-    emitter: 'git-sync action (packages/operator-core/lib/harness/git-sync/git-sync-events.ts)',
+      'git-sync could not acquire a named resource lock and will retry after lock turnover; payload carries the resource, reason, and holder snapshots. ' +
+      'NOT emitted for the `held_exclusive` refusal class (a live peer — often the system git-sync routine — still holds the row): that case is ' +
+      'deliberately silent, so awaiting this key after a held_exclusive skip parks on an emitter that will not fire for it. git-sync:run therefore ' +
+      'advertises no completion_event for that class (EI-21914064913503090).',
+    emitter:
+      'git-sync action — sole call site packages/operator-core/lib/harness/git-sync/git-sync-action.ts, guarded by `reason !== "held_exclusive"` ' +
+      '(WI-209800 / D-104); helper defined in packages/operator-core/lib/harness/git-sync/git-sync-events.ts',
     exists: true,
     payloadFiltered: true,
   },

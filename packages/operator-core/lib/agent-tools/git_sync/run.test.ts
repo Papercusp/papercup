@@ -358,33 +358,43 @@ describe('git-sync:run', () => {
     });
   });
 
-  it('returns a structured lock-retry continuation when the fire skips on a held resource', async () => {
-    const holders = [
-      {
-        owner: 'su-peer',
-        owner_label: 'peer agent',
-        mode: 'exclusive',
-        status: 'held',
-        lock_id: 'lock-1',
-        reason: 'manual git work',
-        acquired_ts: '2026-08-21T10:00:00.000Z',
-        expires_ts: '2026-08-21T10:10:00.000Z',
-        fence_seq: 42,
-      },
-    ];
-    const outcome = {
-      status: 'skipped' as const,
-      reason: 'held_exclusive',
-      blockedOn: 'git-sync:papercusp',
-      holders,
-    };
+  const SKIP_HOLDERS = [
+    {
+      owner: 'su-peer',
+      owner_label: 'peer agent',
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'lock-1',
+      reason: 'manual git work',
+      acquired_ts: '2026-08-21T10:00:00.000Z',
+      expires_ts: '2026-08-21T10:10:00.000Z',
+      fence_seq: 42,
+    },
+  ];
+
+  const mockSkippedFire = async (outcome: Record<string, unknown>) => {
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
     vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
     vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
     vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => outcome) }));
-
     const { default: tool } = await import('./run');
-    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+    return parse((await tool.handler({}, MAKE_CTX())) as never);
+  };
+
+  // EI-21914064913503090: `held_exclusive` is the ONE skip class whose retry signal is
+  // deliberately never emitted — git-sync-action.ts guards the sole emitter with
+  // `reason !== 'held_exclusive'` (WI-209800 / D-104). Advertising a completion_event
+  // here handed callers an events:await on a key with no reachable emitter, so the
+  // response must promise no event at all. It must NOT substitute git-sync:committed:
+  // the holder is not necessarily the system routine (any peer may hold git-sync:<slug>).
+  it('promises NO completion event when the skip is held_exclusive, since none is ever emitted for that class', async () => {
+    const outcome = {
+      status: 'skipped' as const,
+      reason: 'held_exclusive',
+      blockedOn: 'git-sync:papercusp',
+      holders: SKIP_HOLDERS,
+    };
+    const result = await mockSkippedFire(outcome);
 
     expect(result).toMatchObject({
       ok: true,
@@ -392,6 +402,46 @@ describe('git-sync:run', () => {
       status: 'skipped',
       success: false,
       committed: false,
+      outcome,
+      // Live holder state is still genuinely useful and is retained.
+      continuation: {
+        progress_ref: {
+          surface: 'agent_resource_locks',
+          workspace_id: 'default',
+          install_slug: 'papercusp',
+          resource: 'git-sync:papercusp',
+          fields: ['resource', 'reason', 'holders'],
+        },
+      },
+    });
+    // The dead-drop: no awaitable event may be advertised for this class.
+    // (`parse` returns Record<string, unknown>, so narrow before indexing.)
+    const { continuation } = result as { continuation: Record<string, unknown> };
+    expect(continuation.completion_event).toBeUndefined();
+    expect(continuation.await_tool).toBeUndefined();
+    // ...and the prose must not name the key AT ALL. Mentioning it even to negate it
+    // ("do NOT await git-sync:lock-retry") is what a skimming caller or a substring
+    // match turns straight back into the dead-drop await. Caught by this assertion.
+    expect(result.note).not.toMatch(/git-sync:lock-retry/);
+    expect(result.note).toMatch(/NO targeted retry event fires/);
+  });
+
+  // POSITIVE CONTROL for the case above: the fix must be scoped to `held_exclusive`
+  // ONLY. Every other refusal class still reaches the live emitter, so removing the
+  // continuation wholesale would be a regression, not a fix.
+  it('still returns the lock-retry continuation for a non-held_exclusive skip, whose emitter does fire', async () => {
+    const outcome = {
+      status: 'skipped' as const,
+      reason: 'lock_contended',
+      blockedOn: 'libs-papercusp-submodule',
+      holders: SKIP_HOLDERS,
+    };
+    const result = await mockSkippedFire(outcome);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: true,
+      status: 'skipped',
       outcome,
       continuation: {
         completion_event: {
@@ -403,7 +453,7 @@ describe('git-sync:run', () => {
           surface: 'agent_resource_locks',
           workspace_id: 'default',
           install_slug: 'papercusp',
-          resource: 'git-sync:papercusp',
+          resource: 'libs-papercusp-submodule',
           fields: ['resource', 'reason', 'holders'],
         },
       },
