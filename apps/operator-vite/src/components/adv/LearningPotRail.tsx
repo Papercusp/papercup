@@ -147,7 +147,8 @@ export default function LearningPotRail() {
   // with nothing in it, so the rail simply is not there.
   if (active.length === 0 && dormant.length === 0) return null;
 
-  const potWord = t("pot", { plural: dormant.length !== 1, lower: true });
+  const many = dormant.length !== 1;
+  const potWord = t("pot", { plural: many, lower: true });
 
   return (
     <ul
@@ -165,7 +166,7 @@ export default function LearningPotRail() {
       {dormant.length > 0 ? (
         <li className="pc-potrail__chip pc-potrail__chip--dormant">
           <Tooltip
-            label={`${dormant.length} ${potWord} have a learning setup — a gym autoloop or governor lanes — with nothing armed right now. They are not switched off; nothing is running for them.`}
+            label={`${dormant.length} ${potWord} ${many ? "have" : "has"} a learning setup — a gym autoloop or governor lanes — with nothing armed right now. ${many ? "They are" : "It is"} not switched off; nothing is running for ${many ? "them" : "it"}.`}
           >
             <span className="pc-potrail__dormant">
               {`+${dormant.length} idle`}
@@ -221,8 +222,22 @@ export default function LearningPotRail() {
           position: absolute; width: 1px; height: 1px; margin: -1px;
           padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
         }
+        /* A narrow container gets ONE scrolling row rather than a stack of
+           wrapped rows: this sits between the stage stepper and the view tabs,
+           so growing vertically pushes the whole tab body down.
+           The mask is the scroll AFFORDANCE, and it is honest without any
+           overflow detection — it fades the element's last 22px, which is bare
+           background when nothing overflows and a half-visible chip when
+           something does. Verified 2026-08-30: at a 550px container the rail
+           held 7 chips in a 25px row and clipped the second chip mid-word with
+           no hint it continued. */
         @container learning (max-width: 640px) {
-          .pc-potrail { flex-wrap: nowrap; overflow-x: auto; }
+          .pc-potrail {
+            flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+            -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+            mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+          }
+          .pc-potrail::-webkit-scrollbar { display: none; }
         }
       `}</style>
     </ul>

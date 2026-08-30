@@ -39,6 +39,15 @@
  * skips dead candidates for BOTH floor picks and minimum fills, which is why an
  * all-dead pool yields an empty menu rather than an unusable pick.
  *
+ * THE MENU IS PARTY-DISTINCT, NOT ID-DISTINCT (D-008). `selectRanked` dedupes on
+ * `ownerId`, which is a claim about strings; one agent can hold several
+ * coordination identities (a rebind chain, a launcher and what it launched), and
+ * a two-entry menu that is one party twice makes D-003's carried second opinion a
+ * self-review the gate then ranks as better-informed. So the POOL is collapsed to
+ * one candidate per party before selection — at the pool because
+ * `routing.candidates` is what cascade-core's refill and revival legs extend the
+ * menu from, and a menu-level fix would leave that path open.
+ *
  * SELECTION ITSELF IS NOT WRITTEN HERE. The bounds come from the shared registry
  * (`selection-policies.ts`, key ACCEPTANCE_GRADING_POLICY) and the algorithm is
  * `@papercusp/ranked-selection` — the same two things the critique consult
@@ -75,6 +84,13 @@ export interface GraderSelectDeps {
   route: (params: ConsultRouteParams) => Promise<RouteResult>;
   /** Resolve the durable role for every routed owner in the plan workspace. */
   getCandidateRoles: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string | null>>;
+  /**
+   * Map every candidate to its PARTY key — one agent's several coordination
+   * identities collapse to one key (D-008). Required, not optional: a consumer
+   * that forgot to wire it would lose the independence guard silently, so the
+   * type refuses to compile instead. `lineagePartyKeys` is the production impl.
+   */
+  getPartyKeys: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string>>;
 }
 
 /** One selected grader with the provenance of HOW it was selected. `via` is on
@@ -111,6 +127,18 @@ export interface GraderSelection {
   routing?: RoutingSnapshot;
   /** The full exclusion set applied — the D-009 independence audit trail. */
   excluded: string[];
+  /**
+   * Candidates dropped because a better-ranked candidate resolved to the SAME
+   * PARTY (D-008). Kept separate from `excluded`, which is the D-009 set and
+   * means something different: these are not disqualified actors, they are
+   * duplicate representations of an actor already on the menu.
+   *
+   * Present (possibly empty) whenever party resolution ran; ABSENT when the
+   * lookup faulted and selection degraded to raw-ownerId distinctness — so a
+   * reader can tell "no duplicates found" from "not checked", which an empty
+   * array alone cannot say.
+   */
+  partyCollapsed?: string[];
   /**
    * What the router could measure after applying the independence exclusions.
    * `eligibleCount` is the known non-excluded actor pool; `qualifiedCount` is
@@ -170,6 +198,48 @@ export function filterCoordCapableCandidates(
   roles: ReadonlyMap<string, string | null>,
 ): RoutingCandidate[] {
   return candidates.filter((candidate) => isCoordCapableRole(roles.get(candidate.ownerId)));
+}
+
+/**
+ * Collapse two ranked pools to one candidate per PARTY (D-008).
+ *
+ * `selectRanked` dedupes on `ownerId`, which is a claim about strings, not about
+ * agents. Since D-003 made the menu a min-1/max-2 cascade, two ownerIds of one
+ * party would produce a "second opinion" that is that party reviewing its own
+ * carried card — WI-905074's shape one level up. Collapsing here rather than
+ * after selection is deliberate: `routing.candidates` is the pool cascade-core's
+ * refill and revival legs extend the menu from, so a menu-level fix would leave
+ * exactly that hole open.
+ *
+ * A party's representative prefers its best-ranked QUALIFIED member over its
+ * best-ranked eligible one. Collapsing on eligible order alone could keep an
+ * above-floor party's below-floor face and shrink the qualified pool, turning an
+ * independence guard into an accidental floor demotion.
+ *
+ * Both inputs must be in ranked order; `qualified` is expected to be a subset of
+ * `eligible`, as the router produces it.
+ */
+export function collapseToDistinctParties(
+  eligible: RoutingCandidate[],
+  qualified: RoutingCandidate[],
+  partyKeys: ReadonlyMap<string, string>,
+): { eligible: RoutingCandidate[]; qualified: RoutingCandidate[]; collapsed: string[] } {
+  const partyOf = (candidate: RoutingCandidate) => partyKeys.get(candidate.ownerId) ?? candidate.ownerId;
+  const representative = new Map<string, string>();
+  for (const candidate of qualified) {
+    const party = partyOf(candidate);
+    if (!representative.has(party)) representative.set(party, candidate.ownerId);
+  }
+  for (const candidate of eligible) {
+    const party = partyOf(candidate);
+    if (!representative.has(party)) representative.set(party, candidate.ownerId);
+  }
+  const keep = new Set(representative.values());
+  return {
+    eligible: eligible.filter((candidate) => keep.has(candidate.ownerId)),
+    qualified: qualified.filter((candidate) => keep.has(candidate.ownerId)),
+    collapsed: eligible.filter((candidate) => !keep.has(candidate.ownerId)).map((c) => c.ownerId),
+  };
 }
 
 /** The system-authored grader-discovery query: rubric first (the definition of
@@ -262,8 +332,33 @@ export async function selectAcceptanceGrader(
   // snapshot, but keeping the filtering explicit prevents a future router
   // change from allowing an incompatible candidate through the assignment
   // path while eligibility still counts the safe pool.
-  const eligibleCandidates = filterCoordCapableCandidates(route.snapshot.candidates, candidateRoles);
-  const qualifiedCandidates = filterCoordCapableCandidates(route.qualified, candidateRoles);
+  const coordCapableEligible = filterCoordCapableCandidates(route.snapshot.candidates, candidateRoles);
+  const coordCapableQualified = filterCoordCapableCandidates(route.qualified, candidateRoles);
+
+  // D-008: distinct ownerIds are not distinct PARTIES. Collapse before anything
+  // downstream counts, selects from, or persists these pools, so the menu, the
+  // eligibility counts and the refill pool all describe the same party set.
+  //
+  // FAIL-SOFT, disclosed (D-008, matching D-007's read): a party-lookup fault
+  // degrades to raw-ownerId distinctness — precisely the pre-D-008 behaviour —
+  // rather than refusing every ship in the workspace on a transient PG fault.
+  // `partyCollapsed` is then left ABSENT, so the degrade is legible instead of
+  // looking like a clean "no duplicate parties found".
+  let partyKeys: ReadonlyMap<string, string> | null = null;
+  try {
+    partyKeys = await deps.getPartyKeys(
+      params.workspaceId,
+      coordCapableEligible.map((candidate) => candidate.ownerId),
+    );
+  } catch {
+    partyKeys = null;
+  }
+  const parties = partyKeys
+    ? collapseToDistinctParties(coordCapableEligible, coordCapableQualified, partyKeys)
+    : null;
+  const eligibleCandidates = parties?.eligible ?? coordCapableEligible;
+  const qualifiedCandidates = parties?.qualified ?? coordCapableQualified;
+  const partyCollapsed = parties ? { partyCollapsed: parties.collapsed } : {};
 
   const eligibility: GraderEligibility = {
     eligibleCount: eligibleCandidates.length,
@@ -282,7 +377,7 @@ export async function selectAcceptanceGrader(
   // is no ranking to fill from, only an arbitrary row order. Minting fresh here
   // is the honest outcome, not a survival of the overturned asymmetry.
   if (route.snapshot.degraded === 'embed-unavailable' || route.verdict === 'relevance_unmeasured') {
-    return { verdict: 'fresh', graders: [], excluded, eligibility, freshReason: 'degraded' };
+    return { verdict: 'fresh', graders: [], excluded, ...partyCollapsed, eligibility, freshReason: 'degraded' };
   }
 
   // D-001 [owner]: bounds from the shared registry, algorithm from the shared
@@ -304,6 +399,7 @@ export async function selectAcceptanceGrader(
       verdict: 'fresh',
       graders: [],
       excluded,
+      ...partyCollapsed,
       eligibility,
       ...(escalation ? { escalation } : {}),
       // Two genuinely different empty menus, kept apart because they imply
@@ -322,6 +418,7 @@ export async function selectAcceptanceGrader(
       selection: selectionSnapshot(bounds.min, bounds.max, graders),
     },
     excluded,
+    ...partyCollapsed,
     eligibility,
   };
 }

@@ -85,6 +85,12 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
   { name: 'coverage-census', seedScript: 'seed-coverage-census-routine.ts' },
   { name: 'cross-hive-outbox-drain', seedScript: 'seed-cross-hive-drain-routine.ts' },
+  // EI-21894865709918325. Landed defaulting ACTIVE (its own header: "the always-on
+  // dead-citation sweep") but was never added here, so the guard that exists to catch
+  // "the seed script nobody ever ran" could not see it — the same omission, one level up,
+  // that this registry was written to close. Found red in committed staging while greening
+  // main on 2026-08-30; unrelated to the frozen-candidate entry below.
+  { name: 'dead-citation-sweep', seedScript: 'seed-dead-citation-sweep-routine.ts' },
   {
     name: 'frozen-candidate-drift-sweep',
     seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',

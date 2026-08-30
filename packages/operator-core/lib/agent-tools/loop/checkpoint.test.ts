@@ -1368,6 +1368,30 @@ describe('EI-18833865002636933: rescue-by-parse of a tag-serialized structured w
     expect(written).toContain('</did>');
     expect(written).not.toContain('RENDERED:');
   });
+
+  // EI-21918217118634060: a sibling's CLOSE tag was present in the blob (so the rescue
+  // fires) but its OPEN tag never was, so it fails to extract — the rescue must NOT
+  // claim "stored correctly" for that section, and must NAME it as dropped.
+  it('a signaled-but-unrecovered sibling is named in droppedSections, and the note stops claiming success', async () => {
+    const partiallyMalformed = [
+      'Closed two gate threats.</did>',
+      '<left>Nothing claimed.</left>',
+      'Something about the gate in prose.</insight>', // no matching <insight> opener
+      '<next>Confirm the gate outcome.</next>',
+    ].join('\n');
+    const b = body(await call({ did: partiallyMalformed }));
+    expect(b.rescued.recovered).toEqual(expect.arrayContaining(['did', 'left', 'next']));
+    expect(b.rescued.recovered).not.toContain('insight');
+    expect(b.rescued.droppedSections).toEqual(['insight']);
+    expect(b.rescued.note).not.toContain('stored correctly');
+    expect(b.rescued.note).toContain('insight');
+  });
+
+  it('a fully-clean rescue reports no droppedSections and keeps the "stored correctly" note', async () => {
+    const b = body(await call({ did: BLOB }));
+    expect(b.rescued.droppedSections).toBeUndefined();
+    expect(b.rescued.note).toContain('stored correctly');
+  });
 });
 
 // WI-7264 — a carry-note write must not be DISCARDED over one oversized or

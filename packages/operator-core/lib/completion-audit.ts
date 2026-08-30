@@ -177,6 +177,84 @@ export const COMPLETION_AUDITS = [
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
 
 /**
+ * How stale a release must be before `worked-then-abandoned` will name the row.
+ *
+ * 21 days, not a tunable: the bucket is an enum value with no parameters, and a
+ * caller-chosen floor would let the same query answer "3 items" or "700" with nothing
+ * in the result saying which question was asked. Measured on this install 2026-08-30
+ * over open, non-observation rows: 2,043 had been worked-then-released at all, 721 more
+ * than 7 days ago, 406 more than 21. The 7-day figure still contains ordinary in-flight
+ * churn (an agent releasing to a peer, a lane handoff resumed next day); by 21 days a
+ * release that was going to be picked back up already has been.
+ */
+export const WORKED_THEN_ABANDONED_STALE_DAYS = 21;
+
+/**
+ * Audits over OPEN rows — the lifecycle siblings of {@link COMPLETION_AUDITS}.
+ *
+ * Every bucket above judges a CLOSE and is meaningless on an open row (an open item has
+ * no completion to be missing). This set is the mirror image: it judges rows that are
+ * still open, and is meaningless on a terminal one. They are separate constants rather
+ * than one flat list because the difference is not cosmetic — it decides which state
+ * clause the query must apply, which is exactly what {@link auditWhereSql} exists to
+ * derive rather than let each call site re-type (see its doc for the silent-empty-result
+ * failure that motivated it).
+ *
+ *  - `worked-then-abandoned` (EI-19320339017813143) — a NON-terminal row that was
+ *    claimed, worked, and RELEASED (`last_released_by IS NOT NULL`) more than
+ *    {@link WORKED_THEN_ABANDONED_STALE_DAYS} days ago, and has sat open ever since.
+ *
+ *    The defect it names: `work_items:release` is the correct verb for "I am stopping
+ *    work on this", and after confirming an item needs no change, "I am stopping work"
+ *    feels accurate — but the item is DONE, and releasing it returns it to the backlog
+ *    as unclaimed work. The next agent to scan the queue re-derives the same conclusion
+ *    and releases it again. WI-5623 sat `open` + `critical` for 6 days after being
+ *    verified fixed, with the evidence sitting unread in its checkpoint; three items
+ *    from a single 2026-08-01 retrospective cluster (EI-19278588744322125,
+ *    EI-19278589690487622, EI-19278590581840106) each sat open ~1 month after the work
+ *    they asked for had shipped, each with prior holders who released without recording
+ *    why. Closing all three needed no code — only someone reading the record.
+ *
+ *    ⚠ THIS IS A DETECTOR, NEVER A SWEEP, AND THE PREDICATE IS NOT A CLAIM THAT THE
+ *    WORK IS DONE. "Released and untouched for three weeks" is a fact about the
+ *    LIFECYCLE COLUMNS and nothing more; the reasons include already-delivered, but also
+ *    genuinely-hard, deprioritized, and blocked-on-something-external. Every one of the
+ *    406 live matches would have to be adjudicated by reading it, which is precisely
+ *    what the three closes above cost. Do not build a closer on this — see
+ *    {@link ./stranded-checkpoint-scan}, whose module header records the same rule
+ *    reached from measurement (its checkpoint classifier ran at ~43% precision over an
+ *    overlapping population, with false positives including a note that opened
+ *    "⛔ DO NOT CLOSE").
+ *
+ *    RELATIONSHIP TO `work_items:stranded` — complementary, not a rival. That scan
+ *    INNER JOINs `harness_shared.carry_notes` and asks a CONTENT question: does this
+ *    open item's checkpoint DECLARE the work finished? This bucket asks a COLUMN
+ *    question: was this item worked and then abandoned? Measured on the 406 live
+ *    matches: 195 also carry a checkpoint (so the stranded scan can at least see them,
+ *    if its classifier fires) and 211 carry NONE AT ALL — structurally unreachable by
+ *    that join, and the population where the record is most damaged, because the holder
+ *    left nothing behind to read. Neither surface subsumes the other and neither should
+ *    grow into the other: keep this predicate on `work_items` columns only (it is
+ *    evaluated inside eleven list/count queries) and keep checkpoint-content judgement
+ *    in the module that owns the classifier.
+ */
+export const OPEN_WORK_ITEM_AUDITS = ['worked-then-abandoned'] as const;
+export type OpenWorkItemAudit = (typeof OPEN_WORK_ITEM_AUDITS)[number];
+
+/** Every value the `audit` filter accepts, across both state scopes. */
+export const WORK_ITEM_AUDITS = [...COMPLETION_AUDITS, ...OPEN_WORK_ITEM_AUDITS] as const;
+export type WorkItemAudit = (typeof WORK_ITEM_AUDITS)[number];
+
+/**
+ * Which state scope a bucket is defined over. Derived from set membership — never a
+ * second hand-maintained list, so adding a bucket to {@link OPEN_WORK_ITEM_AUDITS} is
+ * the whole of registering its scope.
+ */
+export function auditStateScope(audit: WorkItemAudit): 'terminal' | 'open' {
+  return (OPEN_WORK_ITEM_AUDITS as readonly string[]).includes(audit) ? 'open' : 'terminal';
+}
+
+/**
  * The exact `by` identities the audited `skipCompletionGate` bypasses stamp — kept here,
  * beside the predicate that reads them, so the two can never drift apart (the module's
  * own discipline for `_completionEvidence` applied to this key too). One entry per
@@ -402,7 +480,10 @@ export const COMPLETION_AUTHORITY_FILTERS = [
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate
  * (the two families spell their state column differently — `status` vs `state`).
  */
-export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
+export function auditPredicateSql(sql: OrgSql, audit: WorkItemAudit) {
+  if (audit === 'worked-then-abandoned') {
+    return sql`last_released_by IS NOT NULL AND last_released_at IS NOT NULL AND last_released_at < now() - make_interval(days => ${WORKED_THEN_ABANDONED_STALE_DAYS})`;
+  }
   if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL AND authority IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
     // EI-18821460229478708: origin='local' ONLY — see this bucket's module-header doc for
@@ -436,12 +517,17 @@ export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
 }
 
 /** Same fragment, for a query that aliases the table (e.g. `ei.payload`). */
-export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias: string) {
+export function auditPredicateSqlFor(sql: OrgSql, audit: WorkItemAudit, alias: string) {
   const col = sql.unsafe(`${alias}.payload`);
   const ref = sql.unsafe(`${alias}.terminal_completion_ref`);
   const owner = sql.unsafe(`${alias}.terminal_owner`);
   const authority = sql.unsafe(`${alias}.authority`);
   const origin = sql.unsafe(`${alias}.origin`);
+  if (audit === 'worked-then-abandoned') {
+    const releasedBy = sql.unsafe(`${alias}.last_released_by`);
+    const releasedAt = sql.unsafe(`${alias}.last_released_at`);
+    return sql`${releasedBy} IS NOT NULL AND ${releasedAt} IS NOT NULL AND ${releasedAt} < now() - make_interval(days => ${WORKED_THEN_ABANDONED_STALE_DAYS})`;
+  }
   if (audit === 'no-completion-record') return sql`${ref} IS NULL AND ${authority} IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
     // EI-18821460229478708: origin='local' ONLY — see auditPredicateSql's sibling branch.
@@ -467,6 +553,47 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
   }
   // 'reconciler-sourced': same actor-keyed rule as auditPredicateSql above.
   return sql`${owner} = ${RECONCILER_SYSTEM_ACTOR}`;
+}
+
+/**
+ * The COMPLETE `audit` WHERE fragment — state scope AND bucket predicate together.
+ *
+ * WHY THIS EXISTS, AND WHY CALL SITES MUST NOT HAND-ROLL THE STATE CLAUSE. Until
+ * EI-19320339017813143 the state scope was not part of the audit's definition at all: it
+ * was re-typed as a literal `state = ANY(<TERMINAL>) AND <predicate>` at ELEVEN separate
+ * call sites across `work-items.ts` (list + count) and `issues-engineer.ts` (nine list /
+ * count / aliased variants). That worked only while every bucket happened to share one
+ * scope. The first bucket defined over OPEN rows turns it into a silent-wrong-answer
+ * generator: each un-migrated site would AND a terminal-only clause onto an
+ * open-only predicate and return ZERO ROWS, forever, with no error — an audit that
+ * reports "nothing to see" is indistinguishable from an audit that is clean, and this
+ * module's header exists because that exact confusion (EI-10867) once told a leader the
+ * fleet's completions were sound while 69% of them carried no evidence.
+ *
+ * So the scope travels WITH the bucket, derived from {@link auditStateScope}, and the
+ * only correct way to apply an `audit` filter is to call this. A caller passes its own
+ * dialect — the state COLUMN name and that family's terminal-state list, which genuinely
+ * differ (`status`/`TERMINAL_WORK_ITEM_STATES` vs `state`/`ISSUE_TERMINAL_STATES`) — and
+ * nothing else.
+ *
+ * A NULL state counts as NON-terminal. `NOT (state = ANY(...))` is NULL for a NULL
+ * state, which would silently drop such a row from an open-scope audit; a malformed row
+ * missing its own state is exactly the kind this should surface, never hide.
+ */
+export function auditWhereSql(
+  sql: OrgSql,
+  audit: WorkItemAudit,
+  opts: { stateColumn: string; terminalStates: readonly string[]; alias?: string },
+) {
+  const state = sql.unsafe(opts.alias ? `${opts.alias}.${opts.stateColumn}` : opts.stateColumn);
+  const predicate = opts.alias
+    ? auditPredicateSqlFor(sql, audit, opts.alias)
+    : auditPredicateSql(sql, audit);
+  const terminal = opts.terminalStates as string[];
+  if (auditStateScope(audit) === 'open') {
+    return sql`((${state} IS NULL OR NOT (${state} = ANY(${terminal}::text[]))) AND ${predicate})`;
+  }
+  return sql`(${state} = ANY(${terminal}::text[]) AND ${predicate})`;
 }
 
 /**

@@ -21,28 +21,16 @@ export interface AcceptanceAuthorIdentityOpts {
 }
 
 /**
- * Whether two identities are in a direct ancestor/descendant chain.
+ * The directed identity-edge set both lineage readers walk, defined ONCE.
  *
- * Rebind edges and both agent-launch parent edges are directed. We walk from each
- * candidate in turn, so an ancestor grader is excluded just like a descendant
- * grader, while siblings remain eligible (sharing a parent is not lineage).
- * Spawn ids and session owners are aliases in the spawned-agent table; both
- * representations are bridged. The recursive walk is bounded and cycle-safe.
+ * There are two consumers — the pairwise {@link areAcceptanceLineageRelated} and
+ * the set-based {@link lineagePartyKeys} — and a second hand-written copy of this
+ * union is the classic derived-truth drift: a new edge kind added for one reader
+ * silently leaves the other answering "unrelated" for parties that are related.
+ * Returned as a `postgres` fragment so both spell the same CTE body.
  */
-export async function areAcceptanceLineageRelated(
-  firstId: string | null | undefined,
-  secondId: string | null | undefined,
-  opts: AcceptanceAuthorIdentityOpts = {},
-): Promise<boolean> {
-  const first = firstId?.trim() ?? '';
-  const second = secondId?.trim() ?? '';
-  if (!first || !second) return false;
-  if (first === second) return true;
-
-  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<Array<{ matches: boolean }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+function identityEdges(sql: Sql, workspaceId: string) {
+  return sql`
         SELECT args_json->>'from',
                COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id)
           FROM harness_shared.tool_invocations
@@ -78,6 +66,33 @@ export async function areAcceptanceLineageRelated(
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${workspaceId}
            AND NULLIF(session_owner, '') IS NOT NULL
+  `;
+}
+
+/**
+ * Whether two identities are in a direct ancestor/descendant chain.
+ *
+ * Rebind edges and both agent-launch parent edges are directed. We walk from each
+ * candidate in turn, so an ancestor grader is excluded just like a descendant
+ * grader, while siblings remain eligible (sharing a parent is not lineage).
+ * Spawn ids and session owners are aliases in the spawned-agent table; both
+ * representations are bridged. The recursive walk is bounded and cycle-safe.
+ */
+export async function areAcceptanceLineageRelated(
+  firstId: string | null | undefined,
+  secondId: string | null | undefined,
+  opts: AcceptanceAuthorIdentityOpts = {},
+): Promise<boolean> {
+  const first = firstId?.trim() ?? '';
+  const second = secondId?.trim() ?? '';
+  if (!first || !second) return false;
+  if (first === second) return true;
+
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ matches: boolean }>>`
+      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+        ${identityEdges(sql, workspaceId)}
       ),
       walk(node, path, depth) AS (
         SELECT ${first}::text, ARRAY[${first}::text], 0
@@ -153,4 +168,99 @@ export async function isAcceptanceAuthorIdentity(
   } catch {
     return false;
   }
+}
+
+/**
+ * Partition `ownerIds` into PARTIES — groups of ids that are one agent wearing
+ * several coordination identities — and return each id's canonical party key.
+ *
+ * WHY THIS EXISTS (unified-responder-selection-critique-and-grading-2026-08-30
+ * D-008). Grader selection deduped its menu on raw `ownerId`, which is not the
+ * same claim as "these are different parties" — it is precisely the claim
+ * {@link areAcceptanceLineageRelated} exists to refute. Once grading became a
+ * min-1/max-2 cascade (D-003) a two-entry menu could be one party twice, so the
+ * "second opinion" reviewing grader 1's carried card would be that same party
+ * reviewing itself, and the gate would rank the self-review as the
+ * better-informed card (D-007's recency tie-break). Measured against live PG on
+ * 2026-08-30: 67 launcher/launched pairs across 12 distinct parents were BOTH
+ * routable and BOTH coord-role-bearing, i.e. both selectable as graders.
+ *
+ * ONE query, not N². The pairwise helper answers a single question per call; a
+ * candidate pool needs the whole relation, so this walks from every id at once
+ * and keeps only the arrivals that are themselves candidates.
+ *
+ * The key for a group is the EARLIEST id in the caller's own order, so passing a
+ * ranked pool makes each party's representative its best-ranked member.
+ *
+ * ⚠ DELIBERATELY OVER-MERGES SIBLINGS (D-008). Grouping is union-find over the
+ * related PAIRS found inside the set, so with A→B and B→C present and B also a
+ * candidate, siblings A and C land in one party even though the pairwise helper
+ * calls them unrelated (sharing a parent is not lineage). That direction
+ * over-excludes, which for an independence guard is the correct way to be wrong.
+ *
+ * Throws on a read fault rather than guessing; callers decide whether their
+ * degraded behaviour is to fall back to raw-id distinctness.
+ */
+export async function lineagePartyKeys(
+  ownerIds: readonly (string | null | undefined)[],
+  opts: AcceptanceAuthorIdentityOpts = {},
+): Promise<Map<string, string>> {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of ownerIds) {
+    const id = raw?.trim() ?? '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ordered.push(id);
+  }
+  const keys = new Map<string, string>(ordered.map((id) => [id, id]));
+  if (ordered.length < 2) return keys;
+
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const pairs = await sql<Array<{ a: string; b: string }>>`
+      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+        ${identityEdges(sql, workspaceId)}
+      ),
+      walk(src, node, path, depth) AS (
+        SELECT s.seed, s.seed, ARRAY[s.seed], 0
+          FROM unnest(${ordered}::text[]) AS s(seed)
+        UNION ALL
+        SELECT walk.src, edge.to_id, walk.path || edge.to_id, walk.depth + 1
+          FROM walk
+          JOIN identity_edges AS edge ON edge.from_id = walk.node
+         WHERE walk.depth < 64
+           AND NOT edge.to_id = ANY(walk.path)
+      )
+      SELECT DISTINCT walk.src AS a, walk.node AS b
+        FROM walk
+       WHERE walk.node <> walk.src
+         AND walk.node = ANY(${ordered}::text[])
+  `;
+  if (pairs.length === 0) return keys;
+
+  // Union-find, resolving each group to its earliest member in caller order.
+  const rank = new Map(ordered.map((id, index) => [id, index] as const));
+  const parent = new Map<string, string>(ordered.map((id) => [id, id]));
+  const find = (id: string): string => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cursor = id;
+    while (parent.get(cursor) !== root) {
+      const next = parent.get(cursor)!;
+      parent.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+  for (const { a, b } of pairs) {
+    if (!parent.has(a) || !parent.has(b)) continue;
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA === rootB) continue;
+    const [keep, drop] = (rank.get(rootA) ?? 0) <= (rank.get(rootB) ?? 0) ? [rootA, rootB] : [rootB, rootA];
+    parent.set(drop, keep);
+  }
+  for (const id of ordered) keys.set(id, find(id));
+  return keys;
 }

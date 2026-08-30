@@ -25,6 +25,7 @@ import {
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
   rescueTaggedCarryNoteBlob,
+  detectCarryNoteRescueSignals,
   mergeCarryRows,
   patchExistingCheckEntries,
   carryRowKey,
@@ -1073,6 +1074,41 @@ describe('rescueTaggedCarryNoteBlob — recovering a tag-serialized structured w
     expect(rendered).toContain('## Next action'); // NB: tag name `next` ≠ heading 'Next action'
     expect(rendered).toContain('- ✓ main is green — re-check: git rev-parse main');
     expect(rendered).not.toContain('</did>');
+  });
+});
+
+// EI-21918217118634060 — detectCarryNoteRescueSignals is the honesty check the rescue's
+// success message was missing: it names every sibling whose CLOSE tag appeared in the
+// blob, regardless of whether extraction actually succeeded, so a caller (checkpoint.ts)
+// can diff it against `Object.keys(rescued)` and stop claiming "stored correctly" for a
+// section that was signaled but silently dropped.
+describe('detectCarryNoteRescueSignals — which siblings were SIGNALED, not just recovered', () => {
+  const BLOB = [
+    'Closed two gate threats.</did>',
+    '<left>Nothing claimed, nothing half-landed.</left>',
+    '<insight>A gate verdict is a timestamped snapshot.</insight>',
+    '<next>Confirm the gate outcome; do not force it.</next>',
+  ].join('\n');
+
+  it('returns every sibling whose close tag is present, in CARRY_NOTE_SECTIONS order', () => {
+    expect(detectCarryNoteRescueSignals(BLOB)).toEqual(['left', 'insight', 'next']);
+  });
+
+  it('a signaled sibling that fails to extract (no matching open tag) still shows up', () => {
+    const partiallyMalformed = 'did</did>\n<left>l</left>\nprose mentioning it.</insight>\n<next>n</next>';
+    expect(detectCarryNoteRescueSignals(partiallyMalformed)).toEqual(['left', 'insight', 'next']);
+    // and the extractor genuinely drops it — confirming the signal was honest, not a false alarm
+    expect(rescueTaggedCarryNoteBlob(partiallyMalformed)?.insight).toBeUndefined();
+  });
+
+  it('returns [] when no sibling close tag is present', () => {
+    expect(detectCarryNoteRescueSignals('did</did> only, no siblings')).toEqual([]);
+  });
+
+  it('treats a null/undefined/empty blob as signaling nothing', () => {
+    expect(detectCarryNoteRescueSignals(null)).toEqual([]);
+    expect(detectCarryNoteRescueSignals(undefined)).toEqual([]);
+    expect(detectCarryNoteRescueSignals('')).toEqual([]);
   });
 });
 

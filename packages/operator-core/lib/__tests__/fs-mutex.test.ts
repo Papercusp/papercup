@@ -265,6 +265,150 @@ describe('withFsMutex', () => {
   });
 });
 
+// EI-21915677034576963: withFsMutex had no fairness at all — every waiter just raced
+// mkdir() on a fixed poll, so a caller that re-acquires the SAME lock across many
+// short-lived sub-invocations (e.g. one shard of a broad affected-tests run after
+// another) got a fresh, near-instant shot at every release with no regard for who had
+// been waiting longest, starving a bounded/narrow verification run for hours even
+// though it registered first. A FIFO ticket queue fixes this: only the OLDEST live
+// ticket may attempt the mkdir race on any given poll.
+describe('withFsMutex fairness (FIFO ticket queue)', () => {
+  it('serves waiters in FIFO ticket order — a later caller cannot leapfrog one already waiting', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    const order: string[] = [];
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let holderStarted!: () => void;
+    const holderReady = new Promise<void>((resolve) => {
+      holderStarted = resolve;
+    });
+
+    const holder = withFsMutex(
+      'fair-lock',
+      async () => {
+        holderStarted();
+        await holderReleased;
+        order.push('holder');
+      },
+      { timeoutMs: 5_000, retryMs: 5 },
+    );
+    await holderReady;
+
+    // B registers its ticket first — its ticket is strictly OLDER than C's.
+    const waiterB = withFsMutex(
+      'fair-lock',
+      async () => {
+        order.push('B');
+      },
+      { timeoutMs: 5_000, retryMs: 5 },
+    );
+    // Give B's ticket a moment to land on disk before C registers its own — otherwise
+    // same-millisecond ticket ids could tie-break either way.
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 30));
+
+    const waiterC = withFsMutex(
+      'fair-lock',
+      async () => {
+        order.push('C');
+      },
+      { timeoutMs: 5_000, retryMs: 5 },
+    );
+
+    releaseHolder();
+    await Promise.all([holder, waiterB, waiterC]);
+
+    expect(order).toEqual(['holder', 'B', 'C']);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reclaims a ticket from a crashed waiter (confirmed-dead pid) instead of wedging behind it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    const queueDir = join(dir, 'fair-lock-dead.queue');
+    await mkdir(queueDir, { recursive: true });
+    const deadTicketDir = join(queueDir, '0000000000000001-999999-deadticket.ticket');
+    await mkdir(deadTicketDir, { recursive: true });
+    const deadPid = 2_147_483_647; // guaranteed not to exist
+    await writeFile(
+      join(deadTicketDir, 'owner.json'),
+      JSON.stringify({ pid: deadPid, host: hostname(), startedAt: new Date().toISOString(), name: 'fair-lock-dead' }),
+    );
+
+    const start = Date.now();
+    const result = await withFsMutex('fair-lock-dead', async () => 'done', {
+      timeoutMs: 5_000,
+      staleMs: 10 * 60_000,
+      retryMs: 5,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result).toBe('done');
+    expect(elapsed).toBeLessThan(2_000);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reclaims a ticket with no owner.json (crash between mkdir and write) once it is stale', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    const queueDir = join(dir, 'fair-lock-orphan.queue');
+    await mkdir(queueDir, { recursive: true });
+    const orphanTicketDir = join(queueDir, '0000000000000001-999999-orphanticket.ticket');
+    await mkdir(orphanTicketDir, { recursive: true }); // deliberately no owner.json
+    const old = new Date(Date.now() - 60_000);
+    await utimes(orphanTicketDir, old, old);
+
+    const result = await withFsMutex('fair-lock-orphan', async () => 'done', {
+      timeoutMs: 1_000,
+      staleMs: 1,
+      retryMs: 5,
+    });
+
+    expect(result).toBe('done');
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // The critical safety property: age alone must NEVER reclaim a ticket whose owner is
+  // genuinely alive, however old — that is exactly the legitimate multi-hour-wait case
+  // this queue exists to protect. A naive reuse of reclaimAbandonedLock's (age OR dead)
+  // policy would silently defeat the whole fairness fix by discarding the very ticket
+  // that is supposed to win.
+  it('never reclaims a ticket whose owner is alive on this host, no matter how old', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    const queueDir = join(dir, 'fair-lock-oldlive.queue');
+    await mkdir(queueDir, { recursive: true });
+    const oldTicketDir = join(queueDir, '0000000000000001-999999-oldbutlive.ticket');
+    await mkdir(oldTicketDir, { recursive: true });
+    await writeFile(
+      join(oldTicketDir, 'owner.json'),
+      JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        startedAt: new Date(Date.now() - 999_999_999).toISOString(),
+        name: 'fair-lock-oldlive',
+      }),
+    );
+    const veryOld = new Date(Date.now() - 999_999_999);
+    await utimes(oldTicketDir, veryOld, veryOld);
+
+    // A brand-new caller's own ticket is always YOUNGER than the planted one. With a
+    // tiny staleMs that would wrongly reclaim an age-based ticket, it must still DEFER
+    // to the planted (live-pid) ticket and time out — never acquire by racing past it.
+    await expect(
+      withFsMutex('fair-lock-oldlive', async () => 'done', { timeoutMs: 300, staleMs: 1, retryMs: 20 }),
+    ).rejects.toThrow(/Timed out after 300ms/);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
 // EI-19304880034803985: a NON-blocking peek so a caller (test-files.mjs) can
 // WARN ("an install is in flight, this may hang") instead of hanging silently
 // on a spawnSync it cannot introspect while the mutex is held.

@@ -36,23 +36,35 @@ describe('workspace-host image scan policy', () => {
       // assertion on purpose: provider release paths use their own scoped policies,
       // while generic callers may not have coverage evidence available.
       requireCoverageProof: false,
+      // 'all' for the same reason: a caller with no attributing scanner must not
+      // inherit a narrower SUBJECT by silence.
+      evaluatedScope: 'all',
     });
   });
 
   it('scopes the coverage requirement to every provider release policy', () => {
     for (const policy of [GCP_IMAGE_SCAN_POLICY, AWS_IMAGE_SCAN_POLICY, AZURE_IMAGE_SCAN_POLICY]) {
-      expect(policy).toEqual({
-        denyVulnerabilitiesAtOrAbove: 'high',
-        maxSecretFindings: 0,
-        requireCoverageProof: true,
-      });
+      expect(policy.requireCoverageProof).toBe(true);
       // The thresholds must not drift apart: each provider is held to the SAME bar
-      // plus a proof obligation, not to a different bar.
+      // plus a proof obligation, not to a different bar. This is the assertion that
+      // stops "scoping" from ever becoming a threshold relaxation in disguise
+      // (D-172/174/175): a provider may narrow WHICH findings it judges, never HOW
+      // HARSHLY it judges them.
       expect(policy.denyVulnerabilitiesAtOrAbove).toBe(
         WORKSPACE_HOST_IMAGE_SCAN_POLICY.denyVulnerabilitiesAtOrAbove,
       );
       expect(policy.maxSecretFindings).toBe(WORKSPACE_HOST_IMAGE_SCAN_POLICY.maxSecretFindings);
     }
+  });
+
+  it('scopes ONLY the provider whose scanner attributes findings', () => {
+    // GCP's guest scanner emits the attribution maps (D-204); AWS and Azure do not.
+    // A scoped policy against a non-attributing scanner denies, so these values are a
+    // statement of where each provider actually is — not a concession, and not a
+    // default anyone inherits by accident.
+    expect(GCP_IMAGE_SCAN_POLICY.evaluatedScope).toBe('papercusp-bundled');
+    expect(AWS_IMAGE_SCAN_POLICY.evaluatedScope).toBe('all');
+    expect(AZURE_IMAGE_SCAN_POLICY.evaluatedScope).toBe('all');
   });
 
   it('ranks severities from artifact-trust, so the two gates cannot disagree', () => {
@@ -172,10 +184,36 @@ describe('workspace-host image scan policy', () => {
   describe('scan coverage must be PROVEN, not assumed (WI-1092039 / D-196)', () => {
     const covered = { mountedFilesystems: 3, candidateRootProof: '/mnt/candidate/sda1/etc/os-release' };
 
+    /**
+     * GCP is a SCOPED policy, so its scan must now prove two separate things: that it
+     * covered the image (this block) and that it attributed what it found (the scoped
+     * block below). Attribution is supplied here so these tests keep exercising the
+     * coverage rule alone rather than tripping the newer one.
+     */
+    const attributed = (findings: number, atOrAboveHigh: number, secrets = 0) => ({
+      vulnerabilityByScope: { 'inherited-base-image': findings },
+      vulnerabilityCriticalHighByScope: { 'inherited-base-image': atOrAboveHigh },
+      secretsByScope: { 'inherited-base-image': secrets },
+      bundleCatalogedArtifacts: 3711,
+    });
+
     it('accepts a GCP scan that proves it mounted an OS root', () => {
-      const verdict = evaluateImageScanPolicy({ ...scan({ low: 4 }), ...covered }, GCP_IMAGE_SCAN_POLICY);
+      const verdict = evaluateImageScanPolicy(
+        { ...scan({ low: 4 }), ...covered, ...attributed(4, 0) },
+        GCP_IMAGE_SCAN_POLICY,
+      );
       expect(verdict.accepted).toBe(true);
       expect(verdict.failures).toEqual([]);
+    });
+
+    it('DENIES a covered GCP scan that never says WHERE its findings came from', () => {
+      // Coverage and attribution are independent obligations: proving you scanned the
+      // whole image says nothing about which half a finding belongs to, and a scoped
+      // verdict is meaningless without that. Absence denies rather than falling back
+      // to the totals.
+      const verdict = evaluateImageScanPolicy({ ...scan({ low: 4 }), ...covered }, GCP_IMAGE_SCAN_POLICY);
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toEqual(['scope-attribution-missing']);
     });
 
     it('DENIES a GCP scan that reports zero findings but never proves it scanned anything', () => {
@@ -331,6 +369,209 @@ describe('workspace-host image scan policy', () => {
     it('an unreconciled gate admits the dead instrument this policy rejects', () => {
       expect(unreconciledGate(DEAD_INSTRUMENT)).toBe(true);
       expect(evaluateImageScanPolicy(DEAD_INSTRUMENT).accepted).toBe(false);
+    });
+  });
+
+  describe('scoped evaluation (D-204 attribution made operative)', () => {
+    /**
+     * The MEASURED 0.0.18 candidate, from D-201's cross-tab and D-202's split. Using
+     * the real numbers rather than toy ones matters here: the whole question is
+     * whether the arithmetic over this specific population behaves, and a fixture of
+     * 1s and 2s can satisfy every reconciliation while hiding a sign error.
+     *
+     *   3982 findings total; 1839 at/above high (248 Critical + 1591 High)
+     *   of those 1839: 26 papercusp-bundled (all npm), 1813 inherited
+     *   275 secrets, every one of them inherited
+     */
+    const MEASURED_CANDIDATE: ImageScanPolicyInput = {
+      vulnerabilityFindings: 3982,
+      vulnerabilityBySeverity: { Critical: 248, High: 1591, Medium: 1000, Low: 1143 },
+      secretFindings: 275,
+      mountedFilesystems: 3,
+      candidateRootProof: '/mnt/candidate/etc/os-release',
+      vulnerabilityByScope: { 'papercusp-bundled': 44, 'inherited-base-image': 3938 },
+      vulnerabilityCriticalHighByScope: { 'papercusp-bundled': 26, 'inherited-base-image': 1813 },
+      secretsByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 275 },
+      bundleCatalogedArtifacts: 3711,
+    };
+
+    const scopedFrom = (patch: Partial<ImageScanPolicyInput>): ImageScanPolicyInput => ({
+      ...MEASURED_CANDIDATE,
+      ...patch,
+    });
+
+    it('judges the bundled population and STILL denies it — scoping is not a pass', () => {
+      // D-202's central ruling, as an executable assertion. The reading D-201 alone
+      // invites is "the gate is unreachable, so scope it and move on"; that is wrong,
+      // and this test is what stops the code from drifting into it. A scoped verdict
+      // on the measured candidate is RED, on exactly the 26 findings we own.
+      const verdict = evaluateImageScanPolicy(MEASURED_CANDIDATE, GCP_IMAGE_SCAN_POLICY);
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.policyViolatingVulnerabilities).toBe(26);
+      expect(verdict.failures.map((failure) => failure.code)).toContain('vulnerability-threshold');
+      // The inherited measurement is not discarded — it is still reported.
+      expect(verdict.totalVulnerabilities).toBe(3982);
+      expect(verdict.evaluatedScope).toBe('papercusp-bundled');
+    });
+
+    it('accepts once the bundled findings are actually fixed, while the image is unchanged', () => {
+      // The same image, the same 1813 inherited findings, the same unchanged bar —
+      // only the 44 npm findings (26 of them at/above high) resolved. This is the
+      // state WI-1203796 delivers.
+      //
+      // Note every number below moves together: remediating the bundle removes those
+      // findings from the SEVERITY breakdown too, not just from the scope map. An
+      // earlier draft of this fixture zeroed only the bundled bucket and was rejected
+      // by the cross-instrument reconciliation — which is the check earning its place,
+      // so the corrected fixture is written out in full rather than patched.
+      const verdict = evaluateImageScanPolicy(
+        scopedFrom({
+          vulnerabilityFindings: 3938,
+          vulnerabilityBySeverity: { Critical: 247, High: 1566, Medium: 1000, Low: 1125 },
+          vulnerabilityByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 3938 },
+          vulnerabilityCriticalHighByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 1813 },
+          // Still cataloged: a remediated bundle has zero FINDINGS but never zero
+          // PACKAGES. That is exactly why the proof counts artifacts, not findings.
+          bundleCatalogedArtifacts: 3711,
+        }),
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(verdict.accepted).toBe(true);
+      expect(verdict.policyViolatingVulnerabilities).toBe(0);
+      // Unscoped, that very same measurement is still denied — which is the proof
+      // that the accept above came from remediation and not from a lowered bar.
+      expect(
+        evaluateImageScanPolicy(MEASURED_CANDIDATE, WORKSPACE_HOST_IMAGE_SCAN_POLICY).accepted,
+      ).toBe(false);
+    });
+
+    it('DENIES when the bundle was never cataloged, even though every bundled bucket reads zero', () => {
+      // THE test. This is the false-GREEN that scoping introduces and everything else
+      // in the scoped path exists to prevent: get the bundle path wrong and all
+      // findings attribute to 'inherited-base-image', the bundled buckets read 0, and
+      // an unsatisfiable gate becomes a vacuously satisfied one. Same shape as the
+      // gitleaks installer that never installed. Note the input below would otherwise
+      // PASS — every bundled count is 0 and every partition reconciles.
+      const verdict = evaluateImageScanPolicy(
+        scopedFrom({
+          vulnerabilityByScope: { 'inherited-base-image': 3982 },
+          vulnerabilityCriticalHighByScope: { 'inherited-base-image': 1839 },
+          secretsByScope: { 'inherited-base-image': 275 },
+          bundleCatalogedArtifacts: 0,
+        }),
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toContain('scope-attribution-invalid');
+    });
+
+    it('denies when the scanner did not attribute at all', () => {
+      // A non-attributing scanner (AWS/Azure today) handed to a scoped policy must
+      // deny, never fall back to judging the totals and never pass on absent buckets.
+      for (const field of [
+        'vulnerabilityByScope',
+        'vulnerabilityCriticalHighByScope',
+        'secretsByScope',
+        'bundleCatalogedArtifacts',
+      ] as const) {
+        const verdict = evaluateImageScanPolicy(
+          scopedFrom({ [field]: undefined }),
+          GCP_IMAGE_SCAN_POLICY,
+        );
+        expect(verdict.accepted, `${field} absent must deny`).toBe(false);
+        expect(verdict.failures.map((failure) => failure.code)).toContain('scope-attribution-missing');
+      }
+    });
+
+    it('denies an attribution that does not account for every finding', () => {
+      // A partition that loses findings loses precisely the ones nobody then judges.
+      const cases: readonly Partial<ImageScanPolicyInput>[] = [
+        { vulnerabilityByScope: { 'papercusp-bundled': 44, 'inherited-base-image': 1 } },
+        { vulnerabilityCriticalHighByScope: { 'papercusp-bundled': 26, 'inherited-base-image': 1 } },
+        { secretsByScope: { 'papercusp-bundled': 0, 'inherited-base-image': 1 } },
+      ];
+      for (const patch of cases) {
+        const verdict = evaluateImageScanPolicy(scopedFrom(patch), GCP_IMAGE_SCAN_POLICY);
+        expect(verdict.accepted).toBe(false);
+        expect(verdict.failures.map((failure) => failure.code)).toContain('scope-attribution-mismatch');
+      }
+    });
+
+    it('denies a scope label this build does not know', () => {
+      // Unlike an unknown SEVERITY (over-approximated as violating), an unknown SCOPE
+      // has no safe side to fall on: it means the scanner re-partitioned the image, so
+      // the arithmetic the verdict rests on no longer describes anything.
+      const verdict = evaluateImageScanPolicy(
+        scopedFrom({
+          vulnerabilityByScope: { 'papercusp-bundled': 44, 'vendor-layer': 3938 },
+        }),
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toContain('scope-attribution-invalid');
+    });
+
+    it('refuses to read the critical/high bucket for a policy that denies at another threshold', () => {
+      // The attributed bucket is computed guest-side over 'critical' or 'high' only.
+      // At any other threshold it does not measure what is being denied, so the honest
+      // answer is to refuse rather than approximate.
+      const mediumScoped: ImageScanPolicy = {
+        ...GCP_IMAGE_SCAN_POLICY,
+        denyVulnerabilitiesAtOrAbove: 'medium',
+      };
+      const verdict = evaluateImageScanPolicy(MEASURED_CANDIDATE, mediumScoped);
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toContain('scope-attribution-mismatch');
+    });
+
+    it('holds the secret bar at zero inside the scope', () => {
+      // The 275 inherited secrets (libmagic magic.mgc, botocore service JSON, rsync-ssl)
+      // no longer deny — but one secret in content we ship still does. maxSecretFindings
+      // never moved; only the population it judges did.
+      expect(evaluateImageScanPolicy(MEASURED_CANDIDATE, GCP_IMAGE_SCAN_POLICY).policyViolatingSecrets).toBe(0);
+      const withOurs = evaluateImageScanPolicy(
+        scopedFrom({
+          secretsByScope: { 'papercusp-bundled': 1, 'inherited-base-image': 274 },
+        }),
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(withOurs.accepted).toBe(false);
+      expect(withOurs.policyViolatingSecrets).toBe(1);
+      expect(withOurs.failures.map((failure) => failure.code)).toContain('secret-threshold');
+      // The whole-image count stays reported either way; only the judged count moves.
+      expect(withOurs.secretFindings).toBe(275);
+    });
+
+    it('denies a bucket holding more at/above-high findings than findings', () => {
+      const verdict = evaluateImageScanPolicy(
+        scopedFrom({
+          vulnerabilityByScope: { 'papercusp-bundled': 10, 'inherited-base-image': 3972 },
+        }),
+        GCP_IMAGE_SCAN_POLICY,
+      );
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toContain('scope-attribution-mismatch');
+    });
+
+    it('leaves the unscoped path exactly as it was', () => {
+      // Attribution present but the policy judges 'all': the totals still decide, so
+      // an existing caller cannot silently acquire a narrower verdict.
+      const verdict = evaluateImageScanPolicy(MEASURED_CANDIDATE, WORKSPACE_HOST_IMAGE_SCAN_POLICY);
+      expect(verdict.evaluatedScope).toBe('all');
+      expect(verdict.policyViolatingVulnerabilities).toBe(1839);
+      expect(verdict.policyViolatingSecrets).toBe(275);
+      expect(verdict.accepted).toBe(false);
+    });
+
+    it('denies a policy naming a scope this build cannot evaluate', () => {
+      const verdict = evaluateImageScanPolicy(MEASURED_CANDIDATE, {
+        ...GCP_IMAGE_SCAN_POLICY,
+        evaluatedScope: 'inherited-base-image' as unknown as ImageScanPolicy['evaluatedScope'],
+      });
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toContain('invalid-policy');
+      // An uninterpretable label never reaches a stored verdict.
+      expect(verdict.evaluatedScope).toBe('all');
     });
   });
 });

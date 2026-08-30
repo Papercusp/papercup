@@ -1163,6 +1163,20 @@ export function rescueTaggedCarryNoteBlob(blob: string | null | undefined): Carr
   return fields;
 }
 
+/** Sibling sections whose CLOSE tag literally appears in a blob passed to
+ *  {@link rescueTaggedCarryNoteBlob} — independent of whether the open+close PAIR
+ *  actually parsed into a stored value. EI-21918217118634060: the rescue previously
+ *  reported "stored correctly" whenever it ran at all, even when a sibling's close
+ *  tag was present but its content never made it into `rescued` (an unmatched open
+ *  tag, a tag quoted only once inside prose, a nesting the extractor could not
+ *  isolate). Diffing this against `Object.keys(rescued)` is what lets the caller
+ *  distinguish "nothing else was ever there" from "something was there and got
+ *  silently dropped" — the exact distinction the false-success report was missing. */
+export function detectCarryNoteRescueSignals(blob: string | null | undefined): CarryNoteTextKey[] {
+  const text = blob ?? '';
+  return CARRY_NOTE_SECTIONS.filter(({ key }) => key !== 'did' && text.includes(`</${key}>`)).map(({ key }) => key);
+}
+
 /** Shared row-section splitter: strip one `## <heading>` section of parseable rows
  *  out of a note, returning the remaining body + the parsed rows. Non-row lines
  *  inside the section (legend, prose) are dropped with it. */

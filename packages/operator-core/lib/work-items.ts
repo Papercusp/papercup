@@ -83,7 +83,7 @@ import {
 } from './coord-lifecycle/records';
 import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import type { TopicTagMirrorOutcome, TopicTagMirrorResult } from './work-item-topic-tags';
-import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
+import { auditWhereSql, completionAuthorityPredicateSql, type WorkItemAudit } from './completion-audit';
 import type { CompletionAttestation, PersistedCompletionEvidence } from './coord-lifecycle/records';
 import { isWorkItemCompletionAuthority, type WorkItemCompletionAuthority } from './work-item-completion-authority';
 // EI-19362441037986499: the DECISION lives in a leaf module so it is exercisable without PG
@@ -987,12 +987,18 @@ export interface ListWorkItemsFilter {
    * '-suspicious'), or an actor whose closes are never independently verified
    * ('reconciler-sourced') — none of which P-004 closes.
    *
-   * Composes with `state` (an explicit terminal state narrows the audit to it); without
-   * `state` it spans the whole cross-family terminal set. Non-terminal rows never match
-   * (an open item owes no evidence yet). Results are ordered newest-first, so recent
-   * closes surface above the pre-gate legacy backlog.
+   * Composes with `state` (an explicit state narrows the audit to it); without `state`
+   * each bucket spans its own scope. Results are ordered newest-first, so recent closes
+   * surface above the pre-gate legacy backlog.
+   *
+   * ⚠ THE STATE SCOPE BELONGS TO THE BUCKET, NOT TO THIS CALL SITE. Most buckets judge a
+   * CLOSE and match only terminal rows (an open item owes no evidence yet); the
+   * {@link OPEN_WORK_ITEM_AUDITS} set — currently `worked-then-abandoned` — judges an
+   * OPEN row's lifecycle and matches only NON-terminal ones. Never re-derive that here:
+   * {@link auditWhereSql} emits the state clause together with the predicate precisely so
+   * a scope mismatch cannot produce a permanently-empty result that reads as "clean".
    */
-  audit?: CompletionAudit;
+  audit?: WorkItemAudit;
   /**
    * P-013 — filter TERMINAL rows by the completion-authority judgement P-004 stamps
    * ({@link WorkItemCompletionAuthority}), or `'unjudged'` for a close carrying NO
@@ -1235,7 +1241,10 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
          }
          AND ${
            filter.audit
-             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             ? auditWhereSql(sql, filter.audit, {
+                 stateColumn: 'status',
+                 terminalStates: TERMINAL_WORK_ITEM_STATES,
+               })
              : sql`TRUE`
          }
          -- P-013: see ListWorkItemsFilter.completionAuthority. Terminal-scoped for the same
@@ -1370,7 +1379,10 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
          -- mirrored here, so numerator and denominator answer the same question.
          AND ${
            filter.audit
-             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             ? auditWhereSql(sql, filter.audit, {
+                 stateColumn: 'status',
+                 terminalStates: TERMINAL_WORK_ITEM_STATES,
+               })
              : sql`TRUE`
          }
          AND ${

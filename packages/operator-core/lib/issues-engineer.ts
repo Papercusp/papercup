@@ -57,12 +57,7 @@ import {
   terminalPayloadMergeJson,
 } from './coord-lifecycle/records';
 import type { CompletionAttestation, StoredAssumptionDeclaration } from './coord-lifecycle/records';
-import {
-  auditPredicateSql,
-  auditPredicateSqlFor,
-  completionAuthorityPredicateSql,
-  type CompletionAudit,
-} from './completion-audit';
+import { auditWhereSql, completionAuthorityPredicateSql, type WorkItemAudit } from './completion-audit';
 import { dedupSignature } from './harness/improvements/digest';
 import type { PersistedCompletionEvidence } from './coord-lifecycle/records';
 import {
@@ -1335,13 +1330,19 @@ export interface ListIssuesFilter {
   admissibleOnly?: boolean;
   /**
    * fleet-leader-frictions P-005 (the issue-family leg of listWorkItems' audit).
-   * EI-10867: the predicate now lives in ONE place ({@link auditPredicateSql}) that
-   * both families import, so the audit and the write path cannot key on different
-   * fields again. P-006/D-003 deleted the 'no-evidence' bareness bucket (evidence is
-   * now required at write time — see {@link CompletionAudit} for what survived and
-   * why). Composes with an explicit `state`.
+   * EI-10867: the predicate now lives in ONE place ({@link auditWhereSql}) that both
+   * families import, so the audit and the write path cannot key on different fields
+   * again. P-006/D-003 deleted the 'no-evidence' bareness bucket (evidence is now
+   * required at write time — see {@link CompletionAudit} for what survived and why).
+   * Composes with an explicit `state`.
+   *
+   * EI-19320339017813143 widened this to {@link WorkItemAudit}: the STATE SCOPE now
+   * travels with the bucket, because `worked-then-abandoned` is defined over OPEN rows
+   * and every one of this file's nine call sites used to hard-code a terminal-only
+   * clause. Always compose via {@link auditWhereSql} — a hand-written state clause here
+   * would silently return zero rows for an open-scope bucket rather than failing.
    */
-  audit?: CompletionAudit;
+  audit?: WorkItemAudit;
   /**
    * P-013 — filter TERMINAL rows by the completion-authority judgement P-004 stamps
    * ({@link WorkItemCompletionAuthority}), or `'unjudged'` for a close that carries NO
@@ -1885,7 +1886,7 @@ async function listIssuesWithLimit(
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+           ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES })
            : sql`TRUE`
        }
        -- P-013: the completion-authority read half (see ListIssuesFilter.completionAuthority).
@@ -2007,7 +2008,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
+             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
@@ -2045,7 +2046,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+           ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES })
            : sql`TRUE`
        }
        -- P-013: completion-authority filter — mirrors listIssues so this COUNT and the LIST
@@ -2116,7 +2117,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
+             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
@@ -2153,7 +2154,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
          AND ${
            filter.audit
-             ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter — keeps this histogram's WHERE identical to
@@ -2242,7 +2243,7 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
+             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
              : sql`TRUE`
          }
          AND ${
@@ -2278,7 +2279,7 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
          AND ${
            filter.audit
-             ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES })
              : sql`TRUE`
          }
          AND ${
@@ -2339,7 +2340,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
+             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
@@ -2389,7 +2390,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit
-           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+           ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES })
            : sql`TRUE`
        }
        -- P-013: completion-authority filter — mirrors the other issue-family reads.

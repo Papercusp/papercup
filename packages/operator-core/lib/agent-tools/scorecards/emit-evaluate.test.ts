@@ -523,6 +523,42 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  it('P-005: the lineage guard is judged PER EMITTER — grader 1 passing does not carry grader 2', async () => {
+    // Grading is a min-1/max-2 cascade since D-003, so the same rubric is graded
+    // by two different parties in sequence. This pins that the verdict keys on
+    // `createdBy` and nothing else: a clean first card must not license a second
+    // grader who is in the implementer's lineage, and the refusal of one must not
+    // taint the other. Head-only enforcement would pass every other test here.
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    lineageRelatedM.mockImplementation(
+      async (author, candidate) => author === candidate || (author === 'su-implementer' && candidate === 'su-grader-2'),
+    );
+
+    const first = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-grader-1' },
+    );
+    expect(first).toMatchObject({ ok: true, created: true });
+
+    const second = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-grader-2' },
+    );
+    expect(second).toMatchObject({ ok: false, code: 'grader_in_implementer_lineage' });
+
+    // …and the order does not matter: the refused grader is refused first too.
+    const secondFirst = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-grader-2' },
+    );
+    expect(secondFirst).toMatchObject({ ok: false, code: 'grader_in_implementer_lineage' });
+    const cleanAfterRefusal = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-grader-1' },
+    );
+    expect(cleanAfterRefusal).toMatchObject({ ok: true, created: true });
+  });
+
   it('fails closed when an acceptance grader cannot read the current rubric revision', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
     readRubricPlanRevisionM.mockResolvedValue({ ok: false, revision: null });

@@ -489,6 +489,14 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: 'SQL sweep + plans:set-status flips — the reflect-direction mirror of plan-item-orphan-reconcile; no spawn/dispatch/wake',
   },
   'system:supervision-reconcile': { spend: 'none', why: 'Reconciles supervision rows' },
+  'system:frozen-candidate-drift-sweep': {
+    spend: 'none',
+    why: 'One bounded `git log` over the frozen candidate..staging range plus a report-only captureImprovement — no spawn/dispatch/wake. Filing a finding can lead a HUMAN or a later triage routine to act, but nothing this fire does bills a turn directly, matching worker-breaker-watch (which even broadcasts on coord) being none',
+  },
+  'system:dead-citation-sweep': {
+    spend: 'none',
+    why: 'Doc/metadata citation-drift scan filing findings via captureImprovement — no spawn/dispatch/wake',
+  },
   'system:consult-expiry-sweep': {
     spend: 'llm',
     why: 'Expiry emit wakes a hard-blocked parked requester (latched consult:reply key), and a wake bills a turn',

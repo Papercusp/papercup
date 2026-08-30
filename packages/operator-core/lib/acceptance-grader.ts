@@ -51,6 +51,12 @@ export type AcceptanceGraderLifecycle = {
   /** D-009 exclusion audit trail (implementers + heavy consult participants +
    * rubric author + shipper) — set whenever discovery ran. */
   excluded?: string[];
+  /** D-008 party-collapse audit trail: candidates dropped because a better-ranked
+   * candidate was the SAME PARTY (a rebind chain, or a launcher and what it
+   * launched). Distinct from `excluded` — these are duplicate faces of an actor
+   * already on the menu, not disqualified actors. ABSENT (not empty) when party
+   * resolution faulted and selection degraded to raw-ownerId distinctness. */
+  partyCollapsed?: string[];
   /** Structured discovery counts, including the known post-exclusion pool. */
   eligibility?: GraderEligibility;
   /** Explicit escalation when the measured post-exclusion pool is empty. */
@@ -483,6 +489,8 @@ type GraderDiscoveryResult = {
    * Absent when the menu is empty — there is no cascade to open. */
   routing?: unknown;
   excluded: string[];
+  /** D-008 party-collapse audit trail; absent when party resolution faulted. */
+  partyCollapsed?: string[];
   eligibility?: GraderEligibility;
   escalation?: GraderEscalation;
   freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded';
@@ -504,6 +512,7 @@ async function prodDiscoverGrader(
       import('./agent-tools/coordination/liveness-oracle'),
       import('./consult/acceptance-grader-select'),
     ]);
+  const { lineagePartyKeys } = await import('./acceptance-author-identity');
   const embed = await buildQueryEmbedder();
   const r = rubric as unknown as {
     rubricId: string;
@@ -548,6 +557,11 @@ async function prodDiscoverGrader(
         `;
         return new Map(rows.map((row) => [row.owner_id, row.agent_role] as const));
       },
+      // D-008: one agent can hold several coordination identities, so the menu
+      // has to be distinct by PARTY, not by ownerId. Same ledger the acceptance
+      // gate already resolves scorecard authors through.
+      getPartyKeys: (workspaceId, ownerIds) =>
+        lineagePartyKeys(ownerIds, { sql: getOrgPg().sql, workspaceId }),
       route: (params) =>
         routeConsult(params, {
           getSql: () => getOrgPg().sql,
@@ -572,6 +586,7 @@ async function prodDiscoverGrader(
     })),
     ...(selection.routing ? { routing: selection.routing } : {}),
     excluded: selection.excluded,
+    ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
     eligibility: selection.eligibility,
     ...(selection.escalation ? { escalation: selection.escalation } : {}),
     ...(selection.freshReason ? { freshReason: selection.freshReason } : {}),
@@ -825,6 +840,7 @@ export async function resolveAcceptanceGrader(
   let discovery:
     | {
         excluded: string[];
+        partyCollapsed?: string[];
         eligibility?: GraderEligibility;
         escalation?: GraderEscalation;
         freshReason: NonNullable<AcceptanceGraderLifecycle['freshReason']>;
@@ -865,6 +881,7 @@ export async function resolveAcceptanceGrader(
           graders: selection.graders,
           ...(opened ? { conversationId: opened.conversationId } : {}),
           excluded: selection.excluded,
+          ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
           eligibility: selection.eligibility,
           ...(selection.escalation ? { escalation: selection.escalation } : {}),
           notified: { woke: opened?.woke ?? 0 },
@@ -872,6 +889,7 @@ export async function resolveAcceptanceGrader(
       }
       discovery = {
         excluded: selection.excluded,
+        ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
         eligibility: selection.eligibility,
         ...(selection.escalation ? { escalation: selection.escalation } : {}),
         freshReason: selection.freshReason ?? 'no_eligible_non_excluded',

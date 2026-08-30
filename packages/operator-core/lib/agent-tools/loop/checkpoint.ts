@@ -43,6 +43,7 @@ import {
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
   rescueTaggedCarryNoteBlob,
+  detectCarryNoteRescueSignals,
   CARRY_ROW_SOFT_CAPS,
   CARRY_TEXT_SOFT_CAP,
   CARRY_CAP_HARD_MULTIPLE,
@@ -1596,17 +1597,36 @@ export default defineTool({
             // mangled note reached the cold wake looking like sloppy authoring, with
             // nothing saying it had been degraded — so a rescue must announce itself and
             // teach the correct call shape.
+            // EI-21918217118634060: NEVER claim "stored correctly" for a sibling section
+            // whose closing tag was PRESENT in the blob but which failed to parse into
+            // `rescued` — that is a silently-dropped write wearing a success envelope,
+            // strictly worse than an honest failure because the caller stops checking.
             ...(rescued
-              ? {
-                  rescued: {
-                    from: 'tagged-blob',
-                    recovered: Object.keys(rescued),
-                    note:
-                      'Your `did` was a whole structured note serialized as one XML-tagged string; it was PARSED ' +
-                      'back into sections + typed rows and stored correctly. Pass { did, left, insight, next, ' +
-                      'checks } as SEPARATE arguments — do not emit section tags inside a field value.',
-                  },
-                }
+              ? (() => {
+                  const recovered = Object.keys(rescued);
+                  const signaled = detectCarryNoteRescueSignals(args.did);
+                  const dropped = signaled.filter((key) => !(key in rescued));
+                  return {
+                    rescued: {
+                      from: 'tagged-blob',
+                      recovered,
+                      ...(dropped.length > 0 ? { droppedSections: dropped } : {}),
+                      note:
+                        dropped.length === 0
+                          ? 'Your `did` was a whole structured note serialized as one XML-tagged string; it was ' +
+                            'PARSED back into sections + typed rows and stored correctly. Pass { did, left, ' +
+                            'insight, next, checks } as SEPARATE arguments — do not emit section tags inside a ' +
+                            'field value.'
+                          : `Your \`did\` looked like a whole structured note serialized as one XML-tagged ` +
+                            `string, but only [${recovered.join(', ')}] parsed cleanly. A closing tag for ` +
+                            `[${dropped.join(', ')}] was present yet did NOT extract — those section(s) were ` +
+                            'NOT stored: any prior content is unchanged, and whatever you meant to write there ' +
+                            'remains buried as literal tagged text inside the stored `did`. Re-send { did, left, ' +
+                            'insight, next, checks } as SEPARATE, well-formed arguments so nothing is silently ' +
+                            'dropped.',
+                    },
+                  };
+                })()
               : {}),
             ...(uncheckedClaims.length > 0
               ? {

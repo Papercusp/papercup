@@ -212,5 +212,3 @@ export function createPotAppSeam(host: PotAppSeamHost): PotAppSeam {
 export function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-
-// WI-1245142 Run C closure-invalidation control; remove after the probe.

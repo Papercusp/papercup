@@ -132,6 +132,95 @@ async function reclaimAbandonedLock(lockDir, staleMs) {
   return false;
 }
 
+// EI-21915677034576963 — a FIFO fairness queue for `withFsMutex`'s WRITE-mode
+// acquisition. Without this, a waiter is just one more `mkdir()` racer on a fixed
+// poll cycle, so a caller that re-acquires the SAME lock repeatedly across many
+// short-lived sub-invocations (e.g. one shard of a broad affected-tests run after
+// another, each its own `runBudgetedTasks` -> `withFsMutex` call) gets a fresh,
+// immediate shot at the mkdir() every time it releases, with no fairness against a
+// caller that has already been waiting — a bounded/narrow verification run can be
+// starved for hours behind a "continuous sequence" of such re-acquisitions even
+// though it registered first. Each caller now registers a ticket BEFORE racing for
+// the lock, and only the OLDEST live ticket is allowed to attempt the mkdir on any
+// given poll — a brand-new sub-invocation always registers a brand-new, strictly
+// YOUNGER ticket, so it can never leapfrog someone who was already waiting.
+
+function queueRoot(lockRootDir, name) {
+  return join(lockRootDir, `${safeName(name)}.queue`);
+}
+
+/**
+ * A FIFO-orderable, globally-unique ticket id: a zero-padded epoch-ms prefix (so
+ * lexicographic directory-listing order matches chronological registration order)
+ * plus pid+uuid to break same-millisecond ties and guarantee uniqueness across
+ * concurrent callers on the same host.
+ */
+function ticketId(startedAtMs) {
+  return `${String(startedAtMs).padStart(16, '0')}-${process.pid}-${randomUUID()}`;
+}
+
+/**
+ * Reclaim one abandoned WAIT TICKET. Deliberately NOT the same policy as
+ * `reclaimAbandonedLock`: a ticket legitimately gets old while its owner is
+ * genuinely still waiting — that is exactly the multi-hour starvation this queue
+ * exists to prevent — so age alone must NEVER reclaim a ticket whose owner.json
+ * parses and names a still-alive process; only a POSITIVELY confirmed-dead owner
+ * does. Age is still the fallback ONLY for the narrow "mkdir landed, owner.json
+ * never did" crash window: a ticket with no readable owner can never be confirmed
+ * dead by pid, and left unreclaimed would otherwise wedge the whole queue behind a
+ * phantom waiter forever.
+ */
+async function reclaimAbandonedTicket(ticketDir, staleMs) {
+  let raw;
+  try {
+    raw = await readFile(join(ticketDir, 'owner.json'), 'utf8');
+  } catch {
+    if ((await lockAgeMs(ticketDir)) > staleMs) await rm(ticketDir, { recursive: true, force: true });
+    return;
+  }
+  let owner;
+  try {
+    owner = JSON.parse(raw);
+  } catch {
+    if ((await lockAgeMs(ticketDir)) > staleMs) await rm(ticketDir, { recursive: true, force: true });
+    return;
+  }
+  if (typeof owner.pid !== 'number' || typeof owner.host !== 'string' || owner.host !== hostname()) return;
+  try {
+    process.kill(owner.pid, 0);
+    return; // no throw ⇒ signal delivered ⇒ owner is alive (or unconfirmable ⇒ assume alive)
+  } catch (error) {
+    if (error && error.code === 'ESRCH') await rm(ticketDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The ticket that has been waiting LONGEST for `name`'s write lock, after
+ * reclaiming any abandoned tickets — or null when the queue directory cannot be
+ * read. Fail-open: no ordering information ⇒ the caller falls back to racing for
+ * the lock directly, so a broken/unreadable queue can never deadlock acquisition.
+ */
+async function oldestTicketDir(ticketsDir, staleMs) {
+  let entries;
+  try {
+    entries = await readdir(ticketsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const ticketDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => join(ticketsDir, entry.name));
+  for (const ticketDir of ticketDirs) await reclaimAbandonedTicket(ticketDir, staleMs);
+  let remaining;
+  try {
+    remaining = (await readdir(ticketsDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return null;
+  }
+  return remaining.length ? join(ticketsDir, remaining[0]) : null;
+}
+
 async function writerLockIsHeld(lockDir, staleMs) {
   try {
     await stat(lockDir);
@@ -207,36 +296,84 @@ export async function withFsMutex(name, fn, opts = {}) {
 
   await mkdir(root, { recursive: true });
 
-  let announcedWaiting = false;
-  for (;;) {
-    try {
-      await mkdir(lockDir);
-      await writeFile(join(lockDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
+  // EI-21915677034576963: register a FIFO ticket BEFORE racing for the write lock, so a
+  // caller that has been waiting longest is never overtaken by a newer one that simply
+  // happens to poll at a luckier moment — including the SAME long-running caller
+  // re-entering across its own successive sub-invocations (e.g. one shard after
+  // another): each is a brand-new `withFsMutex` call, so it always registers a
+  // brand-new, strictly YOUNGER ticket than anyone already waiting. Best-effort: if the
+  // ticket bookkeeping itself fails for any reason, fall back to the pre-existing racing
+  // behaviour for THIS caller rather than ever deadlocking on a broken queue.
+  const ticketsDir = queueRoot(root, name);
+  const myTicketDir = join(ticketsDir, `${ticketId(startedAt)}.ticket`);
+  let ticketRegistered = false;
+  try {
+    await mkdir(ticketsDir, { recursive: true });
+    await mkdir(myTicketDir);
+    await writeFile(join(myTicketDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+    ticketRegistered = true;
+  } catch {
+    ticketRegistered = false;
+  }
 
-      const elapsed = Date.now() - startedAt;
-      if (!announcedWaiting && opts.onWaiting) {
-        announcedWaiting = true;
-        opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs: elapsed });
+  let announcedWaiting = false;
+  try {
+    for (;;) {
+      if (ticketRegistered) {
+        const oldest = await oldestTicketDir(ticketsDir, staleMs);
+        if (oldest != null && oldest !== myTicketDir) {
+          // Someone else registered first — don't even attempt the mkdir race this
+          // cycle; let them go before us.
+          const elapsed = Date.now() - startedAt;
+          if (!announcedWaiting && opts.onWaiting) {
+            announcedWaiting = true;
+            opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs: elapsed });
+          }
+          if (elapsed > timeoutMs) {
+            const currentOwner = await readOwner(lockDir);
+            throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
+          }
+          await sleep(retryMs);
+          continue;
+        }
       }
-      const lockAgeMs = await stat(lockDir)
-        .then((s) => Date.now() - s.mtimeMs)
-        .catch(() => 0);
-      if (lockAgeMs > staleMs) {
-        await rm(lockDir, { recursive: true, force: true });
-        continue;
+      try {
+        await mkdir(lockDir);
+        await writeFile(join(lockDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+        break;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+
+        const elapsed = Date.now() - startedAt;
+        if (!announcedWaiting && opts.onWaiting) {
+          announcedWaiting = true;
+          opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs: elapsed });
+        }
+        const lockAgeMs = await stat(lockDir)
+          .then((s) => Date.now() - s.mtimeMs)
+          .catch(() => 0);
+        if (lockAgeMs > staleMs) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        if (await isOwnerProcessConfirmedDead(lockDir)) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        if (elapsed > timeoutMs) {
+          const currentOwner = await readOwner(lockDir);
+          throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
+        }
+        await sleep(retryMs);
       }
-      if (await isOwnerProcessConfirmedDead(lockDir)) {
-        await rm(lockDir, { recursive: true, force: true });
-        continue;
+    }
+  } finally {
+    if (ticketRegistered) {
+      try {
+        await rm(myTicketDir, { recursive: true, force: true });
+      } catch {
+        // best-effort — a missing/already-cleaned ticket is not an error
       }
-      if (elapsed > timeoutMs) {
-        const currentOwner = await readOwner(lockDir);
-        throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
-      }
-      await sleep(retryMs);
     }
   }
 

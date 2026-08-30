@@ -23,6 +23,10 @@ import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import {
   auditPredicateSql,
   auditPredicateSqlFor,
+  auditStateScope,
+  auditWhereSql,
+  WORK_ITEM_AUDITS,
+  WORKED_THEN_ABANDONED_STALE_DAYS,
   citedImagePaths,
   citesAssertionBearingRun,
   citesScreenshotArtifact,
@@ -204,10 +208,122 @@ describe('completion-audit predicates (EI-10867)', () => {
   });
 
   it('every declared audit produces a predicate (no silently-unhandled enum member)', () => {
-    for (const a of COMPLETION_AUDITS) {
+    for (const a of WORK_ITEM_AUDITS) {
       const f = frag(auditPredicateSql(recordingSql(), a));
       expect(f.text.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  /**
+   * EI-19320339017813143 — the FIRST audit bucket defined over OPEN rows, and the
+   * state-scope plumbing it forced.
+   *
+   * Before this bucket the scope was not part of an audit's definition: eleven call
+   * sites in work-items.ts and issues-engineer.ts each re-typed a literal
+   * `state = ANY(<TERMINAL>) AND <predicate>`. That is invisible while every bucket
+   * shares one scope and catastrophic the moment one does not — a terminal-only clause
+   * ANDed onto an open-only predicate returns ZERO ROWS, forever, with no error. An
+   * audit reporting "nothing to see" is indistinguishable from an audit that is clean,
+   * which is the precise confusion EI-10867 (this file's own subject) was filed for.
+   *
+   * So these tests guard the SCOPE, not just the predicate text.
+   */
+  describe("'worked-then-abandoned' — the open-row bucket (EI-19320339017813143)", () => {
+    /** Like `recordingSql`, but INLINES a nested fragment instead of binding it as a
+     *  parameter — `auditWhereSql` composes fragments, so the composed text is the
+     *  thing under test and must not collapse to a `$n`. */
+    function composingSql() {
+      const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+        let text = '';
+        const params: unknown[] = [];
+        strings.forEach((s, i) => {
+          text += s;
+          if (i >= values.length) return;
+          const v = values[i] as { __raw?: string; text?: string; params?: unknown[] };
+          if (v && typeof v === 'object' && typeof v.__raw === 'string') text += v.__raw;
+          else if (v && typeof v === 'object' && typeof v.text === 'string') {
+            text += v.text;
+            params.push(...(v.params ?? []));
+          } else {
+            params.push(values[i]);
+            text += `$${params.length}`;
+          }
+        });
+        return { text, params };
+      };
+      tag.unsafe = (raw: string) => ({ __raw: raw });
+      return tag as unknown as Parameters<typeof auditWhereSql>[0] & { unsafe: (s: string) => unknown };
+    }
+
+    const issueOpts = { stateColumn: 'state', terminalStates: ['resolved', 'closed', 'deprecated', 'done'] };
+
+    it('is classified as an OPEN-scope bucket, and every completion audit stays TERMINAL', () => {
+      expect(auditStateScope('worked-then-abandoned')).toBe('open');
+      for (const a of COMPLETION_AUDITS) expect(auditStateScope(a)).toBe('terminal');
+    });
+
+    it('keys on the release stamps the release path writes — not on any completion column', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'worked-then-abandoned'));
+      expect(f.text).toContain('last_released_by IS NOT NULL');
+      expect(f.text).toContain('last_released_at <');
+      // It must NOT smuggle in a completion-shaped test: this bucket is about the
+      // LIFECYCLE, and an open row has no completion columns populated by construction.
+      expect(f.text).not.toContain('terminal_completion_ref');
+      expect(f.text).not.toContain('authority');
+      expect(f.params).toContain(WORKED_THEN_ABANDONED_STALE_DAYS);
+    });
+
+    it('the aliased form matches its unaliased twin', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'worked-then-abandoned'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'worked-then-abandoned', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
+
+    /**
+     * THE LOAD-BEARING ASSERTION. If a future edit reverts the scope to the old
+     * hard-coded terminal conjunct, this bucket silently matches nothing — so assert the
+     * membership test is NEGATED, not merely that some SQL was produced.
+     */
+    it('scopes to NON-terminal rows — the terminal membership test is negated', () => {
+      const f = frag(auditWhereSql(composingSql(), 'worked-then-abandoned', issueOpts));
+      expect(f.text).toContain('NOT (state = ANY(');
+      // The predicate really did compose in (not collapse to a bound parameter).
+      expect(f.text).toContain('last_released_by IS NOT NULL');
+      // A bare, UN-negated terminal conjunct is the regression. Strip the legitimate
+      // negated occurrences first — asserting on the raw text cannot distinguish them,
+      // since `NOT (state = ANY(` contains `(state = ANY(` verbatim.
+      expect(f.text.replace(/NOT \(state = ANY\(/g, '')).not.toContain('state = ANY(');
+    });
+
+    it('treats a NULL state as non-terminal rather than dropping the row', () => {
+      const f = frag(auditWhereSql(composingSql(), 'worked-then-abandoned', issueOpts));
+      // NOT(NULL) is NULL, which would silently exclude a malformed row — exactly the
+      // kind an audit should surface. The IS NULL arm is what keeps it visible.
+      expect(f.text).toContain('state IS NULL OR');
+    });
+
+    it('a TERMINAL bucket still gets the positive membership test through the same helper', () => {
+      const f = frag(auditWhereSql(composingSql(), 'reconciler-sourced', issueOpts));
+      expect(f.text).toMatch(/\(\s*state = ANY\(/);
+      expect(f.text).not.toContain('NOT (state = ANY(');
+      expect(f.text).toContain('terminal_owner =');
+    });
+
+    it('applies the caller dialect: alias and state column are not hard-coded', () => {
+      const aliased = frag(
+        auditWhereSql(composingSql(), 'worked-then-abandoned', { ...issueOpts, alias: 'ei' }),
+      );
+      expect(aliased.text).toContain('ei.last_released_by');
+      expect(aliased.text).toContain('NOT (ei.state = ANY(');
+
+      const feature = frag(
+        auditWhereSql(composingSql(), 'worked-then-abandoned', {
+          stateColumn: 'status',
+          terminalStates: ['done', 'passed', 'dropped', 'deprecated'],
+        }),
+      );
+      expect(feature.text).toContain('NOT (status = ANY(');
+    });
   });
 
   // WI-5891 — the P-014/WI-5874 audit follow-up: a layout-bearing filesChanged closed

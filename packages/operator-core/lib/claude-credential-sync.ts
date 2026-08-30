@@ -62,6 +62,7 @@ import {
 import { homedir, userInfo } from 'node:os';
 import chokidar, { type FSWatcher as ChokidarFSWatcher } from 'chokidar';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import { readClaudeKeychainOAuthBundle, writeClaudeKeychainOAuthBundle } from './agent-auth-detect';
@@ -289,7 +290,14 @@ export function reconcileClaudeCredentials(opts: ReconcileOptions = {}): Reconci
   };
 }
 
-const GUARD_KEY = '__papercuspClaudeCredentialSync';
+// Module-scoped mutable state in a bundled package: pinned per the shared-lib
+// singleton rule, so a second module record (tsx's CJS preflight, a bare vs
+// relative specifier, a bundled copy beside source) cannot start a SECOND
+// credential sync — duplicate watchers and intervals over the same files —
+// while each record believes it holds the process-wide singleton.
+const syncGuard = pinModuleState('@papercusp/operator-core.claude-credential-sync', () => ({
+  handle: null as CredentialSyncHandle | null,
+}));
 const DEBOUNCE_MS = 1_500;
 const FALLBACK_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -319,8 +327,7 @@ export function startClaudeCredentialSync(opts: {
   /** Per-pass gate (feature flag). Defaults to always-on. */
   isEnabled?: () => Promise<boolean> | boolean;
 } = {}): CredentialSyncHandle {
-  const g = globalThis as Record<string, unknown>;
-  if (g[GUARD_KEY]) return g[GUARD_KEY] as CredentialSyncHandle;
+  if (syncGuard.handle) return syncGuard.handle;
 
   const home = opts.home ?? homedir();
   const sessionRoot = opts.sessionRoot ?? sessionClaudeRoot();
@@ -419,10 +426,10 @@ export function startClaudeCredentialSync(opts: {
       if (debounce) clearTimeout(debounce);
       interval.stop();
       for (const w of watchers) void w.close();
-      delete g[GUARD_KEY];
+      syncGuard.handle = null;
     },
     _sessionWatcherForTests: sessionWatcher,
   };
-  g[GUARD_KEY] = handle;
+  syncGuard.handle = handle;
   return handle;
 }

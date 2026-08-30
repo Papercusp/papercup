@@ -307,7 +307,17 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- lane/goal_id comments above record — 896 adds it to the production view by
       -- anchor-replacing the pg_get_viewdef tail, which appends. EI-21467654382027859
       -- federates it, so this projection needs the column visible on the view too.
-      state_changed_at
+      state_changed_at,
+      -- EI-19320339017813143 / migration 1041: the release stamps the 'worked-then-abandoned'
+      -- open-row audit bucket reads. Appended LAST for the same CREATE OR REPLACE VIEW reason
+      -- every comment above records — 1041 anchor-replaces the pg_get_viewdef tail, which
+      -- appends. READ SIDE ONLY: unlike 946, 1041 deliberately does NOT extend the INSTEAD OF
+      -- trigger, because release stamps are lifecycle state the release path writes to
+      -- harness_shared.work_items directly — so there is no DML half to mirror here.
+      -- 94% of that bucket's population is issue-family, so a fixture missing these columns
+      -- makes the audit look EMPTY rather than fail (see the THIRD COPY warning above).
+      last_released_at,
+      last_released_by
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;
