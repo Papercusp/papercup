@@ -238,10 +238,19 @@ export function validateContinuityProbe(probe: ContinuityProbe): ContinuityProbe
   }
   const revision = projectedToolRegistryRevision([tool]);
   if (probe.schemaRevision !== revision) {
+    // This branch is reached only from the WRITER path (continuityProbeSchema):
+    // the replay path (runOne, below) checks schemaRevision against the current
+    // registry BEFORE calling validateContinuityProbe, and short-circuits with
+    // its own diagnostic on a mismatch — so `probe.schemaRevision` here was
+    // either a caller-supplied literal that was not (or could not be resolved
+    // from) the `live` sentinel. Naming that sentinel in the message is what
+    // turns a guess-the-revision failure into a one-shot fix; multiple callers
+    // have independently hit this exact wall (EI-21886701316980990 and
+    // siblings) by hardcoding a stale revision instead of using `live`.
     issues.push({
       path: ['schemaRevision'],
       code: 'schema_revision_mismatch',
-      message: `stored revision ${probe.schemaRevision} differs from current revision ${revision}`,
+      message: `stored revision ${probe.schemaRevision} differs from current revision ${revision}; pass schemaRevision:"${LIVE_SCHEMA_REVISION}" instead of a hardcoded revision string and the writer resolves it for you`,
     });
   }
   const argsBytes = jsonBytes(args);

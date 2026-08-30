@@ -145,6 +145,17 @@ describe('continuity probe persistence contract', () => {
     );
   });
 
+  it('names the `live` sentinel escape hatch in a caller-hardcoded schema-revision mismatch (EI-21886701316980990)', () => {
+    // A caller who hardcodes a stale registry-revision literal instead of the
+    // writer-only `live` shorthand used to see only two opaque revision
+    // strings with no path forward — multiple agents independently re-filed
+    // this exact confusion. The mismatch diagnostic must name the fix inline.
+    const issues = validateContinuityProbe({ ...readProbe(), schemaRevision: 'work-items-get-v1' });
+    const mismatch = issues.find((issue) => issue.code === 'schema_revision_mismatch');
+    expect(mismatch?.message).toMatch(/schemaRevision:"live"/);
+    expect(mismatch?.message).toContain('work-items-get-v1');
+  });
+
   it('resolves the writer-only live revision sentinel while keeping shape/replay strict', async () => {
     const parsed = continuityProbeSchema.parse({ ...readProbe(), schemaRevision: 'live' });
     expect(parsed.schemaRevision).toBe(continuityProbeRevision('status:read'));
