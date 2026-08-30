@@ -172,8 +172,18 @@ describe('scenario registry', () => {
   });
 
   it('every scenario references a known target', () => {
+    // DERIVED from the target registry, never hand-maintained. This list
+    // DESCRIBES targets/index.ts, so a hardcoded copy goes stale the moment a
+    // target is registered — which is exactly how 'pui-loop' (D-034) red the
+    // gate while the scenario and its target were both correct.
+    // Deriving keeps the assertion sharp rather than vacuous: a scenario
+    // naming an UNREGISTERED target still fails, which is the property under
+    // test. The length guard is what stops an empty registry from making the
+    // loop trivially satisfiable.
+    const registeredTargets = listTargets();
+    expect(registeredTargets.length).toBeGreaterThan(0);
     for (const s of SCENARIOS) {
-      expect(['operator', 'papercup', 'oracle', 'architect', 'su', 'mug', 'cup', 'kettle', 'onboarding-tutor']).toContain(s.target);
+      expect(registeredTargets).toContain(s.target);
     }
   });
 
