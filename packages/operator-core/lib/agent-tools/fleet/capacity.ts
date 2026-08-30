@@ -407,13 +407,17 @@ function hasMeasuredCodexTierCapacity(
   >,
 ): boolean {
   if (provider !== 'codex' || report.tierLayer !== true) return false;
-  if (!Number.isInteger(report.healthyAccounts) || report.healthyAccounts <= 0) return false;
-  if (!Number.isInteger(report.dispatchBudget) || report.dispatchBudget <= 0) return false;
+  // Every field here is nullable ("not measured"), and `Number.isInteger` is not a type guard —
+  // it narrows nothing, so a bare `x <= 0` after it still reads a possible null. Guard the null
+  // explicitly: a MISSING reading must fail this predicate for the same reason a bad one does.
+  const positiveInt = (value: number | null | undefined): boolean =>
+    value != null && Number.isInteger(value) && value > 0;
+  const nonNegativeInt = (value: number | null | undefined): boolean =>
+    value != null && Number.isInteger(value) && value >= 0;
+  if (!positiveInt(report.healthyAccounts)) return false;
+  if (!positiveInt(report.dispatchBudget)) return false;
   const beeTier = report.capByTier?.find((row) => row.tier === report.beeTier);
-  return beeTier != null &&
-    [beeTier.minShare, beeTier.inFlight, beeTier.queued].every(
-      (value) => Number.isInteger(value) && value >= 0,
-    );
+  return beeTier != null && [beeTier.minShare, beeTier.inFlight, beeTier.queued].every(nonNegativeInt);
 }
 
 /** One provider-scoped reading, shared by uniform and mixed-fleet responses. */

@@ -500,7 +500,9 @@ export async function queenCapacityHeadroom(
     const gw = await fetchGatewayHeadroom({ timeoutMs: opts.timeoutMs ?? 1200 });
     const beeTier = tierOf('cup', DEFAULT_GATEWAY_PRIORITY_MAP);
     const beeRow = gw.priorityTiers?.tiers.find((t) => t.tier === beeTier) ?? null;
-    const dispatchBudget = beeRow && beeRow.cap != null ? Math.max(0, beeRow.cap - beeRow.inFlight - beeRow.queued) : null;
+    const dispatchBudget =     beeRow && beeRow.minShare != null
+      ? Math.max(0, beeRow.minShare - beeRow.inFlight - beeRow.queued)
+      : null;
     signal = {
       reachable: gw.reachable,
       utilization: gw.utilization,
@@ -548,7 +550,11 @@ export interface CapacityReport {
   tier1Reserve: number | null;
   /** The admission tier bee work maps to (default 3) — the band `dispatchBudget` is measured in. */
   beeTier: number;
-  /** Spare bee-tier slots right now = cap − inFlight − queued (D-001). null when the tier layer is off. */
+  /** Spare bee-tier slots right now = minShare − inFlight − queued (D-001). null when the tier layer is off.
+   *
+   *  ⚠ This is a CONSERVATIVE floor, not the pool's true headroom: `minShare` is the tier's guaranteed
+   *  minimum share, and since WI-4541 a tier at its share may still borrow idle slots when no
+   *  higher tier is waiting. A zero here therefore means "no guaranteed slots left", not "no capacity". */
   dispatchBudget: number | null;
   /** Real usable accounts for the bee provider from the account-pool projection (accounts:status), when
    *  supplied — the count that is `available` AND not edge-throttled. null when no cross-check was passed. */
@@ -592,7 +598,7 @@ export interface CapacityReport {
   blind: boolean;
   /** The `blindCount` this report's `blind` verdict was computed from. null when not supplied. */
   blindAccounts: number | null;
-  capByTier: { tier: number; cap: number | null; inFlight: number; queued: number }[] | null;
+  capByTier: { tier: number; minShare: number | null; inFlight: number; queued: number }[] | null;
   inFlight: number | null;
   queueDepth: number | null;
   /** Milliseconds since the gateway process started, when the stats payload exposes it. */
@@ -695,7 +701,9 @@ export function buildCapacityReport(
   const pt = hr.priorityTiers;
   const capByTier = pt?.tiers ?? null;
   const beeRow = pt?.tiers.find((t) => t.tier === beeTier) ?? null;
-  const dispatchBudget = beeRow && beeRow.cap != null ? Math.max(0, beeRow.cap - beeRow.inFlight - beeRow.queued) : null;
+  const dispatchBudget =     beeRow && beeRow.minShare != null
+      ? Math.max(0, beeRow.minShare - beeRow.inFlight - beeRow.queued)
+      : null;
   signal.healthyAccounts = pt?.healthyAccounts ?? null;
   signal.dispatchBudget = dispatchBudget;
   let factor = capacityFactor(signal, config);

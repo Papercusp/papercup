@@ -225,6 +225,42 @@ const VERIFICATION_CONFLICT_PATTERNS: ReadonlyArray<RegExp> = [
 ];
 
 /**
+ * A verification disclaimer is a contradiction even when it does not share a
+ * subject noun with the claim. The row's `verified` field is the evidence for
+ * the WHOLE claim, so phrases such as "B is NOT covered by this run" or "wants
+ * a re-check" must not leave the row looking like a complete ✓. Keep this
+ * separate from the unresolved-status patterns below: coverage gaps are not a
+ * lifecycle state, and a claim can legitimately be *about* a coverage gap.
+ */
+const VERIFICATION_COVERAGE_DISCLAIMER_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b(?:not|does\s+not|did\s+not|isn't|aren't|wasn't|weren't|never)\s+(?:fully\s+)?(?:covered|included|exercised|tested|checked|verified|validated|measured)\b/i,
+  /\b(?:uncovered|out[-\s]?of[-\s]?scope)\b/i,
+  /\b(?:needs?|wants?|requires?)\s+(?:a\s+)?(?:fresh\s+)?re[-\s]?check\b/i,
+];
+
+/**
+ * A check whose claim explicitly asserts the coverage limitation is not a
+ * false ✓: "the producer tests are not covered by the prior run" can be
+ * verified by evidence saying exactly that. This is intentionally narrow so
+ * a broad health claim with a disclaimer in its evidence still downgrades.
+ */
+const CLAIM_EXPLICIT_COVERAGE_LIMIT_RE =
+  /\b(?:not|never|uncovered|out[-\s]?of[-\s]?scope|partial(?:ly)?|excluded|excludes)\b[^\n.!?;]{0,120}\b(?:covered|included|exercised|tested|checked|verified|validated|measured|scope)\b|\b(?:needs?|wants?|requires?)\s+(?:a\s+)?(?:fresh\s+)?re[-\s]?check\b/i;
+
+/** Return a coverage disclaimer that makes a complete ✓ unsafe, if any. */
+function findVerificationCoverageDisclaimer(
+  evidence: string,
+  claim: string | null | undefined,
+): string | null {
+  if (typeof claim === 'string' && CLAIM_EXPLICIT_COVERAGE_LIMIT_RE.test(claim)) return null;
+  for (const pattern of VERIFICATION_COVERAGE_DISCLAIMER_PATTERNS) {
+    const match = pattern.exec(evidence);
+    if (match?.[0]) return match[0];
+  }
+  return null;
+}
+
+/**
  * A registered event-await/watch is intentionally pending until its event fires.
  * Keep that healthy liveness state distinct from unresolved work such as a pending
  * verdict or approval. These patterns are deliberately narrow: the registration
@@ -468,6 +504,8 @@ function isNegatedVerificationConflict(text: string, match: RegExpExecArray): bo
 export function findVerificationConflict(evidence: string | null | undefined, claim?: string | null): string | null {
   const text = typeof evidence === 'string' ? evidence : '';
   if (!text.trim()) return null;
+  const coverageDisclaimer = findVerificationCoverageDisclaimer(text, claim);
+  if (coverageDisclaimer) return coverageDisclaimer;
   for (const pattern of VERIFICATION_CONFLICT_PATTERNS) {
     const match = pattern.exec(text);
     if (

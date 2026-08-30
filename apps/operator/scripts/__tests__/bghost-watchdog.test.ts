@@ -698,6 +698,15 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
       expect(s.own).toBe(2);
     });
 
+    it('recognises the bundled dist-host entry as the unit itself, not collateral', () => {
+      const s = classifyCollateral([
+        { pid: 1, cmdline: 'node dist-host/hono-host.mjs' },
+      ])!;
+      expect(s.own).toBe(1);
+      expect(s.collateral).toBe(0);
+      expect(s.other).toBe(0);
+    });
+
     it('empty/null input is UNKNOWN(null) — never a zeroed summary that reads as "nothing died"', () => {
       expect(classifyCollateral([])).toBeNull();
       expect(classifyCollateral(null)).toBeNull();

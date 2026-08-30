@@ -109,6 +109,10 @@ import {
   readAgentReviewState,
   readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
+import {
+  hasResourceGovernorReceiptPayload,
+  ResourceGovernorReleaseRequiredError,
+} from './resource-governor/queue';
 
 /**
  * Release cleanup is only needed on the explicit release paths. Keep the
@@ -7745,6 +7749,9 @@ export async function releaseWorkItem(
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  if (hasResourceGovernorReceiptPayload(wi.payload)) {
+    throw new ResourceGovernorReleaseRequiredError(id);
+  }
   // Only a release of an actually-CLAIMED item is a `claim:released` transition —
   // releasing an already-free row is a no-op and must not wake pool-waiters.
   const wasClaimed = Boolean(wi.assignee);

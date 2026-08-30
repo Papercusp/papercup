@@ -717,7 +717,16 @@ export function classifyCollateral(entries) {
     const cmd = String(e?.cmdline ?? '');
     if (!cmd) continue;
     // The unit's own server + its build helper — expected to die with the unit, not collateral.
-    if (cmd.includes('bin/hono-host.ts') || cmd.includes('esbuild --service')) own.push(e);
+    // The bg-host now starts the bundled entry (`node dist-host/hono-host.mjs`) after the
+    // 95-bundled-entry drop-in replaced the old tsx command. Keep both launch shapes here:
+    // misclassifying the bundled host as collateral makes the committed-hot-path activation
+    // guard permanently suppress every safe restart (EI-21678196684867980).
+    if (
+      cmd.includes('bin/hono-host.ts') ||
+      cmd.includes('dist-host/hono-host.mjs') ||
+      cmd.includes('esbuild --service')
+    )
+      own.push(e);
     else if (cmd.includes('spawner-sidecar')) spawner.push(e);
     else if (cmd.includes('Papercusp GUI') || cmd.includes('serve.mjs')) desktop.push(e);
     else other.push(e);

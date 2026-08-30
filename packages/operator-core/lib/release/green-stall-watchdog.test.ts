@@ -89,6 +89,7 @@ import {
   judgeVerdictlessDeath,
   DEFAULT_VERDICTLESS_GRACE_MS,
   decideVerdictlessRefire,
+  type CheckpointEvidence,
 } from './green-stall-watchdog';
 // Imported, never restated: the re-fire tests enumerate the REAL abort table, so adding a
 // status there (or reclassifying one) is reported by these tests instead of silently changing
@@ -1313,6 +1314,11 @@ describe('green-checkpoint-stall recovery parser + decision', () => {
       harness_slug: ' oddsmith ',
       candidate: '  abcdef1234567890  ',
       failingTests: [' pkg/a.test.ts ', '', 42, 'pkg/b.test.ts'],
+      checkpointEvidence: {
+        logPath: ' /var/lib/papercusp/checkpoint-logs/oddsmith-run.log ',
+        runId: ' run-oddsmith-1 ',
+        integrationRoot: ' /srv/oddsmith ',
+      },
       ownership: { covered: false },
       recovery: {
         attempts: '2',
@@ -1328,6 +1334,11 @@ describe('green-checkpoint-stall recovery parser + decision', () => {
       installSlug: 'oddsmith',
       candidate: 'abcdef1234567890',
       failingTests: ['pkg/a.test.ts', 'pkg/b.test.ts'],
+      checkpointEvidence: {
+        logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+        runId: 'run-oddsmith-1',
+        integrationRoot: '/srv/oddsmith',
+      },
       ownershipCovered: false,
       recovery: {
         attempts: 2,
@@ -1344,6 +1355,18 @@ describe('green-checkpoint-stall recovery parser + decision', () => {
     ['array input', JSON.stringify([])],
   ])('rejects %s rather than treating it as an uncovered red', (_label, raw) => {
     expect(parseGreenCheckpointStallEscalation(raw)).toBeNull();
+  });
+
+  it('keeps missing checkpoint evidence explicitly absent instead of selecting a global fallback log', () => {
+    const parsed = parseGreenCheckpointStallEscalation({
+      kind: 'green-checkpoint-stall',
+      harness_slug: 'oddsmith',
+      candidate: 'abcdef1234567890',
+      failingTests: ['pkg/a.test.ts'],
+      ownership: { covered: false },
+    });
+
+    expect(parsed?.checkpointEvidence).toBeNull();
   });
 
   it('dispatches only a stale, uncovered, actionable row and bounds retries/notification', () => {
@@ -1442,6 +1465,11 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
         harness_slug: 'oddsmith',
         candidate: 'abcdef1234567890',
         failingTests: ['pkg/a.test.ts'],
+        checkpointEvidence: {
+          logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+          runId: 'run-oddsmith-1',
+          integrationRoot: '/srv/oddsmith',
+        },
         ownership: { covered: false },
         ...overrides,
       },
@@ -1467,6 +1495,11 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
       { installSlug: 'oddsmith', workspaceId: 'papercusp-workspace' },
       'abcdef1234567890',
       ['pkg/a.test.ts'],
+      {
+        logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+        runId: 'run-oddsmith-1',
+        integrationRoot: '/srv/oddsmith',
+      },
     );
     expect(notifyAttentionMock).not.toHaveBeenCalled();
     expect(broadcastSevereEventMock).not.toHaveBeenCalled();
@@ -1493,7 +1526,13 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
     expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
     const notice = notifyAttentionMock.mock.calls[0]![0] as {
       body: string;
-      data: { candidate: string; failingTests: string[]; attempts: number; reason: string };
+      data: {
+        candidate: string;
+        failingTests: string[];
+        checkpointEvidence: CheckpointEvidence;
+        attempts: number;
+        reason: string;
+      };
     };
     expect(notice.data.candidate).toBe('abcdef123456');
     expect(notice.data.failingTests).toEqual(failingTests.slice(0, 20));
@@ -1501,6 +1540,12 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
     expect(notice.body).not.toContain(failingTests[5]!);
     expect(notice.data.attempts).toBe(1);
     expect(notice.data.reason).toBe('no-progress');
+    expect(notice.data.checkpointEvidence).toEqual({
+      logPath: '/var/lib/papercusp/checkpoint-logs/oddsmith-run.log',
+      runId: 'run-oddsmith-1',
+      integrationRoot: '/srv/oddsmith',
+    });
+    expect(notice.body).toContain('Exact checkpoint log: /var/lib/papercusp/checkpoint-logs/oddsmith-run.log');
     expect(broadcastSevereEventMock).toHaveBeenCalledWith(
       expect.objectContaining({
         conditionKey: 'green-checkpoint-stall-recovery:oddsmith',

@@ -8,6 +8,16 @@ import {
   MIN_DAILY_DIGEST_COVERAGE,
   DAILY_DIGEST_MAX_PROMPT_CHARS,
   DAILY_DIGEST_MAX_TITLE_CHARS,
+  DAILY_DIGEST_MAX_OUTPUT_TOKENS,
+  DAILY_DIGEST_TOKENS_PER_UMBRELLA,
+  DAILY_DIGEST_TOKEN_OVERHEAD,
+  DAILY_DIGEST_UMBRELLA_TITLE_CHARS,
+  DAILY_DIGEST_UMBRELLA_BODY_CHARS,
+  DAILY_DIGEST_UMBRELLA_REASON_CHARS,
+  DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA,
+  DEFAULT_DAILY_DIGEST_MAX_TOKENS,
+  MAX_DAILY_DIGEST_UMBRELLAS,
+  maxUmbrellasForOutputBudget,
   type DailyDigestContext,
   type DailyDigestItem,
 } from './work-items-admission-daily-digest';
@@ -358,5 +368,71 @@ describe('work-item admission daily digest', () => {
 
     expect(result).toMatchObject({ status: 'blocked', blockedReason: 'empty-corpus', modelCalled: false });
     expect(harness.prompts).toHaveLength(0);
+  });
+});
+
+describe('daily digest output budget (D-031)', () => {
+  // Chars-per-token for JSON of this shape. Deliberately CONSERVATIVE (real JSON
+  // with punctuation and ids runs richer than 4 chars/token), so the invariant
+  // errs toward refusing a budget that would actually have fit.
+  const CHARS_PER_TOKEN = 4;
+
+  /** Worst-case tokens for ONE umbrella at every schema maximum simultaneously. */
+  const worstCaseUmbrellaTokens = (): number => {
+    const chars =
+      DAILY_DIGEST_UMBRELLA_TITLE_CHARS +
+      DAILY_DIGEST_UMBRELLA_BODY_CHARS +
+      DAILY_DIGEST_UMBRELLA_REASON_CHARS +
+      DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA * 24 + // a quoted id plus separator
+      120; // per-object JSON keys/punctuation
+    return Math.ceil(chars / CHARS_PER_TOKEN);
+  };
+
+  it('sizes one umbrella within the per-umbrella rate the cap is derived from', () => {
+    expect(worstCaseUmbrellaTokens()).toBeLessThanOrEqual(DAILY_DIGEST_TOKENS_PER_UMBRELLA);
+  });
+
+  // THE INVARIANT. A full answer at the schema's own maxima must fit the budget
+  // that has to carry it. Per D-031 an over-budget answer is not truncated-but-
+  // usable on this path: the text is lost entirely, so "it will just get cut off"
+  // is not an available fallback.
+  it('a MAXIMAL answer fits the output budget', () => {
+    const worst = DAILY_DIGEST_TOKEN_OVERHEAD + MAX_DAILY_DIGEST_UMBRELLAS * worstCaseUmbrellaTokens();
+    expect(worst).toBeLessThanOrEqual(DAILY_DIGEST_MAX_OUTPUT_TOKENS);
+  });
+
+  it('derives the umbrella cap from the budget, and never drops below one', () => {
+    expect(MAX_DAILY_DIGEST_UMBRELLAS).toBe(maxUmbrellasForOutputBudget());
+    expect(DEFAULT_DAILY_DIGEST_MAX_TOKENS).toBe(DAILY_DIGEST_MAX_OUTPUT_TOKENS);
+    expect(maxUmbrellasForOutputBudget(DAILY_DIGEST_TOKEN_OVERHEAD + 5 * DAILY_DIGEST_TOKENS_PER_UMBRELLA)).toBe(5);
+    expect(maxUmbrellasForOutputBudget(1)).toBe(1); // never zero or negative
+  });
+
+  // CONTROL — the pre-fix configuration, kept permanently so the invariant above
+  // is provably not vacuous: 100 umbrellas x a 12,000-char body against a 20,000
+  // token budget. If this ever starts fitting, the invariant is measuring nothing.
+  it('control: the pre-fix configuration does NOT fit, which is why the digest returned empty', () => {
+    const preFixUmbrellaTokens = Math.ceil((240 + 12_000 + 2_000 + 500 * 24 + 120) / CHARS_PER_TOKEN);
+    const preFixWorst = 500 + 100 * preFixUmbrellaTokens;
+    expect(preFixWorst).toBeGreaterThan(20_000);
+  });
+
+  it('TELLS the model the limits it must respect, not just the schema', () => {
+    const { system } = buildDailyDigestPrompt(context);
+    expect(system).toContain(`AT MOST ${MAX_DAILY_DIGEST_UMBRELLAS} umbrellas`);
+    expect(system).toContain(`body <= ${DAILY_DIGEST_UMBRELLA_BODY_CHARS}`);
+    expect(system).toContain(`memberIds <= ${DAILY_DIGEST_MAX_MEMBERS_PER_UMBRELLA}`);
+  });
+
+  it('rejects an answer that exceeds the derived umbrella cap', () => {
+    const tooMany = {
+      umbrellas: Array.from({ length: MAX_DAILY_DIGEST_UMBRELLAS + 1 }, (_, i) => ({
+        title: `t${i}`,
+        body: 'b',
+        reason: 'r',
+        memberIds: ['WI-1', 'WI-2', 'WI-3'],
+      })),
+    };
+    expect(() => parseDailyDigestProposals(tooMany, new Set(['WI-1', 'WI-2', 'WI-3']))).toThrow();
   });
 });

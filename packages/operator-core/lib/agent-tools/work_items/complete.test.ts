@@ -1338,6 +1338,19 @@ describe('work_items:complete (keyed-array)', () => {
       ).toBe(false);
     });
 
+    it('documents specAdequacy as a top-level sibling and rejects nesting under completion (EI-21709695952126373)', () => {
+      expect(complete.guidance?.when).toContain('top-level sibling of `completion`');
+      expect(complete.guidance?.when).toContain('never `completion.specAdequacy`');
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed', specAdequacy },
+        }).success,
+      ).toBe(false);
+    });
+
     it('does not consult the gate for a record-only completion', async () => {
       getWorkItem.mockResolvedValue(linkedIssue);
 

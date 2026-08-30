@@ -130,7 +130,29 @@ function runCargoTest(manifestAbs, extraArgs) {
       // Stop at the first artifact that makes the mount admissible: the caps
       // bound how much a sweep may take, but only this budget keeps it from
       // taking more than the refusal actually costs.
-      reclaim = reclaimInactiveCargoArtifacts({ stopWhen: () => readDiskAdmission().allowed });
+      // WI-954677: this sweep only ever runs when admission is ALREADY blocked
+      // — the suite is refusing to spawn at all. At that moment the default
+      // 24h age gate is measuring the wrong cost. `debug` is where `cargo test`
+      // builds, so on any host that runs the suite more than once a day it is
+      // permanently younger than 24h: the sweep reports `reclaimed: 0` and the
+      // suite refuses while tens of GiB of its own output sit one directory
+      // away. That is the exact failure the comment on CARGO_PROFILE_DIR_NAMES
+      // describes; adding `debug` to the candidate set fixed the candidate
+      // half and left the age half, so the refusal kept recurring (WI-41462
+      // closed 2026-08-25, recurred by 2026-08-30 at 95% used / 99 GiB free —
+      // the artifact that unblocked it by hand was 66 MINUTES old).
+      //
+      // Reclaiming here costs a rebuild; refusing costs the whole suite and
+      // red-pins the gate, so a short age gate is correct on this path only.
+      // Safety does NOT rest on the age gate: activeRunMarker (pid +
+      // start_ticks), pathIsLive (open descriptors), the cargo slot lock and
+      // the .papercusp-keep marker each veto reclamation independently, and
+      // `stopWhen` halts at the first artifact that restores admissibility.
+      // heartbeatTtlMs is deliberately NOT lowered — see its policy comment.
+      reclaim = reclaimInactiveCargoArtifacts({
+        policy: { cargoTtlMs: 10 * 60_000 },
+        stopWhen: () => readDiskAdmission().allowed,
+      });
       if (reclaim.reclaimed > 0) diskAdmission = readDiskAdmission();
       if (reclaim.reclaimed > 0) {
         console.warn(

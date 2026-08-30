@@ -262,6 +262,49 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(parseCheckLine(rendered)).toEqual(downgraded[0]);
   });
 
+  it('downgrades a verified row whose evidence disclaims coverage of part of its claim', () => {
+    const claim =
+      'Both changed projects typecheck clean in my files: operator-core and operator-vite';
+    const evidence =
+      'ran before the producers.ts/producers.test.ts edits — those two are NOT covered by this run and want a re-check';
+    const now = Date.parse('2026-08-30T01:00:00.000Z');
+
+    expect(findVerificationConflict(evidence, claim)).toMatch(/NOT covered/i);
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'rerun typecheck for every changed file', verified: evidence }],
+      [],
+      now,
+    );
+
+    expect(row).toMatchObject({
+      claim,
+      recheck: 'rerun typecheck for every changed file',
+      contested: expect.stringContaining('NOT covered'),
+    });
+    expect(row).not.toHaveProperty('verified');
+
+    const rendered = renderCheckLine(row!);
+    expect(rendered).toContain('- ⚠ ');
+    expect(rendered).toContain('NOT covered');
+    expect(parseCheckLine(rendered)).toEqual(row);
+  });
+
+  it('keeps a coverage-limited claim VERIFIED when the disclaimer is the claim itself', () => {
+    const claim = 'producer tests are not covered by the prior run and need a re-check';
+    const evidence = 'producer tests are NOT covered by the prior run and want a re-check';
+
+    expect(findVerificationConflict(evidence, claim)).toBeNull();
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'run the producer tests', verified: evidence }],
+      [],
+      Date.parse('2026-08-30T01:00:00.000Z'),
+    );
+
+    expect(row).toMatchObject({ claim, verified: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('contested');
+    expect(renderCheckLine(row!)).toContain('- ✓ ');
+  });
+
   it('keeps running evidence VERIFIED when it supports a queued/running claim', () => {
     const claim = 'fresh typechecks remain queued';
     const evidence = "both sessions were 'still running and queued at ~180s'";

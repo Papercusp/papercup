@@ -131,6 +131,46 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     expect(mismatched.divergences).toHaveLength(1);
   });
 
+  it('does not treat a fleet mission as an undeclarable competing goal', () => {
+    const out = detectIntentActionDivergence([
+      call({
+        id: 1,
+        intentEventId: 100,
+        goalRef: 'fleet:capless-inference-gateway-ship-2026-08-28',
+      }),
+      call({
+        id: 2,
+        intentEventId: 100,
+        goalRef: 'WI-474673',
+        declaredGoalRefs: ['WI-474673'],
+      }),
+    ]);
+
+    expect(out.divergences).toHaveLength(0);
+    expect(out.coverage.comparableBuckets).toBe(0);
+    expect(out.coverage.goalStampedCalls).toBe(2);
+  });
+
+  it('still detects divergence between two item-level goals in a fleet', () => {
+    const out = detectIntentActionDivergence([
+      call({
+        id: 1,
+        intentEventId: 100,
+        goalRef: 'fleet:capless-inference-gateway-ship-2026-08-28',
+      }),
+      call({ id: 2, intentEventId: 100, goalRef: 'WI-1' }),
+      call({ id: 3, intentEventId: 100, goalRef: 'WI-2' }),
+    ]);
+
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0]).toMatchObject({
+      kind: 'goal-drift-within-intent',
+      a: { goalRef: 'WI-1' },
+      b: { goalRef: 'WI-2' },
+    });
+    expect(out.coverage.comparableBuckets).toBe(1);
+  });
+
   it('reports THREE goals as two findings against the first, not n squared', () => {
     const out = detectIntentActionDivergence([
       call({ id: 1, intentEventId: 100, goalRef: 'WI-1' }),

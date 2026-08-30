@@ -127,6 +127,25 @@ export function cargoDiskPolicyFromEnv(env = process.env) {
 export const DEFAULT_CARGO_RECLAIM_POLICY = Object.freeze({
   ephemeralTtlMs: 6 * 3_600_000,
   cargoTtlMs: 24 * 3_600_000,
+  /**
+   * How recent a `.heartbeat` must be for a producer to count as still live.
+   *
+   * WI-954677: this used to be the SAME value as `cargoTtlMs`, which silently
+   * coupled two unrelated questions — "is this artifact stale enough to be
+   * worth reclaiming?" and "is someone still writing to it?". That coupling is
+   * why the age gate could not be lowered: shortening `cargoTtlMs` to reach a
+   * genuinely stale artifact also shortened the window in which a live build
+   * was recognised, so the safe-looking one-line change quietly weakened the
+   * liveness check. Keep them separate. Lowering the age gate is a policy
+   * choice about cost; lowering this is a correctness regression.
+   *
+   * Liveness does not actually depend on this value: `activeRunMarker`
+   * (pid + start_ticks, immune to PID reuse), `pathIsLive` (open descriptors)
+   * and the cargo slot lock all gate reclamation independently. The heartbeat
+   * is the weakest of the four, which is exactly why it should not be the one
+   * carrying the age policy on its back.
+   */
+  heartbeatTtlMs: 24 * 3_600_000,
   maxEntries: 12,
   maxBytes: 128 * GIB,
   minCargoArtifactBytes: 512 * 1024 * 1024,
@@ -356,13 +375,15 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
     result.reclaimed += 1;
     result.bytesReclaimed += bytes;
   };
-  const canReclaim = (path, ttlMs) => {
+  // `heartbeatTtlMs` defaults to `ttlMs` so the ephemeral call site below is
+  // byte-for-byte unchanged; only the cargo path passes them separately.
+  const canReclaim = (path, ttlMs, heartbeatTtlMs = ttlMs) => {
     const stat = safeStat(path);
     if (!stat || !stat.isDirectory()) return { ok: false, reason: 'missing or not a directory' };
     result.scanned += 1;
     if (now - stat.mtimeMs < ttlMs) return { ok: false, reason: 'younger than ttl' };
     if (activeRunMarker(path)) return { ok: false, reason: 'active run marker' };
-    if (freshHeartbeat(path, now, ttlMs)) return { ok: false, reason: 'fresh heartbeat' };
+    if (freshHeartbeat(path, now, heartbeatTtlMs)) return { ok: false, reason: 'fresh heartbeat' };
     if (pathIsLive(path)) return { ok: false, reason: 'live descriptor or executable' };
     if (existsSync(join(path, '.papercusp-keep'))) return { ok: false, reason: 'explicit keep marker' };
     return { ok: true };
@@ -420,7 +441,7 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
       continue;
     }
     for (const path of cargoArtifactCandidates(root)) {
-      const decision = canReclaim(path, policy.cargoTtlMs);
+      const decision = canReclaim(path, policy.cargoTtlMs, policy.heartbeatTtlMs);
       if (!decision.ok) {
         result.skipped.push({ path, reason: decision.reason });
         continue;

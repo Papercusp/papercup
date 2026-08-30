@@ -713,6 +713,10 @@ describe('release:checkpoint-run', () => {
   // that recommendation is exactly what induced the 2026-07-13 fleet replace-storm (four sus
   // serially killing each other's runs; no verdict for 2h). Young-stale is NORMAL, not wedged.
   it('a YOUNG stale run gets a wait-for-verdict note, never a replaceStale recommendation (EI-11667)', async () => {
+    // Capture the fixture clock before the dynamic import/handler work. Under a queued heavy
+    // lane that work can exceed a minute, so comparing the fixture's progress_at against a
+    // later Date.now() turns this healthy freshness assertion into a load-sensitive flake.
+    const fixtureNow = Date.now();
     const launchSpy = vi.fn(async () => ({
       launched: false,
       unit: 'papercup-green-checkpoint-manual-1fxzuva',
@@ -727,9 +731,9 @@ describe('release:checkpoint-run', () => {
         current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
         candidate_stale: true,
         quiet_cut_sec: 240,
-        started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        started_at: new Date(fixtureNow - 5 * 60_000).toISOString(),
         elapsed_sec: 300, // 5 min — a healthy in-progress run on a busy tree
-        progress_at: new Date(Date.now() - 5_000).toISOString(),
+        progress_at: new Date(fixtureNow - 5_000).toISOString(),
         current_phase: 'suite',
         eta_sec: 10500,
         eta_basis: 'full-suite',
@@ -753,7 +757,7 @@ describe('release:checkpoint-run', () => {
       current_phase: 'suite',
       eta_basis: 'full-suite',
     });
-    expect(Date.parse(String(b.progress_at))).toBeGreaterThan(Date.now() - 60_000);
+    expect(Date.parse(String(b.progress_at))).toBeGreaterThan(fixtureNow - 60_000);
     expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
     expect(String(b.note)).toMatch(/Do NOT replace/i);
     expect(String(b.note)).toMatch(/current_phase \+ progress_at/);
@@ -1771,6 +1775,18 @@ describe('release-fixer.md prompt banners stay in sync with this file', () => {
     // The retired banner this class was filed over must not have crept back in — a
     // literal reappearance here means someone quoted the OLD wording again.
     expect(prompt).not.toMatch(/⚠ quiet-cut EXCLUDED/);
+  });
+
+  it('requires the release-fixer to use an exact run-bound log, never global mtime selection', () => {
+    const prompt = readFileSync(PROMPT_PATH, 'utf8');
+
+    // EI-218328: concurrent harness checkpoint runs share the log directory. The old
+    // "newest log" instruction could hand a fixer another harness's failure, even though
+    // the dispatch already knew the producing run's candidate, runId, and logPath.
+    expect(prompt).toMatch(/exact `logPath` supplied in the\s+release-fixer context/);
+    expect(prompt).toMatch(/supplied `runId`, candidate SHA, and integration\s+root/);
+    expect(prompt).toMatch(/Never choose a log by\s+global mtime or by "newest" alone/);
+    expect(prompt).not.toContain('Read the newest `~/.papercusp/checkpoint-logs/*.log`');
   });
 });
 

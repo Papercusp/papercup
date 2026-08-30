@@ -72,6 +72,8 @@ vi.mock('./workspace-registry', async () => {
 
 const rr = await import('./work-items-release-request');
 const workItems = await import('./work-items');
+const { Governor } = await import('./resource-governor/admission');
+const { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } = await import('./resource-governor/queue');
 const { registerAwait } = await import('./events/await/store');
 
 const H = 'papercup';
@@ -543,6 +545,85 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('EI-21663360969291342 — generic release cannot mutate governor receipts', () => {
+  it('refuses a running receipt without changing the outer claim or emitting release events', async () => {
+    const nowMs = 10_000;
+    const owner = 'su-681b5b32';
+    const store = new PgWorkItemAdmissionQueueStore({ sql: db.sql, workspaceId: WS });
+    const driver = new WorkItemAdmissionQueueDriver(store, {
+      namespace: 'ei-216633-repro',
+      now: () => nowMs,
+      leaseIdFactory: () => 'lease-ei-216633',
+    });
+    const governor = new Governor(driver, {
+      now: () => nowMs,
+      idFactory: () => 'request-ei-216633',
+    });
+
+    const admitted = await governor.admit({
+      idempotencyKey: 'protected-running',
+      admissionClass: 'process',
+    });
+    if (admitted.kind !== 'queued') throw new Error(`expected queued receipt, got ${admitted.kind}`);
+    const claim = await driver.leaseNext({ owner, ttlMs: 5_000 });
+    if (!claim) throw new Error('expected a durable governor lease');
+    const running = await driver.markRunning(claim.receiptId, claim.lease.leaseId);
+    expect(running).toMatchObject({ changed: true, record: { state: 'running' } });
+
+    const before = await db.sql<
+      Array<{
+        status: string | null;
+        taken_by: string | null;
+        governor: Record<string, unknown>;
+        claim_hold: string | null;
+        claim_hold_by: string | null;
+      }>
+    >`
+      SELECT status, taken_by, payload->'resource_governor' AS governor,
+             payload->>'_claimHold' AS claim_hold,
+             payload->>'claim_hold_by' AS claim_hold_by
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${claim.receiptId}`;
+    expect(before[0]).toMatchObject({
+      status: 'wip',
+      taken_by: owner,
+      governor: { state: 'running', lease: { owner, leaseId: claim.lease.leaseId } },
+      claim_hold: 'true',
+      claim_hold_by: 'system:resource-governor',
+    });
+
+    await expect(
+      workItems.releaseWorkItem(claim.receiptId, { harness: H, expectedAssignee: owner }),
+    ).rejects.toMatchObject({
+      code: 'RESOURCE_GOVERNOR_RELEASE_REQUIRED',
+      receiptId: claim.receiptId,
+    });
+
+    const after = await db.sql<
+      Array<{
+        status: string | null;
+        taken_by: string | null;
+        governor: Record<string, unknown>;
+        claim_hold: string | null;
+        claim_hold_by: string | null;
+      }>
+    >`
+      SELECT status, taken_by, payload->'resource_governor' AS governor,
+             payload->>'_claimHold' AS claim_hold,
+             payload->>'claim_hold_by' AS claim_hold_by
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${claim.receiptId}`;
+    expect(after).toEqual(before);
+
+    const eventRows = await db.sql<Array<{ event_key: string }>>`
+      SELECT event_key
+        FROM harness_shared.event_key_fires
+       WHERE workspace_id = ${WS}
+       ORDER BY event_key`;
+    expect(eventRows).toEqual([]);
   });
 });
 

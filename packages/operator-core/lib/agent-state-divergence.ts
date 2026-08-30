@@ -443,6 +443,22 @@ function normalizeIntentGoal(c: DivergenceCall): DivergenceCall {
   return explicit && explicit !== c.goalRef ? { ...c, goalRef: explicit } : c;
 }
 
+/**
+ * Fleet membership is a mission CONTAINER, not an item-level goal.
+ *
+ * `agent-goal-ref.ts` deliberately filters the same `fleet:<slug>` ref out of
+ * `ResolvedGoal.competing`: every ordinary fleet member has both a mission and
+ * the work it was sent to do. The retrospective stamp can still carry the
+ * mission when no more-specific claim is known, so the divergence leg must
+ * apply that same granularity rule before comparing goals. Otherwise a normal
+ * fleet transition from `fleet:<slug>` to `WI-/EI-…` looks like an undeclarable
+ * multi-goal drift: `declared_goal_refs` intentionally accepts work-item refs
+ * only, so no valid re-declaration could clear the finding.
+ */
+function isFleetMissionRef(ref: string): boolean {
+  return ref.startsWith('fleet:');
+}
+
 function timeOf(c: DivergenceCall): number {
   const t = Date.parse(c.invokedAt);
   return Number.isFinite(t) ? t : 0;
@@ -584,7 +600,12 @@ export function detectIntentActionDivergence(
   for (const bucket of buckets.values()) {
     const allWithGoal = bucket
       .map(normalizeIntentGoal)
-      .filter((c) => c.goalRef != null && c.goalRef !== '');
+      .filter(
+        (c) =>
+          c.goalRef != null &&
+          c.goalRef !== '' &&
+          !isFleetMissionRef(c.goalRef),
+      );
 
     // Drop calls whose goal is already finished. A drift BETWEEN two closed goals
     // is unactionable by construction: there is no re-declaration the recipient

@@ -579,3 +579,107 @@ describe('native-suite admission reclaim reaches its own producer output (P-001)
     expect(REPORTER_SOURCE).toContain('stopWhen: () => readDiskAdmission().allowed');
   });
 });
+
+describe('admission reclaim age gate is decoupled from producer liveness (WI-954677)', () => {
+  // The measured recurrence: WI-41462 was closed 2026-08-25 for this refusal and
+  // it was back by 2026-08-30 (95% used, 99 GiB free). The artifact that cleared
+  // it by hand — ~/.cargo-target/debug, 26 GiB — was 66 MINUTES old, so the 24h
+  // age gate made the single largest reclaimable candidate permanently
+  // ineligible on any host that runs `cargo test` more than once a day.
+  const SIXTY_SIX_MINUTES = 66 * 60_000;
+
+  function seedAgedProfile(target: string, profile: string, ageMs: number) {
+    const dir = resolve(target, profile);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, 'artifact'), 'x');
+    const old = (Date.now() - ageMs) / 1000;
+    utimesSync(dir, old, old);
+    return dir;
+  }
+
+  function ageDir(path: string, ageMs: number) {
+    const old = (Date.now() - ageMs) / 1000;
+    utimesSync(path, old, old);
+  }
+
+  function sweep(target: string, root: string, policy: Record<string, number>) {
+    return reclaimInactiveCargoArtifacts({
+      tmpDir: root,
+      cargoRoots: [target],
+      now: Date.now(),
+      policy: { ...DEFAULT_CARGO_RECLAIM_POLICY, minCargoArtifactBytes: 0, ...policy },
+      pathIsLive: () => false,
+      slotLockIsHeld: () => false,
+    });
+  }
+
+  it('reclaims a 66-minute-old debug profile under the blocked-admission age gate, and provably would NOT under the old 24h one', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-agegate-'));
+    try {
+      const target = resolve(root, '.cargo-target');
+      const debug = seedAgedProfile(target, 'debug', SIXTY_SIX_MINUTES);
+      ageDir(target, SIXTY_SIX_MINUTES);
+
+      // CONTROL FIRST — the old policy must FAIL to reclaim it. Without this the
+      // assertion below would pass just as well against a broken sweep that
+      // deletes everything, and would prove nothing about the age gate.
+      const underOldTtl = sweep(target, root, { cargoTtlMs: 24 * 3_600_000 });
+      expect(existsSync(debug)).toBe(true);
+      expect(underOldTtl.reclaimed).toBe(0);
+      expect(underOldTtl.skipped.some((s) => s.reason === 'younger than ttl')).toBe(true);
+
+      // THE FIX: the admission path's short age gate reaches the same artifact.
+      const underAdmissionTtl = sweep(target, root, { cargoTtlMs: 10 * 60_000 });
+      expect(existsSync(debug)).toBe(false);
+      expect(underAdmissionTtl.reclaimed).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT let a short age gate shrink the live-producer heartbeat window', () => {
+    // This is the regression the obvious one-line fix introduces. `canReclaim`
+    // used ONE ttl for both "old enough to reclaim" and "heartbeat still fresh",
+    // so lowering the age gate to reach a stale artifact also narrowed the
+    // window in which a running build is recognised as alive. A heartbeat 30
+    // minutes old is live under the 24h heartbeat window but would read as
+    // abandoned under a 10-minute one — so if anyone re-couples the two values,
+    // this test deletes a live build's target and fails.
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-heartbeat-'));
+    try {
+      const target = resolve(root, '.cargo-target');
+      const debug = seedAgedProfile(target, 'debug', SIXTY_SIX_MINUTES);
+      ageDir(target, SIXTY_SIX_MINUTES);
+
+      const beat = resolve(debug, '.heartbeat');
+      writeFileSync(beat, 'alive');
+      ageDir(beat, 30 * 60_000);
+      // Re-age the DIRECTORY last: writing .heartbeat into it just bumped its
+      // mtime to now, which would park the sweep on 'younger than ttl' and let
+      // this test pass without ever reaching the heartbeat check it exists to
+      // pin. (Observed: it did exactly that on the first run.)
+      ageDir(debug, SIXTY_SIX_MINUTES);
+
+      const result = sweep(target, root, {
+        cargoTtlMs: 10 * 60_000,
+        heartbeatTtlMs: 24 * 3_600_000,
+      });
+
+      expect(existsSync(debug)).toBe(true);
+      expect(result.reclaimed).toBe(0);
+      expect(result.skipped.some((s) => s.reason === 'fresh heartbeat')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the reporter reclaiming on the blocked path with an age gate well under a day', () => {
+    // Pins the call site itself: the sweep is reached only when admission is
+    // already blocked, and it must not inherit the 24h default there. The two
+    // defaults stay put — this fix is about the admission path's override, not
+    // about weakening the periodic janitor.
+    expect(REPORTER_SOURCE).toContain('policy: { cargoTtlMs: 10 * 60_000 }');
+    expect(DEFAULT_CARGO_RECLAIM_POLICY.heartbeatTtlMs).toBe(24 * 3_600_000);
+    expect(DEFAULT_CARGO_RECLAIM_POLICY.cargoTtlMs).toBe(24 * 3_600_000);
+  });
+});

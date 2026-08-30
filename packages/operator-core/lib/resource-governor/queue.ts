@@ -216,6 +216,36 @@ function recordFromPayload(payload: unknown): DurableAdmissionRecord | null {
   return raw as unknown as DurableAdmissionRecord;
 }
 
+/**
+ * Whether a work-item payload belongs to the durable resource-governor queue.
+ *
+ * Generic work-item mutations must not treat these rows as ordinary issue-family
+ * work: the outer status/assignee is a projection of the nested receipt state and
+ * lease, while `_claimHold` keeps the row out of generic self-selection. The
+ * reserved payload key is the protection boundary (rather than only the hold
+ * provenance), so even a partially-corrupted receipt remains outside generic
+ * work-item mutations.
+ */
+export function hasResourceGovernorReceiptPayload(payload: unknown): boolean {
+  const outer = jsonObject(payload);
+  return outer !== null && Object.prototype.hasOwnProperty.call(outer, RESOURCE_GOVERNOR_PAYLOAD_KEY);
+}
+
+/** Raised when an ordinary work-item release would bypass governor state transitions. */
+export class ResourceGovernorReleaseRequiredError extends Error {
+  readonly code = 'RESOURCE_GOVERNOR_RELEASE_REQUIRED';
+  readonly receiptId: string;
+
+  constructor(receiptId: string) {
+    super(
+      `work-item '${receiptId}' is a protected resource-governor receipt; ` +
+        'release it through the resource-governor admission context instead of generic work_items:release',
+    );
+    this.name = 'ResourceGovernorReleaseRequiredError';
+    this.receiptId = receiptId;
+  }
+}
+
 function storedFromRow(row: QueueDbRow): StoredAdmissionRecord {
   const record = recordFromPayload(row.payload);
   if (!record) {

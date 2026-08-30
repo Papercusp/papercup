@@ -174,12 +174,29 @@ export interface GreenCheckpointStallRecoveryMarker {
   notifiedAt: number | null;
 }
 
+/**
+ * Exact evidence for the checkpoint run that produced a gate-stall row.
+ *
+ * This is deliberately a structural mirror of release-actions.ts's
+ * `CheckpointEvidence`: the watchdog cannot import the routine module without pulling in
+ * its registration side effects. Null fields mean the historical row predates this
+ * evidence, not that a different log may be selected. Missing fields remain
+ * missing so a consumer can distinguish legacy evidence from a measured value.
+ */
+export interface CheckpointEvidence {
+  logPath?: string;
+  runId?: string;
+  integrationRoot?: string;
+}
+
 export interface GreenCheckpointStallEscalation {
   /** The original JSON object, preserved so recovery markers never discard evidence. */
   raw: Record<string, unknown>;
   installSlug: string | null;
   candidate: string | null;
   failingTests: string[];
+  /** Exact producing-run identity, when the row was written by an evidence-aware producer. */
+  checkpointEvidence: CheckpointEvidence | null;
   ownershipCovered: boolean | null;
   recovery: GreenCheckpointStallRecoveryMarker;
 }
@@ -206,6 +223,12 @@ const parseTimestamp = (value: unknown): number | null => {
 
 const displayTimestamp = (value: number | null): string =>
   value != null && Number.isFinite(value) ? new Date(value).toISOString() : '(unknown)';
+
+const boundedText = (value: unknown, max: number): string | null => {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text ? text.slice(0, max) : null;
+};
 
 const displayPauseText = (value: string | null, fallback: string): string => {
   const text = value?.trim();
@@ -417,6 +440,17 @@ export function parseGreenCheckpointStallEscalation(raw: unknown): GreenCheckpoi
         .map((test) => test.trim())
         .slice(0, 20)
     : [];
+  const evidenceRecord = asRecord(record.checkpointEvidence);
+  const logPath = boundedText(evidenceRecord?.logPath, 1000);
+  const runId = boundedText(evidenceRecord?.runId, 128);
+  const integrationRoot = boundedText(evidenceRecord?.integrationRoot, 1000);
+  const checkpointEvidence = evidenceRecord
+    ? {
+        ...(logPath ? { logPath } : {}),
+        ...(runId ? { runId } : {}),
+        ...(integrationRoot ? { integrationRoot } : {}),
+      }
+    : null;
   const ownership = asRecord(record.ownership);
   const recoveryRecord = asRecord(record.recovery);
 
@@ -425,6 +459,7 @@ export function parseGreenCheckpointStallEscalation(raw: unknown): GreenCheckpoi
     installSlug: typeof record.harness_slug === 'string' && record.harness_slug.trim() ? record.harness_slug.trim() : null,
     candidate,
     failingTests,
+    checkpointEvidence,
     ownershipCovered: typeof ownership?.covered === 'boolean' ? ownership.covered : null,
     recovery: {
       attempts: finiteNonNegativeInt(recoveryRecord?.attempts, 0),
@@ -1273,6 +1308,7 @@ async function notifyGreenCheckpointStallRecovery(opts: {
   workspaceId: string;
   candidate: string;
   failingTests: readonly string[];
+  checkpointEvidence: CheckpointEvidence | null;
   attempts: number;
   reason: 'no-progress' | 'max-attempts';
 }): Promise<void> {
@@ -1282,6 +1318,9 @@ async function notifyGreenCheckpointStallRecovery(opts: {
     `(candidate ${opts.candidate.slice(0, 12)}; recovery attempts: ${opts.attempts}). ` +
     `${opts.reason === 'max-attempts' ? 'The bounded release-fixer retry budget is exhausted.' : 'A release-fixer dispatch made no progress.'} ` +
     `Named failing test(s): ${opts.failingTests.slice(0, 5).join(', ')}. ` +
+    (opts.checkpointEvidence?.logPath
+      ? `Exact checkpoint log: ${opts.checkpointEvidence.logPath}. `
+      : '') +
     `Inspect the gate row and release-fixer liveness before taking further action.`;
   const fleetSlug = (process.env.PAPERCUSP_FLEET_SLUG ?? '').trim();
   const route = fleetSlug
@@ -1303,6 +1342,7 @@ async function notifyGreenCheckpointStallRecovery(opts: {
         installSlug: opts.installSlug,
         candidate: opts.candidate.slice(0, 12),
         failingTests: opts.failingTests.slice(0, 20),
+        ...(opts.checkpointEvidence ? { checkpointEvidence: opts.checkpointEvidence } : {}),
         attempts: opts.attempts,
         reason: opts.reason,
       },
@@ -1406,6 +1446,7 @@ async function recoverStaleGreenCheckpointStalls(
           workspaceId: row.workspace_id,
           candidate: parsed.candidate,
           failingTests: parsed.failingTests,
+          checkpointEvidence: parsed.checkpointEvidence,
           attempts: parsed.recovery.attempts,
           reason: 'max-attempts',
         });
@@ -1421,6 +1462,7 @@ async function recoverStaleGreenCheckpointStalls(
           { installSlug: row.harness_slug, workspaceId: row.workspace_id },
           parsed.candidate!,
           parsed.failingTests,
+          parsed.checkpointEvidence ?? undefined,
         )) != null;
     } catch (e) {
       console.warn(`[green-stall-watchdog] recovery dispatch failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
@@ -1445,6 +1487,7 @@ async function recoverStaleGreenCheckpointStalls(
         workspaceId: row.workspace_id,
         candidate: parsed.candidate,
         failingTests: parsed.failingTests,
+        checkpointEvidence: parsed.checkpointEvidence,
         attempts: decision.nextAttempt,
         reason: 'no-progress',
       });
