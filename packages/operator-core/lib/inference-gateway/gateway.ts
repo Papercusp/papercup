@@ -68,6 +68,7 @@ import {
 import {
   executeGatewayRequestKernel,
   GatewayRequestKernelError,
+  withPromiseDeadline,
   type GatewayKernelAttemptContext,
   type GatewayKernelContext,
 } from './request-kernel';
@@ -1496,26 +1497,6 @@ export function parseUnified7dWindow(h: Record<string, string | undefined>): {
   const r = h['anthropic-ratelimit-unified-7d-reset'];
   if (r && /^\d+$/.test(r)) out.windowResetAt7d = Number(r) * 1000;
   return out;
-}
-
-/** Reject if `p` doesn't settle within `ms` — bounds an otherwise deadline-less await (the OAuth token
- *  refresh, which has no timeout of its own and runs before the upstream stall-guard). The timer is
- *  unref'd so it never keeps the event loop alive, and is cleared the moment `p` settles. */
-function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    t.unref?.();
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
-    );
-  });
 }
 
 function headersToObject(h: Headers): Record<string, string | undefined> {
@@ -5363,7 +5344,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     } else {
       stageSpan?.beginStage('bodyRead');
       try {
-        bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
+        bodyBuf = await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
       } catch {
         try {
           req.destroy();
@@ -5724,7 +5705,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
     try {
-      bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
+      bodyBuf = await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
     } catch {
       try {
         req.destroy();
