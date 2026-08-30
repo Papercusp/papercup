@@ -5,6 +5,7 @@
  * is not exercised — committed:false.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promisify } from 'node:util';
 
 const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
   ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides } as never);
@@ -84,6 +85,143 @@ describe('git-sync:run', () => {
     expect(fireSpy).toHaveBeenCalledTimes(1);
     expect(fireSpy).toHaveBeenCalledWith('papercusp', 'default', null);
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
+  });
+
+  it('returns a read-only preview for a registered repository without firing git-sync', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    const execFileMock = vi.fn(
+      (_file: string, args: string[], _opts: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'rev-parse') {
+          cb(null, 'abc123\n', '');
+          return;
+        }
+        cb(null, ' M packages/example.ts\0?? scratch.txt\0', '');
+      },
+    );
+    // Node's real child_process.execFile has a bespoke promisify implementation
+    // that resolves to { stdout, stderr }. Keep this callback mock observable
+    // while exposing the same promisified contract used by run.ts.
+    Object.defineProperty(execFileMock, promisify.custom, {
+      value: (_file: string, args: string[], opts: Record<string, unknown>) =>
+        new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execFileMock(_file, args, opts, (error: unknown, stdout: string, stderr: string) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve({ stdout, stderr });
+          });
+        }),
+    });
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => '/repo' }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({ installSlug: 'papercusp', dryRun: true }, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: false,
+      dry_run: true,
+      slug: 'papercusp',
+      status: 'preview',
+      preview: {
+        repo_path: '/repo',
+        head_sha: 'abc123',
+        dirty: true,
+        dirty_paths: ['packages/example.ts', 'scratch.txt'],
+        dirty_paths_truncated: false,
+        error: null,
+      },
+    });
+    expect(fireSpy).not.toHaveBeenCalled();
+    expect(execFileMock.mock.calls.map((call) => call[1])).toEqual([
+      ['rev-parse', 'HEAD'],
+      ['status', '--porcelain=v1', '-z', '-uall'],
+    ]);
+  });
+
+  it('returns an honest no-repository preview without spawning git or firing git-sync', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    const execFileMock = vi.fn();
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'operator-home' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({ harness: 'repo-less', dryRun: true }, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: false,
+      dry_run: true,
+      slug: 'repo-less',
+      status: 'preview',
+      preview: {
+        repo_path: null,
+        head_sha: null,
+        dirty: null,
+        dirty_paths: null,
+        dirty_paths_truncated: false,
+        error: 'No repository path is registered for install "repo-less".',
+      },
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(fireSpy).not.toHaveBeenCalled();
+  });
+
+  it('surfaces repository inspection failures as unknown dirtiness instead of claiming clean', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    const execFileMock = vi.fn(
+      (_file: string, args: string[], _opts: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'rev-parse') {
+          cb(null, 'abc123\n', '');
+          return;
+        }
+        cb(new Error('git status failed'));
+      },
+    );
+    Object.defineProperty(execFileMock, promisify.custom, {
+      value: (_file: string, args: string[], opts: Record<string, unknown>) =>
+        new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execFileMock(_file, args, opts, (error: unknown, stdout: string, stderr: string) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve({ stdout, stderr });
+          });
+        }),
+    });
+    vi.doMock('node:child_process', () => ({ execFile: execFileMock }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => '/repo' }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({ installSlug: 'papercusp', dryRun: true }, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: false,
+      dry_run: true,
+      status: 'preview',
+      preview: {
+        repo_path: '/repo',
+        head_sha: 'abc123',
+        dirty: null,
+        dirty_paths: null,
+        dirty_paths_truncated: false,
+        error: 'git status failed',
+      },
+    });
+    expect(fireSpy).not.toHaveBeenCalled();
   });
 
   it('returns the shared synced outcome instead of inferring success from a HEAD delta', async () => {
