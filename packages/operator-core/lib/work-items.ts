@@ -5688,11 +5688,27 @@ export function observationLaneExclusionSql(
   // closed literal union: the value is trusted SQL structure, never user input.
   payloadCol: 'wi.payload' | 'payload' | 'ei.payload' = 'wi.payload',
 ) {
-  // `lane` is stored in the work-item payload; the old generated-column reference
-  // (`wi.lane`) was removed from the base table and made work_items:claimable fail
-  // with `column wi.lane does not exist` (EI-21580597231511770). Keep the same
-  // NULL-safe semantics: absent/null payload or lane means the row is included.
-  return sql`COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'`;
+  // WI-524804: read the STORED generated column, NOT `payload ->> 'lane'`. Migration 721
+  // (WI-6934) added `lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED` expressly so
+  // this floor filters without a per-row JSONB detoast, and this floor is evaluated over the
+  // ENTIRE candidate population — the largest single population any floor touches.
+  //
+  // This was reverted to the payload form on a MISDIAGNOSIS. EI-21580597231511770 saw
+  // "column wi.lane does not exist" and concluded the column had been dropped. It had not:
+  // information_schema still reports lane text, is_generated=ALWAYS, generation_expression
+  // (payload ->> 'lane') on harness_shared.work_items, and harness_shared.engineer_issues
+  // exposes lane too (both re-verified 2026-08-30). The real cause was that
+  // issueClaimCandidateSubquery's claimability-snapshot projection did not project the
+  // column, so on the filterPushdown path — the only path that repro reached, via a spec —
+  // the outer FROM-source is a CTE that genuinely lacks it. Fixed at the projection.
+  //
+  // Alias-aware by construction: every caller evaluates this against a relation that HAS the
+  // column (work_items base, the now-corrected snapshot CTE, or engineer_issues), so the lane
+  // column tracks whatever alias the caller's payload column names. Semantics are unchanged
+  // and still NULL-safe — the column is NULL exactly when payload ->> 'lane' would be, and
+  // IS DISTINCT FROM keeps a NULL lane INCLUDED.
+  const laneCol = payloadCol === 'payload' ? 'lane' : `${payloadCol.split('.')[0]}.lane`;
+  return sql`${sql.unsafe(laneCol)} IS DISTINCT FROM 'observation'`;
 }
 
 /**
