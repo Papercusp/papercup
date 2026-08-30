@@ -210,7 +210,34 @@ export function buildDesktopSandboxCommand(
   // tier that needs them — and only that tier, so a software desktop gets no GPU handle.
   if (input.glTier === 'hardware') argv.push('--dev-bind-try', '/dev/dri', '/dev/dri');
 
-  argv.push('--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup-try');
+  // ⛔ `--unshare-ipc` IS DELIBERATELY ABSENT — do not add it back (WI-1105361).
+  //
+  // A desktop app is an X client of an Xvfb that lives OUTSIDE this sandbox. MIT-SHM — the
+  // extension every serious X client uses to hand the server a frame — works by the client
+  // creating a SysV shared segment and the server attaching to it BY ID. A private IPC
+  // namespace makes that id unresolvable from the server's side, so the attach fails and the
+  // next `XShmPutImage` is a BadValue against a segment the server never attached. X kills
+  // the client for it.
+  //
+  // MEASURED 2026-08-30, three arms against one Xvfb, ten runs each, one variable:
+  //     no bwrap                     0/10 died
+  //     bwrap, IPC shared            0/10 died
+  //     bwrap --unshare-ipc          9/10 died  (X Error, MIT-SHM, X_ShmPutImage, exit 139)
+  // It presented as a flaky "the GL app paints nothing" in desktop-gl-live for two
+  // investigation cycles, because apps were spawned `stdio:'ignore'` and a killed app and a
+  // non-painting one look identical from the framebuffer. VirtualGL is simply where it
+  // surfaced first: it does not install the X error handler that GTK/WebKitGTK use to fall
+  // back, so it dies where they merely degrade. The exposure was never GL-specific.
+  //
+  // WHY DROPPING IT COSTS ALMOST NOTHING HERE. This app already holds an authenticated
+  // connection to a shared X server, through a socket bound in below. Anything an attacker
+  // would want from the IPC namespace — reading another client's pixels, injecting input —
+  // is reachable through that connection, which we cannot take away without taking away the
+  // desktop. `--unshare-ipc` was buying isolation the X socket had already spent, at the
+  // price of breaking the one thing a desktop exists to do. The confinement that does the
+  // real work here is the read-only root, the private /tmp and HOME, the credential masks,
+  // and (opt-in) `--unshare-net` — all still in force.
+  argv.push('--unshare-pid', '--unshare-uts', '--unshare-cgroup-try');
   if (opts.denyNetwork) argv.push('--unshare-net');
 
   // Credential masking via the SHARED emitter, so the file-vs-dir distinction, the

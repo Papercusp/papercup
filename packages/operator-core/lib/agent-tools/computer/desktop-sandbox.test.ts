@@ -169,6 +169,31 @@ describe('buildDesktopSandboxCommand — network isolation is OPT-IN (D-015 §3)
   });
 });
 
+describe('buildDesktopSandboxCommand — IPC stays SHARED (WI-1105361)', () => {
+  it('never unshares the IPC namespace, because MIT-SHM would stop working', () => {
+    // A desktop app is an X client of an Xvfb OUTSIDE this sandbox. MIT-SHM works by the
+    // client creating a SysV segment and the server attaching to it BY ID, so a private IPC
+    // namespace makes that id unresolvable and the next XShmPutImage is a BadValue that X
+    // kills the client for. Measured 9/10 deaths with the flag vs 0/10 without.
+    //
+    // This assertion is the guard: re-adding `--unshare-ipc` reads like tightening
+    // isolation, and its damage shows up somewhere else entirely — as a flaky "the GL app
+    // painted nothing" in desktop-gl-live, hours later and in another package.
+    expect(build().argv).not.toContain('--unshare-ipc');
+    expect(build({ glTier: 'hardware' }).argv).not.toContain('--unshare-ipc');
+    expect(build({}, { denyNetwork: true }).argv).not.toContain('--unshare-ipc');
+  });
+
+  it('still unshares the namespaces that cost the app nothing', () => {
+    // Dropping IPC is a targeted concession, not a retreat from confinement — if these
+    // went too, the test above would be passing for the wrong reason.
+    const argv = build().argv;
+    expect(argv).toContain('--unshare-pid');
+    expect(argv).toContain('--unshare-uts');
+    expect(argv).toContain('--unshare-cgroup-try');
+  });
+});
+
 describe('buildDesktopSandboxCommand — GL', () => {
   it('binds /dev/dri for a hardware desktop, so --dev /dev cannot silently undo P-002', () => {
     const argv = build({ glTier: 'hardware' }).argv;
