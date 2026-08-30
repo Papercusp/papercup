@@ -504,8 +504,16 @@ function cargoResultNames(output: string): { name: string; outcome: 'ok' | 'FAIL
 }
 
 function killCargoTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) {
+    try {
+      child.kill(signal);
+    } catch {
+      /* the process already exited */
+    }
+    return;
+  }
   try {
-    if (child.pid) process.kill(-child.pid, signal);
+    process.kill(-child.pid, signal);
   } catch {
     try {
       child.kill(signal);
@@ -579,7 +587,10 @@ export function runCargoCriterionCheck(opts: {
       if (child) killCargoTree(child, signal);
     };
     const scheduleEscalation = (): void => {
-      if (escalation || settled || !child) return;
+      // A timeout can settle the caller's promise before managedSpawn finishes
+      // its admission/ledger handshake. A late child still needs the same
+      // SIGKILL backstop even though the result is already settled.
+      if (escalation || !child) return;
       escalation = setTimeout(() => kill('SIGKILL'), 15_000);
       escalation.unref();
     };
@@ -593,7 +604,11 @@ export function runCargoCriterionCheck(opts: {
       scheduleEscalation();
     };
     const finishFromClose = (code: number | null, signal: NodeJS.Signals | null): void => {
-      if (settled) return;
+      if (settled) {
+        closeObserved = true;
+        if (escalation) clearTimeout(escalation);
+        return;
+      }
       closeObserved = true;
       const results = cargoResultNames(output);
       const passed = results.filter((r) => r.outcome === 'ok').length;

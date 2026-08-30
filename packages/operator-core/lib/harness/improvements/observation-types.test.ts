@@ -213,6 +213,55 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
   });
 
+  it('round-trips native Cargo check runs and drops malformed native records', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'pui-tui-remediation-and-consolidation-2026-08-27-acceptance',
+      checkRuns: {
+        native: {
+          kind: 'cargo',
+          manifestPath: 'apps/tui/Cargo.toml',
+          sourceFiles: ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs'],
+          test: 'app::tests',
+          verdict: 'pass',
+          passed: 12,
+          failed: 0,
+          ignored: 1,
+          runId: 'cargo-run-1',
+          measuredAt: '2026-08-30T07:30:00.000Z',
+        },
+      },
+    });
+    expect(out?.checkRuns?.native).toEqual({
+      kind: 'cargo',
+      manifestPath: 'apps/tui/Cargo.toml',
+      sourceFiles: ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs'],
+      test: 'app::tests',
+      verdict: 'pass',
+      passed: 12,
+      failed: 0,
+      ignored: 1,
+      runId: 'cargo-run-1',
+      measuredAt: '2026-08-30T07:30:00.000Z',
+    });
+
+    const malformed = asStructuredObservation({
+      rubricRef: 'r',
+      checkRuns: {
+        native: {
+          kind: 'cargo',
+          manifestPath: 'apps/tui/Cargo.toml',
+          sourceFiles: [],
+          verdict: 'pass',
+          passed: 1,
+          failed: 0,
+          ignored: 0,
+          measuredAt: '2026-08-30T07:30:00.000Z',
+        },
+      },
+    });
+    expect(malformed?.checkRuns).toBeUndefined();
+  });
+
   it('preserves an explicit empty ratings object for a zero-criterion rubric', () => {
     const out = asStructuredObservation({
       rubricRef: 'zero-criterion-investigation',

@@ -77,9 +77,14 @@ import scorecardEmitTool, {
 } from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
-import type { evaluateCriterionTestChecks, CriterionCheckRun } from '../../rubrics-criterion-checks';
+import type {
+  evaluateCriterionCargoChecks,
+  evaluateCriterionTestChecks,
+  CriterionCheckRun,
+} from '../../rubrics-criterion-checks';
 
 type EvaluateChecks = typeof evaluateCriterionTestChecks;
+type EvaluateCargoChecks = typeof evaluateCriterionCargoChecks;
 
 const CHECKED_RUBRIC = {
   rubricId: 'ar-checked-plan',
@@ -127,6 +132,18 @@ const PASS_RUN: CriterionCheckRun = {
   measuredAt: '2026-08-17T12:00:00.000Z',
 };
 
+const CARGO_PASS_RUN: CriterionCheckRun = {
+  kind: 'cargo',
+  manifestPath: 'apps/tui/Cargo.toml',
+  sourceFiles: ['apps/tui/src/app.rs'],
+  verdict: 'pass',
+  passed: 12,
+  failed: 0,
+  ignored: 1,
+  runId: 'cargo-1',
+  measuredAt: '2026-08-30T07:30:00.000Z',
+};
+
 const emitArgs = (over: Record<string, unknown> = {}) => ({
   rubricRef: 'ar-checked-plan',
   ratings: RATINGS,
@@ -167,6 +184,51 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       runId: 'run-1',
     });
     expect((res as { checkRuns?: Record<string, unknown> }).checkRuns?.['det-outcome']).toBeDefined();
+  });
+
+  it('runs native Cargo checks through their own evaluator and stamps the native run', async () => {
+    const cargoRubric = {
+      ...CHECKED_RUBRIC,
+      criteria: [
+        CHECKED_RUBRIC.criteria[0],
+        {
+          ...CHECKED_RUBRIC.criteria[1],
+          check: {
+            kind: 'cargo' as const,
+            manifestPath: 'apps/tui/Cargo.toml',
+            sourceFiles: ['apps/tui/src/app.rs'],
+          },
+        },
+      ],
+    };
+    getRubric.mockResolvedValue(cargoRubric);
+    const evaluateCargoChecks = vi.fn<EvaluateCargoChecks>().mockResolvedValue({
+      ok: true,
+      checkRuns: { 'det-outcome': CARGO_PASS_RUN },
+    });
+    const evaluateChecks = vi.fn<EvaluateChecks>();
+    const res = await emitScorecard(emitArgs() as never, EMIT_INPUT, {
+      evaluateChecks,
+      evaluateCargoChecks,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(evaluateChecks).not.toHaveBeenCalled();
+    expect(evaluateCargoChecks).toHaveBeenCalledTimes(1);
+    const call = evaluateCargoChecks.mock.calls[0][0];
+    expect(call.root).toBe('/tmp/fake-root');
+    expect(call.criteria).toBe(cargoRubric.criteria);
+    expect(call.timeoutMs).toBe(SCORECARD_TEST_CHECK_TIMEOUT_MS);
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { checkRuns?: Record<string, CriterionCheckRun> } };
+    };
+    expect(payload.payloadExtra.observation.checkRuns?.['det-outcome']).toMatchObject({
+      kind: 'cargo',
+      manifestPath: 'apps/tui/Cargo.toml',
+      sourceFiles: ['apps/tui/src/app.rs'],
+      verdict: 'pass',
+      runId: 'cargo-1',
+    });
   });
 
   it('runs checks against targetHive paths for a cross-hive grader', async () => {
