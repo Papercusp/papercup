@@ -286,6 +286,10 @@ export interface DeployStatus {
     failingTests: string[];
     /** True only when the sibling failingTests list is a real verdict measurement. */
     failingTestsMeasured?: boolean | null;
+    /** EI-18832825158594027: true when the sibling failingTests list was inherited from an
+     *  earlier observation of the same candidate rather than measured by the tick that produced
+     *  this verdict. Never a current blame list. */
+    failingTestsCarriedForward?: boolean | null;
     /** Normalized persisted frozen-repair queue; null/absent means no readable queue. */
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
     /** EI-10902: the most recent green-checkpoint TICK, from the append-only pipeline-events
@@ -574,6 +578,12 @@ export function computeDeployStatus(
     verdictStale || checkpoint.state === 'running' || checkpoint.state === 'paused' || checkpoint.state === 'blocked';
   const failingTests = suppressHistoricalFailingTests ? [] : (g.failingTests ?? []);
   const failingTestsMeasured = suppressHistoricalFailingTests ? false : (g.failingTestsMeasured ?? null);
+  // EI-18832825158594027: when the list is suppressed above it is `[]`, so there is nothing
+  // inherited left to label — false. Otherwise forward the writer's marker so downstream
+  // surfaces can say the names are inherited instead of implying a fresh measurement.
+  const failingTestsCarriedForward = suppressHistoricalFailingTests
+    ? false
+    : (g.failingTestsCarriedForward ?? false);
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
   const releaseTriggerRow = snap.routines.releaseTrigger;
@@ -729,6 +739,7 @@ export function computeDeployStatus(
       flakyWorkspaces: g.flakyWorkspaces,
       failingTests,
       failingTestsMeasured,
+      failingTestsCarriedForward,
       repairQueue: g.repairQueue ?? null,
       lastVerdict,
     },

@@ -18,6 +18,14 @@ export interface ReleaseTraceGate {
   failingTests: string[];
   /** True only when failingTests is a measurement for the requested candidate. */
   failingTestsMeasured?: boolean | null;
+  /**
+   * EI-18832825158594027: true when `failingTests` was INHERITED from an earlier observation of
+   * this same candidate rather than produced by the tick behind the current verdict. Read it
+   * before acting: a true here means re-verify at tip before editing anything, and it is NOT a
+   * reason to re-fire the gate — re-firing to "refresh" this list is the expensive follow-on
+   * mistake this marker exists to prevent.
+   */
+  failingTestsCarriedForward?: boolean | null;
   /** The writer's own verdict marker for the candidate named by observedCandidate. */
   recordedVerdict?: 'green' | 'not-green' | null;
   /**

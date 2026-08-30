@@ -255,6 +255,12 @@ export interface GitPipelineSnapshot {
      * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
      * malformed blob whose measurement state cannot be established. */
     failingTestsMeasured?: boolean | null;
+    /** EI-18832825158594027: true when `failingTests` was INHERITED from an earlier observation
+     * of the same candidate (the monotonic fold in `mergeGateHealthMonotonic`) rather than
+     * observed by the tick that produced this verdict. A reader must not treat those names as a
+     * current blame list — that is what sends fixers at already-green code. Distinct from
+     * `failingTestsMeasured`, which remains true: the names WERE measured, just not by this tick. */
+    failingTestsCarriedForward?: boolean | null;
     /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
      *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
      *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
@@ -1340,6 +1346,11 @@ export async function gitPipelineSnapshot(
       failingTests: effectiveGate.failingTests,
       failingTestsMeasured:
         gcVerdictStaleReasonCode === 'pin-advance' ? true : failingTestsMeasurement.measured,
+      // EI-18832825158594027: forward the writer's inherited-list marker. A proven pin-advance
+      // has already wiped `failingTests` to `[]` above, so there is nothing inherited left to
+      // label — report false rather than letting a stale true ride a now-empty list.
+      failingTestsCarriedForward:
+        gcVerdictStaleReasonCode === 'pin-advance' ? false : gateHealth.failingTestsCarriedForward === true,
       // Not part of `RawGateCounters`/`pinProvenGateCorrection`: a proven pin-advance already
       // wipes `failingTests` to `[]` above, which alone makes `verifyGateVerdict`'s file-shaped
       // check a no-op — no separate reset needed for the candidate it was attributed to.

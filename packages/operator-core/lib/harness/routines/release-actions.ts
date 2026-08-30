@@ -2071,6 +2071,23 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  * trackGateStall caller can commit between this function's SELECT and UPDATE. Keeping both
  * layers is intentional: this fold handles the ordinary sequential path and the SQL predicate
  * closes the stale read/modify/write race.
+ *
+ * EI-18832825158594027: preserving the list is right; presenting it as a fresh measurement is
+ * not. Once preserved, those names were NOT observed by the tick that produced the verdict a
+ * reader is holding, and every downstream surface (`git-pipeline-stats` → `release-deploy-launch`
+ * → `release:trace` / `dev:why`) renders `failingTests` as a current, authoritative blame list.
+ * That is what sends a fixer at already-green code, and re-firing the gate to "refresh" it is
+ * the more expensive follow-on mistake.
+ *
+ * So stamp the axis rather than drop the data: `failingTestsCarriedForward` says the sibling
+ * array is inherited, exactly as `inheritedRepairQueueFailingTestsSource` already labels the
+ * OTHER inheritance path in this system. It is deliberately orthogonal to
+ * `failingTestsMeasured`, which stays true — those names WERE measured, just not by this tick;
+ * conflating "not measured" with "not measured HERE" would destroy real evidence.
+ *
+ * ⚠ The flag MUST be written on BOTH branches. A carried-forward marker that outlives the
+ * carry-forward is the same defect one level up — a stale qualifier on a fresh list — so the
+ * non-preserving branch clears it explicitly instead of letting an older `true` ride along.
  */
 export function mergeGateHealthMonotonic(
   previous: { failingTests?: unknown; observedCandidate?: unknown } | null | undefined,
@@ -2092,7 +2109,9 @@ export function mergeGateHealthMonotonic(
     previousCandidate === nextCandidate &&
     next.lastFromFresh !== true &&
     next.lastVerdict !== 'green';
-  return preservesPreviousFailures ? { ...next, failingTests: previousFailingTests } : next;
+  return preservesPreviousFailures
+    ? { ...next, failingTests: previousFailingTests, failingTestsCarriedForward: true }
+    : { ...next, failingTestsCarriedForward: false };
 }
 
 /**
@@ -2377,6 +2396,11 @@ export async function trackGateStall(
       failingTests?: string[];
       /** True only when a real code verdict measured the sibling failingTests array. */
       failingTestsMeasured?: boolean;
+      /** EI-18832825158594027: true when the sibling failingTests array was INHERITED from an
+       *  earlier observation of this same candidate rather than observed by the tick that wrote
+       *  this verdict. Orthogonal to failingTestsMeasured, which stays true — those names were
+       *  measured, just not here. See mergeGateHealthMonotonic. */
+      failingTestsCarriedForward?: boolean;
       retriageStaleTip?: string | null;
       retriageDetail?: string | null;
       retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
@@ -3201,11 +3225,23 @@ export async function trackGateStall(
             AND COALESCE(($2::jsonb->'gate_health'->>'lastFromFresh')::boolean, false) = false
             AND COALESCE($2::jsonb->'gate_health'->>'lastVerdict', '') <> 'green'
             THEN jsonb_set(
-              $2::jsonb->'gate_health',
-              '{failingTests}',
-              metadata->'gate_health'->'failingTests',
+              jsonb_set(
+                $2::jsonb->'gate_health',
+                '{failingTests}',
+                metadata->'gate_health'->'failingTests',
+                true
+              ),
+              '{failingTestsCarriedForward}',
+              'true'::jsonb,
               true
             )
+            -- EI-18832825158594027: this branch is the RACE path — the TS fold saw no prior
+            -- failures at SELECT time and therefore wrote false, but the row gained them
+            -- before UPDATE. Stamping here too is what keeps the two layers from disagreeing;
+            -- without it the concurrent case is the one that silently ships an unlabelled
+            -- inherited list. The ELSE branch needs no reset: it writes next verbatim, and
+            -- mergeGateHealthMonotonic has already set the flag false there.
+            -- (No backticks in this comment: it lives inside a tagged template literal.)
             ELSE $2::jsonb->'gate_health'
           END,
           true
