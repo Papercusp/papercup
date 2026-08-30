@@ -19,6 +19,31 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@papercusp/activity-bridge', () => ({ recordActivity: vi.fn(async () => ({ id: 42 })) }));
 vi.mock('../../activity-pg-store', () => ({ createPgTelemetryStore: () => ({}) }));
+// The SessionEnd path force-releases this owner's locks and work-item leases, and
+// both seams talk to REAL Postgres. Unmocked, they made this UNIT test a
+// load-dependent flake: under fleet contention the release lost a lock/statement
+// race (pg 57014), report.ts console.warn'd the degradation — correctly, it is
+// fire-and-forget and must not fail the request — and vitest-fail-on-console turned
+// that into a red. It passed at 08:35Z and failed at 08:41Z on the same commit with
+// no code change between, which is the signature of an environment-dependent test,
+// not a defect (EI-21876713250361239, the missing PG isolation boundary).
+// Stub both: this file is about the inbox-wake lifecycle, and each release path has
+// its own coverage. The mocks keep the import-actual spread that
+// `lint:full-replacement-mocks` requires, so a newly added export cannot strand.
+vi.mock('../locks/release-all-owned', async (orig) => ({
+  ...(await orig<typeof import('../locks/release-all-owned')>()),
+  releaseAllOwnedLocks: vi.fn(async () => ({
+    released: [],
+    heldBefore: 0,
+    crossDomainReleased: [],
+    granularReleased: 0,
+    resourcesReleased: 0,
+  })),
+}));
+vi.mock('../../work-item-lease-release', async (orig) => ({
+  ...(await orig<typeof import('../../work-item-lease-release')>()),
+  releaseAllWorkItemLeasesForOwner: vi.fn(async () => ({ releasedIds: [], claimsCleared: 0 })),
+}));
 vi.mock('../../events/await/inbox-wake-arm', () => ({
   armInboxWake: h.arm,
   cancelInboxWake: h.cancel,

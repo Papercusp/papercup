@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -34,6 +34,37 @@ import { resolveTaskTimeoutMs } from '../../../../scripts/lib/batch-watchdog.mjs
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+
+// 33466aadb9 wrapped `runBudgetedTasks` in the SHARED, cross-process admission
+// mutex (`papercusp-test-process-admission`, 4h timeout). That made this file
+// deadlock against the very runner executing it: `affected-tests` holds that lock
+// for the whole suite, so every test here that calls `runBudgetedTasks` waited on
+// a lock its own parent owned and died at vitest's 60s cap. It reproduced at
+// EXACTLY 9 timeouts in three independent measurements (run 7's full canonical
+// suite, an isolated full-lane run, and this file alone) and burned ~9.2 min of
+// every canonical run — the largest single block on a green root `npm test`.
+//
+// Measured 2026-08-30: bypassing the mutex took this file from 553s/9-timeouts to
+// 20s/0-timeouts, 57 passed.
+//
+// The fix is isolation, not bypass: point the mutex root at a per-file temp dir so
+// these tests take a REAL lock that simply nobody else contends on. Bypassing via
+// PAPERCUSP_DISABLE_FS_MUTEX would have silently broken the one test that asserts
+// the gate actually serializes (it fails under a bypass, as it should). That test
+// already redirects the root this same way and restores to whatever it found —
+// which is now this dir, so it keeps working unchanged.
+let mutexLockRoot: string;
+let previousMutexLockRoot: string | undefined;
+beforeAll(() => {
+  previousMutexLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  mutexLockRoot = mkdtempSync(join(tmpdir(), 'pc-budgeted-scheduler-locks-'));
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = mutexLockRoot;
+});
+afterAll(() => {
+  if (previousMutexLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousMutexLockRoot;
+  rmSync(mutexLockRoot, { recursive: true, force: true });
+});
 
 const config = {
   workerBudget: 4,
