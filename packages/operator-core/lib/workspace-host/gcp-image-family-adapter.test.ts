@@ -279,7 +279,14 @@ describe('GCP image-family production adapter', () => {
           calls.push({ command, args, options });
           return {
             exitCode: 0,
-            stdout: args[0] === 'build' ? `artifact,0,id,gce,${PROJECT}/${CANDIDATE_NAME}` : '',
+            stdout:
+              args[0] === 'build'
+                ? `artifact,0,id,gce,${PROJECT}/${CANDIDATE_NAME}`
+                : // `auth` is the ADC probe: it must mint a non-empty token or the build refuses
+                  // to start. See the ADC guard test below.
+                  args[0] === 'auth'
+                  ? 'ya29.test-adc-token'
+                  : '',
             stderr: '',
           };
         },
@@ -323,9 +330,12 @@ describe('GCP image-family production adapter', () => {
     // `validate` sits between init and build ON PURPOSE — it evaluates the template with the
     // real variables, so an unknown function or a false validation condition fails here in a
     // second instead of after a builder VM has been created. See the buildCandidate comment.
-    expect(calls.map((call) => call.args[0])).toEqual(['init', 'validate', 'build']);
-    const validateCall = calls[1];
-    const buildCall = calls[2];
+    // `auth` sits FIRST on purpose: it proves Application Default Credentials — the credential
+    // packer actually authenticates with — can still mint a token, before init/validate/build
+    // spend anything. See the ADC recurrence guard below.
+    expect(calls.map((call) => call.args[0])).toEqual(['auth', 'init', 'validate', 'build']);
+    const validateCall = calls[2];
+    const buildCall = calls[3];
     expect(buildCall?.args).not.toContain('--shell');
     // The evaluation is worthless unless it evaluates the SAME variables the build uses: a
     // validate run with different (or no) vars can pass while the build it is guarding fails.
@@ -394,9 +404,11 @@ describe('GCP image-family production adapter', () => {
     // Stdout-only failure: the diagnostic MUST reach the thrown error.
     await expect(
       buildCandidate(async (_command, args) =>
-        args[0] === 'init'
-          ? { exitCode: 0, stdout: '', stderr: '' }
-          : { exitCode: 1, stdout: PACKER_STDOUT_ERROR, stderr: '' },
+        args[0] === 'auth'
+          ? { exitCode: 0, stdout: 'ya29.test-adc-token', stderr: '' }
+          : args[0] === 'init'
+            ? { exitCode: 0, stdout: '', stderr: '' }
+            : { exitCode: 1, stdout: PACKER_STDOUT_ERROR, stderr: '' },
       ),
     ).rejects.toThrow(/setsubtract/);
 
