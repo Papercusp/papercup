@@ -633,7 +633,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       { name: 'msgId', required: true, describe: 'the coord msg_id whose federated delivery receipt to wait on' },
     ],
     describe:
-      'A federated peer returned a DELIVERY RECEIPT for one of your coord messages (delivered, or quarantined with a reason in the payload).',
+      'A federated peer returned a DELIVERY RECEIPT for one of your coord messages (delivered, quarantined with a reason in the payload, or — WI-7043 — suppressed by the receiving machine\'s own federated-wake rate budget: payload.suppressed === "rate-limit" with delivered:false, woken:0. That is NOT the same as recipient_absent — the recipient may be alive and simply un-woken this window.).',
     emitter:
       'hyperbee coord-message projection (packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts) — the fed_event pass-through on the receiving peer',
     exists: true,
