@@ -47,6 +47,36 @@ export interface UnitPauseRecord {
   /** The last salience tier already broadcast, so a tier notifies once (see
    *  `PAUSE_SALIENCE_TIERS`). Null until the first pause notification. */
   lastNotifiedTier: string | null;
+  /**
+   * EI-20302762698704679: WHY this unit is paused, and WHO said so — the same
+   * `{reason, by, reviewBy}` shape `routines:set`'s pause path already requires
+   * (EI-18654017982759582 fixed the identical bug one layer over: a pause with no
+   * recorded reason/owner stays silently off for days because every reader faces the
+   * same unanswerable choice between re-arming it blind and leaving it alone).
+   *
+   * Pausing a systemd-user unit is NOT mediated by a Papercusp tool call (an operator
+   * runs `systemctl --user disable --now <unit>` directly), so — unlike a routine pause
+   * — there is no call site to REQUIRE this at pause time. It is instead set by
+   * `supervision:annotate-pause` any time after the reconciler observes the pause (or
+   * proactively, before its next tick), and PRESERVED verbatim by `decidePause` across
+   * every tick until the unit resumes. Null/undefined means genuinely never annotated —
+   * the reconciler's escalation treats that absence itself as the anomaly to report.
+   */
+  reason?: string | null;
+  /** The ownerId (or role fallback) that recorded `reason`, via `supervision:annotate-pause`. */
+  by?: string | null;
+  /** ISO timestamp the annotator intends to re-review this pause by (the DARK_FLAGS_REVIEW_BY /
+   *  routines-pause `reviewBy` analog for the same reason). Advisory only — nothing currently
+   *  auto-acts on it past the existing PAUSE_SALIENCE_TIERS ramp. */
+  reviewBy?: string | null;
+}
+
+/** The `{reason, by, reviewBy}` triple as seen by an annotator — every field optional so a
+ *  partial re-annotation (e.g. only bumping `reviewBy`) does not require re-typing `reason`. */
+export interface PauseAnnotation {
+  reason?: string | null;
+  by?: string | null;
+  reviewBy?: string | null;
 }
 
 /** The whole durable payload: one record per unit name. */
@@ -145,9 +175,55 @@ export function decidePause(
       // round-trip completes.
       escalatedAt: shouldEscalate ? now : (prev?.escalatedAt ?? null),
       lastNotifiedTier: tier.id,
+      // EI-20302762698704679: a tick-driven decision NEVER touches the annotation —
+      // it is set only by `annotatePause` (via `supervision:annotate-pause`), and must
+      // survive every tick unchanged. Dropping it here would silently un-annotate the
+      // pause the moment the reconciler next ran.
+      reason: prev?.reason ?? null,
+      by: prev?.by ?? null,
+      reviewBy: prev?.reviewBy ?? null,
     },
     decision: { pausedSince, durationMs, tier, notify, shouldEscalate },
   };
+}
+
+/**
+ * EI-20302762698704679: record WHY (and by whom) a currently-paused unit is paused, and
+ * optionally when to re-review it — the same durable annotation `routines:set`'s pause path
+ * already requires, applied to the systemd-unit pause clock. Called by `supervision:annotate-pause`.
+ *
+ * Merges into the EXISTING record for `unit` when one exists (an annotation must never reset
+ * `pausedSince`/`escalatedAt`/`lastNotifiedTier` — that would restart the clock this module
+ * exists to make durable). When no record exists yet (annotating proactively, ahead of the
+ * reconciler's next tick), seeds one with `pausedSince: now` so the annotation is not lost.
+ *
+ * A field OMITTED from `annotation` leaves the existing value untouched (a partial re-annotation,
+ * e.g. bumping only `reviewBy`, does not require re-typing `reason`); a field explicitly passed as
+ * `null` clears it.
+ */
+export async function annotatePause(
+  unit: string,
+  annotation: PauseAnnotation,
+  now: number,
+  deps?: PauseStoreDeps,
+): Promise<UnitPauseRecord> {
+  let result: UnitPauseRecord | undefined;
+  await updatePauseState((current) => {
+    const prev = current[unit];
+    const next: UnitPauseRecord = {
+      pausedSince: prev?.pausedSince ?? now,
+      escalatedAt: prev?.escalatedAt ?? null,
+      lastNotifiedTier: prev?.lastNotifiedTier ?? null,
+      reason: 'reason' in annotation ? (annotation.reason ?? null) : (prev?.reason ?? null),
+      by: 'by' in annotation ? (annotation.by ?? null) : (prev?.by ?? null),
+      reviewBy: 'reviewBy' in annotation ? (annotation.reviewBy ?? null) : (prev?.reviewBy ?? null),
+    };
+    result = next;
+    return { ...current, [unit]: next };
+  }, deps);
+  // `updatePauseState` always invokes the mutator synchronously (production, the VITEST
+  // fallback, and the hermetic catch path alike), so `result` is always assigned above.
+  return result!;
 }
 
 /** Render a pause duration for notification copy — coarse on purpose (the tier
