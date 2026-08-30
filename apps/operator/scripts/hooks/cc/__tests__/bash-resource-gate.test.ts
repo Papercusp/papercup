@@ -1802,6 +1802,64 @@ describe('heavy-command admission control (WI-3821)', () => {
       expectHeavyDeny(runGate(bashCmd(`cd ${CANON}\n${command}`, { cwd: CANON }), { ...AGENT, ...OVER }));
     });
   });
+
+  /**
+   * EI-18139694363457325 — heavy detection must anchor at EVERY shell command
+   * position, not only after an operator.
+   *
+   * The item was filed on the assumption that the PEEL's open wrapper set would
+   * recurr a 5th time and deny the advertised remedy. Measured across 14 shell
+   * shapes (11 the peel has never known), the remedy was allowed in ALL of
+   * them — the peel gap and the anchor gap mostly cancel, because a remedy's
+   * heavy token sits behind `pc-heavy.sh --` and so reaches no anchor either.
+   *
+   * The live defect was the COMPLEMENT, in the safety direction: the anchor
+   * treated only `[;&|\n]` as a command position, so a heavy command placed
+   * after a reserved word reached no anchor and was ADMITTED outright —
+   * `for f in a; do vitest; done` is N unthrottled heavy runs, while the
+   * identical bare `vitest` denies.
+   *
+   * These are written as a MATRIX on purpose. The wrapper set is open and must
+   * never be "fixed" by enumeration, but shell command positions are a CLOSED
+   * set fixed by the grammar — so the invariant is assertable directly, and a
+   * 5th recurrence surfaces here as a red test rather than as silent agent
+   * friction or a silently ungated build.
+   */
+  describe('heavy detection anchors at every shell command position (EI-18139694363457325)', () => {
+    const HEAVY = 'vitest run lib/x.test.ts';
+    const REMEDY = `scripts/pc-heavy.sh -- ${HEAVY}`;
+
+    // Each shape places a command after a reserved word or a group-open rather
+    // than after a plain operator. Every one was measured ADMITTED before the fix.
+    const POSITIONS: [string, (cmd: string) => string][] = [
+      ['`if …; then`', (c) => `if true; then ${c}; fi`],
+      ['`for …; do`', (c) => `for f in a; do ${c}; done`],
+      ['`while …; do`', (c) => `while read y; do ${c}; done`],
+      ['`… else`', (c) => `if false; then :; else ${c}; fi`],
+      ['a brace group', (c) => `{ ${c}; }`],
+    ];
+
+    for (const [label, wrap] of POSITIONS) {
+      it(`DENIES a raw heavy command after ${label}`, () => {
+        expectHeavyDeny(runGate(bashCmd(wrap(HEAVY), { cwd: CANON }), { ...AGENT, ...OVER }));
+      });
+
+      // The other half of the contract, mirroring the sibling describe above:
+      // closing an anchor gap must not start denying the advertised remedy.
+      it(`still allows the pc-heavy remedy after ${label}`, () => {
+        expectAllow(runGate(bashCmd(wrap(REMEDY), { cwd: CANON }), { ...AGENT, ...OVER }));
+      });
+    }
+
+    // The reserved word is only a command position at a REAL command position.
+    // Without this, widening the anchor would deny ordinary prose that merely
+    // contains the word — the over-block a permissive-looking fix always risks.
+    it('does not treat a reserved word inside prose as a command position', () => {
+      expectAllow(
+        runGate(bashCmd(`echo "then vitest is the next step"`, { cwd: CANON }), { ...AGENT, ...OVER }),
+      );
+    });
+  });
 });
 
 describe('compound `cd <canonical> && …` coverage (WI-3853 — marker-less fleet sessions)', () => {

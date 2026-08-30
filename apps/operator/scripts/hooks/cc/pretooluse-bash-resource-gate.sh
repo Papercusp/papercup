@@ -5064,6 +5064,25 @@ _NAMED_WRAPPER_ALTS = (
 _ASSIGN_PREFIX = r'[A-Za-z_]\w*=\S*\s+'
 _BENIGN_WRAPPERS = '(?:' + '|'.join(_NAMED_WRAPPER_ALTS + (_ASSIGN_PREFIX,)) + ')'
 
+# Shell RESERVED WORDS that open a command position (`if …; then CMD`,
+# `for …; do CMD`, `… else CMD`). EI-18139694363457325 measured the gap they
+# left: a heavy command placed after one of them sat at NO anchor, so
+# `for f in a; do vitest; done` — N unthrottled heavy runs — was admitted while
+# the identical bare `vitest` was denied.
+#
+# This set is deliberately shaped UNLIKE the wrapper set above. Wrappers are an
+# OPEN set (any executable can wrap a command), which is why enumerating them
+# has recurred four times (EI-9634/EI-10001/EI-10439/WI-4551) and why the peel
+# must never be "fixed" by adding one more. Reserved words are a CLOSED set
+# fixed by the shell grammar, so enumerating them completely is a one-time
+# closure rather than another step on that treadmill.
+#
+# Kept OPTIONAL and only at a real command position (start / after a separator)
+# so it widens the anchor by exactly the grammar's command positions: a bare
+# `; do vitest` matches, while the word alone in prose does not become an
+# anchor of its own.
+_CMD_INTRODUCER = r'(?:(?:then|do|else|elif)\s+)?'
+
 # The ROOT npm entrypoints that package.json ALREADY wraps in scripts/pc-heavy.sh.
 # They run their own flock counting-semaphore admission, so they are safe at ANY
 # command position, not merely as the first word.
@@ -5221,10 +5240,12 @@ def _heavy_admission():
     # position too; `\b` keeps `nice` from matching inside `ionice`.
     anchor = (
         r'(?:'
-        # A real command position — start of string, or just after a separator —
-        # optionally behind stacked benign wrappers. This is the arm that admits
-        # the bare-assignment prefix (`FOO=1 npx tsc`, `… && FOO=1 npx vitest`).
-        r'(?:^|[;&|\n]\s*)(?:' + _BENIGN_WRAPPERS + r'){0,4}'
+        # A real command position — start of string, just after a separator, or
+        # just inside a brace group — optionally behind a command-introducing
+        # reserved word (`; then`/`; do`), then optionally behind stacked benign
+        # wrappers. This is the arm that admits the bare-assignment prefix
+        # (`FOO=1 npx tsc`, `… && FOO=1 npx vitest`).
+        r'(?:^|[;&|\n]\s*|\{\s*)' + _CMD_INTRODUCER + r'(?:' + _BENIGN_WRAPPERS + r'){0,4}'
         # A NAMED wrapper anywhere, as before this fix. Kept as its own arm so
         # no coverage is lost relative to the previous anchor; the assignment
         # prefix is deliberately absent here (see _ASSIGN_PREFIX above).
