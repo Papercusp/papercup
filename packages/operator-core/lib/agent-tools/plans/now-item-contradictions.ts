@@ -9,6 +9,17 @@ export interface NowItemContradiction {
 type TerminalStatus = NowItemContradiction['status'];
 
 const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
+// EI-21900747713795768: a plan slug immediately preceding a P-NNN mention
+// scopes that id to a DIFFERENTLY-NAMED plan explicitly — e.g. "Audited
+// under pui-tui-ship-drive-2026-08-30 P-001" is a citation of THAT plan's
+// P-001, never this one's, however this plan's own item numbering happens
+// to line up (nearly always, since every plan starts at P-001). Every plan
+// slug in this system carries a trailing -YYYY-MM-DD suffix (plans:new
+// auto-appends the creation date), which makes this a reliable,
+// low-false-positive signal — ordinary prose essentially never produces a
+// multi-segment kebab-case token ending in a full date immediately before
+// a plan-item id.
+const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})\s+$/i;
 const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
@@ -28,7 +39,9 @@ const NOW_CROSS_LEDGER_REF_AFTER_RE = /^\s*\/\s*WI-\d+\b/i;
  * is contradictory. The check is occurrence-based so a Now block may both
  * record an item's completion and accidentally direct a second pass over it.
  */
-export function detectNowItemContradictions(parsed: Pick<ParsedPlan, 'now' | 'items'>): NowItemContradiction[] {
+export function detectNowItemContradictions(
+  parsed: Pick<ParsedPlan, 'now' | 'items' | 'slug'>,
+): NowItemContradiction[] {
   if (!parsed.now) return [];
 
   const nowText = `${parsed.now.state}\n${parsed.now.next}`;
@@ -99,7 +112,16 @@ export function detectNowItemContradictions(parsed: Pick<ParsedPlan, 'now' | 'it
       !NOW_NEGATED_OR_FUTURE_RE.test(after) &&
       !NOW_ACTIVE_RE.test(historicalContext.slice(-120)) &&
       !NOW_ACTIVE_RE.test(after);
-    if (closeAfter || closeBefore || historicalReference || crossLedgerReference) continue;
+    // An explicit "<other-plan-slug> P-NNN" citation scopes the id to that
+    // OTHER plan, never this one — see PLAN_SLUG_PREFIX_RE above. Tense/action
+    // wording after the id is irrelevant here: the id itself does not name an
+    // item of THIS plan, so there is nothing for this plan's terminal-status
+    // map to contradict.
+    const precedingSlugMatch = PLAN_SLUG_PREFIX_RE.exec(before);
+    const explicitForeignPlanReference =
+      precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase();
+    if (closeAfter || closeBefore || historicalReference || crossLedgerReference || explicitForeignPlanReference)
+      continue;
 
     contradictions.push({
       id,
