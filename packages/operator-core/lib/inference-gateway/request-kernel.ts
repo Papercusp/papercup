@@ -785,9 +785,9 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           try {
             response = await withDeadline({
               parent: requestController.signal,
-              timeoutMs: opts.policy.ttfbTimeoutMs,
+              timeoutMs: ttfbTimeoutMs,
               error: () =>
-                new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${opts.policy.ttfbTimeoutMs}ms`, {
+                new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${ttfbTimeoutMs}ms`, {
                   code: 'ttfb-timeout',
                   outcome: 'upstream-error',
                   status: 504,

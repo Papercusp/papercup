@@ -653,3 +653,118 @@ describe('gateway request kernel contract guards', () => {
     });
   });
 });
+
+/**
+ * D-007 (plan `gateway-kernel-adoption-2026-08-29`). Every cloud handler picks
+ * a SHORT TTFB deadline for a streaming request and a generous one otherwise,
+ * deciding by parsing `stream: true` out of the REQUEST body — which is not
+ * known until the kernel's own bounded body read has run. A scalar policy
+ * could not express that, and the only workaround was each adapter racing its
+ * own stall timer, re-creating the ladder this kernel exists to delete.
+ */
+describe('gateway request kernel request-body-derived TTFB deadline', () => {
+  const lane = laneRegistry.openaiResponses;
+
+  it('resolves the deadline from the read body and arms the resolved value', async () => {
+    const seen: string[] = [];
+    const f = fixture(lane, {
+      policy: {
+        maxAttempts: 1,
+        ttfbTimeoutMs: ({ body }) => {
+          seen.push(body.toString('utf8'));
+          return (JSON.parse(body.toString('utf8')) as { stream?: boolean }).stream === true ? 5 : 60_000;
+        },
+      },
+      body: (async function* () {
+        yield Buffer.from('{"stream":true}');
+      })(),
+      executeAttempt: async () => new Promise<KernelResponse>(() => undefined),
+    });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    // The resolver saw the body the kernel actually read, not the caller's iterable.
+    expect(seen).toEqual(['{"stream":true}']);
+    expect(error).toMatchObject({ code: 'ttfb-timeout', outcome: 'upstream-error', status: 504 });
+    expect(error.message).toContain('5ms');
+  });
+
+  it('gives a non-streaming body the generous deadline instead', async () => {
+    const f = fixture(lane, {
+      policy: {
+        maxAttempts: 1,
+        // A streaming body would get 1ms and time out; this one must not.
+        ttfbTimeoutMs: ({ body }) =>
+          (JSON.parse(body.toString('utf8')) as { stream?: boolean }).stream === true ? 1 : 60_000,
+      },
+      body: (async function* () {
+        yield Buffer.from('{"stream":false}');
+      })(),
+      executeAttempt: async (_prepared, context) => ({
+        status: 200,
+        streaming: false,
+        transport: context.route.transport,
+        metadata: { contentType: 'application/json' },
+        body: chunks('ok'),
+      }),
+    });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result.status).toBe(200);
+  });
+
+  it('calls the resolver exactly once, not per attempt', async () => {
+    let calls = 0;
+    const f = fixture(lane, {
+      policy: {
+        maxAttempts: 2,
+        ttfbTimeoutMs: () => {
+          calls++;
+          return 60_000;
+        },
+      },
+      executeAttempt: async (_prepared, context) => {
+        if (context.attempt === 1) {
+          throw new GatewayRequestKernelError('transient', {
+            code: 'upstream-error',
+            outcome: 'upstream-error',
+            status: 502,
+            retryable: true,
+          });
+        }
+        return {
+          status: 200,
+          streaming: false,
+          transport: context.route.transport,
+          metadata: { contentType: 'application/json' },
+          body: chunks('ok'),
+        };
+      },
+    });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result.attempts).toBe(2);
+    expect(calls).toBe(1);
+  });
+
+  it('rejects a resolver that returns a nonsense deadline', async () => {
+    const f = fixture(lane, { policy: { ttfbTimeoutMs: () => 0 } });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'invalid-policy', outcome: 'gateway-error', status: 500 });
+  });
+
+  it('still rejects an invalid SCALAR up front, before the body is read', async () => {
+    const f = fixture(lane, { policy: { ttfbTimeoutMs: 0 } });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'invalid-policy' });
+    // Back-compat guard: a bad scalar must fail before any work happens, as it
+    // did when the field could only ever be a number.
+    expect(f.events).not.toContain('body');
+  });
+});
