@@ -614,7 +614,7 @@ describe('<AdvWorkflowsTab> — composing and creating', () => {
   it('sends the Gmail direct Email work-item target and keeps it unavailable for other sources', async () => {
     renderTab();
     const slackDialog = await openAdvancedWorkflowSetup();
-    expect((within(slackDialog).getByRole('button', { name: /Create Email work/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(slackDialog).getByRole('button', { name: /Create an Email work item/ }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(slackDialog).getByRole('button', { name: 'Cancel' }));
 
     cleanup();
@@ -622,7 +622,7 @@ describe('<AdvWorkflowsTab> — composing and creating', () => {
     renderTab();
     const dialog = await openAdvancedWorkflowSetup();
     fireEvent.click(within(dialog).getByRole('button', { name: /External event/ }));
-    const emailTarget = within(dialog).getByRole('button', { name: /Create Email work/ });
+    const emailTarget = within(dialog).getByRole('button', { name: /Create an Email work item/ });
     expect((emailTarget as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(emailTarget);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));

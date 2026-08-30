@@ -238,6 +238,7 @@ function SearchablePlanPicker({
         <input
           role="combobox"
           aria-label="Plan to run"
+          aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open}
@@ -245,6 +246,7 @@ function SearchablePlanPicker({
           disabled={disabled}
           value={open ? query : ''}
           onFocus={() => { if (!disabled) setOpen(true); }}
+          onBlur={() => { window.setTimeout(() => setOpen(false), 0); }}
           onChange={(event) => {
             setQuery(event.target.value);
             setOpen(true);
@@ -1144,6 +1146,14 @@ function CreateAutomationModal({
       ? Boolean(goalId.trim())
       : triggerKind === 'external' && selectedSource?.kind === 'gmail';
   const canSubmit = targetReady && triggerReady && !pendingArm;
+  const chooseTarget = (next: CreateTargetKind) => {
+    // Goal and direct-work-item actions are external-trigger contracts. Selecting
+    // one from the default schedule view switches the trigger mode with the
+    // target, so a valid action is never hidden behind a disabled card.
+    if (next !== 'plan') setTriggerKind('external');
+    setTargetKind(next);
+    setError(null);
+  };
 
   const finishArmed = (target: PendingArm) => {
     setPendingArm(null);
@@ -1407,16 +1417,15 @@ function CreateAutomationModal({
                     type="button"
                     data-target-kind="plan"
                     aria-pressed={targetKind === 'plan'}
-                    onClick={() => { setTargetKind('plan'); setError(null); }}
+                    onClick={() => chooseTarget('plan')}
                   >
-                    <span className="pc-workflows-create__choice-inner"><CalendarClock size={18} aria-hidden /><strong>Launch a plan</strong><span>Run an existing plan or create one here.</span><em>Action: launch-plan</em></span>
+                    <span className="pc-workflows-create__choice-inner"><CalendarClock size={18} aria-hidden /><strong>Launch an existing plan</strong><span>Run an existing plan or create one here.</span><em>Action: launch-plan</em></span>
                   </button>
                   <button
                     type="button"
                     data-target-kind="goal"
                     aria-pressed={targetKind === 'goal'}
-                    disabled={triggerKind === 'schedule'}
-                    onClick={() => { setTargetKind('goal'); setError(null); }}
+                    onClick={() => chooseTarget('goal')}
                   >
                     <span className="pc-workflows-create__choice-inner"><Sparkles size={18} aria-hidden /><strong>Activate a goal</strong><span>Start the selected goal when an external event arrives.</span><em>Action: start-goal</em></span>
                   </button>
@@ -1424,10 +1433,10 @@ function CreateAutomationModal({
                     type="button"
                     data-target-kind="email-work-item"
                     aria-pressed={targetKind === 'email-work-item'}
-                    disabled={triggerKind === 'schedule' || selectedSource?.kind !== 'gmail'}
-                    onClick={() => { setTargetKind('email-work-item'); setError(null); }}
+                    disabled={selectedSource?.kind !== 'gmail'}
+                    onClick={() => chooseTarget('email-work-item')}
                   >
-                    <span className="pc-workflows-create__choice-inner"><DatabaseZap size={18} aria-hidden /><strong>Create Email work</strong><span>Make the bounded Email draft proposal from Gmail.</span><em>Action: create-work-item</em></span>
+                    <span className="pc-workflows-create__choice-inner"><DatabaseZap size={18} aria-hidden /><strong>Create an Email work item</strong><span>Make the bounded Email draft proposal from Gmail.</span><em>Action: create-work-item</em></span>
                   </button>
                 </div>
                 <p className="pc-workflows-create__boundary-note" role="note">
