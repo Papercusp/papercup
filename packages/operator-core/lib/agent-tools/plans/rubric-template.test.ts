@@ -10,11 +10,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   rubricTemplateDataSchema,
+  rubricTemplateDataAuthoringSchema,
   rubricCriterionSchema,
   rubricCriterionCheckSchema,
   rubricCriterionWindowSchema,
   resolveCriterionWindow,
   rubricKindOf,
+  isUnknownRatingEquivalent,
+  UNKNOWN_RATING_EQUIVALENTS,
   DEFAULT_CRITERION_WINDOW_MS,
   RUBRIC_TEMPLATE,
   RUBRIC_TEMPLATE_NAME,
@@ -115,6 +118,18 @@ describe('rubric template schema', () => {
         extra: true,
       }).success,
     ).toBe(false);
+  });
+
+  it('keeps the read schema compatible with historical light acceptance rows', () => {
+    expect(
+      rubricTemplateDataSchema.safeParse({
+        characteristic: 'plan-acceptance',
+        kind: 'acceptance',
+        subjectPlan: 'some-plan-2026-08-11',
+        criteria: [{ key: 'outcome', title: 'Outcome' }],
+        ratingScale: ['pass', 'fail'],
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -249,7 +264,13 @@ describe('rubric kind (standard | acceptance)', () => {
       characteristic: 'goal-acceptance',
       kind: 'acceptance',
       subjectGoal: 'ship-a-paid-app-abc123',
-      criteria: [{ key: 'paying-user', title: 'At least one paying user exists' }],
+      criteria: [
+        {
+          key: 'paying-user',
+          title: 'At least one paying user exists',
+          driftMarkers: 'No verified paying-user evidence exists in the measured window.',
+        },
+      ],
       ratingScale: ['pass', 'fail', 'unknown'],
     };
     expect(rubricTemplateDataSchema.safeParse(goalSubject).success).toBe(true);
@@ -262,7 +283,13 @@ describe('rubric kind (standard | acceptance)', () => {
       characteristic: 'plan-acceptance',
       kind: 'acceptance',
       subjectPlan: 'some-plan-2026-08-11',
-      criteria: [{ key: 'gate-rerun', title: 'The gate re-runs without a manual poke' }],
+      criteria: [
+        {
+          key: 'gate-rerun',
+          title: 'The gate re-runs without a manual poke',
+          driftMarkers: 'The gate remains stalled until an operator manually restarts it.',
+        },
+      ],
       ratingScale: ['pass', 'fail', 'unknown'],
     });
     expect(ok.success).toBe(true);
@@ -282,6 +309,85 @@ describe('rubric kind (standard | acceptance)', () => {
     expect(
       issues({ ...base, classRef: 'investigation', releaseGating: true }),
     ).toContain('releaseGating is standard-kind only');
+  });
+});
+
+describe('acceptance authoring profile (EI-21826845597011306)', () => {
+  const acceptance = (over: Record<string, unknown> = {}) => ({
+    characteristic: 'plan-acceptance',
+    kind: 'acceptance',
+    subjectPlan: 'some-plan-2026-08-11',
+    criteria: [
+      {
+        key: 'outcome',
+        title: 'Outcome',
+        driftMarkers: 'The measured outcome is absent or contradicted.',
+      },
+    ],
+    ratingScale: ['pass', 'fail', 'unknown'],
+    ...over,
+  });
+
+  it('requires a concrete driftMarkers falsifier for every bespoke criterion', () => {
+    const result = rubricTemplateDataAuthoringSchema.safeParse(
+      acceptance({ criteria: [{ key: 'outcome', title: 'Outcome' }] }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 0, 'driftMarkers'],
+            message: expect.stringContaining('requires non-empty driftMarkers'),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it('requires a no-verdict rating so unavailable evidence cannot be fabricated as pass/fail', () => {
+    const result = rubricTemplateDataAuthoringSchema.safeParse(
+      acceptance({ ratingScale: ['pass', 'partial', 'fail'] }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['ratingScale'],
+            message: expect.stringContaining('unknown-equivalent'),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it.each(['unknown', 'NOT-MEASURED', 'not assessed', 'indeterminate', 'n/a', 'not_applicable'])(
+    'recognizes %s as an unknown-equivalent',
+    (value) => {
+      expect(isUnknownRatingEquivalent(value)).toBe(true);
+    },
+  );
+
+  it('accepts a non-canonical unknown-equivalent and a concrete falsifier', () => {
+    const result = rubricTemplateDataAuthoringSchema.safeParse(
+      acceptance({ ratingScale: ['pass', 'fail', 'not-measured'] }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it('does not impose acceptance-only guards on standard rubrics', () => {
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...minimalData,
+        ratingScale: ['healthy', 'degraded', 'broken'],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('publishes the stricter profile through the registered template write schema', () => {
+    expect(RUBRIC_TEMPLATE.schema.safeParse(acceptance({ ratingScale: ['pass', 'fail'] })).success).toBe(false);
+    expect(UNKNOWN_RATING_EQUIVALENTS).toContain('unknown');
   });
 });
 

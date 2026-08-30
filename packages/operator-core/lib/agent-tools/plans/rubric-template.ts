@@ -600,6 +600,77 @@ export const rubricTemplateDataSchema = z
     }
   });
 
+/**
+ * Rating labels that can honestly carry a no-verdict result when a grader cannot
+ * establish the criterion from the available evidence. `unknown` is the canonical
+ * spelling used by scorecards, but acceptance rubrics have historically used a few
+ * equivalent labels (for example `not-measured`) in their own scales.
+ *
+ * Keep this vocabulary here, beside the acceptance authoring guard, rather than in a
+ * consumer: the authoring contract must not depend on whichever grader happens to read
+ * the rubric first.
+ */
+export const UNKNOWN_RATING_EQUIVALENTS = [
+  'unknown',
+  'unassessable',
+  'not-assessable',
+  'not-assessed',
+  'not-measured',
+  'not-observed',
+  'not-observable',
+  'indeterminate',
+  'inconclusive',
+  'unverified',
+  'unavailable',
+  'no-verdict',
+  'not-applicable',
+  'na',
+] as const;
+
+function normalizeRatingVocabularyToken(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/^n\/a$/, 'na');
+}
+
+/** True when a rating-scale entry can represent an honest no-verdict outcome. */
+export function isUnknownRatingEquivalent(value: string): boolean {
+  return (UNKNOWN_RATING_EQUIVALENTS as readonly string[]).includes(normalizeRatingVocabularyToken(value));
+}
+
+/**
+ * The WRITE-TIME acceptance-rubric profile.
+ *
+ * `rubricTemplateDataSchema` remains permissive for the read/re-point path: historical
+ * acceptance plans can be inspected even when they predate the falsifier/no-verdict
+ * contract. Every new or amended acceptance rubric must use this stricter profile:
+ * each bespoke criterion names a non-empty `driftMarkers` falsifier, and the rubric
+ * scale has a label for evidence that cannot produce a verdict.
+ */
+export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
+  if (rubricKindOf(d) !== 'acceptance') return;
+
+  if (!d.ratingScale.some(isUnknownRatingEquivalent)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ratingScale'],
+      message:
+        'an acceptance rubric ratingScale must include an unknown-equivalent value ' +
+        "(for example 'unknown', 'not-measured', 'indeterminate', or 'not-applicable') " +
+        'so a grader can record that the evidence did not establish a verdict instead of fabricating pass/fail',
+    });
+  }
+
+  d.criteria.forEach((criterion, index) => {
+    if (criterion.driftMarkers?.trim()) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['criteria', index, 'driftMarkers'],
+      message:
+        `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
+        '(the concrete degraded/broken state that falsifies the outcome)',
+    });
+  });
+});
+
 /** The validated structured-data type for a `rubric` template instance. */
 export type RubricTemplateData = z.infer<typeof rubricTemplateDataSchema>;
 
@@ -608,7 +679,10 @@ export const RUBRIC_TEMPLATE: PlanTemplate = {
   name: RUBRIC_TEMPLATE_NAME,
   description:
     'A shared STANDARD for a system characteristic: criteria (key/title/model/method/driftMarkers) that structured observations grade, plus a rating scale. A rubric IS a plan (template:rubric); rubrics:list/get/search query these.',
-  schema: rubricTemplateDataSchema,
+  // Registry consumers are write paths (plans:set-template-data). The read/re-point
+  // path intentionally imports rubricTemplateDataSchema directly so legacy acceptance
+  // rows remain inspectable while new writes get the stricter authoring profile.
+  schema: rubricTemplateDataAuthoringSchema,
 };
 
 // Self-register at module load so the write path (plans:set-template-data →
