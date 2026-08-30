@@ -95,6 +95,11 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
     env: { ...process.env, ...GIT_ENV },
+    // WI-41180: a sync spawn blocks the worker's event loop, so vitest cannot time it
+    // out, and the pure lane shares one fork across ~2,740 files — an unbounded hang
+    // here wedges all of them until the batch watchdog fires 45 minutes later.
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   }).trim();
 }
 
@@ -110,6 +115,10 @@ function callHelper(repoArg: string, env: Record<string, string | undefined>): s
   return execFileSync('bash', ['-c', script, 'stamp-guard', HELPER_PATH, repoArg], {
     encoding: 'utf8',
     env: { ...clean, ...env } as NodeJS.ProcessEnv,
+    // WI-41180 — see the note in git() above. This one matters most: it sources a shell
+    // helper, so a hang here is a hang in someone else's script, not in our own code.
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   }).trim();
 }
 
@@ -127,6 +136,9 @@ describe('EI-21826568874232796 — the sidecar stamp records the pinned source, 
     repo = join(work, 'repo');
     execFileSync('git', ['init', '-q', '-b', 'staging', repo], {
       env: { ...process.env, ...GIT_ENV },
+      // WI-41180 — see the note in git() above.
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     });
 
     writeFileSync(join(repo, 'serve.mjs'), 'the bytes this build was pinned to\n');
