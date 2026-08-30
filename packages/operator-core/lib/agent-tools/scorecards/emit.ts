@@ -4,7 +4,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
-import { getRubric, getRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from '../../rubrics';
+import {
+  getRubric,
+  getRubricPlanRevision,
+  META_ACCEPTANCE_RUBRIC_ID,
+  readRubricPlanRevision,
+} from '../../rubrics';
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -474,7 +479,23 @@ export async function emitScorecard(
       // the grader — that critic still independently challenged the rubric. A list
       // of critics who all resolve to the grader is not independence (WI-905074).
       if (!callerIsImplementer) {
-        const currentRevision = rubricRevision;
+        // EI-21828643965337454: a failed revision read must not be flattened into
+        // "no revision". The latter is a valid unversioned rubric; the former
+        // would make the current-revision filter vacuously true and let the sole
+        // vetting critic grade their own rubric. Refuse before reading scorecards
+        // so the failure cannot be mistaken for an unvetted/empty history.
+        const revisionRead = await readRubricPlanRevision(rubric.rubricId);
+        if (!revisionRead.ok) {
+          return {
+            ok: false as const,
+            code: 'grader_is_sole_vetting_critic_revision_unreadable' as const,
+            error:
+              `acceptance rubric '${rubric.rubricId}' current revision could not be read, so the ` +
+              `sole-vetting-critic guard cannot verify that its vetting attestation is current; ` +
+              `retry after the rubric plan-row read recovers`,
+          };
+        }
+        const currentRevision = revisionRead.revision;
         const vettingCards = await listScorecards({
           rubricRef: META_ACCEPTANCE_RUBRIC_ID,
           subjectRef: rubric.rubricId,

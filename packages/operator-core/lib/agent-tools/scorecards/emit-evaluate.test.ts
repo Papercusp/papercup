@@ -27,7 +27,12 @@ import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../a
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
-  return { ...actual, getRubric: vi.fn(), getRubricPlanRevision: vi.fn(async () => 7) };
+  return {
+    ...actual,
+    getRubric: vi.fn(),
+    getRubricPlanRevision: vi.fn(async () => 7),
+    readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),
+  };
 });
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: vi.fn(async () => null) }));
 vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
@@ -44,7 +49,7 @@ vi.mock('../../acceptance-author-identity', () => ({
   areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
 }));
 
-import { getRubric, getRubricPlanRevision } from '../../rubrics';
+import { getRubric, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
@@ -53,6 +58,7 @@ import { evaluateScorecard } from './evaluate';
 
 const getRubricM = vi.mocked(getRubric);
 const getRubricPlanRevisionM = vi.mocked(getRubricPlanRevision);
+const readRubricPlanRevisionM = vi.mocked(readRubricPlanRevision);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
@@ -127,6 +133,7 @@ beforeEach(() => {
   lineageRelatedM.mockImplementation(async (author, candidate) => author === candidate);
   getRubricM.mockResolvedValue(RUBRIC);
   getRubricPlanRevisionM.mockResolvedValue(7);
+  readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
   listM.mockResolvedValue([]);
   captureM.mockResolvedValue({ created: true, issue: { id: 'ISS-1' } } as never);
   getIssueM.mockResolvedValue(null);
@@ -513,6 +520,25 @@ describe('emitScorecard', () => {
       code: 'grader_in_implementer_lineage',
       error: expect.stringContaining('spawn/rebind lineage'),
     });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an acceptance grader cannot read the current rubric revision', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    readRubricPlanRevisionM.mockResolvedValue({ ok: false, revision: null });
+
+    await expect(
+      emitScorecard(
+        { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+        { createdBy: 'su-grader' },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: 'grader_is_sole_vetting_critic_revision_unreadable',
+      error: expect.stringContaining('current revision could not be read'),
+    });
+    expect(readRubricPlanRevisionM).toHaveBeenCalledWith('acceptance-rubric');
+    expect(listM).not.toHaveBeenCalled();
     expect(captureM).not.toHaveBeenCalled();
   });
 
