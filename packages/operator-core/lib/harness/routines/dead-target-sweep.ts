@@ -87,7 +87,47 @@ export interface RoutineRow {
   id: string;
   install_slug: string;
   name: string;
-  rec: PermanenceRecord | null;
+  /** Whatever is sitting at `metadata.health.dead_target` — free-form jsonb until parsed. */
+  rec: unknown;
+}
+
+/** Epoch ms from either the decider's native number or the stamp's ISO-8601 string. */
+function epochMs(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string') {
+    const n = Date.parse(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Parse the PERSISTED stamp back into the decider's `PermanenceRecord`.
+ *
+ * These are deliberately different shapes and this is the ONE place they meet. The stamp is
+ * written for a HUMAN reading `routines:list`: ISO-8601 timestamps, snake_case keys like the
+ * rest of the row. The decider works in epoch ms. Keeping the bridge explicit is what makes
+ * the round trip testable — while it was implicit (the SELECT was simply *typed* as a
+ * `PermanenceRecord`) writer and reader disagreed silently, `nowMs - undefined` produced NaN,
+ * and the confirming sweep threw on `new Date(undefined).toISOString()` — so the reaper could
+ * never actually park anything, and every unit test still passed because each handed
+ * `priorRecord` a hand-built record rather than one this module had written.
+ *
+ * It fails CLOSED. Anything unreadable yields null, which restarts the run from a single
+ * sighting instead of parking on a record whose age cannot be established — a missed park
+ * costs one more tick, a park on a misread record disables a live install.
+ */
+export function recordFromStamp(raw: unknown): PermanenceRecord | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const s = raw as Record<string, unknown>;
+  if (typeof s.confirmations !== 'number' || !Number.isFinite(s.confirmations)) return null;
+  // Only the two permanent states are ever persisted (any other verdict CLEARS the record),
+  // so a stamp claiming anything else is not a run this sweep may continue.
+  if (s.state !== 'root-missing' && s.state !== 'git-corrupt') return null;
+  const firstSeenAtMs = epochMs(s.firstSeenAtMs ?? s.first_seen_at);
+  const lastSeenAtMs = epochMs(s.lastSeenAtMs ?? s.last_seen_at);
+  if (firstSeenAtMs === null || lastSeenAtMs === null) return null;
+  return { state: s.state, firstSeenAtMs, lastSeenAtMs, confirmations: s.confirmations };
 }
 
 /** Read the prior permanence record for an install. Rows of one install should agree, but if
@@ -96,8 +136,8 @@ export interface RoutineRow {
 export function priorRecord(rows: readonly RoutineRow[]): PermanenceRecord | null {
   let best: PermanenceRecord | null = null;
   for (const r of rows) {
-    const rec = r.rec;
-    if (!rec || typeof rec.confirmations !== 'number') continue;
+    const rec = recordFromStamp(r.rec);
+    if (!rec) continue;
     if (!best || rec.confirmations > best.confirmations) best = rec;
   }
   return best;
