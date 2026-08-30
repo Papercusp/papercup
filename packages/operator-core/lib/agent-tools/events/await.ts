@@ -927,7 +927,7 @@ export default defineTool({
         // `view.filter` tree can NEVER carry a `harness` leaf (D-002 — harness scoping is a
         // resolver-level floor, not spec vocabulary; see ITEM_FIELDS in claim-spec.ts), so
         // `claimSpecFilterToClaimablePayloadFilter` alone can only narrow on kind/id/title/
-        // plan/tags. A harness-bound fleet spec (the common case — every fleet:launch-on-plan
+        // plan/tags/goal. A harness-bound fleet spec (the common case — every fleet:launch-on-plan
         // fleet stores its `harness_slug` on the very same cup_claim_specs row) was silently
         // left UNSCOPED on harness, so this auto-scope fired on any matching-kind item from
         // ANY harness in the workspace — observed live: a papercusp fleet member woken by a
@@ -1384,7 +1384,7 @@ export default defineTool({
               ? {
                   unscoped_claimable_await: true,
                   unscoped_claimable_advice:
-                    'EI-13846: no payload_filter was passed, and you have no claim spec that narrows over the claimable payload (id/kind/title/plan), so this await is UNSCOPED — it will wake you on EVERY hive-wide work-item:claimable emission, which fires constantly on a large board. If you are fleet-scoped, confirm scheduler:get_claim_spec narrows on one of those fields; otherwise pass an explicit payload_filter or expect frequent guaranteed-miss wakes.',
+                    'EI-13846: no payload_filter was passed, and you have no claim spec that narrows over the claimable payload (id/kind/title/plan/tags/goal), so this await is UNSCOPED — it will wake you on EVERY hive-wide work-item:claimable emission, which fires constantly on a large board. If you are fleet-scoped, confirm scheduler:get_claim_spec narrows on one of those fields; otherwise pass an explicit payload_filter or expect frequent guaranteed-miss wakes.',
                 }
               : {}),
             ...(autoScopedPipeline
