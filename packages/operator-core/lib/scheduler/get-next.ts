@@ -1141,7 +1141,7 @@ function candidateFromSource(sql: OrgSql, sub: SqlFragment, precomputedTable?: s
   return precomputedTable ? sql`(SELECT * FROM ${sql.unsafe(precomputedTable)})` : sql`(${sub})`;
 }
 
-export async function aggregateIssueClaimExclusions(
+async function aggregateIssueClaimExclusionsOn(
   filter: FilterNode | undefined,
   opts: {
     harness: string;
@@ -1175,6 +1175,10 @@ export async function aggregateIssueClaimExclusions(
      *  are per-floor diagnostics answering "why can't I claim", and an observation row is already
      *  unclaimable for a reason that has its own bucket. */
     laneScopedPopulation?: { matchedByFilter: number; observationLane: number };
+    /** Server-side per-statement cap applied by the exported wrapper on the STANDALONE
+     *  (no `client`) path only. Ignored when `client` is injected, because that caller's
+     *  transaction already carries its own `SET LOCAL statement_timeout`. */
+    statementTimeoutMs?: number;
   },
 ): Promise<IssueClaimExclusionBreakdown> {
   const sql = opts.client ?? getOrgPg().sql;
@@ -1317,6 +1321,54 @@ export async function aggregateIssueClaimExclusions(
       revisionRequestedAgentReview: r?.revision_requested_agent_review ?? 0,
     },
   };
+}
+
+/**
+ * Default server-side cap for a STANDALONE aggregateIssueClaimExclusions call. Matches
+ * {@link readIssueClaimability}'s own default for the SAME query family, so the bounded and
+ * standalone paths cannot drift into two different ideas of "too slow".
+ */
+const AGGREGATE_EXCLUSIONS_DEFAULT_STATEMENT_TIMEOUT_MS = 15_000;
+
+/**
+ * EI-21863190622583520 — aggregateIssueClaimExclusions is the most expensive query family in
+ * this system (independently measured in EI-21336921007507524), and until this wrapper existed
+ * every STANDALONE caller ran it with NO server-side bound at all: the inner function takes a
+ * bare pool checkout, and `adminPoolStatementTimeoutMs` is a connect-time GUC that only NEW
+ * connections carry. MEASURED 2026-08-30 on the live box, load 138/128 cores: one
+ * `pcusp:org-admin` backend ran this exact aggregate for >=180s (sampled at 93.6s -> 113.8s ->
+ * 180.5s on one monotonic query_start), and two more org-admin backends sat at 161.3s / 112.5s
+ * on connections 40.2 / 32.5 minutes old.
+ *
+ * WHY IT WENT UNNOTICED — and why a caller-side bound was never enough: the get_next miss path
+ * wraps this call in `withBoundedTimeout(..., 1_500ms)`, but that bounds only the CALLER.
+ * bounded-timeout.ts's own docstring says the query "still runs to completion in the background
+ * even after a timeout degrades the caller" (WI-7099 filed that defect separately). So the
+ * busiest call site fires the system's most expensive read on EVERY get_next miss, abandons it
+ * after 1.5s, and leaves it burning a core and holding a pooled connection for minutes. The
+ * caller sees a tidy fallback; the database sees unbounded work.
+ *
+ * The bound therefore has to live server-side, which is what this wrapper adds. Injecting a
+ * `client` still opts out, because that path (readIssueClaimability) is already inside its own
+ * bounded transaction and shares one snapshot + temp table with its sibling reads — opening a
+ * second transaction there would break both properties.
+ *
+ * SAFE BY CONSTRUCTION: all three standalone callers already degrade on failure —
+ * fleet-scope-admission and drain-stamp `catch { return null }`, lane-health `catch`es, and the
+ * get_next miss path takes `withBoundedTimeout`'s fallback (it catches rejections, not just its
+ * own timer). So a cap converts wasted DB work into the null these callers already handle.
+ */
+export async function aggregateIssueClaimExclusions(
+  filter: FilterNode | undefined,
+  opts: Parameters<typeof aggregateIssueClaimExclusionsOn>[1],
+): Promise<IssueClaimExclusionBreakdown> {
+  if (opts.client) return aggregateIssueClaimExclusionsOn(filter, opts);
+  return boundedOrgTxn((tx) => aggregateIssueClaimExclusionsOn(filter, { ...opts, client: tx }), {
+    statementTimeoutMs: Math.max(
+      100,
+      Math.trunc(opts.statementTimeoutMs ?? AGGREGATE_EXCLUSIONS_DEFAULT_STATEMENT_TIMEOUT_MS),
+    ),
+  });
 }
 
 /** Bounded per-floor SAMPLE of excluded row ids — the companion read to
