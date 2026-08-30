@@ -31,6 +31,7 @@ import {
   designatesHarness,
   findUnguardedHarnessArgs,
   schemaMayCarrySlug,
+  suspectsHarness,
   topLevelArgEntries,
   type HarnessArgCoverageTool,
 } from '../packages/operator-core/lib/endpoint-route/hive-harness-arg-coverage.ts';
@@ -55,14 +56,16 @@ if (listMode) {
   for (const tool of tools) {
     for (const [arg, propSchema] of topLevelArgEntries(tool.inputSchema)) {
       scanned++;
-      if (!designatesHarness(arg)) continue;
+      if (!suspectsHarness(arg, propSchema)) continue;
       const disposition = guarded.has(arg)
-        ? 'GUARDED'
-        : exempt.has(arg)
-          ? 'EXEMPT'
-          : !schemaMayCarrySlug(propSchema)
-            ? 'NOT-A-SLUG'
-            : 'UNGUARDED';
+        ? 'LITERAL-BRANCH'
+        : designatesHarness(arg)
+          ? 'SWEPT'
+          : exempt.has(arg)
+            ? 'EXEMPT'
+            : !schemaMayCarrySlug(propSchema)
+              ? 'NOT-A-SLUG'
+              : 'NEEDS-DISPOSITION';
       const row = byArg.get(arg) ?? { tools: [], disposition };
       row.tools.push(tool.name);
       byArg.set(arg, row);

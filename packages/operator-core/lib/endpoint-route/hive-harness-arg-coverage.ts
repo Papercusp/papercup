@@ -115,6 +115,36 @@ export function schemaMayCarrySlug(propSchema: unknown): boolean {
   return true; // no declared type -> fail closed
 }
 
+/**
+ * The SUSPICION net — deliberately WIDER than `designatesHarness`.
+ *
+ * Once the clamp sweeps every `designatesHarness` argument generically, a
+ * detector built on that same predicate can never find anything: enforcement
+ * and detection would be one opinion, and the test would be decoration. The
+ * residual risk after the sweep is a harness-naming argument whose spelling the
+ * predicate does not RECOGNISE — `realmSlug`, `podSlug`, a name that only its
+ * description reveals. Nothing structural can identify those, so this net casts
+ * wider and asks a human to disposition the difference:
+ *
+ *   suspicious  \  enforced  =  needs a decision
+ *
+ * `installSlug` and `potSlug` are exactly the shape this would have caught
+ * BEFORE anyone thought to add them by hand.
+ */
+export function suspectsHarness(argName: string, propSchema?: unknown): boolean {
+  if (designatesHarness(argName)) return true;
+  const n = argName.toLowerCase().replace(/[_-]/g, '');
+  // Any *Slug-shaped identifier is a candidate routing key.
+  if (n.endsWith('slug') || n.endsWith('slugs')) return true;
+  // A description that talks about harnesses/hives/pots, whatever the name.
+  const desc =
+    propSchema && typeof propSchema === 'object'
+      ? (propSchema as Record<string, unknown>).description
+      : undefined;
+  if (typeof desc === 'string' && /\b(harness|hive|pot)\b/i.test(desc)) return true;
+  return false;
+}
+
 /** A registered tool, reduced to what this detector needs. */
 export interface HarnessArgCoverageTool {
   /** MCP name where present, else any stable identifier for the report. */
@@ -170,25 +200,34 @@ export function collectHarnessSlugArgs(
 }
 
 /**
- * THE DETECTOR. Every (tool, arg) pair whose argument name designates a harness
- * and whose declared type could carry a slug, but which the clamp neither reads
- * literally nor exempts.
+ * Is this argument already COVERED by the hive clamp?
  *
- * A NON-EMPTY result means the hive clamp has a hole: that argument can name a
- * harness outside the caller's hive and nothing will stop it.
+ * Either it is one of the four literal branches, or the generic sweep picks it
+ * up because `designatesHarness` recognises the spelling.
+ */
+export function isClampEnforcedArg(argName: string): boolean {
+  // EXACT match for the literal branches, never normalized — see trap (1).
+  return HIVE_CLAMP_LITERAL_ARGS.includes(argName) || designatesHarness(argName);
+}
+
+/**
+ * THE DETECTOR. Every (tool, arg) pair that LOOKS like it could name a harness
+ * but which the clamp does not cover and no one has dispositioned.
+ *
+ * A NON-EMPTY result is a question for a human, not necessarily a hole: either
+ * the arg really can route to another hive (widen `designatesHarness` so the
+ * clamp sweeps it) or it cannot (add an exemption stating why).
  */
 export function findUnguardedHarnessArgs(
   tools: readonly HarnessArgCoverageTool[],
-  options?: { readonly guarded?: readonly string[]; readonly exemptions?: Readonly<Record<string, string>> },
+  options?: { readonly exemptions?: Readonly<Record<string, string>> },
 ): UnguardedHarnessArg[] {
-  // EXACT match, never normalized — see trap (1).
-  const guarded = new Set(options?.guarded ?? HIVE_CLAMP_LITERAL_ARGS);
   const exempt = new Set(Object.keys(options?.exemptions ?? HIVE_CLAMP_ARG_EXEMPTIONS));
   const findings: UnguardedHarnessArg[] = [];
   for (const tool of tools) {
     for (const [arg, propSchema] of topLevelArgEntries(tool.inputSchema)) {
-      if (!designatesHarness(arg)) continue;
-      if (guarded.has(arg) || exempt.has(arg)) continue;
+      if (isClampEnforcedArg(arg) || exempt.has(arg)) continue;
+      if (!suspectsHarness(arg, propSchema)) continue;
       if (!schemaMayCarrySlug(propSchema)) continue;
       findings.push({ tool: tool.name, arg });
     }
