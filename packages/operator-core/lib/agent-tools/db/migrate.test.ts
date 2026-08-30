@@ -417,6 +417,40 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(h.recordResourceAction).toHaveBeenCalledTimes(1);
   });
 
+  it('EI-217072: places the completed pre-destructive snapshot admission guard before guarded DDL', async () => {
+    const guardedFile = '/repo/libs/papercusp/libs/db/sql/1016-pre-snapshot-guarded.sql';
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: guardedFile, confirm: true }, CTX),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+
+    const [, , opts] = h.spawnSync.mock.calls[0];
+    const script = (opts as { input: string }).input;
+    const guardIndex = script.indexOf('papercusp_pre_destructive_snapshot_guard');
+    const includeIndex = script.indexOf(`\\i ${guardedFile}`);
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(includeIndex).toBeGreaterThan(guardIndex);
+    expect(script).toContain("latest.status = 'ok'");
+    expect(script).toContain('latest.finished_at IS NOT NULL');
+    expect(script).toContain('latest.kopia_snapshot_id IS NOT NULL');
+    expect(script).toContain('latest.db_dump_ok IS TRUE');
+  });
+
+  it('EI-217072: exempts migration 1006 so it can introduce db_dump_ok before the guard is meaningful', async () => {
+    const schemaMigration = '/repo/libs/papercusp/libs/db/sql/1006-backup-snapshot-db-dump-integrity.sql';
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: schemaMigration, confirm: true }, CTX),
+    );
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+
+    const [, , opts] = h.spawnSync.mock.calls[0];
+    const script = (opts as { input: string }).input;
+    expect(script).not.toContain('papercusp_pre_destructive_snapshot_guard');
+    expect(script).toContain(`\\i ${schemaMigration}`);
+  });
+
   it('a failed psql apply is reported and never records either ledger', async () => {
     h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'ERROR: syntax error' });
     const out = parse(

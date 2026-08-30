@@ -343,6 +343,14 @@ export async function openPuiSuSession(input: PuiSuSessionInput): Promise<PuiSuS
     launched = await launchAgent({
       ...opts,
       agent: backend,
+      // PUI is a non-interactive launcher, so its account route must be
+      // explicit. A null/omitted account reaches bootstrap-su as "use the
+      // owner's nominated default", which may silently route through the
+      // inference gateway. The real Rust PUI already defaults this field to
+      // `default` (system credential, gateway skipped); keep the shared TS door
+      // on the same contract so tests and alternate PUI clients cannot create a
+      // different launch_argv by omission.
+      account: opts.account ?? 'default',
       carry,
       deferSpawn: true,
       attachAdvSessionId: null,

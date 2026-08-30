@@ -228,11 +228,97 @@ const QUANTIFIER_RE =
 const SCOPE_DISCLAIMER_RE =
   /\b(?:never|not)\s+(?:[a-z][a-z'-]*\s+){0,3}by\s+me\b|\b(?:the\s+)?(?:whole|entire)\s+of\s+what\s+my\s+probe(?:'s)?\s+(?:saw|observed|checked|measured)\b|\bsays?\s+nothing\s+about\b|\b(?:was|were|is|are)\s+never\s+scoped\s+to\b|\b(?:does|do)\s+not\s+cover\b|\blimited\s+to\b|\boutside\s+(?:this|the)\s+probe\b/gi;
 
+/**
+ * Non-assertive claim fragments. Carry checks commonly mix a factual
+ * assertion with a future trigger ("if no values arrive, ping ...") or with
+ * instructions for the next wake ("emit ...; never C6 alone"). A lexical
+ * quantifier scan cannot tell those apart from an absence assertion, so mask
+ * only the conditional antecedent / imperative clause before scanning.
+ *
+ * This is deliberately a small, fail-open approximation rather than a parser:
+ * it removes the two measured false-positive shapes while leaving quantifiers
+ * in neighbouring declarative clauses visible.
+ */
+const CONDITIONAL_MARKER_RE = /\b(?:if|unless|when)\b/gi;
+const PAST_WINDOW_WITH_RE =
+  /\bpast\s+(?:the\s+)?(?:last\s+)?\d+\s*(?:s|sec|secs|second|seconds|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)\s+with\b/gi;
+const CLAUSE_BOUNDARY_RE = /[,;:.!?—–\n]/g;
+
+/**
+ * Base-form verbs that begin the directive clauses this fleet writes in
+ * carried checks. Keep the set explicit: treating every sentence-initial word
+ * as an imperative would hide ordinary observations ("No values arrived").
+ */
+const IMPERATIVE_VERB_RE =
+  /^(?:add|admit|acquire|alert|ask|avoid|call|capture|check|choose|clear|close|confirm|continue|copy|declare|delete|describe|do|drop|edit|emit|ensure|exclude|execute|finish|follow|include|inspect|keep|leave|limit|list|load|mark|measure|message|move|narrow|open|park|pass|pause|ping|prefer|preserve|probe|read|record|recheck|refresh|release|remove|repeat|report|rerun|re-run|retry|run|save|send|set|split|start|stop|strip|take|treat|trust|use|verify|wait|widen|write)\b/i;
+const DIRECTIVE_PREFIX_RE = /^\s*(?:please\s+)?(?:do\s+not|don't)\b/i;
+const DIRECTIVE_QUANTIFIER_RE =
+  /^\s*(?:never|always)\s+(?:(?:the|a|an)\s+)?(?:[A-Z][A-Za-z0-9_.:/-]*|\d|add|call|check|emit|follow|pass|ping|read|re-run|rerun|retry|run|send|trust|use|verify|widen|write)\b/;
+
+function nextClauseBoundary(text: string, start: number): number {
+  CLAUSE_BOUNDARY_RE.lastIndex = start;
+  const boundary = CLAUSE_BOUNDARY_RE.exec(text);
+  return boundary?.index ?? text.length;
+}
+
+function maskRange(text: string, start: number, end: number): string {
+  if (end <= start) return text;
+  return `${text.slice(0, start)}${' '.repeat(end - start)}${text.slice(end)}`;
+}
+
+function maskConditionalAntecedents(text: string): string {
+  const ranges: Array<[number, number]> = [];
+  for (const marker of text.matchAll(CONDITIONAL_MARKER_RE)) {
+    const start = marker.index ?? 0;
+    ranges.push([start, nextClauseBoundary(text, start + marker[0].length)]);
+  }
+  for (const marker of text.matchAll(PAST_WINDOW_WITH_RE)) {
+    const start = marker.index ?? 0;
+    ranges.push([start, nextClauseBoundary(text, start + marker[0].length)]);
+  }
+  // Apply right-to-left so the offsets remain those of the original claim.
+  return ranges
+    .sort((a, b) => b[0] - a[0])
+    .reduce((masked, [start, end]) => maskRange(masked, start, end), text);
+}
+
+function isImperativeClause(clause: string): boolean {
+  const normalized = clause
+    .replace(/^\s*(?:[-*]\s*)?(?:[✓?⚠🚨]\s*)?/, '')
+    .replace(/^\s*(?:and|then|so)\s+/i, '');
+  return IMPERATIVE_VERB_RE.test(normalized) || DIRECTIVE_PREFIX_RE.test(normalized) || DIRECTIVE_QUANTIFIER_RE.test(normalized);
+}
+
+function maskImperativeClauses(text: string): string {
+  const ranges: Array<[number, number]> = [];
+  let clauseStart = 0;
+  CLAUSE_BOUNDARY_RE.lastIndex = 0;
+  for (const boundary of text.matchAll(CLAUSE_BOUNDARY_RE)) {
+    const end = boundary.index ?? 0;
+    if (isImperativeClause(text.slice(clauseStart, end))) {
+      ranges.push([clauseStart, end]);
+    }
+    clauseStart = end + boundary[0].length;
+  }
+  if (isImperativeClause(text.slice(clauseStart))) {
+    ranges.push([clauseStart, text.length]);
+  }
+  return ranges
+    .sort((a, b) => b[0] - a[0])
+    .reduce((masked, [start, end]) => maskRange(masked, start, end), text);
+}
+
+function maskNonAssertiveClaimClauses(claim: string): string {
+  // Conditional masking happens first so the consequent can be recognized as
+  // an imperative independently of the antecedent's words.
+  return maskImperativeClauses(maskConditionalAntecedents(claim));
+}
+
 function findClaimQuantifier(claim: string): RegExpExecArray | null {
   // Preserve offsets and the original match text while hiding only
   // quantifiers that occur inside an explicit scope disclaimer.
   const claimWithoutDisclaimers = claim.replace(SCOPE_DISCLAIMER_RE, (match) => ' '.repeat(match.length));
-  return QUANTIFIER_RE.exec(claimWithoutDisclaimers);
+  return QUANTIFIER_RE.exec(maskNonAssertiveClaimClauses(claimWithoutDisclaimers));
 }
 
 /**

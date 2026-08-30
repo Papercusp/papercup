@@ -201,6 +201,55 @@ describe('detectScopeOverreach — the advisory lint', () => {
     ).toHaveLength(1);
   });
 
+  it('does NOT flag quantifiers inside conditional trigger antecedents', () => {
+    const triggers = [
+      'ESCALATION FLOOR: if no values ping by ~22:55Z, ping cc991 for run-6 status.',
+      'When no values arrive, ping the owner for a fresh status.',
+      'Unless every worker reports ready, keep the run parked.',
+      'Past 24 hours with no gate verdict, escalate to the release owner.',
+    ];
+    for (const claim of triggers) {
+      expect(
+        detectScopeOverreach([{ claim, recheck: 'tail -5 /tmp/x.log', verified: 'yes' }]),
+        claim,
+      ).toHaveLength(0);
+    }
+  });
+
+  it('does NOT flag quantifiers inside imperative/directive clauses', () => {
+    const directives = [
+      'Emit the FULL C1-C6 set in ONE card, never C6 alone.',
+      'Verify that every item passes before reporting the result.',
+      'Do not trust any cached verdict until release:trace confirms it.',
+    ];
+    for (const claim of directives) {
+      expect(
+        detectScopeOverreach([{ claim, recheck: 'tail -5 /tmp/x.log', verified: 'yes' }]),
+        claim,
+      ).toHaveLength(0);
+    }
+  });
+
+  it('keeps declarative assertions visible when a row mixes them with triggers or directives', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'No gate run produced a verdict today; if no values arrive, ping the owner.',
+          recheck: 'tail -5 /tmp/x.log',
+          verified: 'split evidence',
+        },
+        {
+          claim: 'Emit the full report, never C6 alone; no gate run produced a verdict today.',
+          recheck: 'tail -5 /tmp/x.log',
+          verified: 'split evidence',
+        },
+      ]),
+    ).toMatchObject([
+      { quantifier: 'No', probeScope: 'last 5 lines' },
+      { quantifier: 'no', probeScope: 'last 5 lines' },
+    ]);
+  });
+
   it('does NOT flag quantifiers used to disclaim the writer\'s own scope', () => {
     const narrowing = [
       {

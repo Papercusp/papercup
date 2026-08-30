@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { RouteDefinition } from '@papercusp/agent-mcp';
+import type { RouteDefinition } from '@papercusp/tooldef/define-tool';
 import {
   HostedSessionCookieCodec,
   type CreateHostedSessionInput,

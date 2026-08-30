@@ -510,11 +510,12 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
    *  independent complete acceptance grading for everything else (so the ONLY
    *  variable under test is the vetting state). */
   const stockScorecards = (metaCards: ScorecardRow[], acceptanceCards?: ScorecardRow[]) => {
-    mockScorecards.mockImplementation(async (filter?: { rubricRef?: string }) =>
-      filter?.rubricRef === 'meta-acceptance-rubric'
-        ? metaCards
-        : (acceptanceCards ?? [scorecard({ createdBy: 'su-grader' })]),
-    );
+    mockScorecards.mockImplementation(async (filter?: { rubricRef?: string; subjectRef?: string }) => {
+      if (filter?.rubricRef === 'meta-acceptance-rubric') {
+        return filter.subjectRef ? metaCards.filter((card) => card.subject?.ref === filter.subjectRef) : metaCards;
+      }
+      return acceptanceCards ?? [scorecard({ createdBy: 'su-grader' })];
+    });
   };
 
   beforeEach(() => {
@@ -542,6 +543,21 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     expect(v.message).toContain('consult:get_feedback');
   });
 
+  it('names a historical subject-less meta-scorecard as malformed diagnostic evidence', async () => {
+    stockScorecards([
+      metaVettingCard({
+        issueId: 'EI-subjectless-meta',
+        subject: undefined,
+        vetting: undefined,
+      }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+    expect(v.message).toContain('EI-subjectless-meta');
+    expect(v.message).toContain('subject-less meta-scorecard');
+    expect(v.message).toContain("names no acceptance rubric");
+  });
+
   it('a plain meta-grade WITHOUT the linked consult does not satisfy — the consult is what makes an attestation a vetting', async () => {
     stockScorecards([metaVettingCard({ vetting: undefined })]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
@@ -554,6 +570,7 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
     expect(v.message).toContain('revision 6');
     expect(v.message).toContain('revision 7');
+    expect(v.message).toContain('EI-vet');
   });
 
   it('a current-revision vetting with a linked consult satisfies (meta-rubric still proposed — tolerance proven)', async () => {

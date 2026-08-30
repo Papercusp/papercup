@@ -130,7 +130,6 @@ describe('launchAgent', () => {
         slug: 'papercup',
         planSlug: 'pui-plan',
         model: 'selected-model',
-        account: 'default',
       });
       expect(result).toEqual({
         ok: true,
@@ -148,6 +147,10 @@ describe('launchAgent', () => {
       expect(firstBody()).toMatchObject({
         agent: backend,
         model: 'selected-model',
+        // The account route is a WRITER, not an incidental default:
+        // launch-su persists it into the deferred row's launch_argv. Omitting
+        // it used to let bootstrap-su reinterpret the PUI launch as the
+        // owner-nominated gateway route.
         account: 'default',
         carry: 'warm',
         defer_spawn: true,

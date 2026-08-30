@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, cascadeDanglingLedes, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionParts, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, PROJECTION_BUDGET_CHARS, projectionBanner, projectionBudget, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, cascadeDanglingLedes, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionParts, danglingProjectionWarnings, docClaimCutMatches, docPartIdentityProblems, FULL_PRECOMPRESSION_MARKER, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, PROJECTION_BUDGET_CHARS, projectionBanner, projectionBudget, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -27,6 +27,7 @@ type Part = {
   client_scope: string[];
   target_section: string | null;
   project_rank: number;
+  tombstone?: boolean;
 };
 
 let seq = 0;
@@ -146,6 +147,112 @@ describe('composition', () => {
     const parts = [part({ body: 'kept rule' }), part({ body: 'lost rule' })];
     const corrupted = assemble([parts[0]]);
     expect(verifyBodiesPresent(corrupted, parts)).toEqual([parts[1].part_key]);
+  });
+});
+
+describe('doc-part identity guard', () => {
+  it('accepts a projecting row whose body retains a discriminating key token', () => {
+    const row = part({
+      part_key: 'section-a-pgrep-q-does-not-ex',
+      target_section: 'Section A',
+      body: 'The pgrep command is not supported here.',
+    });
+    expect(docPartIdentityProblems([row])).toEqual([]);
+  });
+
+  it('CONTROL — reports a projecting row whose body was replaced by an unrelated rule', () => {
+    const row = part({
+      part_key: 'section-a-pgrep-q-does-not-ex',
+      target_section: 'Section A',
+      body: 'Use find-newermt only with bfs 4.1.1.',
+    });
+    expect(docPartIdentityProblems([row])).toMatchObject([
+      {
+        part_key: row.part_key,
+        code: 'key-body-mismatch',
+      },
+    ]);
+  });
+
+  it('skips corpus-only, tombstoned, and evidence rows in the key/body heuristic', () => {
+    const corpusOnly = part({
+      part_key: 'section-a-pgrep-q-does-not-ex',
+      target_section: 'Section A',
+      client_scope: [],
+      body: 'An unrelated corpus-only observation.',
+    });
+    const tombstoned = part({
+      part_key: 'section-a-pgrep-q-does-not-ex',
+      target_section: 'Section A',
+      tombstone: true,
+      body: 'An unrelated tombstoned observation.',
+    });
+    const evidence = part({
+      part_key: 'section-a-pgrep-q-does-not-ex#evidence',
+      target_section: 'Section A',
+      client_scope: [],
+      body: 'An unrelated evidence observation.',
+    });
+    expect(docPartIdentityProblems([corpusOnly, tombstoned, evidence])).toEqual([]);
+  });
+
+  it('stays conservative when truncation leaves only generic key words', () => {
+    const row = part({
+      part_key: 'section-a-the-is-a',
+      target_section: 'Section A',
+      body: 'A body with no copy of the generic key words.',
+    });
+    expect(docPartIdentityProblems([row])).toEqual([]);
+  });
+
+  it('reports pre-compression evidence whose projecting sibling was lost', () => {
+    const evidence = part({
+      part_key: 'section-a-pgrep-q-does-not-ex#evidence',
+      target_section: 'Section A',
+      client_scope: [],
+      body: `${FULL_PRECOMPRESSION_MARKER}\n\nThe pgrep rule was preserved here.`,
+    });
+    expect(docPartIdentityProblems([evidence])).toMatchObject([
+      {
+        part_key: evidence.part_key,
+        code: 'orphaned-full-precompression-evidence',
+      },
+    ]);
+  });
+
+  it('reports pre-compression evidence disconnected from its projecting sibling', () => {
+    const sibling = part({
+      part_key: 'section-a-pgrep-q-does-not-ex',
+      target_section: 'Section A',
+      body: 'The pgrep command is not supported here.',
+    });
+    const evidence = part({
+      part_key: `${sibling.part_key}#evidence`,
+      target_section: 'Section A',
+      client_scope: [],
+      body: `${FULL_PRECOMPRESSION_MARKER}\n\nA completely unrelated unique protocol rule.`,
+    });
+    expect(docPartIdentityProblems([sibling, evidence])).toMatchObject([
+      {
+        part_key: evidence.part_key,
+        code: 'evidence-not-backed-by-projected-sibling',
+      },
+    ]);
+  });
+
+  it('accepts pre-compression evidence that still overlaps its projecting sibling', () => {
+    const sibling = part({
+      part_key: 'section-a-pgrep-q-does-not-ex',
+      target_section: 'Section A',
+      body: 'The pgrep command is not supported here.',
+    });
+    const evidence = part({
+      part_key: `${sibling.part_key}#evidence`,
+      target_section: 'Section A',
+      client_scope: [],
+      body: `${FULL_PRECOMPRESSION_MARKER}\n\nThe pgrep rule was preserved here with more detail.`,
+    });
+    expect(docPartIdentityProblems([sibling, evidence])).toEqual([]);
   });
 });
 

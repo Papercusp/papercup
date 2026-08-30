@@ -71,6 +71,8 @@ const { applyPendingMigrationsAtBoot, applyPendingMigrationsNow, reconcileMigrat
 let rootSql: postgres.Sql;
 let bootClient: postgres.Sql;
 let dbUrl: string;
+const PRE_DESTRUCTIVE_TEST_WORKSPACE = 'ei-217072-pre-snapshot-test';
+const PRIOR_WORKSPACE_ENV = process.env.PAPERCUSP_WORKSPACE_ID;
 
 // EI-8888-adjacent (2026-07-09 host-load root-cause finding): every mkdtemp()
 // below lands under the fleet-wide shared TMPDIR (/tmp/pcv — pinned by
@@ -161,10 +163,33 @@ beforeAll(async () => {
       intent text,
       reserved_at timestamptz NOT NULL DEFAULT now()
     )`);
+  // The snapshot-admission regression exercises the native runner against a
+  // minimal but schema-faithful receipt table. The real 000-baseline creates
+  // this table; this integration fixture creates only the relation needed by
+  // the focused migration runner tests above it.
+  await rootSql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.backup_snapshots (
+      id bigint PRIMARY KEY,
+      workspace_id text NOT NULL,
+      kopia_snapshot_id text,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz,
+      status text NOT NULL DEFAULT 'running',
+      trigger_reason text NOT NULL,
+      trigger_context jsonb,
+      bytes_added bigint,
+      bytes_total bigint,
+      sources_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+      error_text text,
+      db_dump_ok boolean
+    )`);
+  process.env.PAPERCUSP_WORKSPACE_ID = PRE_DESTRUCTIVE_TEST_WORKSPACE;
   bootClient = postgres(dbUrl, { max: 1, prepare: false, onnotice: () => {} });
 }, 90_000);
 
 afterAll(async () => {
+  if (PRIOR_WORKSPACE_ENV === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+  else process.env.PAPERCUSP_WORKSPACE_ID = PRIOR_WORKSPACE_ENV;
   await bootClient?.end({ timeout: 5 });
   await rootSql?.end({ timeout: 5 });
   await Promise.all(createdSqlDirs.map((dir) => rm(dir, { recursive: true, force: true })));
@@ -418,6 +443,94 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       await boot?.catch(() => {});
       await holder.end({ timeout: 5 });
     }
+  });
+});
+
+describe('native boot pre-destructive snapshot admission (EI-217072)', () => {
+  async function withSuppressedConsoleError<T>(fn: () => Promise<T>): Promise<T> {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      return await fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  beforeEach(async () => {
+    await rootSql`
+      DELETE FROM harness_shared.backup_snapshots
+       WHERE workspace_id = ${PRE_DESTRUCTIVE_TEST_WORKSPACE}`;
+  });
+
+  it('leaves a post-1006 migration pending when no completed pre-destructive receipt exists', async () => {
+    const filename = '1016-ei-217072-no-receipt.sql';
+    const dir = makeSqlDir({
+      [filename]: 'CREATE TABLE harness_shared.ei_217072_no_receipt (id int);',
+    });
+    await seedMigrationReservations([filename]);
+
+    const result = await withSuppressedConsoleError(() => applyPendingMigrationsNow({ sqlDir: dir }));
+
+    expect(result).toMatchObject({
+      applied: 0,
+      failed: [{ file: filename, error: expect.stringContaining('pre-destructive snapshot admission failed') }],
+    });
+    const ledger = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
+    expect(ledger).toEqual([]);
+    const relation = await rootSql<{ name: string | null }[]>`
+      SELECT to_regclass('harness_shared.ei_217072_no_receipt')::text AS name`;
+    expect(relation[0]?.name).toBeNull();
+  });
+
+  it('does not let an older completed receipt mask a newer running receipt', async () => {
+    const filename = '1017-ei-217072-newest-running.sql';
+    const dir = makeSqlDir({
+      [filename]: 'CREATE TABLE harness_shared.ei_217072_newest_running (id int);',
+    });
+    await seedMigrationReservations([filename]);
+    await rootSql`
+      INSERT INTO harness_shared.backup_snapshots
+        (id, workspace_id, trigger_reason, status, started_at, finished_at, kopia_snapshot_id, db_dump_ok)
+      VALUES
+        (101, ${PRE_DESTRUCTIVE_TEST_WORKSPACE}, 'pre_destructive', 'ok',
+          '2026-08-30T05:00:00Z', '2026-08-30T05:01:00Z', 'kopia-good', true),
+        (102, ${PRE_DESTRUCTIVE_TEST_WORKSPACE}, 'pre_destructive', 'running',
+          '2026-08-30T05:02:00Z', NULL, NULL, NULL)`;
+
+    const result = await withSuppressedConsoleError(() => applyPendingMigrationsNow({ sqlDir: dir }));
+
+    expect(result).toMatchObject({
+      applied: 0,
+      failed: [{ file: filename, error: expect.stringContaining('pre-destructive snapshot admission failed') }],
+    });
+    const relation = await rootSql<{ name: string | null }[]>`
+      SELECT to_regclass('harness_shared.ei_217072_newest_running')::text AS name`;
+    expect(relation[0]?.name).toBeNull();
+  });
+
+  it('applies a post-1006 migration once the newest receipt is complete and database-backed', async () => {
+    const filename = '1018-ei-217072-complete.sql';
+    const dir = makeSqlDir({
+      [filename]: 'CREATE TABLE harness_shared.ei_217072_complete (id int);',
+    });
+    await seedMigrationReservations([filename]);
+    await rootSql`
+      INSERT INTO harness_shared.backup_snapshots
+        (id, workspace_id, trigger_reason, status, started_at, finished_at, kopia_snapshot_id, db_dump_ok)
+      VALUES
+        (103, ${PRE_DESTRUCTIVE_TEST_WORKSPACE}, 'pre_destructive', 'ok',
+          '2026-08-30T05:03:00Z', '2026-08-30T05:04:00Z', 'kopia-complete', true)`;
+
+    const result = await applyPendingMigrationsNow({ sqlDir: dir });
+
+    expect(result).toMatchObject({ applied: 1, failed: [] });
+    const ledger = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
+    expect(ledger).toEqual([{ filename }]);
+    const relation = await rootSql<{ name: string | null }[]>`
+      SELECT to_regclass('harness_shared.ei_217072_complete')::text AS name`;
+    expect(relation[0]?.name).toBe('harness_shared.ei_217072_complete');
   });
 });
 

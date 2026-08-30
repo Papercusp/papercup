@@ -1,0 +1,156 @@
+diff --git a/node_modules/postgres/cf/src/connection.js b/node_modules/postgres/cf/src/connection.js
+index 8e79170..fd3b67b 100644
+--- a/node_modules/postgres/cf/src/connection.js
++++ b/node_modules/postgres/cf/src/connection.js
+@@ -254,6 +254,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function nextWrite(fn) {
++    // PAPERCUSP PATCH (WI-1048027): the socket can be torn down between write()
++    // scheduling this immediate and the immediate firing -- e.g. pgbouncer
++    // closing an idle server connection, after which closed() sets socket = null
++    // and reconnect() waits out a backoff during which queued queries still
++    // reach write(). Without this guard socket.write() raises
++    //   TypeError: Cannot read properties of null (reading 'write')
++    // from inside the Immediate, i.e. out of band: no query-level try/catch and
++    // no promise rejection handler can observe it, so it terminates the process.
++    // The close itself is already surfaced through
++    // closed() -> error(Errors.connection('CONNECTION_CLOSED', ...)), so
++    // dropping the unsendable chunk here loses no error signal.
++    if (socket === null) {
++      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
++      chunk = nextWriteTimer = null
++      return false
++    }
+     const x = socket.write(chunk, fn)
+     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
+     chunk = nextWriteTimer = null
+@@ -426,7 +442,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     if (stream || query || initial || sent.length)
+       error(Errors.connection('CONNECTION_DESTROYED', options))
+ 
++    // PAPERCUSP PATCH (WI-1048027): same deferred-write state reset as closed().
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     if (socket) {
+       socket.removeListener('data', data)
+       socket.removeListener('connect', connected)
+@@ -439,7 +457,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     incoming = Buffer.alloc(0)
+     remaining = 0
+     incomings = null
++    // PAPERCUSP PATCH (WI-1048027): reset the deferred-write STATE, not just the
++    // timer handle. reconnect() reuses this same closure and connected() resets
++    // neither field, so leaving nextWriteTimer non-null permanently wedges
++    // write()'s `nextWriteTimer === null` scheduling guard (deferred writes are
++    // never re-armed), and leaving `chunk` set prepends bytes buffered for the
++    // dead socket onto the next connection's StartupMessage.
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
+diff --git a/node_modules/postgres/cjs/src/connection.js b/node_modules/postgres/cjs/src/connection.js
+index 07f6716..b0e06ce 100644
+--- a/node_modules/postgres/cjs/src/connection.js
++++ b/node_modules/postgres/cjs/src/connection.js
+@@ -252,6 +252,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function nextWrite(fn) {
++    // PAPERCUSP PATCH (WI-1048027): the socket can be torn down between write()
++    // scheduling this immediate and the immediate firing -- e.g. pgbouncer
++    // closing an idle server connection, after which closed() sets socket = null
++    // and reconnect() waits out a backoff during which queued queries still
++    // reach write(). Without this guard socket.write() raises
++    //   TypeError: Cannot read properties of null (reading 'write')
++    // from inside the Immediate, i.e. out of band: no query-level try/catch and
++    // no promise rejection handler can observe it, so it terminates the process.
++    // The close itself is already surfaced through
++    // closed() -> error(Errors.connection('CONNECTION_CLOSED', ...)), so
++    // dropping the unsendable chunk here loses no error signal.
++    if (socket === null) {
++      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
++      chunk = nextWriteTimer = null
++      return false
++    }
+     const x = socket.write(chunk, fn)
+     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
+     chunk = nextWriteTimer = null
+@@ -424,7 +440,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     if (stream || query || initial || sent.length)
+       error(Errors.connection('CONNECTION_DESTROYED', options))
+ 
++    // PAPERCUSP PATCH (WI-1048027): same deferred-write state reset as closed().
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     if (socket) {
+       socket.removeListener('data', data)
+       socket.removeListener('connect', connected)
+@@ -437,7 +455,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     incoming = Buffer.alloc(0)
+     remaining = 0
+     incomings = null
++    // PAPERCUSP PATCH (WI-1048027): reset the deferred-write STATE, not just the
++    // timer handle. reconnect() reuses this same closure and connected() resets
++    // neither field, so leaving nextWriteTimer non-null permanently wedges
++    // write()'s `nextWriteTimer === null` scheduling guard (deferred writes are
++    // never re-armed), and leaving `chunk` set prepends bytes buffered for the
++    // dead socket onto the next connection's StartupMessage.
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()
+diff --git a/node_modules/postgres/src/connection.js b/node_modules/postgres/src/connection.js
+index 1b1cccd..48b9842 100644
+--- a/node_modules/postgres/src/connection.js
++++ b/node_modules/postgres/src/connection.js
+@@ -252,6 +252,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function nextWrite(fn) {
++    // PAPERCUSP PATCH (WI-1048027): the socket can be torn down between write()
++    // scheduling this immediate and the immediate firing -- e.g. pgbouncer
++    // closing an idle server connection, after which closed() sets socket = null
++    // and reconnect() waits out a backoff during which queued queries still
++    // reach write(). Without this guard socket.write() raises
++    //   TypeError: Cannot read properties of null (reading 'write')
++    // from inside the Immediate, i.e. out of band: no query-level try/catch and
++    // no promise rejection handler can observe it, so it terminates the process.
++    // The close itself is already surfaced through
++    // closed() -> error(Errors.connection('CONNECTION_CLOSED', ...)), so
++    // dropping the unsendable chunk here loses no error signal.
++    if (socket === null) {
++      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
++      chunk = nextWriteTimer = null
++      return false
++    }
+     const x = socket.write(chunk, fn)
+     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
+     chunk = nextWriteTimer = null
+@@ -424,7 +440,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     if (stream || query || initial || sent.length)
+       error(Errors.connection('CONNECTION_DESTROYED', options))
+ 
++    // PAPERCUSP PATCH (WI-1048027): same deferred-write state reset as closed().
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     if (socket) {
+       socket.removeListener('data', data)
+       socket.removeListener('connect', connected)
+@@ -437,7 +455,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     incoming = Buffer.alloc(0)
+     remaining = 0
+     incomings = null
++    // PAPERCUSP PATCH (WI-1048027): reset the deferred-write STATE, not just the
++    // timer handle. reconnect() reuses this same closure and connected() resets
++    // neither field, so leaving nextWriteTimer non-null permanently wedges
++    // write()'s `nextWriteTimer === null` scheduling guard (deferred writes are
++    // never re-armed), and leaving `chunk` set prepends bytes buffered for the
++    // dead socket onto the next connection's StartupMessage.
+     clearImmediate(nextWriteTimer)
++    chunk = nextWriteTimer = null
+     socket.removeListener('data', data)
+     socket.removeListener('connect', connected)
+     idleTimer.cancel()

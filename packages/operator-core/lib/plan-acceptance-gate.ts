@@ -589,6 +589,33 @@ export async function evaluatePlanAcceptanceGate(
           ...new Set(vettedCards.map((s) => s.vetting?.rubricRevision).filter((v) => v != null)),
         ];
         const stale = vettedCards.length > 0;
+        // A subject-less historical meta-card cannot be returned by the
+        // subjectRef-filtered read above, but it is still useful diagnostic
+        // evidence: it explains how an emitter could believe vetting happened
+        // while the gate correctly found no card bound to this rubric. Keep the
+        // note explicitly unattributed rather than guessing which rubric the
+        // malformed card intended to attest.
+        const unboundMetaCards = (
+          await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })
+        ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject);
+        const unboundIds = unboundMetaCards.slice(0, 3).map((s) => s.issueId);
+        const unboundDiagnostic =
+          unboundIds.length > 0
+            ? ` A subject-less meta-scorecard exists in history (${unboundIds.join(', ')}${
+                unboundMetaCards.length > unboundIds.length ? ', …' : ''
+              }), but it names no acceptance rubric and cannot satisfy this gate; re-emit with ` +
+              `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }` +
+              (stale
+                ? ` and a current vetting linkage.`
+                : ` plus vettingConsult:'<consult conversation_id>' (or vettingWorkItem:'<review WI-/EI- id>').`)
+            : '';
+        const staleDiagnostic =
+          stale && vettedCards.length > 0
+            ? ` The linked attestation card(s) ${vettedCards
+                .slice(0, 3)
+                .map((s) => s.issueId)
+                .join(', ')} do not cover the current revision.`
+            : '';
         return {
           satisfied: false,
           code: 'acceptance_rubric_unvetted',
@@ -600,7 +627,7 @@ export async function evaluatePlanAcceptanceGate(
               `ships. Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<consult conversation_id>', ratings:{ <every meta criterion> } }. Citing the SAME ` +
-              `consult is fine when the revision IS the improvement its critique asked for.`
+              `consult is fine when the revision IS the improvement its critique asked for.${staleDiagnostic}`
             : `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has not ` +
               `been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric ` +
               `AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external ` +
@@ -608,6 +635,7 @@ export async function evaluatePlanAcceptanceGate(
               `from the critique (rubrics:propose), (3) attest: scorecards:emit ` +
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
+              `${unboundDiagnostic ? unboundDiagnostic.slice(1) : ''}` +
               `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`,
         };
       }
