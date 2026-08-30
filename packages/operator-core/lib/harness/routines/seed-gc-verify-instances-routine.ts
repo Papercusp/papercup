@@ -41,6 +41,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { announceRoutineSeeded } from './seed-routine-announce';
 
 const SLUG = process.env.GC_VERIFY_INSTANCES_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Hourly at :24 past — offset from gc-plan-runs (:12) and gc-dead-loops (:18) so the
@@ -91,20 +92,12 @@ async function main(): Promise<void> {
       (dryRun ? ', dry_run=true' : '') +
       '.',
   );
-  // The step that costs the next person an hour if it is not said out loud.
-  // Seeding the row is only HALF of shipping a routine: `system:<action>` handlers are
-  // dispatched by routinesTick, which runs ONLY in bg-host (PAPERCUSP_BACKGROUND_WORKERS=1).
-  // :3070/:3170 boot request-only and never invoke it, and a DEPLOY DOES NOT CARRY IT
-  // (EI-11120). So against a bg-host started before this code landed, the routine fires
-  // on schedule, finds no registered handler, and silently does nothing — presenting as
-  // a healthy active row (the EI-18741229858124453 class). Observed exactly that on
-  // 2026-08-01: seeded, fired, reaped zero, because bg-host was 4 days stale.
-  console.log(
-    '[seed-gc-verify-instances-routine] ⚠ NOT LIVE YET unless bg-host is running this code. ' +
-      'A routine handler loads on RESTART, never on deploy (EI-11120): ' +
-      "dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: '...' }. " +
-      'Verify with dev:pipeline_position { path: ".../gc-verify-instances-action.ts" } — ' +
-      'its `serving` stage reports whether bg-host predates the code.',
+  // Seeding the row is only HALF of shipping a routine — see seed-routine-announce.ts for
+  // why. Observed exactly that failure mode on 2026-08-01: seeded, fired, reaped zero,
+  // because bg-host was 4 days stale.
+  announceRoutineSeeded(
+    'seed-gc-verify-instances-routine',
+    'packages/operator-core/lib/harness/routines/gc-verify-instances-action.ts',
   );
 }
 

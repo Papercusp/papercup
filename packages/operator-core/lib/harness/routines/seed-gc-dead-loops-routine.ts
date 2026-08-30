@@ -33,6 +33,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { announceRoutineSeeded } from './seed-routine-announce';
 
 const SLUG = process.env.GC_DEAD_LOOPS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Daily at :18 past midnight UTC — a handful of SELECT/DELETEs, and loop rows
@@ -83,6 +84,10 @@ async function main(): Promise<void> {
       (maxPerRun ? `, max_per_run=${maxPerRun}` : '') +
       (dryRun ? ', dry_run=true' : '') +
       '.',
+  );
+  announceRoutineSeeded(
+    'seed-gc-dead-loops-routine',
+    'packages/operator-core/lib/harness/routines/gc-dead-loops-action.ts',
   );
 }
 
