@@ -34,6 +34,7 @@ import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/esca
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
+import { runFleetLogsGc } from '../fleet-logs-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick } from '@papercusp/backup';
 import { gcScheduledPlanRuns } from '../harness/routines/gc-plan-runs';
@@ -448,6 +449,45 @@ const decisionLedgerGcWorkflow = idempotentRegisterWorkflow('decisionLedgerGc', 
   }),
 );
 DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
+
+// Hourly @:05: retention GC for the `fleet-logs/` directories headless-spawn
+// launch paths write to (WI-224710 cause #2 — "fleet-logs grows without
+// bound"). Measured live 2026-08-30: 25G / 2,946 files in ONE such directory
+// on a filesystem at 98% used with only ~46.5G of the required 2%-floor
+// headroom left — the single biggest lever on the disk-headroom risk that
+// makes green-checkpoint fail closed with `green:null` (no verdict at all,
+// regardless of code). Age (3d) + a 10 GiB per-directory ceiling, both
+// enforced every tick rather than once daily, because the ceiling — not the
+// age window — is what actually binds at this growth rate; a once-daily
+// cadence would let a burst of spawns push the disk past the headroom floor
+// between sweeps. Pure FS housekeeping (fleet-logs-gc.ts), no LLM, no
+// owner-authority surface — same class as gc-plan-runs / decision-ledger-gc.
+async function fleetLogsGcTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      const result = runFleetLogsGc();
+      const totalScanned = result.dirs.reduce((s, d) => s + d.scanned, 0);
+      const totalRemovedAge = result.dirs.reduce((s, d) => s + d.removedByAge, 0);
+      const totalRemovedCeiling = result.dirs.reduce((s, d) => s + d.removedByCeiling, 0);
+      const totalBytesFreed = result.dirs.reduce((s, d) => s + d.bytesFreed, 0);
+      const totalErrors = result.dirs.reduce((s, d) => s + d.errors.length, 0);
+      console.log(
+        `[fleet-logs-gc] scanned ${totalScanned} file(s) across ${result.dirs.length} dir(s) → ` +
+          `removed ${totalRemovedAge} by age + ${totalRemovedCeiling} by ceiling, freed ` +
+          `${Math.round(totalBytesFreed / (1024 * 1024))}MB` +
+          (totalErrors ? `, ${totalErrors} error(s)` : ''),
+      );
+    },
+    { name: 'fleet-logs-gc' },
+  );
+}
+const fleetLogsGcWorkflow = idempotentRegisterWorkflow('fleetLogsGc', () =>
+  DBOS.registerWorkflow(fleetLogsGcTick, {
+    name: 'fleetLogsGc',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5 * * * *' });
 
 // Daily 04:55 (off the 04:00-04:50 GC stampede): physical retention GC for
 // harness_shared.operator_turns — the operator-chat transcript table (158MB,
