@@ -69,19 +69,22 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect or explicitly retire the operator-home green-checkpoint frozen repair queue. This is workspace-global: omit harness/workspace from the payload because the target is derived from the active workspace operator home. get returns normalized phase/age/fixer/reservation/decision diagnostics. retire is dry-run unless confirm:true, refuses a live or unknown fixer and an active dispatch reservation, and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
+    'Inspect, converge, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. get returns phase/age/fixer/reservation/decision diagnostics. converge is THE sanctioned route for landing a gate-red fix on the judged lineage: it fast-forwards the movable repairHead to the staging tip while that is still safe, never touches the immutable candidate, and with paths reports whether the judged sha carries your fix. retire is dry-run unless confirm:true and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
   capability: 'operator:write',
-  effectForCall: (args) => (args.op === 'get' ? 'read' : 'write'),
+  effectForCall: (args) =>
+    args.op === 'get' || (args.op === 'converge' && args.confirm !== true) ? 'read' : 'write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
   guidance: {
     when:
-      'A release read reports repair-in-progress, a fossil/blocked repair queue, or a queue whose fixer is definitely dead. Call get first; retire only after independently establishing that this exact queue is terminal.',
+      'You fixed a gate red and need it on the judged sha — call converge{paths}. Or a release read reports repair-in-progress, a fossil/blocked queue, or a definitely-dead fixer.',
     notWhen:
-      'Do not pass harness or workspace in this tool payload: release:repair-queue is workspace-global and derives the operator-home target internally; scope belongs to the outer session/transport. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify/promote work, or merely to make the gate move. This does not launch a checkpoint or deploy.',
+      'Do not pass harness or workspace: this tool is workspace-global and derives the operator-home target internally. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify work, or merely to make the gate move. Never re-cut a fresh candidate for a phantom red. Does not launch a checkpoint or deploy.',
     chaining:
-      'release:repair-queue{op:get} → verify the returned exact identity + retireAllowed → retire with those exact fields and confirm:true → let the ordinary scheduled green-checkpoint fire.',
+      'Landing a fix: converge{paths} → read verdict + containment → re-call confirm:true if it says would-converge. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
+    returns:
+      "converge verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-converged (repairHead is the staging tip; your fix is on the judged sha) | would-converge (dry run; re-call with confirm:true to fast-forward) | converged (repairHead moved; check persisted) | diverged-merge-required (a repair fixer has committed, so fast-forward would discard it — merge staging into the worktree named in nextAction) | ancestry-unverifiable (the git probe failed; fails closed to today's behaviour, never a guess). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is, so a submodule-backed subject still needs a gitlink diff. retire: dry-run unless confirm:true; refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: z.discriminatedUnion('op', [
