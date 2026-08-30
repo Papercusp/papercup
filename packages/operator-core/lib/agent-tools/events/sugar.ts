@@ -877,7 +877,7 @@ defineTool({
 defineTool({
   name: "git-sync:await",
   description:
-    'Sleep until git-sync creates a LOCAL commit (git-sync:committed:<sha>) — the "is my edit committed locally yet" wait. Pass sha to target a commit; omit to wake on the next local git-sync commit. Then END YOUR TURN.',
+    'Sleep until git-sync creates a LOCAL commit (git-sync:committed:<sha>) — the "is my edit committed locally yet" wait. Pass sha to target a commit; omit to wake on the next local git-sync commit. Then END YOUR TURN. The default timeout_sec (1800) already accounts for a slow cycle under heavy fleet concurrency (git-sync is a disk-bound op and can legitimately queue behind lock contention or host memory/IO pressure); a caller-set SHORT timeout_sec (e.g. 600 or less) risks firing on ordinary cadence variance, which reads as a false "host is broken" signal — prefer the default, or a longer explicit value, over a short one (EI-21915439526975712).',
   capability: "coord:write",
   guidance: {
     when: "You left an edit in the tree and your next step needs it COMMITTED LOCALLY — arm this and end your turn.",
