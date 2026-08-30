@@ -189,7 +189,7 @@ export interface StartGoalByIdDeps {
   buildBrief: typeof buildGoalKickoffBrief;
 }
 
-const DEFAULT_DEPS: StartGoalByIdDeps = {
+export const DEFAULT_START_GOAL_BY_ID_DEPS: StartGoalByIdDeps = {
   launch: launchGoalHolderSession,
   resolveHolders: resolveGoalHolders,
   buildBrief: buildGoalKickoffBrief,
@@ -235,7 +235,7 @@ const DEFAULT_DEPS: StartGoalByIdDeps = {
 export async function startGoalById(
   sql: Sql,
   input: StartGoalByIdInput,
-  deps: StartGoalByIdDeps = DEFAULT_DEPS,
+  deps: StartGoalByIdDeps = DEFAULT_START_GOAL_BY_ID_DEPS,
 ): Promise<StartGoalByIdResult> {
   const workspaceId = input.workspaceId?.trim();
   const goalId = input.goalId?.trim();
