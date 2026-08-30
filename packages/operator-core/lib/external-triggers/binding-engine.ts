@@ -13,7 +13,9 @@ import { keyMatchesPattern, payloadMatchesFilter } from '../events/await/pattern
 import {
   runScheduledPlanFire,
   type ScheduledPlanFireOptions,
+  type ScheduledPlanFireRefusal,
   type ScheduledPlanFireResult,
+  type ScheduledPlanFireStartedResult,
 } from '../harness/routines/plan-run-action';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from './ingestion';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
@@ -174,7 +176,7 @@ export interface TriggerDispatchResult {
   triggerRunIds: string[];
 }
 
-type RunPlan = (sql: postgres.Sql, opts: ScheduledPlanFireOptions) => Promise<ScheduledPlanFireResult | null>;
+type RunPlan = (sql: postgres.Sql, opts: ScheduledPlanFireOptions) => Promise<ScheduledPlanFireResult>;
 
 export interface TriggerDispatchDeps {
   runPlan?: RunPlan;
@@ -192,7 +194,32 @@ export interface TriggerDispatchDeps {
   staleAfterSeconds?: number;
 }
 
-type AgenticDispatchResult = NonNullable<ScheduledPlanFireResult['dispatch']>;
+type AgenticDispatchResult = NonNullable<ScheduledPlanFireStartedResult['dispatch']>;
+
+function planRunRefusalError(refusal: ScheduledPlanFireRefusal): string {
+  if (refusal.reason === 'concurrency-skip') {
+    return 'external_trigger_plan_run_skipped:concurrency-skip';
+  }
+  return `external_trigger_plan_run_refused:${refusal.reason}:${refusal.readiness?.code ?? 'unknown'}`;
+}
+
+function planRunRefusalOutcome(refusal: ScheduledPlanFireRefusal): Record<string, unknown> {
+  return {
+    planRunRefusal: {
+      reason: refusal.reason,
+      detail: refusal.detail,
+      retryable: refusal.retryable,
+      ...(refusal.readiness ? { readiness: refusal.readiness } : {}),
+      ...(refusal.priorRunId === undefined ? {} : { priorRunId: refusal.priorRunId }),
+    },
+  };
+}
+
+class ExternalTriggerPlanRunRefusalError extends Error {
+  constructor(readonly refusal: ScheduledPlanFireRefusal) {
+    super(planRunRefusalError(refusal));
+  }
+}
 
 class ExternalTriggerAgenticDispatchError extends Error {
   constructor(readonly dispatch: AgenticDispatchResult) {
@@ -218,6 +245,10 @@ function persistedDispatchFailure(cause: unknown): PersistedDispatchFailure | nu
     queuePreserved: failure?.queuePreserved === true,
     message: failure?.message ?? cause.dispatch.warning ?? null,
   };
+}
+
+function persistedPlanRunRefusal(cause: unknown): ScheduledPlanFireRefusal | null {
+  return cause instanceof ExternalTriggerPlanRunRefusalError ? cause.refusal : null;
 }
 
 function retryEscalationMsgId(outcome: Record<string, unknown>): string | null {
@@ -899,7 +930,30 @@ export async function dispatchPendingTriggerRuns(
         inputs: row.args,
         ...(execution ? { execution } : {}),
       });
-      if (!launched || launched.skippedForConcurrency) {
+      if (launched.started === false) {
+        const refusalError = planRunRefusalError(launched);
+        if (launched.retryable) {
+          // A missing required input can become startable after the plan is
+          // repaired. Preserve the typed diagnosis through the ordinary
+          // failed/retry path instead of collapsing it into an opaque error.
+          throw new ExternalTriggerPlanRunRefusalError(launched);
+        }
+        // Missing templates, schema/data mismatches, and policy skips are
+        // settled outcomes for this trigger receipt. They must not burn the
+        // outbox retry budget.
+        await sql`
+          UPDATE harness_shared.trigger_runs
+             SET status = 'skipped', plan_run_ref = NULL,
+                 outcome = outcome || ${JSON.stringify(planRunRefusalOutcome(launched))}::text::jsonb,
+                 error = ${refusalError}, next_attempt_at = now(),
+                 completed_at = now(), updated_at = now()
+           WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+        result.skipped += 1;
+        continue;
+      }
+      if (!launched) {
+        // Defensive compatibility for an injected/legacy seam. Production
+        // runScheduledPlanFire now returns a typed refusal instead of null.
         throw new Error('external_trigger_plan_run_not_started');
       }
       if (execution && (!launched.dispatch || !launched.dispatch.ok)) {
@@ -950,6 +1004,7 @@ export async function dispatchPendingTriggerRuns(
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : String(cause);
       const dispatchFailure = persistedDispatchFailure(cause);
+      const planRunRefusal = persistedPlanRunRefusal(cause);
       const deferred = Boolean(
         dispatchFailure?.recoverable && dispatchFailure.queuePreserved && row.attempts >= DEFAULT_MAX_ATTEMPTS,
       );
@@ -963,7 +1018,9 @@ export async function dispatchPendingTriggerRuns(
               attempts: row.attempts,
             },
           }
-        : {};
+        : planRunRefusal
+          ? planRunRefusalOutcome(planRunRefusal)
+          : {};
       await sql`
         UPDATE harness_shared.trigger_runs
            SET status = 'failed', error = ${error},

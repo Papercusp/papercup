@@ -71,14 +71,25 @@ export default defineTool({
       // Persist the SAME resolved inputs the gate approved — never a second merge.
       inputs: gate.inputs,
     });
+    if (res.started === false) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, slug: args.slug, ...res }),
+          },
+        ],
+        // Concurrency is a deliberate policy skip, not an execution error.
+        ...(res.reason === 'concurrency-skip' ? {} : { isError: true }),
+      };
+    }
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify(res ? { ok: true, ...res } : { error: 'run_failed', slug: args.slug }),
+          text: JSON.stringify({ ok: true, ...res }),
         },
       ],
-      ...(res ? {} : { isError: true }),
     };
   },
 });
