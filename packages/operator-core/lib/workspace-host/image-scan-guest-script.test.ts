@@ -417,3 +417,282 @@ describe('image scan guest script — papercusp/inherited scope attribution', ()
     expect(line).toContain('.File');
   });
 });
+
+/**
+ * A CONDITIONAL FAIL-CLOSED GUARD IS ONLY SOUND IF ITS PRECONDITION IS PROVEN BY SOMETHING
+ * OUTSIDE THE GUARD'S OWN INPUTS.
+ *
+ * `if subject_present > 0 AND subject_measured == 0 then fail` reads as the CAREFUL version of
+ * a guard and is frequently a silent no-op. When the precondition and the measurement derive
+ * from the same source, a fault in that source zeroes BOTH: nothing is present, nothing is
+ * measured, the conjunction is never satisfied, the guard never fires, and the release reads
+ * spotless. The detector shares its subject's single point of failure, so it cannot detect that
+ * failure — and it looks MORE rigorous than the unconditional form it replaced.
+ *
+ * This shape was written into this file twice on 2026-08-30. The bundle scope-attribution guard
+ * derived both `find` and the SBOM matcher from PAPERCUSP_BUNDLE_PATH, so a wrong constant
+ * zeroed both; it was caught in review and is now pinned unconditionally at `bundle-path-not-found`
+ * above. The npm ecosystem-coverage guard has the same shape and is CORRECT, because its
+ * precondition is independently established.
+ *
+ * So the shape is not bannable — banning it would delete a working guard, and the assertion
+ * below deliberately does not. What it forces is the JUSTIFICATION: every conditional guard must
+ * carry written prose saying why its precondition cannot fail in the same breath as its subject.
+ *
+ * The second-order reason this is a build-time guard rather than review discipline: the npm
+ * guard became sound as a SIDE EFFECT of two unrelated fixes landing the same day (the
+ * unconditional bundle hard-fail, and host-side mount-coverage enforcement under
+ * GCP_IMAGE_SCAN_POLICY — WI-1092039 / D-205). Nothing re-evaluated it when they landed.
+ * Soundness is not local to a guard; it is the guard plus everything upstream, and upstream
+ * changes silently. A registry that must be edited to add a guard is the cheapest place to make
+ * that re-evaluation happen.
+ */
+
+/** One fail-closed `exit 1`, with every predicate that must hold for it to fire. */
+type FailClosedExit = { detail: string; predicates: string[] };
+
+/**
+ * Split a shell test into its conjuncts. `-a` is POSIX's obsolete in-bracket AND; it is also a
+ * unary file-exists operator, which this file does not use and which would mis-split if it ever
+ * appeared. Prefer `] && [`.
+ */
+const splitConjuncts = (test: string): string[] =>
+  test
+    .split(/&&|\s-a\s/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+/**
+ * Every fail-closed exit in the guest script, paired with the predicates that gate it.
+ *
+ * Deliberately STRUCTURAL rather than textual. The obvious detector — grep for `] && [` — sees
+ * only the single-line conjunction and is blind to the identical class written as a nested `if`,
+ * or as a `|| { exit }` inside an enclosing `if`. Both forms are what a well-meaning author
+ * actually types, and three of the four guards this finds today are invisible to that grep.
+ *
+ * BOUNDARY, stated so no coverage claim is read wider than the evidence: this walks
+ * comment-stripped lines and understands `if` / `fi` / `else` and `|| {`. It does not parse the
+ * shell. A guard hidden inside a `case`, a `while`, a function called from elsewhere, or a
+ * command substitution is NOT in this population.
+ */
+function failClosedExits(script: string): FailClosedExit[] {
+  const lines = script.split('\n').filter((line) => !/^\s*#/.test(line));
+  const stack: { test: string; lineIndex: number }[] = [];
+  const exits: FailClosedExit[] = [];
+
+  lines.forEach((line, index) => {
+    const opened = /^\s*(?:el)?if\s+(.+)$/.exec(line);
+    if (opened) {
+      const thenIndex = opened[1].indexOf('; then');
+      const test = (thenIndex >= 0 ? opened[1].slice(0, thenIndex) : opened[1]).trim();
+      stack.push({ test, lineIndex: index });
+    }
+
+    if (/(^|;|\s)exit 1(\s|;|$)/.test(line)) {
+      // Every enclosing test must hold for this exit to be REACHED, and each conjunct within a
+      // test is its own predicate. A `|| { ... }` clause contributes the command failure itself.
+      const predicates = stack.flatMap((frame) => splitConjuncts(frame.test));
+      if (/\|\|\s*\{/.test(line)) predicates.push(`command failure: ${line.trim()}`);
+
+      // Name the exit by the detail code it reports. That code is what reaches a release log and
+      // what host-side policy reads, so it is the stable identity — line numbers are not.
+      const floor = stack.length > 0 ? stack[stack.length - 1].lineIndex : 0;
+      let detail: string | null = null;
+      for (let i = index; i >= floor; i -= 1) {
+        const match = /detail="([^"]+)"/.exec(lines[i]);
+        if (match) {
+          detail = match[1];
+          break;
+        }
+      }
+      if (!detail) {
+        throw new Error(
+          `a fail-closed exit sets no detail= code, so it cannot be named in a release log ` +
+            `or keyed for justification: ${line.trim()}`,
+        );
+      }
+      exits.push({ detail, predicates });
+    }
+
+    if (/(^|;|\s)fi(\s|;|$)/.test(line)) stack.pop();
+  });
+
+  return exits;
+}
+
+/**
+ * A guard is CONDITIONAL when more than one predicate must hold for it to fire — i.e. something
+ * other than its own failure condition gates it. That is precisely the population whose
+ * precondition can share a failure mode with its subject.
+ *
+ * `if [ "$vuln_count" = "null" ]; then ... exit 1; fi` has ONE predicate (its own failure
+ * condition) and is unconditional. So is the `else` branch of a gate, which fires exactly when
+ * the gate does not.
+ */
+const conditionalGuards = (script: string): FailClosedExit[] =>
+  failClosedExits(script).filter((exit) => exit.predicates.length > 1);
+
+/**
+ * The `command -v gitleaks` gate is a sound precondition because its COMPLEMENT is itself an
+ * unconditional fail-closed exit: the `else` branch reports `gitleaks-missing` and exits. There
+ * is therefore no path on which a missing scanner yields a zero secret count — the property the
+ * three guards below rely on, established outside their own inputs.
+ */
+const GITLEAKS_PRESENCE_PROVEN =
+  'Gated on `command -v gitleaks`, whose complement is an unconditional fail-closed exit: the ' +
+  '`else` branch sets detail="gitleaks-missing" and exits 1. A missing scanner therefore reds ' +
+  'the scan rather than falling through to secret_count=0, so this guard skipping is never a ' +
+  'silent pass. The precondition is proven by the else branch, not by any input this guard reads.';
+
+/**
+ * Why each conditional guard's precondition cannot fail in the same breath as its subject.
+ *
+ * SHRINK-ONLY. An entry whose guard leaves the script must be deleted with it — asserted below,
+ * so this can never decay into an append-forever parking lot. Adding an entry is the moment to
+ * ask the only question that matters: is this precondition established by something OUTSIDE the
+ * inputs this guard reads? If the honest answer is no, make the guard unconditional instead.
+ */
+const CONDITIONAL_GUARD_JUSTIFICATIONS: Record<string, string> = {
+  'sbom-npm-coverage-zero':
+    'The precondition `npm_manifests > 0` cannot be zeroed by the same fault as `npm_cataloged` ' +
+    'because the bundle is proven present independently: an absent bundle path is an ' +
+    'UNCONDITIONAL hard error (detail="bundle-path-not-found"), an unmounted OS root is an ' +
+    'unconditional hard error (detail="candidate-root-not-mounted"), and mount coverage is ' +
+    'enforced host-side by evaluateImageScanPolicy under GCP_IMAGE_SCAN_POLICY (WI-1092039 / ' +
+    'D-205). node_modules lives under /opt/papercusp, so on a proven-mounted, proven-bundle- ' +
+    'bearing image `npm_manifests == 0` is a REAL reading, not an instrument failure.',
+  'gitleaks-failed': GITLEAKS_PRESENCE_PROVEN,
+  'gitleaks-no-report': GITLEAKS_PRESENCE_PROVEN,
+  'secret-parse-failed': GITLEAKS_PRESENCE_PROVEN,
+};
+
+/** A conjunction guard with no independent proof of its precondition — must be REJECTED. */
+const CONTROL_UNJUSTIFIED_CONJUNCTION = `#!/bin/bash
+subject_present=$(find /mnt/candidate -path "$SUBJECT_ROOT/*" -name manifest.json | head -1 | wc -l)
+subject_measured=$(jq "[.artifacts[]? | select(.path | contains(\\"$SUBJECT_ROOT\\"))] | length" /tmp/sbom.json)
+if [ "$subject_present" -gt 0 ] && [ "$subject_measured" -eq 0 ]; then
+  detail="control-unjustified-conjunction"; exit 1
+fi
+`;
+
+/** The SAME class written as a nested `if` — invisible to a `] && [` grep. Must be REJECTED. */
+const CONTROL_NESTED_PRECONDITION = `#!/bin/bash
+if command -v controltool >/dev/null 2>&1; then
+  if [ ! -f /tmp/control-report.json ]; then detail="control-nested-precondition"; exit 1; fi
+fi
+`;
+
+/** A gated command failure — also invisible to a `] && [` grep. Must be REJECTED. */
+const CONTROL_GATED_COMMAND_FAILURE = `#!/bin/bash
+if command -v controltool >/dev/null 2>&1; then
+  controltool run || { detail="control-gated-command-failure"; exit 1; }
+fi
+`;
+
+/** An unconditional guard. Must be ACCEPTED, or the checker is just "everything is a violation". */
+const CONTROL_UNCONDITIONAL = `#!/bin/bash
+measured=$(jq "[.matches[]?] | length" /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "$measured" = "null" ]; then detail="control-parse-failed"; exit 1; fi
+controltool run || { detail="control-run-failed"; exit 1; }
+`;
+
+describe('image scan guest script — conditional fail-closed guards carry a justification', () => {
+  it('finds the conditional guards a `] && [` grep cannot see', () => {
+    // CALIBRATION. Every assertion below is of the form "the detected set satisfies X", so a
+    // detector that silently matched nothing would make all of them pass vacuously — the exact
+    // failure mode this whole describe block exists to prevent, reintroduced one level up.
+    const detected = conditionalGuards(emitGuestScript()).map((guard) => guard.detail);
+
+    // The single-line conjunction, which the naive grep does find.
+    expect(detected).toContain('sbom-npm-coverage-zero');
+    // The three it does not: all gated by an enclosing `if command -v gitleaks`.
+    expect(detected).toContain('gitleaks-failed');
+    expect(detected).toContain('gitleaks-no-report');
+    expect(detected).toContain('secret-parse-failed');
+
+    // And the unconditional majority must NOT be swept in, or the registry becomes a list of
+    // every guard in the file and stops meaning anything.
+    const all = failClosedExits(emitGuestScript());
+    expect(all.length).toBeGreaterThanOrEqual(40);
+    expect(detected.length).toBeLessThan(all.length / 2);
+    expect(detected).not.toContain('vuln-parse-failed');
+    expect(detected).not.toContain('gitleaks-missing');
+  });
+
+  it('every conditional guard carries a written justification', () => {
+    const unjustified = conditionalGuards(emitGuestScript())
+      .filter((guard) => !CONDITIONAL_GUARD_JUSTIFICATIONS[guard.detail])
+      .map((guard) => `${guard.detail} :: gated by ${JSON.stringify(guard.predicates)}`);
+
+    expect(
+      unjustified,
+      'a conditional fail-closed guard was added without recording why its precondition is ' +
+        'proven OUTSIDE its own inputs. If it is not, the guard is a silent no-op wearing the ' +
+        'costume of care — make it unconditional. If it is, add the entry saying how.',
+    ).toEqual([]);
+  });
+
+  it('the registry is shrink-only — no entry outlives its guard', () => {
+    const present = new Set(conditionalGuards(emitGuestScript()).map((guard) => guard.detail));
+    const stale = Object.keys(CONDITIONAL_GUARD_JUSTIFICATIONS).filter(
+      (detail) => !present.has(detail),
+    );
+
+    expect(
+      stale,
+      'these justifications name guards that are no longer in the script; delete them. Without ' +
+        'this the registry becomes an append-forever parking lot and stops being evidence.',
+    ).toEqual([]);
+  });
+
+  it('each conditional guard is distinctly named, so one entry cannot justify two guards', () => {
+    const details = conditionalGuards(emitGuestScript()).map((guard) => guard.detail);
+    expect(details.length).toBe(new Set(details).size);
+  });
+
+  it('each justification is prose, not a rubber stamp', () => {
+    // A length floor cannot judge whether a justification is TRUE — only a reader can, which is
+    // the point of forcing one to be written. What it does buy is that '' and 'ok' cannot pass,
+    // so the registry entry costs enough to be worth thinking about.
+    const thin = Object.entries(CONDITIONAL_GUARD_JUSTIFICATIONS)
+      .filter(([, why]) => why.trim().length < 120)
+      .map(([detail]) => detail);
+    expect(thin).toEqual([]);
+  });
+
+  it('REJECTS an unjustified single-line conjunction (permanent control)', () => {
+    // Falsifiability, proven against fixtures rather than by mutating the real scanner: this is
+    // a shared, swept checkout, so an in-tree mutant can be committed by git-sync mid-probe even
+    // when nothing goes wrong. These controls are permanent and bidirectional instead.
+    const detected = conditionalGuards(CONTROL_UNJUSTIFIED_CONJUNCTION);
+    expect(detected.map((guard) => guard.detail)).toEqual(['control-unjustified-conjunction']);
+    expect(CONDITIONAL_GUARD_JUSTIFICATIONS['control-unjustified-conjunction']).toBeUndefined();
+  });
+
+  it('REJECTS the same class written as a nested if (permanent control)', () => {
+    const detected = conditionalGuards(CONTROL_NESTED_PRECONDITION);
+    expect(detected.map((guard) => guard.detail)).toEqual(['control-nested-precondition']);
+  });
+
+  it('REJECTS a command failure gated by an enclosing precondition (permanent control)', () => {
+    const detected = conditionalGuards(CONTROL_GATED_COMMAND_FAILURE);
+    expect(detected.map((guard) => guard.detail)).toEqual(['control-gated-command-failure']);
+  });
+
+  it('ACCEPTS unconditional guards (permanent control)', () => {
+    // The negative direction. Without this, a checker that flagged EVERY guard would satisfy
+    // every rejection control above while being useless.
+    expect(conditionalGuards(CONTROL_UNCONDITIONAL)).toEqual([]);
+    expect(failClosedExits(CONTROL_UNCONDITIONAL).map((exit) => exit.detail)).toEqual([
+      'control-parse-failed',
+      'control-run-failed',
+    ]);
+  });
+
+  it('refuses a fail-closed exit that names no detail code', () => {
+    // An unkeyable guard is also an untraceable one: it reds a release with no code to look up.
+    expect(() => failClosedExits('#!/bin/bash\nif [ -z "$x" ]; then exit 1; fi\n')).toThrow(
+      /sets no detail= code/,
+    );
+  });
+});
