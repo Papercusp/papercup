@@ -141,4 +141,31 @@ describe('interval snapshot admission rendezvous', () => {
       expect.stringContaining('interval-admission-unreadable'),
     ]));
   });
+
+  it('does not settle until the admitted snapshot completes', async () => {
+    h.intervalRows = [{
+      workspace_id: 'interval-await-ws',
+      cadence_minutes: 60,
+      last_started_at: null,
+    }];
+    let releaseSnapshot!: () => void;
+    const snapshotFinished = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    snapshot.mockReturnValueOnce(snapshotFinished);
+
+    let settled = false;
+    const tick = runBackupSchedulerTick().then(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => {
+      expect(snapshot).toHaveBeenCalledWith('interval', undefined);
+    });
+    expect(settled).toBe(false);
+
+    releaseSnapshot();
+    await tick;
+    expect(settled).toBe(true);
+  });
 });

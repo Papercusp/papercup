@@ -108,6 +108,7 @@ async function tick(): Promise<void> {
       GROUP BY s.workspace_id, s.cadence_minutes
     `;
     const now = Date.now();
+    const pendingSnapshots: Promise<void>[] = [];
     for (const r of rows) {
       const mem = STATE.get(r.workspace_id) ?? { lastFiredAt: 0, inFlight: false };
       // Use the larger of in-memory and PG — in-memory wins after a
@@ -131,12 +132,14 @@ async function tick(): Promise<void> {
 
       const next: WorkspaceTickState = { lastFiredAt: now, inFlight: true };
       STATE.set(r.workspace_id, next);
-      void runSnapshot(r.workspace_id, 'interval', undefined)
-        .finally(() => {
+      pendingSnapshots.push(
+        runSnapshot(r.workspace_id, 'interval', undefined).finally(() => {
           const cur = STATE.get(r.workspace_id);
           if (cur) cur.inFlight = false;
-        });
+        }),
+      );
     }
+    await Promise.all(pendingSnapshots);
   } catch (err) {
     console.warn('[backup-scheduler] tick failed:', err);
   }
