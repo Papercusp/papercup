@@ -482,6 +482,11 @@ export async function createOneWorkItem(
     // screens below have nothing to screen, and a recurring detector's steady-state
     // re-fire stays one indexed read + one refresh write.
     const conditionKey = args.conditionKey?.trim() || undefined;
+    // EI-21827949941920236: an urgent condition-keyed filing is itself the
+    // durable detector signal that must reach the queue when the semantic probe
+    // is unavailable. The condition upsert still provides deterministic
+    // recurrence deduplication; keep the ordinary goal-mode rail fail-closed.
+    const urgentConditionKeyEscape = Boolean(args.urgent && conditionKey);
     if (conditionKey) {
       const incumbent = await adoptConditionIncumbent(conditionKey, {
         title: args.title,
@@ -674,7 +679,12 @@ export async function createOneWorkItem(
     // was admitted with a degraded marker stamped where nobody looks. Unlike DRAIN
     // above, force:true remains an explicit escape for work that must land now; the
     // coverage verdict + any candidates still come back on the result either way.
-    if (args.goalDedupGate && !args.force && dedupCoverage?.degraded) {
+    if (
+      args.goalDedupGate
+      && !args.force
+      && dedupCoverage?.degraded
+      && !urgentConditionKeyEscape
+    ) {
       return {
         ok: false,
         error: 'dedup_unavailable',
