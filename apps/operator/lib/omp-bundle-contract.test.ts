@@ -26,15 +26,107 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const PKG_DIR = join(homedir(), 'node_modules', '@oh-my-pi', 'pi-coding-agent');
+/**
+ * Candidate roots for the user-level omp install, newest layout first.
+ *
+ * This USED to be a single hardcoded `~/node_modules` path. Bun's global install
+ * lives at `~/.bun/install/global/node_modules`, so once omp moved there the
+ * `existsSync` probe below went false and `describe.skipIf` silently disabled this
+ * ENTIRE suite — on a box with omp very much installed and in active use. A guard
+ * written to stop a live-fleet overflow incident (2026-07-13) recurring then
+ * protected nothing, and reported green while doing it (EI-18607938218532714).
+ *
+ * Resolve across candidates rather than assuming one, and see the resolution
+ * describe() below, which fails loudly if this list ever goes stale again.
+ */
+const OMP_ROOTS = [
+  join(homedir(), '.bun', 'install', 'global', 'node_modules'),
+  join(homedir(), 'node_modules'),
+] as const;
+
+/** The package dir of the first candidate root carrying a real bundle, else null. */
+function resolveOmpDir(): string | null {
+  for (const root of OMP_ROOTS) {
+    const dir = join(root, '@oh-my-pi', 'pi-coding-agent');
+    if (existsSync(join(dir, 'dist', 'cli.js')) && existsSync(join(dir, 'package.json'))) return dir;
+  }
+  return null;
+}
+
+/**
+ * Where an omp install might live, for DETECTION — deliberately broader than, and
+ * maintained separately from, the OMP_ROOTS used for RESOLUTION.
+ *
+ * The two lists must not be the same list. If detection reused OMP_ROOTS, then the
+ * one failure that actually occurred — omp moving to a location OMP_ROOTS does not
+ * name — would make detection come up empty too, and the dead-guard check below
+ * would pass by measuring nothing. That is the same vacuity trap this file's own
+ * contract tests guard against, one level up.
+ */
+const OMP_DISCOVERY_ROOTS = [
+  join(homedir(), 'node_modules'),
+  join(homedir(), '.bun', 'install', 'global', 'node_modules'),
+  join(homedir(), '.local', 'share', 'bun', 'install', 'global', 'node_modules'),
+  join(homedir(), '.npm-global', 'lib', 'node_modules'),
+  join(homedir(), '.local', 'lib', 'node_modules'),
+] as const;
+
+/**
+ * Package dirs that EXIST anywhere we know to look, whether or not they carry a
+ * usable bundle and whether or not OMP_ROOTS names them.
+ *
+ * RESIDUAL LIMIT, stated rather than papered over: this is still a list, so an
+ * install under a root named by NEITHER list is invisible to it and the dead-guard
+ * check stays silent. Widening detection shrinks that blind spot; it does not close
+ * it. Closing it entirely needs a walk of $HOME, which is too costly for a unit test.
+ */
+function ompPackageDirsPresent(): string[] {
+  return [...new Set([...OMP_ROOTS, ...OMP_DISCOVERY_ROOTS])]
+    .map((root) => join(root, '@oh-my-pi', 'pi-coding-agent'))
+    .filter((d) => existsSync(d));
+}
+
+const OMP_DIR = resolveOmpDir();
+const installed = OMP_DIR !== null;
+
+// Fallback keeps these path constants well-formed when omp is absent; nothing reads
+// them in that case, because every test below is inside the skipped describe.
+const PKG_DIR = OMP_DIR ?? join(homedir(), 'node_modules', '@oh-my-pi', 'pi-coding-agent');
 const BUNDLE = join(PKG_DIR, 'dist', 'cli.js');
 const SETTINGS_SCHEMA = join(PKG_DIR, 'dist', 'types', 'config', 'settings-schema.d.ts');
-const PI_AI_FLAGS = join(homedir(), 'node_modules', '@oh-my-pi', 'pi-ai', 'src', 'error', 'flags.ts');
+const PI_AI_FLAGS = join(PKG_DIR, '..', 'pi-ai', 'src', 'error', 'flags.ts');
 
 /** Minimum version whose upstream overflow handling we verified end-to-end (2026-07-14). */
 const VERIFIED_MIN_VERSION = [16, 3, 3] as const;
 
-const installed = existsSync(BUNDLE) && existsSync(join(PKG_DIR, 'package.json'));
+// NOT skipped: a silently-skipping guard is the failure this suite already suffered
+// once, and by construction it cannot be caught by any test inside the skipped block.
+describe('omp bundle contract — resolution', () => {
+  it('does not skip while an omp install is actually present (dead-guard guard)', () => {
+    const present = ompPackageDirsPresent();
+    if (present.length === 0) return; // genuinely no omp on this box — the legitimate skip
+
+    expect(
+      OMP_DIR,
+      `@oh-my-pi/pi-coding-agent EXISTS at ${present.join(', ')} but no candidate root ` +
+        `yielded dist/cli.js + package.json, so the contract suite below would skip and ` +
+        `guard nothing. OMP_ROOTS is stale — add the current install layout.`,
+    ).not.toBeNull();
+  });
+
+  it('reads the files the contract asserts against, rather than throwing ENOENT mid-suite', () => {
+    if (!installed) return;
+    // `installed` only probes cli.js + package.json, but the tests below also read the
+    // settings schema and pi-ai's flags source. Without this, a packaging change makes
+    // the suite die on an opaque ENOENT stack instead of naming what moved.
+    for (const [label, path] of [
+      ['settings schema', SETTINGS_SCHEMA],
+      ['pi-ai error flags', PI_AI_FLAGS],
+    ] as const) {
+      expect(existsSync(path), `${label} not found at ${path} — omp packaging changed`).toBe(true);
+    }
+  });
+});
 
 describe.skipIf(!installed)('installed omp bundle contract (P-003)', () => {
   const bundle = () => readFileSync(BUNDLE, 'utf8');

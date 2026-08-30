@@ -349,6 +349,15 @@ export default defineTool({
         failingTests: snapshot.gate.verdictStale || candidateInconclusive ? [] : snapshot.gate.failingTests,
         failingTestsMeasured:
           snapshot.gate.verdictStale || candidateInconclusive ? false : snapshot.gate.failingTestsMeasured,
+        // EI-18832825158594027: the blanking above only covers a STALE verdict / inconclusive
+        // candidate. The monotonic fold inherits a prior observation's names for the SAME
+        // candidate, where `verdictStale` is legitimately false — so those names survive the
+        // blanking and render as an authoritative, current blame list. This marker is the axis
+        // that distinguishes them. False when the list was blanked: `[]` has nothing to inherit.
+        failingTestsCarriedForward:
+          snapshot.gate.verdictStale || candidateInconclusive
+            ? false
+            : snapshot.gate.failingTestsCarriedForward === true,
         recordedVerdict: snapshot.gate.recordedVerdict,
         inheritedRepairQueueFailingTests,
         inheritedRepairQueueFailingTestsSource: repairQueueInconclusive ? 'prior-gate-verdict' : null,

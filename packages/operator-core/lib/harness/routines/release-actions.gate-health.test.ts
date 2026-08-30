@@ -605,6 +605,93 @@ describe('trackGateStall monotonic gate_health merge (EI-20854484804457933)', ()
 });
 
 /**
+ * EI-18832825158594027: the fold above is CORRECT to preserve the names — an empty observation
+ * is not evidence the failures disappeared. What was missing is that the preserved list was
+ * written back indistinguishable from a fresh measurement, so `release:trace` / `dev:why`
+ * rendered inherited names as a current, authoritative blame list. Two expensive wrong moves
+ * follow: editing already-green code, and re-firing the gate to "refresh" it.
+ *
+ * `failingTestsCarriedForward` is that missing axis. It is deliberately NOT a replacement for
+ * `failingTestsMeasured` — the inherited names WERE measured, just not by this tick, so
+ * conflating the two would destroy real evidence.
+ */
+describe('gate_health marks an INHERITED failing-test list (EI-18832825158594027)', () => {
+  it('⭐ stamps failingTestsCarriedForward when it preserves a prior observation’s names', () => {
+    const folded = mergeGateHealthMonotonic(
+      { failingTests: ['real-failure.test.ts'], observedCandidate: 'candidate-re' },
+      {
+        failingTests: [],
+        lastFromFresh: false,
+        lastVerdict: 'not-green',
+        observedCandidate: 'candidate-re',
+      },
+    );
+
+    expect(folded.failingTests).toEqual(['real-failure.test.ts']);
+    expect(folded.failingTestsCarriedForward).toBe(true);
+  });
+
+  /**
+   * The guard that matters most. A carried-forward marker outliving the carry-forward is the
+   * SAME defect one level up — a stale qualifier on a fresh list — and it fails in the more
+   * dangerous direction, telling a reader to discount names that are genuinely current.
+   */
+  it('⭐ CLEARS the marker when the new observation measured its own failures', () => {
+    const folded = mergeGateHealthMonotonic(
+      {
+        failingTests: ['inherited.test.ts'],
+        observedCandidate: 'candidate-re',
+        // A previous write left the flag set; it must not ride along onto fresh names.
+        failingTestsCarriedForward: true,
+      } as Record<string, unknown>,
+      {
+        failingTests: ['freshly-observed.test.ts'],
+        lastFromFresh: true,
+        lastVerdict: 'not-green',
+        observedCandidate: 'candidate-re',
+      },
+    );
+
+    expect(folded.failingTests).toEqual(['freshly-observed.test.ts']);
+    expect(folded.failingTestsCarriedForward).toBe(false);
+  });
+
+  it('marks a non-preserving fold false rather than leaving the axis absent', () => {
+    // Different candidate: the fold declines to preserve, so nothing is inherited. An ABSENT
+    // field would force every consumer to guess; false is the answer.
+    const folded = mergeGateHealthMonotonic(
+      { failingTests: ['lint:tsc'], observedCandidate: 'old-candidate' },
+      {
+        failingTests: [],
+        lastFromFresh: false,
+        lastVerdict: 'not-green',
+        observedCandidate: 'new-candidate',
+      },
+    );
+
+    expect(folded.failingTests).toEqual([]);
+    expect(folded.failingTestsCarriedForward).toBe(false);
+  });
+
+  /**
+   * The SQL predicate re-applies the preservation rule against the row at UPDATE time, closing
+   * the read/modify/write race the TS fold cannot see. That branch must stamp the marker too —
+   * it is precisely the concurrent case, where the TS fold already decided `false`, that would
+   * otherwise persist an unlabelled inherited list.
+   */
+  it('⭐ stamps the marker in the SQL race branch, not only in the TS fold', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts']);
+
+    const update = [...calls].reverse().find((call) => /UPDATE\s+harness_shared\.routines/i.test(call.query));
+    expect(update?.query).toContain('failingTestsCarriedForward');
+    // Guard the DIRECTION: the preserve branch is the one that must set it true.
+    expect(update?.query).toMatch(/\{failingTestsCarriedForward\}'[\s\S]*?'true'::jsonb/);
+  });
+});
+
+/**
  * EI-7505: the green-checkpoint action already parses `failingTests` from the
  * verdict and passes them into `trackGateStall`, but the function previously
  * discarded them — the persisted `gate_health` `next` object never carried a
