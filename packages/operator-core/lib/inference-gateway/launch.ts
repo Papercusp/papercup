@@ -109,7 +109,10 @@ export async function resolvePriorityTiers(
   const frac = Number.isFinite(fracRaw) && fracRaw >= 0 ? fracRaw : DEFAULT_T1_RESERVE_FRAC;
   const tiers = tiersOfMap(map);
   const { caps, reserve } = defaultTierCaps(poolSlots, tiers, frac);
-  return { map, config: { caps, tier1Reserve: reserve } };
+  // Pass the fraction ITSELF, not just the absolute it produced: the queue rescales the reserve on
+  // every AIMD change and would otherwise re-derive the fraction as reserve/poolSlots — which at
+  // this seed window (8) is ceil(8*0.15)/8 = 0.25, not the 0.15 configured here (EI-21833234632961797).
+  return { map, config: { caps, tier1Reserve: reserve, reserveFrac: frac } };
 }
 
 export interface GatewayServiceOptions {

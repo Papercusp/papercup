@@ -38,7 +38,7 @@ export interface AdmissionSnapshotLite {
   queued: number;
   maxConcurrent: number;
   tier1Reserve?: number;
-  byTier?: { tier: number; cap: number | null; inFlight: number; queued: number }[];
+  byTier?: { tier: number; minShare: number | null; inFlight: number; queued: number }[];
   /** AIMD effective vs configured cap — a deep shrink is worth naming even when nothing is queued. */
   aimdEffective?: number;
   aimdCap?: number;
@@ -564,7 +564,7 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
   if (adm.queued > 0 && freeShared > 0) {
     const perTier = (adm.byTier ?? [])
       .filter((t) => t.queued > 0)
-      .map((t) => `tier ${t.tier} (cap ${t.cap ?? '∞'}, ${t.inFlight} in flight, ${t.queued} queued)`)
+      .map((t) => `tier ${t.tier} (min share ${t.minShare ?? 'none'}, ${t.inFlight} in flight, ${t.queued} queued)`)
       .join(', ');
     return {
       stage: 'admission',
