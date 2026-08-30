@@ -4771,19 +4771,32 @@ export async function claimWorkItem(
          SET taken_by = ${assignee}, taken_at = now(),
              -- P-001: a NEW holder starts with a clean progress slate (so the grace
              -- window anchors on the fresh taken_at, not a prior holder's stale
-             -- last_progress_at); a re-claim by the SAME agent keeps its progress.
-             last_progress_at = CASE WHEN taken_by = ${assignee} THEN last_progress_at ELSE NULL END,
+             -- last_progress_at); a re-claim by the SAME agent (including a
+             -- EI-21921431863111143 self-heal of a truncated ownerId) keeps its progress.
+             last_progress_at = CASE
+               WHEN taken_by = ${assignee}
+                 OR (taken_by IS NOT NULL AND taken_by <> '' AND position(taken_by in ${assignee}) = 1)
+               THEN last_progress_at ELSE NULL END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          -- EI-20731607691070897: fromHolder (the CALLER) is the atomic self-held
          -- transfer leg -- see the opts doc on claimWorkItem. When it is absent it
          -- falls back to the assignee, making this disjunct a duplicate of the one
          -- before it, so the predicate stays equivalent to its pre-change behavior.
+         --
+         -- EI-21921431863111143: the last disjunct self-heals a TRUNCATED taken_by
+         -- (some assignment path persisted a prefix of the real ownerId instead of
+         -- the canonical full one). A stored taken_by that is a non-empty strict
+         -- prefix of the incoming assignee can only realistically BE that same
+         -- caller's own truncated id (ownerId collisions of this shape are not a
+         -- realistic risk — see isSelfOwnerRecord), so the match both lets the true
+         -- owner re-claim its own item and rewrites taken_by to the full id here.
          AND (
            taken_by IS NULL OR taken_by = ''
            OR taken_by = ${assignee}
            OR taken_by = ${opts.fromHolder ?? assignee}
            ${expectedAssignee ? sql` OR taken_by = ${expectedAssignee}` : sql``}
+           OR (taken_by IS NOT NULL AND taken_by <> '' AND position(taken_by in ${assignee}) = 1)
          )
          -- G2 admission (shared-hive-trust-admission P-003): an explicit named claim
          -- can't bypass the auditor either — remote, un-admitted stays unclaimable
@@ -4854,6 +4867,27 @@ export async function claimWorkItem(
 }
 
 /**
+ * True when a recorded holder/assignee string identifies the SAME agent as
+ * `caller`'s own full ownerId — either an exact match, or `recorded` is a
+ * non-empty STRICT PREFIX of `caller` (EI-21921431863111143). Some assignment
+ * paths (observed: a fleet leader's dispatch write) persist a truncated
+ * ownerId instead of the canonical full one, which previously deadlocked the
+ * item against its own assignee: `not_holder`/`claim_conflict` did a strict
+ * string comparison and reported the caller as a DIFFERENT, live peer.
+ *
+ * A prefix collision with a genuinely different agent is not a realistic risk:
+ * ownerIds are `su-<uuid>`-shaped, so two independently-generated ids sharing
+ * an identical prefix is astronomically unlikely, and the match can only ever
+ * be true for the ONE caller whose own id the truncated form is a prefix of.
+ */
+export function isSelfOwnerRecord(recorded: string | null | undefined, caller: string): boolean {
+  const holder = recorded?.trim();
+  if (!holder) return false;
+  if (holder === caller) return true;
+  return caller.length > holder.length && caller.startsWith(holder);
+}
+
+/**
  * Why did `claimWorkItem`/`claimIssue` return null? (EI-2197.)
  *
  * The compare-and-claim returns a bare `null` for THREE very different outcomes,
@@ -4875,6 +4909,9 @@ export async function claimWorkItem(
  * Pure over the already-fetched row so it unit-tests without a DB. A self-held
  * item re-claims idempotently (claim would have SUCCEEDED), so reaching here with
  * holder === claimer is not a real conflict — reported as `gated` for safety.
+ * EI-21921431863111143: "self-held" is decided by `isSelfOwnerRecord`, so a
+ * recorded holder that is a truncated prefix of the caller's own id is treated
+ * the same as an exact match, not as a live peer's conflicting claim.
  */
 export type ClaimFailure =
   | { reason: 'not_found'; holder: null }
@@ -4888,7 +4925,7 @@ export function classifyClaimFailure(current: { assignee?: string | null } | nul
   // normalizeTakenBy, but this function's `current` param is a bare structural type
   // any caller can pass directly, not necessarily one that went through the mapping).
   const holder = normalizeTakenBy(current.assignee ?? null)?.trim();
-  if (holder && holder !== claimer) return { reason: 'conflict', holder };
+  if (holder && !isSelfOwnerRecord(holder, claimer)) return { reason: 'conflict', holder };
   return { reason: 'gated', holder: null };
 }
 
