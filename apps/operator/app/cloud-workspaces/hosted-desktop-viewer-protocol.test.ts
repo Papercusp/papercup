@@ -10,6 +10,12 @@ import {
 
 const TICKET = `ht_${"a".repeat(43)}`;
 
+type FakeSocketEvent = {
+  data?: unknown;
+  code?: number;
+  reason?: string;
+};
+
 class FakeSocket {
   static readonly OPEN = 1;
   static readonly CLOSED = 3;
@@ -23,10 +29,13 @@ class FakeSocket {
   sent: string[] = [];
   private readonly listeners = new Map<
     string,
-    Array<(event: unknown) => void>
+    Array<(event: FakeSocketEvent) => void>
   >();
 
-  addEventListener(type: string, listener: (event: unknown) => void): void {
+  addEventListener(
+    type: "open" | "close" | "error" | "message",
+    listener: (event: FakeSocketEvent) => void,
+  ): void {
     const current = this.listeners.get(type) ?? [];
     current.push(listener);
     this.listeners.set(type, current);
@@ -41,7 +50,7 @@ class FakeSocket {
     this.emit("close", { code, reason });
   }
 
-  emit(type: string, event: unknown): void {
+  emit(type: string, event: FakeSocketEvent): void {
     for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 }
