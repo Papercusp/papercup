@@ -2,6 +2,11 @@ import { randomUUID, createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
+  acquireWithContentionRetry,
+  isWorkspaceContended,
+  LOCK_CONTENTION_BACKOFFS_MS,
+} from '../agent-tools/locks/contention-retry';
+import {
   AdmissionIdempotencyConflictError,
   AdmissionPersistenceError,
   admissionRequestFingerprint,
@@ -346,12 +351,20 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   private readonly now: () => number;
   private readonly leaseIdFactory: () => string;
 
+  /** EI-21863356544930781: backoffs + sleep for the admission-enqueue contention retry.
+   *  Injectable for the same reason `now` / `leaseIdFactory` are — so a test can prove
+   *  the retry without spending the real ~6s of backoff. */
+  private readonly admissionRetryBackoffsMs: readonly number[] | undefined;
+  private readonly sleep: ((ms: number) => Promise<void>) | undefined;
+
   constructor(
     private readonly store: DurableAdmissionQueueStore,
     options: {
       namespace?: string;
       now?: () => number;
       leaseIdFactory?: () => string;
+      admissionRetryBackoffsMs?: readonly number[];
+      sleep?: (ms: number) => Promise<void>;
       onActualDemand?: (input: {
         readonly receiptId: string;
         readonly context: AdmissionContext;
@@ -361,6 +374,8 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       }) => void | Promise<void>;
     } = {},
   ) {
+    this.admissionRetryBackoffsMs = options.admissionRetryBackoffsMs;
+    this.sleep = options.sleep;
     this.namespace = options.namespace?.trim() || 'operator';
     this.now = options.now ?? (() => Date.now());
     this.leaseIdFactory = options.leaseIdFactory ?? (() => randomUUID());
@@ -400,13 +415,36 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
 
     let stored: StoredAdmissionRecord;
     try {
-      stored = await this.store.enqueue(candidate);
+      // EI-21863356544930781: ride out a TRANSIENT pg contention timeout (55P03 lock_timeout /
+      // 57014 statement_timeout) instead of losing the whole admission on one failed write.
+      //
+      // Admission is PRE-execution — this record is what admits the work — so the caller's
+      // "run it anyway and record best-effort" shape is not available here: dropping the
+      // record would mean running ungoverned. The retry is the correct lever instead, and it
+      // is SAFE because enqueue is keyed by idempotencyKey: a lock timeout aborts its
+      // transaction (nothing committed), and if an earlier attempt HAD committed, the retry
+      // returns that same row and the fingerprint check below still guards a genuine
+      // idempotency conflict. Non-contention faults (a real bug, a missing relation, DB down)
+      // are NOT retried — they propagate on the first attempt, unchanged.
+      //
+      // Reuses the shared EI-1720 primitive rather than a second backoff loop; that bug class
+      // (a single transient timeout taken as terminal) is the same one, one layer up.
+      stored = await acquireWithContentionRetry(() => this.store.enqueue(candidate), {
+        ...(this.admissionRetryBackoffsMs ? { backoffsMs: this.admissionRetryBackoffsMs } : {}),
+        ...(this.sleep ? { sleep: this.sleep } : {}),
+      });
     } catch (error) {
       if (error instanceof AdmissionIdempotencyConflictError || error instanceof AdmissionPersistenceError) throw error;
-      throw new AdmissionPersistenceError(
-        `durable admission record could not be persisted: ${describeAdmissionCause(error)}`,
-        { cause: error },
-      );
+      // EI-21863356544930781: when contention is what beat us, say that the retries are already
+      // spent. The prior message left a caller unable to tell whether retrying was worth it, and
+      // an immediate manual retry into a still-contended box is the wrong next move.
+      const attempts = (this.admissionRetryBackoffsMs ?? LOCK_CONTENTION_BACKOFFS_MS).length + 1;
+      const prefix = isWorkspaceContended(error)
+        ? `durable admission record could not be persisted after ${attempts} attempts (transient pg contention did not clear)`
+        : 'durable admission record could not be persisted';
+      throw new AdmissionPersistenceError(`${prefix}: ${describeAdmissionCause(error)}`, {
+        cause: error,
+      });
     }
     if (stored.record.requestFingerprint !== candidate.requestFingerprint) {
       throw new AdmissionIdempotencyConflictError(request.idempotencyKey);
