@@ -278,6 +278,37 @@ export class PgConversationStore {
     return rows[0] ? toRow(rows[0]) : null;
   }
 
+  /**
+   * EI-21914051456641891: ids are minted as `<prefix>-<newMsgId()>`, and
+   * `newMsgId()` itself has 3 hyphen-delimited segments (ms-timestamp / seq /
+   * uuid-hex) — so a *published* conversation id (in a plan `## Now`, a
+   * rubric methodRef, a coord message) commonly gets HAND-TRUNCATED to just
+   * the leading `<prefix>-<ms>` segment, which LOOKS like a complete opaque
+   * token on its own (8 alnum chars reads exactly like a short id). `get()`
+   * above does an exact match, so that truncated form returns a clean,
+   * confident `null` — indistinguishable from genuine absence.
+   *
+   * This is the fallback ONLY: callers try `get(id)` first, and reach for
+   * this on an exact-match MISS. Bounded (LIMIT) and workspace-scoped (the
+   * PK's leading column), so a rare miss-path prefix scan stays cheap even
+   * without a pattern-ops index. Ambiguity (>1 match) is the caller's to
+   * handle explicitly — this never guesses.
+   */
+  async getByPrefix(prefix: string, limit = 5): Promise<ConversationRow[]> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // Ids never legitimately contain LIKE metacharacters (base36 + hex +
+    // hyphens only) — escape defensively so a stray `%`/`_`/`\` in a
+    // hand-typed/garbage input can't widen the match beyond a true prefix.
+    const escaped = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const rows = await sql<ConversationRowDb[]>`
+      SELECT ${sql.unsafe(SELECT_COLS)}
+        FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${this.ws} AND id LIKE ${escaped + '%'} ESCAPE '\\'
+       LIMIT ${limit}`;
+    return rows.map(toRow);
+  }
+
   async list(opts: ListConversationsOpts = {}): Promise<ConversationRow[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
