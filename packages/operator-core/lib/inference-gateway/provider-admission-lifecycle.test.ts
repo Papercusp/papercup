@@ -273,4 +273,39 @@ describe('registration contract', () => {
     // FALSIFIER: a seed that behaved as a cap would pin this at 3.
     expect(lifecycle.windowFor('claude')).toBeGreaterThan(3);
   });
+
+  /**
+   * RECURRENCE GUARD for EI-21842988251907640.
+   *
+   * `contractions`/`expansions` are monotonic for the life of the PROCESS, not of the deployment: a lane is
+   * registered once and never evicted, so they reset only when the gateway restarts. They surface on GET
+   * /stats as `aimd.decreases`/`aimd.increases`, whose shared type once documented them as LIFETIME counts.
+   * A reader therefore took `decreases: 0` on a freshly-restarted gateway to mean "this lane has never
+   * contracted". `countersSinceMs` is the epoch that makes the scope readable AT THE READ SITE.
+   *
+   * This case reproduces the misreading rather than merely asserting the field exists: deleting
+   * `countersSinceMs` makes it fail to compile/assert, and — more importantly — the two lifecycles below are
+   * INDISTINGUISHABLE on the counters alone, which is precisely why the epoch has to be published.
+   */
+  it('publishes the counter epoch, so a post-restart 0 cannot be read as "never contracted"', () => {
+    const before = makeLifecycle({ now: () => 1_000 });
+    throttle(before.lifecycle, 'claude', 6);
+    const contracted = before.lifecycle.snapshotFor('claude');
+    expect(contracted.contractions).toBeGreaterThan(0);
+    expect(contracted.countersSinceMs).toBe(1_000);
+
+    // A RESTART: same lane, brand-new process, counters back at zero.
+    const after = makeLifecycle({ now: () => 9_000 });
+    const restarted = after.lifecycle.snapshotFor('claude');
+    expect(restarted.contractions).toBe(0);
+
+    // THE CONTROL that makes this test worth having: a lane that has genuinely never contracted in a
+    // long-running process is ALSO at 0, so the counter alone cannot separate the two cases...
+    const neverContracted = makeLifecycle({ now: () => 1_000 }).lifecycle.snapshotFor('claude');
+    expect(neverContracted.contractions).toBe(restarted.contractions);
+    // ...and the epoch is the only thing that does. If this assertion is deleted or the field removed, the
+    // ambiguity that caused EI-21842988251907640 is silently back.
+    expect(restarted.countersSinceMs).not.toBe(neverContracted.countersSinceMs);
+    expect(restarted.countersSinceMs).toBe(9_000);
+  });
 });
