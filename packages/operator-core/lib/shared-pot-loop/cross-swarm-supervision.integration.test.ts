@@ -95,7 +95,11 @@ beforeAll(async () => {
       buildPresenceProjection(popts) as never,
     ],
   });
-}, 180_000);
+}, 300_000); // real 2-cell boot (PG + Hyperswarm testnet join + hive-epoch-boot-deps'
+// harness_registry read) under this box's fleet-wide concurrent-agent load routinely
+// exceeds 180s (observed: got through both cells' swarm-join + announce-admit inside
+// 180s but not the rest of boot()); composition-rig-schema-drift.integration.test.ts
+// already sets 240_000 for the same rig — this matches that precedent with headroom.
 
 afterAll(async () => {
   await rig?.close();
