@@ -75,7 +75,16 @@ configureBackup({
       // deliberately waits for the current migration/backup holder to finish;
       // mirror the boot migrator's explicit reset instead of letting the role
       // default turn a valid in-flight snapshot into a failed safety rail.
+      //
+      // WI-1194246 — the same argument applies to `statement_timeout`, which also
+      // cancels a `pg_advisory_lock` wait (verified 2026-08-30: statement_timeout=1s
+      // against a held advisory lock aborts with "canceling statement due to statement
+      // timeout"). harness_admin has no role-level statement_timeout today, so this SET
+      // is inert; it is here because WI-1194246 proposes adding one, and this rendezvous
+      // was measured waiting 253.7s / 118.4s on the live box. This connection is
+      // dedicated to holding the lock and is ended on release, so nothing is reset.
       await client`SET lock_timeout = 0`;
+      await client`SET statement_timeout = 0`;
       await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
     } catch (error) {
       await client.end({ timeout: 5 }).catch(() => {});
