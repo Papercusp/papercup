@@ -1967,7 +1967,8 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         });
       }
     } catch { /* statfs unavailable — leave null */ }
-    // Backup freshness (P-011): newest successful kopia snapshot + last outcome.
+    // Backup freshness (P-011): newest snapshot whose Kopia artifact AND
+    // pre-snapshot database dump are explicitly known-good + last outcome.
     let backup: InfraHealth['backup'] = null;
     try {
       const { sql } = getOrgPg();
@@ -1977,10 +1978,14 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         // "Received an instance of Date" incident, 2026-07-12).
         sql<Array<{ finished_at: string }>>`
           SELECT finished_at FROM harness_shared.backup_snapshots
-           WHERE workspace_id = ${ctx.ws} AND status = 'ok' AND finished_at IS NOT NULL
+           WHERE workspace_id = ${ctx.ws}
+             AND status = 'ok'
+             AND kopia_snapshot_id IS NOT NULL
+             AND db_dump_ok IS TRUE
+             AND finished_at IS NOT NULL
            ORDER BY finished_at DESC LIMIT 1`,
-        sql<Array<{ status: string }>>`
-          SELECT status FROM harness_shared.backup_snapshots
+        sql<Array<{ status: string; db_dump_ok: boolean | null }>>`
+          SELECT status, db_dump_ok FROM harness_shared.backup_snapshots
            WHERE workspace_id = ${ctx.ws}
            ORDER BY started_at DESC LIMIT 1`,
       ]);
@@ -1989,6 +1994,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         lastOkAtMs,
         ageMs: lastOkAtMs === null ? null : ctx.now - lastOkAtMs,
         lastStatus: last[0]?.status ?? null,
+        lastDbDumpOk: typeof last[0]?.db_dump_ok === 'boolean' ? last[0].db_dump_ok : null,
       };
     } catch { /* backup tables unreadable/absent — leave null */ }
     // Per-tool HANDLER failure rate (EI-18798264517111160) — the write-path outage
@@ -2046,7 +2052,16 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),
-        m('backup', backup?.ageMs == null ? 'n/a' : agoMin(backup.lastOkAtMs, ctx.now), backup && backup.ageMs !== null && backup.ageMs > 48 * 60 * 60_000 ? 'warn' : undefined),
+        m(
+          'backup',
+          backup?.ageMs == null ? 'n/a' : agoMin(backup.lastOkAtMs, ctx.now),
+          backup && (
+            backup.lastDbDumpOk === false ||
+            backup.lastStatus === 'degraded' ||
+            backup.lastStatus === 'failed' ||
+            (backup.ageMs !== null && backup.ageMs > 48 * 60 * 60_000)
+          ) ? 'warn' : undefined,
+        ),
         m('drift', migrationDrift ? migrationDrift.unapplied : 'n/a', (migrationDrift?.unapplied ?? 0) > 0 ? 'warn' : undefined),
         m(
           'tool failures',

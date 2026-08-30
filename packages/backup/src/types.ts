@@ -52,6 +52,12 @@ export interface SnapshotInfo {
   startedAt: string;
   finishedAt: string | null;
   /**
+   * Whether the pre-snapshot database dump landed. `null` is deliberate:
+   * rows written before this field existed (or by a resumed workflow whose
+   * cached hook result is unavailable) are unknown, never inferred as good.
+   */
+  dbDumpOk?: boolean | null;
+  /**
    * `degraded` = the kopia snapshot succeeded but the pre-snapshot DB dump did
    * not land, so the captured tree carries a stale database. Distinct from
    * `failed` (no usable snapshot at all) because the file tree IS restorable —
@@ -97,6 +103,8 @@ export interface SnapshotResult {
   kopiaSnapshotId: string;
   bytesAdded: number;
   durationMs: number;
+  /** Tri-state pre-snapshot database dump outcome; null/absent is unknown. */
+  dbDumpOk?: boolean | null;
 }
 
 export interface RestoreResult {

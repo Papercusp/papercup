@@ -90,6 +90,7 @@ describe('snapshot receipt recovery', () => {
           finished_at: null,
           bytes_added: null,
           bytes_total: null,
+          db_dump_ok: null,
           hook_payload: { ok: true, bytes: 2_329_667_487 },
         }]);
       }
@@ -121,6 +122,7 @@ describe('snapshot receipt recovery', () => {
       reconciled: true,
       stillRunning: false,
       status: 'ok',
+      dbDumpOk: true,
       kopiaSnapshotId: '0de65178167b65df11cf1ba40a0169b0',
       bytesAdded: 17,
       bytesTotal: 6_948_207_239,
@@ -130,6 +132,54 @@ describe('snapshot receipt recovery', () => {
       '0de65178167b65df11cf1ba40a0169b0',
       'ok',
       6_948_207_239,
+      true,
     ]));
+  });
+
+  it('reconciles a tagged artifact with an explicit failed dump as degraded', async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push({ text, values });
+      if (text.includes('FROM harness_shared.backup_snapshots AS snapshot')) {
+        return Promise.resolve([{
+          id: 75480,
+          status: 'running',
+          kopia_snapshot_id: null,
+          started_at: '2026-08-26T22:40:10.180Z',
+          finished_at: null,
+          bytes_added: null,
+          bytes_total: null,
+          db_dump_ok: false,
+          hook_payload: { ok: false, error: 'pg dump timed out after 900000ms' },
+        }]);
+      }
+      if (/UPDATE harness_shared\.backup_snapshots/.test(text)) {
+        return Promise.resolve([{ id: 75480 }]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureWithSql(sql);
+    const backup = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    vi.spyOn(backup, 'ensureRepo').mockResolvedValue(undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(backup as any, 'kopia').mockResolvedValue(JSON.stringify([{
+      id: 'kopia-degraded',
+      startTime: '2026-08-26T22:43:39.886Z',
+      endTime: '2026-08-26T22:43:49.378Z',
+      source: { path: root },
+      stats: { addedSize: 17, totalSize: 6_948_207_239 },
+    }]));
+
+    await expect(backup.reconcileSnapshotReceipt(75480)).resolves.toMatchObject({
+      snapshotId: 75480,
+      reconciled: true,
+      stillRunning: false,
+      status: 'degraded',
+      dbDumpOk: false,
+      kopiaSnapshotId: 'kopia-degraded',
+    });
+    const update = queries.find((query) => /UPDATE harness_shared\.backup_snapshots/.test(query.text));
+    expect(update?.values).toEqual(expect.arrayContaining(['degraded', false]));
   });
 });

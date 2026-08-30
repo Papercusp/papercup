@@ -505,8 +505,17 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   if (diskBand === 'warn') return 'warn';
   // Unapplied migrations = every deploy is one restart away from surprise DDL (P-011).
   if ((d.migrationDrift?.unapplied ?? 0) > 0) return 'warn';
-  // Backup staleness: no successful snapshot in 48h (cadence is ~hours) (P-011).
-  if (d.backup && d.backup.ageMs !== null && d.backup.ageMs > BACKUP_STALE_MS) return 'warn';
+  // Backup integrity/freshness: an explicit failed DB dump or a legacy
+  // success-shaped row without a known-good dump must never read as healthy.
+  // `lastDbDumpOk === null` is not itself a failure when the newest row is
+  // unknown, so it remains visible as `n/a` until an explicit complete
+  // snapshot lands. Explicitly failed/degraded rows remain visible.
+  if (d.backup && (
+    d.backup.lastDbDumpOk === false ||
+    d.backup.lastStatus === 'degraded' ||
+    d.backup.lastStatus === 'failed' ||
+    (d.backup.ageMs !== null && d.backup.ageMs > BACKUP_STALE_MS)
+  )) return 'warn';
   // P-006/W4: PG-pool starvation is the routinesTick freeze mode — warn (not crit: the
   // pgHealth-latency proxy is coarse, matching P-005 slotLeak → warn, so one slow tick
   // doesn't red the panel; a sustained freeze still crits via the dead-routine detector).

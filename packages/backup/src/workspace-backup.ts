@@ -93,6 +93,7 @@ export interface SnapshotReceiptReconciliation {
   reconciled: boolean;
   stillRunning: boolean;
   status: SnapshotInfo['status'];
+  dbDumpOk: boolean | null;
   kopiaSnapshotId: string | null;
   bytesAdded: number | null;
   bytesTotal: number | null;
@@ -424,6 +425,7 @@ export class WorkspaceBackup {
       heartbeatTick,
     ) ?? fallbackInterval(heartbeatTick, SNAPSHOT_HEARTBEAT_INTERVAL_MS);
 
+    let dbDumpOk: boolean | null = null;
     try {
       await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
 
@@ -453,6 +455,10 @@ export class WorkspaceBackup {
               return { ok: false, error: String(err) };
             }),
       );
+      // Step runners can replay an older cached `undefined` result, or a
+      // malformed value from an older host. Preserve that as unknown rather
+      // than turning it into a false/true assertion.
+      dbDumpOk = typeof dumpOutcome?.ok === 'boolean' ? dumpOutcome.ok : null;
 
       try {
         await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
@@ -515,16 +521,17 @@ export class WorkspaceBackup {
         // any status anyone remembered to write. So an unknown outcome does not
         // fabricate an alarm here, and a genuinely dead dump is still caught
         // there.
-        const dumpDegraded = dumpOutcome?.ok === false;
+        const dumpDegraded = dbDumpOk === false;
         await steps.runStep('backup-record-result', async () => {
           await sql`
             UPDATE harness_shared.backup_snapshots
             SET kopia_snapshot_id = ${parsed.snapshotId},
                 finished_at       = now(),
                 status            = ${dumpDegraded ? 'degraded' : 'ok'},
-                error_text        = ${dumpDegraded ? `pre-snapshot db dump did not land: ${dumpOutcome.error ?? 'unknown'}` : null},
+                error_text        = ${dumpDegraded ? `pre-snapshot db dump did not land: ${dumpOutcome?.error ?? 'unknown'}` : null},
                 bytes_added       = ${parsed.bytesAdded},
-                bytes_total       = ${parsed.bytesTotal}
+                bytes_total       = ${parsed.bytesTotal},
+                db_dump_ok        = ${dbDumpOk}
             WHERE id = ${snapshotRowId}
           `;
         });
@@ -539,6 +546,7 @@ export class WorkspaceBackup {
           kopiaSnapshotId: parsed.snapshotId,
           bytesAdded: parsed.bytesAdded,
           durationMs: parsed.durationMs,
+          dbDumpOk,
         };
       } catch (err) {
         const msg = String(err instanceof Error ? err.message : err);
@@ -546,7 +554,8 @@ export class WorkspaceBackup {
           UPDATE harness_shared.backup_snapshots
           SET finished_at = now(),
               status      = 'failed',
-              error_text  = ${msg}
+              error_text  = ${msg},
+              db_dump_ok  = ${dbDumpOk}
           WHERE id = ${snapshotRowId}
         `;
         await this.event(snapshotRowId, 'progress', { phase: 'failed', error: msg });
@@ -611,6 +620,7 @@ export class WorkspaceBackup {
       started_at: string ;
       finished_at: string  | null;
       status: string;
+      db_dump_ok: boolean | null;
       trigger_reason: string;
       trigger_context: unknown;
       bytes_added: string | null;   // BIGINT comes back as string in some drivers
@@ -619,7 +629,7 @@ export class WorkspaceBackup {
       error_text: string | null;
     }[]>`
       SELECT id, kopia_snapshot_id, started_at, finished_at, status,
-             trigger_reason, trigger_context, bytes_added, bytes_total,
+             db_dump_ok, trigger_reason, trigger_context, bytes_added, bytes_total,
              sources_json, error_text
       FROM harness_shared.backup_snapshots
       WHERE workspace_id = ${this.workspaceId}
@@ -633,6 +643,7 @@ export class WorkspaceBackup {
       startedAt: tsIso(r.started_at) ?? new Date(0).toISOString(),
       finishedAt: tsIso(r.finished_at),
       status: r.status as SnapshotInfo['status'],
+      dbDumpOk: typeof r.db_dump_ok === 'boolean' ? r.db_dump_ok : null,
       triggerReason: r.trigger_reason as SnapshotTriggerReason,
       triggerContext: (r.trigger_context as Record<string, unknown> | null),
       bytesAdded: r.bytes_added == null ? null : Number(r.bytes_added),
@@ -656,6 +667,7 @@ export class WorkspaceBackup {
     const rows = await sql<{
       id: number;
       status: SnapshotInfo['status'];
+      db_dump_ok: boolean | null;
       kopia_snapshot_id: string | null;
       started_at: string;
       finished_at: string | null;
@@ -665,6 +677,7 @@ export class WorkspaceBackup {
     }[]>`
       SELECT snapshot.id,
              snapshot.status,
+             snapshot.db_dump_ok,
              snapshot.kopia_snapshot_id,
              snapshot.started_at,
              snapshot.finished_at,
@@ -686,6 +699,7 @@ export class WorkspaceBackup {
     `;
     const row = rows[0];
     if (!row) throw new Error(`backup snapshot row ${snapshotId} was not found in ${this.workspaceId}`);
+    const knownDbDumpOk = resolveDbDumpOk(row.db_dump_ok, row.hook_payload);
 
     if (row.status !== 'running') {
       return {
@@ -693,6 +707,7 @@ export class WorkspaceBackup {
         reconciled: false,
         stillRunning: false,
         status: row.status,
+        dbDumpOk: knownDbDumpOk,
         kopiaSnapshotId: row.kopia_snapshot_id,
         bytesAdded: row.bytes_added == null ? null : Number(row.bytes_added),
         bytesTotal: row.bytes_total == null ? null : Number(row.bytes_total),
@@ -718,6 +733,7 @@ export class WorkspaceBackup {
         reconciled: false,
         stillRunning: true,
         status: 'running',
+        dbDumpOk: knownDbDumpOk,
         kopiaSnapshotId: null,
         bytesAdded: null,
         bytesTotal: null,
@@ -751,7 +767,8 @@ export class WorkspaceBackup {
       ?? manifest.stats?.totalBytes
       ?? manifest.rootEntry?.summ?.size
       ?? 0;
-    const dumpDegraded = row.hook_payload?.ok === false;
+    const dbDumpOk = knownDbDumpOk;
+    const dumpDegraded = dbDumpOk === false;
     const status: SnapshotInfo['status'] = dumpDegraded ? 'degraded' : 'ok';
     const errorText = dumpDegraded
       ? `pre-snapshot db dump did not land: ${String(row.hook_payload?.error ?? 'unknown')}`
@@ -763,7 +780,8 @@ export class WorkspaceBackup {
              status            = ${status},
              error_text        = ${errorText},
              bytes_added       = ${bytesAdded},
-             bytes_total       = ${bytesTotal}
+             bytes_total       = ${bytesTotal},
+             db_dump_ok        = ${dbDumpOk}
        WHERE workspace_id = ${this.workspaceId}
          AND id = ${snapshotId}
          AND status = 'running'
@@ -776,6 +794,7 @@ export class WorkspaceBackup {
         reconciled: false,
         stillRunning: true,
         status: 'running',
+        dbDumpOk,
         kopiaSnapshotId: null,
         bytesAdded: null,
         bytesTotal: null,
@@ -794,6 +813,7 @@ export class WorkspaceBackup {
       reconciled: true,
       stillRunning: false,
       status,
+      dbDumpOk,
       kopiaSnapshotId: manifest.id,
       bytesAdded,
       bytesTotal,
@@ -820,8 +840,12 @@ export class WorkspaceBackup {
         -- last_ok stays STRICT ('ok' only). It is read as "when did we last
         -- take a COMPLETE backup", and a degraded snapshot answering that
         -- question is the exact lie this change exists to remove.
-        MAX(finished_at) FILTER (WHERE status = 'ok')    AS last_ok,
-        MAX(finished_at) FILTER (WHERE status = 'failed') AS last_fail
+        MAX(finished_at) FILTER (
+          WHERE status = 'ok' AND kopia_snapshot_id IS NOT NULL AND db_dump_ok IS TRUE
+        ) AS last_ok,
+        MAX(finished_at) FILTER (
+          WHERE status IN ('failed', 'degraded') OR db_dump_ok IS FALSE
+        ) AS last_fail
       FROM harness_shared.backup_snapshots
       WHERE workspace_id = ${this.workspaceId}
     `;
@@ -1163,14 +1187,16 @@ export class WorkspaceBackup {
     const rows = await sql<{
       id: number; kopia_snapshot_id: string | null; started_at: string ; finished_at: string  | null;
       status: string; trigger_reason: string; trigger_context: unknown;
+      db_dump_ok: boolean | null;
       bytes_added: string | null; bytes_total: string | null;
       sources_json: unknown; error_text: string | null;
     }[]>`
       SELECT id, kopia_snapshot_id, started_at, finished_at, status,
-             trigger_reason, trigger_context, bytes_added, bytes_total,
+             db_dump_ok, trigger_reason, trigger_context, bytes_added, bytes_total,
              sources_json, error_text
       FROM harness_shared.backup_snapshots
-      WHERE workspace_id = ${this.workspaceId} AND status = 'failed'
+      WHERE workspace_id = ${this.workspaceId}
+        AND (status IN ('failed', 'degraded') OR db_dump_ok IS FALSE)
       ORDER BY started_at DESC
       LIMIT ${limit}
     `;
@@ -1181,6 +1207,7 @@ export class WorkspaceBackup {
       startedAt: tsIso(r.started_at) ?? new Date(0).toISOString(),
       finishedAt: tsIso(r.finished_at),
       status: r.status as SnapshotInfo['status'],
+      dbDumpOk: typeof r.db_dump_ok === 'boolean' ? r.db_dump_ok : null,
       triggerReason: r.trigger_reason as SnapshotTriggerReason,
       triggerContext: r.trigger_context as Record<string, unknown> | null,
       bytesAdded: r.bytes_added == null ? null : Number(r.bytes_added),
@@ -1395,6 +1422,14 @@ function durationBetween(start: unknown, end: unknown): number | null {
   if (!startIso || !endIso) return null;
   const durationMs = new Date(endIso).getTime() - new Date(startIso).getTime();
   return Number.isFinite(durationMs) ? Math.max(0, durationMs) : null;
+}
+
+function resolveDbDumpOk(
+  columnValue: unknown,
+  hookPayload: Record<string, unknown> | null | undefined,
+): boolean | null {
+  if (typeof columnValue === 'boolean') return columnValue;
+  return typeof hookPayload?.ok === 'boolean' ? hookPayload.ok : null;
 }
 
 /**

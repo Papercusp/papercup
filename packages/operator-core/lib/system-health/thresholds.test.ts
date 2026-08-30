@@ -779,8 +779,12 @@ describe('infraStatus — disk / migration-drift / backup legs (health-tab-v2 P-
     expect(infraStatus(infra({ migrationDrift: { unapplied: 0 } }))).toBe('ok');
   });
   it('warn when the newest OK backup is older than the staleness window', () => {
-    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: BACKUP_STALE_MS + 1, lastStatus: 'ok' } }))).toBe('warn');
-    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: 60_000, lastStatus: 'ok' } }))).toBe('ok');
+    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: BACKUP_STALE_MS + 1, lastStatus: 'ok', lastDbDumpOk: true } }))).toBe('warn');
+    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: 60_000, lastStatus: 'ok', lastDbDumpOk: true } }))).toBe('ok');
+    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: 60_000, lastStatus: 'degraded', lastDbDumpOk: false } }))).toBe('warn');
+    // Legacy rows have no dump outcome. Unknown is fail-soft, not an
+    // invented failure; the next explicit false/degraded row will warn.
+    expect(infraStatus(infra({ backup: { lastOkAtMs: null, ageMs: null, lastStatus: 'ok', lastDbDumpOk: null } }))).toBe('ok');
     expect(infraStatus(infra({ backup: null }))).toBe('ok'); // leg unreadable — fail-soft
   });
 });

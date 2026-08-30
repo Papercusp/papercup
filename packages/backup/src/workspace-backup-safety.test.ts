@@ -466,33 +466,37 @@ describe('degraded pre-snapshot dump must not record status=ok (EI-2010903477719
       (q) => /UPDATE harness_shared\.backup_snapshots/.test(q.text) && /kopia_snapshot_id/.test(q.text),
     );
     expect(update, 'the recording UPDATE should have run').toBeDefined();
-    // Bound in source order: kopia id, status, error_text, bytes_added, bytes_total, row id.
-    return { status: update!.values[1], errorText: update!.values[2] };
+    // Bound in source order: kopia id, status, error_text, bytes_added,
+    // bytes_total, db_dump_ok, row id.
+    return { status: update!.values[1], errorText: update!.values[2], dbDumpOk: update!.values[5] };
   }
 
   it('records status=degraded (NOT ok) when the dump was skipped for space', async () => {
-    const { status, errorText } = await recordWithHookOutcome({
+    const { status, errorText, dbDumpOk } = await recordWithHookOutcome({
       ok: false,
       error:
         'insufficient free space (35319316480 available; 6415804660 needed for a dump of 1780687612 bytes)',
     });
     expect(status).toBe('degraded');
     expect(status).not.toBe('ok');
+    expect(dbDumpOk).toBe(false);
     // The reason must land ON the row: a bare 'degraded' with no error_text
     // sends the next reader back to the logfile this bug proved nobody reads.
     expect(String(errorText)).toMatch(/insufficient free space/);
   });
 
   it('records status=degraded when the dump pipeline FAILED outright', async () => {
-    const { status, errorText } = await recordWithHookOutcome({ ok: false, error: 'pg_dump exited 1' });
+    const { status, errorText, dbDumpOk } = await recordWithHookOutcome({ ok: false, error: 'pg_dump exited 1' });
     expect(status).toBe('degraded');
+    expect(dbDumpOk).toBe(false);
     expect(String(errorText)).toMatch(/pg_dump exited 1/);
   });
 
   it('still records a clean ok (and a null error_text) when the dump landed', async () => {
-    const { status, errorText } = await recordWithHookOutcome({ ok: true });
+    const { status, errorText, dbDumpOk } = await recordWithHookOutcome({ ok: true });
     expect(status).toBe('ok');
     expect(errorText).toBeNull();
+    expect(dbDumpOk).toBe(true);
   });
 
   it('does NOT fabricate degraded from an absent step result (a resumed pre-deploy workflow)', async () => {
@@ -531,5 +535,144 @@ describe('degraded pre-snapshot dump must not record status=ok (EI-2010903477719
       (q) => /UPDATE harness_shared\.backup_snapshots/.test(q.text) && /kopia_snapshot_id/.test(q.text),
     );
     expect(update!.values[1]).toBe('ok');
+    expect(update!.values[5]).toBeNull();
+  });
+});
+
+describe('db_dump_ok readers stay tri-state and drive rollups', () => {
+  it('list exposes false/true/null without inferring from status', async () => {
+    const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      if (text.includes('ORDER BY started_at DESC')) {
+        return Promise.resolve([
+          {
+            id: 1,
+            kopia_snapshot_id: 'k1',
+            started_at: '2026-08-30T00:00:00.000Z',
+            finished_at: '2026-08-30T00:01:00.000Z',
+            status: 'ok',
+            db_dump_ok: true,
+            trigger_reason: 'manual',
+            trigger_context: null,
+            bytes_added: '1',
+            bytes_total: '2',
+            sources_json: [],
+            error_text: null,
+          },
+          {
+            id: 2,
+            kopia_snapshot_id: 'k2',
+            started_at: '2026-08-28T00:00:00.000Z',
+            finished_at: '2026-08-28T00:01:00.000Z',
+            status: 'ok',
+            db_dump_ok: null,
+            trigger_reason: 'manual',
+            trigger_context: null,
+            bytes_added: '3',
+            bytes_total: '4',
+            sources_json: [],
+            error_text: null,
+          },
+          {
+            id: 3,
+            kopia_snapshot_id: 'k3',
+            started_at: '2026-08-29T00:00:00.000Z',
+            finished_at: '2026-08-29T00:01:00.000Z',
+            status: 'degraded',
+            db_dump_ok: false,
+            trigger_reason: 'pre_destructive',
+            trigger_context: null,
+            bytes_added: '3',
+            bytes_total: '4',
+            sources_json: [],
+            error_text: 'dump failed',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    await expect(w.list()).resolves.toMatchObject([
+      { id: 1, status: 'ok', dbDumpOk: true },
+      { id: 2, status: 'ok', dbDumpOk: null },
+      { id: 3, status: 'degraded', dbDumpOk: false },
+    ]);
+  });
+
+  it('stats uses explicit dump success/failure predicates, not status=ok', async () => {
+    const queries: string[] = [];
+    const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      if (text.includes('bytes_added_sum')) {
+        return Promise.resolve([{
+          total: '2',
+          bytes_added_sum: '10',
+          bytes_total_sum: '20',
+          last_ok: '2026-08-30T00:01:00.000Z',
+          last_fail: '2026-08-30T00:02:00.000Z',
+        }]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    await expect(w.stats()).resolves.toMatchObject({
+      totalSnapshots: 2,
+      lastSnapshotAt: '2026-08-30T00:01:00.000Z',
+      lastFailureAt: '2026-08-30T00:02:00.000Z',
+    });
+    expect(queries.join('\n')).toContain('db_dump_ok IS TRUE');
+    expect(queries.join('\n')).toContain('db_dump_ok IS FALSE');
+  });
+
+  it('recentFailures includes legacy degraded rows and explicit dump failures', async () => {
+    const queries: string[] = [];
+    const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      queries.push(text);
+      if (text.includes('status IN (')) {
+        return Promise.resolve([{
+          id: 7,
+          kopia_snapshot_id: 'k7',
+          started_at: '2026-08-30T00:00:00.000Z',
+          finished_at: '2026-08-30T00:01:00.000Z',
+          status: 'degraded',
+          db_dump_ok: null,
+          trigger_reason: 'pre_destructive',
+          trigger_context: null,
+          bytes_added: '1',
+          bytes_total: '2',
+          sources_json: [],
+          error_text: 'legacy dump failure',
+        }]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    await expect(w.recentFailures()).resolves.toMatchObject([
+      { id: 7, status: 'degraded', dbDumpOk: null },
+    ]);
+    expect(queries.join('\n')).toContain('db_dump_ok IS FALSE');
   });
 });

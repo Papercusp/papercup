@@ -675,9 +675,16 @@ export interface InfraHealth {
     freeGb?: number;
     band?: Extract<PanelStatus, 'ok' | 'warn' | 'crit'>;
   }> | null;
-  /** Backup freshness (P-011): newest SUCCESSFUL kopia snapshot. null = tables
-   *  unreadable/absent this tick (greyed leg). */
-  backup?: { lastOkAtMs: number | null; ageMs: number | null; lastStatus: string | null } | null;
+  /** Backup freshness (P-011): newest snapshot whose Kopia artifact AND
+   *  pre-snapshot DB dump are both known-good. `lastDbDumpOk` is the explicit
+   *  tri-state outcome of the newest row; null means legacy/unknown, never
+   *  inferred as complete. null = tables unreadable/absent this tick. */
+  backup?: {
+    lastOkAtMs: number | null;
+    ageMs: number | null;
+    lastStatus: string | null;
+    lastDbDumpOk?: boolean | null;
+  } | null;
   /** Migration drift (P-011, the db:check_drift source): migrations on disk not
    *  yet recorded in schema_migrations. null = drift unreadable this tick. */
   migrationDrift?: { unapplied: number } | null;
