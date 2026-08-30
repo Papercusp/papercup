@@ -376,6 +376,41 @@ describe('WI-6522 — regression pins that must not be traded away', () => {
     });
   });
 
+  describe('EI-21883551367092231 — `harness_slug` accepted as a synonym for `harness`', () => {
+    const base = { to: ['peer'], summary: 'hi', expects: 'none' as const };
+
+    it('accepts harness_slug on the single form and normalizes it to harness', () => {
+      const r = sendTool.args.safeParse({ ...base, harness_slug: 'target-harness' });
+      expect(r.success).toBe(true);
+      if (r.success) {
+        expect((r.data as { harness?: string }).harness).toBe('target-harness');
+        expect('harness_slug' in (r.data as object)).toBe(false);
+      }
+    });
+
+    it('accepts harness_slug on an items[] entry and normalizes it too', () => {
+      const r = sendTool.args.safeParse({ items: [{ ...base, harness_slug: 'target-harness' }] });
+      expect(r.success).toBe(true);
+      if (r.success) {
+        const item = (r.data as { items: Array<{ harness?: string }> }).items[0];
+        expect(item.harness).toBe('target-harness');
+        expect('harness_slug' in item).toBe(false);
+      }
+    });
+
+    it('an explicit harness wins when both harness and harness_slug are passed', () => {
+      const r = sendTool.args.safeParse({ ...base, harness: 'explicit', harness_slug: 'alias' });
+      expect(r.success).toBe(true);
+      if (r.success) expect((r.data as { harness?: string }).harness).toBe('explicit');
+    });
+
+    it('is a pure alias, not a new advertised field — the schema still only names harness', () => {
+      const schema = z.toJSONSchema(sendTool.args) as { properties?: Record<string, unknown> };
+      expect(schema.properties).toHaveProperty('harness');
+      expect(schema.properties).not.toHaveProperty('harness_slug');
+    });
+  });
+
   // P-013 — expectEffect. The schema is the ONLY place an uninterpretable expectation
   // can be stopped: once stamped on the envelope it is read back by a probe that must
   // either produce a verdict or skip the row, and a silently-skipped expectation is

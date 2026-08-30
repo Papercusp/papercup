@@ -2218,9 +2218,36 @@ export default defineTool({
           body?: unknown;
           wake?: unknown;
           endTurn?: unknown;
+          harness?: unknown;
+          harness_slug?: unknown;
         }
       | null
       | undefined;
+    // EI-21883551367092231: `harness_slug` is the field name on many other
+    // papercusp tools (harness_docs:*, plans:*, ...); coord:send's own field
+    // is `harness` (messageHarnessArg). Accept `harness_slug` as a synonym so
+    // a caller who reaches for the more common name is not rejected outright
+    // — normalized here, before the strict object schema below sees it, so it
+    // never surfaces as an "Unrecognized key" refusal. Applies to both the
+    // top-level shorthand and each items[] entry, since itemSpec carries the
+    // identical `harness` field (EI-19295149246007753 parity).
+    const applyHarnessSlugAlias = (
+      m: { harness?: unknown; harness_slug?: unknown } | null | undefined,
+    ) => {
+      if (!m || typeof m !== 'object') return;
+      if (m.harness === undefined && m.harness_slug !== undefined) {
+        m.harness = m.harness_slug;
+      }
+      if ('harness_slug' in m) delete m.harness_slug;
+    };
+    applyHarnessSlugAlias(a);
+    if (Array.isArray(a?.items)) {
+      for (const it of a.items) {
+        if (it && typeof it === 'object') {
+          applyHarnessSlugAlias(it as { harness?: unknown; harness_slug?: unknown });
+        }
+      }
+    }
     const hasItems = Array.isArray(a?.items) && a.items.length > 0;
     // Keep `Boolean(a?.summary)` (not a string check) so a WRONG-TYPED summary
     // (e.g. a number) stays "present" here and falls through to summaryArg's own
