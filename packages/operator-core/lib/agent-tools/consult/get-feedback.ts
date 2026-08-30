@@ -26,6 +26,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { hardText, LIMITS } from '../limits';
+// The two "default N" figures in the arg descriptions below are RENDERED from the
+// registry, never typed: a tool description is prose that describes code, and P-006
+// found five hand-maintained copies of this same bound already stale in the tree.
+import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from '../../consult/selection-policies';
 import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
@@ -78,14 +82,14 @@ export default defineTool({
       .min(1)
       .max(8)
       .optional()
-      .describe('Cap on the selected cascade menu (default 3). Delivery stays single-wake: the top selectee is woken, the rest are the menu (remaining_candidates).'),
+      .describe(`Cap on the selected cascade menu (default ${DEFAULT_MAX_RESPONDERS}). Delivery stays single-wake: the top selectee is woken, the rest are the menu (remaining_candidates).`),
     min_agents: z
       .number()
       .int()
       .min(0)
       .max(8)
       .optional()
-      .describe("Select at least this many responders even below the relevance floor (best-available LIVE fill, labeled via:'minimum'; default 1). Pass 0 to restore pure-floor selection."),
+      .describe(`Select at least this many responders even below the relevance floor (best-available LIVE fill, labeled via:'minimum'; default ${DEFAULT_MIN_RESPONDERS}). Pass 0 to restore pure-floor selection.`),
     policy: z
       .string()
       .optional()
