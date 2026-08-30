@@ -1066,19 +1066,39 @@ export async function resolveFleetClaimSpec(
  * "unrecognized `spec`" error message so a caller sees what WOULD have matched instead of
  * guessing again (EI-18672834165659298, option 2: "error with the candidates, never fall
  * back").
+ *
+ * EI-21857753284071679: pass `revision` whenever the caller's `spec` was a `revN` shorthand
+ * that {@link resolveFleetClaimSpec} rejected as AMBIGUOUS. Without it, this defaults to the
+ * `limit` most-recently-updated fleet specs across ALL revisions — a window that can (and,
+ * measured live, does: 3 fleets sat at revision 13 workspace-wide, only 1 of them within the
+ * top 20 by recency) silently EXCLUDE the very rows that caused the ambiguity. A caller then
+ * reads the returned `candidates` as "the whole match set" — sees one revision-13 row, no
+ * others — and reasonably concludes the ambiguity error is itself a bug, when the omitted
+ * rows are why resolution correctly refused to guess. `revision` switches the query to an
+ * unbounded scan filtered to that exact revision (still ordered by recency, and still capped
+ * by `limit` as a sanity ceiling, not a recency window) so the full match set — the actual
+ * reason resolution failed closed — is always what gets shown.
  */
 export async function listFleetClaimSpecCandidates(
-  args: { workspaceId?: string; limit?: number },
+  args: { workspaceId?: string; limit?: number; revision?: number },
   sqlOverride?: OrgSql,
 ): Promise<Array<{ fleetSlug: string; specId: string | null; revision: number }>> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const limit = args.limit ?? 20;
-  const rows = (await sql`
+  const rows = (
+    Number.isSafeInteger(args.revision) && (args.revision as number) >= 0
+      ? ((await sql`
+    SELECT bee_id, spec->>'specId' AS spec_id, revision
+      FROM harness_shared.cup_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id LIKE 'fleet:%' AND revision = ${args.revision as number}
+     ORDER BY updated_at DESC LIMIT ${limit}`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>)
+      : ((await sql`
     SELECT bee_id, spec->>'specId' AS spec_id, revision
       FROM harness_shared.cup_claim_specs
      WHERE workspace_id = ${ws} AND bee_id LIKE 'fleet:%'
-     ORDER BY updated_at DESC LIMIT ${limit}`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>;
+     ORDER BY updated_at DESC LIMIT ${limit}`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>)
+  );
   return rows.map((r) => ({
     fleetSlug: r.bee_id.slice('fleet:'.length),
     specId: r.spec_id,

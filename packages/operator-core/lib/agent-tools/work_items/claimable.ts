@@ -202,7 +202,15 @@ export default defineTool({
         };
       }
       if (resolved === null) {
-        const candidates = await listFleetClaimSpecCandidates({ workspaceId: ws }).catch(() => []);
+        // EI-21857753284071679: when `args.spec` was a `revN` shorthand, resolveFleetClaimSpec
+        // can reject it as AMBIGUOUS (>=2 live fleet specs currently sit at that revision).
+        // Show the ACTUAL match set that caused the ambiguity, not the generic
+        // most-recently-updated-20 window — otherwise a caller can see only ONE revision-N row
+        // in `candidates` (the rest fell outside the recency window) and reasonably conclude the
+        // refusal is a bug rather than genuine, correctly-detected ambiguity.
+        const revisionMatch = /^rev(\d+)$/i.exec(args.spec);
+        const revision = revisionMatch ? Number(revisionMatch[1]) : undefined;
+        const candidates = await listFleetClaimSpecCandidates({ workspaceId: ws, revision }).catch(() => []);
         return {
           content: [
             {
@@ -212,7 +220,11 @@ export default defineTool({
                 error:
                   `no unique fleet or claim-spec named '${args.spec}' found (checked fleet-slug, specId, and ` +
                   `unique revN namespaces) — refusing to fall back to the unfiltered whole-backlog lane. Pass a valid fleet ` +
-                  `slug or specId from \`candidates\`, or omit \`spec\` to intentionally read the whole lane.`,
+                  `slug or specId from \`candidates\`, or omit \`spec\` to intentionally read the whole lane.` +
+                  (revision !== undefined
+                    ? ` \`candidates\` below is filtered to every live fleet spec currently at revision ${revision} — ` +
+                      `2+ of them is why the shorthand was rejected as ambiguous.`
+                    : ''),
                 candidates,
               }),
             },
