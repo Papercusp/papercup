@@ -312,18 +312,22 @@ describe('local-backend kernel adapter', () => {
     // `tried.delete(id); continue;` re-enters least-loaded selection, so the
     // rescue may legitimately move to a less-loaded peer. The ladder recorded a
     // failover on the backend CHANGING, and so must the kernel wiring.
+    // `a` starts as the least-loaded (1 vs 2) so the 503 comes from the
+    // STARTABLE backend; while that attempt is in flight `b`'s two concurrent
+    // requests finish, so by the time the rescue re-enters selection `b` is
+    // strictly less loaded and least-loaded routing prefers it.
+    const pool = fakePool([onDemand('a'), backend('b')], { a: 1, b: 2 });
     let calls = 0;
     const fetchImpl = vi.fn(async () => {
       calls += 1;
-      return calls === 1 ? reply(503, fakeBody().stream) : reply(200, fakeBody(['from-b']).stream);
+      if (calls === 1) {
+        pool.recordEnd('b');
+        pool.recordEnd('b');
+        return reply(503, fakeBody().stream);
+      }
+      return reply(200, fakeBody(['from-b']).stream);
     });
-    const { adapter, ensure } = makeAdapter({
-      backends: [onDemand('a'), backend('b')],
-      // `a` carries a concurrent request, so once it is eligible again `b` is
-      // strictly less loaded and least-loaded selection prefers it.
-      preload: { a: 2 },
-      fetchImpl,
-    });
+    const { adapter, ensure } = makeAdapter({ pool, fetchImpl });
 
     const { result, started } = await runKernel(adapter);
 
