@@ -1,0 +1,292 @@
+/**
+ * Codex bearer lane adapter for the provider-neutral request kernel.
+ *
+ * This is the FIRST `GatewayKernelAdapter` implementation (plan
+ * `gateway-kernel-adoption-2026-08-29`, P-002). It expresses exactly the
+ * protocol/transport-owned half of `proxyOpenAi`'s hand-rolled ladder —
+ * account selection, token resolution, header construction, the upstream
+ * call, and retryability normalization — and NOTHING else. Every shared
+ * request invariant (abort wiring, request ceiling, bounded body read,
+ * admission, in-flight registration, the TTFB-then-body-idle single-timer
+ * ladder, failover bookkeeping, stage telemetry) belongs to
+ * `executeGatewayRequestKernel` and is deliberately absent here.
+ *
+ * SCOPE BOUNDARY — bearer only. `proxyOpenAi` falls back to the ChatGPT
+ * CLI bridge (`cli-exec` / `oauth-http`) when no bearer account resolves.
+ * That fallback is a DIFFERENT transport on the same lane and is chosen
+ * BEFORE the kernel is entered, exactly as the live handler chooses it
+ * before its bearer path. This adapter is therefore only constructed once
+ * a bearer account is known to be resolvable; `selectInitial` surfaces a
+ * typed error rather than silently substituting a CLI route.
+ *
+ * TWO INVARIANTS THE KERNEL ALREADY OWNS — do not re-implement them here:
+ *  1. Hard-pin failover suppression. `rotateCodex` opens with
+ *     `if (hardPin) return false`; the kernel's own failover wrapper
+ *     (`request-kernel.ts`) returns null for `pin.mode === 'hard'` before
+ *     the adapter is consulted, so this adapter never sees that case.
+ *  2. Route-cycle rejection. The kernel THROWS `route-cycle` if a failover
+ *     returns an already-tried route key. `rotateCodex` compared only
+ *     against the CURRENT account, so an A->B->A rotation was silently
+ *     possible there; here `selectFailover` must decline instead, which is
+ *     why it consults `triedRouteKeys` rather than just the current id.
+ */
+import type { GatewayTransportId } from './provider-adapters';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
+import {
+  GatewayRequestKernelError,
+  type GatewayKernelAdapter,
+  type GatewayKernelAttemptContext,
+  type GatewayKernelRoute,
+  type GatewayKernelRouteContext,
+  type GatewayKernelUpstreamResponse,
+} from './request-kernel';
+
+const BEARER_TRANSPORT: GatewayTransportId = 'bearer-http';
+
+/** Route payload: the resolved bearer account for one attempt. */
+export interface CodexBearerRouteValue {
+  account: ActiveAccount;
+}
+
+export type CodexBearerChunk = Uint8Array;
+
+export interface CodexBearerResponseMetadata {
+  /** Account that actually served the attempt (`x-papercusp-routed-account`). */
+  accountId: string;
+  /** Upstream response headers, lowercased keys, pre-strip. */
+  headers: Record<string, string>;
+  /**
+   * Set when a SOFT pin yielded to a different account, so the caller can
+   * emit the pin-yield header and its owner-outcome. Null when the serving
+   * account is the pinned one, or when nothing was pinned.
+   */
+  pinYieldedFrom: string | null;
+}
+
+export interface CodexBearerPreparedAttempt {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Uint8Array | null;
+  accountId: string;
+  dispatcher: unknown;
+}
+
+/**
+ * Minimal structural view of a WHATWG `Response`. Structural rather than
+ * the DOM type so a unit test can drive the adapter with a plain object and
+ * no network, and so the adapter never depends on the gateway's `doFetch`.
+ */
+export interface CodexBearerFetchResponse {
+  status: number;
+  headers: { forEach(callback: (value: string, key: string) => void): void };
+  body: (AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void }) | null;
+}
+
+export interface CodexBearerFetchInit {
+  method: string;
+  headers: Record<string, string>;
+  body: Uint8Array | null;
+  signal: AbortSignal;
+  dispatcher: unknown;
+}
+
+export interface CodexBearerAdapterOptions {
+  pool: AccountPool;
+  /** e.g. `https://api.openai.com` — joined with the request path verbatim. */
+  upstreamBase: string;
+  /** Request path as received downstream, e.g. `/v1/responses`. */
+  urlPath: string;
+  method: string;
+  /** Downstream request headers; forwarded minus `stripRequestHeaders`. */
+  requestHeaders: Record<string, string | string[] | undefined>;
+  /** Lowercased hop-by-hop / auth headers the gateway must not forward. */
+  stripRequestHeaders: ReadonlySet<string>;
+  tokenTimeoutMs: number;
+  /** Backoff applied to an account parked without an explicit rate reset. */
+  failoverBackoffMs: number;
+  fetch(url: string, init: CodexBearerFetchInit): Promise<CodexBearerFetchResponse>;
+  /** Per-account upstream egress binding. */
+  dispatcherFor?(account: ActiveAccount): unknown | Promise<unknown>;
+  /** Parses `x-ratelimit-reset*` into an epoch-ms retry instant. */
+  rateResetAt?(headers: Record<string, string>): number | null;
+  now?(): number;
+}
+
+export type CodexBearerKernelAdapter = GatewayKernelAdapter<
+  CodexBearerRouteValue,
+  CodexBearerPreparedAttempt,
+  CodexBearerChunk,
+  CodexBearerResponseMetadata
+>;
+
+export type CodexBearerUpstream = GatewayKernelUpstreamResponse<CodexBearerChunk, CodexBearerResponseMetadata>;
+
+function routeFor(account: ActiveAccount): GatewayKernelRoute<CodexBearerRouteValue> {
+  return {
+    key: `bearer:${account.accountId}`,
+    accountId: account.accountId,
+    transport: BEARER_TRANSPORT,
+    value: { account },
+  };
+}
+
+function headersToObject(headers: CodexBearerFetchResponse['headers']): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key.toLowerCase()] = value;
+  });
+  return out;
+}
+
+/**
+ * Reject after `ms`. The kernel owns the TTFB and body-idle deadlines, but
+ * token resolution happens inside `prepareAttempt` and so carries its own
+ * bound — the same `tokenTimeoutMs` the live handler applies.
+ */
+async function withTokenDeadline(promise: Promise<string>, ms: number, label: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions): CodexBearerKernelAdapter {
+  const now = opts.now ?? (() => Date.now());
+  // Which account the caller asked for, captured at initial selection so a
+  // soft-pin yield can be reported on the response metadata.
+  let pinnedAccountId: string | null = null;
+
+  const resolveFailoverResetAt = (
+    context: GatewayKernelRouteContext<CodexBearerRouteValue, CodexBearerChunk, CodexBearerResponseMetadata>,
+  ): number => {
+    const headers = context.lastResponse?.metadata?.headers;
+    if (headers && opts.rateResetAt) {
+      const parsed = opts.rateResetAt(headers);
+      if (typeof parsed === 'number' && Number.isFinite(parsed)) return parsed;
+    }
+    return now() + opts.failoverBackoffMs;
+  };
+
+  return {
+    selectInitial(context) {
+      const pinnedId = context.pin?.accountId;
+      const pinned = pinnedId ? (opts.pool.select?.(pinnedId) ?? null) : null;
+      pinnedAccountId = pinned?.accountId ?? null;
+      let account: ActiveAccount | null = pinned;
+      if (!account) {
+        try {
+          account = opts.pool.active();
+        } catch (error) {
+          // The live handler falls back to the CLI bridge here. That is a
+          // different transport chosen before the kernel is entered, so the
+          // kernel surfaces the unavailability instead of substituting.
+          throw new GatewayRequestKernelError(
+            `inference-gateway: no Codex bearer account available: ${(error as Error).message}`,
+            { code: 'invalid-route', outcome: 'gateway-error', status: 503 },
+          );
+        }
+      }
+      return routeFor(account);
+    },
+
+    selectFailover(context) {
+      // Hard pins never reach here — the kernel's failover wrapper declines
+      // them before consulting the adapter (see the header note).
+      // `currentRoute` is typed nullable because the same context shape is
+      // reused for initial selection; failover always carries one.
+      const currentRoute = context.currentRoute;
+      if (!currentRoute) return null;
+      const current = currentRoute.value.account.accountId;
+      const next = opts.pool.onExhausted(current, resolveFailoverResetAt(context));
+      if (!next || next.accountId === current) return null;
+      // The kernel throws `route-cycle` on an already-tried key, so decline
+      // instead of handing one back.
+      if (context.triedRouteKeys.includes(routeFor(next).key)) return null;
+      return routeFor(next);
+    },
+
+    async prepareAttempt(
+      context: GatewayKernelAttemptContext<CodexBearerRouteValue>,
+    ): Promise<CodexBearerPreparedAttempt> {
+      const account = context.route.value.account;
+      let token: string;
+      try {
+        token = await withTokenDeadline(account.token(), opts.tokenTimeoutMs, `codex token '${account.accountId}'`);
+      } catch (error) {
+        // Token-read failure rotates to another account in the live handler;
+        // `retryable` is what routes this to the kernel's failover path.
+        throw new GatewayRequestKernelError(
+          `inference-gateway: Codex token unavailable for '${account.accountId}': ${(error as Error).message}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 503, retryable: true },
+        );
+      }
+
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries(opts.requestHeaders)) {
+        if (value === undefined || opts.stripRequestHeaders.has(key.toLowerCase())) continue;
+        headers[key] = Array.isArray(value) ? value.join(', ') : value;
+      }
+      headers.authorization = `Bearer ${token}`;
+      headers['accept-encoding'] = 'identity';
+
+      return {
+        url: `${opts.upstreamBase}${opts.urlPath}`,
+        method: opts.method,
+        headers,
+        body: context.body.length ? new Uint8Array(context.body) : null,
+        accountId: account.accountId,
+        dispatcher: (await opts.dispatcherFor?.(account)) ?? undefined,
+      };
+    },
+
+    async executeAttempt(
+      prepared: CodexBearerPreparedAttempt,
+      context: GatewayKernelAttemptContext<CodexBearerRouteValue>,
+    ): Promise<CodexBearerUpstream> {
+      const account = context.route.value.account;
+      let upstream: CodexBearerFetchResponse;
+      try {
+        upstream = await opts.fetch(prepared.url, {
+          method: prepared.method,
+          headers: prepared.headers,
+          body: prepared.body,
+          signal: context.signal,
+          dispatcher: prepared.dispatcher,
+        });
+      } catch (error) {
+        // Transport failure (dead/hanging proxy or network) → route around
+        // to another account, mirroring the live handler.
+        account.invalidateToken?.();
+        throw new GatewayRequestKernelError(
+          `inference-gateway: Codex upstream failed: ${(error as Error).message}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true },
+        );
+      }
+
+      const headers = headersToObject(upstream.headers);
+      const pinYieldedFrom =
+        pinnedAccountId && pinnedAccountId !== account.accountId ? pinnedAccountId : null;
+
+      return {
+        status: upstream.status,
+        streaming: (headers['content-type'] ?? '').includes('text/event-stream'),
+        transport: BEARER_TRANSPORT,
+        metadata: { accountId: account.accountId, headers, pinYieldedFrom },
+        body: upstream.body,
+        // 429 is the route-around case; everything else is forwarded as-is
+        // so the caller's own client sees the real upstream status.
+        retryable: upstream.status === 429,
+        discard: upstream.body?.cancel ? () => upstream.body?.cancel?.() : undefined,
+      };
+    },
+  };
+}
