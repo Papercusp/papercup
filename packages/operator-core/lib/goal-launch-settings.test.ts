@@ -106,6 +106,26 @@ interface MockOpts {
   headcount?: Record<string, { total: number; fleet: number }>;
   /** P-012 canonical portfolio projection row by goal id. */
   portfolio?: Record<string, Record<string, unknown>>;
+  /**
+   * Holder-AUTHORITY election, by GOAL id — who currently holds the goal named
+   * in `modeSubject`. Omitted ⇒ the owner that runs the goal is also its
+   * elected holder, which is what every pre-02d9c38d1f fixture meant.
+   *
+   * Keyed by goal rather than by owner on purpose: the election is a property
+   * of the subject, so two owners on the same goal must see the SAME verdict.
+   * Naming a different `electedOwnerId` is how a test asks for a SUPERSEDED
+   * caller; naming `predecessorOwnerId` + a future `handoffExpiresAt` is how it
+   * asks for a live handoff.
+   */
+  holder?: Record<
+    string,
+    {
+      electedOwnerId?: string;
+      electedEpoch?: number | null;
+      predecessorOwnerId?: string | null;
+      handoffExpiresAt?: string | null;
+    }
+  >;
   /** Force a hard failure on any statement matching this. */
   failOn?: RegExp;
   /** Statements the mock actually saw, for structural assertions. */
@@ -120,10 +140,28 @@ function mockSql(opts: MockOpts = {}): Sql {
     if (opts.failOn?.test(text)) return Promise.reject(new Error('boom'));
 
     // resolveGoalContext leg 1 — does this owner RUN a goal?
+    //
+    // Since 02d9c38d1f this is the holder-AUTHORITY election read
+    // (goals/holder-authority.ts): ONE row carrying the caller's own subject
+    // AND the currently-elected holder for it. This fixture used to return
+    // `{ subject }` alone, which left `elected_owner_id` undefined — and the
+    // reader correctly reads "elected holder ≠ me" as SUPERSEDED. Every
+    // modeSubject test therefore failed on the supersession fence instead of
+    // exercising its own subject. Return the full row shape.
     if (text.includes('SELECT subject FROM harness_shared.agent_modes')) {
       const owner = vals[1] as string;
       const subj = opts.modeSubject?.[owner];
-      return Promise.resolve(subj ? [{ subject: subj }] : []);
+      if (!subj) return Promise.resolve([]);
+      const h = opts.holder?.[subj];
+      return Promise.resolve([
+        {
+          subject: subj,
+          elected_owner_id: h?.electedOwnerId ?? owner,
+          elected_epoch: h?.electedEpoch ?? 1,
+          predecessor_owner_id: h?.predecessorOwnerId ?? null,
+          handoff_expires_at: h?.handoffExpiresAt ?? null,
+        },
+      ]);
     }
     // resolveGoalContext leg 2 — did this owner INHERIT one?
     if (text.includes('SELECT goal_id FROM harness_shared.session_briefs')) {
@@ -724,6 +762,47 @@ describe('an UNREADABLE holder-authority store degrades, it does not throw the l
     // The underlying authority message must survive into the reason, so an
     // operator can tell a storage blip from a genuine absence of goal context.
     expect(r.degradedReasons.join(' ')).toMatch(/unreadable|goal context unresolved/i);
+  });
+
+  // The other half of the same fix, and the reason it is a CODE test and not a
+  // blanket try/catch: a SUPERSEDED caller must still be refused. Degrading
+  // here would let an agent whose lease was taken keep launching under the old
+  // goal's ceiling — the exact thing the fence exists to stop. If someone
+  // "simplifies" isFatalGoalHolderVerdict into catch-everything, these fail.
+  const superseded = () =>
+    mockSql({ modeSubject: { 'su-goal': 'g1' }, holder: { g1: { electedOwnerId: 'su-successor' } } });
+
+  it('resolveGoalLaunch still THROWS for a superseded holder', async () => {
+    await expect(
+      resolveGoalLaunch({ workspaceId: WS, launcherOwnerId: 'su-goal', sql: superseded() }),
+    ).rejects.toMatchObject({ code: 'goal_holder_superseded' });
+  });
+
+  it('readGoalLaunchSettingsForLauncher still THROWS for a superseded holder', async () => {
+    await expect(
+      readGoalLaunchSettingsForLauncher({ workspaceId: WS, launcherOwnerId: 'su-goal', sql: superseded() }),
+    ).rejects.toMatchObject({ code: 'goal_holder_superseded' });
+  });
+
+  it('a LIVE handoff is not superseded — the predecessor still resolves its goal', async () => {
+    // Pins the third status the reader can return, so a future narrowing of the
+    // fence to "elected only" cannot pass by looking like the two cases above.
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        holder: {
+          g1: {
+            electedOwnerId: 'su-successor',
+            predecessorOwnerId: 'su-goal',
+            handoffExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        },
+      }),
+    });
+    expect(r.goalId).toBe('g1');
+    expect(r.degraded).toBe(false);
   });
 });
 
