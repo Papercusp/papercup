@@ -35,24 +35,25 @@ import { resolveTaskTimeoutMs } from '../../../../scripts/lib/batch-watchdog.mjs
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
 
-// 33466aadb9 wrapped `runBudgetedTasks` in the SHARED, cross-process admission
-// mutex (`papercusp-test-process-admission`, 4h timeout). That made this file
-// deadlock against the very runner executing it: `affected-tests` holds that lock
-// for the whole suite, so every test here that calls `runBudgetedTasks` waited on
-// a lock its own parent owned and died at vitest's 60s cap. It reproduced at
-// EXACTLY 9 timeouts in three independent measurements (run 7's full canonical
-// suite, an isolated full-lane run, and this file alone) and burned ~9.2 min of
-// every canonical run — the largest single block on a green root `npm test`.
+// HYGIENE, NOT A FIX — do not read this as the reason the timeouts went away.
 //
-// Measured 2026-08-30: bypassing the mutex took this file from 553s/9-timeouts to
-// 20s/0-timeouts, 57 passed.
+// 33466aadb9 wrapped `runBudgetedTasks` in the SHARED, cross-process admission mutex
+// (`papercusp-test-process-admission`, 4h timeout). A unit test asserting allocation
+// logic has no business taking the production lock the real runner uses, so this
+// redirects the lock root to a per-file temp dir: these tests take a REAL lock that
+// nobody else contends on, and a leaked one cannot reach another process.
 //
-// The fix is isolation, not bypass: point the mutex root at a per-file temp dir so
-// these tests take a REAL lock that simply nobody else contends on. Bypassing via
-// PAPERCUSP_DISABLE_FS_MUTEX would have silently broken the one test that asserts
-// the gate actually serializes (it fails under a bypass, as it should). That test
-// already redirects the root this same way and restores to whatever it found —
-// which is now this dir, so it keeps working unchanged.
+// It is worth being explicit that this did NOT fix the 9 timeouts, because I first
+// believed it would and said so. Measured with this redirect in place and the mutex
+// otherwise live: 552s / 9 timeouts / 12 failed — IDENTICAL to without it. So
+// cross-process contention was never the cause. The real cause is the tick-count
+// assumption documented on `until` below; see EI-21882326796062266 for the
+// falsification.
+//
+// Deliberately not PAPERCUSP_DISABLE_FS_MUTEX: that removes the mechanism entirely
+// and silently breaks the one test asserting the gate actually serializes.
+// The gate test already redirects the root this same way and restores whatever it
+// found — which is now this dir, so it keeps working unchanged.
 let mutexLockRoot: string;
 let previousMutexLockRoot: string | undefined;
 beforeAll(() => {
@@ -84,6 +85,34 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/**
+ * Wait for an OBSERVED condition instead of guessing how many ticks it takes.
+ *
+ * 33466aadb9 put an async filesystem-mutex acquisition (`withFsMutex`) in front of
+ * task admission. `await Promise.resolve()` — one microtask — was enough to observe
+ * admission before that, and is not now: the assertions saw `starts` still EMPTY.
+ *
+ * That cost far more than three assertion failures. A test that fails mid-flight
+ * abandons a `runBudgetedTasks` which is still HOLDING the mutex (its fake `runTask`
+ * gates never resolve, so `withFsMutex` never reaches its release). Every later call
+ * in the process then blocked until vitest's 60s cap — 9 of them, ~9.2 min of every
+ * canonical run, presenting as timeouts with no connection to the real defect.
+ *
+ * MEASURED: the first timing-out test PASSES ALONE in 13s (`-t`), and the first
+ * assertion failure reproduces alone in 12s with 0 timeouts. So the timeouts are
+ * collateral from the earlier failures, not independent hangs.
+ *
+ * Waiting on the signal is robust to however much async sits in front of admission,
+ * which is the property a fixed tick count never had.
+ */
+async function until(predicate: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise<void>((done) => setImmediate(done));
+  }
+}
+
 describe('runBudgetedTasks', () => {
   it('gives the longest task all but one worker and overlaps the shortest on the reserved lane', async () => {
     const tasks = [
@@ -102,7 +131,7 @@ describe('runBudgetedTasks', () => {
       },
     });
 
-    await Promise.resolve();
+    await until(() => starts.length >= 2, 'the first two admissions');
     expect(starts).toEqual([
       { id: 'long', lane: 'primary', workers: 3 },
       { id: 'short', lane: 'reserved', workers: 1 },
@@ -132,11 +161,17 @@ describe('runBudgetedTasks', () => {
     ];
     const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
     const settled: string[] = [];
+    // Admission is the thing we have to wait for, so it has to be observable —
+    // this test previously had no record of it and relied on a microtask tick.
+    const started: string[] = [];
     let poolReturned = false;
     const running = runBudgetedTasks(tasks, {
       ...config,
       estimateMs: (task: (typeof tasks)[number]) => task.estimateMs,
-      runTask: (task: (typeof tasks)[number]) => gates.get(task.id)!.promise,
+      runTask: (task: (typeof tasks)[number]) => {
+        started.push(task.id);
+        return gates.get(task.id)!.promise;
+      },
       onTaskSettled: (entry: { task: { id: string } }) => {
         settled.push(entry.task.id);
       },
@@ -145,7 +180,7 @@ describe('runBudgetedTasks', () => {
       poolReturned = true;
     });
 
-    await Promise.resolve();
+    await until(() => started.length >= 2, 'both tasks to be admitted');
     gates.get('short')!.resolve('short-result');
     await new Promise<void>((done) => setImmediate(done));
     expect(settled).toEqual(['short']);
@@ -232,7 +267,7 @@ describe('runBudgetedTasks', () => {
       (error: Error) => ({ error }),
     );
 
-    await Promise.resolve();
+    await until(() => starts.length >= 2, 'long and short to be admitted');
     expect(starts).toEqual(['long', 'short']);
     gates.get('long')!.reject(new Error('primary failed'));
     await new Promise<void>((done) => setImmediate(done));
