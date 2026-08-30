@@ -193,7 +193,14 @@ describe('proposeRubric integration wiring', () => {
         subjectPlan: 'does-not-exist',
         characteristic: 'citation-guard',
         title: 'Citation guard wiring',
-        criteria: [{ ...c6(), title: 'Cross-lineage delivery' }],
+        ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+        criteria: [
+          {
+            ...c6(),
+            title: 'Cross-lineage delivery',
+            driftMarkers: 'The cited source or named test case does not establish the outcome.',
+          },
+        ],
         checkPathRoot: root,
         by: 'su-test',
       }),
