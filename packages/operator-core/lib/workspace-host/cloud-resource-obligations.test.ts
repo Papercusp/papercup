@@ -14,8 +14,10 @@ import {
   recordCloudResourceObligation,
   closeCloudResourceObligation,
   markCloudResourceObligationEscalated,
+  runCloudResourceObligationSweepOnce,
   CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
   type CloudResourceObligationRow,
+  type CloudResourceObligationCaptureDep,
 } from './cloud-resource-obligations';
 
 function makeRow(overrides: Partial<CloudResourceObligationRow> = {}): CloudResourceObligationRow {
@@ -223,5 +225,112 @@ describe('markCloudResourceObligationEscalated', () => {
   it('requires a non-empty work item id', async () => {
     const { sql } = makeFakeSql();
     await expect(markCloudResourceObligationEscalated(sql, 1, '')).rejects.toThrow(/workItemId/);
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// runCloudResourceObligationSweepOnce — the whole tick body, DBOS-free.
+// ---------------------------------------------------------------------------------
+
+function toDbRow(row: CloudResourceObligationRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    workspace_id: row.workspaceId,
+    provider: row.provider,
+    resource_kind: row.resourceKind,
+    resource_id: row.resourceId,
+    project_id: row.projectId,
+    purpose: row.purpose,
+    created_by_owner_id: row.createdByOwnerId,
+    source_work_item_id: row.sourceWorkItemId,
+    created_at: new Date(row.createdAtMs).toISOString(),
+    grace_ms: row.graceMs,
+    teardown_owed: row.teardownOwed,
+    closed_at: row.closedAtMs === null ? null : new Date(row.closedAtMs).toISOString(),
+    closed_reason: row.closedReason,
+    last_escalated_at: row.lastEscalatedAtMs === null ? null : new Date(row.lastEscalatedAtMs).toISOString(),
+    escalation_work_item_id: row.escalationWorkItemId,
+    updated_at: new Date(row.updatedAtMs).toISOString(),
+  };
+}
+
+function makeSweepFakeSql(openRows: CloudResourceObligationRow[]) {
+  const markCalls: Array<{ id: number; workItemId: string }> = [];
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+    if (text.includes('SELECT * FROM harness_shared.cloud_resource_obligations')) {
+      return Promise.resolve(openRows.map(toDbRow));
+    }
+    if (text.includes('SET last_escalated_at')) {
+      // Template layout: UPDATE ... SET last_escalated_at = now(), escalation_work_item_id =
+      // ${workItemId} ... WHERE id = ${id} — id is the LAST interpolated value.
+      markCalls.push({ id: Number(values[values.length - 1]), workItemId: String(values[0]) });
+      return Promise.resolve([]);
+    }
+    throw new Error(`unexpected query in sweep fake sql: ${text}`);
+  }) as unknown as postgres.Sql;
+  return { sql, markCalls };
+}
+
+describe('runCloudResourceObligationSweepOnce', () => {
+  it('escalates exactly the grace-eligible rows and marks each escalated with the returned work-item id', async () => {
+    const fresh = makeRow({ id: 1, resourceId: 'fresh-still-inside-grace', createdAtMs: 900_000 });
+    const stale = makeRow({ id: 2, resourceId: 'stale-past-grace', createdAtMs: 0 });
+    const evaluatedAtMs = CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS;
+    const { sql, markCalls } = makeSweepFakeSql([fresh, stale]);
+    const capturedTitles: string[] = [];
+    const capturedWatchdogKeys: string[] = [];
+    const capture: CloudResourceObligationCaptureDep = async (input) => {
+      capturedTitles.push(input.title);
+      capturedWatchdogKeys.push(input.watchdogKey);
+      return { ok: true, created: true, issue: { id: 'EI-fake-escalation' } };
+    };
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, { evaluatedAtMs });
+    expect(result).toEqual({ candidates: 1, escalated: 1, errors: [] });
+    expect(capturedTitles).toHaveLength(1);
+    expect(capturedTitles[0]).toContain('stale-past-grace');
+    expect(capturedWatchdogKeys[0]).toBe('cloud-resource-obligation:gcp:nat:stale-past-grace');
+    expect(markCalls).toEqual([{ id: 2, workItemId: 'EI-fake-escalation' }]);
+  });
+
+  it('files nothing when every open obligation is still inside its grace period', async () => {
+    const fresh = makeRow({ id: 1, resourceId: 'fresh', createdAtMs: 900_000 });
+    const { sql, markCalls } = makeSweepFakeSql([fresh]);
+    const capture: CloudResourceObligationCaptureDep = async () => {
+      throw new Error('capture must not be called for a fresh obligation');
+    };
+    const result = await runCloudResourceObligationSweepOnce(
+      sql,
+      { capture },
+      { evaluatedAtMs: 900_000 + 1000 },
+    );
+    expect(result).toEqual({ candidates: 0, escalated: 0, errors: [] });
+    expect(markCalls).toEqual([]);
+  });
+
+  it('records a per-candidate capture failure without aborting the rest of the sweep', async () => {
+    const bad = makeRow({ id: 1, resourceId: 'bad', createdAtMs: 0 });
+    const good = makeRow({ id: 2, resourceId: 'good', createdAtMs: 0 });
+    const evaluatedAtMs = CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS;
+    const { sql, markCalls } = makeSweepFakeSql([bad, good]);
+    const capture: CloudResourceObligationCaptureDep = async (input) => {
+      if (input.watchdogKey.includes('bad')) throw new Error('capture backend unavailable');
+      return { ok: true, created: true, issue: { id: 'EI-good' } };
+    };
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, { evaluatedAtMs });
+    expect(result.candidates).toBe(2);
+    expect(result.escalated).toBe(1);
+    expect(result.errors).toEqual([{ id: 1, error: 'capture backend unavailable' }]);
+    expect(markCalls).toEqual([{ id: 2, workItemId: 'EI-good' }]);
+  });
+
+  it('does not mark escalated when capture coalesced without returning an issue id', async () => {
+    const row = makeRow({ id: 1, resourceId: 'coalesced', createdAtMs: 0 });
+    const evaluatedAtMs = CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS;
+    const { sql, markCalls } = makeSweepFakeSql([row]);
+    const capture: CloudResourceObligationCaptureDep = async () => ({ ok: true, created: false });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, { evaluatedAtMs });
+    expect(result).toEqual({ candidates: 1, escalated: 0, errors: [] });
+    expect(markCalls).toEqual([]);
   });
 });

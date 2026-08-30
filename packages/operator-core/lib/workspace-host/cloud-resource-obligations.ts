@@ -269,3 +269,98 @@ export function selectCloudResourceObligationsToEscalate(
   }
   return out.sort((a, b) => a.createdAtMs - b.createdAtMs);
 }
+
+/**
+ * Minimal structural shape of `captureImprovement` (capture-core.ts) — duck-typed
+ * rather than imported, so this workspace-host module does not pull in the whole
+ * improvements-capture dependency graph. Kept deliberately narrow to exactly the
+ * fields the sweep uses; `watchdogKey` is what makes a re-nudge COALESCE onto the
+ * same work-item (bumping repeatCount) instead of filing a sibling.
+ */
+export interface CloudResourceObligationCaptureDep {
+  (input: {
+    title: string;
+    kind: 'bug';
+    body?: string;
+    severity?: 'critical' | 'major' | 'minor' | 'nit';
+    watchdogKey: string;
+    createdBy?: string;
+  }): Promise<{ ok: true; created: boolean; issue?: { id: string } }>;
+}
+
+export interface CloudResourceObligationSweepDeps {
+  capture: CloudResourceObligationCaptureDep;
+}
+
+export interface CloudResourceObligationSweepResult {
+  candidates: number;
+  escalated: number;
+  errors: Array<{ id: number; error: string }>;
+}
+
+/**
+ * The whole sweep tick body, split out of the DBOS wrapper so it is testable without
+ * a scheduler (mirrors reclaimOrphanPgssStatsOnce / runRecipeHygieneOnce). Reads every
+ * open obligation, decides which are escalation-eligible, and files/refreshes a durable
+ * bug work-item for each via the injected `capture` dependency — the OWNER-INDEPENDENT
+ * half of the fix: this function runs on the DBOS scheduler's own process, so detection
+ * does not depend on the creating agent's session, or any agent's session, surviving.
+ *
+ * A per-candidate capture failure is recorded in `errors` and does not abort the rest
+ * of the sweep — one bad row must never strand every other obligation's escalation.
+ */
+export async function runCloudResourceObligationSweepOnce(
+  sql: postgres.Sql,
+  deps: CloudResourceObligationSweepDeps,
+  opts: { evaluatedAtMs?: number; escalateCooldownMs?: number } = {},
+): Promise<CloudResourceObligationSweepResult> {
+  const evaluatedAtMs = opts.evaluatedAtMs ?? Date.now();
+  const open = await listOpenCloudResourceObligations(sql);
+  const candidates = selectCloudResourceObligationsToEscalate(open, evaluatedAtMs, opts.escalateCooldownMs);
+  const errors: Array<{ id: number; error: string }> = [];
+  let escalated = 0;
+  for (const c of candidates) {
+    try {
+      const ageHours = (c.ageMs / 3_600_000).toFixed(1);
+      const watchdogKey = `cloud-resource-obligation:${c.provider}:${c.resourceKind}:${c.resourceId}`;
+      const title =
+        `Undischarged ${c.provider.toUpperCase()} ${c.resourceKind} '${c.resourceId}' — teardown owed ` +
+        `${ageHours}h, nothing has closed it`;
+      const body =
+        `A ${c.provider} ${c.resourceKind} named '${c.resourceId}'` +
+        (c.projectId ? ` (project ${c.projectId})` : '') +
+        ` was created ${ageHours}h ago and has not been marked torn down.\n\n` +
+        (c.purpose ? `Purpose recorded at creation: ${c.purpose}\n\n` : '') +
+        (c.sourceWorkItemId ? `Originating work-item: ${c.sourceWorkItemId}\n\n` : '') +
+        `This is an OWNER-INDEPENDENT sweep of harness_shared.cloud_resource_obligations ` +
+        `(migration 1040, id=${c.id}) — it fires on a schedule and does not depend on the creating ` +
+        `agent's session surviving. It cannot itself verify or delete the resource (no working cloud ` +
+        `credential is available to this sweep); whoever picks this up should (a) verify via the ` +
+        `provider console/API whether the resource still exists, (b) tear it down if it is no longer ` +
+        `needed, and (c) call closeCloudResourceObligation({ workspaceId:'${c.workspaceId}', ` +
+        `provider:'${c.provider}', resourceKind:'${c.resourceKind}', resourceId:'${c.resourceId}', ` +
+        `reason:'<what you found>' }) (packages/operator-core/lib/workspace-host/` +
+        `cloud-resource-obligations.ts) once discharged, so this escalation stops re-firing.` +
+        (c.hadPriorEscalation
+          ? `\n\nThis is a RE-NUDGE — a prior escalation ${c.priorEscalationWorkItemId} was filed for ` +
+            `this same resource and appears to still be open.`
+          : '');
+      const result = await deps.capture({
+        title,
+        kind: 'bug',
+        body,
+        severity: 'major',
+        watchdogKey,
+        createdBy: 'system:cloud-resource-obligation-sweep',
+      });
+      const workItemId = result.issue?.id;
+      if (workItemId) {
+        await markCloudResourceObligationEscalated(sql, c.id, workItemId);
+        escalated += 1;
+      }
+    } catch (err) {
+      errors.push({ id: c.id, error: (err as Error).message });
+    }
+  }
+  return { candidates: candidates.length, escalated, errors };
+}
