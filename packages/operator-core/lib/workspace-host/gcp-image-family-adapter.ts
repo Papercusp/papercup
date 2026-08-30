@@ -34,6 +34,11 @@ import {
   type GcpImageScanEvidence,
 } from './gcp-image-family';
 import { evaluateImageScanPolicy } from './image-scan-policy';
+import {
+  IAP_TCP_FORWARDING_SOURCE_RANGE,
+  iapSshRuleAdmits,
+  // @ts-expect-error — plain .mjs helper has no declaration file; reuse its tested firewall semantics.
+} from '../../bin/gcp-clean-room-args.mjs';
 
 /** A shell-free command invocation used by the image, scanner, and clean-room seams. */
 export interface GcpImageFamilyCommand {
@@ -538,6 +543,15 @@ function cleanProof(value: unknown, input: GcpImageFamilyCleanRoomRunInput): Gcp
   return proof;
 }
 
+/**
+ * Same predicate the host projection uses (`isPlainObject` in papercusp-image-scan.mjs), kept
+ * local rather than imported so the two halves of the scan document stay independently
+ * readable. Guards the optional breakdown fields below: a non-object is treated as absent.
+ */
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function scanEvidence(
   value: unknown,
   input: {
@@ -572,6 +586,57 @@ function scanEvidence(
     // which is the single place that decides whether a measurement is usable.
     vulnerabilityBySeverity: result.vulnerabilityBySeverity as Readonly<Record<string, number>>,
     secretFindings: result.secretFindings as number,
+    // ---- Everything below is MEASURED ON EVERY RUN and used to be discarded exactly here. ----
+    // The guest computes each of these, fail-closed validates them, and serialises them over
+    // SSH; the host projects them; and this function dropped nine of them on the floor. The
+    // cost is not abstract: reaching a scan result takes a full billable image build, so a
+    // diagnostic lost here is re-derived by building the image AGAIN. It forced "how many
+    // blockers are actually fixable" to be guessed twice (WI-1088331), and it hid the scan's
+    // own coverage, which is what makes a partial mount publishable as clean (WI-1092039).
+    //
+    // Carried conditionally, mirroring the host projection's idiom, so an ABSENT field stays
+    // absent and reads as "not measured" — never as a zero nobody actually took.
+    // `image-scan-host-to-adapter.test.ts` derives the expected set from the host projection,
+    // so a field added upstream with no reader here fails there instead of vanishing.
+    ...(typeof result.mountedFilesystems === 'number'
+      ? { mountedFilesystems: result.mountedFilesystems }
+      : {}),
+    ...(typeof result.candidateRootProof === 'string'
+      ? { candidateRootProof: result.candidateRootProof }
+      : {}),
+    ...(typeof result.vulnerabilityFixable === 'number'
+      ? { vulnerabilityFixable: result.vulnerabilityFixable }
+      : {}),
+    ...(isRecord(result.vulnerabilityFixableBySeverity)
+      ? {
+          vulnerabilityFixableBySeverity: result.vulnerabilityFixableBySeverity as Readonly<
+            Record<string, number>
+          >,
+        }
+      : {}),
+    ...(isRecord(result.vulnerabilityByEcosystem)
+      ? {
+          vulnerabilityByEcosystem: result.vulnerabilityByEcosystem as Readonly<
+            Record<string, number>
+          >,
+        }
+      : {}),
+    ...(isRecord(result.vulnerabilityFixableByEcosystem)
+      ? {
+          vulnerabilityFixableByEcosystem: result.vulnerabilityFixableByEcosystem as Readonly<
+            Record<string, number>
+          >,
+        }
+      : {}),
+    ...(isRecord(result.secretsByRule)
+      ? { secretsByRule: result.secretsByRule as Readonly<Record<string, number>> }
+      : {}),
+    ...(isRecord(result.secretsByArea)
+      ? { secretsByArea: result.secretsByArea as Readonly<Record<string, number>> }
+      : {}),
+    ...(Array.isArray(result.secretSample)
+      ? { secretSample: result.secretSample as readonly unknown[] }
+      : {}),
     evidenceRef: text(result.evidenceRef, 'scan.evidenceRef'),
   };
   if (
@@ -598,6 +663,49 @@ function scanEvidence(
 
 function jsonInput(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
+}
+
+function parseJsonArray(value: string, operation: string): readonly unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fail(`${operation} returned invalid JSON`);
+  }
+  if (!Array.isArray(parsed)) fail(`${operation} returned a JSON value instead of an array`);
+  return parsed;
+}
+
+/**
+ * Read the network tags that the checked-in Packer template will give its builder.
+ *
+ * The adapter passes these tags explicitly to both `packer validate` and `packer build`, rather
+ * than relying on Packer's implicit variable default. That makes the IAP preflight and the
+ * billable build operate on one exact tag list, while a template edit that removes or corrupts
+ * the declaration fails before any cloud mutation.
+ */
+export function parseBuilderNetworkTags(template: string): readonly string[] {
+  const header = 'variable "builder_network_tags"';
+  const start = template.indexOf(header);
+  if (start < 0) fail('Packer template is missing variable "builder_network_tags"');
+  const nextVariable = template.indexOf('\nvariable "', start + header.length);
+  const block = template.slice(start, nextVariable < 0 ? template.length : nextVariable);
+  const match = /^\s*default\s*=\s*\[([^\]]*)\]/m.exec(block);
+  if (!match) fail('Packer template builder_network_tags must declare a literal default list');
+  const tags = [...match[1].matchAll(/"([^"\r\n]*)"/g)].map((entry, index) => {
+    const tag = entry[1]?.trim() ?? '';
+    return resource(tag, `builder_network_tags[${index}]`);
+  });
+  if (tags.length === 0) fail('Packer template builder_network_tags must contain at least one tag');
+  if (new Set(tags).size !== tags.length) fail('Packer template builder_network_tags must not contain duplicate tags');
+  return tags;
+}
+
+function regionFromZone(zone: string): string {
+  const value = text(zone, 'cleanRoom.zone');
+  const region = value.replace(/-[a-z]$/, '');
+  if (region === value) fail('cleanRoom.zone must be a zonal GCP location such as us-central1-a');
+  return region;
 }
 
 /** Node process runner used by the production adapter and by command-protocol runners. */
@@ -1061,6 +1169,84 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
     }
   }
 
+  private async gcloudJson(args: readonly string[], operation: string): Promise<unknown> {
+    const gcloud = safeExecutable(this.options.gcloudExecutable, 'gcloud', 'gcloudExecutable');
+    let result: GcpImageFamilyCommandResult;
+    try {
+      result = await this.commands.run(gcloud, [...args, '--format=json']);
+    } catch (error) {
+      fail(
+        `${operation} could not be executed: ${redactDiagnostic(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+    return assertSuccess(result, operation);
+  }
+
+  /**
+   * Verify the IAP route before Packer creates its ephemeral builder.
+   *
+   * The builder is private and uses IAP for SSH, so a firewall rule that targets a different
+   * network tag is indistinguishable from a dead guest until Packer's full SSH timeout expires.
+   * Resolve the subnet's actual network, read its actual firewall rules, and apply the same
+   * `iapSshRuleAdmits` predicate used by the clean-room VM path before ADC, init, validate, or
+   * build can start.
+   */
+  private async assertIapSshCanReachBuilder(
+    projectId: string,
+    zone: string,
+    subnetwork: string,
+    builderNetworkTags: readonly string[],
+  ): Promise<void> {
+    // A non-IAP template path does not depend on the IAP tcp:22 rule. The template defaults to
+    // IAP, so the check remains fail-closed for the production path unless explicitly disabled.
+    if (this.options.useIap === false) return;
+
+    const region = regionFromZone(zone);
+    const subnet = parseJsonObject(
+      String(
+        await this.gcloudJson(
+          [
+            'compute',
+            'networks',
+            'subnets',
+            'describe',
+            text(subnetwork, 'cleanRoom.subnetwork'),
+            `--project=${projectId}`,
+            `--region=${region}`,
+          ],
+          'GCP IAP subnet preflight',
+        ),
+      ),
+      'GCP IAP subnet preflight',
+    );
+    const networkValue = text(subnet.network, 'GCP IAP subnet preflight network');
+    const networkName = resource(networkValue.split('/').at(-1) ?? '', 'GCP IAP subnet preflight network name');
+    const rules = parseJsonArray(
+      String(
+        await this.gcloudJson(
+          ['compute', 'firewall-rules', 'list', `--project=${projectId}`, `--filter=network:${networkName}`],
+          'GCP IAP firewall preflight',
+        ),
+      ),
+      'GCP IAP firewall preflight',
+    );
+    const admitted = rules.some((rule) =>
+      builderNetworkTags.some((tag) => iapSshRuleAdmits(rule, tag)),
+    );
+    if (admitted) return;
+
+    const tagList = builderNetworkTags.join(', ');
+    fail(
+      `GCP IAP firewall preflight found no INGRESS tcp:22 rule on network '${networkName}' ` +
+        `that admits builder network tag(s) [${tagList}] from ${IAP_TCP_FORWARDING_SOURCE_RANGE}. ` +
+        `Packer would create a private builder and then wait for SSH until its timeout. ` +
+        `Create or repair a rule, for example: gcloud compute firewall-rules create ` +
+        `${networkName}-builder-iap --project=${projectId} --network=${networkName} ` +
+        `--direction=INGRESS --action=allow --rules=tcp:22 ` +
+        `--source-ranges=${IAP_TCP_FORWARDING_SOURCE_RANGE} --target-tags=${tagList}`,
+    );
+  }
+
   async buildCandidate(
     input: Parameters<GcpImageFamilyReleaseAdapter['buildCandidate']>[0],
   ): Promise<{ imageId: string }> {
@@ -1108,6 +1294,7 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
         `template ${template} digest ${templateDigest} does not match pinned ${context.artifact.buildManifest.builder.templateSha256}`,
       );
     }
+    const builderNetworkTags = parseBuilderNetworkTags(bytes.toString('utf8'));
     const vars: Readonly<Record<string, string | number | boolean>> = {
       project_id: project(input.projectId, 'projectId'),
       zone: text(context.request.cleanRoom.zone, 'cleanRoom.zone'),
@@ -1127,6 +1314,7 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       release_signature_url: text(context.artifact.release.signatureUrl, 'release.signatureUrl'),
       release_signing_public_key: text(context.artifact.release.signingPublicKey, 'release.signingPublicKey'),
       release_signing_key_sha256: digest(context.artifact.release.signingKeySha256, 'release.signingKeySha256'),
+      builder_network_tags: JSON.stringify(builderNetworkTags),
       guest_tool_versions: JSON.stringify(versions),
       ...(this.options.machineType ? { machine_type: this.options.machineType } : {}),
       ...(this.options.diskSizeGb === undefined ? {} : { disk_size_gb: this.options.diskSizeGb }),
@@ -1137,6 +1325,15 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       this.options.packerExecutable ?? this.options.packerPath,
       'packer',
       'packerExecutable',
+    );
+    // ⚠ Verify the actual network and firewall admission before even probing ADC. The IAP
+    // preflight is read-only, while `packer init`/`validate` are the final free checks before the
+    // billable builder VM is created.
+    await this.assertIapSshCanReachBuilder(
+      input.projectId,
+      text(context.request.cleanRoom.zone, 'cleanRoom.zone'),
+      text(context.request.cleanRoom.subnetwork, 'cleanRoom.subnetwork'),
+      builderNetworkTags,
     );
     // ⚠ PROVE THE CREDENTIAL PACKER WILL ACTUALLY USE, before anything billable runs. Same
     // motivation as the `packer validate` call below: fail in a second, not after a builder VM
