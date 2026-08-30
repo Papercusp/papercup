@@ -137,6 +137,28 @@ done
 if [ "\$mounted" -eq 0 ]; then detail="no-filesystem-mounted"; exit 1; fi
 echo "[papercusp] mounted \$mounted filesystem(s)"
 
+# COVERAGE PROOF — prove we mounted the OPERATING SYSTEM, not merely something.
+#
+# A count cannot express what the gate depends on, and is unusable as a guard anyway: the
+# lsblk filter above admits ANY non-empty FSTYPE, so swap / LVM2_member / crypto_LUKS
+# partitions are attempted and legitimately fail to mount. "mounted == attempted" would
+# therefore red every honest run. The checkable property is narrower: did the userland we
+# claim to have scanned actually get read?
+#
+# Without this, a root filesystem that fails to mount while any OTHER partition succeeds
+# (an EFI vfat partition, say) leaves mounted>=1, so the loop above swallows the failure
+# via 2>/dev/null, syft/grype/gitleaks run across a few hundred MB of boot partition
+# instead of the 32GB userland, and the run returns a near-zero measurement. A near-zero
+# measurement is exactly what the release policy ACCEPTS — so the failure mode is a
+# GREEN gate and trusted:true on an image that was never scanned (WI-1092039).
+candidate_root=""
+for probe in \$(find /mnt/candidate -maxdepth 3 -path '*/etc/*' -name os-release 2>/dev/null); do
+  candidate_root="\$probe"
+  break
+done
+if [ -z "\$candidate_root" ]; then detail="candidate-root-not-mounted"; exit 1; fi
+echo "[papercusp] candidate root proven at \$candidate_root"
+
 syft scan dir:/mnt/candidate -o syft-json=/tmp/sbom.json >/dev/null 2>&1 || { detail="syft-failed"; exit 1; }
 grype sbom:/tmp/sbom.json -o json > /tmp/vuln.json 2>/dev/null || { detail="grype-failed"; exit 1; }
 
@@ -190,6 +212,7 @@ sbom_sha=\$(sha256sum /tmp/sbom.json | cut -d' ' -f1)
 
 jq -n \\
   --arg sbomSha256 "\$sbom_sha" \\
+  --arg candidateRootProof "\$candidate_root" \\
   --argjson vulnerabilityFindings "\$vuln_count" \\
   --argjson secretFindings "\$secret_count" \\
   --argjson mountedFilesystems "\$mounted" \\
@@ -198,7 +221,7 @@ jq -n \\
   --argjson vulnerabilityFixableBySeverity "\$vuln_fixable_by_severity" \\
   --argjson secretsByRule "\$secrets_by_rule" \\
   --argjson secretSample "\$secrets_sample" \\
-  '{sbomSha256:\$sbomSha256, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
+  '{sbomSha256:\$sbomSha256, candidateRootProof:\$candidateRootProof, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, vulnerabilityFixableBySeverity:\$vulnerabilityFixableBySeverity, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -351,6 +374,18 @@ async function scan(input) {
   if (!Number.isSafeInteger(secretFindings) || secretFindings < 0) {
     fail('scanner returned a non-integer secret count');
   }
+  // COVERAGE IS PART OF THE MEASUREMENT, not a footnote. A scan that read the wrong
+  // filesystem yields a small, clean-LOOKING result, and small-and-clean is exactly what
+  // the release policy accepts — so coverage has to be checked here or not at all.
+  // `mountedFilesystems` was emitted by the guest from the beginning and read by nothing
+  // (two references tree-wide, both inside the guest's own jq call), which is what made
+  // the fail-open reachable. Both fields are REQUIRED rather than optional: a guest too
+  // old to emit them must fail closed, never read as covered by default (WI-1092039).
+  const mountedFilesystems = measurement.mountedFilesystems;
+  if (!Number.isSafeInteger(mountedFilesystems) || mountedFilesystems < 1) {
+    fail('scanner did not report how many candidate filesystems it mounted');
+  }
+  const candidateRootProof = requireText(measurement.candidateRootProof, 'scan.candidateRootProof');
   if (residualResourceIds.length > 0) {
     // Leaked billable resources invalidate the run's hygiene claim; surface, do not hide.
     fail('scanner could not destroy every ephemeral resource', { residualResourceIds });
@@ -373,6 +408,16 @@ async function scan(input) {
     ...(Number.isSafeInteger(measurement.vulnerabilityFixable)
       ? { vulnerabilityFixable: measurement.vulnerabilityFixable }
       : {}),
+    // The guest has computed this since the field was introduced, and until 2026-08-30
+    // nothing read it: it was measured, fail-closed validated, serialised over SSH, and
+    // dropped HERE, because this projection omitted it. `grep -rn vulnerabilityFixableBySeverity`
+    // returned two hits, both inside the guest script itself. That made it exactly the
+    // guess the comment above says it exists to prevent — "how many of the Critical ones
+    // can we actually act on" had to be guessed on the 0.0.18 candidate a second time,
+    // while the answer was being computed and discarded on every run (WI-1088331).
+    ...(isPlainObject(measurement.vulnerabilityFixableBySeverity)
+      ? { vulnerabilityFixableBySeverity: measurement.vulnerabilityFixableBySeverity }
+      : {}),
     ...(isPlainObject(measurement.secretsByRule)
       ? { secretsByRule: measurement.secretsByRule }
       : {}),
@@ -391,6 +436,9 @@ async function scan(input) {
     // report what we measured and let the release fail honestly if it is non-zero.
     trusted: true,
     sbomSha256,
+    // What the scan actually covered, carried as evidence rather than discarded.
+    mountedFilesystems,
+    candidateRootProof,
     vulnerabilityFindings,
     secretFindings,
     ...findings,

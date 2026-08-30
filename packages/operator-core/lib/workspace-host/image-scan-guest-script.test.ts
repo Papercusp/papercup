@@ -29,13 +29,16 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-const SCANNER_SOURCE = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  'bin',
-  'papercusp-image-scan.mjs',
-);
+/**
+ * The scanner source under test. Overridable ONLY so falsifiability can be proven against
+ * a COPY outside the tree: these guards assert properties of a shared, swept checkout, and
+ * mutating that checkout in place to prove a guard can fail risks git-sync committing the
+ * mutant mid-probe. With this one line, `PAPERCUSP_IMAGE_SCAN_SOURCE=<copy> vitest ...`
+ * proves the guard reds against a pre-fix snapshot without touching the real file.
+ */
+const SCANNER_SOURCE =
+  process.env.PAPERCUSP_IMAGE_SCAN_SOURCE ??
+  join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'papercusp-image-scan.mjs');
 
 /** Evaluate startupScript() out of the scanner source without executing its CLI main(). */
 function emitGuestScript(): string {
@@ -142,9 +145,29 @@ describe('image scan guest script', () => {
       'vuln-fix-parse-failed',
       'secret-rule-parse-failed',
       'secret-sample-parse-failed',
+      // Mounting SOMETHING is not the same as mounting the thing under test.
+      'candidate-root-not-mounted',
     ]) {
       expect(script).toContain(detail);
     }
+  });
+
+  it('proves it mounted the operating system, not merely some filesystem', () => {
+    const script = emitGuestScript();
+    // The mount loop swallows each failure with `2>/dev/null` and only fails closed at a
+    // total of zero, so a root filesystem that fails to mount while an EFI partition
+    // succeeds leaves mounted>=1. The scan then runs across a few hundred MB of boot
+    // partition and returns a near-zero measurement — and near-zero is exactly what the
+    // release policy ACCEPTS, so the failure mode is a GREEN gate on an image that was
+    // never scanned (WI-1092039).
+    //
+    // Counting cannot express this guard: the lsblk filter admits any non-empty FSTYPE, so
+    // swap / LVM2_member / crypto_LUKS partitions are attempted and legitimately fail, and
+    // `mounted == attempted` would red every honest run. Proving the userland was read is
+    // the narrower checkable property, and it is immune to those partition types.
+    expect(script).toContain('-name os-release');
+    expect(script).toMatch(/if \[ -z "\$candidate_root" \]/);
+    expect(script).toContain('candidateRootProof');
   });
 
   it('never swallows a failure from a measurement step with `|| true`', () => {
@@ -164,5 +187,37 @@ describe('image scan guest script', () => {
     expect(script).toContain('sha256sum -c');
     expect(script).toContain('gitleaks-digest-mismatch');
     expect(script).not.toContain('scripts/install.sh');
+  });
+
+  it('has a host-side reader for every field the guest emits', () => {
+    // THE CLASS THIS GUARDS. The guest and the host are two halves of one document with
+    // nothing asserting they agree, so a field could be computed on the VM, fail-closed
+    // validated, serialised over SSH — and read by nothing. That happened twice, and both
+    // were invisible for exactly the same reason:
+    //
+    //   vulnerabilityFixableBySeverity — whose own comment calls it "precisely the number
+    //     that decides whether a red gate means 'patch the image' or 'the threshold is
+    //     unsatisfiable against this distro'". Added to stop a guess, then never delivered,
+    //     so the guess had to be made a second time on the 0.0.18 candidate (WI-1088331).
+    //   mountedFilesystems — the scan's own coverage. Losing it made a partially mounted
+    //     candidate publishable behind a green gate (WI-1092039).
+    //
+    // Both had two references in the whole tree, both inside the guest's own jq call.
+    // Deriving the field list from the script means the NEXT one cannot hide the same way.
+    const source = readFileSync(SCANNER_SOURCE, 'utf8');
+    const script = emitGuestScript();
+
+    const projection = script.match(/'\{sbomSha256:[^}]*\}'/);
+    if (!projection) {
+      throw new Error('could not locate the guest result projection — extraction is stale, not the subject');
+    }
+    const emitted = [...projection[0].matchAll(/([A-Za-z0-9_]+):\$/g)].map((match) => match[1]);
+    // Self-check, same spirit as emitGuestScript's: a regex that silently matched nothing
+    // would make this test pass vacuously, which is the failure mode it exists to prevent.
+    expect(emitted).toContain('sbomSha256');
+    expect(emitted.length).toBeGreaterThanOrEqual(9);
+
+    const unread = emitted.filter((field) => !source.includes(`measurement.${field}`));
+    expect(unread).toEqual([]);
   });
 });
