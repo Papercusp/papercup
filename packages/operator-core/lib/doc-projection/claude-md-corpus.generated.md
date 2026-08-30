@@ -653,6 +653,16 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > (measured identical to the default here). Whether a sha really carries your change is
 > a CONTENT question, never a date one → `git rev-parse <sha>:<path>` vs
 > `git rev-parse staging:<path>` (equal blobs ⇒ it carries it), or `git show --stat <sha>`.
+>
+> ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is.** When a failing
+> test's runtime SUBJECT lives in a submodule (e.g. `readdirSync('…/libs/papercusp/libs/db/sql')`),
+> the test blob is identical in both refs while the gitlink moved underneath it — so containment
+> answers "not stale" on a red that is pure staleness. Diff the gitlinks too:
+> `git diff --raw <sha> staging | grep '^:160000'` (measured 2026-08-30: 0 moved at 1h, 3 at 3h,
+> 8 at 8h — selective enough to be worth the one command). ⛔ And `git diff <sha> staging -- <sub>/<file>`
+> prints NOTHING for a submodule-backed path — a superproject diff carries only the gitlink — so the
+> empty result reads as "the subject did not change" and CONFIRMS the wrong conclusion.
+>
 > For live/deployed status, use `dev:pipeline_position { path }`, whose timestamps are
 > UTC. For authorship, use the commissioning work-item/plan-item or a timestamp-correlated
 > `sessions:search`; if neither resolves, say "not attributable" — never name a person.
