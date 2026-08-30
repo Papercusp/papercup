@@ -61,6 +61,32 @@ export interface ReadinessReconcileResult {
  *   way other operator-core modules acquire it). Pass an explicit handle in
  *   tests (the integration test points it at a testcontainer DB).
  */
+/**
+ * WI-1194246 — this detector's DECLARED bound.
+ *
+ * Measured 2026-08-30 by sampling `pg_stat_activity`: this query runs for up to
+ * **154.8s** on the live box (71 consecutive 2s samples, all reporting no
+ * `wait_event_type` — i.e. genuinely executing, not waiting on a lock), once an
+ * hour on the `readiness-drift-monitor` cron. That is legitimate: it is a
+ * set-based FULL OUTER JOIN over the whole feature family, by design.
+ *
+ * It was nonetheless the LARGEST UNCAPPED statement on the box, because it runs
+ * on a bare `getOrgPg()` pool checkout with no transaction wrapper — so nothing
+ * bounded it at all. Every other long-running path here declares its own bound
+ * (migrations via MIGRATION_TRANSACTION_PREFIX, pg_dump via PGOPTIONS, the
+ * backup↔migration rendezvous via `SET statement_timeout = 0`); this one simply
+ * never said anything, which is why it blocked WI-1194246's role-level default:
+ * you cannot pick a safe default while a legitimate 155s statement is
+ * indistinguishable from a runaway one.
+ *
+ * 600s = ~4x the measured worst case, and the same figure pg_dump already uses
+ * for its own long batch. NOT 0 (unbounded): `getOrgPg`'s shared handle is
+ * max:2, so a genuinely runaway drift query would pin half the admin pool
+ * indefinitely. A declared-but-generous cap keeps the honest case working while
+ * still killing a pathological one.
+ */
+export const READINESS_RECONCILE_STATEMENT_TIMEOUT_MS = 600_000;
+
 export async function reconcileReadiness(sql: Sql = getOrgPg().sql): Promise<ReadinessReconcileResult> {
   // ORACLE set = feature items the predicate says are blocked.
   // SIDECAR set = the current work_item_blocked rows.
@@ -69,14 +95,29 @@ export async function reconcileReadiness(sql: Sql = getOrgPg().sql): Promise<Rea
   //   • oracle row present, sidecar NULL  → MISSING (dangerous-stale: looks ready)
   //   • sidecar row present, oracle NULL  → EXTRA   (starving: looks blocked)
   // One pass, set-based — no per-item probe.
-  const rows = await sql<
+  //
+  // WI-1194246: wrapped in a transaction PURELY to carry `SET LOCAL
+  // statement_timeout`. It MUST be SET LOCAL, never a session-level `SET`: this
+  // runs on a SHARED pool checkout, so a session-level set would leak this
+  // 10-minute bound onto whatever ran next on the same connection — silently
+  // un-capping an unrelated caller. SET LOCAL reverts at COMMIT.
+  const rows = await sql.begin<
     Array<{
       direction: 'missing' | 'extra';
       workspace_id: string;
       harness_slug: string;
       feature_id: string;
     }>
-  >`
+  >(async (tx) => {
+    await tx.unsafe(`SET LOCAL statement_timeout = ${READINESS_RECONCILE_STATEMENT_TIMEOUT_MS}`);
+    return tx<
+      Array<{
+        direction: 'missing' | 'extra';
+        workspace_id: string;
+        harness_slug: string;
+        feature_id: string;
+      }>
+    >`
     WITH oracle AS (
       SELECT f.workspace_id, f.harness_slug, f.feature_id
         FROM harness_shared.work_items f
@@ -104,6 +145,7 @@ export async function reconcileReadiness(sql: Sql = getOrgPg().sql): Promise<Rea
      WHERE o.feature_id IS NULL OR s.feature_id IS NULL
      ORDER BY direction, workspace_id, harness_slug, feature_id
   `;
+  });
 
   const missing: ReadinessKey[] = [];
   const extra: ReadinessKey[] = [];
