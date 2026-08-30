@@ -558,7 +558,7 @@ export function narrowDecisionPayload<T extends { id: string }>(
 export default defineTool({
   name: "plans:get",
   description:
-    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') to disambiguate or constrain the read. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
     when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
     notWhen:

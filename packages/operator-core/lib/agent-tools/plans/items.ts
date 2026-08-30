@@ -189,7 +189,7 @@ export default defineTool({
   description:
     'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous — `ids:[…]` is an accepted alias for `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
-    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `item:"P-NNN"` (one, matching plans:get-item\'s convention) or `itemIds:[…]` (many) with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
+    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `item:"P-NNN"` (one, matching plans:get-item\'s convention) or `itemIds:[…]` (many) with `slug` for exact item selection. An UNSCOPED session\'s exact-slug reads can auto-resolve their harness; a session already scoped to a concrete harness stays scoped to it (a miss names the actual owner). Cross-plan reads must name one.',
     notWhen:
       "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
     chaining:
