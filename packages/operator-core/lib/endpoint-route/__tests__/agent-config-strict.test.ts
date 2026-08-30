@@ -6,6 +6,8 @@
  * (owner bug 2026-06-11). Valid bodies persist verbatim.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MODEL_EFFORT_LEVELS } from '../../agent-config-constants';
+import { launchableModes } from '../../modes/registry';
 
 // writeAgentConfig hits PG + process.env — mock the write, keep the real
 // parsers (they ARE the subject under test via the route's drop detection).
@@ -139,6 +141,14 @@ beforeEach(() => {
 });
 
 describe('GET /agent-config diagnostics', () => {
+  it('projects the canonical PSU effort and launch-mode registries for clients', async () => {
+    const json = await (await callGet()).json();
+    expect(json.effortLevels).toEqual([...MODEL_EFFORT_LEVELS]);
+    expect(json.launchableModes).toEqual(
+      launchableModes().map(({ id, title, oneLiner }) => ({ id, title, oneLiner })),
+    );
+  });
+
   it('returns codex binary detection and the latest tracked Codex CODEX_HOME diagnostics', async () => {
     listResumableSessionsMock.mockResolvedValue([
       { id: 40, agent: 'claude', coordOwnerId: 'su-c', startedAt: '2026-06-21T00:00:00.000Z', endedAt: null },

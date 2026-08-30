@@ -697,6 +697,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
 
     expect(body).toMatchObject({ ok: false, windDown: true });
     expect(Date.now() - startedAt).toBeLessThan(GET_NEXT_TOTAL_BUDGET_MS);
+    expect(diagnoseFleetScopeIssueFloorMissM).toHaveBeenCalledWith(
+      expect.objectContaining({ totalBudgetMs: GET_NEXT_ISSUE_DIAG_BUDGET_MS }),
+    );
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:issueFloorMiss exceeded'));
     warnSpy.mockRestore();
   });

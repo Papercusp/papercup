@@ -47,6 +47,7 @@ const admissionMocks = vi.hoisted(() => ({
   // real aggregateIssueClaimExclusions (get-next.ts) is mocked here for the same
   // reason compileFilter is: assert the WIRING, not postgres.js's SQL composition.
   aggregateIssueClaimExclusions: vi.fn(),
+  boundedPgReadTxn: vi.fn(),
   sql: vi.fn(),
 }));
 
@@ -78,6 +79,10 @@ vi.mock('./get-next', () => ({
   compileFilter: admissionMocks.compileFilter,
   aggregateIssueClaimExclusions: admissionMocks.aggregateIssueClaimExclusions,
 }));
+vi.mock('../pg-read-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pg-read-query')>()),
+  boundedPgReadTxn: (...args: unknown[]) => admissionMocks.boundedPgReadTxn(...args),
+}));
 vi.mock('../agent-tools/coordination/messages', () => ({
   sendMessage: admissionMocks.sendMessage,
 }));
@@ -99,6 +104,7 @@ import {
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeFeatureFamilyMatch,
   diagnoseFleetScopeIssueFloorMiss,
+  FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
   diagnoseFleetScopeRetiredPlans,
   fleetLeaderUnavailableRefusal,
   fleetScopeLeaderRemedy,
@@ -832,6 +838,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   // via buildMissDiagnosis; fleetScopedMiss surfaces it honestly instead of the bare
   // message.
   describe('WI-5561: issue-family floor-breakdown miss re-attribution', () => {
+    const fakeTx = { unsafe: vi.fn() };
     const issueScope = {
       ownerId: 'su-member',
       fleetSlug: 'bug-drain-200k',
@@ -876,6 +883,13 @@ describe('fleet scope assignment admission (P-016)', () => {
       },
     };
 
+    beforeEach(() => {
+      fakeTx.unsafe.mockReset();
+      admissionMocks.boundedPgReadTxn.mockImplementation(
+        async (run: (tx: typeof fakeTx) => Promise<unknown>) => run(fakeTx),
+      );
+    });
+
     it('returns the floor breakdown when the spec matches issue-family rows, threading harness/assignee/states/rigAvailable', async () => {
       admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(floorGatedBreakdown);
 
@@ -895,6 +909,28 @@ describe('fleet scope assignment admission (P-016)', () => {
         assignee: 'su-member',
         rigAvailable: true,
         states: ['open'],
+        client: fakeTx,
+      });
+      const [, txnOpts] = admissionMocks.boundedPgReadTxn.mock.calls[0] ?? [];
+      expect(txnOpts).toEqual({ acquireTimeoutMs: 2_250, timeoutMs: 6_750 });
+      expect(
+        txnOpts.acquireTimeoutMs + txnOpts.timeoutMs + 3_000,
+      ).toBe(FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS);
+    });
+
+    it('fits acquire + statement + helper overhead inside a tighter caller budget', async () => {
+      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(floorGatedBreakdown);
+
+      await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+        totalBudgetMs: 8_000,
+      });
+
+      expect(admissionMocks.boundedPgReadTxn).toHaveBeenCalledWith(expect.any(Function), {
+        acquireTimeoutMs: 1_250,
+        timeoutMs: 3_750,
       });
     });
 
@@ -916,6 +952,28 @@ describe('fleet scope assignment admission (P-016)', () => {
       admissionMocks.aggregateIssueClaimExclusions.mockRejectedValue(new Error('pg unavailable'));
       const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
       expect(diag).toBeNull();
+    });
+
+    it('FAILS SOFT: a bounded transaction acquisition/timeout error degrades to null', async () => {
+      admissionMocks.boundedPgReadTxn.mockRejectedValue(new Error('bounded transaction timed out'));
+      const diag = await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
+      expect(diag).toBeNull();
+      expect(admissionMocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
+    });
+
+    it('skips the DB entirely when the caller cannot fund both 100ms legs plus helper overhead', async () => {
+      const diag = await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+        totalBudgetMs: 3_199,
+      });
+      expect(diag).toBeNull();
+      expect(admissionMocks.boundedPgReadTxn).not.toHaveBeenCalled();
     });
 
     it('returns null when the workspace cannot be resolved (nothing to diagnose)', async () => {

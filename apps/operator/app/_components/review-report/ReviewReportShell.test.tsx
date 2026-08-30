@@ -322,6 +322,12 @@ describe("rendering", () => {
     );
   });
 
+  it("wraps full group identities inside constrained report panes", () => {
+    expect(REPORT_CSS).toMatch(
+      /@container \(max-width: 760px\)[\s\S]*?\.review-report__group-title\s*\{[^}]*flex: 1 1 160px;[^}]*min-width: 0;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/,
+    );
+  });
+
   it("isolates the sticky header from scrolling report rows", () => {
     const headerRule = REPORT_CSS.match(
       /\.review-report__head\s*\{([\s\S]*?)\}/,

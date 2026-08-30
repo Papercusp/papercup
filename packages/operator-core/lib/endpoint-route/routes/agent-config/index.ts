@@ -31,7 +31,8 @@ import {
   parseTerminalEmulator,
   type AgentConfig,
 } from '../../../agent-config';
-import { DEFAULT_MODEL_TIERS } from '../../../agent-config-constants';
+import { DEFAULT_MODEL_TIERS, MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
+import { launchableModes } from '../../../modes/registry';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
 import { notifySyncInvalidate } from '../../../sync-sse';
@@ -58,6 +59,16 @@ export default [
         // (queen-steering D-006) gets the baseline without a client-side
         // operator-core constant import. Additive; existing consumers ignore it.
         defaultTiers: DEFAULT_MODEL_TIERS,
+        // PUI/PSU option-source parity: clients render the launch vocabularies
+        // from the same two registries the launcher validates. Never duplicate
+        // these arrays in a Rust/GUI client — adding an effort or launchable
+        // mode must reach every surface from one source change.
+        effortLevels: MODEL_EFFORT_LEVELS,
+        launchableModes: launchableModes().map(({ id, title, oneLiner }) => ({
+          id,
+          title,
+          oneLiner,
+        })),
         binaries: detectBinaries(),
         codexDiagnostics: latestCodexSession
           ? {

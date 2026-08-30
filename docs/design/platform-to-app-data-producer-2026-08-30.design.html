@@ -393,9 +393,11 @@
         <h3>The corpus is live, so “done” is a moving target</h3>
         <p style="font-size:.95rem">Mail arrives continuously — the newest canonical row landed minutes before this page was written, while calendar has been quiet since 2026-08-28. Any acceptance evidence that cites a fixed row total will be stale before it is graded. The receiving-end assertion has to be “this provider id is in the app’s store,” never “the app holds N rows.”</p>
       </div>
-      <div class="ask">
-        <h3>One opportunity I’m deliberately leaving out</h3>
-        <p style="font-size:.95rem">There is no single surface listing every rule in the system. It’s a real gap and your question surfaced it, but folding it into this plan would widen a data-delivery fix into a governance project. Filed as its own concern.</p>
+      <div class="corr">
+        <h3>Retracted: the “no single surface for every rule” opportunity</h3>
+        <p>I claimed this page’s own “genuine opportunity” — that no surface lists every rule — and then measured it. <strong>It does not hold, and I withdraw it</strong> (<code>D-010</code>).</p>
+        <p>I said three stores; there are five, and one of them (<code>event_reactions</code>) is a <em>fire log</em>, not rules at all. Worse, the idea conflated two unlike things: trigger bindings (7) and ECA rules (26) are <strong>curated policy</strong>, while event awaits (790 live of 81,058) and predicate watches (387) are <strong>ephemeral runtime waits</strong>. A unified view would bury 33 rows of policy under ~1,177 rows of ephemera — worse than any surface it replaced. And each family already has a good one: <code>events:graph</code> gives on→fire edges plus a cause-chain for “why did this fire?”, <code>/admin/triggers</code> covers bindings, <code>events:status</code> covers live awaits. The code/data split is deliberate, not drift.</p>
+        <p><strong>What survives is one missing edge, and it is premature.</strong> <code>events:graph</code> can’t see bindings; <code>/admin/triggers</code> can’t see what happens after an action fires. So “a Gmail message arrives — what happens?” spans four surfaces. Real, but not worth building against 2 armed bindings. Revisit when the binding population grows or a cross-plane misfire actually costs debugging time.</p>
       </div>
     </div>
   </section>

@@ -11,6 +11,7 @@ describe('work-item admission daily digest system action', () => {
       corpusSize: 42,
       coverage: { live: 44, covered: 42, uncovered: 2, ratio: 42 / 44 },
       promptItems: { included: 42, omitted: 0 },
+      clamps: null,
       modelCalled: true,
       tokensIn: 1200,
       tokensOut: 250,
@@ -41,6 +42,7 @@ describe('work-item admission daily digest system action', () => {
       // blocked before a census resolved, so no coverage or prompt was measurable
       coverage: null,
       promptItems: null,
+      clamps: null,
       modelCalled: false,
       tokensIn: 0,
       tokensOut: 0,

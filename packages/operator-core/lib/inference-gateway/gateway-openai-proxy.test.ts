@@ -801,6 +801,188 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
   });
 });
 
+/*
+ * P-004 characterization goldens (plan `gateway-kernel-adoption-2026-08-29`, D-003).
+ *
+ * These pin the parts of `serveCodexOAuthProxy` that NOTHING else covered before the
+ * kernel migration. Two of them exist because reading the kernel first showed the
+ * migration would silently change them:
+ *
+ *  1. THE 401 REFRESH-AND-RETRY LADDER (`gateway.ts:5670`) had ZERO tests. It retries
+ *     the SAME account after refreshing, and — unlike every other retry in this
+ *     handler — it is NOT gated on `routing.hardPin`. The kernel suppresses failover
+ *     for hard pins BEFORE the adapter is consulted (`request-kernel.ts:491`), so a
+ *     migration that expresses this retry as a failover would forward the 401
+ *     downstream on exactly the account-pinned path P-009 depends on. The hard-pin
+ *     case below is the falsifier for that.
+ *
+ *  2. WHICH account serves an UNPINNED request. This is the D-010 double-advance
+ *     catcher for this lane: `proxyOpenAi` already spends this request's one
+ *     `codexCliPool.active()` call to resolve `cli` before the handler is entered
+ *     (gateway.ts:5948), so an adapter whose `selectInitial` calls `active()` again
+ *     would start every unpinned request on the SECOND account. Nothing else here
+ *     asserts the FIRST account serves, which is exactly how that defect hid in the
+ *     bearer lane until a golden pinned the serving account.
+ *
+ * The refresh is driven WITHOUT a network call: `doRefresh` re-reads auth.json first
+ * and returns a token a peer already refreshed (`codex-oauth-proxy.ts:520-524`), so
+ * rewriting the file mid-flight exercises the real code path deterministically. The
+ * gateway calls `refreshCodexToken(home, auth)` with no `fetchImpl`, so it would
+ * otherwise reach the live OpenAI token endpoint.
+ */
+describe('proxyOpenAi — ChatGPT OAuth 401 refresh-and-retry (uncovered before P-004)', () => {
+  /** A fresh, VALID access token that is distinguishable from any other. `freshJwt()`
+   *  is deterministic within one second, and the refresh only takes effect when the
+   *  on-disk token actually DIFFERS from the one in hand. */
+  const jwtWith = (nonce: string) => {
+    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600, nonce })}.sig`;
+  };
+  const writeAuth = (home: string, accountId: string, accessToken: string) =>
+    fs.writeFile(
+      path.join(home, 'auth.json'),
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: { access_token: accessToken, refresh_token: `refresh-${accountId}`, account_id: accountId },
+      }),
+    );
+
+  const sse = () =>
+    new Response(
+      `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_refreshed', output: [] } })}\n\ndata: [DONE]\n\n`,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+
+  /** Boot a single-account ChatGPT OAuth gateway whose upstream 401s once, rewriting
+   *  auth.json to `refreshed` before it does, then serves SSE. */
+  async function bootOAuth401(opts: { pin?: 'hard' | 'soft'; persistentlyUnauthorized?: boolean } = {}) {
+    const home = await makeCodexHome('chatgpt-a');
+    const refreshed = jwtWith('refreshed');
+    const bearers: string[] = [];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      routed.push(headers.get('chatgpt-account-id') ?? '');
+      bearers.push(headers.get('authorization') ?? '');
+      if (bearers.length === 1) {
+        // The peer-refresh the gateway's own refresh call will pick up off disk.
+        await writeAuth(home, 'chatgpt-a', refreshed);
+        return new Response(JSON.stringify({ error: { message: 'expired token' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (opts.persistentlyUnauthorized) {
+        return new Response(JSON.stringify({ error: { message: 'still unauthorized' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return sse();
+    }) as typeof fetch;
+
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexOAuthProxy: true,
+      codexCliRun: async () => {
+        throw new Error('the CLI bridge must not run: this is the transparent OAuth transport');
+      },
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const headers: Record<string, string> = { [ACCOUNT_HEADER]: 'chatgpt-a' };
+    if (opts.pin === 'hard') headers[ACCOUNT_PIN_HEADER] = 'hard';
+    const res = await postResponses({ model: 'gpt-5.5', input: 'refresh me', stream: true }, headers);
+    return { res, bearers, routed, refreshed };
+  }
+
+  it('refreshes the token and retries the SAME account, forwarding the native SSE', async () => {
+    const { res, bearers, routed, refreshed } = await bootOAuth401();
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('resp_refreshed');
+    // Same account both times — a refresh is a re-AUTH, never a re-ROUTE.
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-a']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+    // The retry carried the REFRESHED bearer, not the stale one.
+    expect(bearers).toHaveLength(2);
+    expect(bearers[0]).not.toBe(bearers[1]);
+    expect(bearers[1]).toBe(`Bearer ${refreshed}`);
+    // A same-account re-auth is not a failover and must not be counted as one.
+    expect(gw!.stats().codex.failovers).toBe(0);
+  });
+
+  it('refreshes and retries even when the account is HARD-pinned (a re-auth is not a re-route)', async () => {
+    // THE REGRESSION CATCHER. A hard pin forbids changing ACCOUNT; it must not forbid
+    // re-authenticating the pinned one. If this 401 is ever expressed as a kernel
+    // failover, `request-kernel.ts:491` returns null before the adapter is asked and
+    // this test sees a bare 401 instead of the refreshed 200.
+    const { res, bearers, routed, refreshed } = await bootOAuth401({ pin: 'hard' });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('resp_refreshed');
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-a']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    expect(bearers[1]).toBe(`Bearer ${refreshed}`);
+  });
+
+  it('forwards a persistent 401 after exactly ONE refresh instead of looping', async () => {
+    // `refreshedAccount !== cli.accountId` bounds the refresh to once per account, so a
+    // credential the backend keeps rejecting is surfaced byte-transparently.
+    const { res, bearers } = await bootOAuth401({ persistentlyUnauthorized: true });
+
+    expect(res.status).toBe(401);
+    expect(bearers).toHaveLength(2);
+  });
+});
+
+describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher)', () => {
+  it('serves an UNPINNED request from the pool FIRST account, advancing the pool exactly once', async () => {
+    const homeA = await makeCodexHome('chatgpt-a');
+    const homeB = await makeCodexHome('chatgpt-b');
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: homeA },
+      { accountId: 'chatgpt-b', home: homeB },
+    ];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      return new Response(
+        `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_first', output: [] } })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    // No ACCOUNT_HEADER: the pool picks. The live handler resolves `cli` ONCE above the
+    // handler, so the first account serves. A second `active()` call anywhere in the
+    // migrated path would make this 'chatgpt-b'.
+    const res = await postResponses({ model: 'gpt-5.5', input: 'who serves me', stream: true });
+
+    expect(res.status).toBe(200);
+    expect(routed).toEqual(['chatgpt-a']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+  });
+});
+
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
   it('surfaces Codex admission/health in live config, includes ChatGPT egress, and readmits a paused Codex account', async () => {
     openaiUpstream = await startUpstream(ok);

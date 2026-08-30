@@ -23,6 +23,7 @@ import {
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
 import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
+import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
 
 /**
  * EI-19393442073558754: pull the `kind in [...]` leaf's value out of a claim spec's
@@ -1425,19 +1426,37 @@ export async function diagnoseFleetScopeIssueFloorMiss(args: {
   workspaceId?: string | null;
   states?: string[];
   rigAvailable?: boolean;
+  /** Whole-call allowance supplied by the handler. Acquisition, statement execution,
+   *  and boundedPgReadTxn's fixed cleanup overhead must all fit inside this slice. */
+  totalBudgetMs?: number;
 }): Promise<import('./get-next').IssueClaimExclusionBreakdown | null> {
   try {
     const ws = resolveClaimSpecWorkspace(args.workspaceId);
     if (!ws) return null;
+    const totalBudgetMs = Number.isFinite(args.totalBudgetMs)
+      ? Math.trunc(args.totalBudgetMs as number)
+      : FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS;
+    const databaseBudgetMs = totalBudgetMs - PG_READ_QUERY_CALL_OVERHEAD_MS;
+    // boundedPgReadTxn clamps each leg to at least 100ms. Do not start a transaction
+    // when those two minimums plus its fixed whole-call overhead cannot fit inside
+    // the caller's remaining allowance.
+    if (databaseBudgetMs < 200) return null;
+    const acquireTimeoutMs = Math.max(100, Math.floor(databaseBudgetMs / 4));
+    const timeoutMs = databaseBudgetMs - acquireTimeoutMs;
     const spec = args.scope.record.spec;
     const { aggregateIssueClaimExclusions } = await import('./get-next');
-    const agg = await aggregateIssueClaimExclusions(spec.view.filter, {
-      harness: args.harness,
-      workspaceId: ws,
-      states: args.states ?? spec.states,
-      assignee: args.scope.ownerId,
-      rigAvailable: args.rigAvailable,
-    });
+    const agg = await boundedPgReadTxn(
+      (tx) =>
+        aggregateIssueClaimExclusions(spec.view.filter, {
+          harness: args.harness,
+          workspaceId: ws,
+          states: args.states ?? spec.states,
+          assignee: args.scope.ownerId,
+          rigAvailable: args.rigAvailable,
+          client: tx,
+        }),
+      { acquireTimeoutMs, timeoutMs },
+    );
     // EI-18663622382734446: matchedByFilter === 0 is returned, not swallowed — see the
     // doc comment above. Only a genuinely missing/errored aggregate degrades to null.
     return agg ?? null;
@@ -1445,6 +1464,9 @@ export async function diagnoseFleetScopeIssueFloorMiss(args: {
     return null;
   }
 }
+
+/** Default DB cancellation slice for callers that do not own a tighter handler budget. */
+export const FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS = 12_000;
 
 /**
  * EI-20186990913643457: count the rows a fleet spec matches WITHOUT applying the

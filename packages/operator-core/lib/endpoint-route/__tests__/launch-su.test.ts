@@ -431,6 +431,37 @@ describe('launch-su', () => {
     expect(realSpawns()).toHaveLength(0);
   });
 
+  it('threads the shared model/effort/account/mode choices into the deferred psu argv', async () => {
+    const res = await callPost({
+      agent: 'codex',
+      harness_slug: 'papercup',
+      plan_slug: 'my-plan',
+      model: 'gpt-5.6-sol:low',
+      effort: 'xhigh',
+      account: 'auto',
+      mode: 'auto',
+      defer_spawn: true,
+    });
+    expect(res.status).toBe(200);
+    const recorded = recordAdvSessionMock.mock.calls[0]![0] as { launchArgv?: string[] };
+    expect(recorded.launchArgv).toEqual(
+      expect.arrayContaining([
+        '--plan=my-plan',
+        '--model=gpt-5.6-sol:xhigh',
+        '--account=auto',
+        '--auto',
+      ]),
+    );
+  });
+
+  it('fails loudly when effort has no model instead of silently dropping it', async () => {
+    const res = await callPost({ agent: 'claude', effort: 'high', defer_spawn: true });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('needs a model');
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
+  });
+
   it('attaches by stable advSessionId and native handle without spawning or recording', async () => {
     const row = trackedSession({ agent: 'codex', sessionId: null });
     const native = {

@@ -626,7 +626,11 @@ describe('admission reclaim age gate is decoupled from producer liveness (WI-954
       const underOldTtl = sweep(target, root, { cargoTtlMs: 24 * 3_600_000 });
       expect(existsSync(debug)).toBe(true);
       expect(underOldTtl.reclaimed).toBe(0);
-      expect(underOldTtl.skipped.some((s) => s.reason === 'younger than ttl')).toBe(true);
+      expect(
+        underOldTtl.skipped.some(
+          (s: { path: string; reason: string }) => s.reason === 'younger than ttl',
+        ),
+      ).toBe(true);
 
       // THE FIX: the admission path's short age gate reaches the same artifact.
       const underAdmissionTtl = sweep(target, root, { cargoTtlMs: 10 * 60_000 });
@@ -667,7 +671,9 @@ describe('admission reclaim age gate is decoupled from producer liveness (WI-954
 
       expect(existsSync(debug)).toBe(true);
       expect(result.reclaimed).toBe(0);
-      expect(result.skipped.some((s) => s.reason === 'fresh heartbeat')).toBe(true);
+      expect(
+        result.skipped.some((s: { path: string; reason: string }) => s.reason === 'fresh heartbeat'),
+      ).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

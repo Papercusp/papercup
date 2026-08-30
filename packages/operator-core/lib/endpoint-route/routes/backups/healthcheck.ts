@@ -51,8 +51,12 @@ export function classifyBackupHealth(
     return { state: 'never_run', ageSeconds: null };
   }
 
+  // `ageSeconds` is non-null on every path that reaches here — it is null only when
+  // lastSnapshotMs is null/non-finite, which the `never_run` guard above already returned
+  // on. TypeScript cannot carry that correlation across the two separate consts, so the
+  // null case is spelled out rather than asserted away: an unaged snapshot is not stale.
   return {
-    state: ageSeconds > STALE_THRESHOLD_SEC ? 'stale' : 'ok',
+    state: ageSeconds !== null && ageSeconds > STALE_THRESHOLD_SEC ? 'stale' : 'ok',
     ageSeconds,
   };
 }

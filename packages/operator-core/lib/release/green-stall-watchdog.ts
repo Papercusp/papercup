@@ -1458,11 +1458,20 @@ async function recoverStaleGreenCheckpointStalls(
     try {
       const { dispatchReleaseFixer } = await import('../harness/routines/release-actions');
       dispatched =
+        // 4th positional is `repairQueue?: FrozenCandidateRepairQueue`, NOT checkpoint
+        // evidence. Passing `parsed.checkpointEvidence` here was not merely a type error:
+        // dispatchReleaseFixer dereferences `repairQueue.candidate.slice(0, 8)` and
+        // `.worktreePath`/`.repairHead`/`.attempts` when building the fixer's instructions,
+        // and CheckpointEvidence carries none of those — so a watchdog-driven recovery
+        // dispatch would have thrown a TypeError on `undefined.slice` inside the very path
+        // meant to rescue a stalled gate. The watchdog has no frozen repair queue to hand
+        // over (its `parsed` exposes only checkpointEvidence), so the argument is omitted;
+        // the evidence continues to travel on the verdict records built above. The repo's
+        // two other callers pass three arguments for the same reason.
         (await dispatchReleaseFixer(
           { installSlug: row.harness_slug, workspaceId: row.workspace_id },
           parsed.candidate!,
           parsed.failingTests,
-          parsed.checkpointEvidence ?? undefined,
         )) != null;
     } catch (e) {
       console.warn(`[green-stall-watchdog] recovery dispatch failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);

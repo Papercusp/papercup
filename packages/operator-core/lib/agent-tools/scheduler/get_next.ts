@@ -1263,6 +1263,7 @@ export default defineTool({
           workspaceId: ident.workspaceId,
           states: args.states,
           rigAvailable: args.rigAvailable,
+          totalBudgetMs: budgetMs,
         }),
         {
           fallback: null,

@@ -638,6 +638,13 @@
     grid-column: 1 / -1;
   }
 
+  .review-report__group-title {
+    flex: 1 1 160px;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .review-report__group-desc {
     order: 4;
     flex-basis: 100%;
