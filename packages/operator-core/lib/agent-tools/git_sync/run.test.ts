@@ -104,7 +104,8 @@ describe('git-sync:run', () => {
     Object.defineProperty(execFileMock, promisify.custom, {
       value: (_file: string, args: string[], opts: Record<string, unknown>) =>
         new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-          execFileMock(_file, args, opts, (error: unknown, stdout: string, stderr: string) => {
+          execFileMock(_file, args, opts, (...callbackArgs: unknown[]) => {
+            const [error, stdout, stderr] = callbackArgs as [unknown, string, string];
             if (error) {
               reject(error);
               return;
@@ -189,7 +190,8 @@ describe('git-sync:run', () => {
     Object.defineProperty(execFileMock, promisify.custom, {
       value: (_file: string, args: string[], opts: Record<string, unknown>) =>
         new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-          execFileMock(_file, args, opts, (error: unknown, stdout: string, stderr: string) => {
+          execFileMock(_file, args, opts, (...callbackArgs: unknown[]) => {
+            const [error, stdout, stderr] = callbackArgs as [unknown, string, string];
             if (error) {
               reject(error);
               return;
