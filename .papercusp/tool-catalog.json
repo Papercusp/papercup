@@ -4038,7 +4038,7 @@
           "POST"
         ]
       },
-      "description": "Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE call, returning only the script's summary (plus explicitly returned image/audio blocks) — collapsing N sequential model turns into one and keeping intermediate payloads out of context. Write the script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` (sessions:read → tools.sessions.read); never invent a fourth spelling.",
+      "description": "Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE call, returning only the script's summary (plus explicitly returned image/audio blocks) — collapsing N sequential model turns into one and keeping intermediate payloads out of context. Write the script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` (sessions:read → tools.sessions.read; tools:invoke → tools.tools.invoke, never bare tools.invoke); never invent a fourth spelling.",
       "capabilities": [
         "capability:bash"
       ],
@@ -9452,7 +9452,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You specifically want the AGENT inventory: which delegates / orchestrator children / pty hosts / paperclip / next-servers are up, and under which harness + cwd. The /dev panel view.",
-        "notWhen": "NOT for \"what is running on this host\" — it filters to six agent shapes and silently drops the rest, so it will answer that question WRONG rather than empty. Plain `ps`/`pgrep` is the correct tool there and is never gated (D-009). NOT for \"is MY job done\" (vitest/tsc/gate/deploy/rig): those classify as 'other' and are never returned — start such a job with `capability:bash { run_in_background: true }` and poll `capability:bash_output`, which also survives a carry-respawn / cold-loop wake where a native run_in_background handle does not (EI-16611). For ACTIVE spawns use `orchestrator.list_active`; for delegates, `delegates:list`."
+        "notWhen": "NOT for \"what is running on this host\" — it filters to six agent shapes and silently drops the rest, so it will answer that question WRONG rather than empty. Plain `ps`/`pgrep` is the correct tool there and is never gated (D-009). NOT for \"is MY job done\" (vitest/tsc/gate/deploy/rig): those classify as 'other' and are never returned — start such a job with `capability:bash { run_in_background: true }` and poll `capability:bash_output`, which also survives a carry-respawn / cold-loop wake where a native run_in_background handle does not (EI-16611). For the ledger-backed live task inventory (who launched it, for which work-item, what it costs) use `processes:list`; for delegates, `delegates:list`."
       }
     },
     {
@@ -14727,14 +14727,14 @@
           "POST"
         ]
       },
-      "description": "When to use: User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view.\n\nWhen NOT to use: For LIVE running spawns only, use `orchestrator.list_active`. spawn_tree is historical + structural; list_active is the now-snapshot.",
+      "description": "When to use: User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view.\n\nWhen NOT to use: For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot.",
       "capabilities": [
         "intel:read"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view.",
-        "notWhen": "For LIVE running spawns only, use `orchestrator.list_active`. spawn_tree is historical + structural; list_active is the now-snapshot."
+        "notWhen": "For LIVE running spawns only, use `processes:list` (ledger-backed, with provenance) or `dev:processes` (the six tracked agent process kinds). spawn_tree is historical + structural; those are the now-snapshot."
       }
     },
     {
