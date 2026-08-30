@@ -56,7 +56,13 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES, 'kettle', 'worker', 'cup'],
+  // EI-21841626363210048: the judge role's grading-integrity audit is mandated to
+  // "execute each evidence probe exactly as written" for a spec-test-adequacy card —
+  // this read-only tool IS that probe (named by spec-test-adequacy's own method text
+  // and by its `freshness` method). Without it the auditor was structurally blocked
+  // from the one re-run its own rubric prescribes and had to substitute weaker
+  // corroboration with no signal in the emitted card.
+  agentRoles: [...SU_ROLES, 'kettle', 'worker', 'cup', 'judge'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
