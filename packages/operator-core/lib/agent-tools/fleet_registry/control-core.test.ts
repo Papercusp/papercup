@@ -335,6 +335,9 @@ describe('applyFleetControl', () => {
     });
     expect(r.message).toContain(registeredLeader);
     expect(r.message).toContain('fleet:take-leadership');
+    expect(r.message).toContain('fleet:launch-on-plan');
+    expect(r.message).toContain('leader: "spawn"');
+    expect(r.message).toContain('that new leader then calls fleet:resume');
     expect(presenceM).toHaveBeenCalledWith(registeredLeader);
     expect(setControlM).not.toHaveBeenCalled();
     expect(sendM).not.toHaveBeenCalled();

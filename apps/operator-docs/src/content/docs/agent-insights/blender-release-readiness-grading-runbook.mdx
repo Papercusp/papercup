@@ -6,24 +6,24 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Grading Blender public-release readiness"
 description: "Deterministic runbook for the blender-release-readiness rubric (v2): watermark-windowed instruments, generation-parity stamps, both drill modes, DBOS grading-watchdog liveness, coverage floors, red-path integrity, and complete scorecard filing."
+type: Insight
 discovered: 2026-07-13
-tags: [runbook, blender, scout, grading, rubrics, scorecards, release]
+tags: ["runbook", "blender", "scout", "grading", "rubrics", "scorecards", "release"]
 status: active
 documents:
-  - packages/operator-core/lib/scout/success-metrics.ts
-  - packages/operator-core/lib/agent-tools/scout/success-metrics.ts
-  - packages/operator-core/lib/scout/generation-watermark.ts
-  - packages/operator-core/lib/scout/capacity-storm-drill.ts
-  - packages/operator-core/lib/scout/rubric-live-drill.ts
-  - packages/operator-core/lib/rubric-staleness-watchdog.ts
-  - packages/operator-core/lib/scout/ungraded-filings-watchdog.ts
-  - packages/operator-core/lib/dbos/routines-workflow.ts
-  - packages/operator-core/lib/scout/cycle.ts
+  - "packages/operator-core/lib/scout/success-metrics.ts"
+  - "packages/operator-core/lib/agent-tools/scout/success-metrics.ts"
+  - "packages/operator-core/lib/scout/generation-watermark.ts"
+  - "packages/operator-core/lib/scout/capacity-storm-drill.ts"
+  - "packages/operator-core/lib/scout/rubric-live-drill.ts"
+  - "packages/operator-core/lib/rubric-staleness-watchdog.ts"
+  - "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
+  - "packages/operator-core/lib/dbos/routines-workflow.ts"
+  - "packages/operator-core/lib/scout/cycle.ts"
 plans:
-  - rubric-system-hardening-2026-07-14
-  - blender-self-learning-2026-07-12
-  - scorecard-blender-pipeline-fixes-2026-07-11
-type: Insight
+  - "rubric-system-hardening-2026-07-14"
+  - "blender-self-learning-2026-07-12"
+  - "scorecard-blender-pipeline-fixes-2026-07-11"
 generated:
   by: agent
   at: 2026-07-13
@@ -278,7 +278,8 @@ observation: {
   kind: 'reinforce',
   rubricRef: 'blender-release-readiness',
   ratings: { <all seven criterion keys>: { rating, evidence } },
-  linkTo: [<the defects this pass filed or tracked>]
+  linkTo: [{ targetId: '<defect or follow-up EI-/WI->', rel: 'relates' }]
+  // Use [] when this pass has no defect or follow-up work-item to link.
 }
 ```
 

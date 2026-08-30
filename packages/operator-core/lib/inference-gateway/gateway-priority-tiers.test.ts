@@ -256,7 +256,7 @@ test('/stats — per-tier {cap,inFlight,queued} + pool healthyAccounts; ABSENT u
   assert.equal(s.priorityTiers.healthyAccounts, 3, 'all 3 pool accounts healthy');
   assert.equal(s.priorityTiers.tier1Reserve, 2);
   const t1 = s.priorityTiers.tiers.find((t: any) => t.tier === 1);
-  assert.deepEqual({ tier: t1.tier, cap: t1.cap }, { tier: 1, cap: 8 });
+  assert.deepEqual({ tier: t1.tier, minShare: t1.minShare }, { tier: 1, minShare: 8 });
   // admission.byTier is the same data on the generic snapshot
   assert.ok(Array.isArray(s.admission.byTier), 'admission.byTier present');
 });
@@ -305,11 +305,11 @@ test('tier-aware shedding: an AIMD storm shrinks the bottom band first, holds ti
   const s = await getStats();
   assert.ok(calls > 0, 'upstream saw the storm');
   assert.ok(s.aimd.decreases > 0, 'AIMD shrank effective concurrency under the storm');
-  const cap = (tier: number) => s.priorityTiers.tiers.find((t: any) => t.tier === tier)?.cap ?? null;
-  // tier 1 is never reduced below its steady-state ceiling; the bottom band (4) is shed first → its cap is
-  // ≤ the higher non-tier-1 bands (2,3 give up headroom only after 4 hits its floor).
-  assert.equal(cap(1), 16, 'tier 1 cap held at the full pool under the storm');
-  assert.ok(cap(4)! <= cap(3)!, 'tier 4 shed at least as much as tier 3 (bottom-up)');
+  const share = (tier: number) => s.priorityTiers.tiers.find((t: any) => t.tier === tier)?.minShare ?? null;
+  // tier 1's share is never reduced; the bottom band (4) is shed first → its share is ≤ the higher
+  // non-tier-1 bands (2,3 give up headroom only after 4 hits its floor).
+  assert.equal(share(1), 16, 'tier 1 share held at the full pool under the storm');
+  assert.ok(share(4)! <= share(3)!, 'tier 4 shed at least as much as tier 3 (bottom-up)');
   assert.ok(cap(3)! <= cap(2)!, 'tier 3 shed at least as much as tier 2 (bottom-up)');
   assert.ok(cap(4)! < 13, 'the most-sheddable band actually shrank');
 }, 20_000); // storm-driven — needs headroom on a loaded box (flaked at the 5s default under fleet load, 2026-07-01)

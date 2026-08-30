@@ -222,7 +222,10 @@ export async function applyFleetControl(
         message:
           `fleet:${action} cannot emit a fleet-leader cue as ${invokedAs}: the registry leader ` +
           `(${fleet.leaderOwnerId ?? 'none'}) ${leaderState}. ` +
-          `Call fleet:take-leadership { fleet: "${slug}" } first, then retry the control action.`,
+          `Recover authority first: either call fleet:take-leadership { fleet: "${slug}" } and retry, ` +
+          `or keep this caller outside the fleet by using fleet:launch-on-plan { name: "${slug}", ` +
+          `leader: "spawn", ... } to install a freshly launched delegated leader; that new leader ` +
+          `then calls fleet:${action}.`,
       };
     }
   }

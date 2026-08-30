@@ -52,7 +52,7 @@ export interface GatewayHeadroom {
   priorityTiers?: {
     healthyAccounts: number;
     tier1Reserve: number;
-    tiers: { tier: number; cap: number | null; inFlight: number; queued: number }[];
+    tiers: { tier: number; minShare: number | null; inFlight: number; queued: number }[];
   };
   totalRequests?: number;
   upstream429?: number;
@@ -166,7 +166,7 @@ export function isWholesaleThrottled(h: GatewayHeadroom): boolean {
   if (h.priorityTiers) {
     const serviceable =
       h.priorityTiers.healthyAccounts > 0 &&
-      h.priorityTiers.tiers.some((t) => t.cap === null || t.cap > t.inFlight + t.queued);
+      h.priorityTiers.tiers.some((t) => t.minShare === null || t.minShare > t.inFlight + t.queued);
     if (serviceable) return false;
   }
   return h.paused === true || h.rejected === true;

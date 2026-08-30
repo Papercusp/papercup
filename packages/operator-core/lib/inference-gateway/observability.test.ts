@@ -75,7 +75,7 @@ test('projectHeadroom — Codex scope uses Codex admission and health, not Claud
       queued: 2,
       maxConcurrent: 4,
       byPriority: [{ priority: 0, count: 2 }],
-      byTier: [{ tier: 3, cap: 4, inFlight: 1, queued: 2 }],
+      byTier: [{ tier: 3, minShare: 4, inFlight: 1, queued: 2 }],
       tier1Reserve: 1,
     },
     unified: { window: '7d', utilization: 1, resetAt: 9_999_999, rejected: true },
@@ -92,7 +92,7 @@ test('projectHeadroom — Codex scope uses Codex admission and health, not Claud
   assert.deepEqual(h.priorityTiers, {
     healthyAccounts: 1,
     tier1Reserve: 1,
-    tiers: [{ tier: 3, cap: 4, inFlight: 1, queued: 2 }],
+    tiers: [{ tier: 3, minShare: 4, inFlight: 1, queued: 2 }],
   });
   assert.equal(h.rejected, undefined, 'Claude unified rejection must not reject a Codex scope');
   assert.equal(h.paused, undefined, 'Claude pause must not pause a Codex scope');

@@ -438,8 +438,8 @@ describe('computeWhyChain (EI-7349)', () => {
             maxConcurrent: 12,
             tier1Reserve: 2,
             byTier: [
-              { tier: 1, cap: 24, inFlight: 0, queued: 0 },
-              { tier: 5, cap: 1, inFlight: 1, queued: 3 },
+              { tier: 1, minShare: 24, inFlight: 0, queued: 0 },
+              { tier: 5, minShare: 1, inFlight: 1, queued: 3 },
             ],
             aimdEffective: 12,
             aimdCap: 24,

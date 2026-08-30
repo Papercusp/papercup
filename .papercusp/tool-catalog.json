@@ -11750,7 +11750,7 @@
           "POST"
         ]
       },
-      "description": "Force a fleet member to checkpoint its in-flight state and RETURN whether it landed — the pre-check before standing a member down, killing it, reassigning its lane, or advising compaction. Skips the wake when a checkpoint is already fresh (freshSec). The verdict is DERIVED from the checkpoint ledger (woken:1 is delivery, not compliance): itemStateSafe is true ONLY when every item is already-fresh, already-terminal, landed, or terminal-complete, with per-item verdicts (already-fresh|already-terminal|landed|terminal-complete|pending|staged|undeliverable|unprovable), evidence, and a nextAction. { waitSec } blocks until it lands. Scope: work-item checkpoints only — session carry (loop:checkpoint) is a separate ledger.",
+      "description": "Force a fleet member to checkpoint its in-flight state and RETURN whether it landed — the pre-check before standing a member down, killing it, reassigning its lane, or advising compaction. Skips the wake when a checkpoint is already fresh (freshSec). The verdict is DERIVED from the checkpoint ledger (woken:1 is delivery, not compliance): itemStateSafe is true ONLY when every item is already-fresh, already-terminal, or landed, with per-item verdicts (already-fresh|already-terminal|landed|pending|staged|undeliverable|unprovable), evidence, and a nextAction. { waitSec } blocks until it lands. Scope: work-item checkpoints only — session carry (loop:checkpoint) is a separate ledger.",
       "capabilities": [
         "coord:write"
       ],
