@@ -225,9 +225,27 @@ export type PuiSuSessionResult =
   | { ok: true; session: PuiSuSessionBinding }
   | { ok: false; code?: LaunchAgentResult['code']; error: string; installCmd?: string };
 
-/** The launch-su endpoints to try (same-origin first, then Tauri fallback ports). */
+/** The launch-su endpoints to try (explicit pin, then same-origin, then Tauri fallback ports). */
 function launchSuEndpoints(): string[] {
   const out: string[] = [];
+  // An EXPLICIT operator pin beats every implicit fallback below.
+  //
+  // Without it, a NON-BROWSER caller has no way to say which operator it means:
+  // `window` is undefined under vitest, so the same-origin branch is skipped and
+  // the call always lands on :3070 — the RELEASE checkout, which serves green
+  // `main`. While the gate is red that can be DAYS behind staging, so an
+  // acceptance run silently exercises deployed code instead of the tree under
+  // test — and still passes, which is the part that makes it dangerous: nothing
+  // in the result reports the mismatch. su-session-real-backend-matrix pins the
+  // staging operator (:3170) through this so its CREATE hop tests this tree.
+  //
+  // PAPERCUSP_OPERATOR_BASE is the same env var every other internal-fetch site
+  // uses (see agents-list.ts `operatorBase()`), and no running operator sets it,
+  // so honouring it here changes nothing until a caller deliberately opts in.
+  // This file is isomorphic, hence the guarded `process` access for the webview.
+  const pinned =
+    typeof process !== 'undefined' ? process.env?.PAPERCUSP_OPERATOR_BASE?.trim() : undefined;
+  if (pinned) out.push(`${pinned.replace(/\/+$/, '')}/api/adv/sessions/launch-su`);
   if (typeof window !== 'undefined') {
     const p = window.location.protocol;
     if (p === 'http:' || p === 'https:') out.push('/api/adv/sessions/launch-su');
