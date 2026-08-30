@@ -33,18 +33,34 @@ export interface WhisperListener {
   onFinal: (text: string, capture: CaptureWindow) => void;
 }
 
-// Silero VAD framing. vad-web picks the frame size from the model
-// (real-time-vad.js: `model === 'v5' ? 512 : 1536` samples @16kHz), so the
-// millisecond values below are DERIVED from the frame counts we configure
-// rather than restated in a comment — the old "~500ms" / "~250ms" notes were
-// left over from the 1536-sample v4 default and were both wrong by ~2×.
+// ── Silero VAD timing (WI-954890 — read the library, don't trust the comment) ──
+//
+// This file used to pass `redemptionFrames: 8` and `minSpeechFrames: 4`, with
+// comments calling them "~500ms of silence before ending" and "~250ms minimum
+// to count as speech". BOTH were wrong, and not by a little:
+//
+//   • The installed @ricky0123/vad-web takes MILLISECONDS — `redemptionMs`,
+//     `minSpeechMs`, `preSpeechPadMs` (frame-processor.d.ts) — and DERIVES the
+//     frame counts itself (`redemptionFrames = floor(redemptionMs/msPerFrame)`).
+//     The frame-named options we were passing are not options at all: they were
+//     silently ignored, so the VAD has been running on library defaults the
+//     whole time. (`minSpeechFrames` is not even in the type; tsc flags it.)
+//   • Those defaults are redemptionMs 1400 / minSpeechMs 400 / preSpeechPadMs
+//     800 — so end-of-speech actually waits 1400ms, nearly 3× the "~500ms" the
+//     comment claimed and by itself twice the old 700ms self-audio window.
+//
+// The values below are set to the library defaults ON PURPOSE: they pin what
+// this path is ALREADY doing rather than quietly retuning the VAD inside an
+// echo-guard fix. Whether 1400/400 are the right numbers is a separate tuning
+// question and is filed as its own bug.
 const VAD_MODEL = 'v5' as const;
-const VAD_FRAME_SAMPLES = 512; // v5 @ 16kHz → 32ms per frame
 const VAD_SAMPLE_RATE = 16_000;
-const MS_PER_VAD_FRAME = (VAD_FRAME_SAMPLES / VAD_SAMPLE_RATE) * 1000; // 32ms
-const MIN_SPEECH_FRAMES = 4; // 128ms minimum to count as speech
-const REDEMPTION_FRAMES = 8; // 256ms of silence before ending
-const REDEMPTION_MS = REDEMPTION_FRAMES * MS_PER_VAD_FRAME;
+/** Silence before onSpeechEnd fires — dead time between real audio and the transcript. */
+const REDEMPTION_MS = 1_400;
+/** Shorter segments are discarded as a misfire. */
+const MIN_SPEECH_MS = 400;
+/** Audio prepended to each segment; it makes the returned clip start EARLIER than the speech. */
+const PRE_SPEECH_PAD_MS = 800;
 
 export interface WhisperCapture {
   /** Stop the loop + release the mic. Idempotent. */
@@ -72,15 +88,18 @@ export async function startWhisperCapture(
     onnxWASMBasePath: '/vad-runtime/',
     positiveSpeechThreshold: 0.6, // raise = stricter (fewer false positives)
     negativeSpeechThreshold: 0.35,
-    minSpeechFrames: MIN_SPEECH_FRAMES,
-    redemptionFrames: REDEMPTION_FRAMES,
+    minSpeechMs: MIN_SPEECH_MS,
+    redemptionMs: REDEMPTION_MS,
+    preSpeechPadMs: PRE_SPEECH_PAD_MS,
     onSpeechEnd: async (audio: Float32Array) => {
-      // WALL-CLOCK SPAN OF THIS AUDIO (WI-954890), captured BEFORE the await —
+      // WALL-CLOCK SPAN OF THIS AUDIO (WI-954890), taken BEFORE the await —
       // whisper's own latency (measured floor ~827ms on the shipped local
-      // server) must not leak into the window, which is the exact mistake the
-      // old dispatch-time cooldown made. `onSpeechEnd` fires only after the
+      // server) must not leak into the window, which is precisely the mistake
+      // the old dispatch-time cooldown made. `onSpeechEnd` fires only after the
       // redemption silence, so step back over it; the sample count gives the
-      // duration. Landing early is the safe direction.
+      // duration, and it includes the pre-speech padding, so the window starts
+      // a little before the speech did. Both effects land EARLY, which is the
+      // safe direction: a window shifted late is what loses an overlap.
       const capture = captureWindowEndingAt(
         Date.now() - REDEMPTION_MS,
         (audio.length / VAD_SAMPLE_RATE) * 1000,
