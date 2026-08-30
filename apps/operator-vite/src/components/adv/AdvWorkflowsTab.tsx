@@ -27,7 +27,7 @@ import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
-import { CalendarClock, DatabaseZap, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { CalendarClock, DatabaseZap, Plus, RefreshCw, Search, Sparkles, X } from 'lucide-react';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 import type { PlanInputSchemaInfo } from '@/app/admin/plans/plans-api';
@@ -624,9 +624,15 @@ export default function AdvWorkflowsTab() {
       ) : null}
 
       <header className="pc-wf__mast">
-        <div className="pc-wf__mast-ident">
-          <h1 className="pc-wf__title">Workflows</h1>
-          <span className="pc-wf__summary">{buildPopulationSummary(counts)}</span>
+        <div className="pc-wf__mast-copy">
+          <span className="pc-wf__eyebrow">Automation control</span>
+          <div className="pc-wf__mast-ident">
+            <h1 className="pc-wf__title">Workflows</h1>
+            <span className="pc-wf__summary" data-loading={loading || undefined}>
+              {loading ? 'Loading workflow inventory…' : buildPopulationSummary(counts)}
+            </span>
+          </div>
+          <p className="pc-wf__lede">Create, monitor, and repair everything that runs without you.</p>
           {sourceHealth.length > 0 ? (
             <span className="pc-wf__sources" role="group" aria-label="Source health">
               {sourceHealth.map((entry) => {
@@ -645,7 +651,9 @@ export default function AdvWorkflowsTab() {
                     <span className="pc-wf__btn-inner">
                       <i className="pc-wf__dot" data-tone={entry.tone} aria-hidden />
                       <span className="pc-wf__source-name">{entry.label}</span>
-                      <span className="pc-wf__source-count">{entry.armedCount}/{entry.bindingCount}</span>
+                      <span className="pc-wf__source-count">
+                        {entry.bindingCount > 0 ? `${entry.armedCount}/${entry.bindingCount}` : entry.status}
+                      </span>
                     </span>
                   </button>
                 );
@@ -664,32 +672,41 @@ export default function AdvWorkflowsTab() {
       </header>
 
       <section className="pc-wf__composer" aria-label="Describe a workflow">
-        <form onSubmit={submitComposer}>
-          <div className="pc-wf__composer-row">
+        <div className="pc-wf__composer-head">
+          <span className="pc-wf__composer-icon" aria-hidden><Sparkles size={17} /></span>
+          <div>
+            <h2 className="pc-wf__composer-title">Build with the workflow agent</h2>
+            <p className="pc-wf__composer-copy">Describe the trigger and outcome. The agent assembles the workflow for review.</p>
+          </div>
+        </div>
+        <div className="pc-wf__composer-work">
+          <form onSubmit={submitComposer}>
             <label className="pc-wf__composer-label" htmlFor="pc-wf-compose">
-              What should happen automatically? The agent wires it.
+              What should happen automatically?
             </label>
-            <input
-              id="pc-wf-compose"
-              className="pc-wf__composer-input"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="When an email from a client arrives…"
-            />
-            <button type="submit" className="pc-wf__btn pc-wf__btn--tint" disabled={draft.trim().length === 0}>
-              <span className="pc-wf__btn-inner">Wire it</span>
-            </button>
-          </div>
-        </form>
-        {chips.length > 0 ? (
-          <div className="pc-wf__chips" data-testid="workflows-chips">
-            {chips.map((chip) => (
-              <button key={chip.id} type="button" className="pc-wf__suggest" onClick={() => setDraft(chip.text)}>
-                <span className="pc-wf__btn-inner">{chip.text}</span>
+            <div className="pc-wf__composer-row">
+              <input
+                id="pc-wf-compose"
+                className="pc-wf__composer-input"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="When an email from a client arrives…"
+              />
+              <button type="submit" className="pc-wf__btn pc-wf__btn--tint" disabled={draft.trim().length === 0}>
+                <span className="pc-wf__btn-inner">Wire it</span>
               </button>
-            ))}
-          </div>
-        ) : null}
+            </div>
+          </form>
+          {chips.length > 0 ? (
+            <div className="pc-wf__chips" data-testid="workflows-chips">
+              {chips.map((chip) => (
+                <button key={chip.id} type="button" className="pc-wf__suggest" onClick={() => setDraft(chip.text)}>
+                  <span className="pc-wf__btn-inner">{chip.text}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </section>
 
       {/* D-018, preserved by D-004: rendered ONLY when non-empty. No empty-state branch.
@@ -726,67 +743,91 @@ export default function AdvWorkflowsTab() {
         </div>
       ) : null}
 
-      <div className="pc-wf__facets">
-        <Tabs.Root value={mode} onValueChange={(next) => void setMode(next as Mode)}>
-          <Tabs.List className="pc-wf__seg" aria-label="Workflows view">
-            <Tabs.Trigger value="workflows" className="pc-wf__seg-tab">Workflows</Tabs.Trigger>
-            <Tabs.Trigger value="activity" className="pc-wf__seg-tab">Activity</Tabs.Trigger>
-          </Tabs.List>
-        </Tabs.Root>
+      <section className="pc-wf__controls" aria-label="Workflow controls" data-testid="workflows-control-deck">
+        <div className="pc-wf__control-row">
+          <div className="pc-wf__control-cluster">
+            <span className="pc-wf__control-label">View</span>
+            <Tabs.Root value={mode} onValueChange={(next) => void setMode(next as Mode)}>
+              <Tabs.List className="pc-wf__seg" aria-label="Workflows view">
+                <Tabs.Trigger value="workflows" className="pc-wf__seg-tab">Workflows</Tabs.Trigger>
+                <Tabs.Trigger value="activity" className="pc-wf__seg-tab">Activity</Tabs.Trigger>
+              </Tabs.List>
+            </Tabs.Root>
+          </div>
+
+          {mode === 'workflows' ? (
+            <div className="pc-wf__control-cluster pc-wf__control-cluster--grow">
+              <span className="pc-wf__control-label">State</span>
+              <div className="pc-wf__facet-group" role="group" aria-label="Filter by state">
+                {STATE_FACETS.map((facet) => (
+                  <button
+                    key={facet.id}
+                    type="button"
+                    className="pc-wf__facet"
+                    aria-pressed={stateFacet === facet.id}
+                    onClick={() => void setStateFacet(facet.id)}
+                  >
+                    <span className="pc-wf__btn-inner">
+                      {facet.label}
+                      <span className="pc-wf__facet-n">
+                        {loading ? '—' : facet.id === 'all' ? counts.all : counts[facet.id]}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         {mode === 'workflows' ? (
-          <>
-            <div className="pc-wf__facet-group" role="group" aria-label="Filter by state">
-              {STATE_FACETS.map((facet) => (
-                <button
-                  key={facet.id}
-                  type="button"
-                  className="pc-wf__facet"
-                  aria-pressed={stateFacet === facet.id}
-                  onClick={() => void setStateFacet(facet.id)}
-                >
-                  <span className="pc-wf__btn-inner">
-                    {facet.label}
-                    <span className="pc-wf__facet-n">{facet.id === 'all' ? counts.all : counts[facet.id]}</span>
-                  </span>
-                </button>
-              ))}
+          <div className="pc-wf__control-row pc-wf__control-row--secondary">
+            <div className="pc-wf__control-cluster">
+              <span className="pc-wf__control-label">Kind</span>
+              <div className="pc-wf__facet-group" role="group" aria-label="Filter by kind">
+                {KIND_FACETS.map((facet) => (
+                  <button
+                    key={facet.id}
+                    type="button"
+                    className="pc-wf__facet"
+                    aria-pressed={kindFacet === facet.id}
+                    onClick={() => void setKindFacet(facet.id)}
+                  >
+                    <span className="pc-wf__btn-inner">
+                      {facet.label}
+                      <span className="pc-wf__facet-n">
+                        {loading ? '—' : facet.id === 'all' ? counts.all : counts[facet.id]}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="pc-wf__facet-group" role="group" aria-label="Filter by kind">
-              {KIND_FACETS.map((facet) => (
-                <button
-                  key={facet.id}
-                  type="button"
-                  className="pc-wf__facet"
-                  aria-pressed={kindFacet === facet.id}
-                  onClick={() => void setKindFacet(facet.id)}
-                >
-                  <span className="pc-wf__btn-inner">
-                    {facet.label}
-                    <span className="pc-wf__facet-n">{facet.id === 'all' ? counts.all : counts[facet.id]}</span>
-                  </span>
-                </button>
-              ))}
+            <div className="pc-wf__control-cluster pc-wf__control-cluster--search">
+              <span className="pc-wf__control-label">Find</span>
+              <label className="pc-wf__search">
+                <Search size={13} aria-hidden />
+                <input
+                  value={query}
+                  onChange={(event) => void setQuery(event.target.value)}
+                  placeholder="Search workflows"
+                  aria-label="Search workflows"
+                />
+              </label>
             </div>
-            <label className="pc-wf__search">
-              <Search size={13} aria-hidden />
-              <input
-                value={query}
-                onChange={(event) => void setQuery(event.target.value)}
-                placeholder="Search workflows"
-                aria-label="Search workflows"
+            <div className="pc-wf__control-cluster">
+              <span className="pc-wf__control-label">Sort</span>
+              <Select
+                value={sort}
+                onChange={(value) => void setSort(value as LedgerSort)}
+                ariaLabel="Sort workflows"
+                triggerClassName="pc-wf__sort"
+                options={SORTS.map((entry) => ({ value: entry.id, label: entry.label }))}
               />
-            </label>
-            <Select
-              value={sort}
-              onChange={(value) => void setSort(value as LedgerSort)}
-              ariaLabel="Sort workflows"
-              triggerClassName="pc-wf__sort"
-              options={SORTS.map((entry) => ({ value: entry.id, label: entry.label }))}
-            />
-          </>
+            </div>
+          </div>
         ) : null}
-      </div>
+      </section>
 
       <div className="pc-wf__body">
         {mode === 'activity' ? (
