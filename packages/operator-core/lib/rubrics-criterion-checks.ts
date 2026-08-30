@@ -23,8 +23,11 @@
  * Fuzzy + deterministic criteria coexist in one rubric.
  */
 
-import { existsSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { ChildProcess } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
@@ -34,6 +37,7 @@ import type {
   ScorecardCheckRun,
   ScorecardCoverageCheckRun,
 } from './harness/improvements/observation-types';
+import { managedSpawn } from './task-manager/managed-spawn';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -45,6 +49,13 @@ export interface CriterionCheckPathFailure {
   criterionKey: string;
   path: string;
   reason: string;
+  /** Present for native checks so the refusal can name the affected runner. */
+  checkKind?: 'cargo';
+}
+
+export interface NormalizedCargoCheckPaths {
+  manifestPath: string;
+  sourceFiles: string[];
 }
 
 export interface CriterionCheckPathValidation {
@@ -72,6 +83,9 @@ export interface CriterionCheckPathValidation {
    *  spellings expanded). Present for every tests-check criterion that validated clean —
    *  callers should persist THESE so grading-time resolution is deterministic. */
   normalizedByKey: Record<string, string[]>;
+  /** Criterion key → its Cargo manifest and explicit source attribution, normalized to
+   *  repo-root-relative form. */
+  normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths>;
 }
 
 /**
@@ -125,12 +139,12 @@ function describeUnroutableTestPath(file: string): string | null {
 }
 
 /**
- * PROPOSE-time validation: every kind:'tests' check file must resolve against the live
- * tree AND be runnable by the same router grading will use (see
- * {@link describeUnroutableTestPath}). Absolute paths are refused outright — a stored
- * absolute path is machine-specific and escapes the tree the check claims to be about;
- * repo-root-relative (or unambiguous workspace-relative, which is normalized) is the
- * portable contract.
+ * PROPOSE-time validation: every kind:'tests' check file and every kind:'cargo' manifest
+ * or source attribution must resolve against the live tree. Tests files must also be
+ * runnable by the Vitest router grading will use (see {@link describeUnroutableTestPath}).
+ * Absolute paths are refused outright — a stored absolute path is machine-specific and
+ * escapes the tree the check claims to be about; repo-root-relative (or unambiguous
+ * workspace-relative, which is normalized) is the portable contract.
  */
 export function validateCriterionCheckPaths(
   criteria: ReadonlyArray<CheckedCriterion>,
@@ -140,6 +154,7 @@ export function validateCriterionCheckPaths(
   const failures: CriterionCheckPathFailure[] = [];
   const scopeFailures: CriterionCheckPathFailure[] = [];
   const normalizedByKey: Record<string, string[]> = {};
+  const normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths> = {};
   let checked = 0;
   for (const c of criteria) {
     if (c.check?.kind === 'coverage') {
@@ -154,6 +169,68 @@ export function validateCriterionCheckPaths(
             'scope names both planTouched and an explicit sourceFiles list — planTouched IS the ' +
             'file list, resolved from the subject plan at grading time. Pick one.',
         });
+      }
+      continue;
+    }
+    if (c.check?.kind === 'cargo') {
+      const rawPaths = [c.check.manifestPath, ...c.check.sourceFiles];
+      const absoluteIndexes = rawPaths.flatMap((path, index) => (isAbsolute(path) ? [index] : []));
+      for (const index of absoluteIndexes) {
+        checked++;
+        failures.push({
+          criterionKey: c.key,
+          path: rawPaths[index]!,
+          reason: 'absolute paths are machine-specific — name the path repo-root-relative',
+          checkKind: 'cargo',
+        });
+      }
+      const relativePaths = rawPaths.filter((path) => !isAbsolute(path));
+      if (relativePaths.length === 0) continue;
+      const resolution = normalizeTestFilePaths([...relativePaths], root);
+      if (!resolution.ok) {
+        checked += relativePaths.length;
+        failures.push({
+          criterionKey: c.key,
+          path: resolution.path,
+          reason: `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
+          checkKind: 'cargo',
+        });
+        continue;
+      }
+      const normalizedRelative = resolution.files;
+      let relativeIndex = 0;
+      const normalizedPaths = rawPaths.map((path) =>
+        isAbsolute(path) ? path : normalizedRelative[relativeIndex++]!,
+      );
+      let valid = absoluteIndexes.length === 0;
+      for (const [index, path] of normalizedPaths.entries()) {
+        checked++;
+        if (isAbsolute(path)) continue;
+        const candidate = resolve(root, path);
+        let isFile = false;
+        try {
+          isFile = isInsideRoot(root, candidate) && statSync(candidate).isFile();
+        } catch {
+          isFile = false;
+        }
+        if (!isFile) {
+          valid = false;
+          failures.push({
+            criterionKey: c.key,
+            path,
+            reason: 'does not resolve to a regular file in the live tree',
+            checkKind: 'cargo',
+          });
+        }
+        // The manifest and source paths are deliberately checked as one list so
+        // a later source failure cannot leave a partially persisted binding.
+        void index;
+      }
+      if (valid) {
+        normalizedCargoByKey[c.key] = {
+          manifestPath: normalizedPaths[0]!,
+          sourceFiles: normalizedPaths.slice(1),
+        };
       }
       continue;
     }
@@ -204,6 +281,7 @@ export function validateCriterionCheckPaths(
     failures,
     scopeFailures,
     normalizedByKey,
+    normalizedCargoByKey,
   };
 }
 
@@ -272,13 +350,25 @@ export function assertCriterionCheckPathsResolve(
   if (v.ok) return;
   const parts: string[] = [];
   if (v.failures.length > 0) {
-    parts.push(
-      `structured tests-check paths must resolve against the live tree AND be runnable by ` +
-        `the test router that grading will use ` +
-        `(P-011 / D-006 — a check that can never run is a booby trap, not advice). Against root '${v.root}':\n` +
-        v.failures.map((f) => `  • criterion '${f.criterionKey}': ${f.path} — ${f.reason}`).join('\n') +
-        `\nFix the path(s) (repo-root-relative), or drop the check to leave the criterion fuzzy.`,
-    );
+    const testsFailures = v.failures.filter((f) => f.checkKind !== 'cargo');
+    const cargoFailures = v.failures.filter((f) => f.checkKind === 'cargo');
+    if (testsFailures.length > 0) {
+      parts.push(
+        `structured tests-check paths must resolve against the live tree AND be runnable by ` +
+          `the test router that grading will use ` +
+          `(P-011 / D-006 — a check that can never run is a booby trap, not advice). Against root '${v.root}':\n` +
+          testsFailures.map((f) => `  • criterion '${f.criterionKey}': ${f.path} — ${f.reason}`).join('\n') +
+          `\nFix the path(s) (repo-root-relative), or drop the check to leave the criterion fuzzy.`,
+      );
+    }
+    if (cargoFailures.length > 0) {
+      parts.push(
+        `structured cargo-check manifest/source paths must resolve against the live tree ` +
+          `(P-011 / D-006 — a check that cannot run is a booby trap, not advice). Against root '${v.root}':\n` +
+          cargoFailures.map((f) => `  • criterion '${f.criterionKey}': ${f.path} — ${f.reason}`).join('\n') +
+          `\nFix the Cargo paths (repo-root-relative), or drop the check to leave the criterion fuzzy.`,
+      );
+    }
   }
   if (v.scopeFailures.length > 0) {
     parts.push(
@@ -345,6 +435,370 @@ export type CriterionCheckRunner = (opts: {
   root: string;
   timeoutMs?: number;
 }) => Promise<TestFilesCoreResult>;
+
+/** Distilled result of one native Cargo invocation. Cargo's stable runner reports
+ * test names and counts at crate/binary scope, not the source file containing each
+ * inline `#[test]`; source attribution is therefore supplied by the criterion and
+ * preserved on the resulting scorecard check run. */
+export interface CriterionCargoRunResult {
+  passed: number;
+  failed: number;
+  ignored: number;
+  runId: string | null;
+  durationMs: number | null;
+  failures?: string[];
+  /** A typed refusal means no trustworthy crate verdict exists. */
+  error?: string;
+  output?: string;
+}
+
+/** Injectable native runner seam. Production invokes Cargo directly; tests can
+ * model pass/fail/empty/timeout outcomes without compiling the whole crate. */
+export type CriterionCargoCheckRunner = (opts: {
+  manifestPath: string;
+  sourceFiles: string[];
+  root: string;
+  test?: string;
+  timeoutMs?: number;
+}) => Promise<CriterionCargoRunResult>;
+
+const CARGO_RESULT_RE = /^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$/gm;
+const CARGO_ANSI_RE = /\u001B\][\s\S]*?(?:\u0007|\u001B\\)|\u001B\[[0-?]*[ -/]*[@-~]|\u001B[ -/]*[@-~]/g;
+const CARGO_RUN_OUTPUT_LIMIT = 16 * 1024 * 1024;
+const CARGO_DEFAULT_TIMEOUT_MS = 15 * 60_000;
+
+function isInsideRoot(root: string, candidate: string): boolean {
+  const rootAbs = resolve(root);
+  const candidateAbs = resolve(candidate);
+  return candidateAbs === rootAbs || candidateAbs.startsWith(`${rootAbs}${sep}`);
+}
+
+function cargoBinary(): string {
+  const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  const candidates = [
+    ...pathDirs.map((dir) => join(dir, 'cargo')),
+    process.env.CARGO_HOME ? join(process.env.CARGO_HOME, 'bin', 'cargo') : null,
+    join(homedir(), '.cargo', 'bin', 'cargo'),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'cargo';
+}
+
+function cargoResultNames(output: string): { name: string; outcome: 'ok' | 'FAILED' | 'ignored' }[] {
+  const normalized = output.replace(CARGO_ANSI_RE, '');
+  const results: { name: string; outcome: 'ok' | 'FAILED' | 'ignored' }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = CARGO_RESULT_RE.exec(normalized)) !== null) {
+    results.push({ name: match[1]!, outcome: match[2] as 'ok' | 'FAILED' | 'ignored' });
+  }
+  CARGO_RESULT_RE.lastIndex = 0;
+  return results;
+}
+
+function killCargoTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    if (child.pid) process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      /* the process already exited */
+    }
+  }
+}
+
+/**
+ * Run one Cargo crate at manifest scope and distil its stable stdout into counts.
+ *
+ * This is intentionally separate from `runTestFilesCore`: that core is a Vitest
+ * router and correctly refuses `.rs` inputs. Cargo's own manifest/test boundary
+ * is the native equivalent, while the caller retains explicit sourceFiles
+ * attribution because stable Cargo output has no source-location grain.
+ */
+export function runCargoCriterionCheck(opts: {
+  manifestPath: string;
+  sourceFiles: string[];
+  root: string;
+  test?: string;
+  timeoutMs?: number;
+}): Promise<CriterionCargoRunResult> {
+  const runId = randomUUID();
+  const startedAt = Date.now();
+  const manifestAbs = resolve(opts.root, opts.manifestPath);
+  const args = [
+    'test',
+    '--manifest-path',
+    manifestAbs,
+    '--no-fail-fast',
+    ...(opts.test ? [opts.test] : []),
+  ];
+  const timeoutMs = opts.timeoutMs ?? CARGO_DEFAULT_TIMEOUT_MS;
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CARGO_TERM_COLOR: 'never',
+    PAPERCUSP_TEST_RUN_GROUP: runId,
+  };
+
+  return new Promise((resolveResult) => {
+    let stdout = '';
+    let stderr = '';
+    let outputTruncated = false;
+    let timedOut = false;
+    let settled = false;
+    let escalation: NodeJS.Timeout | undefined;
+
+    const append = (current: string, chunk: string): string => {
+      const next = current + chunk;
+      if (next.length <= CARGO_RUN_OUTPUT_LIMIT) return next;
+      outputTruncated = true;
+      return next.slice(-CARGO_RUN_OUTPUT_LIMIT);
+    };
+    const finish = (result: CriterionCargoRunResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (escalation) clearTimeout(escalation);
+      resolveResult(result);
+    };
+
+    let child: ChildProcess;
+    const start = managedSpawn(
+      cargoBinary(),
+      args,
+      {
+        class: 'build',
+        title: `scorecards cargo check (${opts.manifestPath})`,
+        argv: [cargoBinary(), ...args],
+        cwd: opts.root,
+        launchedBy: 'scorecards:emit',
+        runtimeMaxSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
+        detail: { rubricCheck: 'cargo', manifestPath: opts.manifestPath, sourceFiles: opts.sourceFiles },
+      },
+      {
+        spawnOptions: {
+          cwd: opts.root,
+          env,
+          detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      },
+    );
+
+    start.catch((error) => {
+      finish({
+        passed: 0,
+        failed: 0,
+        ignored: 0,
+        runId,
+        durationMs: Date.now() - startedAt,
+        error: `spawn_error: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child) killCargoTree(child, 'SIGTERM');
+      escalation = setTimeout(() => killCargoTree(child, 'SIGKILL'), 15_000);
+      escalation.unref();
+    }, timeoutMs);
+    start.then((managed) => {
+      child = managed.child;
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        stdout = append(stdout, chunk.toString());
+      });
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        stderr = append(stderr, chunk.toString());
+      });
+      child.on('error', (error) => {
+        finish({
+          passed: 0,
+          failed: 0,
+          ignored: 0,
+          runId,
+          durationMs: Date.now() - startedAt,
+          error: `spawn_error: ${error.message}`,
+        });
+      });
+      child.on('close', (code) => {
+      const output = `${stdout}\n${stderr}`;
+      const results = cargoResultNames(output);
+      const passed = results.filter((r) => r.outcome === 'ok').length;
+      const failed = results.filter((r) => r.outcome === 'FAILED').length;
+      const ignored = results.filter((r) => r.outcome === 'ignored').length;
+      const failures = results
+        .filter((r) => r.outcome === 'FAILED')
+        .slice(0, 10)
+        .map((r) => r.name);
+      const common = {
+        passed,
+        failed,
+        ignored,
+        runId,
+        durationMs: Date.now() - startedAt,
+        ...(failures.length > 0 ? { failures } : {}),
+        ...(outputTruncated ? { output: 'Cargo output exceeded the bounded parser buffer.' } : {}),
+      };
+      if (timedOut) {
+        finish({ ...common, error: `timeout after ${timeoutMs}ms` });
+      } else if (outputTruncated) {
+        finish({ ...common, error: 'output_truncated: Cargo test result lines were not fully measurable' });
+      } else if (results.length === 0) {
+        finish({
+          ...common,
+          output: output.slice(-4000),
+          error: code === 0 ? 'no_tests: Cargo reported no test result lines' : `cargo_failed: exit code ${code ?? 'null'}`,
+        });
+      } else if (code !== 0 && failed === 0) {
+        finish({ ...common, output: output.slice(-4000), error: `cargo_failed: exit code ${code ?? 'null'}` });
+      } else {
+        finish(common);
+      }
+      });
+    });
+  });
+}
+
+/**
+ * GRADING-time evaluation for kind:'cargo' checks. Each unique manifest/filter
+ * pair is run once, then its crate-level verdict is copied to each criterion
+ * with that criterion's explicit sourceFiles attribution. This keeps native
+ * checks cheap without claiming Cargo can identify which Rust file owned a test.
+ */
+export async function evaluateCriterionCargoChecks(input: {
+  criteria: ReadonlyArray<CheckedCriterion>;
+  ratings: Record<string, { rating: string } | undefined>;
+  root?: string;
+  timeoutMs?: number;
+  runner?: CriterionCargoCheckRunner;
+  nowIso?: () => string;
+}): Promise<CriterionCheckEvaluation> {
+  const ratedCargoChecks = input.criteria.filter(
+    (c) => c.check?.kind === 'cargo' && input.ratings[c.key] !== undefined,
+  );
+  const root = selectCriterionCheckRoot(ratedCargoChecks, input.root ?? resolveAgentWorkspaceRoot({})).root;
+  const runner = input.runner ?? runCargoCriterionCheck;
+  const nowIso = input.nowIso ?? (() => new Date().toISOString());
+  const deadline = input.timeoutMs !== undefined ? Date.now() + input.timeoutMs : null;
+  const planned: {
+    key: string;
+    manifestPath: string;
+    sourceFiles: string[];
+    test?: string;
+  }[] = [];
+
+  for (const c of ratedCargoChecks) {
+    const validation = validateCriterionCheckPaths([c], { root });
+    const normalized = validation.normalizedCargoByKey[c.key];
+    if (!validation.ok || !normalized) {
+      return {
+        ok: false,
+        error: 'check_path_unresolved',
+        criterionKey: c.key,
+        paths: validation.failures.map((f) => f.path),
+        detail:
+          `criterion '${c.key}' carries a cargo-check whose manifest/source path(s) cannot be used against '${root}': ` +
+          validation.failures.map((f) => `${f.path} (${f.reason})`).join('; ') +
+          ` — grading a native deterministic criterion whose check cannot run would be a silent pass. ` +
+          `Fix the rubric's check (rubrics:propose) or restore the path(s), then re-emit.`,
+      };
+    }
+    planned.push({
+      key: c.key,
+      manifestPath: normalized.manifestPath,
+      sourceFiles: normalized.sourceFiles,
+      ...(c.check?.kind === 'cargo' && c.check.test ? { test: c.check.test } : {}),
+    });
+  }
+  if (planned.length === 0) return { ok: true, checkRuns: {} };
+
+  const groups = new Map<
+    string,
+    { manifestPath: string; sourceFiles: string[]; test?: string; keys: string[] }
+  >();
+  for (const item of planned) {
+    const groupKey = `${item.manifestPath}\u0000${item.test ?? ''}`;
+    const group = groups.get(groupKey) ?? {
+      manifestPath: item.manifestPath,
+      sourceFiles: [],
+      ...(item.test ? { test: item.test } : {}),
+      keys: [],
+    };
+    for (const sourceFile of item.sourceFiles) {
+      if (!group.sourceFiles.includes(sourceFile)) group.sourceFiles.push(sourceFile);
+    }
+    group.keys.push(item.key);
+    groups.set(groupKey, group);
+  }
+
+  const checkRuns: Record<string, CriterionCheckRun> = {};
+  for (const group of groups.values()) {
+    const budget = deadline === null ? undefined : Math.max(1000, deadline - Date.now());
+    const run = await runner({
+      manifestPath: group.manifestPath,
+      sourceFiles: group.sourceFiles,
+      root,
+      ...(group.test ? { test: group.test } : {}),
+      ...(budget !== undefined ? { timeoutMs: budget } : {}),
+    });
+    if (run.error) {
+      return {
+        ok: false,
+        error: 'check_run_failed',
+        criterionKey: group.keys[0] ?? '(none)',
+        detail:
+          `the cargo tests-check run for ${group.keys.length} criterion/criteria ` +
+          `(manifest ${group.manifestPath}${group.test ? `, filter ${JSON.stringify(group.test)}` : ''}) ` +
+          `could not be judged (${run.error}). D-006 requires the named native tests to actually ` +
+          `RUN at grading time — an unjudgeable check refuses the emit rather than passing silently.`,
+      };
+    }
+    if (run.passed + run.failed === 0) {
+      return {
+        ok: false,
+        error: 'check_run_failed',
+        criterionKey: group.keys[0] ?? '(none)',
+        detail:
+          `the cargo tests-check run for manifest '${group.manifestPath}' executed ZERO non-ignored ` +
+          `tests${group.test ? ` for filter ${JSON.stringify(group.test)}` : ''}; ` +
+          `an ignored/empty native suite is unjudged, not a deterministic pass.`,
+      };
+    }
+    for (const item of planned.filter((candidate) => group.keys.includes(candidate.key))) {
+      const record: CriterionCheckRun = {
+        kind: 'cargo',
+        manifestPath: group.manifestPath,
+        sourceFiles: item.sourceFiles,
+        ...(group.test ? { test: group.test } : {}),
+        verdict: run.failed === 0 ? 'pass' : 'fail',
+        passed: run.passed,
+        failed: run.failed,
+        ignored: run.ignored,
+        runId: run.runId,
+        measuredAt: nowIso(),
+        ...(run.failed > 0 && run.failures?.length ? { failures: run.failures } : {}),
+      };
+      const rating = input.ratings[item.key]?.rating ?? '';
+      if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
+        return {
+          ok: false,
+          error: 'check_contradicted',
+          criterionKey: item.key,
+          rating,
+          run: record,
+          detail:
+            `criterion '${item.key}' is rated '${rating}' but its deterministic cargo-check FAILED ` +
+            `(${record.failed} failing of ${record.passed + record.failed} run): ` +
+            `${record.failures?.join(' · ') ?? 'Cargo reported a failing test'}. ` +
+            `A must-pass check outranks judgment — fix the code (or the tests), or rate the criterion honestly.`,
+        };
+      }
+      checkRuns[item.key] = record;
+    }
+  }
+  return { ok: true, checkRuns };
+}
 
 /** Ratings whose meaning a failing must-pass run CONTRADICTS — the same vocabulary map
  *  the scorecard instrument contract uses for verdict mismatches, applied to the binary

@@ -220,9 +220,9 @@ export interface StructuredObservation {
   /**
    * P-011 (owner-ratified D-006): grading-time DETERMINISTIC check runs, keyed by
    * criterion key — stamped server-side by scorecards:emit for every rated criterion
-   * whose rubric check is kind:'tests'. Each record is a LIVE run performed at emit
-   * time (never a stale ledger read), so a rating the run contradicts is machine-
-   * detectable from the scorecard itself. Never caller-supplied.
+   * whose rubric check is kind:'tests' or kind:'cargo'. Each record is a LIVE run
+   * performed at emit time (never a stale ledger read), so a rating the run contradicts
+   * is machine-detectable from the scorecard itself. Never caller-supplied.
    */
   checkRuns?: Record<string, ScorecardCheckRun>;
 }
@@ -233,7 +233,10 @@ export interface StructuredObservation {
  * pass-claiming rating outright, so a persisted 'fail' verdict coexists only with a
  * rating that honestly reflects it (or a bespoke scale word outside the pass map).
  */
-export type ScorecardCheckRun = ScorecardTestsCheckRun | ScorecardCoverageCheckRun;
+export type ScorecardCheckRun =
+  | ScorecardTestsCheckRun
+  | ScorecardCargoCheckRun
+  | ScorecardCoverageCheckRun;
 
 export interface ScorecardTestsCheckRun {
   kind: 'tests';
@@ -248,6 +251,33 @@ export interface ScorecardTestsCheckRun {
   /** ISO instant the run finished (emit time). */
   measuredAt: string;
   /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
+  failures?: string[];
+}
+
+/**
+ * One criterion's grading-time native Cargo check. Cargo's stable test output
+ * reports tests at crate/binary scope, not the Rust source file that contains each
+ * inline `#[test]`. `sourceFiles` is therefore an explicit attribution scope, while
+ * the counts and verdict remain the honest crate-level measurement.
+ */
+export interface ScorecardCargoCheckRun {
+  kind: 'cargo';
+  /** The repo-root-relative manifest that was actually tested. */
+  manifestPath: string;
+  /** Rust/source files to which the crate-level verdict is attributed. */
+  sourceFiles: string[];
+  /** Optional Cargo test-name filter used for this measurement. */
+  test?: string;
+  verdict: 'pass' | 'fail';
+  /** Complete counts parsed from Cargo's test result lines. */
+  passed: number;
+  failed: number;
+  ignored: number;
+  /** Run correlation id for this live native invocation. */
+  runId: string | null;
+  /** ISO instant the run finished (emit time). */
+  measuredAt: string;
+  /** Bounded failing test names, only on a 'fail' verdict. */
   failures?: string[];
 }
 
@@ -873,6 +903,37 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           verdict: r.verdict,
           passed: r.passed,
           failed: r.failed,
+          runId: typeof r.runId === 'string' && r.runId.trim() ? r.runId : null,
+          measuredAt: r.measuredAt,
+          ...(Array.isArray(r.failures)
+            ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }
+            : {}),
+        };
+      } else if (
+        r.kind === 'cargo' &&
+        typeof r.manifestPath === 'string' &&
+        r.manifestPath.trim() !== '' &&
+        Array.isArray(r.sourceFiles) &&
+        (r.verdict === 'pass' || r.verdict === 'fail') &&
+        typeof r.passed === 'number' &&
+        typeof r.failed === 'number' &&
+        typeof r.ignored === 'number' &&
+        typeof r.measuredAt === 'string' &&
+        r.measuredAt.trim() !== ''
+      ) {
+        const sourceFiles = r.sourceFiles.filter(
+          (x): x is string => typeof x === 'string' && x.trim() !== '',
+        );
+        if (sourceFiles.length === 0) continue;
+        runs[key] = {
+          kind: 'cargo',
+          manifestPath: r.manifestPath,
+          sourceFiles,
+          ...(typeof r.test === 'string' && r.test.trim() ? { test: r.test } : {}),
+          verdict: r.verdict,
+          passed: r.passed,
+          failed: r.failed,
+          ignored: r.ignored,
           runId: typeof r.runId === 'string' && r.runId.trim() ? r.runId : null,
           measuredAt: r.measuredAt,
           ...(Array.isArray(r.failures)
