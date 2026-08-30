@@ -432,6 +432,41 @@ describe('GCP workspace-host image family release', () => {
     expect(unaccounted.calls).not.toContain('publish-family-version');
   });
 
+  it('refuses to publish an image whose scan never proved it covered the disk (WI-1092039)', async () => {
+    // The defect this guards, stated as the release path rather than the policy unit.
+    // The guest fails closed only on a total of ZERO mounts, so a candidate whose ROOT
+    // filesystem failed to mount while some other partition succeeded produced a scan
+    // that looked perfect: few findings, no secrets, trusted, correctly bound to the
+    // subject. Every existing assertion passed. The image published.
+    //
+    // Note what this test is NOT: it is not a variation on "the scan found something
+    // bad". Both fixtures below report a CLEAN result. The question is whether the
+    // gate can tell a clean scan from an absent one — and until this change it could
+    // not, because coverage evidence reached it and nothing read it.
+    for (const [label, mutate] of [
+      ['neither half of the proof', (e: GcpImageScanEvidence) => ({
+        ...e,
+        mountedFilesystems: undefined,
+        candidateRootProof: undefined,
+      })],
+      ['no OS root, despite mounting something', (e: GcpImageScanEvidence) => ({
+        ...e,
+        mountedFilesystems: 2,
+        candidateRootProof: undefined,
+      })],
+      ['a zero-mount scan', (e: GcpImageScanEvidence) => ({ ...e, mountedFilesystems: 0 })],
+    ] as const) {
+      const unproven = new FakeAdapter();
+      const original = unproven.scanImage.bind(unproven);
+      unproven.scanImage = async (input) => mutate(await original(input));
+      await expect(
+        executeGcpImageFamilyRelease(request(), unproven),
+        `an unproven scan (${label}) must not publish`,
+      ).rejects.toThrow('violates the workspace-host release policy');
+      expect(unproven.calls, label).not.toContain('publish-family-version');
+    }
+  });
+
   it('fails closed before family publication when scan or exact migration evidence is not green', async () => {
     const badScan = new FakeAdapter();
     badScan.badScan = true;
