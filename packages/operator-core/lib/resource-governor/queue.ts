@@ -742,9 +742,11 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     const expired = await tx<QueueDbRow[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
-               payload,
+               COALESCE(payload, '{}'::jsonb)
+                 - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+                 - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at',
                ARRAY['resource_governor']::text[],
-               ((payload->'resource_governor') - 'lease') || jsonb_build_object(
+               ((COALESCE(payload, '{}'::jsonb)->'resource_governor') - 'lease') || jsonb_build_object(
                  'state', 'expired',
                  'updatedAtMs', ${nowMs}::bigint,
                  'decision', jsonb_build_object(
@@ -783,6 +785,21 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     record: DurableAdmissionRecord,
     assignee: string | null,
   ): Promise<StoredAdmissionRecord> {
+    // A governor receipt is parked out of generic self-selection while it is
+    // active. Once a lease transition reaches any terminal state, keeping the
+    // outer `_claimHold`/`claim_hold_*` metadata behind makes a completed row
+    // count as a live claim and can exhaust scheduler claim capacity. Build the
+    // terminal cleanup into this same UPDATE so readers never observe a done
+    // receipt with stale claim-hold metadata. Non-terminal transitions retain
+    // the hold, preserving the governor queue's protection boundary.
+    const terminalHoldCleanup =
+      record.state === 'completed' ||
+      record.state === 'cancelled' ||
+      record.state === 'superseded' ||
+      record.state === 'expired'
+        ? sql` - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+                 - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'`
+        : sql``;
     const rows = await sql<QueueDbRow[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
@@ -790,7 +807,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
                ARRAY['resource_governor']::text[],
                ${JSON.stringify(record)}::text::jsonb,
                true
-             ),
+             )${terminalHoldCleanup},
              status = ${outerState(record.state)},
              taken_by = ${assignee},
              taken_at = CASE WHEN ${assignee}::text IS NULL THEN NULL ELSE now() END,
