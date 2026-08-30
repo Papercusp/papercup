@@ -716,6 +716,9 @@ describe('pc-heavy per-invocation variables are excluded from the cache identity
     PC_HEAVY_ADMISSION_ID: 'pc-heavy-2599104-1787967914220388311',
     PC_HEAVY_PSI_FINALIZATION_FILE: '/tmp/pc-heavy-ready/finalization.Qq77Zz',
     PC_HEAVY_PREEMPT_START_FILE: '/tmp/pc-heavy-slots/scratch/start.Kj4m22',
+    // Live WI-1024071 Run D gained this conditional wrapper flag while Run C lacked it. It
+    // controls whether pc-heavy may preempt an exclusive materializer, not what the task tests.
+    PC_HEAVY_PREEMPT_EXCLUSIVE: '0',
   };
 
   it('hits across two invocations of the real root `npm test` environment', () => {
@@ -726,6 +729,7 @@ describe('pc-heavy per-invocation variables are excluded from the cache identity
     'PC_HEAVY_ADMISSION_ID',
     'PC_HEAVY_PSI_FINALIZATION_FILE',
     'PC_HEAVY_PREEMPT_START_FILE',
+    'PC_HEAVY_PREEMPT_EXCLUSIVE',
   ])('a new %s alone does not invalidate the identity', (name) => {
     const changed = { ...invocationOne, [name]: 'something-entirely-different' };
     expect(identityFor(changed).fingerprint).toBe(identityFor(invocationOne).fingerprint);
