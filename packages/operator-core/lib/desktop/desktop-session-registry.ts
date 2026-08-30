@@ -33,7 +33,32 @@ import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
-export type DesktopKind = 'xvfb-local' | 'frame-slot' | 'vm-guest' | 'bwrap' | 'microvm';
+/**
+ * Every desktop kind, as DATA so the set can be walked — the union below is derived
+ * from it rather than restated. `desktop-sessions-schema.integration.test.ts` iterates
+ * THIS array against the live `desktop_sessions_kind_ck`, which is what makes the PG
+ * constraint and the TypeScript set provably the same set instead of two hand-kept
+ * copies that agree until they quietly do not.
+ *
+ * ⚠ Widening it is a THREE-PLACE change and tsc catches only two:
+ *   1. `DESKTOP_LIFECYCLE_POLICY` is a `Record<DesktopKind, …>` — fails to compile
+ *      until the new kind has D-008 rule-3 freeze/reap thresholds. (Caught.)
+ *   2. Any other exhaustive `Record`/`switch` over the union. (Caught.)
+ *   3. The PG CHECK constraint, which tsc cannot see. A kind added here with no
+ *      migration inserts happily in unit tests (they stub PG) and is REJECTED in
+ *      production. Ship the migration in the same change — the schema integration
+ *      test is what turns that from a rule into a failure.
+ */
+export const DESKTOP_KINDS = [
+  'xvfb-local',
+  'frame-slot',
+  'vm-guest',
+  'bwrap',
+  'microvm',
+  'kasmvnc',
+] as const;
+
+export type DesktopKind = (typeof DESKTOP_KINDS)[number];
 export type DesktopScope = 'pot' | 'agent' | 'workspace';
 export type DesktopState = 'provisioning' | 'ready' | 'idle' | 'frozen' | 'released' | 'dead';
 export type DesktopViewerMode = 'none' | 'watch' | 'takeover';
