@@ -174,7 +174,7 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
-  await db.cleanup();
+  await db?.cleanup();
   if (savedWsEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = savedWsEnv;
 });
