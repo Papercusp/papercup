@@ -17,7 +17,7 @@ import type { PlanAcceptanceGateVerdictRow } from '@papercusp/operator-core/lib/
  * ⚠ THE RENDERING RULE, and it runs OPPOSITE to the sibling coverage section. There, the
  * findings are advisory and must not look like failures (D-018). Here the codes ARE real
  * refusals, so a blocker renders as a blocker — and the honesty burden moves onto the
- * PASSES instead. Three states are satisfied-but-not-clean, and flattening any of them
+ * PASSES instead. Four states are satisfied-but-not-clean, and flattening any of them
  * into a green claims a verification that did not happen:
  *
  *   · `skipped` — the gate did not APPLY. Nothing was checked.
@@ -26,6 +26,11 @@ import type { PlanAcceptanceGateVerdictRow } from '@papercusp/operator-core/lib/
  *     little"), so the waiver and its reason are rendered, never summarized away.
  *   · `vettedUnderWaiver` — the rubric was vetted over a consult nobody critiqued
  *     (EI-20821478338037350). Allowed, but the reader is entitled to know.
+ *   · `gradedVia:'minimum'` — the grading came from a peer the relevance router did
+ *     NOT match, taken as a below-floor minimum-fill because nobody above the floor
+ *     was available (unified-responder-selection-critique-and-grading-2026-08-30
+ *     D-002, which accepts that cost knowingly and asks that it not be rediscovered
+ *     as a surprise). The grading is real; the expertise behind it is not vouched for.
  */
 
 export const PLAN_ACCEPTANCE_GATE_PARAM = 'gate';
@@ -43,7 +48,9 @@ export function PlanAcceptanceGateSection({ slug }: { slug: string }) {
 
   // A pass with a caveat is NOT a clean pass. Computed once so the badge and the body
   // cannot disagree about it.
-  const caveated = Boolean(row && (row.skipped || row.forcedPast || row.vettedUnderWaiver));
+  const caveated = Boolean(
+    row && (row.skipped || row.forcedPast || row.vettedUnderWaiver || row.gradedVia === 'minimum'),
+  );
   const badge = !row
     ? ''
     : row.unavailableReason
@@ -137,6 +144,16 @@ export function PlanAcceptanceGateSection({ slug }: { slug: string }) {
                   ? `Independently graded by: ${row.gradedBy}`
                   : 'No independent grading recorded — a self-grading does not satisfy this gate.'}
               </div>
+
+              {/* Below-floor minimum-fill grading (D-002). Rendered beside the grader
+                  rather than as a blocker: the ship is allowed, and what the reader
+                  needs is that the router did not vouch for this grader's expertise. */}
+              {row.gradedVia === 'minimum' ? (
+                <div className="det-label" data-testid="plan-acceptance-gate-grader-minimum">
+                  ⚠ Grader selected BELOW the relevance floor (minimum-fill) — nobody the
+                  router matched was available, so this grading carries no expertise match
+                </div>
+              ) : null}
             </>
           )}
         </div>

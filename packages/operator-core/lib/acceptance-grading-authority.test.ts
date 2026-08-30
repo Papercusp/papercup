@@ -18,6 +18,7 @@ import {
   pickAuthoritativeGrading,
   readGraderSelectionVia,
   GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS,
+  type RankableGrading,
 } from './acceptance-grading-authority';
 
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -82,7 +83,7 @@ describe('graderSelectionVia — folding the durable rows into ownerId → via',
 
 describe('pickAuthoritativeGrading — authority first, recency as the tie-break', () => {
   const viaMap = (entries: Record<string, SelectionVia>) => new Map(Object.entries(entries));
-  const viaOf = (m: Map<string, SelectionVia>) => (c: { createdBy: string | null }) => gradingViaOf(c, m);
+  const viaOf = (m: Map<string, SelectionVia>) => (c: RankableGrading) => gradingViaOf(c, m);
 
   it('a LATER minimum-fill card does not supersede an earlier floor card (the P-004 rule)', () => {
     const floor = card('su-floor', '2026-08-30T01:00:00Z');

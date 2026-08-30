@@ -62,6 +62,17 @@ export interface PlanAcceptanceGateVerdictRow {
   rubricId: string | null;
   /** Rubric VERDICT: the INDEPENDENT grader who satisfied the gate, if any. */
   gradedBy: string | null;
+  /**
+   * HOW that grader was selected — `'minimum'` means the relevance router did
+   * NOT match them and they were taken as a below-floor minimum-fill
+   * (unified-responder-selection-critique-and-grading-2026-08-30 D-002). Rides
+   * here for the same reason `vettedUnderWaiver` does: the ship is allowed and
+   * the grading is real, but a reader of a green verdict is entitled to know
+   * that nobody above the floor was available to give it. `null` = the grading
+   * is not attributable to a cascade selection (owner-filed, hand-dispatched,
+   * or predating the cascade) — which is NOT the same claim as `'floor'`.
+   */
+  gradedVia: 'floor' | 'minimum' | null;
   /** A recorded, reasoned waiver of the code-truth family. Must never be silent. */
   forcedPast: { reason: string; checks: string[] } | null;
   /** Vetted over a consult nobody critiqued. Allowed, but the reader is entitled to it. */
@@ -88,6 +99,7 @@ export async function resolvePlanAcceptanceGateVerdict(
         message: v.message ?? null,
         rubricId: v.rubricId ?? null,
         gradedBy: v.gradedBy ?? null,
+        gradedVia: v.gradedVia ?? null,
         forcedPast: v.forcedPast
           ? { reason: v.forcedPast.reason, checks: [...v.forcedPast.checks] }
           : null,
@@ -115,6 +127,7 @@ export async function resolvePlanAcceptanceGateVerdict(
         }).`,
         rubricId: null,
         gradedBy: null,
+        gradedVia: null,
         forcedPast: null,
         vettedUnderWaiver: null,
         unavailableReason: 'resolver-unavailable',
