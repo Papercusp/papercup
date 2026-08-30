@@ -35,7 +35,7 @@ const healthyStats = (over: Partial<RawGatewayStats> = {}): RawGatewayStats => (
 
 test('summarizeGatewayMetrics — projects the post-AIMD structured bag', () => {
   const m = summarizeGatewayMetrics(
-    healthyStats({ totalRequests: 4321, admission: { running: 24, queued: 7, maxConcurrent: 12 }, shed429: 5, shedAllThrottled: 2, failovers: 1, unified: { utilization: 0.97 }, aimd: { effective: 12, cap: 24, floor: 4, decreases: 3 } }),
+    healthyStats({ totalRequests: 4321, admission: { running: 24, queued: 7, maxConcurrent: 12 }, shed429: 5, shedAllThrottled: 2, failovers: 1, unified: { utilization: 0.97 }, aimd: { effective: 12, cap: 24, floor: 4, decreases: 3, countersSinceMs: 1_700_000_000_000 } }),
   );
   assert.equal(m.totalRequests, 4321);
   assert.equal(m.inFlight, 24);
@@ -49,7 +49,44 @@ test('summarizeGatewayMetrics — projects the post-AIMD structured bag', () => 
   assert.equal(m.aimdEffective, 12);
   assert.equal(m.aimdCap, 24);
   assert.equal(m.aimdDecreases, 3);
+  assert.equal(m.aimdCountersSinceMs, 1_700_000_000_000); // the BOUND travels with the bounded number
   assert.equal(m.slotReconcileMismatch, 0); // healthy default
+});
+
+/**
+ * EI-21842988251907640 recurrence guard, wedge layer.
+ *
+ * `aimdDecreases` is per-process, so it RESETS on a gateway restart. A reader differencing two
+ * samples sees it fall 8 → 0 and concludes "the storm recovered" — when the gateway actually
+ * restarted and the true count is unknowable from the counter alone. That is the same misreading
+ * this work item was filed for, one layer downstream of /stats.
+ *
+ * The guard reproduces the misreading rather than asserting field presence: `decreases` alone is
+ * IDENTICAL between a genuine no-contraction gateway and a freshly-restarted one, so the epoch is
+ * the only thing that separates them. Drop `aimdCountersSinceMs` from the projection and the two
+ * become indistinguishable again and this fails.
+ */
+test('summarizeGatewayMetrics — projects the counter epoch, so a post-restart drop in aimdDecreases cannot be read as recovery', () => {
+  const stormy = summarizeGatewayMetrics(healthyStats({ aimd: { effective: 4, cap: 24, floor: 4, decreases: 8, countersSinceMs: 1_000 } }));
+  // Same gateway, later: the process restarted, so the counter is back to 0 on a NEW epoch.
+  const restarted = summarizeGatewayMetrics(healthyStats({ aimd: { effective: 24, cap: 24, floor: 4, decreases: 0, countersSinceMs: 9_000 } }));
+  // A gateway that genuinely never contracted, on that same new epoch.
+  const neverContracted = summarizeGatewayMetrics(healthyStats({ aimd: { effective: 24, cap: 24, floor: 4, decreases: 0, countersSinceMs: 9_000 } }));
+
+  // The counter DROPPED, which naively reads as "recovered"...
+  assert.ok((restarted.aimdDecreases ?? 0) < (stormy.aimdDecreases ?? 0));
+  // ...but the epoch MOVED, which is the disclosure that the drop is a reset, not a recovery.
+  assert.notEqual(restarted.aimdCountersSinceMs, stormy.aimdCountersSinceMs);
+  // And on counters alone a restarted gateway is indistinguishable from one that never contracted —
+  // which is precisely why the epoch has to be carried rather than inferred.
+  assert.equal(restarted.aimdDecreases, neverContracted.aimdDecreases);
+  assert.equal(restarted.aimdCountersSinceMs, neverContracted.aimdCountersSinceMs);
+});
+
+test('summarizeGatewayMetrics — a gateway that omits countersSinceMs yields null (UNKNOWN scope), never a silent "lifetime" reading', () => {
+  const noEpoch = summarizeGatewayMetrics(healthyStats({ aimd: { effective: 12, cap: 24, floor: 4, decreases: 3 } }));
+  assert.equal(noEpoch.aimdDecreases, 3);
+  assert.equal(noEpoch.aimdCountersSinceMs, null);
 });
 
 // ── P-005/W3 slot-leak recurrence guard (D-001): the slotReconcileMismatch → slotLeak verdict path ──
@@ -97,6 +134,7 @@ test('summarizeGatewayMetrics — DEPLOY-SKEW: a pre-AIMD gateway (no aimd/shedA
   assert.equal(m.aimdEffective, null);
   assert.equal(m.aimdCap, null);
   assert.equal(m.aimdDecreases, null);
+  assert.equal(m.aimdCountersSinceMs, null); // no aimd block at all → UNKNOWN scope
   assert.equal(m.utilizationPct, null); // no unified window seen
 });
 
