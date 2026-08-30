@@ -1,29 +1,65 @@
 /**
- * Workspace-host half of the outbound hosted terminal/file relay.
+ * Workspace-host half of the outbound hosted terminal/file/desktop relay.
  *
  * The control plane owns the WebSocket and forwards generation-bound relay
  * envelopes here. This module never listens on a VM port. It binds every PTY
  * to the authenticated connector identity + browser principal and constrains
  * generic file operations to one server-selected project root.
+ *
+ * ## Desktop channels (P-013 / D-023)
+ *
+ * A channel is a PTY or a DESKTOP. Because the host never listens, a desktop
+ * viewer is not a listener we expose: the adapter DIALS the sandbox's
+ * loopback-bound KasmVNC websocket as a CLIENT and pumps bytes over the existing
+ * outbound relay. D-020's "loopback-only" property is therefore preserved by
+ * construction rather than by configuration.
  */
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, realpath, readdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getScreenSerialization, spawnPty, type PtyHandle } from '../pty-bridge';
 import type { PtyAccessScope } from '../pty-ticket';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+import type { KasmvncSessionCredentials } from '../desktop/kasmvnc-credentials';
+import {
+  assertLoopbackDesktopEndpoint,
+  desktopViewersHold,
+  desktopViewerHeartbeatMs,
+  hostedDesktopGrant,
+  HostedDesktopEndpointError,
+  type HostedDesktopAction,
+  type HostedDesktopAttachment,
+  type HostedDesktopEndpoint,
+  type HostedDesktopGrant,
+} from '../desktop/hosted-desktop-channel';
 
 export const HOSTED_HOST_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_HOST_MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const HOSTED_HOST_MAX_PTY_INPUT_BYTES = 64 * 1024;
 export const HOSTED_HOST_SESSION_IDLE_MS = 15 * 60_000;
+/**
+ * Cap on ONE viewer→sandbox RFB write.
+ *
+ * Client→server RFB messages are small (key, pointer, encoding and update
+ * requests); the one that can grow is a clipboard paste. 256 KiB is far above a
+ * legitimate paste and far below `HOSTED_HOST_MAX_MESSAGE_BYTES`, so a hostile
+ * viewer cannot use the desktop plane to push megabyte envelopes at the sandbox.
+ */
+export const HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES = 256 * 1024;
 
 const OUTPUT_CHUNK_BYTES = 48 * 1024;
 const MAX_DIRECTORY_ENTRIES = 2_000;
 const SAFE_SIGNAL = new Set(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGKILL']);
 
 export type HostedHostTabRole = 'controller' | 'observer';
+
+/**
+ * What a channel carries. `observer`/`controller` says WHO the viewer is; this
+ * says WHAT they attached to.
+ */
+export type HostedHostChannelKind = 'pty' | 'desktop';
 
 export interface HostedHostRelayOpen {
   type: 'relay.open';
@@ -32,6 +68,19 @@ export interface HostedHostRelayOpen {
   hostedSessionId: string;
   audience: string;
   role: HostedHostTabRole;
+  /**
+   * Absent means `'pty'`.
+   *
+   * NOT a back-compat shim for dead code: the control plane and the workspace
+   * host are SEPARATELY deployed across a real version skew (the host runs in
+   * the customer's VM on a pinned generation). An envelope minted by a control
+   * plane that predates this field must keep opening terminals, or updating the
+   * host would break every live terminal tab. The default is therefore part of
+   * the wire contract, and is pinned by a test.
+   */
+  kind?: HostedHostChannelKind;
+  /** Required when `kind === 'desktop'`; ignored otherwise. */
+  desktopSessionId?: string;
 }
 
 export interface HostedHostRelayMessage {
@@ -82,6 +131,52 @@ export interface HostedHostPtyFactoryInput {
   rows: number;
 }
 
+/** One live byte pipe to the sandbox's loopback KasmVNC websocket. */
+export interface HostedDesktopSocket {
+  /** Forward viewer→sandbox RFB bytes. `false` means the pipe is gone. */
+  send(data: Buffer): boolean;
+  close(): void;
+  onData(listener: (data: Buffer) => void): () => void;
+  onClose(listener: (reason: string) => void): () => void;
+}
+
+/** What the adapter needs about a sandbox desktop before it may dial one. */
+export interface HostedDesktopSessionRecord {
+  /**
+   * Where the session listens, or null when it serves none (an Xvfb backend is
+   * started `-nolisten tcp`). Never trusted blindly — `assertLoopbackDesktopEndpoint`
+   * re-checks it at the moment of dialling.
+   */
+  endpoint: HostedDesktopEndpoint | null;
+  /** The session's view-only and control users (P-012, D-020). */
+  credentials: Pick<KasmvncSessionCredentials, 'view' | 'control'>;
+}
+
+export interface HostedDesktopDialInput {
+  desktopSessionId: string;
+  /** Already asserted loopback by the adapter — the dialler need not re-check. */
+  endpoint: HostedDesktopEndpoint;
+  /** Carries exactly ONE of the session's two secrets. Never both. */
+  grant: HostedDesktopGrant;
+}
+
+/**
+ * The side-effecting half of the desktop plane, injected so the adapter itself
+ * stays socket-free and unit-testable.
+ *
+ * Deliberately NOT the desktop session registry: the adapter must not learn how
+ * sessions are stored, and the composition root is where a registry read becomes
+ * one of these. That keeps the workspace host free of control-plane schema.
+ */
+export interface HostedDesktopBackend {
+  /** Resolve a desktop session id; null when unknown, ended, or not this host's. */
+  lookup(desktopSessionId: string): Promise<HostedDesktopSessionRecord | null>;
+  /** Dial the sandbox's loopback websocket as a CLIENT (D-023 ruling 1). */
+  dial(input: HostedDesktopDialInput): Promise<HostedDesktopSocket>;
+  /** Touch `last_active_at` on the registry row while a viewer is attached (D-008 rule 4). */
+  heartbeat(desktopSessionId: string): void;
+}
+
 export interface HostedWorkspaceHostOptions {
   binding: HostedConnectorBinding;
   workspaceRoot: string;
@@ -91,6 +186,12 @@ export interface HostedWorkspaceHostOptions {
   idleMs?: number;
   maxMessageBytes?: number;
   onAudit?: (event: HostedHostAuditEvent) => void;
+  /**
+   * Omitted on a host with no desktop pack installed. A `kind:'desktop'` open is
+   * then REFUSED rather than silently opening a channel that can never carry
+   * pixels.
+   */
+  desktop?: HostedDesktopBackend;
 }
 
 type HostSession = {
@@ -106,9 +207,33 @@ type HostSession = {
   closed: boolean;
 };
 
-type Channel = {
-  sessionKey: string;
+/**
+ * The channel index, discriminated so one `channelId` namespace covers both
+ * planes — which is what makes the `channel_already_open` check and `relay.close`
+ * dispatch uniform instead of two half-checks that can disagree.
+ */
+type Channel =
+  | { kind: 'pty'; sessionKey: string; role: HostedHostTabRole }
+  | { kind: 'desktop'; desktopSessionId: string; role: HostedHostTabRole };
+
+type DesktopChannel = {
+  channelId: string;
+  userId: string;
+  hostedSessionId: string;
+  desktopSessionId: string;
   role: HostedHostTabRole;
+  /**
+   * The grant's non-secret residue. The SECRET is deliberately not kept: it is
+   * consumed by the dial and then unreachable, so a later bug in this file
+   * cannot log, serialise, or re-send it. Tranche 1 keeps a grant from ever
+   * holding both secrets; this keeps it from outliving its single use.
+   */
+  action: HostedDesktopAction;
+  inputAllowed: boolean;
+  /** null while the dial is still in flight. */
+  socket: HostedDesktopSocket | null;
+  closed: boolean;
+  teardown: Array<() => void>;
 };
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -380,6 +505,14 @@ function ptyHandleAdapter(handle: PtyHandle, scope: PtyAccessScope): HostedHostP
 export class HostedWorkspaceHostSessionAdapter {
   private readonly sessions = new Map<string, HostSession>();
   private readonly channels = new Map<string, Channel>();
+  private readonly desktopChannels = new Map<string, DesktopChannel>();
+  /**
+   * Only channels whose dial SUCCEEDED. Kept separate from `desktopChannels` (which
+   * includes in-flight dials) because this is what `desktopViewersHold` is asked
+   * about: a viewer that is still connecting is not yet holding the desktop awake.
+   */
+  private readonly attachments = new Map<string, HostedDesktopAttachment>();
+  private desktopHeartbeat: ManagedHandle | null = null;
   private readonly files: SafeRootFileService;
   private readonly createPty: (input: HostedHostPtyFactoryInput) => HostedHostPty;
   private readonly idleMs: number;
@@ -410,7 +543,12 @@ export class HostedWorkspaceHostSessionAdapter {
     if (this.closed) return;
     this.closed = true;
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
+    // notify:false — the broadcast above already told the control plane about
+    // every channel, including these.
+    for (const desktop of [...this.desktopChannels.values()]) this.closeDesktopChannel(desktop, reason, false);
     for (const session of [...this.sessions.values()]) this.destroySession(session, reason);
+    this.desktopHeartbeat?.stop();
+    this.desktopHeartbeat = null;
     this.channels.clear();
   }
 
@@ -420,9 +558,19 @@ export class HostedWorkspaceHostSessionAdapter {
     const hostedSessionId = string(message.hostedSessionId);
     const audience = string(message.audience);
     const role = message.role === 'controller' || message.role === 'observer' ? message.role : null;
-    if (!channelId || !userId || !hostedSessionId || audience !== 'workspace-operator' || !role) return;
+    // Absent `kind` is 'pty' (wire contract, see HostedHostRelayOpen); an
+    // UNRECOGNISED kind is rejected rather than defaulted, so a future channel
+    // type can never silently open a terminal.
+    const kind: HostedHostChannelKind | null =
+      message.kind === undefined || message.kind === 'pty' ? 'pty' : message.kind === 'desktop' ? 'desktop' : null;
+    if (!channelId || !userId || !hostedSessionId || audience !== 'workspace-operator' || !role || !kind) return;
     if (this.channels.has(channelId)) {
       this.options.send({ type: 'relay.close', channelId, reason: 'channel_already_open' });
+      return;
+    }
+
+    if (kind === 'desktop') {
+      await this.openDesktop(channelId, userId, hostedSessionId, role, string(message.desktopSessionId));
       return;
     }
 
@@ -470,25 +618,131 @@ export class HostedWorkspaceHostSessionAdapter {
       session.idleTimer = null;
     }
     session.channels.add(channelId);
-    this.channels.set(channelId, { sessionKey: key, role });
+    this.channels.set(channelId, { kind: 'pty', sessionKey: key, role });
     this.send(channelId, { type: 'pty.ready', resumed, role });
     const snapshot = await session.pty.snapshot();
-    if (snapshot && this.channels.get(channelId)?.sessionKey === key) {
+    // Re-entrancy guard: the channel may have been detached — or reused by a
+    // different session, or by a DESKTOP open — while the snapshot was awaited.
+    const current = this.channels.get(channelId);
+    if (snapshot && current?.kind === 'pty' && current.sessionKey === key) {
       this.send(channelId, { type: 'pty.snapshot', data: Buffer.from(snapshot, 'utf8').toString('base64') });
     }
     this.audit(resumed ? 'pty_resumed' : 'channel_attached', session, channelId);
+  }
+
+  /**
+   * Attach one viewer to a sandbox desktop.
+   *
+   * ## Why the role is fixed here and never upgraded in place
+   *
+   * `watch` and `takeover` are distinguished by WHICH credential authenticated
+   * the dial, so a channel cannot change privilege without a new dial. There is
+   * deliberately no "promote this observer" path: a takeover is a fresh
+   * `relay.open` that mints its own audit event. That makes privilege escalation
+   * impossible to express rather than merely disallowed, and it is what gives the
+   * hosted path audit parity with the local one.
+   *
+   * ## Why an observer's bytes are not filtered
+   *
+   * The relay carries the RFB protocol, in which input (KeyEvent, PointerEvent)
+   * is interleaved with traffic an observer legitimately MUST send —
+   * FramebufferUpdateRequest is how it receives pixels at all. RFB messages are
+   * variable-length and stateful, so a per-chunk byte filter cannot align with
+   * message boundaries and would be security theatre. View-only is enforced where
+   * it is actually decidable: KasmVNC drops input from the `-r` view user
+   * (P-012 / D-020). `inputAllowed` is reported to the viewer so it can disable
+   * its own input affordances, and is NOT a gate.
+   */
+  private async openDesktop(
+    channelId: string,
+    userId: string,
+    hostedSessionId: string,
+    role: HostedHostTabRole,
+    desktopSessionId: string | null,
+  ): Promise<void> {
+    const backend = this.options.desktop;
+    if (!desktopSessionId || !backend) {
+      this.options.send({
+        type: 'relay.close',
+        channelId,
+        reason: desktopSessionId ? 'desktop_unsupported' : 'desktop_session_required',
+      });
+      return;
+    }
+
+    // Reserve the id SYNCHRONOUSLY, before the first await: a second open for the
+    // same channelId must lose the `channel_already_open` race rather than run a
+    // parallel dial that leaks a socket.
+    const channel: DesktopChannel = {
+      channelId,
+      userId,
+      hostedSessionId,
+      desktopSessionId,
+      role,
+      action: role === 'controller' ? 'takeover' : 'watch',
+      inputAllowed: role === 'controller',
+      socket: null,
+      closed: false,
+      teardown: [],
+    };
+    this.channels.set(channelId, { kind: 'desktop', desktopSessionId, role });
+    this.desktopChannels.set(channelId, channel);
+
+    try {
+      const record = await backend.lookup(desktopSessionId);
+      if (!record) throw new SafeRootFileError('desktop_session_unknown');
+      const endpoint = assertLoopbackDesktopEndpoint(record.endpoint);
+      const grant = hostedDesktopGrant(role, record.credentials);
+      const socket = await backend.dial({ desktopSessionId, endpoint, grant });
+      // A detach that landed while we were dialling wins: drop the socket we just
+      // opened rather than attaching it to a channel nobody is holding.
+      if (channel.closed || this.desktopChannels.get(channelId) !== channel) {
+        socket.close();
+        return;
+      }
+      channel.socket = socket;
+      channel.teardown.push(socket.onData((data) => this.sendDesktopFrames(channel, data)));
+      channel.teardown.push(socket.onClose((reason) => this.closeDesktopChannel(channel, reason || 'desktop_closed')));
+      this.attachments.set(channelId, {
+        channelId,
+        desktopSessionId,
+        action: grant.action,
+        endpoint,
+      });
+      this.send(channelId, {
+        type: 'desktop.ready',
+        action: grant.action,
+        inputAllowed: grant.inputAllowed,
+      });
+      this.audit(grant.auditAction, channel, channelId, `desktop=${desktopSessionId}`);
+      this.startDesktopHeartbeat();
+    } catch (error) {
+      const code =
+        error instanceof HostedDesktopEndpointError || error instanceof SafeRootFileError
+          ? error.code
+          : 'desktop_dial_failed';
+      this.audit('desktop_denied', channel, channelId, code);
+      this.closeDesktopChannel(channel, code);
+    }
   }
 
   private async relay(message: Record<string, unknown>): Promise<void> {
     const channelId = string(message.channelId, 256);
     if (!channelId) return;
     const channel = this.channels.get(channelId);
-    const session = channel ? this.sessions.get(channel.sessionKey) : null;
-    if (!channel || !session || session.closed) return;
+    if (!channel) return;
     const payload = object(message.payload);
     if (!payload) return;
     const type = string(payload.type, 64);
     if (!type) return;
+
+    if (channel.kind === 'desktop') {
+      this.relayDesktop(channelId, type, payload);
+      return;
+    }
+
+    const session = this.sessions.get(channel.sessionKey);
+    if (!session || session.closed) return;
 
     try {
       if (type === 'pty.input') {
@@ -576,6 +830,118 @@ export class HostedWorkspaceHostSessionAdapter {
     }
   }
 
+  /**
+   * Viewer→sandbox. One opaque RFB byte stream, deliberately unparsed (see
+   * `openDesktop`), so the only operation on this plane is `desktop.data`.
+   *
+   * Frames are NOT audited individually: an interactive desktop emits input at
+   * pointer-motion rate, and an audit line per frame would bury the events that
+   * matter (attach, takeover, detach, denial) in noise. That is a different
+   * choice from the PTY plane on purpose — a keystroke there is a discrete
+   * auditable command, a mouse move here is not.
+   */
+  private relayDesktop(channelId: string, type: string, payload: Record<string, unknown>): void {
+    const channel = this.desktopChannels.get(channelId);
+    if (!channel || channel.closed) return;
+    if (type !== 'desktop.data') {
+      this.send(channelId, { type: 'operation.error', operation: type, code: 'invalid_desktop_operation' });
+      this.audit('operation_denied', channel, channelId, 'invalid_desktop_operation');
+      return;
+    }
+    // Still dialling: drop. RFB clients re-request the framebuffer, so a dropped
+    // pre-attach write costs a repaint, never correctness.
+    if (!channel.socket) return;
+    const encoded = string(payload.data, Math.ceil((HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES * 4) / 3) + 8);
+    if (!encoded) {
+      this.send(channelId, { type: 'operation.error', operation: type, code: 'invalid_desktop_data' });
+      return;
+    }
+    const data = Buffer.from(encoded, 'base64');
+    if (data.byteLength > HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES || !channel.socket.send(data)) {
+      this.closeDesktopChannel(channel, 'desktop_unavailable');
+    }
+  }
+
+  /** Sandbox→viewer, chunked like PTY output so one large update cannot exceed the envelope cap. */
+  private sendDesktopFrames(channel: DesktopChannel, data: Buffer): void {
+    if (channel.closed) return;
+    for (let offset = 0; offset < data.byteLength; offset += OUTPUT_CHUNK_BYTES) {
+      const chunk = data.subarray(offset, Math.min(data.byteLength, offset + OUTPUT_CHUNK_BYTES));
+      this.send(channel.channelId, { type: 'desktop.data', data: chunk.toString('base64') });
+    }
+  }
+
+  /**
+   * One heartbeat for the whole adapter, armed while ANY viewer is attached
+   * (D-008 rule 4). This is what lets the idle-freeze window drop from hours to
+   * minutes: a desktop somebody is watching must never be reaped as idle.
+   *
+   * `managedSetInterval` rather than a bare timer so it is visible in
+   * `schedule:inventory`; `instanced` because an adapter is per-connector and
+   * several can share a process.
+   */
+  private startDesktopHeartbeat(): void {
+    if (this.desktopHeartbeat || !desktopViewersHold(this.attachments)) return;
+    this.desktopHeartbeat = managedSetInterval(
+      'hosted-desktop-viewer-heartbeat',
+      desktopViewerHeartbeatMs(),
+      () => this.beatDesktops(),
+      { category: 'lifecycle', instanced: true, classification: 'must-sample' },
+    );
+  }
+
+  private beatDesktops(): void {
+    const backend = this.options.desktop;
+    if (!backend) return;
+    // De-duplicated by desktop: two tabs watching one desktop is ONE beat.
+    const beaten = new Set<string>();
+    for (const attachment of this.attachments.values()) {
+      if (beaten.has(attachment.desktopSessionId)) continue;
+      beaten.add(attachment.desktopSessionId);
+      try {
+        backend.heartbeat(attachment.desktopSessionId);
+      } catch {
+        /* a failed beat must never tear down a working viewer */
+      }
+    }
+  }
+
+  private stopDesktopHeartbeatIfIdle(): void {
+    if (desktopViewersHold(this.attachments)) return;
+    this.desktopHeartbeat?.stop();
+    this.desktopHeartbeat = null;
+  }
+
+  /**
+   * Tear one desktop channel down exactly once.
+   *
+   * `notify` is false when the control plane already knows (it asked for the
+   * close, or `close()` is broadcasting), true when the sandbox end went away and
+   * the viewer must be told.
+   */
+  private closeDesktopChannel(channel: DesktopChannel, reason: string, notify = true): void {
+    if (channel.closed) return;
+    channel.closed = true;
+    this.channels.delete(channel.channelId);
+    this.desktopChannels.delete(channel.channelId);
+    this.attachments.delete(channel.channelId);
+    for (const off of channel.teardown.splice(0)) {
+      try {
+        off();
+      } catch {
+        /* a listener that is already gone is not an error */
+      }
+    }
+    try {
+      channel.socket?.close();
+    } catch {
+      /* already closed */
+    }
+    if (notify) this.options.send({ type: 'relay.close', channelId: channel.channelId, reason });
+    this.audit('desktop_detached', channel, channel.channelId, reason);
+    this.stopDesktopHeartbeatIfIdle();
+  }
+
   private requestId(payload: Record<string, unknown>): string {
     const requestId = string(payload.requestId, 256);
     if (!requestId) throw new SafeRootFileError('request_id_required');
@@ -587,6 +953,12 @@ export class HostedWorkspaceHostSessionAdapter {
     const channel = this.channels.get(channelId);
     if (!channel) return;
     this.channels.delete(channelId);
+    if (channel.kind === 'desktop') {
+      const desktop = this.desktopChannels.get(channelId);
+      // The control plane initiated this close, so it needs no echo back.
+      if (desktop) this.closeDesktopChannel(desktop, reason, false);
+      return;
+    }
     const session = this.sessions.get(channel.sessionKey);
     if (!session) return;
     session.channels.delete(channelId);
@@ -628,7 +1000,18 @@ export class HostedWorkspaceHostSessionAdapter {
     this.options.send({ type: 'relay', channelId, payload });
   }
 
-  private audit(action: string, session: HostSession, channelId?: string, detail?: string): void {
+  /**
+   * `identity` is widened to the two fields actually read rather than a
+   * `HostSession`, so a desktop channel — which has no PTY session — audits
+   * through the SAME path with the same connector binding. Both channel state
+   * types satisfy it structurally, so every existing call site is unchanged.
+   */
+  private audit(
+    action: string,
+    identity: { userId: string; hostedSessionId: string },
+    channelId?: string,
+    detail?: string,
+  ): void {
     const binding = this.options.binding;
     this.onAudit({
       action,
@@ -636,8 +1019,8 @@ export class HostedWorkspaceHostSessionAdapter {
       customerWorkspaceId: binding.customerWorkspaceId,
       hostId: binding.hostId,
       generation: binding.generation,
-      userId: session.userId,
-      hostedSessionId: session.hostedSessionId,
+      userId: identity.userId,
+      hostedSessionId: identity.hostedSessionId,
       channelId,
       detail,
     });
