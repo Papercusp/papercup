@@ -425,11 +425,62 @@ export function parsePromoterJudgements(payload: unknown): PromoterJudgement[] {
   return parsed.judgements;
 }
 
+/** Bounded head/tail excerpt of an unparseable reply, in chars. */
+const UNPARSEABLE_REPLY_EXCERPT = 220;
+
+/**
+ * Classify WHY a reply would not parse, from the reply itself.
+ *
+ * Deliberately a heuristic on delimiter counts (a title containing a brace skews it),
+ * so it is reported as a shape hint beside the raw excerpts rather than as a verdict.
+ * It exists to separate the two failures that are otherwise indistinguishable in a
+ * ledger: a model that ran out of output tokens mid-JSON, and a model that answered
+ * in prose (a refusal, or a format miss).
+ */
+function unparseableReplyShape(text: string): string {
+  const opens = (text.match(/[{[]/g) ?? []).length;
+  const closes = (text.match(/[}\]]/g) ?? []).length;
+  if (opens === 0) return 'no-json-delimiters (prose reply — refusal or format miss)';
+  if (opens > closes) {
+    return `unterminated (${opens} open vs ${closes} close delimiters — signature of hitting the output cap)`;
+  }
+  return 'delimiters balanced but unparseable';
+}
+
+/**
+ * Extract the model's JSON payload from a reply.
+ *
+ * ⚠ `tryParseJson` returns **null — not undefined** — as its UNRECOVERABLE sentinel
+ * (`libs/testing-shell/src/llm/llm-client.ts`), and `llmCall` assigns `json` straight
+ * from it on every `responseFormat:'json'` call. A bare `!== undefined` guard therefore
+ * forwards that FAILURE sentinel on as though it were a payload: the caller's Zod parse
+ * reports `expected object, received null`, the reply text is discarded unread, and both
+ * recovery branches below become unreachable whenever the format is json.
+ *
+ * That masking is why two separate output-truncations in this family
+ * (the bulk-judge batch overflow, and the P-012 daily digest) each surfaced as an opaque
+ * schema error naming a type mismatch, with the deciding evidence — the reply text and
+ * its token count — thrown away at the moment it was needed. Treat null as "not parsed",
+ * and make the resulting failure carry its own diagnosis.
+ */
 export function responsePayload(response: PromoterLlmResult): unknown {
-  if (response.json !== undefined) return response.json;
+  if (response.json !== undefined && response.json !== null) return response.json;
   const text = response.text.trim();
-  if (!text) throw new Error('promoter model returned empty output');
-  return JSON.parse(text);
+  if (!text) {
+    throw new Error(`promoter model returned empty output (outputTokens=${response.outputTokens})`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `promoter model reply was not parseable JSON: ${detail}. ` +
+        `shape=${unparseableReplyShape(text)}; chars=${text.length}; ` +
+        `outputTokens=${response.outputTokens}. ` +
+        `head=${JSON.stringify(text.slice(0, UNPARSEABLE_REPLY_EXCERPT))} ` +
+        `tail=${JSON.stringify(text.slice(-UNPARSEABLE_REPLY_EXCERPT))}`,
+    );
+  }
 }
 
 class UnionFind {
