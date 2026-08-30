@@ -401,7 +401,13 @@ const LISTEN_EXEMPT: Record<string, string> = {
 };
 
 /** Transactional pools not yet migrated. This map must only ever SHRINK. */
-// EMPTY — the transactional migration is COMPLETE (2026-08-02). All 13 sites now use
+// EMPTY — the transactional migration is complete FOR THE MODULE-LEVEL SINGLETON SHAPE
+// THIS MAP IS CHECKED AGAINST (2026-08-02). That qualifier is load-bearing and was added
+// by EI-19386584249133403: read as an unqualified "COMPLETE", this comment actively
+// discouraged looking for the population it does not cover. It never meant "no unmigrated
+// admin pool exists" — only "none in the shape scanned here". The CAPTURED shape is
+// scanned separately at the bottom of this file, and its pending bucket is NOT empty.
+// All 13 sites in THIS shape now use
 // getLongLivedAdminPool: the 4 endpoint-route/routes/admin/llm-tests-*.ts routes, the 4
 // llm-testing/{telemetry,ledger,replay,storage}.ts, then dock-layouts.ts,
 // llm-testing/promotion/{promote,candidates}.ts, system-health/desktop-perf-runs.ts and
@@ -699,6 +705,242 @@ describe('no singleton pool is built by a check-then-act async memo (WI-37473)',
         `    return _xPromise;\n` +
         `  }\n` +
         offenders.map((o) => `  - ${o}`).join('\n'),
+    ).toEqual([]);
+  });
+});
+
+/**
+ * EI-19386584249133403: the CAPTURED shape — the same never-rebinds defect in a pool that
+ * is NOT a module-level singleton, and which the scan above cannot see.
+ *
+ * {@link findSingletonPoolSites} deliberately matches only the column-0
+ * `let x: T | null = null` shape, reasoning that a function-scoped client "is always
+ * `.end()`-ed on every path ... so it can't accumulate". That reasoning is SOUND for a
+ * client that is actually ended — `FUNCTION_SCOPED_NOT_A_SINGLETON` above pins exactly
+ * that case and still passes, unchanged, alongside this. It does not hold for a
+ * function-scoped pool that is CAPTURED and never ended:
+ *
+ *     async function buildDeps(slug) {
+ *       const sql = postgres(getHarnessAdminUrl(), { max: 2, idle_timeout: 30 });
+ *       return { store: createPgReferenceStore({ sql }) };  // captured, never .end()-ed
+ *     }
+ *
+ * Both shapes bind the admin URL ONCE and never re-ask. When embedded-pg dies and
+ * `~/.papercusp/embedded-pg.json` goes stale — or is DELETED, which correctly restores the
+ * healthy native :5432 — both keep dialling a dead port for the whole process lifetime and
+ * only a restart clears it. That is the EI-19383722505382723 incident: deleting the
+ * discovery file left the ECONNREFUSED rate completely unchanged, because nothing
+ * re-resolved. `sync-resolver/append-heavy-invalidator.ts` was this exact shape, and this
+ * file never flagged it while `PENDING_MIGRATION` read `{}` — "the transactional migration
+ * is COMPLETE" — which reads as full coverage when it only ever meant "complete for the
+ * shape we scan". A blind spot, not a residue.
+ *
+ * MEASURED before building, not assumed (2026-08-30, whole tree under SCAN_ROOTS): 58
+ * function-scoped `postgres(...)` bindings exist; 55 are `.end()`-ed somewhere and are the
+ * benign shape the docstring above correctly describes. Only 2 survive this filter. That
+ * narrowness is what makes the widening adoptable — a ratchet that flags 58 sites at once
+ * is one nobody can land, which is why this was filed rather than done inline.
+ *
+ * KNOWN LIMIT, stated so it is never mistaken for coverage: the admin-URL test is the same
+ * forward-scan-3-lines for `getHarnessAdminUrl(` that {@link findUntrackedAdminPoolSites}
+ * uses, so a site that hoists the URL into a local first (`const u = getHarnessAdminUrl();
+ * const sql = postgres(u, …)`) is NOT seen. `long-lived-admin-pool.ts` is that shape —
+ * correctly out of scope, since it IS the sanctioned accessor and re-resolves on every call.
+ */
+function findCapturedAdminPoolSites(source: string): { line: number; name: string }[] {
+  const lines = source.split('\n');
+  // Names the module-level scan already owns — a site must never be reported twice.
+  const singletons = new Set<string>();
+  for (const line of lines) {
+    const m = /^let\s+(\w+)\s*:[^=]*=\s*(?:null|undefined);/.exec(line);
+    if (m) singletons.add(m[1]);
+  }
+  const capturedRe = /^\s+(?:const|let)\s+(\w+)\s*(?::[^=]*)?=\s*(?:await\s+)?postgres\(/;
+  const sites: { line: number; name: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
+    const m = capturedRe.exec(lines[i]);
+    if (!m) continue;
+    const name = m[1];
+    if (singletons.has(name)) continue;
+    let fromAdminUrl = false;
+    for (let j = i; j < Math.min(lines.length, i + 3); j++) {
+      if (lines[j].includes('getHarnessAdminUrl(')) fromAdminUrl = true;
+    }
+    if (!fromAdminUrl) continue;
+    // Conservative by construction: ANY `.end()` on this name anywhere in the file clears
+    // the site. A file that ends one pool and leaks another is a false NEGATIVE — the
+    // acceptable side. A ratchet's false POSITIVES are what red a shared gate and stop it
+    // landing at all, so they are the error worth spending precision to avoid.
+    if (new RegExp(`\\b${name}\\s*\\.end\\(`).test(source)) continue;
+    sites.push({ line: i, name });
+  }
+  return sites;
+}
+
+/**
+ * Captured admin pools whose shape is PERMANENTLY fine — same split-by-WHY discipline as
+ * {@link LISTEN_EXEMPT}: a permanent design exemption must not be rationed against a
+ * temporary one, so it does not share a map with the pending bucket below.
+ */
+const SHORT_LIVED_EXEMPT: Record<string, string> = {
+  // A CLI batch process: the pool dies with the command, so "the endpoint moved while I
+  // held it" has no window to occur in. The file already documents the deliberate
+  // direct-connect (a multi-minute snapshot should not occupy a pooler slot the live
+  // operator needs), which is a different and still-valid reason to bypass the accessor.
+  'packages/operator-core/lib/memory/bench/prose-corpus-snapshot.ts':
+    'short-lived CLI batch — pool dies with the process, no rebind window',
+};
+
+/**
+ * Captured transactional pools not yet migrated. This map must only ever SHRINK.
+ *
+ * Deliberately SEPARATE from {@link PENDING_MIGRATION}: that map is checked against
+ * module-level singleton sites, so an entry naming a captured site would match nothing
+ * there and trip its own shrink-only test.
+ */
+const CAPTURED_PENDING_MIGRATION: Record<string, string> = {
+  // FOUND BY THIS WIDENING (EI-19386584249133403). `buildDeps()` binds the admin URL once
+  // and returns it captured inside `createPgReferenceStore({ sql })`; `designCompareDepsFor`
+  // then memoises that bundle in a pinned per-harness Map for the process lifetime. So it
+  // is long-lived AND transactional — the shape that should migrate.
+  //
+  // Not migrated in this change on purpose: `createPgReferenceStore` takes `sql` at
+  // construction and destructures it once, so migrating means moving it to the established
+  // `getSql: () => …` seam (issues-engineer.ts, PgTaggableStore) — an interface change with
+  // its own callers and its own verification. Bundling that into a ratchet widening is
+  // exactly the drive-by this item warned against. Tracked separately.
+  'packages/operator-core/lib/design-compare/host-install.ts':
+    'captured in a memoised per-harness deps bundle — migrate to getLongLivedAdminPool via a getSql seam',
+};
+
+const CAPTURED_ALLOWLIST = { ...SHORT_LIVED_EXEMPT, ...CAPTURED_PENDING_MIGRATION };
+
+describe('the captured-pool guard itself detects the shape (non-vacuity)', () => {
+  // Fixtures, never a temporary mutation of a real file: this tree is shared and
+  // auto-committed every few minutes (CLAUDE.md, "proving a guard is falsifiable").
+  // VERBATIM the real pre-fix shape from design-compare/host-install.ts.
+  const CAPTURED_LEAK = `
+async function buildDeps(harnessSlug: string): Promise<VerbDeps> {
+  const postgres = (await import('postgres')).default;
+  const sql = postgres(getHarnessAdminUrl(), { max: 2, idle_timeout: 30 });
+  return {
+    store: createPgReferenceStore({ sql: sql as unknown as SqlTag }),
+  };
+}`;
+  // The benign shape the module-level scan's docstring describes: ended on every path.
+  const ENDED_IN_SCOPE = `
+async function run() {
+  const sql = postgres(getHarnessAdminUrl(), { max: 4 });
+  try {
+    await sql\`SELECT 1\`;
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}`;
+  // The migrated shape: no postgres(...) call survives, so there is no site to flag.
+  const MIGRATED_CAPTURED = `
+async function buildDeps(harnessSlug: string): Promise<VerbDeps> {
+  const db = () => getLongLivedAdminPool('design-compare', { max: 2 });
+  return { store: createPgReferenceStore({ getSql: db }) };
+}`;
+  // Not admin-pool discovery — a bespoke URL is out of scope, same as the scan above.
+  const BESPOKE_URL = `
+async function run() {
+  const sql = postgres(someOtherUrl, { max: 1 });
+  return sql;
+}`;
+
+  it('flags a captured pool that is never .end()-ed', () => {
+    const sites = findCapturedAdminPoolSites(CAPTURED_LEAK);
+    expect(sites).toHaveLength(1);
+    expect(sites[0].name).toBe('sql');
+  });
+
+  it('ignores a function-scoped client that IS .end()-ed — the benign shape', () => {
+    expect(findCapturedAdminPoolSites(ENDED_IN_SCOPE)).toEqual([]);
+  });
+
+  it('ignores the migrated shape (no postgres(...) call survives)', () => {
+    expect(findCapturedAdminPoolSites(MIGRATED_CAPTURED)).toEqual([]);
+  });
+
+  it('ignores a pool built from a bespoke URL — not admin-pool discovery', () => {
+    expect(findCapturedAdminPoolSites(BESPOKE_URL)).toEqual([]);
+  });
+
+  it('does not double-report a module-level singleton the other scan already owns', () => {
+    // `pool` is declared column-0, so findSingletonPoolSites owns it; the indented
+    // assignment inside the accessor must not also surface here.
+    const SINGLETON = `
+let pool: ReturnType<typeof postgres> | null = null;
+function db() {
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), { max: 4 });
+  }
+  return pool;
+}`;
+    expect(findCapturedAdminPoolSites(SINGLETON)).toEqual([]);
+  });
+});
+
+describe('captured admin pools are allowlisted with a reason (EI-19386584249133403)', () => {
+  const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
+
+  it('the tree scan is wired correctly (test is not vacuously green)', () => {
+    // Anchored to the SCAN, never to the size of the guarded population — that population
+    // shrinks to zero as sites migrate, so a `>= N` floor would red the gate for whoever
+    // finishes the job. Detector correctness is proven by the fixtures above instead.
+    expect(files.length).toBeGreaterThan(100);
+  });
+
+  it('every captured admin-pool site is allowlisted', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const rel = relative(REPO_ROOT, file);
+      if (rel in CAPTURED_ALLOWLIST) continue;
+      const source = readFileSync(file, 'utf8');
+      for (const site of findCapturedAdminPoolSites(source)) {
+        offenders.push(`${rel}:${site.line + 1} (${site.name})`);
+      }
+    }
+    expect(
+      offenders,
+      `These pools bind getHarnessAdminUrl() ONCE inside a function and are never ` +
+        `.end()-ed, so the handle is captured for the process lifetime and CANNOT notice ` +
+        `the endpoint moved. When embedded-pg dies and its discovery file goes stale — or ` +
+        `is deleted, correctly restoring the native :5432 — they keep dialling a dead port ` +
+        `until the service restarts (EI-19383722505382723, measured twice).\n` +
+        `  LONG-LIVED    → route through getLongLivedAdminPool, which re-resolves per call\n` +
+        `  SHORT-LIVED   → add to SHORT_LIVED_EXEMPT; a process-lifetime pool has no window\n` +
+        `  NOT YET       → add to CAPTURED_PENDING_MIGRATION (shrink-only) with the reason\n` +
+        offenders.map((o) => `  - ${o}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every captured-allowlist entry still matches a real site (shrink-only)', () => {
+    // The entry cannot outlive its reason: migrating a file FAILS here until its now-stale
+    // entry is deleted. Same discipline as the module-level allowlist above.
+    const stale: string[] = [];
+    for (const rel of Object.keys(CAPTURED_ALLOWLIST)) {
+      const abs = join(REPO_ROOT, rel);
+      let source: string;
+      try {
+        source = readFileSync(abs, 'utf8');
+      } catch {
+        stale.push(`${rel} (file no longer exists)`);
+        continue;
+      }
+      if (findCapturedAdminPoolSites(source).length === 0) {
+        stale.push(`${rel} (no captured admin-pool site remains)`);
+      }
+    }
+    expect(
+      stale,
+      `These captured-pool allowlist entries no longer match a real site. An exemption ` +
+        `must not outlive its reason — delete the entry:\n` +
+        stale.map((s) => `  - ${s}`).join('\n'),
     ).toEqual([]);
   });
 });

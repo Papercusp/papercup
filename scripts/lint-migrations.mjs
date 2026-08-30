@@ -1214,7 +1214,7 @@ async function main() {
 
   if (failed) process.exit(1);
   console.log(
-    `✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, reservation number+filename≥${ENFORCED_FROM})`,
+    `✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, view lock-order≥${VIEW_LOCK_ORDER_ENFORCED_FROM}, reservation number+filename≥${ENFORCED_FROM})`,
   );
 }
 
