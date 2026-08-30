@@ -589,6 +589,205 @@ describe('rerouteUnackedEscalationsOnce (EI-7024)', () => {
     );
   });
 
+  it('annotates malformed and contradicted predicates before fail-closed suppression', async () => {
+    const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+    const wake = vi.fn(async () => ({ woken: 1 }));
+    const revalidate = vi.fn(async () => ({
+      status: 'contradicted' as const,
+      checkedAt: '2026-08-30T00:00:00.000Z',
+      reason: 'current value no longer matches',
+    }));
+    const result = await rerouteUnackedEscalationsOnce({
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      workspaceId: 'ws-a',
+      listEscalationsFn: vi.fn(async () => [
+        rerouteRow({
+          msg_id: 'malformed-predicate',
+          escalationPredicate: { tool: 'coord:watermark' },
+        }),
+        rerouteRow({
+          msg_id: 'contradicted-predicate',
+          escalationPredicate: {
+            tool: 'coord:watermark',
+            path: 'watermark.messages_since_ts',
+            op: 'eq',
+            value: 'old',
+          },
+        }),
+      ]) as typeof listMock,
+      readResponseMarkersFn: vi.fn(async () => new Set<string>()),
+      listPresenceFn: vi.fn(async () => [
+        {
+          ownerId: 'su-author',
+          agentRole: 'su',
+          currentPlanSlug: 'plan-a',
+          potSlug: 'pot-a',
+          heartbeatAt: iso(0),
+          stale: false,
+          host: '',
+          pid: null,
+          source: 'omp-hook-session',
+        },
+        {
+          ownerId: 'su-driver',
+          agentRole: 'su',
+          currentPlanSlug: 'plan-a',
+          potSlug: 'pot-a',
+          heartbeatAt: iso(0),
+          stale: false,
+          host: '',
+          pid: null,
+          source: 'omp-hook-session',
+        },
+      ]) as never,
+      resolveSessionStatesFn: vi.fn(
+        async () =>
+          new Map([
+            ['su-author', { sessionState: 'parked' }],
+            ['su-driver', { sessionState: 'live' }],
+          ]),
+      ) as never,
+      fetchPresenceFleetFn: vi.fn(async () => new Map()) as never,
+      getFleetFn: vi.fn(async () => null) as never,
+      revalidatePredicateFn: revalidate as never,
+      sendMessageFn: send as never,
+      wakeRecipientsFn: wake as never,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 2,
+      selected: 0,
+      rerouted: 0,
+      failed: 0,
+      predicateSkipped: 2,
+      artifactUnknownSkipped: 0,
+    });
+    expect(revalidate).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([, opts]) => opts.msgId).sort()).toEqual([
+      'escalation-revalidation:contradicted-predicate:contradicted+no-artifact',
+      'escalation-revalidation:malformed-predicate:unknown+no-artifact',
+    ]);
+    expect(send.mock.calls.find(([, opts]) => opts.msgId.includes('malformed'))?.[1]).toMatchObject({
+      to: ['human'],
+      extra: {
+        lifecycle: 'escalation-revalidation',
+        escalationRevalidationOf: 'malformed-predicate',
+        predicateValidation: {
+          status: 'unknown',
+          reason: 'stored escalation predicate is malformed',
+        },
+      },
+    });
+    expect(send.mock.calls.find(([, opts]) => opts.msgId.includes('contradicted'))?.[1]).toMatchObject({
+      extra: {
+        predicateValidation: {
+          status: 'contradicted',
+          checkedAt: '2026-08-30T00:00:00.000Z',
+        },
+      },
+    });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it('annotates an unknown artifact read and keeps the automatic route suppressed', async () => {
+    const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+    const wake = vi.fn(async () => ({ woken: 1 }));
+    const result = await rerouteUnackedEscalationsOnce({
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      workspaceId: 'ws-a',
+      listEscalationsFn: vi.fn(async () => [
+        rerouteRow({
+          msg_id: 'unknown-artifact',
+          escalationPredicate: {
+            tool: 'coord:watermark',
+            path: 'watermark.messages_since_ts',
+            op: 'exists',
+          },
+          evidence: { band: 'tool-output', ref: 'evidence.txt' },
+        }),
+      ]) as typeof listMock,
+      readResponseMarkersFn: vi.fn(async () => new Set<string>()),
+      listPresenceFn: vi.fn(async () => [
+        {
+          ownerId: 'su-author',
+          agentRole: 'su',
+          currentPlanSlug: 'plan-a',
+          potSlug: 'pot-a',
+          heartbeatAt: iso(0),
+          stale: false,
+          host: '',
+          pid: null,
+          source: 'omp-hook-session',
+        },
+        {
+          ownerId: 'su-driver',
+          agentRole: 'su',
+          currentPlanSlug: 'plan-a',
+          potSlug: 'pot-a',
+          heartbeatAt: iso(0),
+          stale: false,
+          host: '',
+          pid: null,
+          source: 'omp-hook-session',
+        },
+      ]) as never,
+      resolveSessionStatesFn: vi.fn(
+        async () =>
+          new Map([
+            ['su-author', { sessionState: 'parked' }],
+            ['su-driver', { sessionState: 'live' }],
+          ]),
+      ) as never,
+      fetchPresenceFleetFn: vi.fn(async () => new Map()) as never,
+      getFleetFn: vi.fn(async () => null) as never,
+      revalidatePredicateFn: vi.fn(async () => ({
+        status: 'satisfied' as const,
+        checkedAt: '2026-08-30T00:00:00.000Z',
+      })) as never,
+      validateArtifactRefFn: vi.fn(async () => ({
+        status: 'unknown' as const,
+        ref: 'evidence.txt',
+        path: '/unreadable/evidence.txt',
+        checkedAt: '2026-08-30T00:00:01.000Z',
+        reason: 'permission denied',
+      })) as never,
+      sendMessageFn: send as never,
+      wakeRecipientsFn: wake as never,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      selected: 0,
+      rerouted: 0,
+      failed: 0,
+      predicateSkipped: 0,
+      artifactUnknownSkipped: 1,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][1]).toMatchObject({
+      to: ['human'],
+      msgId: 'escalation-revalidation:unknown-artifact:satisfied+unknown',
+      body: expect.stringContaining('permission denied'),
+      extra: {
+        lifecycle: 'escalation-revalidation',
+        escalationRevalidationOf: 'unknown-artifact',
+        predicateValidation: {
+          status: 'satisfied',
+          checkedAt: '2026-08-30T00:00:00.000Z',
+        },
+        evidenceValidation: {
+          status: 'unknown',
+          ref: 'evidence.txt',
+          checkedAt: '2026-08-30T00:00:01.000Z',
+        },
+      },
+    });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
   it('does no roster/liveness/send work after an existing related-message marker', async () => {
     const listPresenceFn = vi.fn();
     const send = vi.fn();

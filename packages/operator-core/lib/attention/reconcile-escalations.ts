@@ -838,6 +838,13 @@ export async function rerouteUnackedEscalationsOnce(
         predicate = parseEscalationPredicate(escalation.escalationPredicate);
         if (!predicate) {
           predicateSkipped += 1;
+          await annotateEscalationRevalidation(
+            escalation,
+            {
+              predicate: unknownPredicateValidation('stored escalation predicate is malformed'),
+            },
+            sendFn,
+          );
           return;
         }
         const from = concrete(escalation.from);
@@ -858,6 +865,11 @@ export async function rerouteUnackedEscalationsOnce(
         predicateValidations.set(escalation.msg_id, predicateValidation);
         if (predicateValidation.status !== 'satisfied') {
           predicateSkipped += 1;
+          await annotateEscalationRevalidation(
+            escalation,
+            { predicate: predicateValidation },
+            sendFn,
+          );
           return;
         }
       }
@@ -868,6 +880,16 @@ export async function rerouteUnackedEscalationsOnce(
         artifactValidations.set(escalation.msg_id, artifactValidation);
         if (artifactValidation.status === 'unknown') {
           artifactUnknownSkipped += 1;
+          await annotateEscalationRevalidation(
+            escalation,
+            {
+              ...(predicateValidations.has(escalation.msg_id)
+                ? { predicate: predicateValidations.get(escalation.msg_id) }
+                : {}),
+              artifact: artifactValidation,
+            },
+            sendFn,
+          );
           return;
         }
       }

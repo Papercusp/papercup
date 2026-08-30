@@ -98,6 +98,9 @@ const id = (ownerId: string): AgentIdentity => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (tool: any, args: Record<string, unknown> = {}) => tool.handler(args as any, {} as any);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+const runWithCtx = (tool: any, args: Record<string, unknown>, ctx: Record<string, unknown>) =>
+  tool.handler(args as any, ctx as any);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const parse = (res: any) => (res.data ?? JSON.parse(res.content[0].text));
 
 beforeEach(() => {
@@ -371,6 +374,63 @@ describe('coord:escalate handler', () => {
     expect(rec.options).toHaveLength(2);
     expect(rec.to).toEqual(['human']); // the channel always addresses the human
     expect(rec.resolved).toBeNull();
+  });
+
+  it('stamps raise-time predicate and evidence validation results with checkedAt', async () => {
+    const body = parse(
+      await runWithCtx(
+        escalateTool,
+        {
+          severity: 'question',
+          summary: 'validate this machine-checkable ask',
+          predicate: {
+            tool: 'coord:watermark',
+            path: 'watermark.messages_since_ts',
+            op: 'exists',
+          },
+          evidence: {
+            band: 'tool-output',
+            ref: 'package.json',
+          },
+        },
+        { workspaceId: 'default', harnessSlug: 'papercusp', role: 'su' },
+      ),
+    );
+
+    expect(body).toMatchObject({
+      ok: true,
+      predicate_validation: {
+        status: expect.any(String),
+        checkedAt: expect.any(String),
+      },
+      evidence_validation: {
+        status: 'present',
+        ref: 'package.json',
+        checkedAt: expect.any(String),
+      },
+    });
+    expect(Number.isNaN(Date.parse(body.predicate_validation.checkedAt))).toBe(false);
+    expect(Number.isNaN(Date.parse(body.evidence_validation.checkedAt))).toBe(false);
+
+    const open = parse(await run(escalationsTool, { status: 'open' }));
+    const rec = open.escalations.find((e: { msg_id: string }) => e.msg_id === body.msg_id);
+    expect(rec).toMatchObject({
+      escalationPredicate: {
+        tool: 'coord:watermark',
+        path: 'watermark.messages_since_ts',
+        op: 'exists',
+        args: {},
+      },
+      predicateValidation: {
+        status: body.predicate_validation.status,
+        checkedAt: body.predicate_validation.checkedAt,
+      },
+      evidenceValidation: {
+        status: 'present',
+        ref: 'package.json',
+        checkedAt: body.evidence_validation.checkedAt,
+      },
+    });
   });
 
   // The escalation-flood fix: a watchdog re-checking the SAME condition on a cadence
