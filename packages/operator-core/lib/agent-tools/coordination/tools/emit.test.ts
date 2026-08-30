@@ -120,11 +120,20 @@ describe('sendMessage extra passthrough', () => {
     // never settles — simulating the saturated/wedged coord_event_log write
     // reported in this item.
     const real = log;
-    const hanging: CoordEventLog = {
-      ...real,
-      appendLine: (_surface: LineSurface, _writerKey: string, _line) => new Promise(() => {}),
-      appendLineIfAbsent: (_surface: LineSurface, _writerKey: string, _line) => new Promise(() => {}),
-    };
+    // A plain object spread (`{ ...real, ... }`) only copies REAL's own
+    // enumerable properties, not its prototype methods — it would silently
+    // drop every other CoordEventLog method (readLines, putEvent, ...) both
+    // at the type level (TS2740) and at runtime. Proxy preserves every
+    // other method's real behavior and overrides only the two hang points.
+    const hanging: CoordEventLog = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === 'appendLine' || prop === 'appendLineIfAbsent') {
+          return (_surface: LineSurface, _writerKey: string, _line: unknown) =>
+            new Promise(() => {});
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
     configureCoordLog(hanging);
 
     vi.useFakeTimers();
