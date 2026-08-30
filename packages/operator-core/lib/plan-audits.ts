@@ -40,6 +40,7 @@
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan } from '@papercusp/plan-parser';
@@ -375,6 +376,7 @@ export type CitationFailureReason =
   | 'path_escapes_repo'
   | 'file_not_found'
   | 'not_a_file'
+  | 'file_untracked'
   | 'line_out_of_range'
   | 'symbol_not_found'
   | 'reason_missing'
@@ -385,6 +387,16 @@ export interface CitationDeps {
   statFile: (rel: string) => { isFile: boolean } | null;
   /** Repo-relative → file contents, or null when unreadable. */
   readFile: (rel: string) => string | null;
+  /**
+   * Repo-relative → whether Git tracks the file.
+   *
+   * `true` means Git confirmed the path is tracked, `false` means Git
+   * definitely confirmed it is not tracked, and `null` means tracking could
+   * not be determined (for example, the enclosing repository is unavailable
+   * or the bounded probe timed out). Only the definite negative is a
+   * citation failure.
+   */
+  isTracked?: (rel: string) => boolean | null;
   /**
    * Repo-relative → the absolute root(s) a miss was actually searched under.
    *
@@ -467,6 +479,17 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
   if (!stat) return { ok: false, reason: 'file_not_found', detail: missDetail(rel, deps) };
   if (!stat.isFile) return { ok: false, reason: 'not_a_file', detail: rel };
 
+  if (isVerifyingCitation(citation) && deps.isTracked?.(rel) === false) {
+    const roots = deps.describeRoots?.(rel);
+    const trackingDetail =
+      `${rel} is not tracked in git (git-sync may not have swept it yet, or the path may be ignored and never tracked)`;
+    return {
+      ok: false,
+      reason: 'file_untracked',
+      detail: roots ? `${trackingDetail}; searched ${roots}` : trackingDetail,
+    };
+  }
+
   if (citation.line != null || citation.symbol != null) {
     const body = deps.readFile(rel);
     if (body == null) return { ok: false, reason: 'file_not_found', detail: missDetail(rel, deps) };
@@ -544,6 +567,7 @@ export function independentSiblingRepos(repoRoot: string): ReadonlySet<string> {
 export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
   const workspaceRoot = path.dirname(repoRoot);
   let siblings: ReadonlySet<string> | null = null;
+  const trackedCache = new Map<string, boolean | null>();
 
   const contained = (root: string, rel: string): string | null => {
     const abs = path.resolve(root, rel);
@@ -597,6 +621,34 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
       } catch {
         return null;
       }
+    },
+    isTracked: (rel) => {
+      const abs = within(rel);
+      if (!abs) return null;
+      const cached = trackedCache.get(abs);
+      if (cached !== undefined) return cached;
+
+      let tracked: boolean | null = null;
+      const repoDir = path.dirname(abs);
+      if (fs.existsSync(abs) && fs.existsSync(repoDir)) {
+        try {
+          const probe = spawnSync(
+            'git',
+            ['-C', repoDir, 'ls-files', '--error-unmatch', '--', abs],
+            {
+              encoding: 'utf8',
+              stdio: ['ignore', 'ignore', 'ignore'],
+              timeout: 5_000,
+              killSignal: 'SIGKILL',
+            },
+          );
+          tracked = probe.status === 0 ? true : probe.status === 1 ? false : null;
+        } catch {
+          tracked = null;
+        }
+      }
+      trackedCache.set(abs, tracked);
+      return tracked;
     },
     // Report the roots this rel was ACTUALLY tried under, not the admitted-sibling
     // catalogue: naming every sibling would bury the one root that matters. The repo

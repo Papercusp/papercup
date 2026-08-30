@@ -13,6 +13,7 @@
  * does not exist.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -42,6 +43,15 @@ const code = (p: string): AuditCitation => ({ kind: 'code', path: p });
 type CitationResolver = (citation: AuditCitation, deps: CitationDeps) => CitationResolution;
 
 const deliberatelyWrongCitationResolver: CitationResolver = () => ({ ok: true });
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
+  });
+}
 
 function citationResolverContractFailures(resolve: CitationResolver, deps: CitationDeps): string[] {
   const cases: Array<{
@@ -144,6 +154,34 @@ describe('resolveCitation — falsifiability control (plan P-011)', () => {
       'symbol absent from the cited file',
       'none citation without a reason',
     ]);
+  });
+});
+
+describe('resolveCitation — trackedness of verifying citations (EI-21729074760905025)', () => {
+  const resolvingDeps = (tracked: boolean | null): CitationDeps => ({
+    statFile: () => ({ isFile: true }),
+    readFile: () => 'export const cited = true;\n',
+    isTracked: () => tracked,
+  });
+
+  it.each(['code', 'test'] as const)('rejects a %s citation when Git definitely reports it as untracked', (kind) => {
+    const result = resolveCitation({ kind, path: 'src/untracked.ts' }, resolvingDeps(false));
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'file_untracked',
+    });
+    expect((result as { detail: string }).detail).toContain('git-sync');
+    expect((result as { detail: string }).detail).toContain('ignored');
+  });
+
+  it('preserves an otherwise-valid citation when trackedness is indeterminate', () => {
+    expect(resolveCitation(code('src/unknown.ts'), resolvingDeps(null))).toEqual({ ok: true });
+  });
+
+  it('gates only verifying citation kinds', () => {
+    const deps = resolvingDeps(false);
+    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, deps)).toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'none', reason: 'operational-only item' }, deps)).toEqual({ ok: true });
   });
 });
 
@@ -371,6 +409,26 @@ describe('repoCitationDeps — containment is unchanged', () => {
     const res = resolveCitation(code(abs), deps);
     expect(res.ok).toBe(false);
     expect(res).toMatchObject({ reason: 'path_absolute' });
+  });
+});
+
+describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
+  it('distinguishes tracked and untracked files in the selected repository', () => {
+    const trackedRoot = path.join(workspaceRoot, 'tracked-repo');
+    fs.mkdirSync(trackedRoot, { recursive: true });
+    fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
+    git(trackedRoot, 'init', '-q');
+    git(trackedRoot, 'add', '--', 'tracked.ts');
+    fs.writeFileSync(path.join(trackedRoot, 'untracked.ts'), 'export const untracked = true;\n');
+
+    const deps = repoCitationDeps(trackedRoot);
+    expect(deps.isTracked?.('tracked.ts')).toBe(true);
+    expect(deps.isTracked?.('untracked.ts')).toBe(false);
+    expect(resolveCitation(code('tracked.ts'), deps)).toEqual({ ok: true });
+    expect(resolveCitation(code('untracked.ts'), deps)).toMatchObject({
+      ok: false,
+      reason: 'file_untracked',
+    });
   });
 });
 
