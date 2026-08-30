@@ -18,7 +18,7 @@
  * the declaration order in the interface — deterministic for this fixed schema.
  */
 
-import { keychainStore, keychainLoad } from './keychain';
+import { keychainLoad, keychainStore } from './keychain';
 import { getGhAuthToken, clearGhAuthTokenCache } from './gh-token';
 import { makeTimeoutFetch, resolveGithubTimeoutMs } from './octokit-client';
 import {
@@ -134,7 +134,16 @@ export function clearAttestationQuotaGuards(): void {
 // therefore mint several device identities for the same keychain id, with the
 // last store winning on disk while each harness retained a different pubkey in
 // memory. Keep the whole load/generate/store critical section single-flight.
-const inflightDeviceKeypairs = new Map<string, Promise<DeviceKeypairId>>();
+type DeviceKeypairFlights = {
+  __attestInflightDeviceKeypairs?: Map<string, Promise<DeviceKeypairId>>;
+};
+const _deviceKeypairFlights = globalThis as unknown as DeviceKeypairFlights;
+function getInflightDeviceKeypairs(): Map<string, Promise<DeviceKeypairId>> {
+  if (!_deviceKeypairFlights.__attestInflightDeviceKeypairs) {
+    _deviceKeypairFlights.__attestInflightDeviceKeypairs = new Map();
+  }
+  return _deviceKeypairFlights.__attestInflightDeviceKeypairs;
+}
 
 /**
  * Load the existing device keypair from the keychain, or generate +
@@ -153,33 +162,22 @@ async function loadOrGenerateDeviceKeypairOnce(
     return { keychainId, pubkeyBase64: pubkeyBase64FromDer(loaded.value) };
   }
 
-  // WI-2018: generate ONLY on a definitive not_found (a true first run). An io_error
-  // means a key may EXIST but THIS process context can't read it right now (locked OS
-  // keychain in a service/headless context, permission fault, transient IO) — minting
-  // a fresh keypair here FORKS the device identity: presence stamps one pubkey while
-  // another tier resolves a different one, and the new key is never attested (the
-  // split-device-identity class). Fail LOUD instead; callers' fail-open paths degrade
-  // visibly (e.g. the epoch boot deps record `epoch_gate_skipped`) rather than
-  // silently splitting identity.
-  if (loaded.error.kind === 'io_error') {
+  // Generate ONLY on a definitive not_found (a true first run). Any found-but-
+  // unreadable result means a key may EXIST but THIS process context cannot
+  // establish it. Regenerating on decryption_failed used to destroy both valid
+  // fallback mirrors after a transient/partial LaunchDaemon read; the generic
+  // signer error then hid the actual fault as "not found". Fail closed for both
+  // error classes and carry the non-secret derivation context to the log.
+  if (loaded.error.kind !== 'not_found') {
     throw new Error(
-      `device keypair '${keychainId}' unreadable (io_error: ${loaded.error.reason}) — ` +
+      `device keypair '${keychainId}' unreadable ` +
+        `(${loaded.error.kind}: ${loaded.error.reason}) — ` +
         'refusing to mint a fresh device identity (WI-2018 split-device-identity class); ' +
         'fix the keychain/identity-dir access and reboot',
     );
   }
-  if (loaded.error.kind === 'decryption_failed') {
-    // Machine-secret rotation (hostname/username change) or file corruption: the stored
-    // copy is unrecoverable on THIS box — regenerating is the only path forward, but it
-    // must be loud: prior attestations for this device id are void from here on.
-    console.warn(
-      `[identity] device keypair '${keychainId}' exists but cannot be decrypted ` +
-        `(${loaded.error.reason}) — regenerating a fresh device identity (WI-2018)`,
-    );
-  }
 
-  // First run (not_found) — or unrecoverable stored copy (decryption_failed, warned
-  // above): generate and store.
+  // First run (not_found): generate and store.
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
   await keychainStore(keychainId, privateKeyDer);
   return { keychainId, pubkeyBase64 };
@@ -188,6 +186,7 @@ async function loadOrGenerateDeviceKeypairOnce(
 export function loadOrGenerateDeviceKeypair(
   keychainId: string,
 ): Promise<DeviceKeypairId> {
+  const inflightDeviceKeypairs = getInflightDeviceKeypairs();
   const existing = inflightDeviceKeypairs.get(keychainId);
   if (existing) return existing;
 

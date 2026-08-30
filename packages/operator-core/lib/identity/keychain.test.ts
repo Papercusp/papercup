@@ -72,6 +72,7 @@ afterEach(() => {
   if (origSeedRealHostname === undefined) delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   else process.env.PAPERCUSP_SEED_REAL_HOSTNAME = origSeedRealHostname;
   vi.doUnmock('node:child_process');
+  vi.doUnmock('node:fs/promises');
   try {
     rmSync(TMP_HOME, { recursive: true, force: true });
   } catch {
@@ -148,7 +149,16 @@ describe('keychain (encrypted-file fallback)', () => {
     writeFileSync(path, buf);
     const res = await keychainLoad('tamper:id');
     expect(res.kind).toBe('error');
-    if (res.kind === 'error') expect(res.error.kind).toBe('decryption_failed');
+    if (res.kind === 'error') {
+      expect(res.error.kind).toBe('decryption_failed');
+      if (res.error.kind === 'decryption_failed') {
+        expect(res.error.reason).toContain('context={');
+        expect(res.error.reason).toContain('"identityDirs"');
+        expect(res.error.reason).toContain('"home"');
+        expect(res.error.reason).toContain('"hostname"');
+        expect(res.error.reason).toContain('"username"');
+      }
+    }
   });
 
   it('delete removes the entry (subsequent load is not_found)', async () => {
@@ -353,5 +363,46 @@ describe('keychain (encrypted-file fallback)', () => {
     expect(await keychainLoad('rot:id')).toEqual({ kind: 'ok', value: Buffer.from('v1') });
     await keychainStore('rot:id', Buffer.from('v2'));
     expect(await keychainLoad('rot:id')).toEqual({ kind: 'ok', value: Buffer.from('v2') });
+  });
+
+  it('atomically replaces the fallback and invalidates a load that races the write', async () => {
+    const id = 'atomic:replacement';
+    const oldDer = Buffer.from('old-private-key-material');
+    const newDer = Buffer.from('new-private-key-material');
+    const original = await loadKeychain();
+    await original.keychainStore(id, oldDer);
+
+    vi.resetModules();
+    let tempWritten!: () => void;
+    let releaseRename!: () => void;
+    const sawTemp = new Promise<void>((resolve) => { tempWritten = resolve; });
+    const renameGate = new Promise<void>((resolve) => { releaseRename = resolve; });
+    vi.doMock('node:fs/promises', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs/promises')>();
+      return {
+        ...actual,
+        writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+          const result = await actual.writeFile(...args);
+          if (String(args[0]).includes('.tmp-')) {
+            tempWritten();
+            await renameGate;
+          }
+          return result;
+        },
+      };
+    });
+    const keychain = await loadKeychain();
+    const replacing = keychain.keychainStore(id, newDer);
+    await sawTemp;
+
+    // The complete old ciphertext remains at the final path until rename. A
+    // direct O_TRUNC write made this concurrent load decryption_failed and
+    // authorized the destructive regeneration fixed by WI-989591.
+    const during = await keychain.keychainLoad(id);
+    expect(during).toEqual({ kind: 'ok', value: oldDer });
+
+    releaseRename();
+    await replacing;
+    expect(await keychain.keychainLoad(id)).toEqual({ kind: 'ok', value: newDer });
   });
 });

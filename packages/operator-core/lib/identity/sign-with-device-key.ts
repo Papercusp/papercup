@@ -31,7 +31,13 @@ import { keychainLoad } from './keychain';
 export async function signWithDeviceKey(keychainId: string, bytes: Buffer): Promise<Buffer> {
   const loaded = await keychainLoad(keychainId);
   if (loaded.kind !== 'ok') {
-    throw new Error('signWithDeviceKey: device private key not found in keychain for id: ' + keychainId);
+    const detail = loaded.error.kind === 'not_found'
+      ? loaded.error.kind
+      : `${loaded.error.kind}: ${loaded.error.reason}`;
+    throw new Error(
+      `signWithDeviceKey: device private key unavailable ` +
+        `(${detail}) for id: ${keychainId}`,
+    );
   }
   const privateKey = createPrivateKey({ key: loaded.value, format: 'der', type: 'pkcs8' });
   return nodeSign(null, bytes, privateKey);

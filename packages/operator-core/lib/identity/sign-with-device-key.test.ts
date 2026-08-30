@@ -55,7 +55,23 @@ describe('signWithDeviceKey', () => {
 
   it('throws when the keychain has no key for the id (not_found)', async () => {
     const sign = await loadSigner(vi.fn(async () => ({ kind: 'error', error: { kind: 'not_found' } })));
-    await expect(sign('missing-id', Buffer.from('x'))).rejects.toThrow(/not found in keychain/);
+    await expect(sign('missing-id', Buffer.from('x'))).rejects.toThrow(
+      /private key unavailable \(not_found\) for id: missing-id/,
+    );
+  });
+
+  it('preserves decryption failure reason and non-secret launcher context', async () => {
+    const sign = await loadSigner(vi.fn(async () => ({
+      kind: 'error',
+      error: {
+        kind: 'decryption_failed',
+        reason:
+          'auth tag mismatch; context={"home":"/Users/test","hostname":"test-host"}',
+      },
+    })));
+    await expect(sign('unreadable-id', Buffer.from('x'))).rejects.toThrow(
+      /decryption_failed: auth tag mismatch.*\/Users\/test.*test-host/s,
+    );
   });
 
   it('passes the keychainId through to keychainLoad verbatim', async () => {

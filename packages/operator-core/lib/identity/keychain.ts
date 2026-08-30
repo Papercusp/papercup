@@ -45,7 +45,7 @@
 
 import { createCipheriv, createDecipheriv, pbkdf2, randomBytes } from 'node:crypto';
 import { execFile as _execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, hostname as getHostname, userInfo } from 'node:os';
 import { promisify } from 'node:util';
@@ -80,6 +80,32 @@ export type KeychainError =
   | { kind: 'io_error'; reason: string };
 
 export type KeychainResult<T> = { kind: 'ok'; value: T } | { kind: 'error'; error: KeychainError };
+
+interface KeychainLoadContext {
+  platform: NodeJS.Platform;
+  identityDirs: string[];
+  home: string;
+  hostname: string;
+  username: string;
+  hostnameSource: 'os' | 'seed-override';
+}
+
+/**
+ * Non-secret derivation context for diagnosing a key that exists but cannot be
+ * read in a particular launcher/process context. Never includes key bytes,
+ * salts, ciphertext, or the derived AES key.
+ */
+function keychainLoadContext(): KeychainLoadContext {
+  const hostnameOverride = process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
+  return {
+    platform: process.platform,
+    identityDirs: identityReadDirs(),
+    home: homedir(),
+    hostname: hostnameOverride || getHostname(),
+    username: userInfo().username,
+    hostnameSource: hostnameOverride ? 'seed-override' : 'os',
+  };
+}
 
 // ─── load cache / single-flight / backend availability (WI-5218) ─────────────
 
@@ -124,16 +150,23 @@ export async function keychainStore(
   const b64 = privateKeyDer.toString('base64');
 
   invalidateLoadCache(serviceName, keychainId);
-  const secretToolResult = await trySecretTool('store', keychainId, b64, serviceName);
-  if (secretToolResult === null) {
-    await trySecurityCli('store', keychainId, b64, serviceName);
+  try {
+    const secretToolResult = await trySecretTool('store', keychainId, b64, serviceName);
+    if (secretToolResult === null) {
+      await trySecurityCli('store', keychainId, b64, serviceName);
+    }
+    // Do not turn this into a first-success return. Both OS store helpers return
+    // the empty string on success, and the historical truthiness checks happened
+    // to fall through here. That accidental behavior kept most keys converged but
+    // had no recurrence guard; a future "cleanup" could strand the OS-only key in
+    // a locked login Keychain and split the device identity again (D-005).
+    await fileStore(keychainId, privateKeyDer);
+  } finally {
+    // A load can begin after the pre-store invalidation and finish while the
+    // replacement is still in progress. Invalidate again so that pre-mutation
+    // result cannot survive this completed (or failed) write in the cache.
+    invalidateLoadCache(serviceName, keychainId);
   }
-  // Do not turn this into a first-success return. Both OS store helpers return
-  // the empty string on success, and the historical truthiness checks happened
-  // to fall through here. That accidental behavior kept most keys converged but
-  // had no recurrence guard; a future "cleanup" could strand the OS-only key in
-  // a locked login Keychain and split the device identity again (D-005).
-  await fileStore(keychainId, privateKeyDer);
 }
 
 /**
@@ -334,9 +367,23 @@ async function deriveMachineKey(salt: Buffer): Promise<Buffer> {
   // the owner's fallback keychain entry, which was encrypted with the REAL
   // hostname before the namespace switch.  The cutter hands that value down in
   // this narrowly named env var; ordinary callers keep the OS hostname path.
-  const machineHostname = process.env.PAPERCUSP_SEED_REAL_HOSTNAME || getHostname();
-  const machineSecret = [machineHostname, userInfo().username, 'papercusp-v1'].join(':');
+  const context = keychainLoadContext();
+  const machineSecret = [context.hostname, context.username, 'papercusp-v1'].join(':');
   return pbkdf2Async(machineSecret, salt, PBKDF2_ITERATIONS, KEY_LEN, 'sha512');
+}
+
+async function atomicWritePrivateFile(path: string, blob: Buffer): Promise<void> {
+  const temporaryPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
+  try {
+    await writeFile(temporaryPath, blob, { mode: 0o600, flag: 'wx' });
+    // POSIX rename is atomic within one directory: concurrent LaunchDaemon,
+    // desktop, and source-preflight readers see the complete previous blob or
+    // the complete replacement, never an O_TRUNC/partial ciphertext that is
+    // misclassified as decryption_failed.
+    await rename(temporaryPath, path);
+  } finally {
+    await unlink(temporaryPath).catch(() => {});
+  }
 }
 
 async function fileStoreInDir(
@@ -354,7 +401,7 @@ async function fileStoreInDir(
   const authTag = cipher.getAuthTag();
 
   const blob = Buffer.concat([salt, iv, authTag, ciphertext]);
-  await writeFile(join(dir, encFileName(keychainId)), blob, { mode: 0o600 });
+  await atomicWritePrivateFile(join(dir, encFileName(keychainId)), blob);
 }
 
 async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<void> {
@@ -378,10 +425,22 @@ async function fileLoadFromDir(dir: string, name: string): Promise<KeychainResul
     const code = (err as { code?: string }).code;
     return code === 'ENOENT'
       ? { kind: 'error', error: { kind: 'not_found' } }
-      : { kind: 'error', error: { kind: 'io_error', reason: String(err) } };
+      : {
+          kind: 'error',
+          error: {
+            kind: 'io_error',
+            reason: `${String(err)}; context=${JSON.stringify(keychainLoadContext())}`,
+          },
+        };
   }
   if (blob.length < FILE_HEADER_LEN) {
-    return { kind: 'error', error: { kind: 'decryption_failed', reason: 'file too short' } };
+    return {
+      kind: 'error',
+      error: {
+        kind: 'decryption_failed',
+        reason: `file too short; context=${JSON.stringify(keychainLoadContext())}`,
+      },
+    };
   }
 
   const salt = blob.subarray(0, SALT_LEN);
@@ -398,7 +457,9 @@ async function fileLoadFromDir(dir: string, name: string): Promise<KeychainResul
       kind: 'error',
       error: {
         kind: 'decryption_failed',
-        reason: 'auth tag mismatch — key rotated or file corrupted',
+        reason:
+          'auth tag mismatch — key rotated or file corrupted; ' +
+          `context=${JSON.stringify(keychainLoadContext())}`,
       },
     };
   }
@@ -423,7 +484,8 @@ async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
         error: {
           kind: 'io_error',
           reason:
-            'configured and legacy encrypted identity mirrors disagree — refusing to select or mutate either',
+            'configured and legacy encrypted identity mirrors disagree — refusing to select or mutate either; ' +
+            `context=${JSON.stringify(keychainLoadContext())}`,
         },
       };
     }
