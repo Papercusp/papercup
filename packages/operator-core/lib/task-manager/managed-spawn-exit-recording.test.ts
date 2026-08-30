@@ -257,7 +257,7 @@ describe('confined task exit recording (WI-37509)', () => {
     emitter.emit('exit', null, 'SIGTERM');
     await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_RECHECK_MS - 1);
     scope.procs = [];
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS);
     await Promise.resolve();
 
     expect(L.closed).toHaveLength(1);
