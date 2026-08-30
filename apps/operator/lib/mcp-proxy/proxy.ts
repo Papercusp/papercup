@@ -671,20 +671,45 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // unlike coord:inbox, replaying it cannot mutate coordination state.
   "coord:read",
   "events:catalog",
+  "events:status",
   "facts:list",
   "state:read",
   "locks:list",
   "locks:queue",
+  // Loop state is a pure snapshot; unlike loop:checkpoint/loop:end it does not mutate.
+  "loop:status",
   // capability discovery (find ONLY — tools:invoke EXECUTES arbitrary tools)
   "tools:find",
 ]);
 
-function isReadOnlyToolCall(m: unknown): boolean {
-  if (!m || typeof m !== "object") return false;
+const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
+
+function readOnlyToolName(m: unknown): string | null {
+  if (!m || typeof m !== "object") return null;
   const params = (m as { params?: unknown }).params;
-  if (!params || typeof params !== "object") return false;
+  if (!params || typeof params !== "object" || Array.isArray(params))
+    return null;
   const name = (params as { name?: unknown }).name;
-  return typeof name === "string" && READ_ONLY_TOOLS.has(normalizeMcpName(name));
+  if (typeof name !== "string") return null;
+  const normalizedName = normalizeMcpName(name);
+  if (normalizedName !== READ_ONLY_TOOLS_INVOKE_NAME) return normalizedName;
+
+  // Deferred tools:invoke calls carry the actual tool identity in arguments.name.
+  // Inspect only that one nested target; an unknown/malformed wrapper stays non-read-only.
+  const invokeArgs = (params as { arguments?: unknown }).arguments;
+  if (
+    !invokeArgs ||
+    typeof invokeArgs !== "object" ||
+    Array.isArray(invokeArgs)
+  )
+    return null;
+  const target = (invokeArgs as { name?: unknown }).name;
+  return typeof target === "string" ? normalizeMcpName(target) : null;
+}
+
+function isReadOnlyToolCall(m: unknown): boolean {
+  const name = readOnlyToolName(m);
+  return name !== null && READ_ONLY_TOOLS.has(name);
 }
 /**
  * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`

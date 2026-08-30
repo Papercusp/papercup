@@ -253,6 +253,67 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it.each(["loop:status", "events:status"])(
+    "%s is a pure status snapshot → readonly",
+    (name) => {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: {} },
+        }),
+      );
+      const r = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(r.klass).toBe("readonly");
+      expect(r.body).toBe(body);
+      expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+    },
+  );
+  it("tools:invoke wrapping events:status is classified readonly", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "events:status", args: {} },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
+  it("tools:invoke wrapping a mutator remains keyed", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "work_items:complete", args: {} },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("keyed");
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe(
+      "KEY123",
+    );
+  });
   it.each([
     ["underscore alias", "docs_search"],
     ["fully mangled alias", "mcp__papercusp-su__docs_search"],
