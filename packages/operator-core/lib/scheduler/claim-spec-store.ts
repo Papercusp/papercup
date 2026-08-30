@@ -212,6 +212,18 @@ export async function readClaimConcurrency(
  *
  * A cupId with no held rows is still present in the returned map, with a `blocked:false`
  * verdict — so a caller can never mistake "absent from the map" for "not blocked".
+ *
+ * EI-21902965465306743: this predicate had DRIFTED from {@link getActiveClaimsForBee}'s —
+ * it kept the pre-WI-1250584/pre-EI-21895667973178286 literal terminal-status list
+ * (`'passed','deprecated','resolved','closed'` — missing the unified `'done'`/`'dropped'`
+ * spellings) and carried NO `claim_hold_by` exclusion at all. That meant a member whose
+ * held item had already terminated as `done`/`dropped`, or whose only "claim" was a
+ * resource-governor admission receipt, still read as `blocked:true` here even though the
+ * SAME member's own `scheduler:get_next` (via `getActiveClaimsForBee`, already carrying
+ * both fixes) would happily admit it — leader-brief's `contextPressure`/bench-suggestion
+ * surfaces could disagree with the member's actual claimability for exactly the class of
+ * row this file's own EI-19313376980892266 doc comment set out to eliminate divergence
+ * on. Reuse the identical predicate so the two queries cannot drift again.
  */
 export async function readClaimConcurrencyBatch(
   args: { cupIds: readonly string[]; workspaceId?: string; maxConcurrentClaims?: number | null },
@@ -226,13 +238,16 @@ export async function readClaimConcurrencyBatch(
     ...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE]),
   ];
   // Same predicate as getActiveClaimsForBee — a PARKED/held row retains taken_by and so
-  // counts here, which is exactly the row the presence layer's `load` can omit.
+  // counts here, which is exactly the row the presence layer's `load` can omit. Kept
+  // identical to getActiveClaimsForBee's WHERE clause on purpose (EI-21902965465306743) —
+  // do not hand-edit one without the other.
   const rows = (await sql`
     SELECT feature_id AS id, taken_by AS cup_id
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ANY(${cupIds}::text[])
-       AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')`) as Array<{
+       AND status NOT IN ${sql([...ALL_TERMINAL_STATUSES])}
+       AND payload->>'claim_hold_by' IS DISTINCT FROM ${RESOURCE_GOVERNOR_PARK_OWNER}`) as Array<{
     id: string;
     cup_id: string;
   }>;

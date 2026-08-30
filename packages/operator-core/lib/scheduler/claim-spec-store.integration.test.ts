@@ -31,6 +31,7 @@ const {
   resolveClaimSpecWorkspace,
   fleetSpecBeeKey,
   countActiveClaimsForBee,
+  readClaimConcurrencyBatch,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
 } =
@@ -153,6 +154,59 @@ describe('cup_claim_specs store (mig 372)', () => {
       INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
       VALUES ('default', 'WI-real-work', 'su-bee-governor', 'wip')`;
     expect(await countActiveClaimsForBee({ cupId: 'su-bee-governor' }, db.sql)).toBe(1);
+  });
+
+  // EI-21902965465306743: readClaimConcurrencyBatch (fleet:leader-brief's per-member
+  // concurrency read) had DRIFTED from getActiveClaimsForBee's WHERE clause — it kept the
+  // pre-WI-1250584/pre-EI-21895667973178286 literal terminal-status list and carried NO
+  // claim_hold_by exclusion at all. These three cases mirror the countActiveClaimsForBee
+  // tests above 1:1 against the batch reader so the two queries cannot silently diverge
+  // again without a red test on both sides.
+  describe('readClaimConcurrencyBatch (EI-21902965465306743 — must not diverge from getActiveClaimsForBee)', () => {
+    it('counts an active claim but ignores a terminal one, for a batch of bees', async () => {
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+        VALUES ('default', 'EI-21902965-batch-active', 'su-bee-batch-active', 'open'),
+               ('default', 'EI-21902965-batch-done', 'su-bee-batch-terminal', 'resolved')`;
+
+      const verdicts = await readClaimConcurrencyBatch(
+        { cupIds: ['su-bee-batch-active', 'su-bee-batch-terminal'] },
+        db.sql,
+      );
+      expect(verdicts.get('su-bee-batch-active')).toMatchObject({ blocked: true, activeClaims: 1 });
+      expect(verdicts.get('su-bee-batch-terminal')).toMatchObject({ blocked: false, activeClaims: 0 });
+    });
+
+    it("does not count 'done' or 'dropped' rows as active claims (the WI-1250584 half)", async () => {
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+        VALUES ('default', 'EI-21902965-done', 'su-bee-batch-done-dropped', 'done'),
+               ('default', 'EI-21902965-dropped', 'su-bee-batch-done-dropped', 'dropped')`;
+
+      const verdicts = await readClaimConcurrencyBatch({ cupIds: ['su-bee-batch-done-dropped'] }, db.sql);
+      expect(verdicts.get('su-bee-batch-done-dropped')).toMatchObject({ blocked: false, activeClaims: 0 });
+    });
+
+    it('does not count an active resource-governor admission receipt, but counts real work beside it (the EI-21895667973178286 half)', async () => {
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status, payload)
+        VALUES ('default', 'EI-21902965-governor-receipt', 'su-bee-batch-governor', 'wip',
+                '{"claim_hold_by": "system:resource-governor", "_claimHold": true}'::jsonb)`;
+      let verdicts = await readClaimConcurrencyBatch({ cupIds: ['su-bee-batch-governor'] }, db.sql);
+      expect(verdicts.get('su-bee-batch-governor')).toMatchObject({ blocked: false, activeClaims: 0 });
+
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+        VALUES ('default', 'EI-21902965-real-work', 'su-bee-batch-governor', 'wip')`;
+      verdicts = await readClaimConcurrencyBatch({ cupIds: ['su-bee-batch-governor'] }, db.sql);
+      expect(verdicts.get('su-bee-batch-governor')).toMatchObject({ blocked: true, activeClaims: 1 });
+    });
+
+    it('a cupId with no held rows is still present in the map, with blocked:false', async () => {
+      const verdicts = await readClaimConcurrencyBatch({ cupIds: ['su-bee-batch-never-claimed'] }, db.sql);
+      expect(verdicts.has('su-bee-batch-never-claimed')).toBe(true);
+      expect(verdicts.get('su-bee-batch-never-claimed')).toMatchObject({ blocked: false, activeClaims: 0 });
+    });
   });
 
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {
