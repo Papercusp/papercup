@@ -40,6 +40,7 @@ export type ExactPlanAdmissionReason =
   | 'promotion-lag'
   | 'duplicate-coverage'
   | 'lane-unknown'
+  | 'floor-diagnostics-unavailable'
   | 'floor-gated'
   | 'family-disagreement'
   | 'insufficient-executable-width';
@@ -124,22 +125,42 @@ function finish(
   return { ...base, ready: status === 'ready', status, reason, message };
 }
 
-function zeroClaimableLaneMessage(planSlug: string, lane: FleetLaneHealth): string {
+function zeroClaimableLaneVerdict(
+  planSlug: string,
+  lane: FleetLaneHealth,
+): Pick<ExactPlanAdmission, 'reason' | 'message'> {
   const { matchedByFilter, excluded } = lane.effective;
   const filter = `plan = '${planSlug}'`;
   const scope = lane.spec.assigneeScoped
     ? `claimant scope '${lane.spec.assigneeScoped}'`
     : 'the caller-neutral fleet population';
+  if (matchedByFilter == null || excluded == null) {
+    return {
+      reason: 'floor-diagnostics-unavailable',
+      message:
+        `Under ${scope}, the exact-plan lane (${filter}) has zero claimable rows, but ` +
+        `${lane.effective.basis} diagnostics do not expose matched-row or exclusion-floor counts. ` +
+        'This verdict cannot identify whether the filter matched rows or which claim floor excluded them.',
+    };
+  }
   if (matchedByFilter === 0) {
-    return `Under ${scope}, the exact-plan filter (${filter}) matches no rows; no row reached the claim floors.`;
+    return {
+      reason: 'floor-gated',
+      message: `Under ${scope}, the exact-plan filter (${filter}) matches no rows; no row reached the claim floors.`,
+    };
   }
-  if (matchedByFilter != null && !Object.values(excluded ?? {}).some((count) => count > 0)) {
-    return (
-      `INTERNAL INCONSISTENCY: under ${scope}, the exact-plan filter (${filter}) matched ${matchedByFilter} row(s) ` +
-      'and claimable=0, but every reported exclusion bucket is zero; these counters do not support a floor-gated diagnosis.'
-    );
+  if (!Object.values(excluded).some((count) => count > 0)) {
+    return {
+      reason: 'floor-gated',
+      message:
+        `INTERNAL INCONSISTENCY: under ${scope}, the exact-plan filter (${filter}) matched ${matchedByFilter} row(s) ` +
+        'and claimable=0, but every reported exclusion bucket is zero; these counters do not support a floor-gated diagnosis.',
+    };
   }
-  return `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors.`;
+  return {
+    reason: 'floor-gated',
+    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors.`,
+  };
 }
 
 /** PURE verdict over one exact plan snapshot, its promoted rows, and lane oracle. */
@@ -315,7 +336,8 @@ export function evaluateExactPlanAdmission(args: {
     );
   }
   if (args.laneHealth.effective.claimable === 0) {
-    return finish(base, 'refused', 'floor-gated', zeroClaimableLaneMessage(args.planSlug, args.laneHealth));
+    const zeroLane = zeroClaimableLaneVerdict(args.planSlug, args.laneHealth);
+    return finish(base, 'refused', zeroLane.reason, zeroLane.message);
   }
   if (seatShortfall != null && seatShortfall > 0) {
     const edges = parallelism.blockingEdges

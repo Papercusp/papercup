@@ -226,7 +226,7 @@ describe('evaluateExactPlanAdmission', () => {
     });
   });
 
-  it('D-055: refuses an actionable promoted feature whose post-floor lane is zero', () => {
+  it('D-055: refuses an actionable promoted feature without inventing a floor diagnosis', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
       planItems: [item('P-001')],
@@ -237,7 +237,7 @@ describe('evaluateExactPlanAdmission', () => {
     expect(verdict).toMatchObject({
       ready: false,
       status: 'refused',
-      reason: 'floor-gated',
+      reason: 'floor-diagnostics-unavailable',
       planItems: { actionable: 1 },
       promotion: {
         byFamily: { feature: 1, issue: 0 },
@@ -245,6 +245,9 @@ describe('evaluateExactPlanAdmission', () => {
       },
       lane: { effective: { claimable: 0 } },
     });
+    expect(verdict.message).toContain('diagnostics do not expose matched-row or exclusion-floor counts');
+    expect(verdict.message).toContain('cannot identify whether the filter matched rows or which claim floor excluded them');
+    expect(verdict.message).not.toContain('every matched row is excluded by claim floors');
   });
 
   it('names the exact-plan filter when it matches no rows instead of blaming claim floors', () => {
