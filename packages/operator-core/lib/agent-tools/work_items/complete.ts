@@ -879,8 +879,34 @@ export function unresolvedPathsInCompletion(
       // Outside the repo we have no standing to judge (and no business probing).
       if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
 
+      // EI-21850619651553189: ALSO try the declared path with a leading `<repoName>/`
+      // segment stripped, when that segment names THIS candidate root by its own
+      // directory basename — the conventional cross-repo form (`email/packages/...`,
+      // matching how the file is named in prose, plan titles, and everywhere else)
+      // rather than a path already relative to that repo's own root. Tried ALONGSIDE
+      // the plain form above, never instead of it: a plain relative path always
+      // resolves "inside" any root by construction (`resolve(root, 'a/b')` can never
+      // escape `root`), so the plain form alone cannot distinguish a real hit from a
+      // declared path that merely happens to share this root's name as its first
+      // segment — only checking EXISTENCE of both candidates can.
+      let strippedAbs: string | undefined;
+      const prefix = `${nodePath.basename(repoRoot)}/`;
+      if (declaredPath.startsWith(prefix)) {
+        const stripped = declaredPath.slice(prefix.length);
+        if (stripped) {
+          try {
+            const candidate = nodePath.resolve(repoRoot, stripped);
+            if (candidate === repoRoot || candidate.startsWith(repoRoot + nodePath.sep)) {
+              strippedAbs = candidate;
+            }
+          } catch {
+            /* the plain form above still stands */
+          }
+        }
+      }
+
       try {
-        if (exists(abs)) {
+        if (exists(abs) || (strippedAbs && exists(strippedAbs))) {
           found += 1;
           continue;
         }
