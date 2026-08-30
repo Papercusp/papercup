@@ -36,6 +36,7 @@
     "lint:tests": "tsx scripts/lint-tests.ts",
     "lint:no-hand-rolled-cli-entry": "node ../../scripts/check-no-hand-rolled-cli-entry.mjs",
     "lint:partial-install": "node ../../scripts/check-partial-install.mjs",
+    "lint:no-fake-timers-in-integration": "node ../../scripts/check-fake-timers-in-integration-tests.mjs",
     "storybook": "storybook dev -p 6009",
     "build-storybook": "storybook build -o storybook-static",
     "lostpixel": "lost-pixel",
