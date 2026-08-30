@@ -20,6 +20,7 @@
  */
 
 import { resampleLinearTo16k } from './ptt-capture';
+import { captureWindowEndingAt, type CaptureWindow } from './capture-window';
 
 export interface EnergyVadCapture {
   /** Stop the loop + release the mic. Idempotent. */
@@ -29,8 +30,15 @@ export interface EnergyVadCapture {
 export interface EnergyVadCallbacks {
   onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
-  /** A finished speech segment, mono Float32 @ 16 kHz, ready for whisper. */
-  onUtterance: (pcm16k: Float32Array) => void;
+  /**
+   * A finished speech segment, mono Float32 @ 16 kHz, ready for whisper.
+   *
+   * `capture` is the WALL-CLOCK span the audio actually occupies. It is not a
+   * diagnostic: the self-echo guard (WI-954890) is a test against this window,
+   * because the moment the transcript finally arrives says nothing about
+   * whether the microphone was hearing our own playout when it recorded.
+   */
+  onUtterance: (pcm16k: Float32Array, capture: CaptureWindow) => void;
 }
 
 // ── Pure segmentation state machine (deterministic → unit-testable) ──────
@@ -216,7 +224,17 @@ export async function startEnergyVadCapture(
           ? frames.slice(0, Math.max(1, frames.length - ev.dropTrailingFrames))
           : frames;
         const pcm16k = resampleLinearTo16k(mergeFrames(kept), sampleRate);
-        try { callbacks.onUtterance(pcm16k); } catch { /* caller's problem */ }
+        // WALL-CLOCK SPAN OF THE KEPT AUDIO (WI-954890). `end` fires only after
+        // hangoverFrames of silence, so "now" is already ~683ms past the audio
+        // — and the dropped trailing frames are exactly that silence. Walk back
+        // over them, plus one frame for the buffer we are being handed now, to
+        // land on the instant the kept audio ended; the kept frame count gives
+        // the duration. Rounding lands EARLY on purpose: a window shifted late
+        // is what loses an overlap, a window shifted early only over-guards.
+        const frameMs = (frame.length / sampleRate) * 1000;
+        const endedAtMs = Date.now() - (ev.dropTrailingFrames + 1) * frameMs;
+        const capture = captureWindowEndingAt(endedAtMs, kept.length * frameMs);
+        try { callbacks.onUtterance(pcm16k, capture); } catch { /* caller's problem */ }
       }
     } else {
       // idle, not collecting — maintain the preroll ring
