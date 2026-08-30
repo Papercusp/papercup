@@ -8,10 +8,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { staticImportClosure } from "./related-tests.mjs";
 
 export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
-  "affected-passing-task-verdict-v2";
+  "affected-passing-task-verdict-v3";
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS = 32;
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -133,9 +134,10 @@ export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP = "cross-run-v1";
  *     they change run to run on a busy box. This is the same reasoning the per-run identity already
  *     applies to the PC_HEAVY_* transport variables.
  *
- * Deliberately still hashed: AFFECTED_BASE. While the gate is red the green pin does not move, so
- * consecutive runs share a base and reuse applies; when it finally goes green the base advances and
- * every task re-runs exactly once. That is the correct conservative behaviour, not an oversight.
+ * Deliberately still hashed when present: AFFECTED_BASE. Some repo-wide guards consume the base
+ * directly, so the generic identity cannot assume it is selection-only. The affected-test runner
+ * instead removes it from the REAL child environment of ordinary reusable workspace tasks, where
+ * source census proves it is not a task input; base-dependent guard tasks retain it (WI-1024071).
  */
 /**
  * WI-595883 — shell bookkeeping, measured as a live third defeater.
@@ -755,6 +757,116 @@ export function formatClosureDeltaLine({ taskKey, reason, delta, manifestReason 
 const pathInsideDir = (file, dir) => file === dir || file.startsWith(`${dir}/`);
 
 /**
+ * Root files whose bytes can change how an ordinary workspace test resolves or executes.
+ *
+ * This replaces the former `!file.includes("/")` rule, which admitted every tracked root doc,
+ * image, handoff, and report into every task proof. Keep this list about executable/configuration
+ * inputs; task-owned files and workspace package.json/config already arrive through the workspace
+ * closure below.
+ */
+export const PASSING_TASK_SHARED_ROOT_INPUTS = Object.freeze([
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "vitest.config.mts",
+  "vitest.config.js",
+  "vitest.config.mjs",
+  "quarantine.txt",
+]);
+
+/** Non-module runtime inputs on the affected-test launch path. */
+export const PASSING_TASK_SHARED_RUNTIME_INPUTS = Object.freeze([
+  "scripts/pc-heavy.sh",
+  "libs/test-config/package.json",
+]);
+
+/**
+ * Canonical module entrypoints that shape every ordinary affected-test invocation.
+ *
+ * `vitest-config.ts` supplies setup/global-setup/reporter paths; `lane-split.ts` decides which
+ * files a lane executes. Their path-loaded children are derived by `staticImportClosure`, not
+ * copied into this list. Tests pin these entries against the package export table.
+ */
+export const PASSING_TASK_SHARED_MODULE_INPUTS = Object.freeze([
+  "scripts/affected-tests.mjs",
+  "libs/test-config/src/vitest-config.ts",
+  "libs/test-config/src/lane-split.ts",
+]);
+
+/**
+ * Derive the shared runner/config inputs common to ordinary affected-test tasks.
+ *
+ * The module portion comes from the actual transitive static graph rooted at
+ * `scripts/affected-tests.mjs`, not the whole `scripts/` directory. External package imports are
+ * represented by the lockfiles above. Any graph hole or untracked runtime module fails closed and
+ * makes every ordinary task execute; a broken proof must never be interpreted as an empty proof.
+ */
+export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
+  if (!trackedScan || trackedScan.files.length === 0) {
+    return {
+      ok: false,
+      reason: "provenance-incomplete:shared-input-tracked-file-enumeration-empty",
+    };
+  }
+  const tracked = new Set(trackedScan.files);
+  const graph = staticImportClosure({
+    rootDir: root,
+    entryFiles: PASSING_TASK_SHARED_MODULE_INPUTS.map((file) => resolve(root, file)),
+  });
+  if (!graph.ok) {
+    return {
+      ok: false,
+      reason: `provenance-incomplete:shared-input-module-graph:${graph.unresolved[0] ?? "empty"}`,
+    };
+  }
+
+  const files = new Set();
+  for (const absolute of graph.files) {
+    const file = relative(root, absolute).split(sep).join("/");
+    if (!file || file === ".." || file.startsWith("../") || isAbsolute(file)) {
+      return {
+        ok: false,
+        reason: `provenance-incomplete:shared-input-outside-root:${file || absolute}`,
+      };
+    }
+    if (!tracked.has(file)) {
+      return {
+        ok: false,
+        reason: `provenance-incomplete:shared-input-untracked:${file}`,
+      };
+    }
+    files.add(file);
+  }
+
+  if (!tracked.has("package.json")) {
+    return {
+      ok: false,
+      reason: "provenance-incomplete:shared-input-missing:package.json",
+    };
+  }
+  for (const file of PASSING_TASK_SHARED_ROOT_INPUTS) {
+    if (tracked.has(file)) files.add(file);
+  }
+  for (const file of PASSING_TASK_SHARED_RUNTIME_INPUTS) {
+    if (!tracked.has(file)) {
+      return {
+        ok: false,
+        reason: `provenance-incomplete:shared-input-missing:${file}`,
+      };
+    }
+    files.add(file);
+  }
+
+  return { ok: true, files: [...files].sort() };
+}
+
+/**
  * Resolve the complete content proof for one affected-test task.
  *
  * Kept here, beside the hash it feeds, so the production cache and its repair-chain
@@ -770,6 +882,7 @@ export function passingTaskVerdictDependencyProvenance({
   workspaces,
   trackedScan,
   repoWideTaskKeys,
+  sharedInputProvenance = null,
   digestCache = new Map(),
 }) {
   if (script === "test:integration" || script === "test:el-suite") {
@@ -810,13 +923,21 @@ export function passingTaskVerdictDependencyProvenance({
   }
 
   const wholeTree = repoWideTaskKeys.has(taskKey);
+  if (!wholeTree && sharedInputProvenance && !sharedInputProvenance.ok) {
+    return sharedInputProvenance;
+  }
+  const sharedInputFiles = sharedInputProvenance?.ok
+    ? new Set(sharedInputProvenance.files)
+    : null;
   const files = wholeTree
     ? trackedScan.files
     : trackedScan.files.filter(
         (file) =>
-          !file.includes("/") ||
-          file.startsWith("scripts/") ||
-          file.startsWith("libs/test-config/") ||
+          (sharedInputFiles
+            ? sharedInputFiles.has(file)
+            : !file.includes("/") ||
+              file.startsWith("scripts/") ||
+              file.startsWith("libs/test-config/")) ||
           sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
       );
   const unavailable = trackedScan.unscannedPresent.filter(

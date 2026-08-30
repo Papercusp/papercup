@@ -59,6 +59,38 @@ export function unitExcludedVitestTest(file: string): boolean;
  */
 export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
 /**
+ * Walk the transitive static module graph from a small set of entry files.
+ *
+ * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
+ * resolver, but reads only modules the entries can actually reach. Passing-task provenance uses
+ * it for the affected-test runner itself; indexing every file under `scripts/` would make an
+ * unrelated maintenance script an input to every workspace test, while indexing the whole repo
+ * would cost more than the cache can save.
+ *
+ * Runtime file paths named as `resolve(__dirname, './x')` / `new URL('./x', import.meta.url)` are
+ * edges too. Vitest config loads setup/reporting modules by path rather than import; ignoring that
+ * shape would produce a complete-looking but false-small proof. Every uncertainty fails closed.
+ * An unreadable entry, unresolved relative/alias import or runtime path, edge escaping `rootDir`,
+ * or empty graph returns `ok:false`; callers must run the task instead of reusing a proof. Bare
+ * package imports are represented by the package-manager lockfiles in the caller's manifest and
+ * therefore do not create an on-disk edge here.
+ *
+ * @param {object} [o]
+ * @param {string} o.rootDir absolute repository root
+ * @param {string[]} o.entryFiles absolute entry files to walk
+ * @param {RelatedFs} [o.fs] filesystem seam (injected in tests)
+ * @returns {{ ok: boolean, files: string[], unresolved: string[] }}
+ */
+export function staticImportClosure({ rootDir, entryFiles, fs, }?: {
+    rootDir: string;
+    entryFiles: string[];
+    fs?: RelatedFs | undefined;
+}): {
+    ok: boolean;
+    files: string[];
+    unresolved: string[];
+};
+/**
  * The injectable filesystem seam. Declared as a typedef because `gen:declarations`
  * emits from JSDoc: an UNDOCUMENTED destructured option is inferred as a CLOSED
  * literal type (or, with no default to infer from, dropped from the emitted type

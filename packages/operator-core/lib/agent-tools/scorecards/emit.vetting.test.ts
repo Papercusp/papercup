@@ -18,6 +18,8 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const readVettingConsultCritique = vi.fn();
 const readVettingWorkItemCritique = vi.fn();
+const sameAcceptanceAuthor = vi.fn();
+const lineageRelated = vi.fn();
 
 /** The critique verdict shape readVettingConsultCritique returns. */
 const critique = (over: Record<string, unknown> = {}) => ({
@@ -63,6 +65,10 @@ vi.mock('../../workspace-registry', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../workspace-registry')>();
   return { ...real, activeWorkspaceId: () => 'ws-test' };
 });
+vi.mock('../../acceptance-author-identity', () => ({
+  isAcceptanceAuthorIdentity: (...a: unknown[]) => sameAcceptanceAuthor(...a),
+  areAcceptanceLineageRelated: (...a: unknown[]) => lineageRelated(...a),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...real, getOrgPg: () => ({ sql: {} }) };
@@ -146,6 +152,8 @@ beforeEach(() => {
     critiquePosts: 2,
     critics: ['su-reviewer'],
   });
+  sameAcceptanceAuthor.mockReset().mockImplementation(async (author: unknown, candidate: unknown) => author === candidate);
+  lineageRelated.mockReset().mockImplementation(async (author: unknown, candidate: unknown) => author === candidate);
 });
 
 describe('scorecards:emit vetting stamp (P-004)', () => {
@@ -378,6 +386,55 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     readVettingConsultCritique.mockResolvedValue(critique({ critiquePosts: 1, critics: ['su-x'] }));
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns the author when D-031 leaves one critic unable to grade, while preserving the later refusal', async () => {
+    const vetting = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(vetting).toMatchObject({
+      ok: true,
+      created: true,
+      warning: expect.stringContaining("sole critic 'su-reviewer'"),
+    });
+    expect((vetting as { warning?: string }).warning).toContain('cannot later emit the independent acceptance grade');
+
+    listScorecards.mockImplementation(async (query: { rubricRef?: string; subjectRef?: string }) => {
+      if (query.rubricRef === 'meta-acceptance-rubric' && query.subjectRef === 'ar-some-plan') {
+        return [
+          {
+            issueId: 'EI-vetting',
+            createdAt: '2026-08-29T01:00:00Z',
+            createdBy: 'su-author',
+            rubricRef: 'meta-acceptance-rubric',
+            ratings: META_RATINGS,
+            nKeys: 2,
+            missingKeys: [],
+            extraKeys: [],
+            rubricResolved: true,
+            synthesized: false,
+            score10: 10,
+            linkedItems: [],
+            vetting: {
+              consultId: 'conv-vet-1',
+              rubricRevision: 7,
+              critiquePosts: 2,
+              critics: ['su-reviewer'],
+            },
+          },
+        ] as never;
+      }
+      return [];
+    });
+
+    const grade = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-reviewer', ctxHarness: 'papercusp' },
+    );
+    expect(grade).toMatchObject({
+      ok: false,
+      code: 'grader_is_sole_vetting_critic',
+      error: expect.stringContaining('sole recorded vetting critic'),
+    });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 

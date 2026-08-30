@@ -25,12 +25,14 @@ import {
   namespacePassingTaskVerdictDecision,
   PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
   PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+  PASSING_TASK_SHARED_MODULE_INPUTS,
   PC_HEAVY_VOLATILE_IDENTITY_ENV,
   passingTaskVerdictCacheEntry,
   passingTaskVerdictCrossRunIdentityEnvironment,
   passingTaskVerdictCrossRunGateConfig,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
+  passingTaskVerdictSharedInputProvenance,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
   shouldStorePassingTaskVerdict,
@@ -1182,6 +1184,180 @@ describe('closure hashing separates membership from content', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('ordinary-task shared inputs are derived, narrow, and fail closed', () => {
+  it('ignores unrelated root/scripts churn but binds real runner and test-config modules', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wi1024071-shared-inputs-'));
+    try {
+      const initial = new Map<string, string>([
+        ['package.json', '{"private":true}\n'],
+        ['package-lock.json', '{"lockfileVersion":3}\n'],
+        ['README.md', 'unrelated root doc\n'],
+        ['scripts/affected-tests.mjs', "import './lib/runtime.mjs';\n"],
+        ['scripts/lib/runtime.mjs', 'export const runtime = 1;\n'],
+        ['scripts/unrelated-maintenance.mjs', 'export const unrelated = 1;\n'],
+        ['scripts/pc-heavy.sh', '#!/bin/sh\n'],
+        ['libs/test-config/package.json', '{"exports":{}}\n'],
+        [
+          'libs/test-config/src/vitest-config.ts',
+          "import { resolve } from 'node:path';\nconst setup = resolve(__dirname, 'setup.ts');\nexport { setup };\n",
+        ],
+        ['libs/test-config/src/setup.ts', 'export const setup = true;\n'],
+        ['libs/test-config/src/lane-split.ts', 'export const lane = true;\n'],
+        ['pkg/target/src/index.ts', 'target:v1\n'],
+        ['pkg/dependency/src/index.ts', 'dependency:v1\n'],
+        ['pkg/unrelated/src/index.ts', 'unrelated:v1\n'],
+      ]);
+      for (const [file, contents] of initial) {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), contents);
+      }
+      const files = [...initial.keys()];
+      const trackedScan = { files, unscannedPresent: [] as string[] };
+      const shared = () => passingTaskVerdictSharedInputProvenance({ root, trackedScan });
+      const sharedBefore = shared();
+      if (!sharedBefore.ok) throw new Error(sharedBefore.reason);
+      expect(sharedBefore.files).toContain('scripts/affected-tests.mjs');
+      expect(sharedBefore.files).toContain('scripts/lib/runtime.mjs');
+      expect(sharedBefore.files).toContain('libs/test-config/src/vitest-config.ts');
+      expect(sharedBefore.files).toContain('libs/test-config/src/setup.ts');
+      expect(sharedBefore.files).not.toContain('README.md');
+      expect(sharedBefore.files).not.toContain('scripts/unrelated-maintenance.mjs');
+
+      const workspaces = new Map([
+        ['@target', { dir: 'pkg/target', deps: ['@dependency'] }],
+        ['@dependency', { dir: 'pkg/dependency', deps: [] }],
+        ['@unrelated', { dir: 'pkg/unrelated', deps: [] }],
+      ]);
+      const ordinary = () =>
+        passingTaskVerdictDependencyProvenance({
+          root,
+          taskKey: '@target :: test',
+          script: 'test',
+          workspaceName: '@target',
+          workspaces,
+          trackedScan,
+          repoWideTaskKeys: new Set<string>(),
+          sharedInputProvenance: shared(),
+          digestCache: new Map(),
+        });
+      const repoWide = () =>
+        passingTaskVerdictDependencyProvenance({
+          root,
+          taskKey: '@target :: lint:guard',
+          script: 'lint:guard',
+          workspaceName: '@target',
+          workspaces,
+          trackedScan,
+          repoWideTaskKeys: new Set(['@target :: lint:guard']),
+          sharedInputProvenance: shared(),
+          digestCache: new Map(),
+        });
+      const before = ordinary();
+      const guardBefore = repoWide();
+      if (!before.ok || !guardBefore.ok) throw new Error('expected hashable fixture provenance');
+
+      writeFileSync(join(root, 'README.md'), 'unrelated root doc:changed\n');
+      writeFileSync(join(root, 'scripts/unrelated-maintenance.mjs'), 'export const unrelated = 2;\n');
+      writeFileSync(join(root, 'pkg/unrelated/src/index.ts'), 'unrelated:v2\n');
+      const afterUnrelated = ordinary();
+      const guardAfterUnrelated = repoWide();
+      if (!afterUnrelated.ok || !guardAfterUnrelated.ok) throw new Error('expected hashable fixture provenance');
+      expect(afterUnrelated.hash).toBe(before.hash);
+      expect(guardAfterUnrelated.hash).not.toBe(guardBefore.hash);
+
+      writeFileSync(join(root, 'libs/test-config/src/setup.ts'), 'export const setup = false;\n');
+      const afterConfig = ordinary();
+      if (!afterConfig.ok) throw new Error(afterConfig.reason);
+      expect(afterConfig.hash).not.toBe(before.hash);
+
+      writeFileSync(
+        join(root, 'libs/test-config/src/setup.ts'),
+        initial.get('libs/test-config/src/setup.ts')!,
+      );
+      writeFileSync(join(root, 'pkg/target/src/index.ts'), 'target:v2\n');
+      const afterWorkspace = ordinary();
+      if (!afterWorkspace.ok) throw new Error(afterWorkspace.reason);
+      expect(afterWorkspace.hash).not.toBe(before.hash);
+
+      writeFileSync(
+        join(root, 'pkg/target/src/index.ts'),
+        initial.get('pkg/target/src/index.ts')!,
+      );
+      writeFileSync(join(root, 'pkg/dependency/src/index.ts'), 'dependency:v2\n');
+      const afterDependency = ordinary();
+      if (!afterDependency.ok) throw new Error(afterDependency.reason);
+      expect(afterDependency.hash).not.toBe(before.hash);
+
+      writeFileSync(
+        join(root, 'pkg/dependency/src/index.ts'),
+        initial.get('pkg/dependency/src/index.ts')!,
+      );
+      writeFileSync(join(root, 'scripts/lib/runtime.mjs'), 'export const runtime = 2;\n');
+      const afterRunner = ordinary();
+      if (!afterRunner.ok) throw new Error(afterRunner.reason);
+      expect(afterRunner.hash).not.toBe(before.hash);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('pins the shared test-config entrypoints to the package export table', () => {
+    const testConfig = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'libs/test-config/package.json'), 'utf8'),
+    ) as { exports?: Record<string, { import?: string } | string> };
+    const target = (key: string) => {
+      const value = testConfig.exports?.[key];
+      return typeof value === 'string' ? value : value?.import;
+    };
+    expect(PASSING_TASK_SHARED_MODULE_INPUTS).toContain(
+      `libs/test-config/${target('./vitest-config')?.replace(/^\.\//, '')}`,
+    );
+    expect(PASSING_TASK_SHARED_MODULE_INPUTS).toContain(
+      `libs/test-config/${target('./lane-split')?.replace(/^\.\//, '')}`,
+    );
+  });
+
+  it('computes the derived shared-input graph once and supplies it to every task proof', () => {
+    expect(AFFECTED_TESTS_SRC).toMatch(/^\s*passingTaskVerdictSharedInputProvenance,\s*$/m);
+    expect(
+      AFFECTED_TESTS_SRC.match(/passingTaskVerdictSharedInputProvenance\(\{/g) ?? [],
+    ).toHaveLength(1);
+    expect(AFFECTED_TESTS_SRC).toContain(
+      'sharedInputProvenance: taskVerdictSharedInputProvenance',
+    );
+  });
+
+  it('removes the selection base only from ordinary reusable child processes', () => {
+    const predicateStart = AFFECTED_TESTS_SRC.indexOf(
+      'function isOrdinaryReusableTask(',
+    );
+    expect(predicateStart).toBeGreaterThan(-1);
+    const predicateEnd = AFFECTED_TESTS_SRC.indexOf('\n}', predicateStart);
+    const predicate = AFFECTED_TESTS_SRC.slice(predicateStart, predicateEnd);
+    expect(predicate).toContain('!taskVerdictGuardKeys.has(taskKey(t))');
+    expect(predicate).toContain("t.script !== 'test:integration'");
+    expect(predicate).toContain("t.script !== 'test:el-suite'");
+
+    const childStart = AFFECTED_TESTS_SRC.indexOf('const childEnv = {');
+    const childEnd = AFFECTED_TESTS_SRC.indexOf('let cacheIdentity = null;', childStart);
+    const childSetup = AFFECTED_TESTS_SRC.slice(childStart, childEnd);
+    expect(childSetup).toContain('if (isOrdinaryReusableTask(context.t))');
+    expect(childSetup).toContain('delete childEnv.AFFECTED_BASE;');
+  });
+
+  it('pins forwarded base refs to commits and refuses reuse when a required base cannot resolve', () => {
+    expect(AFFECTED_TESTS_SRC).toContain(
+      "gitTry(['rev-parse', '--verify', '--quiet', `${explicitBase}^{commit}`])",
+    );
+    expect(AFFECTED_TESTS_SRC).toContain(
+      'guardBaseResolved: repoWideGuardBaseSha != null',
+    );
+    expect(AFFECTED_TESTS_SRC).toContain(
+      'provenance-incomplete:affected-base-unresolved',
+    );
   });
 });
 

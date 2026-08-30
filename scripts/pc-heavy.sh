@@ -1666,7 +1666,7 @@ _gate_refuse_broad_sweep() {
   echo "[pc-heavy] That phase is the gate's single-concurrency CLASSIFIER: it re-runs failing" >&2
   echo "[pc-heavy] files to decide real-break vs load-flake. A broad sweep running alongside it" >&2
   echo "[pc-heavy] can flip that verdict and red the gate for the WHOLE fleet on code that is" >&2
-  echo "[pc-heavy] fine — and you would not be the one paying the diagnosis. It lasts minutes." >&2
+  echo "[pc-heavy] fine — and you would not be the one paying the diagnosis. Its duration is bounded by the size of the failing set, not a short fixed window." >&2
   echo "[pc-heavy]" >&2
   echo "[pc-heavy] DO THIS INSTEAD — scope the re-verify to what you actually changed:" >&2
   echo "[pc-heavy]     npm run test:file -- <the files you edited>" >&2

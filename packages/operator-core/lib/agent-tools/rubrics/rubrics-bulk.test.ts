@@ -162,7 +162,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const payload = readJsonResult<{ results: Array<{ rubricId: string; ok: boolean }> }>(dispatched.result!);
-    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
+    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: RUBRIC_R1 }]);
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 

@@ -104,6 +104,48 @@ beforeEach(() => {
 });
 
 describe('work_items:get — checkpoint field', () => {
+  it('emits completion evidence through the result-level alias', async () => {
+    const completion = {
+      summary: 'implemented the completion-evidence read path',
+      testsRun: 'npm run test:file -- get-shape.test.ts',
+      testResult: '47 passed',
+      verifiedHow: 'focused Vitest regression',
+      addedTests: true,
+      filesChanged: ['packages/operator-core/lib/agent-tools/work_items/get-shape.ts'],
+    };
+    getWorkItem.mockResolvedValue({
+      id: 'WI-handler-completion',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'terminal item',
+      state: 'done',
+      terminalCompletionEvidence: completion,
+    });
+
+    const r = await one({ id: 'WI-handler-completion' });
+
+    expect(r.completion).toEqual(completion);
+    expect(r.hasCompletionEvidence).toBe(true);
+  });
+
+  it('emits an explicit false presence result for a terminal row without evidence', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-handler-no-completion',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'legacy terminal item',
+      state: 'done',
+      terminalCompletionEvidence: null,
+    });
+
+    const r = await one({ id: 'WI-handler-no-completion' });
+
+    expect(r.completion).toBeNull();
+    expect(r.hasCompletionEvidence).toBe(false);
+  });
+
   it('surfaces the terminal completion freshness verdict from the read-side detector', async () => {
     const evidence = {
       treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) },

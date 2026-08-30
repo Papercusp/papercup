@@ -155,6 +155,24 @@ printf '{"user":"%s","ok":true,"cleanedUp":true}\\n' "$PAPERCUSP_ATTEST_LOGIN"
   };
 }
 
+function runPreflightAdmission(opts: { skipMatrix?: string; skipFromRepo?: string } = {}) {
+  const script = [
+    'set -uo pipefail',
+    extractFn('attestation_write_preflight_needed'),
+    'attestation_write_preflight_needed',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      SKIP_MATRIX: opts.skipMatrix ?? '0',
+      SKIP_FROMREPO: opts.skipFromRepo ?? '0',
+    },
+  });
+  return result.status ?? -1;
+}
+
 describe('live-federation gate attestation write preflight', () => {
   it('probes both distinct accounts successfully', () => {
     const result = runPreflight();
@@ -202,6 +220,23 @@ describe('live-federation gate attestation write preflight', () => {
     expect(call).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(call);
     expect(gate.slice(call, build)).not.toContain('GATE_FORCE');
+  });
+
+  it('runs only when at least one attestation-gist consumer is enabled', () => {
+    expect(runPreflightAdmission()).toBe(0);
+    expect(runPreflightAdmission({ skipMatrix: '1' })).toBe(0);
+    expect(runPreflightAdmission({ skipFromRepo: '1' })).toBe(0);
+    expect(runPreflightAdmission({ skipMatrix: '1', skipFromRepo: '1' })).toBe(1);
+  });
+
+  it('guards the shipped outward probe with the consumer-admission predicate', () => {
+    const guard = gate.indexOf('if attestation_write_preflight_needed; then');
+    const call = gate.indexOf('ATTESTATION_PREFLIGHT_OUTPUT="$(preflight_attestation_write_accounts');
+    const resultBranch = gate.indexOf('if [ "$ATTESTATION_PREFLIGHT_RC" -ne 0 ]; then');
+    expect(guard).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(guard);
+    expect(resultBranch).toBeGreaterThan(call);
+    expect(gate.slice(guard, resultBranch)).toContain('no attestation-gist consumer is enabled');
   });
 
   it('keeps the inner content-matrix write probe as defense-in-depth', () => {

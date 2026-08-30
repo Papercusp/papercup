@@ -103,7 +103,8 @@ const nextSid = () => `gate-suite-${process.pid}-${++sidSeq}`;
 function runGate(
   payload: unknown,
   env: Record<string, string> = {},
-): { stdout: string; stderr: string; status: number | null } {
+  attempt = 0,
+): GateOut {
   // EI-18829641916212203: cheap re-assert so a transiently-absent credential file
   // cannot turn a deny test into an unexplained JSON.parse('') failure.
   ensureGateCredentials();
@@ -136,7 +137,44 @@ function runGate(
     },
     timeout: 15_000,
   });
-  return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+  // Carry `signal` and `error` OUT, do not drop them. spawnSync reports a child
+  // that never exited NORMALLY as status:null, and the cause lives in exactly one
+  // of those two fields — `signal` when the `timeout: 15_000` above fired, `error`
+  // when the spawn itself failed (e.g. EAGAIN on a box that cannot fork). Dropping
+  // both made every such case surface as the uninformative `expected null to be
+  // +0`; see describeGateExit for what that cost.
+  const out: GateOut = {
+    stdout: r.stdout ?? '',
+    stderr: r.stderr ?? '',
+    status: r.status,
+    signal: r.signal ?? null,
+    error: r.error ? r.error.message : null,
+  };
+
+  // RETRY EXACTLY ONCE when the child never exited normally (WI-1036031).
+  //
+  // status:null is an INFRASTRUCTURE outcome, not a gate verdict — the 15s timeout
+  // fired, or the spawn failed. Measured: this file passes 853/853 in isolation and
+  // failed ONE `expectAllow` inside the 813-file canonical suite, where it competes
+  // with the rest of the run on a box at load1>150. That single false red exits the
+  // whole `@papercusp/web` lane non-zero, which reds the canonical run — the exact
+  // verdict test-suite-recovery-2026-08-27 exists to make trustworthy.
+  //
+  // A retry is SAFE here specifically because the gate is a PURE, read-only
+  // evaluation: it reads the payload on stdin and prints a decision. It mutates no
+  // repo state, and `PAPERCUSP_SID: nextSid()` gives the retry its own session id,
+  // so nothing carries over from the killed attempt.
+  //
+  // Bounded to one deliberately. This must not silently paper over a REAL hang: a
+  // genuine deadlock in the gate still fails, just at 2x15s, and describeGateExit
+  // then names the signal — so the symptom stays visible instead of turning into an
+  // infinite retry loop. Note this is the THIRD load-induced failure class in this
+  // file (see PC_HEAVY_LOAD1_OVERRIDE and PAPERCUSP_NATIVE_BG_ADVISORY above); those
+  // two pin a load-dependent INPUT, whereas this one survives a load-dependent KILL.
+  if (attempt === 0 && out.status === null && (out.signal || out.error)) {
+    return runGate(payload, env, attempt + 1);
+  }
+  return out;
 }
 
 /**
@@ -313,20 +351,64 @@ function parseDecision(out: { stdout: string; stderr?: string; status: number | 
   return JSON.parse(out.stdout);
 }
 
-function expectDeny(out: { stdout: string; stderr?: string; status: number | null }) {
-  expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
+/**
+ * What a gate invocation returned, including WHY it did not exit normally.
+ *
+ * `signal`/`error` are optional so the handful of call sites that build their own
+ * spawnSync result still satisfy it.
+ */
+type GateOut = {
+  stdout: string;
+  status: number | null;
+  stderr?: string;
+  signal?: string | null;
+  error?: string | null;
+};
+
+/**
+ * Explain a non-zero/null exit IN THE ASSERTION MESSAGE.
+ *
+ * `status: null` does not mean "the gate exited non-zero" — it means the child
+ * never exited normally at all, which is an INFRASTRUCTURE outcome, not a gate
+ * verdict. Until this existed, both causes rendered as `expected null to be +0`,
+ * which names neither the signal, the 15s timeout, nor a failed spawn.
+ *
+ * That cost real time, measured: this single assertion was the ENTIRE
+ * `@papercusp/web` lane failure in canonical run 4 (1 failed of 13,450 tests), and
+ * because the message named no cause, identifying it took a 305s full-suite
+ * reproduction plus a hand-audit of runGate — for a line that could have said
+ * "killed by SIGTERM after 15s". The plan this sits under (test-suite-recovery)
+ * exists to make the canonical verdict TRUSTWORTHY, and a red whose message
+ * cannot distinguish infrastructure from defect is the exact opposite (WI-1036031).
+ */
+function describeGateExit(out: GateOut): string {
+  if (out.status === 0) return '';
+  const cause = out.error
+    ? `the SPAWN ITSELF FAILED: ${out.error}`
+    : out.signal
+      ? `the child was KILLED BY ${out.signal} — runGate's spawnSync timeout is 15s, so this is an infrastructure kill (contention/hang), NOT a gate verdict`
+      : `the gate exited ${String(out.status)}`;
+  return [
+    `gate did not exit 0 — ${cause}.`,
+    `stdout=${JSON.stringify((out.stdout ?? '').slice(0, 200))}`,
+    `stderr=${JSON.stringify((out.stderr ?? '').slice(0, 300))}`,
+  ].join(' ');
+}
+
+function expectDeny(out: GateOut) {
+  expect(out.status, describeGateExit(out)).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
   const decision = parseDecision(out);
   expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
   expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('pot:declare-wake');
 }
 
-function expectAllow(out: { stdout: string; status: number | null }) {
-  expect(out.status).toBe(0);
+function expectAllow(out: GateOut) {
+  expect(out.status, describeGateExit(out)).toBe(0);
   expect(out.stdout.trim()).toBe(''); // silence = allow
 }
 
-function expectGitDeny(out: { stdout: string; stderr?: string; status: number | null }) {
-  expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
+function expectGitDeny(out: GateOut) {
+  expect(out.status, describeGateExit(out)).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
   // parseDecision, not a bare JSON.parse: the shell-write / `sed -i` deny tests that
   // route through here are precisely the ones observed failing en masse on the
   // fail-open shape (EI-18829641916212203).
@@ -5030,7 +5112,11 @@ describe('substitution pre-filter', () => {
   // With OPERATOR_URL pointed at a dead port, a command that PASSES the
   // pre-filter attempts HTTP and fails open with a diagnostic on stderr, while
   // one filtered out returns in silence. That difference is the probe.
-  const reachedOperator = (out: { stderr: string }) => out.stderr.includes('operator unreachable');
+  // `stderr` is optional on GateOut (a few call sites build their own spawnSync
+  // result), so default it rather than requiring it — an absent stderr simply
+  // means the operator was not reached.
+  const reachedOperator = (out: { stderr?: string }) =>
+    (out.stderr ?? '').includes('operator unreachable');
 
   it.each([
     ['sed range read', "sed -n '1,80p' packages/foo.ts"],

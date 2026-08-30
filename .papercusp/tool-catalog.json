@@ -5784,7 +5784,7 @@
           "POST"
         ]
       },
-      "description": "Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), files, optional typed goal refs, and optional ambient-retrieval exclusions. `declared_goal_refs` accepts generated goal slugs and WI-/EI- refs; blank and bare numeric refs are rejected. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items`, `current_files`, and `ambient_excluded_refs` (omission preserves; [] clears). A broad \"all remaining items\" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).",
+      "description": "Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), files, optional typed goal refs, and optional ambient-retrieval exclusions. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items`, `current_files`, and `ambient_excluded_refs` (omission preserves; [] clears). A broad \"all remaining items\" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).",
       "capabilities": [
         "coord:write"
       ],
@@ -5807,7 +5807,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. For explicit multi-goal coverage, pass resolvable refs (generated goal slugs or WI-/EI- ids) as `declared_goal_refs`; blank and bare numeric refs are rejected. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad \"take everything remaining\" work, enumerate items to expose overlap (EI-5873).",
+        "when": "Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. For multi-goal coverage, pass resolvable refs as `declared_goal_refs`. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad \"take everything remaining\" work, enumerate items to expose overlap (EI-5873).",
         "notWhen": "Every turn — the OMP hook heartbeats automatically; call this when your intent changes.",
         "chaining": "coord:declare-intent { intent, current_plan_slug, items: [\"P-001\"] } → work → plans:set-status done. Conflicts mean a peer holds the item; coordinate or re-lane. `claims.unknown` means an id was not claimed."
       }

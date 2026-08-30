@@ -12,6 +12,18 @@ import {
 } from './ingestion';
 import { type ExternalTriggerSourceRow, updateExternalTriggerSourceSyncState } from './source-store';
 import { createPersonalVaultExternalSinkForSource, type PersonalVaultExternalSink } from '../personal-vault/live-sink';
+import {
+  createAppDeliverySinkIfConfigured,
+  type AppDeliveryExternalSink,
+} from '../app-data-producer/live-sink';
+
+/**
+ * Every sink this adapter hands to ingestion. The personal vault is always
+ * present; the app-delivery sink (P-011) appears only when this deployment has
+ * an owner mapping for the source's user, so an unconfigured deployment sees
+ * exactly the previous single-sink behaviour.
+ */
+type IngestSink = PersonalVaultExternalSink | AppDeliveryExternalSink;
 
 const GMAIL_API_ORIGIN = 'https://gmail.googleapis.com';
 const DEFAULT_RENEW_BEFORE_MS = 24 * 60 * 60 * 1_000;
@@ -125,6 +137,16 @@ export interface GoogleGmailDeps {
   apiOrigin?: string;
   ingest?: Ingest;
   createPersonalSink?: (sql: postgres.Sql, workspaceId: string, sourceId: string) => Promise<PersonalVaultExternalSink>;
+  /**
+   * P-011 app-delivery sink factory. Returning null means "this deployment is
+   * not configured to deliver to the Email app", which is the normal state for
+   * an install with no owner mapping — not an error.
+   */
+  createAppSink?: (
+    sql: postgres.Sql,
+    workspaceId: string,
+    sourceId: string,
+  ) => Promise<AppDeliveryExternalSink | null>;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
 }
 
@@ -595,7 +617,7 @@ async function getMessage(
 async function deliver(
   sql: postgres.Sql,
   ingest: Ingest,
-  sink: PersonalVaultExternalSink,
+  sinks: IngestSink[],
   source: ExternalTriggerSourceRow,
   message: GoogleGmailMessage,
 ): Promise<void> {
@@ -613,7 +635,7 @@ async function deliver(
     normalize: () => normalized,
     occurredAt: nonEmpty(normalized.occurredAt),
     dedupeKey: `gmail:${id}:message.received`,
-    additionalSinks: [sink],
+    additionalSinks: [...sinks],
   });
   if (!result.ok) throw new Error(`google_gmail_delivery_failed:${id}`);
 }
@@ -623,7 +645,7 @@ async function incrementalSync(
   source: ExternalTriggerSourceRow,
   accessToken: string,
   startHistoryId: string,
-  sink: PersonalVaultExternalSink,
+  sinks: IngestSink[],
   deps: Required<Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
 ): Promise<{ messages: number; pages: number; historyId: string }> {
   let pageToken: string | null = null;
@@ -650,7 +672,7 @@ async function incrementalSync(
       for (const added of history.messagesAdded ?? []) {
         const id = nonEmpty(added.message?.id);
         if (!id || delivered.has(id)) continue;
-        await deliver(sql, deps.ingest, sink, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
+        await deliver(sql, deps.ingest, sinks, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
         delivered.add(id);
       }
     }
@@ -665,7 +687,7 @@ async function fullSync(
   sql: postgres.Sql,
   source: ExternalTriggerSourceRow,
   accessToken: string,
-  sink: PersonalVaultExternalSink,
+  sinks: IngestSink[],
   deps: Required<Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
 ): Promise<{ messages: number; pages: number }> {
   let pageToken: string | null = null;
@@ -686,7 +708,7 @@ async function fullSync(
     for (const listed of body.messages ?? []) {
       const id = nonEmpty(listed.id);
       if (!id) continue;
-      await deliver(sql, deps.ingest, sink, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
+      await deliver(sql, deps.ingest, sinks, source, await getMessage(deps.fetch, deps.apiOrigin, accessToken, id));
       messages += 1;
     }
     pageToken = nonEmpty(body.nextPageToken);
@@ -710,6 +732,13 @@ export async function syncGoogleGmailSource(
   const updateSource = provided.updateSource ?? updateExternalTriggerSourceSyncState;
   const createSink = provided.createPersonalSink ?? createPersonalVaultExternalSinkForSource;
   const sink = await createSink(sql, source.workspaceId, source.id);
+  // P-011: deliver into the Email app as messages land, but only where an owner
+  // mapping configures it. Resolved ONCE per sync, not per message.
+  const createAppSink = provided.createAppSink
+    ?? ((db: postgres.Sql, workspaceId: string, sourceId: string) =>
+      createAppDeliverySinkIfConfigured(db, workspaceId, sourceId, 'email'));
+  const appSink = await createAppSink(sql, source.workspaceId, source.id);
+  const sinks: IngestSink[] = appSink ? [sink, appSink] : [sink];
   const now = (provided.now ?? (() => new Date()))();
   if (!Number.isFinite(now.getTime())) throw new Error('google_gmail_now_invalid');
   let workingSource = source;
@@ -721,7 +750,7 @@ export async function syncGoogleGmailSource(
 
   if (historyId) {
     try {
-      const synced = await incrementalSync(sql, source, accessToken, historyId, sink, deps);
+      const synced = await incrementalSync(sql, source, accessToken, historyId, sinks, deps);
       messages = synced.messages;
       historyPages = synced.pages;
       historyId = synced.historyId;
@@ -739,7 +768,7 @@ export async function syncGoogleGmailSource(
   }
 
   if (!historyId) {
-    const synced = await fullSync(sql, workingSource, accessToken, sink, deps);
+    const synced = await fullSync(sql, workingSource, accessToken, sinks, deps);
     const mailbox = await profile(deps.fetch, deps.apiOrigin, accessToken);
     messages = synced.messages;
     messagePages = synced.pages;

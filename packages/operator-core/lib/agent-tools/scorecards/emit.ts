@@ -730,6 +730,17 @@ export async function emitScorecard(
         ...(waived ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason } : {}),
       };
     }
+    // D-031 fallback advisory: when the vetting channel names exactly one critic,
+    // that critic cannot later supply the independent acceptance grade because
+    // grader_is_sole_vetting_critic must refuse the two-party chain. Surface the
+    // sequencing consequence now, without weakening the later refusal or changing
+    // the durable vetting stamp.
+    const vettingWarning =
+      vetting?.critics?.length === 1
+        ? `vetting for acceptance rubric '${args.subject?.ref ?? 'unknown'}' records a sole critic '${vetting.critics[0]}'. ` +
+          `That critic cannot later emit the independent acceptance grade; the sole-vetting-critic rail will refuse it. ` +
+          `Use another lineage-independent grader or obtain a second independent critic before grading.`
+        : undefined;
     // P-008 (EI-20581177540737568): a 'violatable' criterion is monotonic-downward — one
     // violation falsifies it permanently — so a mid-run rating of one cannot be final.
     // DEFAULT IS PROVISIONAL: the emitter must AFFIRM subject termination (terminal:true)
@@ -913,6 +924,7 @@ export async function emitScorecard(
         evidenceFingerprint,
         previousIssueId: latest?.issueId ?? null,
         canonicalRatings: ratings,
+        ...(vettingWarning ? { warning: vettingWarning } : {}),
         ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
       };
     }
@@ -1097,6 +1109,7 @@ export async function emitScorecard(
       ...(provisional ? { provisional } : {}),
       // P-011: the live deterministic check verdicts this card was filed with.
       ...(checkRuns ? { checkRuns } : {}),
+      ...(vettingWarning ? { warning: vettingWarning } : {}),
       ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };
   } catch (error) {

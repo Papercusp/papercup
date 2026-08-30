@@ -20,6 +20,18 @@ import {
   createPersonalVaultExternalSinkForSource,
   type PersonalVaultExternalSink,
 } from '../personal-vault/live-sink';
+import {
+  createAppDeliverySinkIfConfigured,
+  type AppDeliveryExternalSink,
+} from '../app-data-producer/live-sink';
+
+/**
+ * Every sink this adapter hands to ingestion. The personal vault is always
+ * present; the app-delivery sink (P-011) appears only when this deployment has
+ * an owner mapping for the source's user, so an unconfigured deployment sees
+ * exactly the previous single-sink behaviour.
+ */
+type IngestSink = PersonalVaultExternalSink | AppDeliveryExternalSink;
 
 const GOOGLE_CALENDAR_API_ORIGIN = 'https://www.googleapis.com';
 const DEFAULT_LEAD_MINUTES = 15;
@@ -92,6 +104,16 @@ export interface GoogleCalendarSyncDeps {
     workspaceId: string,
     sourceId: string,
   ) => Promise<PersonalVaultExternalSink>;
+  /**
+   * P-011 app-delivery sink factory. Returning null means "this deployment is
+   * not configured to deliver to the Calendar app", which is the normal state
+   * for an install with no owner mapping — not an error.
+   */
+  createAppSink?: (
+    sql: postgres.Sql,
+    workspaceId: string,
+    sourceId: string,
+  ) => Promise<AppDeliveryExternalSink | null>;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
 }
 
@@ -413,7 +435,7 @@ function assertSource(source: ExternalTriggerSourceRow, accessToken: string): vo
 async function deliver(
   sql: postgres.Sql,
   ingest: Ingest,
-  sink: PersonalVaultExternalSink,
+  sinks: IngestSink[],
   source: ExternalTriggerSourceRow,
   event: GoogleCalendarEvent,
   eventName: 'event-created' | 'event-updated' | 'event-upcoming',
@@ -432,7 +454,7 @@ async function deliver(
     normalize: (payload) => normalizeGoogleCalendarEvent(payload as GoogleCalendarEvent),
     occurredAt: calendarDate(event.start) ?? nonEmpty(event.updated) ?? nonEmpty(event.created),
     dedupeKey,
-    additionalSinks: [sink],
+    additionalSinks: [...sinks],
   });
   if (!result.ok) throw new Error(`google_calendar_delivery_failed:${id}:${eventName}`);
 }
@@ -441,7 +463,7 @@ async function syncChanges(
   sql: postgres.Sql,
   source: ExternalTriggerSourceRow,
   accessToken: string,
-  sink: PersonalVaultExternalSink,
+  sinks: IngestSink[],
   deps: Required<Pick<GoogleCalendarSyncDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
   syncToken: string | null,
 ): Promise<{
@@ -479,7 +501,7 @@ async function syncChanges(
       await deliver(
         sql,
         deps.ingest,
-        sink,
+        sinks,
         source,
         event,
         eventName,
@@ -502,7 +524,7 @@ async function emitUpcoming(
   sql: postgres.Sql,
   source: ExternalTriggerSourceRow,
   accessToken: string,
-  sink: PersonalVaultExternalSink,
+  sinks: IngestSink[],
   deps: Required<Pick<GoogleCalendarSyncDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
   now: Date,
   leadMinutes: number,
@@ -538,7 +560,7 @@ async function emitUpcoming(
       await deliver(
         sql,
         deps.ingest,
-        sink,
+        sinks,
         source,
         event,
         'event-upcoming',
@@ -571,6 +593,13 @@ export async function syncGoogleCalendarSource(
   const updateSource = provided.updateSource ?? updateExternalTriggerSourceSyncState;
   const createSink = provided.createPersonalSink ?? createPersonalVaultExternalSinkForSource;
   const sink = await createSink(sql, source.workspaceId, source.id);
+  // P-011: deliver into the Calendar app as events land, but only where an
+  // owner mapping configures it. Resolved ONCE per sync, not per event.
+  const createAppSink = provided.createAppSink
+    ?? ((db: postgres.Sql, workspaceId: string, sourceId: string) =>
+      createAppDeliverySinkIfConfigured(db, workspaceId, sourceId, 'calendar'));
+  const appSink = await createAppSink(sql, source.workspaceId, source.id);
+  const sinks: IngestSink[] = appSink ? [sink, appSink] : [sink];
   const now = (provided.now ?? (() => new Date()))();
   if (!Number.isFinite(now.getTime())) throw new Error('google_calendar_now_invalid');
 
@@ -578,7 +607,7 @@ export async function syncGoogleCalendarSource(
   let mode: GoogleCalendarSyncResult['mode'] = token ? 'incremental' : 'full';
   let changes;
   try {
-    changes = await syncChanges(sql, source, accessToken, sink, deps, token);
+    changes = await syncChanges(sql, source, accessToken, sinks, deps, token);
   } catch (error) {
     if (!(error instanceof GoogleCalendarApiError) || error.status !== 410 || !token) throw error;
     const clearedCursor = cursorWithoutSyncToken(source.cursor);
@@ -593,7 +622,7 @@ export async function syncGoogleCalendarSource(
       sql,
       { ...source, cursor: clearedCursor },
       accessToken,
-      sink,
+      sinks,
       deps,
       null,
     );
@@ -615,7 +644,7 @@ export async function syncGoogleCalendarSource(
     sql,
     source,
     accessToken,
-    sink,
+    sinks,
     deps,
     now,
     sourceLeadMinutes(source, input.leadMinutes),

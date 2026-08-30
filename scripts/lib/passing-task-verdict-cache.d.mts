@@ -3,6 +3,9 @@ export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION: string;
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS: number;
 export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP: string;
 export const PC_HEAVY_VOLATILE_IDENTITY_ENV: readonly string[];
+export const PASSING_TASK_SHARED_ROOT_INPUTS: readonly string[];
+export const PASSING_TASK_SHARED_RUNTIME_INPUTS: readonly string[];
+export const PASSING_TASK_SHARED_MODULE_INPUTS: readonly string[];
 
 export interface PassingTaskVerdictIdentity {
   taskKey: string;
@@ -104,6 +107,13 @@ export function hashDependencyFileSet(args: {
   unavailable?: string[];
   digestCache?: Map<string, unknown>;
 }): DependencyClosureProof;
+export type SharedInputProvenance =
+  | { ok: true; files: string[] }
+  | { ok: false; reason: string };
+export function passingTaskVerdictSharedInputProvenance(args: {
+  root: string;
+  trackedScan: { files: string[]; unscannedPresent: string[] };
+}): SharedInputProvenance;
 export function passingTaskVerdictDependencyProvenance(args: {
   root: string;
   taskKey: string;
@@ -112,6 +122,7 @@ export function passingTaskVerdictDependencyProvenance(args: {
   workspaces: Map<string, { dir: string; deps: string[] }>;
   trackedScan: { files: string[]; unscannedPresent: string[] };
   repoWideTaskKeys: Set<string>;
+  sharedInputProvenance?: SharedInputProvenance | null;
   digestCache?: Map<string, unknown>;
 }): DependencyClosureProof;
 export function shouldStorePassingTaskVerdict(args: {

@@ -22,6 +22,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { stripCommentsOnly } from "./strip-comments-and-strings.mjs";
 
 /** Extensions we index. */
 const SOURCE_RE = /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
@@ -38,6 +39,9 @@ const SKIP_DIRS = new Set([
 /** `import x from 's'` / `export … from 's'` / `import('s')` / `import 's'` / `require('s')`. */
 const SPECIFIER_RE =
   /(?:\bimport\b|\bexport\b)[^;]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]|\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+/** Runtime-loaded files named relative to the current module rather than imported. */
+const MODULE_RUNTIME_PATH_RE =
+  /\b(?:resolve|join)\s*\(\s*__dirname\s*,\s*['"]([^'"]+)['"]\s*\)|\bnew\s+URL\s*\(\s*['"]([^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/g;
 
 export function isTestFile(file) {
   return TEST_RE.test(file);
@@ -214,6 +218,106 @@ function candidatesFor(base) {
     for (const ext of [".ts", ".tsx", ".mts", ".cts"]) out.push(swapped + ext);
   }
   return out;
+}
+
+/**
+ * Walk the transitive static module graph from a small set of entry files.
+ *
+ * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
+ * resolver, but reads only modules the entries can actually reach. Passing-task provenance uses
+ * it for the affected-test runner itself; indexing every file under `scripts/` would make an
+ * unrelated maintenance script an input to every workspace test, while indexing the whole repo
+ * would cost more than the cache can save.
+ *
+ * Runtime file paths named as `resolve(__dirname, './x')` / `new URL('./x', import.meta.url)` are
+ * edges too. Vitest config loads setup/reporting modules by path rather than import; ignoring that
+ * shape would produce a complete-looking but false-small proof. Every uncertainty fails closed.
+ * An unreadable entry, unresolved relative/alias import or runtime path, edge escaping `rootDir`,
+ * or empty graph returns `ok:false`; callers must run the task instead of reusing a proof. Bare
+ * package imports are represented by the package-manager lockfiles in the caller's manifest and
+ * therefore do not create an on-disk edge here.
+ *
+ * @param {object} [o]
+ * @param {string} o.rootDir absolute repository root
+ * @param {string[]} o.entryFiles absolute entry files to walk
+ * @param {RelatedFs} [o.fs] filesystem seam (injected in tests)
+ * @returns {{ ok: boolean, files: string[], unresolved: string[] }}
+ */
+export function staticImportClosure({
+  rootDir,
+  entryFiles,
+  fs = defaultFs(),
+} = {}) {
+  const root = path.resolve(rootDir ?? ".");
+  const pending = [...(entryFiles ?? [])].map((file) => path.resolve(file));
+  const visited = new Set();
+  const unresolved = new Set();
+
+  const insideRoot = (file) => {
+    const rel = path.relative(root, file);
+    return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
+  };
+
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (!file || visited.has(file)) continue;
+    if (!insideRoot(file)) {
+      unresolved.add(`${file}:outside-root`);
+      continue;
+    }
+    const source = fs.read(file);
+    if (source === null) {
+      unresolved.add(`${file}:unreadable`);
+      continue;
+    }
+    visited.add(file);
+    let graphSource;
+    try {
+      graphSource = stripCommentsOnly(source, file);
+    } catch {
+      unresolved.add(`${file}:comment-strip-failed`);
+      continue;
+    }
+
+    for (const match of graphSource.matchAll(SPECIFIER_RE)) {
+      const spec = match[1] ?? match[2] ?? match[3] ?? match[4];
+      if (!spec) continue;
+      const kind = classifySpecifier(spec);
+      if (kind === "bare") continue;
+      if (kind === "alias") {
+        unresolved.add(`${file}:${spec}`);
+        continue;
+      }
+      const base = path.resolve(path.dirname(file), spec);
+      const target = candidatesFor(base).find((candidate) => fs.exists(candidate));
+      if (!target || !insideRoot(target)) {
+        unresolved.add(`${file}:${spec}`);
+        continue;
+      }
+      pending.push(path.resolve(target));
+    }
+    for (const match of graphSource.matchAll(MODULE_RUNTIME_PATH_RE)) {
+      const spec = match[1] ?? match[2];
+      if (!spec) continue;
+      // Directory anchors such as `resolve(__dirname, '../..')` configure search roots; they are
+      // not loaded modules. Only source-shaped runtime paths join the module proof here.
+      if (!SOURCE_RE.test(spec)) continue;
+      const target = candidatesFor(path.resolve(path.dirname(file), spec)).find((candidate) =>
+        fs.exists(candidate),
+      );
+      if (!target || !insideRoot(target)) {
+        unresolved.add(`${file}:runtime:${spec}`);
+        continue;
+      }
+      pending.push(path.resolve(target));
+    }
+  }
+
+  return {
+    ok: visited.size > 0 && unresolved.size === 0,
+    files: [...visited].sort(),
+    unresolved: [...unresolved].sort(),
+  };
 }
 
 /**
