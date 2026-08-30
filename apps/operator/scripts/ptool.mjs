@@ -1173,6 +1173,16 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // deadline; cutting the request off first turns a valid typed result into
   // an ambiguous blank/transport failure. Keep the caller outside the MCP
   // transport cap so the server-side result remains observable.
+  // EI-21863905839650704: loop:arm declares no timeoutSec (bound only by the
+  // flat 55s MCP_DEADLINE_MS floor) and performs a compound admission — loop
+  // materialization, an optional work-item claim, inbox-wake arming, a
+  // wake-reachability probe, and control-anchor refresh — any of which can
+  // stack past ptool's flat 30s client cutoff under fleet load. A reporter's
+  // combined "coord:declare-intent and loop:arm" call surfaced the identical
+  // ambiguous-outcome failure for this tool. Keep the client outside the MCP
+  // transport cap so a committed loop arm returns its typed receipt instead
+  // of an outcome-unknown -32001 that invites an unsafe blind re-arm.
+  ['loop:arm', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['loop:checkpoint', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['loop:end', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['loop:status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
@@ -1183,6 +1193,20 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // deadline; preserve the typed receipt instead of surfacing a transport
   // timeout that invites an unsafe replay.
   ['coord:send', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21863905839650704: coord:declare-intent declares no timeoutSec, so it
+  // is bound only by the flat 55s MCP_DEADLINE_MS floor (_mcp-handler.ts
+  // effectiveMcpDeadlineMs). EI-9484 bounded its own enrichment legs (mailbox
+  // drain, presence/fleet re-reads) to 8s each so a slow leg cannot hold the
+  // handler past the server deadline, but under fleet/DB-pool pressure those
+  // legs plus the base presence upsert can still legitimately outlive ptool's
+  // flat 30s client cutoff. A reporter observed exactly that: "MCP -32001
+  // timed out after 30s; mutation may have executed and requires state
+  // reconciliation before replay" — the client aborted before the server's
+  // (already-succeeded) presence write and claim reconciliation could be
+  // observed. Keep the client outside the MCP transport cap so the server's
+  // typed result wins the race instead of leaving the caller to guess whether
+  // its declared intent / claimed lane actually landed.
+  ['coord:declare-intent', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.

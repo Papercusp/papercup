@@ -914,6 +914,27 @@ describe('ptool timeoutForTool — continuity/control-plane calls outlive the fl
   });
 });
 
+describe('ptool timeoutForTool — coord:declare-intent and loop:arm outlive the flat client deadline (EI-21863905839650704)', () => {
+  // Both tools declare no timeoutSec, so the server bounds them only at the
+  // flat 55s MCP_DEADLINE_MS floor. A reporter observed ptool's flat 30s
+  // client cutoff abort a "coord:declare-intent and loop:arm" call with
+  // "MCP -32001 timed out after 30s; mutation may have executed and requires
+  // state reconciliation before replay" while the mutation had already (or
+  // was still about to) land server-side.
+  const OUTCOME_UNKNOWN_MUTATIONS = ['coord:declare-intent', 'loop:arm'];
+
+  it.each(OUTCOME_UNKNOWN_MUTATIONS)('%s gets a long-call deadline beyond the MCP transport cap', (name) => {
+    const timeout = timeoutForTool(name, {});
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it.each(OUTCOME_UNKNOWN_MUTATIONS)('%s keeps the long-call deadline through tools:invoke', (name) => {
+    expect(timeoutForTool('tools:invoke', { name })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool serviceOf / groupTools', () => {
   it('splits the service off the colon', () => {
     expect(serviceOf('work_items:list')).toBe('work_items');
