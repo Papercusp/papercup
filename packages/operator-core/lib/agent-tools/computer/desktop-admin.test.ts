@@ -39,6 +39,10 @@ function fakeProvisioner() {
       height: opts?.height ?? 768,
       // No live X server here, so no GL was measured — the honest zero value.
       gl: NO_GL_STRATEGY,
+      // P-012: the default local backend, for the same reason the GL value is the zero
+      // one — nothing was really started, so claiming the KasmVNC backend would assert
+      // a listener this fake does not have.
+      xServer: 'xvfb',
       // P-005: no task ledger in a fake provisioner — the honest "unenrolled"
       // value, which is exactly what the governor reports as unfreezable.
       taskId: null,

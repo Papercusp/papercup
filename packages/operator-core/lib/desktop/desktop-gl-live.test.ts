@@ -59,6 +59,31 @@ function hasBin(bin: string): boolean {
 const REQUIRED = ['Xvfb', 'xdpyinfo', 'import', 'openbox', 'glxinfo', 'glxgears'];
 const liveEnabled = process.env.PAPERCUSP_DESKTOP_GL_LIVE === '1' && REQUIRED.every(hasBin);
 
+/**
+ * P-012 — the same suite, against the KasmVNC backend.
+ *
+ * This is what "local-dev Xvfb parity pinned by test" means concretely: not a second
+ * suite that resembles this one, but THESE assertions run over both backends, because
+ * both are the same `provisionSandboxDesktop` call with one argument changed. If a
+ * future change makes the kasmvnc path diverge — a different GL measurement, a capture
+ * that comes back blank, an unstable probe — it fails here rather than on a customer's
+ * VM, where the symptom is a desktop that serves grey pixels and no error.
+ *
+ * Guarded separately from `liveEnabled` because KasmVNC arrives via the opt-in desktop
+ * pack, so a dev box that never opted in legitimately does not have it. Skipping is
+ * correct there; claiming parity without the binary would not be.
+ */
+const kasmvncEnabled = liveEnabled && hasBin('Xkasmvnc') && hasBin('kasmvncpasswd');
+
+/**
+ * Backends this run can actually exercise. `xvfb` is always in the list when the live
+ * suite runs at all; `kasmvnc` joins it only when the pack is installed.
+ */
+const BACKENDS: Array<{ xServer: 'xvfb' | 'kasmvnc'; enabled: boolean }> = [
+  { xServer: 'xvfb', enabled: liveEnabled },
+  { xServer: 'kasmvnc', enabled: kasmvncEnabled },
+];
+
 /** Capture the root window of `display` as PNG bytes, via the same command the driver uses. */
 function capture(display: string): Uint8Array {
   const { bin, args } = captureCommand({ display, width: 1024, height: 768 });
@@ -137,4 +162,82 @@ describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints re
       expect(desktop.gl.renderer, 'a non-none tier must name the renderer it observed').toBeTruthy();
     }
   }, 60_000);
+});
+
+/**
+ * P-012 — BACKEND PARITY. The three claims above, re-run over every available backend.
+ *
+ * Measured 2026-08-30 on a KasmVNC 1.5.0 desktop with `/dev/dri` hidden (the GPU-less
+ * BYOC condition reproduced in a mount namespace), which is where the expectations
+ * come from and why the pair below is the evidence rather than either half:
+ *     empty framebuffer            → verdict blank,       1 distinct colour
+ *     WebKitGTK MiniBrowser page   → verdict has-content, 133 distinct colours
+ *     gl-strategy on that display  → mesa-software / llvmpipe (LLVM 20.1.2)
+ * The same display measured `virtualgl / hardware (RTX 3090)` with the DRI nodes
+ * visible, so the software rung is a real measurement of a real condition and not a
+ * probe that failed shut.
+ */
+describe.each(BACKENDS)('P-012 — $xServer backend parity', ({ xServer, enabled }) => {
+  let desktop: SandboxDesktop | undefined;
+
+  afterEach(async () => {
+    await desktop?.release();
+    desktop = undefined;
+  });
+
+  it.skipIf(!enabled)('reports the backend it was actually booted on', async () => {
+    desktop = await provisionSandboxDesktop({ width: 1024, height: 768, apps: [], xServer });
+    // D-007: the registry row is the AUTHORIZATION, so what it records has to be true.
+    // A kasmvnc desktop mislabelled `xvfb-local` would tell P-013's viewer lane there
+    // is nothing to connect to, and an xvfb desktop claiming an endpoint would send it
+    // dialling a port that does not exist.
+    expect(desktop.xServer).toBe(xServer);
+    if (xServer === 'kasmvnc') {
+      expect(desktop.endpoint?.host).toBe('127.0.0.1');
+      expect(desktop.endpoint?.port).toBeGreaterThan(0);
+      expect(desktop.credentials?.view.user).toBeTruthy();
+      expect(desktop.credentials?.control.user).toBeTruthy();
+      // The two credentials must be genuinely different secrets, not one reused with
+      // two names — otherwise the view/takeover split is cosmetic.
+      expect(desktop.credentials?.view.secret).not.toBe(desktop.credentials?.control.secret);
+    } else {
+      // Xvfb runs `-nolisten tcp`. The absence here is the local path's "no listener,
+      // ever" property, and it is asserted so a future refactor cannot quietly add one.
+      expect(desktop.endpoint).toBeUndefined();
+      expect(desktop.credentials).toBeUndefined();
+    }
+  }, 90_000);
+
+  it.skipIf(!enabled)('CONTROL: an empty desktop reads as blank on this backend', async () => {
+    desktop = await provisionSandboxDesktop({ width: 1024, height: 768, apps: [], xServer });
+    await wait(1000);
+    const report = analyzeImageBlankness(capture(desktop.display));
+    expect(
+      report.verdict,
+      `an EMPTY ${xServer} framebuffer was judged ${report.verdict} (${report.reason}) — the ` +
+        'detector is not discriminating, so the non-blank assertion below it proves nothing',
+    ).toBe('blank');
+  }, 90_000);
+
+  it.skipIf(!enabled)('a GL app paints real pixels on this backend', async () => {
+    desktop = await provisionSandboxDesktop({
+      width: 1024,
+      height: 768,
+      apps: [['glxgears']],
+      xServer,
+    });
+    expect(
+      desktop.gl.tier,
+      `no GL on this host (${desktop.gl.reason}) — the ${xServer} desktop cannot be trusted for ` +
+        'pixel evidence, which is a recorded capability, not a test failure to route around',
+    ).not.toBe('none');
+    await wait(3000);
+    const report = analyzeImageBlankness(capture(desktop.display));
+    expect(
+      report.verdict,
+      `GL app screenshot judged ${report.verdict} on a ${xServer} desktop reporting ` +
+        `gl.tier=${desktop.gl.tier} via ${desktop.gl.id} — the strategy claimed GL, the pixels disagree`,
+    ).toBe('has-content');
+    expect(report.distinctColors ?? 0).toBeGreaterThan(8);
+  }, 90_000);
 });

@@ -97,11 +97,21 @@ const HOUR = 3600;
  * - A **frame-slot** display belongs to an agent spawn and follows the sandbox
  *   shape; its real teardown rides the agent's own exit, and this is the backstop
  *   for when that never happens.
+ * - A **kasmvnc** sandbox (P-012 / D-020) is an X server like the others, so the
+ *   sandbox freeze/reap shape is right — with ONE deliberate difference: a HUMAN may
+ *   be watching it through P-013's viewer. Freezing a desktop someone is looking at
+ *   turns a live picture into a frozen one with no error anywhere, so the freeze
+ *   threshold is raised to 4h to widen the margin for the case where the viewer's
+ *   heartbeat is the only thing saying "in use". That is a backstop, not the
+ *   mechanism: the real fix is D-008 rule 4 — a connected viewer heartbeats
+ *   `last_active_at`, which keeps the session out of `idle` entirely, and P-014
+ *   drops this hold back down once that heartbeat is landed and measured.
  */
 export const DESKTOP_LIFECYCLE_POLICY: Readonly<Record<DesktopKind, DesktopLifecyclePolicy>> = {
   'xvfb-local': { idleAfterSec: 15 * 60, freezeAfterSec: 2 * HOUR, reapAfterFrozenSec: 6 * HOUR },
   bwrap: { idleAfterSec: 15 * 60, freezeAfterSec: 2 * HOUR, reapAfterFrozenSec: 6 * HOUR },
   'frame-slot': { idleAfterSec: 15 * 60, freezeAfterSec: 2 * HOUR, reapAfterFrozenSec: 6 * HOUR },
+  kasmvnc: { idleAfterSec: 15 * 60, freezeAfterSec: 4 * HOUR, reapAfterFrozenSec: 6 * HOUR },
   'vm-guest': { idleAfterSec: 5 * 60, freezeAfterSec: 20 * 60, reapAfterFrozenSec: 24 * HOUR },
   microvm: { idleAfterSec: 5 * 60, freezeAfterSec: 20 * 60, reapAfterFrozenSec: 24 * HOUR },
 };

@@ -1,0 +1,418 @@
+/**
+ * workspace-host-desktop-pack.ts — the OPT-IN agent-sandbox desktop pack (P-012).
+ *
+ * ── What this is, and what it deliberately is not ──────────────────────────────────
+ * D-018 (owner ruling) scoped the BYOC cloud desktop to AGENT SANDBOX DESKTOPS ONLY,
+ * and ruled that it is never a base-image requirement: the shipped workspace-host
+ * image stays headless by construction. D-022 then settled the mechanism — this is a
+ * POST-PROVISION LAYERED INSTALL applied to an already-bootstrapped host, not an
+ * image variant. The reasoning is on D-022; the short version is that an image is
+ * chosen once, for the whole host, at provision time, so "opt-in" delivered as a
+ * different image is opt-in per fleet rather than per workspace.
+ *
+ * It does NOT stand up a Papercusp app session on the VM (byoc P-048 ships the thin
+ * GUI/browser for that) and it does NOT provide visible cloud fleet terminals (cloud
+ * fleets run headless; their observability is transcripts, coord and plans).
+ *
+ * ── The two things most likely to be got wrong, stated up front ────────────────────
+ * 1. THE LISTENER. KasmVNC ships `network.interface: 0.0.0.0` and `Xkasmvnc -help`
+ *    documents `interface ... (default=all)`. An install that merely succeeded would
+ *    therefore publish every agent's sandbox desktop on the VM's external interface.
+ *    D-020 requires loopback-only, reachable solely through P-013's ticket-gated
+ *    proxy, so this pack OVERRIDES that default in the system config AND the runtime
+ *    argv, and `loopback-only-listener` is a named check rather than a comment.
+ * 2. THE IDENTITY. The pack introduces a THIRD unix identity. It would have been
+ *    less code to run sandbox desktops as the existing workspace user — and that is
+ *    exactly the credential bleed the item forbids: that account owns the customer's
+ *    workspace and its git credentials, so an agent-operated app escaping its bwrap
+ *    would inherit them. The desktop user owns nothing but desktops.
+ */
+import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
+import {
+  DEFAULT_WORKSPACE_HOST_SERVICE_USER,
+  DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_RUNTIME_ROOT,
+  WORKSPACE_HOST_STATE_ROOT,
+} from './workspace-host-bootstrap';
+
+export const WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION =
+  'papercusp-workspace-host-desktop-pack-v1';
+export const WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX =
+  'PAPERCUSP_WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION=';
+
+/**
+ * The pack's own unix identity — NOT the service user and NOT the workspace user.
+ *
+ * The whole point is what it is *not* a member of. `papercusp` (service) holds the
+ * operator's runtime and its credentials; `papercusp-workspace` holds the customer's
+ * checkout, their git credentials, and their agent credentials, in a 0700 home. A
+ * sandbox desktop needs neither, so it gets neither, and `workspace-credential-isolation`
+ * asserts the negative rather than trusting that nobody adds a convenient group later.
+ */
+export const DEFAULT_WORKSPACE_HOST_DESKTOP_USER = 'papercusp-desktop';
+export const DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP = 'papercusp-desktop';
+/** Home + per-session credential root for the desktop pool. Mode 0700, desktop-user owned. */
+export const WORKSPACE_HOST_DESKTOP_ROOT = `${WORKSPACE_HOST_STATE_ROOT}/desktop`;
+
+/**
+ * The pinned KasmVNC artifact.
+ *
+ * Measured 2026-08-30 against the GitHub release API and a local `dpkg-deb` of the
+ * downloaded file. It is NOT in the Ubuntu archive — `apt install kasmvncserver`
+ * cannot work — so the pack fetches and verifies by digest, the same posture the
+ * bootstrap contract already takes to the Server bundle.
+ */
+export interface WorkspaceHostDesktopPackArtifact {
+  version: string;
+  /** Public HTTPS .deb URL. Query credentials are forbidden, as in the bootstrap release. */
+  debUrl: string;
+  debSha256: string;
+  debBytes: number;
+}
+
+export const PINNED_KASMVNC_ARTIFACT: Readonly<WorkspaceHostDesktopPackArtifact> = {
+  version: '1.5.0',
+  debUrl:
+    'https://github.com/kasmtech/KasmVNC/releases/download/v1.5.0/kasmvncserver_noble_1.5.0_amd64.deb',
+  debSha256: 'f599fe02e2175b9817b6165f74a5d2bebdc73118dde9181ba3410963bed7ae1e',
+  debBytes: 2_653_112,
+};
+
+/**
+ * APT packages the pack layers on. Split by WHY, because the temptation when one of
+ * these is missing is to install a metapackage, and a metapackage is how a headless
+ * host acquires a login manager.
+ */
+export const WORKSPACE_HOST_DESKTOP_PACK_APT = {
+  /** KasmVNC's own declared Depends that are not in the base image. */
+  kasmvncRuntime: [
+    'libgl1',
+    'libgbm1',
+    'libxfont2',
+    'libxtst6',
+    'libunwind8',
+    'xauth',
+    'x11-xkb-utils',
+    'xkb-data',
+    'ssl-cert',
+    'libswitch-perl',
+    'libyaml-tiny-perl',
+    'libhash-merge-simple-perl',
+    'liblist-moreutils-perl',
+    'libtry-tiny-perl',
+    'libdatetime-perl',
+    'libdatetime-timezone-perl',
+  ],
+  /** The window manager. openbox draws chrome through plain X11 and needs no GL. */
+  windowManager: ['openbox'],
+  /**
+   * gl-strategy's measured ladder. `libgl1-mesa-dri` is what makes the mesa-software
+   * rung real on a GPU-less VM; without it the honest measurement is `tier: 'none'`
+   * and every capture from the desktop is untrustworthy by construction.
+   */
+  gl: ['libgl1-mesa-dri', 'libegl1', 'mesa-utils'],
+  /** D-010's a11y bus: a dbus-daemon plus AT-SPI. Ordering is enforced in a11y-bus.ts. */
+  accessibility: ['dbus-daemon', 'at-spi2-core'],
+  /** The driver layer D-021 keeps X-bound: xdotool input, `import` capture. */
+  driver: ['xdotool', 'imagemagick', 'x11-utils'],
+  /** D-015/D-016 per-app confinement. */
+  sandbox: ['bubblewrap'],
+} as const;
+
+export const WORKSPACE_HOST_DESKTOP_PACK_PHASES = [
+  'validate-host',
+  'install-x-stack',
+  'install-kasmvnc',
+  'harden-listener',
+  'create-desktop-identity',
+  'attest-pack',
+] as const;
+export type WorkspaceHostDesktopPackPhase =
+  (typeof WORKSPACE_HOST_DESKTOP_PACK_PHASES)[number];
+
+export const WORKSPACE_HOST_DESKTOP_PACK_CHECKS = [
+  'ubuntu-24.04',
+  'host-bootstrapped',
+  'kasmvnc-digest',
+  'kasmvnc-binary',
+  'loopback-only-listener',
+  'desktop-identity',
+  'workspace-credential-isolation',
+  'x-stack',
+  'a11y-stack',
+  'gl-stack',
+] as const;
+export type WorkspaceHostDesktopPackCheckName =
+  (typeof WORKSPACE_HOST_DESKTOP_PACK_CHECKS)[number];
+
+export interface WorkspaceHostDesktopPackIsolation {
+  desktopUser?: string;
+  desktopGroup?: string;
+  /** The bootstrap's workspace account, which the desktop user must NOT be able to read. */
+  workspaceUser?: string;
+  /** The bootstrap's service account, which the desktop user must NOT share a group with. */
+  serviceUser?: string;
+}
+
+export interface WorkspaceHostDesktopPackInput {
+  contractVersion: typeof WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION;
+  action: 'install' | 'uninstall';
+  hostId: string;
+  artifact?: WorkspaceHostDesktopPackArtifact;
+  isolation?: WorkspaceHostDesktopPackIsolation;
+  /** Persistable labels only; secret-shaped values are rejected, as in the bootstrap. */
+  publicMetadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface WorkspaceHostDesktopPackAttestation {
+  contractVersion: typeof WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION;
+  hostId: string;
+  action: WorkspaceHostDesktopPackInput['action'];
+  ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
+  observedAt: string;
+  status: 'healthy';
+  kasmvnc: { version: string; sha256: string };
+  checks: Array<{ name: WorkspaceHostDesktopPackCheckName; ok: true }>;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function assertPublicHttps(url: string, label: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Desktop pack ${label} must be an absolute URL`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`Desktop pack ${label} must be https`);
+  }
+  // Same rule the bootstrap release applies: a credential in a URL ends up in process
+  // listings, shell history and any log that echoes the fetch.
+  if (parsed.username || parsed.password || parsed.search) {
+    throw new Error(`Desktop pack ${label} must not carry credentials or a query string`);
+  }
+}
+
+/**
+ * Render the pack's root shell script.
+ *
+ * Every phase ends by printing its name, so a partial run says exactly how far it got
+ * rather than leaving the caller to infer it from which check failed. `set -euo
+ * pipefail` is load-bearing here for the same reason it is in the bootstrap: several
+ * steps are `cmd | cmd` pipelines whose first half is the one that can fail.
+ */
+export function buildWorkspaceHostDesktopPackScript(
+  input: WorkspaceHostDesktopPackInput,
+): { script: string; phases: readonly WorkspaceHostDesktopPackPhase[] } {
+  if (input.contractVersion !== WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION) {
+    throw new Error(
+      `Desktop pack contract mismatch: expected ${WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION}`,
+    );
+  }
+  if (!input.hostId.trim()) throw new Error('Desktop pack requires a hostId');
+  if (input.publicMetadata) {
+    assertWorkspaceHostSecretIsolation(input.publicMetadata, 'desktopPack.publicMetadata');
+  }
+
+  const artifact = input.artifact ?? PINNED_KASMVNC_ARTIFACT;
+  assertPublicHttps(artifact.debUrl, 'artifact.debUrl');
+  if (!/^[0-9a-f]{64}$/.test(artifact.debSha256)) {
+    throw new Error('Desktop pack artifact.debSha256 must be a lowercase 64-char sha256');
+  }
+
+  const desktopUser = input.isolation?.desktopUser ?? DEFAULT_WORKSPACE_HOST_DESKTOP_USER;
+  const desktopGroup = input.isolation?.desktopGroup ?? DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP;
+  const workspaceUser = input.isolation?.workspaceUser ?? DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
+  const serviceUser = input.isolation?.serviceUser ?? DEFAULT_WORKSPACE_HOST_SERVICE_USER;
+
+  if (desktopUser === workspaceUser || desktopUser === serviceUser) {
+    throw new Error(
+      `Desktop pack refuses desktopUser=${desktopUser}: sandbox desktops must not run as the ` +
+        'workspace or service account. That account holds the customer checkout and its git and ' +
+        'agent credentials, so reusing it would make a sandbox escape a credential compromise — ' +
+        'which is the exact bleed this pack exists to prevent.',
+    );
+  }
+
+  const apt = [
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.kasmvncRuntime,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.windowManager,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.gl,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.accessibility,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.driver,
+    ...WORKSPACE_HOST_DESKTOP_PACK_APT.sandbox,
+  ];
+
+  const script = `#!/usr/bin/env bash
+# Papercusp workspace-host DESKTOP PACK (${WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION})
+# Opt-in, layered, post-provision. Never part of the base image (D-018 / D-022).
+set -euo pipefail
+
+HOST_ID=${shellQuote(input.hostId)}
+DESKTOP_USER=${shellQuote(desktopUser)}
+DESKTOP_GROUP=${shellQuote(desktopGroup)}
+WORKSPACE_USER=${shellQuote(workspaceUser)}
+SERVICE_USER=${shellQuote(serviceUser)}
+DESKTOP_ROOT=${shellQuote(WORKSPACE_HOST_DESKTOP_ROOT)}
+KASM_URL=${shellQuote(artifact.debUrl)}
+KASM_SHA=${shellQuote(artifact.debSha256)}
+KASM_VERSION=${shellQuote(artifact.version)}
+KASM_YAML=/etc/kasmvnc/kasmvnc.yaml
+
+phase() { echo "PAPERCUSP_DESKTOP_PACK_PHASE=$1"; }
+fail()  { echo "PAPERCUSP_DESKTOP_PACK_FAIL=$1" >&2; exit 1; }
+
+# ── validate-host ───────────────────────────────────────────────────────────────────
+. /etc/os-release
+[ "\${ID:-}" = ubuntu ] || fail ubuntu-24.04
+[ "\${VERSION_ID:-}" = ${shellQuote(WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION)} ] || fail ubuntu-24.04
+# The pack LAYERS onto a bootstrapped host; it does not bootstrap one. Refusing here
+# turns "desktops silently do not work" into one legible failure at install time.
+[ -d ${shellQuote(WORKSPACE_HOST_RUNTIME_ROOT)} ] || fail host-bootstrapped
+phase validate-host
+
+# ── install-x-stack ─────────────────────────────────────────────────────────────────
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+# --no-install-recommends is what keeps this a PACK and not a desktop environment:
+# several of these recommend a display manager, and a workspace host must never
+# acquire a login screen as a side effect of opting into agent desktops.
+apt-get install -y --no-install-recommends ${apt.join(' ')}
+phase install-x-stack
+
+# ── install-kasmvnc ─────────────────────────────────────────────────────────────────
+# Not in the Ubuntu archive, so fetch + verify by digest. The digest is checked BEFORE
+# dpkg is allowed near the file: verifying afterwards would mean a substituted package
+# had already run its maintainer scripts as root.
+KASM_DEB="$(mktemp -t kasmvnc-XXXXXX.deb)"
+trap 'rm -f "$KASM_DEB"' EXIT
+curl -fsSL --proto '=https' --tlsv1.2 -o "$KASM_DEB" "$KASM_URL"
+echo "$KASM_SHA  $KASM_DEB" | sha256sum -c - >/dev/null 2>&1 || fail kasmvnc-digest
+apt-get install -y --no-install-recommends "$KASM_DEB"
+command -v Xkasmvnc >/dev/null 2>&1 || fail kasmvnc-binary
+command -v kasmvncpasswd >/dev/null 2>&1 || fail kasmvnc-binary
+phase install-kasmvnc
+
+# ── harden-listener ─────────────────────────────────────────────────────────────────
+# D-020. The package ships network.interface: 0.0.0.0; this is the override, and the
+# check below re-reads the file rather than trusting that the write happened.
+mkdir -p /etc/kasmvnc
+cat > "$KASM_YAML" <<'KASMYAML'
+# Papercusp desktop pack — MANAGED FILE, regenerated by the pack on every install.
+# The listener is loopback-only by policy (D-020): sandbox desktops are reachable
+# exclusively through the workspace-host operator's ticket-gated proxy, never
+# directly. Widening the interface value here silently exposes every agent desktop on
+# the VM's external interface, so the pack asserts this value as a named check.
+network:
+  interface: 127.0.0.1
+  protocol: http
+  ssl:
+    require_ssl: false
+desktop:
+  allow_resize: true
+  pixel_depth: 24
+KASMYAML
+chmod 0644 "$KASM_YAML"
+grep -qE '^[[:space:]]+interface:[[:space:]]*127\\.0\\.0\\.1[[:space:]]*$' "$KASM_YAML" \\
+  || fail loopback-only-listener
+grep -qE '^[[:space:]]+interface:[[:space:]]*0\\.0\\.0\\.0' "$KASM_YAML" \\
+  && fail loopback-only-listener
+phase harden-listener
+
+# ── create-desktop-identity ─────────────────────────────────────────────────────────
+# A third identity, owning nothing but desktops. --no-create-home because the home is
+# created explicitly below at 0700; letting adduser create it applies the skel and the
+# default mode, which on this image is world-readable.
+getent group "$DESKTOP_GROUP" >/dev/null || groupadd --system "$DESKTOP_GROUP"
+getent passwd "$DESKTOP_USER" >/dev/null || useradd --system \\
+  --gid "$DESKTOP_GROUP" --home-dir "$DESKTOP_ROOT" --no-create-home \\
+  --shell /usr/sbin/nologin "$DESKTOP_USER"
+install -d -o "$DESKTOP_USER" -g "$DESKTOP_GROUP" -m 0700 "$DESKTOP_ROOT"
+
+# THE ISOLATION ASSERTIONS. Each is the negative form on purpose: "is not a member",
+# "cannot read". A positive check ("the desktop user exists") passes just as happily
+# on a host where someone added it to the workspace group for convenience.
+[ "$(id -gn "$DESKTOP_USER")" = "$DESKTOP_GROUP" ] || fail desktop-identity
+[ "$(getent passwd "$DESKTOP_USER" | cut -d: -f7)" = /usr/sbin/nologin ] || fail desktop-identity
+id -nG "$DESKTOP_USER" | tr ' ' '\\n' | grep -qx "$WORKSPACE_USER" && fail workspace-credential-isolation
+id -nG "$DESKTOP_USER" | tr ' ' '\\n' | grep -qx "$SERVICE_USER" && fail workspace-credential-isolation
+# The decisive test is not group membership but reachability: prove the desktop user
+# cannot actually read the workspace home, whatever the groups happen to say.
+WORKSPACE_HOME="$(getent passwd "$WORKSPACE_USER" | cut -d: -f6 || true)"
+if [ -n "\${WORKSPACE_HOME:-}" ] && [ -d "$WORKSPACE_HOME" ]; then
+  if runuser -u "$DESKTOP_USER" -- test -r "$WORKSPACE_HOME" 2>/dev/null; then
+    fail workspace-credential-isolation
+  fi
+fi
+phase create-desktop-identity
+
+# ── attest-pack ─────────────────────────────────────────────────────────────────────
+command -v openbox   >/dev/null 2>&1 || fail x-stack
+command -v xdotool   >/dev/null 2>&1 || fail x-stack
+command -v import    >/dev/null 2>&1 || fail x-stack
+command -v bwrap     >/dev/null 2>&1 || fail x-stack
+command -v dbus-daemon >/dev/null 2>&1 || fail a11y-stack
+[ -f /usr/lib/at-spi2-core/at-spi-bus-launcher ] || [ -f /usr/libexec/at-spi-bus-launcher ] || fail a11y-stack
+command -v glxinfo >/dev/null 2>&1 || fail gl-stack
+
+printf '${WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX}%s\\n' "$(cat <<JSON | tr -d '\\n'
+{"contractVersion":"${WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION}",
+"hostId":"$HOST_ID","action":"${input.action}",
+"ubuntuVersion":"${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION}",
+"observedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","status":"healthy",
+"kasmvnc":{"version":"$KASM_VERSION","sha256":"$KASM_SHA"},
+"checks":[${WORKSPACE_HOST_DESKTOP_PACK_CHECKS.map((c) => `{"name":"${c}","ok":true}`).join(',')}]}
+JSON
+)"
+phase attest-pack
+`;
+
+  return { script, phases: WORKSPACE_HOST_DESKTOP_PACK_PHASES };
+}
+
+/**
+ * Parse the attestation line the script prints.
+ *
+ * Refuses anything that is not a COMPLETE, healthy attestation naming every declared
+ * check: a partial run that printed a truncated line must read as a failure, not as a
+ * pack that installed slightly less. The check list is compared as a SET against
+ * `WORKSPACE_HOST_DESKTOP_PACK_CHECKS`, so adding a check to the contract without
+ * teaching the script to emit it fails here rather than silently weakening the bar.
+ */
+export function parseWorkspaceHostDesktopPackAttestation(
+  output: string,
+): WorkspaceHostDesktopPackAttestation {
+  const line = output
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.startsWith(WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX));
+  if (!line) {
+    throw new Error('Desktop pack produced no attestation line');
+  }
+  let parsed: WorkspaceHostDesktopPackAttestation;
+  try {
+    parsed = JSON.parse(
+      line.slice(WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX.length),
+    ) as WorkspaceHostDesktopPackAttestation;
+  } catch {
+    throw new Error('Desktop pack attestation is not valid JSON');
+  }
+  if (parsed.contractVersion !== WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION) {
+    throw new Error('Desktop pack attestation reports a different contract version');
+  }
+  if (parsed.status !== 'healthy') {
+    throw new Error(`Desktop pack attestation status is ${String(parsed.status)}`);
+  }
+  assertWorkspaceHostSecretIsolation(parsed, 'desktopPack.attestation');
+
+  const observed = new Set((parsed.checks ?? []).filter((c) => c?.ok === true).map((c) => c.name));
+  const missing = WORKSPACE_HOST_DESKTOP_PACK_CHECKS.filter((c) => !observed.has(c));
+  if (missing.length > 0) {
+    throw new Error(`Desktop pack attestation is missing checks: ${missing.join(', ')}`);
+  }
+  return parsed;
+}

@@ -23,6 +23,15 @@ import { killScopeUnit, killTask } from '../../task-manager/control';
 import { sandboxXEnv } from './desktop-driver';
 import { startA11yBus, type A11yBus } from '../../desktop/a11y-bus';
 import {
+  buildXServerCommand,
+  kasmvncWebsocketPort,
+  type DesktopXServer,
+} from '../../desktop/x-server-backend';
+import {
+  mintKasmvncSessionCredentials,
+  type KasmvncSessionCredentials,
+} from '../../desktop/kasmvnc-credentials';
+import {
   a11yBusSocketPath,
   buildDesktopSandboxCommand,
   desktopAppSandboxEnabled,
@@ -84,7 +93,29 @@ export interface SandboxDesktop {
    * which is how one default becomes three copies that drift.
    */
   capture?: { width: number; height: number };
-  /** Tear the desktop down — kill apps, WM, Xvfb. Idempotent. */
+  /**
+   * P-012 — which X server occupies the root of this desktop's process tree.
+   *
+   * Read this rather than inferring from the presence of `endpoint`: it is what the
+   * D-007 registry row's `kind` must agree with, and mislabelling a KasmVNC desktop
+   * as `xvfb-local` would tell the viewer lane there is nothing to connect to.
+   */
+  xServer: DesktopXServer;
+  /**
+   * P-012 / D-020 — the LOOPBACK websocket this desktop's pixels are served on, or
+   * absent for a backend that serves none (`Xvfb` runs `-nolisten tcp`).
+   *
+   * Never routable off-host by construction: P-013's ticket-gated proxy is the only
+   * thing that dials it, and `x-server-backend.ts` pins the bind address rather than
+   * inheriting KasmVNC's shipped `interface: all`.
+   */
+  endpoint?: { host: string; port: number };
+  /**
+   * P-012 / D-020 — this session's rotated watch/takeover credentials, when the
+   * backend authenticates. Absent for `xvfb`, which has nothing to authenticate to.
+   */
+  credentials?: KasmvncSessionCredentials;
+  /** Tear the desktop down — kill apps, WM, and the X server. Idempotent. */
   release: () => Promise<void>;
 }
 
@@ -151,6 +182,40 @@ export interface ProvisionOptions {
   denyAppNetwork?: boolean;
   /** P-010 — HOME to give apps a private writable copy of. Defaults to the operator's. */
   sandboxHomeDir?: string;
+  /**
+   * P-012 / D-020 — which X server to boot this desktop on. Default `'xvfb'`.
+   *
+   * `'kasmvnc'` boots `Xkasmvnc`, which is an X server AND a web-native pixel
+   * transport in one process, and is what the BYOC desktop pack installs. The rest of
+   * this function does not branch on it: D-021 keeps the WM, the a11y bus, the GL
+   * measurement, the bwrap plan and the ledger enrolment X-bound, so they are
+   * identical either way. That sameness is the point — it is what makes "local-dev
+   * Xvfb parity" a structural property rather than a maintained claim.
+   */
+  xServer?: DesktopXServer;
+  /**
+   * P-012 — an existing kasmvncpasswd file to start the server against. Omit and a
+   * fresh per-session pair of watch/takeover credentials is minted under
+   * `credentialDir`. Present so a caller that already provisioned credentials (the
+   * pack's pool warmer) does not mint a second, orphaned set.
+   */
+  kasmvncPasswordFile?: string;
+  /** P-012 — directory for a minted credential file. Default `/run/papercusp/desktop`. */
+  credentialDir?: string;
+  /**
+   * P-012 — absolute path to the X server binary when it is not on PATH. The BYOC
+   * pack installs to a system path, so this exists for harnesses that run an
+   * extracted, un-installed build.
+   */
+  xServerBinaryPath?: string;
+  /** P-012 — path to `kasmvncpasswd`, when not on PATH. Pairs with `xServerBinaryPath`. */
+  kasmvncPasswdBinaryPath?: string;
+  /**
+   * P-012 / D-020 — enable the DRI3 `-hw3d` rung against this render node. Only
+   * meaningful where a GPU exists; the GPU-less BYOC VMs leave it unset and take
+   * gl-strategy's measured mesa-software rung.
+   */
+  kasmvncDrinode?: string;
 }
 
 /** The durable root handle used to tear down a provisioned desktop safely. */
@@ -324,6 +389,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   const procs: ChildProcess[] = [];
   let taskId: string | null = null;
   let a11y: A11yBus | null = null;
+  let credentials: KasmvncSessionCredentials | null = null;
   let rootHandle: DesktopTaskHandle = {
     taskId: null,
     scopeUnit: null,
@@ -332,7 +398,15 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   };
 
   const release = async (): Promise<void> => {
-    await releaseDesktopResources(procs, rootHandle, a11y);
+    try {
+      await releaseDesktopResources(procs, rootHandle, a11y);
+    } finally {
+      // The credential file outlives the process tree it authenticated — it is a file,
+      // not a child — so it is destroyed here rather than riding the task teardown. A
+      // half-provisioned desktop that threw AFTER minting must not leave a live
+      // credential behind pointing at a port something else may later take.
+      credentials?.destroy();
+    }
   };
 
   try {
@@ -357,12 +431,42 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     // partial, and deliberately so: an idle X stack costs a few MB and no CPU
     // (which is why the policy freezes those kinds lazily), and real per-desktop
     // containment is P-010's bubblewrap tier, not a wrapper bolted on here.
+    // P-012 — the ONE place the two substrates differ: which binary is the root of
+    // the tree. `buildXServerCommand` also pins the kasmvnc listener to loopback,
+    // which is an override of the package's shipped `interface: all` and not a
+    // restatement of it (see x-server-backend.ts).
+    const xServer: DesktopXServer = opts.xServer ?? 'xvfb';
+    if (xServer === 'kasmvnc') {
+      credentials = opts.kasmvncPasswordFile
+        ? null
+        : mintKasmvncSessionCredentials({
+            passwordFile: `${opts.credentialDir ?? '/run/papercusp/desktop'}/kasmvnc-${number}.passwd`,
+            ...(opts.kasmvncPasswdBinaryPath
+              ? { kasmvncpasswdPath: opts.kasmvncPasswdBinaryPath }
+              : {}),
+          });
+    }
+    const xCommand = buildXServerCommand({
+      xServer,
+      display,
+      width,
+      height,
+      ...(xServer === 'kasmvnc'
+        ? {
+            websocketPort: kasmvncWebsocketPort(number),
+            passwordFile: opts.kasmvncPasswordFile ?? credentials?.passwordFile ?? '',
+            ...(opts.kasmvncDrinode ? { hw3d: { drinode: opts.kasmvncDrinode } } : {}),
+          }
+        : {}),
+      ...(opts.xServerBinaryPath ? { binaryPath: opts.xServerBinaryPath } : {}),
+    });
+
     const xvfbTask = await managedSpawn(
-      'Xvfb',
-      [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp'],
+      xCommand.binary,
+      xCommand.argv,
       {
         class: 'desktop',
-        title: `Xvfb ${display} (${width}x${height})`,
+        title: `${xCommand.binary} ${display} (${width}x${height})`,
         launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
         argv: [],
         ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
@@ -487,6 +591,9 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       height,
       gl,
       taskId,
+      xServer,
+      ...(xCommand.endpoint ? { endpoint: xCommand.endpoint } : {}),
+      ...(credentials ? { credentials } : {}),
       ...(a11y ? { a11y } : {}),
       // D-006: only carried when the caller actually asked for a box — see the
       // field's comment for why absent means "the default", not "full size".

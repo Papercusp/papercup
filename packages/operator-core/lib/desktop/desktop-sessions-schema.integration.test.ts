@@ -35,6 +35,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { DESKTOP_KINDS } from './desktop-session-registry';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 // Overridable so `scripts/mutation-probe.sh` can point this at a MUTATED COPY
@@ -44,6 +45,12 @@ const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/
 const MIGRATION_900 =
   process.env.PAPERCUSP_DESKTOP_SESSIONS_MIGRATION ??
   join(SQL_DIR, '900-desktop-sessions-registry.sql');
+// P-012 widened desktop_sessions_kind_ck to admit 'kasmvnc'. Applied here for the same
+// reason 900 is: this suite's contract is that the TS set and the LIVE constraint are one
+// set, so it has to run against the constraint as currently migrated, not as first written.
+const MIGRATION_1027 =
+  process.env.PAPERCUSP_DESKTOP_KIND_KASMVNC_MIGRATION ??
+  join(SQL_DIR, '1027-desktop-kind-kasmvnc.sql');
 
 const WS = 'ws-desktop-sessions-test';
 
@@ -93,6 +100,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('desktopsessions');
   sql = db.sql;
   await applyMigrationForTest(sql, MIGRATION_900);
+  await applyMigrationForTest(sql, MIGRATION_1027);
 }, 180_000);
 
 afterAll(async () => {
@@ -200,8 +208,14 @@ describe('migration 900 — desktop_sessions registry', () => {
       await expect(insert(over as Record<string, unknown>)).rejects.toThrow(pattern as RegExp);
     });
 
-    it('accepts every declared kind, including the P-010/P-011 tiers', async () => {
-      for (const kind of ['xvfb-local', 'frame-slot', 'vm-guest', 'bwrap', 'microvm']) {
+    // Walks DESKTOP_KINDS itself rather than a literal list, so this cannot pass by
+    // being out of date: a kind added to the TypeScript union without the matching
+    // migration fails HERE, on the real constraint, instead of inserting fine against
+    // every stubbed unit test and rejecting only in production. That drift is the
+    // whole reason the array is exported as data (P-012).
+    it('accepts every kind declared in DESKTOP_KINDS — the TS set and the PG CHECK are one set', async () => {
+      expect(DESKTOP_KINDS.length).toBeGreaterThan(0);
+      for (const kind of DESKTOP_KINDS) {
         await expect(insert({ kind, scope_ref: `pot-kind-${kind}` })).resolves.not.toThrow();
       }
     });

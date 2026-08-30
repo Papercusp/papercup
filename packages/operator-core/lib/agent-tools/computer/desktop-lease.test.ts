@@ -27,6 +27,11 @@ function fakeDesktop(n: number): SandboxDesktop & { released: () => number } {
     gl: NO_GL_STRATEGY,
     // P-005: a fake desktop enrols nothing — the honest "unenrolled" value.
     taskId: null,
+    // P-012: the default local backend. No `endpoint` and no `credentials` follow from
+    // it — Xvfb runs `-nolisten tcp` — and the leasing path under test is backend-blind
+    // by design (D-021 keeps every driver surface X-bound), so a lease test has no
+    // reason to prefer one backend over the other.
+    xServer: 'xvfb',
     release: async () => {
       releases += 1;
     },
