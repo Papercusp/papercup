@@ -307,7 +307,7 @@ describe("rendering", () => {
     );
   });
 
-  it("keeps the five metrics legible at tablet and narrow widths", () => {
+  it("keeps all five metrics compact at tablet and narrow widths", () => {
     expect(REPORT_CSS).toMatch(
       /\.review-report__metrics\s*\{[^}]*grid-template-columns: repeat\(5, minmax\(0, 1fr\)\);/s,
     );
@@ -315,7 +315,10 @@ describe("rendering", () => {
       /@container \(max-width: 760px\)[\s\S]*?\.review-report__metrics\s*\{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
     );
     expect(REPORT_CSS).toMatch(
-      /@container \(max-width: 420px\)[\s\S]*?\.review-report__metrics\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\);/,
+      /@container \(max-width: 420px\)[\s\S]*?\.review-report__metrics\s*\{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*gap: 6px;/,
+    );
+    expect(REPORT_CSS).toMatch(
+      /@container \(max-width: 420px\)[\s\S]*?\.review-report__metric--results\s*\{[^}]*grid-column: 1 \/ -1;/,
     );
   });
 

@@ -669,10 +669,11 @@
 
 @container (max-width: 420px) {
   .review-report__metrics {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .review-report__metric--results {
-    grid-column: auto;
+    grid-column: 1 / -1;
   }
 }
