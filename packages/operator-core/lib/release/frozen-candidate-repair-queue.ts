@@ -857,8 +857,16 @@ export function decideFrozenCandidateRepairQueue(
 /** How many colliding paths the report lists inline before it says it capped them. */
 export const FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP = 20;
 
-/** Compare paths without tripping over `./` prefixes or Windows separators. */
-function normalizeRepoPath(value: string): string {
+/**
+ * Compare paths without tripping over `./` prefixes or Windows separators.
+ *
+ * EXPORTED because the P-004 edit-time hook must classify an edited path the SAME way the
+ * gate does. The hook is plain `.mjs` installed outside the repo and cannot import this
+ * module, so it carries its own copy — pinned against this one by
+ * `frozen-repair-edit-hook-parity.test.ts`, which fails the build if the two ever disagree.
+ * A hook that normalized differently would stay silent on exactly the edits that red the gate.
+ */
+export function normalizeRepoPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
 }
 
