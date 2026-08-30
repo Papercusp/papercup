@@ -61,6 +61,8 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+
 /** Teardown methods considered hazardous when dereferenced unguarded. */
 const METHODS = ['cleanup'];
 
@@ -124,15 +126,25 @@ function scan() {
     } catch {
       continue; // listed but unreadable (raced deletion) — not this guard's business
     }
+    // DETECT over MASKED source, REPORT from the original. A guard's own error
+    // text quotes the very token it detects, so an `await db.cleanup()` written
+    // in a comment or inside a string mints a phantom offender and reds the gate
+    // on prose (EI-20045405992394901). The shared mask is length- and
+    // newline-preserving, so masked line `i` is the same line as original `i` —
+    // which is what lets detection run masked while the human-facing `text`
+    // still shows the real source rather than a blanked-out string.
     const lines = text.split('\n');
+    const maskedLines = stripCommentsAndStrings(text, file).split('\n');
     for (const method of METHODS) {
       const re = bareCall(method);
-      for (let i = 0; i < lines.length; i += 1) {
-        const m = re.exec(lines[i]);
+      for (let i = 0; i < maskedLines.length; i += 1) {
+        const m = re.exec(maskedLines[i]);
         if (!m) continue;
         const ident = m[1];
-        if (isGuarded(lines[i], i > 0 ? lines[i - 1] : '', ident)) continue;
-        violations.push({ file, line: i + 1, ident, method, text: lines[i].trim() });
+        // The truthiness guard is read from the masked text too: a commented-out
+        // `if (db)` above the call must not launder an unguarded dereference.
+        if (isGuarded(maskedLines[i], i > 0 ? maskedLines[i - 1] : '', ident)) continue;
+        violations.push({ file, line: i + 1, ident, method, text: (lines[i] ?? '').trim() });
       }
     }
   }

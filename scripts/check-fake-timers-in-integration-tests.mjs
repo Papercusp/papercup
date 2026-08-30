@@ -64,34 +64,44 @@
  * TEXTUAL, not an AST parse — mirroring `check-no-raw-setinterval.mjs` and
  * `check-timer-classification.mjs`, whose approximation this shares.
  *
- * One deliberate DIFFERENCE from those siblings, and it matters. They call
- * `stripCommentsAndStrings`, which empties string CONTENTS so that a call-shaped token
- * quoted in prose is not read as a real call site (EI-19989853369726696 — a guard's own
- * error text, quoted in another file, produced a phantom offender that red-pinned the
- * gate). This guard cannot do that: the thing it must read — `toFake: ['Date']` — lives
- * INSIDE a string literal, so emptying string contents would erase the evidence and turn
- * every safe Date-only call into a false offender.
+ * Like those siblings it masks through `stripCommentsAndStrings` from
+ * `./lib/strip-comments-and-strings.mjs`, so a call-shaped token quoted in prose is not
+ * read as a real call site (EI-19989853369726696 — a guard's own error text, quoted in
+ * another file, produced a phantom offender that red-pinned the gate).
  *
- * The resolution is a LENGTH-PRESERVING mask. String contents are replaced with spaces
- * rather than removed, so indices in the masked text and the original stay aligned:
- * call sites and the balanced-paren walk run over the MASKED text (prose-safe, and no
- * stray paren inside a string can throw off the depth count), while the argument text is
- * then sliced from the ORIGINAL at those same indices (so `toFake` is readable). That
- * buys the sibling's false-positive immunity without its blindness.
+ * This guard has an extra requirement, and it is worth stating because it once looked
+ * like grounds for a private copy: the thing it must READ — `toFake: ['Date']` — lives
+ * INSIDE a string literal, so a mask that deleted string contents would erase the
+ * evidence and turn every safe Date-only call into a false offender. The shared mask
+ * does not delete: it replaces contents with spaces and KEEPS the delimiters, so it is
+ * LENGTH-PRESERVING and indices in the masked text and the original stay aligned. That
+ * is all this guard ever needed. Call sites and the balanced-paren walk run over the
+ * MASKED text (prose-safe, and no stray paren inside a string can throw off the depth
+ * count), while the argument text is sliced from the ORIGINAL at those same indices, so
+ * `toFake` is readable. False-positive immunity without the blindness, and no second
+ * implementation to keep in step.
  *
- * KNOWN LIMITS, stated rather than papered over:
- *   • A regex literal containing a quote or slash can still confuse the mask — telling a
- *     regex from division needs real parsing. Same class of approximation the siblings
- *     already document, and it fails toward reporting an offender (a human reads one
- *     line), never toward silently passing a hang.
+ * This file previously carried its own `maskCommentsAndStrings` on the belief that the
+ * shared one could not do this. That belief was wrong, and the copy was strictly weaker:
+ * it scanned by hand, so it could not tell a regex literal from division, and it blanked
+ * `${...}` template expressions along with the surrounding template — hiding real code
+ * from detection, which is the false-NEGATIVE direction. The shared module masks through
+ * the TypeScript parser and preserves `${...}` as code, so migrating removed a documented
+ * limit rather than trading one. The export is kept as a delegating alias because a
+ * sibling test pins the length-preservation property through this name.
+ *
+ * KNOWN LIMIT, stated rather than papered over:
  *   • A `toFake` list built dynamically (a variable, a spread) is not statically
- *     readable; it is reported rather than assumed safe, for the same fail-closed reason.
+ *     readable; it is reported rather than assumed safe, for a fail-closed reason: this
+ *     guard fails toward reporting an offender (a human reads one line), never toward
+ *     silently passing a hang.
  */
 
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 /**
  * GUARD_ROOT makes the scanned tree overridable, which is what makes this guard
@@ -145,53 +155,18 @@ const BASELINE = new Set();
  * Single pass, because comments and strings are mutually escaping: `//` inside a string
  * does not open a comment ("http://x" must survive), and a quote inside a comment does not
  * open a string (`// don't` would otherwise eat the rest of the file).
+ *
+ * A DELEGATING ALIAS for the shared `stripCommentsAndStrings`, which already has exactly
+ * these semantics. The name is kept because `fake-timers-integration-guard.test.ts` pins
+ * the length-preservation property through it; there is deliberately no second
+ * implementation here. See the header for why the private copy was removed.
+ *
+ * @param {string} text
+ * @param {string} [fileName] the real path, so the parser picks the right ScriptKind.
+ * @returns {string}
  */
-export function maskCommentsAndStrings(text) {
-  const out = text.split('');
-  const blank = (from, to) => {
-    for (let i = from; i < to && i < out.length; i++) {
-      if (out[i] !== '\n') out[i] = ' ';
-    }
-  };
-
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    const next = text[i + 1];
-
-    if (c === '/' && next === '*') {
-      const end = text.indexOf('*/', i + 2);
-      const stop = end === -1 ? text.length : end + 2;
-      blank(i, stop);
-      i = stop;
-      continue;
-    }
-    if (c === '/' && next === '/') {
-      let end = text.indexOf('\n', i);
-      if (end === -1) end = text.length;
-      blank(i, end);
-      i = end;
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      const quote = c;
-      let j = i + 1;
-      while (j < text.length) {
-        if (text[j] === '\\') {
-          j += 2;
-          continue;
-        }
-        if (text[j] === quote) break;
-        j += 1;
-      }
-      // Blank the CONTENTS only; the delimiters stay put.
-      blank(i + 1, Math.min(j, text.length));
-      i = Math.min(j + 1, text.length);
-      continue;
-    }
-    i += 1;
-  }
-  return out.join('');
+export function maskCommentsAndStrings(text, fileName) {
+  return stripCommentsAndStrings(text, fileName);
 }
 
 /**
@@ -200,10 +175,14 @@ export function maskCommentsAndStrings(text) {
  * Call sites and the paren walk use the MASKED text (so a mention inside prose or a
  * string is not a call site, and a paren inside a string cannot unbalance the walk);
  * `argText` is sliced from the ORIGINAL at the same indices, so `toFake: ['Date']` is
- * readable. See the header for why this differs from the sibling guards.
+ * readable — which works precisely because the shared mask preserves length. See the
+ * header.
+ *
+ * @param {string} text
+ * @param {string} [fileName] the real path, so the parser picks the right ScriptKind.
  */
-export function findUseFakeTimersCalls(text) {
-  const masked = maskCommentsAndStrings(text);
+export function findUseFakeTimersCalls(text, fileName) {
+  const masked = maskCommentsAndStrings(text, fileName);
   const calls = [];
   const re = /\buseFakeTimers\s*\(/g;
   let m;
@@ -284,7 +263,7 @@ export function findOffenders() {
     }
     if (!text.includes('useFakeTimers')) continue;
 
-    for (const call of findUseFakeTimersCalls(text)) {
+    for (const call of findUseFakeTimersCalls(text, f)) {
       const reason = classifyCall(call.argText);
       if (reason) offenders.push({ file: f, line: call.line, reason });
     }
