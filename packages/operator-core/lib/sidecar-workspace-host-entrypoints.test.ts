@@ -33,6 +33,11 @@ const INSTALLER = join(
 );
 const BUILDER = join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh');
 const VERIFIER = join(REPO_ROOT, 'papercusp-desktop/bin/verify-sidecar-bundle.sh');
+const VM_RELEASE_CONFIG = join(
+  REPO_ROOT,
+  'papercusp-desktop/src-tauri/tauri.vm-release.conf.json',
+);
+const PUI_MANIFEST_WRITER = join(REPO_ROOT, 'apps/tui/scripts/write-install-manifest.py');
 const scratchRoots: string[] = [];
 
 const ENTRYPOINTS = [
@@ -43,6 +48,7 @@ const ENTRYPOINTS = [
   'papercusp-server',
   'papercusp-health',
   'psu',
+  'pui',
   'claude',
   'codex',
   'omp',
@@ -85,6 +91,21 @@ function makeFixture(): string {
     `import { writeFileSync } from 'node:fs';\n` +
       `writeFileSync(process.env.PC_ENTRYPOINT_OUTPUT, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\n`,
   );
+  writeFileSync(join(root, 'bin/pui'), '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(join(root, 'bin/pui'), 0o755);
+  writeFileSync(join(root, 'pui-companion.wasm'), 'fixture-wasm');
+  const puiManifest = run('python3', [
+    PUI_MANIFEST_WRITER,
+    'write',
+    '--manifest', join(root, 'pui-install.json'),
+    '--source-sha', 'a'.repeat(40),
+    '--source-dirty', '0',
+    '--built-at-epoch', '123',
+    '--binary', join(root, 'bin/pui'),
+    '--companion', join(root, 'pui-companion.wasm'),
+    '--relative-paths',
+  ]);
+  if (puiManifest.status !== 0) throw new Error(puiManifest.stderr);
   writeFileSync(join(root, 'db-sql/000-baseline.sql'), 'select 1;\n');
   writeFileSync(join(root, 'bin/papercusp-remote-initializer'), '#!/usr/bin/env bash\nexit 0\n');
   chmodSync(join(root, 'bin/papercusp-remote-initializer'), 0o755);
@@ -118,16 +139,29 @@ describe('workspace-host sidecar entrypoint producer', () => {
     expect(existsSync(join(root, 'bin/papercusp-server'))).toBe(false);
   });
 
-  it('emits all eleven executable paths without replacing Node or the initializer', () => {
+  it.each(['pui-companion.wasm', 'pui-install.json'])(
+    'fails closed when the matched PUI generation omits %s',
+    (asset) => {
+      const root = makeFixture();
+      rmSync(join(root, asset));
+      const result = run('bash', [INSTALLER, '--release-root', root]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(asset);
+    },
+  );
+
+  it('emits all twelve executable paths without replacing Node, PUI, or the initializer', () => {
     const root = makeFixture();
     const nodeTarget = readlinkSync(join(root, 'bin/node'));
     const initializer = readFileSync(join(root, 'bin/papercusp-remote-initializer'), 'utf8');
+    const pui = readFileSync(join(root, 'bin/pui'), 'utf8');
     install(root);
     for (const name of ENTRYPOINTS) {
       expect(run('test', ['-x', join(root, 'bin', name)]).status, name).toBe(0);
     }
     expect(readlinkSync(join(root, 'bin/node'))).toBe(nodeTarget);
     expect(readFileSync(join(root, 'bin/papercusp-remote-initializer'), 'utf8')).toBe(initializer);
+    expect(readFileSync(join(root, 'bin/pui'), 'utf8')).toBe(pui);
     for (const tool of PG_TOOLS) {
       const target = readlinkSync(join(root, 'bin', tool));
       expect(target.startsWith('/'), tool).toBe(false);
@@ -149,12 +183,25 @@ describe('workspace-host sidecar entrypoint producer', () => {
     expect(builder).toContain('re-verifying atomically published sidecar at its final path');
   });
 
+  it('carries the complete PUI generation through the vm-release resource allowlist', () => {
+    const config = JSON.parse(readFileSync(VM_RELEASE_CONFIG, 'utf8')) as {
+      bundle?: { resources?: string[] };
+    };
+    const resources = config.bundle?.resources ?? [];
+    expect(resources).toContain('sidecar/bin/**/*');
+    expect(resources).toContain('sidecar/pui-companion.wasm');
+    expect(resources).toContain('sidecar/pui-install.json');
+  });
+
   it('makes the finished-bundle verifier require and allowlist every generated wrapper', () => {
     const verifier = readFileSync(VERIFIER, 'utf8');
     for (const name of ENTRYPOINTS.filter((entry) => entry !== 'node')) {
       expect(verifier, name).toContain(name);
     }
     expect(verifier).toContain('install-workspace-host-entrypoints.sh');
+    expect(verifier).toContain('pui-companion.wasm');
+    expect(verifier).toContain('pui-install.json');
+    expect(verifier).toContain('write-install-manifest.py');
   });
 });
 
@@ -219,6 +266,8 @@ describe('workspace-host entrypoint behavior', () => {
     expect(observed.env.PAPERCUSP_PG_DATA_DIR).toBe(pgRoot);
     expect(observed.env.PAPERCUSP_PG_SQL_DIR).toBe(join(root, 'db-sql'));
     expect(observed.env.PAPERCUSP_SIDECAR_BIN).toBe(join(root, 'bin'));
+    expect(observed.env.PUI_COMPANION_WASM).toBe(join(root, 'pui-companion.wasm'));
+    expect(observed.env.PUI_INSTALL_MANIFEST).toBe(join(root, 'pui-install.json'));
     expect(observed.env.PAPERCUSP_BUILD_VERSION).toBe('2026.8.26-1');
     expect(observed.env.PAPERCUSP_BUILD_SHA).toBe('a'.repeat(40));
     expect(observed.env.PAPERCUSP_DISTRIBUTION_PROFILE).toBe('vm-release');
