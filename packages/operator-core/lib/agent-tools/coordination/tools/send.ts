@@ -37,6 +37,7 @@ import {
 import { fetchPresenceFleet, resolvePresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience, ALLHIVE_BROADCAST_FIELD } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
+import { getConversation } from '../conversations';
 import {
   CUE_AUTHORITY_FIELD,
   readExpectedLifecycleAck,
@@ -903,13 +904,34 @@ async function sendOne(
       lookupErrored = true; // infra hiccup — deliver anyway (fail-soft)
     }
     if (!lookupErrored && relatedOriginal == null) {
+      // EI-21919726429448449: a conversation id (coord:ask / discussion / consult)
+      // and a coord msg_id are two DIFFERENT id spaces, but a caller who copied a
+      // conversation id from a summary/render can reasonably expect it to thread
+      // here too — the generic miss gives them no route forward. Best-effort,
+      // never blocking: if the ref resolves as a conversation, name that instead
+      // of leaving the caller to guess.
+      let conversationHint = '';
+      try {
+        const maybeConversation = await getConversation(msg.related_msg_id);
+        if (maybeConversation) {
+          conversationHint =
+            ` '${msg.related_msg_id}' IS a valid conversation id (kind:${maybeConversation.conversation.kind}, ` +
+            `state:${maybeConversation.conversation.state}) — but related_msg_id threads coord MESSAGES, a ` +
+            'separate id space conversations do not share. Reply IN the conversation with ' +
+            `conversations:answer / conversations:post { conversation_id: '${msg.related_msg_id}' } instead; ` +
+            'if you meant to thread a coord message, find its msg_id in coord:inbox.';
+        }
+      } catch {
+        // best-effort probe — never let it block or alter the primary refusal
+      }
       return {
         ok: false,
         to: msg.to,
         error: 'related_msg_not_found',
         message:
-          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent. ` +
-          `A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
+          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent.` +
+          conversationHint +
+          ` A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
           `you believe you replied). Copy the full msg_id from coord:inbox / the message you ` +
           `are answering, or use a unique leading prefix — never hand-type or use a ` +
           `placeholder. If the original is genuinely old/pruned, resend without related_msg_id.` +
