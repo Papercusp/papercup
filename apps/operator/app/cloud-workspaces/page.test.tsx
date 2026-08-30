@@ -1196,28 +1196,28 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     render(<CloudWorkspacesPage />);
 
     const tabs = screen.getAllByRole("tab") as HTMLButtonElement[];
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1, -1]);
 
     tabs[0].focus();
     fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
     expect(document.activeElement).toBe(tabs[1]);
     expect(tabs[1].getAttribute("aria-selected")).toBe("true");
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, 0, -1, -1]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, 0, -1, -1, -1]);
     expect(H.queryUpdates).toContainEqual(["tab", "resources"]);
 
     fireEvent.keyDown(tabs[1], { key: "End" });
-    expect(document.activeElement).toBe(tabs[3]);
-    expect(tabs[3].getAttribute("aria-selected")).toBe("true");
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, -1, -1, 0]);
+    expect(document.activeElement).toBe(tabs[4]);
+    expect(tabs[4].getAttribute("aria-selected")).toBe("true");
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, -1, -1, -1, 0]);
 
-    fireEvent.keyDown(tabs[3], { key: "ArrowRight" });
+    fireEvent.keyDown(tabs[4], { key: "ArrowRight" });
     expect(document.activeElement).toBe(tabs[0]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
 
     fireEvent.keyDown(tabs[0], { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(tabs[3]);
+    expect(document.activeElement).toBe(tabs[4]);
 
-    fireEvent.keyDown(tabs[3], { key: "Home" });
+    fireEvent.keyDown(tabs[4], { key: "Home" });
     expect(document.activeElement).toBe(tabs[0]);
     expect(H.queryUpdates).toContainEqual(["tab", "overview"]);
   });
