@@ -217,6 +217,17 @@ export interface ReadImprovementOpts {
   scopes?: readonly string[];
   limit?: number;
   /**
+   * Restrict to an explicit id set, applied as a SQL predicate (never a post-filter —
+   * `limit` is applied by Postgres, so filtering after the read returns the first N of
+   * the whole corpus and then shrinks it, which looks like it worked).
+   *
+   * Exposed for the two-phase read shape: scan the corpus cheaply with
+   * `includeBody:false`, then re-read only the handful of rows a decision actually
+   * needs with their bodies. Composes with `loopOutputOnly` by INTERSECTION — the
+   * narrower of the two always wins, so neither scope can widen the other.
+   */
+  issueIds?: readonly string[];
+  /**
    * ISO timestamp — rows created STRICTLY before it (WI-39455, the stale-tail
    * selector). The underlying read is newest-first + capped, so an age-out consumer
    * without this filter only ever sees a recency window and old rows are structurally
@@ -245,6 +256,21 @@ export interface ReadImprovementOpts {
    * immediate caller.
    */
   includeBody?: boolean;
+  /**
+   * Companion to {@link includeBody} for the JSONB payload (see
+   * `ListIssuesFilter.includePayload`, WI-42508). Default (omitted) keeps it.
+   *
+   * ⚠ Same silent-degradation shape as `includeBody`: `ImprovementCandidate` fields
+   * DERIVED from payload — notably `ideaLifecycle` (which `recurrence-escalation`
+   * reads as `alreadyGym`) and `watchdogKey` — simply become undefined rather than
+   * failing to compile. Drop it only for a pass that reads neither.
+   *
+   * Measured 2026-08-30 on the live topic corpus (27,505 rows, papercusp-workspace):
+   * title 2,782 kB · body 23 MB · payload 39 MB · total 64 MB. Payload is the LARGEST
+   * column here, so a whole-corpus scan that needs neither body nor payload reads
+   * ~5 MB instead of ~64 MB.
+   */
+  includePayload?: boolean;
   /** (P-010) Restrict to a specific harness scope. Omit for all scopes (papercusp + all harnesses). */
   harnessSlug?: string;
   /**
@@ -372,20 +398,24 @@ export async function projectImprovementItemsForBoundedRead<T>(
     );
   }
 
-  let issueIds: readonly string[] | undefined;
+  let issueIds: readonly string[] | undefined = opts.issueIds;
   if (opts.loopOutputOnly) {
     if (!deps.readLoopOutputIds) {
       throw new Error(
         'projectImprovementItemsForBoundedRead: loopOutputOnly requires deps.readLoopOutputIds',
       );
     }
-    issueIds = await deps.readLoopOutputIds();
-    if (issueIds.length === 0) {
-      return deps.projectIssues(
-        { issueIds: [] },
-        { maxRows: projection.maxRows, project: () => projection.project([]) },
-      );
-    }
+    const loopIds = await deps.readLoopOutputIds();
+    // Same INTERSECT rule as readBySelector: both are restrictions, so neither may
+    // widen the other.
+    const requestedSet = issueIds ? new Set(issueIds) : undefined;
+    issueIds = requestedSet ? loopIds.filter((id) => requestedSet.has(id)) : loopIds;
+  }
+  if (issueIds && issueIds.length === 0) {
+    return deps.projectIssues(
+      { issueIds: [] },
+      { maxRows: projection.maxRows, project: () => projection.project([]) },
+    );
   }
 
   return deps.projectIssues(
@@ -399,6 +429,12 @@ export async function projectImprovementItemsForBoundedRead<T>(
       ...(scopeSet?.length === 1 ? { scope: scopeSet[0] } : {}),
       ...(scopeSet && scopeSet.length > 1 ? { scopes: scopeSet } : {}),
       ...(issueIds ? { issueIds } : {}),
+      // Forwarded, not defaulted: this is the whole-corpus read, where `body` is 76%
+      // of the bytes (P-008's measurement). A caller scanning tens of thousands of
+      // rows for a counting decision must be able to drop it; one that reads
+      // `candidate.body` simply omits the flag and is unaffected.
+      ...(opts.includeBody === false ? { includeBody: false } : {}),
+      ...(opts.includePayload === false ? { includePayload: false } : {}),
       ...(opts.createdBefore ? { createdBefore: opts.createdBefore } : {}),
     },
     {
@@ -646,7 +682,7 @@ async function readBySelector(
   // becomes a SQL predicate: `limit` is applied by Postgres, so post-filtering the
   // result would take the first N of the whole corpus and then shrink it — returning
   // an arbitrary fraction of the real answer while looking like it worked.
-  let issueIds: readonly string[] | undefined;
+  let issueIds: readonly string[] | undefined = opts.issueIds;
   if (opts.loopOutputOnly) {
     if (!deps.readLoopOutputIds) {
       // Fail loudly. Silently ignoring the scope would return the ENTIRE improvement
@@ -656,8 +692,20 @@ async function readBySelector(
         'readBySelector: loopOutputOnly requires deps.readLoopOutputIds (see improvements/loop-output.ts)',
       );
     }
-    issueIds = await deps.readLoopOutputIds();
+    const loopIds = await deps.readLoopOutputIds();
+    // INTERSECT, never replace: both are restrictions, so the result must satisfy
+    // both. Overwriting would let loopOutputOnly WIDEN an explicit id set (and an
+    // explicit set widen the loop scope), silently returning rows the caller
+    // excluded — the same fail-open shape the throw above exists to prevent.
+    const requestedSet = issueIds ? new Set(issueIds) : undefined;
+    issueIds = requestedSet ? loopIds.filter((id) => requestedSet.has(id)) : loopIds;
   }
+  // NOTE: an empty-but-present id set must still reach `listIssues` as `issueIds: []`,
+  // NOT short-circuit here. `[]` is truthy, so the spread below forwards it and the SQL
+  // predicate resolves to "matches nothing" — which is the tested contract (read-items
+  // "an EMPTY union matches nothing rather than falling back to the whole corpus").
+  // Returning early instead skips the call the test observes, and would also hide the
+  // predicate from anything auditing what was actually asked of the database.
 
   if (opts.windowPerScope) {
     if (!deps.listScopes) {
@@ -705,6 +753,7 @@ async function readBySelector(
     ...(requestedScope ? { scope: requestedScope } : {}),
     ...(scopeSet && scopeSet.length !== 1 ? { scopes: scopeSet } : {}),
     ...(opts.includeBody === false ? { includeBody: false } : {}),
+    ...(opts.includePayload === false ? { includePayload: false } : {}),
     ...(issueIds ? { issueIds } : {}),
     ...(opts.createdBefore ? { createdBefore: opts.createdBefore } : {}),
   });

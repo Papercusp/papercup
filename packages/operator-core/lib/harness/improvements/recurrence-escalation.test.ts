@@ -6,6 +6,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   CANDIDATE_DRAFT_MAX_CHARS,
+  RECURRING_SIGNATURE_SCAN_CAP,
+  RECURRING_MEMBER_HYDRATION_CAP,
   planRecurrenceEscalation,
   runRecurrenceEscalation,
   type EscalationDeps,
@@ -135,6 +137,12 @@ describe('runRecurrenceEscalation — glue', () => {
 
   const baseDeps = (over: Partial<EscalationDeps> = {}): EscalationDeps => ({
     readItems: vi.fn(async () => glueItems()),
+    // Mirrors projectImprovementItemsForBoundedRead: the phase-1 census runs the
+    // caller's projector over the whole corpus. The double reads from `over.readItems`
+    // when supplied so a test that stubs the corpus still drives both phases.
+    scanCorpus: vi.fn(async (_opts, projection) =>
+      projection.project(await (over.readItems ?? (async () => glueItems()))()),
+    ),
     updateIssue: vi.fn(async () => null),
     commentIssue: vi.fn(async () => null),
     applyTriage: vi.fn(async (input) => ({ ok: true, id: input.id })),
@@ -143,10 +151,44 @@ describe('runRecurrenceEscalation — glue', () => {
     ...over,
   });
 
-  it('WI-9454: requests a per-scope read before grouping recurrence signatures', async () => {
-    const readItems = vi.fn(async () => []);
+  it('WI-1216687: censuses the WHOLE corpus on cheap columns — never a per-scope newest-N window', async () => {
+    const scanCorpus = vi.fn(async () => []);
+    await runRecurrenceEscalation({}, baseDeps({ scanCorpus }));
+
+    // The old read was `{ windowPerScope: true }` with no `limit`, which read-items
+    // defaults to 500 PER SCOPE — measured at just 14.1h of history for the scope
+    // holding 96.9% of the corpus. WI-9454's per-scope fairness concern is subsumed:
+    // there is no window left for a busy scope to crowd a small one out of.
+    const [opts, projection] = scanCorpus.mock.calls[0]!;
+    expect(opts).toEqual({ includeBody: false, includePayload: false });
+    expect(opts).not.toHaveProperty('windowPerScope');
+    expect(opts).not.toHaveProperty('limit');
+    expect(projection.maxRows).toBe(RECURRING_SIGNATURE_SCAN_CAP);
+  });
+
+  it('WI-1216687: hydrates phase 2 by explicit member ids, so counting is a SET read and not a recency window', async () => {
+    const readItems = vi.fn(async () => glueItems());
     await runRecurrenceEscalation({}, baseDeps({ readItems }));
-    expect(readItems).toHaveBeenCalledWith({ windowPerScope: true });
+
+    // Both glue groups clear the threshold, so every member id is hydrated by id.
+    const call = readItems.mock.calls.find((c) => c[0] && 'issueIds' in c[0]!);
+    expect(call, 'phase 2 must re-read by issueIds').toBeTruthy();
+    expect([...(call![0]!.issueIds as string[])].sort()).toEqual(['a', 'b', 'c', 'x1', 'x2', 'x3']);
+    // The limit must not silently re-cap the very read that exists to be exact.
+    expect(call![0]!.limit).toBe(6);
+  });
+
+  it('WI-1216687: a group larger than the hydration budget is skipped WHOLE, never truncated', async () => {
+    // A truncated group would under-report `sig.count` — the number that both clears
+    // the ≥3 threshold and is quoted to the owner as "recurred N×".
+    const huge = Array.from({ length: RECURRING_MEMBER_HYDRATION_CAP + 1 }, (_, i) =>
+      cand({ id: `h${i}`, title: 'huge recurring signature group here' }),
+    );
+    const readItems = vi.fn(async () => huge);
+    await runRecurrenceEscalation({}, baseDeps({ readItems }));
+
+    const hydration = readItems.mock.calls.find((c) => c[0] && 'issueIds' in c[0]!);
+    expect(hydration, 'an over-budget group must not be hydrated at all').toBeFalsy();
   });
 
   it('applies each action through the right edge', async () => {
