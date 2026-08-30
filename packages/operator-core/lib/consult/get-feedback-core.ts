@@ -66,9 +66,11 @@ export const MAX_REVIVALS_PER_CONSULT = 1;
  * Never enforce the cap with a local boolean: that turns the per-consult cap
  * into a per-invocation accident the moment a second revival site exists. */
 export function revivalBudgetSpent(
-  selected: ReadonlyArray<{ revived?: boolean } | null | undefined> | undefined,
+  selected: ReadonlyArray<{ revived?: boolean; revivalPending?: boolean } | null | undefined> | undefined,
 ): boolean {
-  return (selected ?? []).filter((e) => e?.revived === true).length >= MAX_REVIVALS_PER_CONSULT;
+  return (
+    selected ?? []
+  ).filter((e) => e?.revived === true || e?.revivalPending === true).length >= MAX_REVIVALS_PER_CONSULT;
 }
 /** Recursion ceiling (D-007 §7) — mirrors the consult_state.depth CHECK (0–2). */
 export const MAX_CONSULT_DEPTH = 2;
@@ -889,15 +891,33 @@ export async function getFeedbackCore(
   //     minimum-fill AND beats an unfilled minimum. With a `revive` dep bound,
   //     the top dead floor-qualified candidate is carry-respawned (headless
   //     resume, cap MAX_REVIVALS_PER_CONSULT) and takes the head of the menu;
-  //     absent dep ⇒ exactly the old D-008 §5 retrieval-only behavior. The
-  //     revive call happens AFTER open (the brief needs the conversation id)
-  //     and BEFORE persist (the snapshot records the revived-first selection).
+  //     absent dep ⇒ exactly the old D-008 §5 retrieval-only behavior.
+  //
+  //     The consult row is persisted BEFORE the revive call. The revived
+  //     process receives its kickoff as its first turn and can issue
+  //     consult:reply before the reviver's host-registration wait returns;
+  //     a missing or provisional row therefore turns a valid first turn into
+  //     not_a_consult/not_a_participant. A provisional revived-first row gives
+  //     that turn a durable responder/selection gate. A failed spawn restores
+  //     the pre-revival selection before the normal wake.
+  const revive = deps.revive;
   const revivalCandidate =
-    deps.revive && (!chosen || chosenVia === 'minimum')
+    revive && (!chosen || chosenVia === 'minimum')
       ? (route.qualified.find(
           (c) => DEAD_RESPONDER_STATES.has(c.liveness) && !lineageOwners.includes(c.ownerId),
         ) ?? null)
       : null;
+  const revivalPending = Boolean(
+    revivalCandidate && revive && !revivalBudgetSpent(route.snapshot.selection?.selected),
+  );
+  const provisionalSelected = revivalPending
+    ? [{ candidate: revivalCandidate!, via: 'floor' as SelectionVia }, ...selected].slice(0, maxResponders)
+    : selected;
+  if (revivalPending) {
+    route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, provisionalSelected);
+    const pendingHead = route.snapshot.selection.selected[0];
+    if (pendingHead) pendingHead.revivalPending = true;
+  }
 
   // 5) Open the conversation — ALWAYS (D-003 honesty feed + the PK row).
   //    direct_to covers both the planned recipient and the fallback (a dead
@@ -913,6 +933,53 @@ export async function getFeedbackCore(
     ],
   });
 
+  // The row is inserted before revival so the revived first turn has a
+  // consult_state participant gate to pass. When revival is pending, the
+  // provisional row points at the candidate that the kickoff will answer as;
+  // a failed spawn is repaired below before the fallback wake.
+  let revival: GetFeedbackResult['revival'] | undefined;
+  let finalSelected = provisionalSelected;
+  let finalChosen = revivalPending ? revivalCandidate : chosen;
+  let finalChosenVia = revivalPending ? ('floor' as SelectionVia) : chosenVia;
+  let revivalFirstTurnObserved = false;
+  const provisionalState: GetFeedbackResult['state'] = finalChosen
+    ? 'awaiting_responder'
+    : 'no_qualified_responder';
+  const provisionalExpiresAt = finalChosen
+    ? new Date(
+        now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
+      ).toISOString()
+    : null;
+  const provisionalWillWake = Boolean(finalChosen);
+  // query_embedding is stored whenever the column exists (embeddingColumnOk —
+  // proven by the archive probe) and this route produced a vector: every
+  // consult forward-fills the P-006 retrieval cache, hit or miss.
+  if (embeddingColumnOk && qVecStr) {
+    await sql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, origin_task_ref, routing, expires_at, wakes_used,
+         depth, parent_consult_id, query_embedding)
+      VALUES
+        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
+         ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
+         ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
+         ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
+    `;
+  } else {
+    await sql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, origin_task_ref, routing, expires_at, wakes_used,
+         depth, parent_consult_id)
+      VALUES
+        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
+         ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
+         ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
+         ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
+    `;
+  }
+
   // 5b) Attempt the dead-preempt revival. spawn:false ⇒ fall back to the
   //     pre-revival selection outcome — the attempt is still reported in the
   //     result (labeled, never silent — D-002 applied to liveness provenance).
@@ -920,38 +987,88 @@ export async function getFeedbackCore(
   //     (EI-20864690354207496 F2) — the same persisted-stamp ledger every
   //     revival site reads; a fresh selection carries no stamps, so this
   //     guard is structural, not decorative.
-  let revival: GetFeedbackResult['revival'] | undefined;
-  let finalSelected = selected;
-  let finalChosen = chosen;
-  let finalChosenVia = chosenVia;
-  if (revivalCandidate && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
-    const r = await deps.revive({
-      ownerId: revivalCandidate.ownerId,
+  if (revivalPending) {
+    const r = await revive!({
+      ownerId: revivalCandidate!.ownerId,
       conversationId: opened.conversation_id,
       brief: revivalBrief({
         requesterId: req.requesterId,
         question: req.question,
         conversationId: opened.conversation_id,
-        candidate: revivalCandidate,
+        candidate: revivalCandidate!,
       }),
     });
     revival = {
-      ownerId: revivalCandidate.ownerId,
+      ownerId: revivalCandidate!.ownerId,
       trigger: 'dead-preempt',
       spawned: r.spawned,
       verified: r.verified,
       detail: r.detail,
     };
     if (r.spawned) {
-      finalSelected = [{ candidate: revivalCandidate, via: 'floor' as SelectionVia }, ...selected].slice(
-        0,
-        maxResponders,
-      );
-      finalChosen = revivalCandidate;
-      finalChosenVia = 'floor';
+      // The provisional row already has the revived responder as its head.
+      // Only stamp provenance here: a first-turn reply may have advanced or
+      // settled the row while the reviver was waiting for host registration,
+      // so rewriting responder/state/cascade fields would clobber that work.
       route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
       const head = route.snapshot.selection.selected[0];
-      if (head) head.revived = true;
+      if (head) {
+        delete head.revivalPending;
+        head.revived = true;
+      }
+      await sql`
+        UPDATE harness_shared.consult_state
+           SET routing = jsonb_set(
+                 routing #- '{selection,selected,0,revivalPending}',
+                 '{selection,selected,0,revived}',
+                 'true'::jsonb
+               )
+         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+      `;
+      const currentRows = (await sql`
+        SELECT responder_id, state
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+      `) as unknown as Array<{ responder_id: string | null; state: string }>;
+      const current = currentRows[0];
+      // The resumed CLI may have completed its first consult:reply while the
+      // reviver was waiting for host registration. Do not send a duplicate
+      // reach wake (or report the old head) after that re-entrant write.
+      revivalFirstTurnObserved = Boolean(
+        current &&
+          (current.responder_id !== revivalCandidate!.ownerId || current.state !== 'awaiting_responder'),
+      );
+    } else {
+      // No first turn can be produced by a spawn that returned false. Restore
+      // the exact pre-revival route and participant gate before waking the
+      // selected fallback. The CAS guards preserve a concurrent expiry/reply
+      // if one somehow moved the provisional row while the reviver resolved.
+      finalSelected = selected;
+      finalChosen = chosen;
+      finalChosenVia = chosenVia;
+      route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
+      const fallbackState: GetFeedbackResult['state'] = finalChosen
+        ? 'awaiting_responder'
+        : 'no_qualified_responder';
+      const fallbackExpiresAt = finalChosen
+        ? new Date(
+            now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
+          ).toISOString()
+        : null;
+      await sql`
+        UPDATE harness_shared.consult_state
+           SET responder_id = ${finalChosen?.ownerId ?? null},
+               state = ${fallbackState},
+               routing = ${sql.json(route.snapshot as never)},
+               expires_at = ${fallbackExpiresAt},
+               wakes_used = ${finalChosen ? 1 : 0},
+               updated_at = ${now.toISOString()}::timestamptz
+         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+           AND responder_id = ${revivalCandidate!.ownerId}
+           AND state = 'awaiting_responder'
+           AND cascade_cursor = 0
+           AND closed_at IS NULL
+      `;
     }
   }
 
@@ -976,39 +1093,12 @@ export async function getFeedbackCore(
   //    spam guards = per-consult max, the depth cap, archive-first dedupe).
   const willWake = Boolean(finalChosen);
 
-  // 6) Persist consult_state (snapshot VERBATIM — D-008; never recomputed).
+  // 6) The consult_state row was persisted before revival above. Re-read the
+  // final route values for the return surface and the normal wake.
   const state: GetFeedbackResult['state'] = finalChosen ? 'awaiting_responder' : 'no_qualified_responder';
   const expiresAt = finalChosen
     ? new Date(now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS)).toISOString()
     : null;
-  // query_embedding is stored whenever the column exists (embeddingColumnOk —
-  // proven by the archive probe) and this route produced a vector: every
-  // consult forward-fills the P-006 retrieval cache, hit or miss.
-  if (embeddingColumnOk && qVecStr) {
-    await sql`
-      INSERT INTO harness_shared.consult_state
-        (workspace_id, conversation_id, requester_id, responder_id, state, question,
-         latency_contract, origin_task_ref, routing, expires_at, wakes_used,
-         depth, parent_consult_id, query_embedding)
-      VALUES
-        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
-         ${finalChosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
-         ${originRef}, ${sql.json(route.snapshot as never)}, ${expiresAt},
-         ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
-    `;
-  } else {
-    await sql`
-      INSERT INTO harness_shared.consult_state
-        (workspace_id, conversation_id, requester_id, responder_id, state, question,
-         latency_contract, origin_task_ref, routing, expires_at, wakes_used,
-         depth, parent_consult_id)
-      VALUES
-        (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
-         ${finalChosen?.ownerId ?? null}, ${state}, ${req.question}, ${latency},
-         ${originRef}, ${sql.json(route.snapshot as never)}, ${expiresAt},
-         ${willWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
-    `;
-  }
 
   // 7) Wake the responder. A floor-qualified pick gets the why-you-were-chosen
   //    evidence body (D-008 §5); a minimum-fill pick gets the HONEST
@@ -1019,7 +1109,7 @@ export async function getFeedbackCore(
   let queued = 0;
   let woke = 0;
   let pickupConfirmed = false;
-  if (willWake && finalChosen) {
+  if (willWake && finalChosen && !revivalFirstTurnObserved) {
     const r = await deps.reach({
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
