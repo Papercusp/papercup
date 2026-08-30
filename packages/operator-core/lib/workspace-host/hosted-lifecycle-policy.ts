@@ -199,18 +199,61 @@ export function classifyHostedLifecycleJob(
   return 'healthy';
 }
 
+/**
+ * A live desktop viewer bound to one of this workspace's desktop sessions (P-014).
+ *
+ * WHY THIS EXISTS. `desktop-lifecycle` already refuses to freeze a desktop somebody is watching,
+ * because freezing a live picture is indistinguishable from a crash to the person looking at it.
+ * The control-plane idle-stop sweep is the SAME failure one layer up and with a bigger blast
+ * radius: it stops the whole VM. Before this input existed the sweep had no way to know a human
+ * was attached, so the two layers disagreed by construction.
+ *
+ * `holdSec` is passed in rather than imported so this module stays pure policy with no dependency
+ * on the desktop registry. It is not a number to invent at the call site: source it from
+ * `desktop-lifecycle.VIEWER_HOLD_SEC`, which is itself derived from the two viewer lanes' teardown
+ * ceiling, so the hold cannot drift away from the lanes it is covering.
+ */
+export interface HostedDesktopViewerSignal {
+  /** Viewers currently bound in `watch` or `takeover` mode. */
+  attachedViewers: number;
+  /** When a bound viewer was last observed live. */
+  lastSeenAt: string | null;
+  /** How long a binding defers governance — `desktop-lifecycle.VIEWER_HOLD_SEC`. */
+  holdSec: number;
+}
+
 export interface HostedWorkspaceActivity {
   state: string;
   observedState: string;
   lastActivityAt?: string | null;
   idleStopAfterMinutes?: number | null;
   activeLifecycleJobs: number;
+  /**
+   * Desktop viewers attached to this workspace. OMITTING it is a valid state and means the caller
+   * had no viewer signal to offer — which is reported back as `desktopViewerSignal: 'absent'`
+   * rather than silently treated as "nobody is watching". See that field.
+   */
+  desktopViewers?: HostedDesktopViewerSignal | null;
 }
 
 export interface HostedIdleStopDecision {
   due: boolean;
   idleForMs: number;
   reason?: string;
+  /** Present only when something actively held the stop off. */
+  hold?: 'desktop-viewer';
+  /**
+   * Whether this verdict actually consulted a desktop-viewer signal.
+   *
+   * `'absent'` means the caller supplied none — so a `due: true` alongside it is NOT evidence
+   * that nobody is watching, only that nobody asked. Reported rather than defaulted because an
+   * unmeasured absence reads exactly like a measured one, and that mistake here queues a STOP on
+   * a machine somebody is using.
+   *
+   * Emitted only on verdicts that reached the idle computation; the earlier guards
+   * (not active, not running, jobs in flight) are refusals to judge, not idle verdicts.
+   */
+  desktopViewerSignal?: 'absent' | 'observed';
 }
 
 export function evaluateHostedIdleStop(
@@ -224,14 +267,33 @@ export function evaluateHostedIdleStop(
   if (minutes == null || !Number.isSafeInteger(minutes) || minutes < 1) {
     return { due: false, idleForMs: 0 };
   }
+
+  const viewers = workspace.desktopViewers ?? null;
+  const desktopViewerSignal: 'absent' | 'observed' = viewers ? 'observed' : 'absent';
+  if (viewers && viewers.attachedViewers > 0) {
+    const lastSeen = Date.parse(viewers.lastSeenAt ?? '');
+    const holdMs = Math.max(0, viewers.holdSec) * 1000;
+    // An unparseable timestamp on an attached viewer holds. A viewer we know is bound but cannot
+    // date is the case where guessing costs the most, and the hold is bounded anyway.
+    if (!Number.isFinite(lastSeen) || now - lastSeen < holdMs) {
+      return {
+        due: false,
+        idleForMs: 0,
+        hold: 'desktop-viewer',
+        desktopViewerSignal,
+      };
+    }
+  }
+
   const lastActivity = Date.parse(workspace.lastActivityAt ?? '');
-  if (!Number.isFinite(lastActivity)) return { due: false, idleForMs: 0 };
+  if (!Number.isFinite(lastActivity)) return { due: false, idleForMs: 0, desktopViewerSignal };
   const idleForMs = Math.max(0, now - lastActivity);
   const due = idleForMs >= minutes * 60_000;
   return {
     due,
     idleForMs,
     ...(due ? { reason: `workspace idle for ${Math.floor(idleForMs / 60_000)} minutes` } : {}),
+    desktopViewerSignal,
   };
 }
 

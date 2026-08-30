@@ -116,4 +116,69 @@ describe('hosted lifecycle policy', () => {
     expect(evaluateHostedIdleStop({ ...active, activeLifecycleJobs: 1 }, now)).toEqual({ due: false, idleForMs: 0 });
     expect(evaluateHostedIdleStop({ ...active, observedState: 'stopped' }, now)).toEqual({ due: false, idleForMs: 0 });
   });
+
+  describe('desktop viewers hold the idle stop off (P-014)', () => {
+    const now = Date.parse('2026-08-28T02:00:00Z');
+    const idleWorkspace = {
+      state: 'active',
+      observedState: 'running',
+      lastActivityAt: '2026-08-28T00:00:00Z',
+      idleStopAfterMinutes: 60,
+      activeLifecycleJobs: 0,
+    };
+    // Sourced from desktop-lifecycle.VIEWER_HOLD_SEC at the call site; a literal here so this
+    // test states the shape rather than re-deriving the number.
+    const holdSec = 20 * 60;
+
+    it('refuses to stop a workspace whose desktop a human is currently watching', () => {
+      // Without this the control plane would stop the VM out from under a live viewer — the same
+      // "indistinguishable from a crash" failure desktop-lifecycle prevents one layer down, with
+      // the whole machine as the blast radius instead of one X server.
+      expect(evaluateHostedIdleStop({
+        ...idleWorkspace,
+        desktopViewers: { attachedViewers: 1, lastSeenAt: '2026-08-28T01:55:00Z', holdSec },
+      }, now)).toEqual({
+        due: false,
+        idleForMs: 0,
+        hold: 'desktop-viewer',
+        desktopViewerSignal: 'observed',
+      });
+    });
+
+    it('holds on an attached viewer it cannot date, rather than guessing it is gone', () => {
+      expect(evaluateHostedIdleStop({
+        ...idleWorkspace,
+        desktopViewers: { attachedViewers: 1, lastSeenAt: null, holdSec },
+      }, now)).toMatchObject({ due: false, hold: 'desktop-viewer' });
+    });
+
+    it('stops once the binding is older than the hold, so one stuck flag cannot leak a VM', () => {
+      expect(evaluateHostedIdleStop({
+        ...idleWorkspace,
+        desktopViewers: { attachedViewers: 1, lastSeenAt: '2026-08-28T00:30:00Z', holdSec },
+      }, now)).toMatchObject({ due: true, desktopViewerSignal: 'observed' });
+    });
+
+    it('does not hold when the signal says no viewer is attached', () => {
+      expect(evaluateHostedIdleStop({
+        ...idleWorkspace,
+        desktopViewers: { attachedViewers: 0, lastSeenAt: '2026-08-28T01:59:00Z', holdSec },
+      }, now)).toMatchObject({ due: true, desktopViewerSignal: 'observed' });
+    });
+
+    // The distinction this pins is the whole reason the field exists: a verdict reached WITHOUT a
+    // viewer signal must not be readable as a verdict that checked and found nobody watching.
+    it('reports an unmeasured absence as absent rather than as nobody watching', () => {
+      const unmeasured = evaluateHostedIdleStop(idleWorkspace, now);
+      expect(unmeasured).toMatchObject({ due: true, desktopViewerSignal: 'absent' });
+      expect(unmeasured.hold).toBeUndefined();
+
+      const measuredClear = evaluateHostedIdleStop({
+        ...idleWorkspace,
+        desktopViewers: { attachedViewers: 0, lastSeenAt: null, holdSec },
+      }, now);
+      expect(measuredClear.desktopViewerSignal).toBe('observed');
+      expect(unmeasured.desktopViewerSignal).not.toBe(measuredClear.desktopViewerSignal);
+    });
+  });
 });

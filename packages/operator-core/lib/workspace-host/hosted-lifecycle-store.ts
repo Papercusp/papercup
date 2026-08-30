@@ -439,6 +439,13 @@ export async function reconcileHostedLifecycleJobs(
         activeLifecycleJobs: customer.active_lifecycle_jobs,
       }, now.getTime());
       if (!decision.due || !customer.billing_owner_kind || !customer.billing_owner_id) continue;
+      // P-014: this sweep has no desktop-viewer input yet, so every stop it queues is decided
+      // WITHOUT knowing whether a human is watching. Say so in the operation's own message rather
+      // than letting the absence look like a check that came back clear — the policy layer
+      // reports it for exactly this reason (see `desktopViewerSignal`).
+      const viewerNote = decision.desktopViewerSignal === 'observed'
+        ? ''
+        : ' (no desktop-viewer signal was available to this sweep)';
       const activityKey = customer.last_activity_at == null
         ? 'unknown'
         : new Date(customer.last_activity_at).toISOString();
@@ -454,7 +461,7 @@ export async function reconcileHostedLifecycleJobs(
           risk_tier, approval_status, heartbeat_at, owner_notification_dedupe_key, updated_at
         ) VALUES (
           ${workspaceId}, ${operationId}, ${customer.workspace_host_id}, 'stop', 'queued', 0,
-          ${decision.reason ?? 'Workspace idle-stop policy elapsed'},
+          ${`${decision.reason ?? 'Workspace idle-stop policy elapsed'}${viewerNote}`},
           ${customer.organization_id}, ${customer.customer_workspace_id}, ${customer.provider_target},
           0, 'USD', 'policy', ${`policy://idle-stop/${customer.customer_workspace_id}`}, ${now.toISOString()},
           ${customer.billing_owner_kind}, ${customer.billing_owner_id},
