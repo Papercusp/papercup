@@ -60,7 +60,9 @@ const catalog: AutomationCatalog = {
   categories: [],
   spend7d: [{ role: 'doc-steward', modelClass: 'claude', turns: 4, outputTokens: 1200, cacheReadTokens: 800, costUsd: 2.4, lastSeenAt: '2026-08-22T19:00:00.000Z' }],
   spend7dTotalUsd: 2.4,
-  arming: { gymPots: [], lanes: [], scoutCeiling: null },
+  // potScope null = the scope read did not happen for this fixture. NOT an empty
+  // scope, which would assert "every pot is learning" (learning-pot-scope-gate).
+  arming: { gymPots: [], lanes: [], scoutCeiling: null, potScope: null },
   generatedAt: '2026-08-22T20:00:00.000Z',
 };
 

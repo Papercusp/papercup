@@ -62,7 +62,9 @@ function fixture(): BuildAutomationModelInput {
     categories: [],
     spend7d: [],
     spend7dTotalUsd: 12.5,
-    arming: { gymPots: [], lanes: [], scoutCeiling: null },
+    // potScope null = the scope read did not happen for this fixture. NOT an empty
+    // scope, which would assert "every pot is learning" (learning-pot-scope-gate).
+    arming: { gymPots: [], lanes: [], scoutCeiling: null, potScope: null },
     generatedAt: '2026-08-22T20:00:00.000Z',
   };
   const external: ExternalTriggerAdminSnapshot = {
