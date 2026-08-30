@@ -980,4 +980,59 @@ describe('gateway request kernel caller-supplied span adoption', () => {
 
     expect(f.telemetry.snapshot().requests).toMatchObject({ started: 1, finalized: 1, active: 0 });
   });
+
+  /**
+   * D-018: a route may carry its own pre-attempt pace, and the KERNEL is the one
+   * thing that executes it. Every legacy ladder slept between attempts; the first
+   * kernel wiring dropped that, which is how a rotate began landing inside the very
+   * burst window it was fleeing.
+   *
+   * Deliberately NOT a wall-clock assertion. Measuring "at least N ms elapsed" would
+   * pass on a kernel that ignores `delayMs` whenever the box happened to be slow,
+   * and its inverse ("under N ms") flakes under fleet load. Instead the pace is set
+   * far longer than the test could tolerate and the client vanishes during it: on a
+   * kernel that does not wait, route B is prepared BEFORE the abort and the
+   * assertion fails deterministically, load or no load.
+   */
+  it("D-018: waits a route's delayMs before attempting it, and a vanished client stops paying for it", async () => {
+    const controller = new AbortController();
+    const f = fixture(lane, { signal: controller.signal });
+    f.options.adapter.selectFailover = async () => {
+      // Fires once the kernel is parked in the delay: a macrotask runs after every
+      // microtask between here and `delayBeforeAttempt`, so the ordering is exact.
+      setTimeout(() => controller.abort(new Error('caller disconnected')), 0);
+      return { ...f.routeB, delayMs: 30_000 };
+    };
+
+    const startedAt = Date.now();
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'cancelled', outcome: 'cancelled' });
+    expect(f.events, 'the paced attempt must not have run').not.toContain('prepare:b');
+    expect(Date.now() - startedAt, 'an abandoned request must not sleep out its pace').toBeLessThan(5_000);
+  });
+
+  it('CONTROL: the SAME abort with NO pace prepares route B — so the assertion above discriminates', async () => {
+    // The matched control, and the falsifiability evidence for a module subject:
+    // identical fixture, identical abort scheduling, `delayMs` the ONLY difference.
+    // A kernel that ignored `delayMs` would behave exactly like this arm, so the
+    // test above failing open is not possible — its `not.toContain('prepare:b')`
+    // is measured here to be a real discriminator rather than a vacuous truth.
+    const controller = new AbortController();
+    const f = fixture(lane, { signal: controller.signal });
+    f.options.adapter.selectFailover = async () => {
+      setTimeout(() => controller.abort(new Error('caller disconnected')), 0);
+      return { ...f.routeB, delayMs: 0 };
+    };
+
+    // Every hop from here to `prepareAttempt` is a microtask, and a macrotask runs
+    // only after all of them — so the un-paced attempt is reached BEFORE the abort,
+    // deterministically. Whether the request then completes is not the claim.
+    await executeGatewayRequestKernel(f.options).catch(() => undefined);
+
+    expect(f.events, 'without a pace the failover attempt is reached before the abort').toContain('prepare:b');
+    // …and the additive half of D-018: the fixture's own routes declare no pace at
+    // all, which is why adding this waited nowhere for the already-migrated lanes.
+    expect(f.routeB.delayMs).toBeUndefined();
+  });
 });

@@ -24,6 +24,22 @@ export interface GatewayKernelRoute<T> {
   accountId?: string | null;
   transport: GatewayTransportId;
   value: T;
+  /**
+   * PACING: wait this long before the first attempt on this route (D-018).
+   *
+   * Every legacy ladder slept between attempts, and how long depended on WHY it
+   * was retrying, not merely on where it was going: a transient-429 rotate paced
+   * `TRANSIENT_429_BACKOFF_MS`, a 529 overload `OVERLOAD_529_BACKOFF_MS`, and a
+   * usage-cap rotate or a sibling-IP retry paced nothing at all. That makes the
+   * pause a ROUTING decision the adapter already owns — so it travels WITH the
+   * route as data, and the kernel is the single thing that executes it.
+   *
+   * Waited outside every stage span, so the pause is never mis-attributed to
+   * `auth`, and inside the request's abort scope, so a vanished client stops
+   * paying for it. Omitted / 0 ⇒ no wait, which is why adding this changed no
+   * existing adapter's behaviour.
+   */
+  delayMs?: number;
 }
 
 /**
@@ -418,6 +434,29 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
         reject(error);
       },
     );
+  });
+}
+
+/**
+ * The route-level pre-attempt pause (`GatewayKernelRoute.delayMs`). Unref'd, so a
+ * pending backoff can never hold the process open — the same `t.unref?.()` the
+ * legacy ladders used — and abort-aware, so a client that vanishes mid-backoff
+ * stops paying for it instead of sleeping out the full pace.
+ */
+async function delayBeforeAttempt(ms: number, signal: AbortSignal): Promise<void> {
+  if (!(ms > 0)) return;
+  if (signal.aborted) throw abortReason(signal);
+  await new Promise<void>((resolve, reject) => {
+    const settleAbort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', settleAbort);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    signal.addEventListener('abort', settleAbort, { once: true });
   });
 }
 
@@ -888,6 +927,12 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
 
         for (let attempt = 1; attempt <= opts.policy.maxAttempts; attempt++) {
           attempts = attempt;
+          // D-018: the route's own pre-attempt pace, BEFORE the attempt context is
+          // used and outside every stage span. The legacy ladders slept here — after
+          // deciding to proceed, before re-entering the loop — so a rotate onto a
+          // fresh account did not land inside the throttle window it was fleeing.
+          // `selectInitial` carries no delay, so the first attempt never waits.
+          await delayBeforeAttempt(currentRoute.delayMs ?? 0, requestController.signal);
           const attemptContext: GatewayKernelAttemptContext<TRoute> = {
             ...base,
             route: currentRoute,

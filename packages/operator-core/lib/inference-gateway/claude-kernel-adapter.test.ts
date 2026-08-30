@@ -145,6 +145,7 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
   const telemetry = new GatewayRequestTelemetry();
   const prepared: ClaudePreparedAttempt[] = [];
   const routeKeys: string[] = [];
+  const routeDelays: number[] = [];
   const forwarded: Buffer[] = [];
   const observedClassifications: (ClaudeResponseClassification | null)[] = [];
   const observedErrors: string[] = [];
@@ -161,7 +162,12 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     streaming: true,
     tokenTimeoutMs: 1_000,
     failoverBackoffMs: 5_000,
-    overloadBackoffMs: 1_000,
+    // D-018: DISTINCT and SMALL. Distinct so a test can tell which option a route's
+    // pace was read from (production ships 1000 / 400, and two equal numbers would
+    // pass even if the adapter used the wrong one); small because the kernel really
+    // sleeps them, and this suite exercises the retry ladder dozens of times.
+    overloadBackoffMs: 30,
+    transientBackoffMs: 20,
     // Each pick returns a DISTINCT key, mirroring a real egress pool round-robin —
     // which is exactly why failovers must not be counted by route key.
     pickEgress:
@@ -182,6 +188,7 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     ...adapter,
     async prepareAttempt(context) {
       routeKeys.push(context.route.key);
+      routeDelays.push(context.route.delayMs ?? 0);
       const result = await adapter.prepareAttempt(context);
       prepared.push(result);
       return result;
@@ -234,6 +241,10 @@ function harness(fetchImpl: ClaudeAdapterOptions['fetch'], overrides: Overrides 
     options,
     prepared,
     routeKeys,
+    /** D-018: the pace each attempt's route carried, in attempt order. Index 0 is the
+     *  INITIAL attempt and must always be 0 — a request never waits before its first
+     *  upstream call. */
+    routeDelays,
     /** Bytes actually relayed downstream — proves a peeked body is replayed whole. */
     forwardedBody: () => Buffer.concat(forwarded).toString('utf8'),
     observedClassifications,
@@ -476,6 +487,110 @@ describe('claude kernel adapter', () => {
     await executeGatewayRequestKernel(forwardedRes.options);
     expect(forwardedRes.prepared.map((p) => p.accountId), 'an ordinary 403 is the caller’s to see').toEqual(['A']);
     expect(plain.calls).toHaveLength(0);
+  });
+
+  /**
+   * D-018 — the inter-attempt PACE.
+   *
+   * The live ladder set `internalRetry.backoffMs` per 429 branch and slept it once
+   * before `continue`. The first kernel wiring dropped it: `overloadBackoffMs` was
+   * passed to the adapter and never read, and the transient-429 pace was not passed
+   * at all. Nothing typechecked wrong and no adapter test failed — the only symptom
+   * was the WI-673 rig going from 8 upstream 429s to 9, because a rotate fired
+   * ~100ms after the 429 and landed inside the destination's own burst window.
+   *
+   * These assert the pace as ROUTE DATA (exact ms, read off each attempt's route)
+   * rather than as elapsed wall time, so they are exact and cost nothing. That the
+   * kernel actually SLEEPS a route's `delayMs` is the kernel's own contract and is
+   * guarded in request-kernel.test.ts — one claim per suite, neither assumed.
+   */
+  it('D-018: a transient 429 rotate carries the TRANSIENT pace, and the initial attempt never waits', async () => {
+    const { pool } = makePool([acct('B')]);
+    let n = 0;
+    const { options, prepared, routeDelays } = harness(async () => (++n === 1 ? res(429) : res(200)), {
+      accounts: [acct('A')],
+      pool,
+      siblingEgressAvailable: () => false,
+    });
+    await executeGatewayRequestKernel(options);
+    expect(prepared.map((p) => p.accountId)).toEqual(['A', 'B']);
+    expect(routeDelays, 'the destination may still be inside the window this account just tripped').toEqual([0, 20]);
+  });
+
+  it('D-018: a 529 overload re-attempt carries the OVERLOAD pace, never the transient one', async () => {
+    const { pool } = makePool([acct('B')]);
+    let n = 0;
+    const { options, prepared, routeDelays } = harness(async () => (++n === 1 ? res(529) : res(200)), {
+      accounts: [acct('A')],
+      pool,
+      siblingEgressAvailable: () => true,
+    });
+    await executeGatewayRequestKernel(options);
+    expect(prepared.map((p) => p.accountId)).toEqual(['A', 'A']);
+    // 30, not 20: a backoff branch that re-asks instantly is not a backoff, and the
+    // two options are distinct here precisely so a mixed-up read cannot pass.
+    expect(routeDelays).toEqual([0, 30]);
+  });
+
+  it('D-018: a sibling-egress re-attempt carries NO pace — the cooled IP is the fix, not a wait', async () => {
+    const { pool } = makePool([]);
+    let n = 0;
+    const { options, prepared, routeDelays } = harness(async () => (++n === 1 ? res(429) : res(200)), {
+      accounts: [acct('A')],
+      pool,
+      siblingEgressAvailable: () => true,
+    });
+    await executeGatewayRequestKernel(options);
+    expect(prepared.map((p) => p.accountId)).toEqual(['A', 'A']);
+    expect(routeDelays).toEqual([0, 0]);
+  });
+
+  it('D-018: an ACCOUNT-WALL rotate carries NO pace — the matched control for the transient rotate', async () => {
+    // Same 429 STATUS and the same rotate decision as the transient case above; only
+    // the body differs. A capped account is walled for hours, so pausing before
+    // leaving it buys nothing and costs the bee latency — the live handler set
+    // `backoffMs: 0` on exactly these two branches.
+    const capped = makePool([acct('B')]);
+    let n = 0;
+    const cap = harness(
+      async () =>
+        ++n === 1
+          ? errorRes(429, '{"error":{"message":"You have hit your session limit · resets 10:50am"}}')
+          : res(200),
+      { accounts: [acct('A')], pool: capped.pool, siblingEgressAvailable: () => false, classifyResponse: classifier },
+    );
+    await executeGatewayRequestKernel(cap.options);
+    expect(cap.prepared.map((p) => p.accountId)).toEqual(['A', 'B']);
+    expect(cap.routeDelays, 'a usage cap must not pay the transient pace').toEqual([0, 0]);
+
+    const org = makePool([acct('B')]);
+    let m = 0;
+    const disallowed = harness(
+      async () => (++m === 1 ? errorRes(403, '{"error":{"message":"OAuth is disallowed for this org"}}') : res(200)),
+      { accounts: [acct('A')], pool: org.pool, classifyResponse: classifier },
+    );
+    await executeGatewayRequestKernel(disallowed.options);
+    expect(disallowed.prepared.map((p) => p.accountId)).toEqual(['A', 'B']);
+    expect(disallowed.routeDelays).toEqual([0, 0]);
+
+    // …and the POSITIVE control on the same seam: a WINDOWED 429 is transient, so it
+    // does pay. Without this arm, an adapter that paced nothing at all would pass
+    // both assertions above.
+    const windowed = makePool([acct('B')]);
+    let k = 0;
+    const rate = harness(
+      async () =>
+        ++k === 1 ? errorRes(429, '{"error":{"message":"rate_limit_error"}}', { 'retry-after': '30' }) : res(200),
+      {
+        accounts: [acct('A')],
+        pool: windowed.pool,
+        siblingEgressAvailable: () => true,
+        classifyResponse: classifier,
+      },
+    );
+    await executeGatewayRequestKernel(rate.options);
+    expect(rate.prepared.map((p) => p.accountId)).toEqual(['A', 'B']);
+    expect(rate.routeDelays).toEqual([0, 20]);
   });
 
   it('a plain 5xx is FORWARDED unretried — `proxy` has no 5xx retry branch, only 429/529, 403 and 401', async () => {

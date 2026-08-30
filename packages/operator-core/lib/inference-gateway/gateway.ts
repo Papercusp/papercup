@@ -4380,6 +4380,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           tokenTimeoutMs,
           failoverBackoffMs: bare429FailoverBackoffMs,
           overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+          transientBackoffMs: TRANSIENT_429_BACKOFF_MS,
           pickEgress: (account, at) => {
             const picked = pickEgress(account, at);
             return { entry: picked.entry, key: picked.key };
