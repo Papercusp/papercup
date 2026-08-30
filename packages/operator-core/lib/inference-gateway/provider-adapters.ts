@@ -448,13 +448,20 @@ export function makeGatewayProviderAdapters(opts: {
       lane: lanes.openaiResponses,
     },
     // OMP (pi) is multi-provider and routes by REUSING the existing adapters
-    // rather than owning a bespoke protocol: a Tier-1 OMP session is pinned to a
-    // Claude account and egresses Anthropic-protocol traffic through the gateway
-    // root, so it shares the claude/anthropic adapter (pool + upstream). This row
-    // is the DIAGNOSTICS view of that delegation — the gateway dispatches by
-    // request PATH (providerForGatewayRequest), never by this entry.
-    // (omp-account-pinning-gateway-2026-06-29 D-003: OMP pins to Claude accounts
-    // for Tier-1 parity; OpenAI-account-pinned OMP is a deliberate follow-up.)
+    // rather than owning a bespoke protocol. This row is the DIAGNOSTICS view of
+    // the ANTHROPIC delegation only — the gateway dispatches by request PATH
+    // (providerForGatewayRequest), never by this entry, and an OMP SESSION's
+    // provider is not decided here at all.
+    //
+    // ⚠ Do NOT read this row as "OMP is always Claude-pinned". OpenAI-account-pinned
+    // OMP is IMPLEMENTED, not a follow-up: `ompGatewayModelFromSpec`
+    // (orchestrator/omp-gateway-config.ts:78) resolves an `openai`/`openai-codex`
+    // selector to { gatewayProvider:'openai', accountProvider:'codex' }; spawn-env.ts:307
+    // adopts that accountProvider and :354 filters the pool to an account of that
+    // provider; the models.yml then targets the /v1 root with `api: openai-responses`
+    // (omp-gateway-config.ts:34-35, :127). Pinned by omp-models-config.test.ts:41 and :97.
+    // The stale form of this comment is what made the OMP follow-up look outstanding
+    // long after it had shipped (gateway-kernel-adoption-2026-08-29 D-029).
     omp: {
       id: 'omp',
       label: 'OMP (via Claude / Anthropic)',
