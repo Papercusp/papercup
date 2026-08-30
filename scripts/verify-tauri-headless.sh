@@ -948,32 +948,44 @@ if [ -z "$DISPLAY_NUM" ]; then
   DISPLAY_AUTO_PICK=1
   DISPLAY_NUM=90
 fi
-while :; do
-  if [ "$DISPLAY_AUTO_PICK" -eq 1 ]; then
-    while x_display_taken "$DISPLAY_NUM"; do
-      # Attempt every reclaim, then RE-TEST rather than trusting a reaper's own
-      # success. A reaper that clears one blocker while another remains (a socket
-      # reaped with the lock still present) previously `break`ed straight onto a
-      # display that still could not be bound.
-      reap_stale_display_if_abandoned "$DISPLAY_NUM" || true
-      reap_orphaned_x_lock "$DISPLAY_NUM" || true
-      x_display_taken "$DISPLAY_NUM" || break
-      DISPLAY_NUM=$((DISPLAY_NUM + 1))
-    done
-  fi
 
-  reserve_display "$DISPLAY_NUM"
-  display_rc=$?
-  [ "$display_rc" -eq 0 ] && break
-  if [ "$DISPLAY_AUTO_PICK" -eq 0 ] || [ "$display_rc" -gt 1 ]; then
-    echo "FATAL: could not reserve verifier display :$DISPLAY_NUM (already in use or reserved by another launcher)" >&2
-    exit 1
-  fi
-  # A peer may have won the reservation between our probe and reserve_display;
-  # walk forward and repeat the same locked recheck for the next candidate.
-  DISPLAY_NUM=$((DISPLAY_NUM + 1))
-done
-[ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
+# pick_display — walk DISPLAY_NUM forward (when auto-picking) past anything
+# taken/stale, then lock the candidate via reserve_display. Factored out of the
+# initial pick (below) so EI-21903832503219853's GTK-init-panic retry (further
+# down, once a boot attempt has already died on a contended/dead display) can
+# call the SAME walk-forward+lock logic on a FRESH display, instead of retrying
+# forever against the one display that just proved unusable. One procedure, two
+# call sites — mirrors pick_and_lock_ports's role for the port-retry fix
+# (EI-18734124566158657).
+pick_display() {
+  while :; do
+    if [ "$DISPLAY_AUTO_PICK" -eq 1 ]; then
+      while x_display_taken "$DISPLAY_NUM"; do
+        # Attempt every reclaim, then RE-TEST rather than trusting a reaper's own
+        # success. A reaper that clears one blocker while another remains (a socket
+        # reaped with the lock still present) previously `break`ed straight onto a
+        # display that still could not be bound.
+        reap_stale_display_if_abandoned "$DISPLAY_NUM" || true
+        reap_orphaned_x_lock "$DISPLAY_NUM" || true
+        x_display_taken "$DISPLAY_NUM" || break
+        DISPLAY_NUM=$((DISPLAY_NUM + 1))
+      done
+    fi
+
+    reserve_display "$DISPLAY_NUM"
+    display_rc=$?
+    [ "$display_rc" -eq 0 ] && break
+    if [ "$DISPLAY_AUTO_PICK" -eq 0 ] || [ "$display_rc" -gt 1 ]; then
+      echo "FATAL: could not reserve verifier display :$DISPLAY_NUM (already in use or reserved by another launcher)" >&2
+      exit 1
+    fi
+    # A peer may have won the reservation between our probe and reserve_display;
+    # walk forward and repeat the same locked recheck for the next candidate.
+    DISPLAY_NUM=$((DISPLAY_NUM + 1))
+  done
+  [ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
+}
+pick_display
 
 # EI-20227529270079601 / EI-9748 Route A: `setsid` creates a new session and
 # process group, but it does NOT escape the spawning operator service's cgroup.
@@ -1558,14 +1570,33 @@ verify_assertion_input_integrity() {
 # live outside the launcher's terminal session. Without setsid, closing a PTY
 # kills Xvfb; WebKit then exits with XIO and the "ready" desktop disappears
 # before the caller's first tauri-agent-tools command (WI-4975).
-XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp)"
+#
+# start_display_server — boot Xvfb + confirm it answers + boot openbox on the
+# CURRENT $DISPLAY_NUM/$VERIFY_SCOPE_BASE. Factored out (EI-21903832503219853)
+# so a GTK-init-panic retry can re-run it on a FRESHLY re-picked display after
+# tearing the old one down, instead of retrying the tauri launch against the
+# same display that just proved dead/contended. Sets XVFB_PID/OPENBOX_PID —
+# teardown() and the SIGTERM/SIGINT handlers below already read those as
+# ambient globals, so a re-run's fresh PIDs are picked up with no other wiring.
+start_display_server() {
+  XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp)"
+  sleep 1
+  DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
+  OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
+}
+# Arm the EXIT/signal traps BEFORE the first start_display_server call (not
+# after, as a naive factor-out would do) — teardown()/handle_signal() check
+# each PID var before acting, so arming early is a harmless no-op while
+# XVFB_PID/OPENBOX_PID are still unset, but arming LATE would mean an exit
+# INSIDE start_display_server (the xdpyinfo FATAL above) leaks the Xvfb it
+# just started and never releases the display lock — a regression the
+# original inline ordering (trap set right after the first XVFB_PID assign)
+# did not have.
 trap teardown EXIT
 trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
 trap 'handle_signal HUP' HUP
-sleep 1
-DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
-OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
+start_display_server
 
 # ── real-GPU GL check (agent-e2e.mdx §15.4: bare Xvfb has no GL → WebKitGTK
 # never paints → every screenshot is blank white regardless of DOM content).
@@ -2018,6 +2049,21 @@ MAX_BOOT_ATTEMPTS="${VERIFY_TAURI_MAX_BOOT_ATTEMPTS:-2}"
 # $DEV_PORT/$LOG are read at CALL time, so this stays correct after a re-pick.
 port_lost_to_squatter() {
   grep -qE "fatal uncaughtException.*EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null
+}
+
+# EI-21903832503219853: has the desktop binary DIED because ITS DISPLAY is
+# dead/contended, rather than because of a code fault? tao/winit's GTK backend
+# panics with `Failed to initialize gtk backend!` (tao event_loop.rs) — the
+# X server it opened at boot (Xvfb :$DISPLAY_NUM) is gone or wedged by the time
+# cargo finishes a cold build minutes later, most often because a concurrent
+# verifier instance's stale-display reaper raced ours. Without this classifier
+# a GTK-init panic reads as a plain "tauri dev exited" — kill -0 fails,
+# boot_failure_diag fires, and the run dies FATALLY even on attempt 1 of 2,
+# retrying nothing, on the SAME display that just proved unusable (a bare
+# process retry there would panic identically). $LOG is read at CALL time, same
+# convention as port_lost_to_squatter, so this stays correct after a re-pick.
+gtk_init_failed() {
+  grep -qE "Failed to initialize gtk backend|gtk::rt::init" "$LOG" 2>/dev/null
 }
 
 # Cargo's markers arrive COLORIZED. tauri's DevCommand invokes

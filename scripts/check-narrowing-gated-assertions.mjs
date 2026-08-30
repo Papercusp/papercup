@@ -277,9 +277,17 @@ function scanSource(file, text, { allDiscriminants = false } = {}) {
   const ext = (file.split('.').pop() || 'ts').toLowerCase();
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, SCRIPT_KIND[ext] ?? ts.ScriptKind.TS);
 
-  const assertedPaths = new Set(); // DIRECT  — expect(p) / assert(p)
-  const bailedPaths = new Set(); // BAIL    — if (!p) return/throw
-  const matcherArmed = new Map(); // MATCHER — base path -> Set(prop names)
+  /**
+   * Arming evidence is POSITIONED, not just collected. An assertion that sits INSIDE the
+   * gate's own then-branch cannot arm that gate — it only runs when the gate already
+   * passed. Without this, `if (r.ok) expect(r.ok).toBe(true)` reads as armed while being
+   * perfectly vacuous, and any gate whose body happens to assert its own discriminant
+   * (`if (s.id) expect(s.id).toMatch(…)`) is silently excused. Caught by this guard's own
+   * discrimination controls, which is what those controls are for.
+   */
+  const assertions = []; // DIRECT  — { path, start, end }
+  const bails = []; // BAIL    — { path, start, end }
+  const matchers = []; // MATCHER — { base, keys, start, end }
   const gates = [];
 
   const collect = (n) => {
@@ -288,7 +296,7 @@ function scanSource(file, text, { allDiscriminants = false } = {}) {
       // expect(<arg>)  /  assert(<arg>)
       if (ts.isIdentifier(callee) && (callee.text === 'expect' || ASSERT_FNS.has(callee.text))) {
         const p = exprPath(n.arguments[0]);
-        if (p) assertedPaths.add(p);
+        if (p) assertions.push({ path: p, start: n.getStart(sf), end: n.end });
       }
       // expect(<base>).toMatchObject({ prop: ... })  — pitfall #1
       if (ts.isPropertyAccessExpression(callee) && OBJECT_MATCHERS.has(callee.name.text)) {
@@ -305,8 +313,7 @@ function scanSource(file, text, { allDiscriminants = false } = {}) {
           if (base) {
             const keys = objectLiteralKeys(n.arguments[0]);
             if (keys.length > 0) {
-              if (!matcherArmed.has(base)) matcherArmed.set(base, new Set());
-              for (const k of keys) matcherArmed.get(base).add(k);
+              matchers.push({ base, keys: new Set(keys), start: n.getStart(sf), end: n.end });
             }
           }
         }
