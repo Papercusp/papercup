@@ -219,6 +219,11 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
                 planFilters={itemPlans}
                 groupByAuthorizer={queueAuthzView}
                 includePlanItems={queueAuthzView}
+                hasMore={queue.attentionRaw.hasMore}
+                loadingMore={queue.attentionRaw.loadingMore}
+                loadMore={queue.attentionRaw.loadMore}
+                totalCount={queue.attentionRaw.totalItemCount}
+                loadedCount={queue.attentionRaw.loadedItemCount}
               />
             ) : null}
             {showPlanItems ? (

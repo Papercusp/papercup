@@ -88,6 +88,14 @@ export interface InboxAttention {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  /** The complete server-side attention count, independent of the loaded page. */
+  totalItemCount: number;
+  /** True when the bounded feed has another page available. */
+  hasMore: boolean;
+  /** True while the next attention page is in flight. */
+  loadingMore: boolean;
+  /** Request the next bounded page. */
+  loadMore: () => void;
 }
 
 /** The flattened attention feed (every kind, every tier). One shared sync
@@ -100,7 +108,16 @@ export function useInboxAttention(enabled = true): InboxAttention {
   // AdvOverviewTab's tiles — gets it for free; see flattenAttentionItems'
   // own doc for why a bare flatMap re-duplicates non-plan-scoped items).
   const items = useMemo(() => flattenAttentionItems(groups ?? []), [groups]);
-  return { items, loading: q.loading, error: q.error, refresh: q.refresh };
+  return {
+    items,
+    loading: q.loading,
+    error: q.error,
+    refresh: q.refresh,
+    totalItemCount: q.totalItemCount,
+    hasMore: q.hasMore,
+    loadingMore: q.loadingMore,
+    loadMore: q.loadMore,
+  };
 }
 
 /**

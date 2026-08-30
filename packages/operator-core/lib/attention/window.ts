@@ -10,10 +10,10 @@
 
 import {
   importanceRank,
-  type AttentionGroup,
   type AttentionItem,
   type AttentionTier,
 } from './types';
+import type { AttentionGroup } from './group';
 
 /** The default UI page is comfortably below the 250 KB wire budget. */
 export const DEFAULT_ATTENTION_PAGE_SIZE = 100;
@@ -187,4 +187,3 @@ export function paginateAttentionGroups(
 
   return { groups: selectedGroups, meta };
 }
-

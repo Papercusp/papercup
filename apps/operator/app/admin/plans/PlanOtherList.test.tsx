@@ -136,6 +136,24 @@ describe('PlanOtherList — retired Mug deep-links', () => {
 });
 
 describe('PlanOtherList — Queue unification (includePlanItems)', () => {
+  it('shows a bounded-feed notice and exposes the continuation action', () => {
+    const loadMore = vi.fn();
+    render(
+      <PlanOtherList
+        {...BASE}
+        groups={[group([item()])]}
+        hasMore
+        totalCount={5}
+        loadedCount={2}
+        loadMore={loadMore}
+      />,
+      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
+    );
+    expect(screen.getByTestId('attention-window-notice').textContent).toContain('2 of 5');
+    fireEvent.click(screen.getByTestId('attention-load-more'));
+    expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces a needs-human plan-item in the "Needs your call" bucket with its P-NNN', () => {
     render(
       <PlanOtherList {...BASE} groups={[group([planItem(), item()])]} groupByAuthorizer includePlanItems />,

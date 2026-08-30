@@ -96,6 +96,12 @@ interface Props {
    *  carry authorizer='you' → "Needs you"). A plan-item row routes its click to
    *  the shared ?item= preview (the Vditor plan preview), not the ?other= card. */
   includePlanItems?: boolean;
+  /** Continuation state for a bounded plans.attention page. */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  loadMore?: () => void;
+  totalCount?: number;
+  loadedCount?: number;
 }
 
 /** Keep the attention items to show: by default the non-plan-item kinds
@@ -153,6 +159,11 @@ export default function PlanOtherList({
   tierFilter,
   groupByAuthorizer,
   includePlanItems,
+  hasMore = false,
+  loadingMore = false,
+  loadMore,
+  totalCount,
+  loadedCount,
 }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
   // The "Let the {brain} handle these →" deep-link points at /settings/autonomy,
@@ -202,6 +213,28 @@ export default function PlanOtherList({
     : allItems;
   // A1: authorizer buckets in the new Queue view, else the legacy plan/harness groups.
   const sections = groupByAuthorizer ? byAuthorizer(baseItems, t) : planSections(otherGroups);
+  const windowLoaded = loadedCount ?? allItems.length;
+  const windowTotal = totalCount ?? windowLoaded;
+  const windowNotice =
+    hasMore || loadingMore ? (
+      <div className="pc-queue__window" role="status" data-testid="attention-window-notice">
+        <span>
+          Showing {windowLoaded} of {windowTotal} attention items. Load more to include older
+          activity.
+        </span>
+        {loadMore ? (
+          <button
+            type="button"
+            className="pc-queue__window-button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            data-testid="attention-load-more"
+          >
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
+        ) : null}
+      </div>
+    ) : null;
 
   // Auto-expand the selected item's section (mirrors the Plans tab). The ref
   // token stops us reopening a section the user just collapsed while the
@@ -237,6 +270,7 @@ export default function PlanOtherList({
   const wrap = (inner: ReactNode) => (
     <section className="pc-items__section">
       <h3 className="pc-items__section-label">{title}</h3>
+      {windowNotice}
       {groupByAuthorizer && allItems.length ? (
         <p className="pc-queue__intro">
           Things an agent paused on because acting needed sign-off. Clear the ones only you can

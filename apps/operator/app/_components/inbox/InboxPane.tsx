@@ -379,7 +379,16 @@ function InboxExpandedDetail({
 }
 
 export default function InboxPane() {
-  const { items, loading, error, refresh } = useInboxAttention();
+  const {
+    items,
+    loading,
+    error,
+    refresh,
+    hasMore,
+    loadingMore,
+    loadMore,
+    totalItemCount,
+  } = useInboxAttention();
   const [filter, setFilter] = useQueryState(
     "opci",
     parseAsStringLiteral(FILTERS).withDefault("needs"),
@@ -839,6 +848,30 @@ export default function InboxPane() {
             </div>
           ) : null}
         </section>
+
+        {hasMore || loadingMore ? (
+          <div
+            className="op-inbox__window"
+            role="status"
+            data-testid="inbox-attention-window"
+          >
+            <span>
+              Showing {items.length} of {totalItemCount} attention items. Load more to include
+              older activity.
+            </span>
+            {loadMore ? (
+              <button
+                type="button"
+                className="op-inbox__window-button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                data-testid="inbox-load-more"
+              >
+                {loadingMore ? "Loading…" : "Load more"}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         {error ? (
           <div className="op-inbox__error" role="alert">

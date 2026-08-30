@@ -1175,6 +1175,11 @@ export default function PlansClient() {
                             tierFilter={queueTier}
                             groupByAuthorizer
                             includePlanItems
+                            hasMore={attention.hasMore}
+                            loadingMore={attention.loadingMore}
+                            loadMore={attention.loadMore}
+                            totalCount={attention.totalItemCount}
+                            loadedCount={attention.loadedItemCount}
                           />
                           {qTodos || qBlocked ? (
                             <PlanItemsList
