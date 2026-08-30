@@ -147,7 +147,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
-  it('marks both supervised guard phases so deliberate results stay out of health evidence', () => {
+  it('marks every supervised guard phase (baseline, copy-baseline, mutant) so deliberate results stay out of health evidence', () => {
     const markerLog = join(dir, 'marker.log');
     const { code } = runProbeIO([
       '--file',
@@ -158,7 +158,11 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "$PAPERCUSP_MUTATION_PROBE" >> "${markerLog}"; if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi; test -f {}`,
     ]);
     expect(code).toBe(0);
-    expect(readFileSync(markerLog, 'utf8').trim().split('\n').sort()).toEqual(['baseline=1', 'mutant=1']);
+    expect(readFileSync(markerLog, 'utf8').trim().split('\n').sort()).toEqual([
+      'baseline=1',
+      'copy-baseline=1',
+      'mutant=1',
+    ]);
     expect(read()).toBe(ORIGINAL);
   });
 
@@ -187,9 +191,10 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(code).toBe(2);
     expect(out).toMatch(/mutation diff/i);
     expect(out).toMatch(/ONLY WHITESPACE/i);
-    // The baseline establishes the harness; the semantic-no-op refusal must
-    // happen before the mutant guard is launched.
-    expect(readFileSync(phases, 'utf8')).toBe('baseline\n');
+    // The baseline establishes the harness, and copy-baseline proves the
+    // relocation is sound; the semantic-no-op refusal must happen before the
+    // mutant guard is launched (mutation is applied only after both).
+    expect(readFileSync(phases, 'utf8')).toBe('baseline\ncopy-baseline\n');
     expect(read()).toBe(ORIGINAL);
   });
 
@@ -291,6 +296,91 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(code).toBe(0);
     expect(out).toMatch(/MUTANT CAUGHT/);
     expect(out).not.toMatch(/RUNNER-MISUSE/i);
+  });
+});
+
+/**
+ * EI-21884666893062196 (2026-08-30) — copy-out mode relocates ONLY the named
+ * `--file`, never its sibling directory. A subject that imports a relative
+ * sibling (the `./lib/...` house pattern under scripts/*.mjs) is broken by
+ * that relocation alone: it dies on ERR_MODULE_NOT_FOUND before the guard
+ * runs a single assertion. That failure is exit 1 — the SAME code the mutant
+ * phase reads as "caught" — so a broken relocation used to silently report
+ * "the guard is falsifiable" without the guard ever having run. These pin the
+ * fix from both sides: the refusal fires (before any mutation is applied),
+ * and a relocation-safe subject (one whose --test command carries its own
+ * sibling along, exactly as the incident's caller-side workaround did) still
+ * reaches a genuine verdict.
+ */
+describe('mutation-probe.sh — copy-out relocation is proven sound before scoring the mutant', () => {
+  it('REFUSES (exit 2, harness-error) when the guard fails against an UNMUTATED relocated copy — never a false MUTANT CAUGHT', () => {
+    const relocSubject = join(dir, 'reloc-subject.mjs');
+    mkdirSync(join(dir, 'lib'));
+    writeFileSync(join(dir, 'lib', 'helper.mjs'), 'export const helperValue = 1;\n');
+    const ORIGINAL_RELOC = "import { helperValue } from './lib/helper.mjs';\nexport const value = helperValue;\n";
+    writeFileSync(relocSubject, ORIGINAL_RELOC);
+
+    const { code, out } = runProbeIO([
+      '--file',
+      relocSubject,
+      // Any non-no-op mutation: copy-baseline runs BEFORE this is applied, so
+      // the exact mutation text is irrelevant to what this test proves — the
+      // refusal must fire before the mutant guard, let alone the mutation
+      // itself, is ever reached.
+      '--mutate',
+      's/helperValue;/helperValue; \\/\\/ mutated/',
+      '--test',
+      'node -e "import(process.argv[1]).then(()=>process.exit(0)).catch(()=>process.exit(1))" {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/COPY-BASELINE FAILED/i);
+    expect(out).toMatch(/RELOCATION/i);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).toMatch(/copy_baseline_exit=1/);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+    // The mutant guard never even ran — the subject is untouched, and the
+    // ERR_MODULE_NOT_FOUND came from Node itself, captured in the guard log.
+    expect(out).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
+    expect(readFileSync(relocSubject, 'utf8')).toBe(ORIGINAL_RELOC);
+  });
+
+  it('still reaches a genuine CAUGHT verdict when --test carries the sibling along (the sanctioned workaround)', () => {
+    // Calibration for the refusal above: a --test command that makes the
+    // relocated copy self-sufficient (mirroring the incident's caller-side
+    // symlink workaround) must sail through copy-baseline and reach a real
+    // mutant verdict — proving the new check does not merely refuse
+    // everything, only genuinely-broken relocations.
+    const relocSubject = join(dir, 'reloc-subject-ok.mjs');
+    mkdirSync(join(dir, 'lib'));
+    writeFileSync(join(dir, 'lib', 'helper.mjs'), 'export const helperValue = 1;\n');
+    writeFileSync(relocSubject, "import { helperValue } from './lib/helper.mjs';\nexport const value = helperValue;\n");
+    const wrapper = join(dir, 'import-with-sidecar.mjs');
+    writeFileSync(
+      wrapper,
+      [
+        "import { existsSync, symlinkSync } from 'node:fs';",
+        "import { dirname, join } from 'node:path';",
+        'const target = process.argv[2];',
+        "const sidecar = join(dirname(target), 'lib');",
+        `if (!existsSync(sidecar)) symlinkSync(${JSON.stringify(join(dir, 'lib'))}, sidecar, 'dir');`,
+        'const mod = await import(target);',
+        'process.exit(mod.value === 1 ? 0 : 1);',
+      ].join('\n'),
+    );
+
+    const code = runProbe([
+      '--file',
+      relocSubject,
+      '--mutate',
+      's/helperValue;/helperValue + 1;/',
+      '--test',
+      `node ${JSON.stringify(wrapper)} {}`,
+    ]);
+    // Baseline (value===1, exit 0) and copy-baseline (same, via the sidecar
+    // symlink) both pass; the mutation then makes value===2, the guard's
+    // `mod.value === 1` check fails => exit 1 => the mutant is CAUGHT => the
+    // probe itself exits 0.
+    expect(code).toBe(0);
   });
 });
 
@@ -450,6 +540,29 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     // Non-vacuousness: the very same command is still rejected without --in-tree, so this is a
     // mode-specific relaxation and not a removed check.
     expect(runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCmd])).toBe(2);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('does NOT run the extra copy-baseline phase — --in-tree never relocates the subject, so there is nothing to prove sound', () => {
+    // EI-21884666893062196's fix is copy-out-specific: --in-tree mutates the
+    // TRACKED file in place, so $TARGET is $FILE and a copy-baseline run
+    // would just repeat the baseline verbatim. Pin the asymmetry so it can't
+    // regress into an accidental extra guard invocation here too.
+    const markerLog = join(dir, 'marker.log');
+    const code = runProbe([
+      '--in-tree',
+      ACCEPT_SWEEP,
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      // The guard must FAIL once "beta" is gone (mutant phase) to be scored
+      // CAUGHT — asserting the ORIGINAL text is present, not the mutated one.
+      `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${markerLog}"; grep -q "^beta$" {}`,
+    ]);
+    expect(code).toBe(0);
+    expect(readFileSync(markerLog, 'utf8').trim().split('\n').sort()).toEqual(['baseline', 'mutant']);
     expect(read()).toBe(ORIGINAL);
   });
 

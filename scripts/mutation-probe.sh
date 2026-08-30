@@ -148,8 +148,10 @@
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
 #      whitespace-only mutation, a mutant that no longer PARSES, a guard run
 #      whose own output shows a known runner-MISUSE marker — e.g. "no test
-#      files found" — instead of an assertion failure, a failing baseline, or
-#      a harness error while running the mutant)
+#      files found" — instead of an assertion failure, a failing baseline, a
+#      copy-out RELOCATION that breaks the subject before any mutation is
+#      applied (the guard fails against an UNMUTATED relocated copy), or a
+#      harness error while running the mutant)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
 #
 # READING THE VERDICT
@@ -808,6 +810,52 @@ else
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
   exit 2
+fi
+
+# --- copy-baseline: prove the RELOCATION survives before scoring anything --
+# (EI-21884666893062196, measured 2026-08-30) Copy-out mode moves the subject
+# to a scratch dir before mutating it. A subject with a relative SIBLING
+# import (the `./lib/...` house pattern under scripts/*.mjs) is broken by that
+# relocation alone — it dies on ERR_MODULE_NOT_FOUND before the guard runs a
+# single assertion. That failure is exit 1, the SAME code the mutant phase
+# reads as "caught", so a broken relocation silently reports "the guard is
+# falsifiable" without the guard ever having run.
+#
+# Prove the guard survives relocation BEFORE mutating anything: run it again
+# against the UNMUTATED copy sitting at the exact path the mutant will occupy.
+# It already passed in-tree (the baseline check above required that), so it
+# must also pass here — anything else means the relocation broke the subject,
+# not that a mutation was caught (there isn't one yet). In-tree mode never
+# relocates the subject at all, so this check applies to copy-out only.
+if [ "$TARGET_MODE" = "copy-out" ]; then
+  COPY_BASELINE_CMD="${TEST_CMD//\{\}/$TARGET}"
+  COPY_BASELINE_LOG="$SCRATCH/copy-baseline.log"
+  COPY_BASELINE_RC=0
+  if run_guard copy-baseline "unmutated-copy baseline guard" "$COPY_BASELINE_CMD" "$COPY_BASELINE_LOG"; then
+    :
+  else
+    COPY_BASELINE_RC=$?
+    log "COPY-BASELINE FAILED (guard exited $COPY_BASELINE_RC against the UNMUTATED relocated copy) — refusing to score the mutant"
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 copy_baseline_exit=%d\n' \
+      "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$COPY_BASELINE_RC"
+    die "the guard failed against an UNMUTATED copy relocated to $TARGET, even though the SAME guard passed in-tree (baseline_exit=$BASELINE_RC, this run's exit=$COPY_BASELINE_RC).
+
+      This is almost always the RELOCATION breaking the subject, not a caught
+      mutant — there is no mutation applied yet. The most common cause: the
+      subject has a relative SIBLING import (the \`./lib/...\` house pattern
+      under scripts/*.mjs) that copy-out mode's single-file relocation does
+      not carry along, so the copy dies on ERR_MODULE_NOT_FOUND the instant it
+      is moved — before a single assertion runs. Scoring that as a caught
+      mutant would report falsifiability this probe never demonstrated.
+
+      Inspect the captured guard output above (copy-baseline phase) for the
+      exact failure — a module-resolution or file-not-found error confirms
+      relocation, not mutation.
+
+      FIX: symlink or copy the subject's sibling directory alongside it before
+      mutating, or point --test at the subject's real in-tree directory
+      instead of relying on the runner's own relocated-copy path."
+  fi
 fi
 
 # --- pre-flight the mutation under perl strict -------------------------------
