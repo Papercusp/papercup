@@ -138,6 +138,18 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
         template_data       JSONB,
         promote_policy      JSONB,
         owner_author_pubkey TEXT,
+        -- mig 714 (input_schema) + mig 908 (output_schema) + mig 923 (property_schema,
+        -- properties) + mig 861 (forced_past): the writer's INSERT/ON CONFLICT column
+        -- list carries all five (projections/harness-plans.ts) -- missing any of them
+        -- 42703s every per-part write, same failure class as the comment above
+        -- (EI-20433418865457805). property_schema/properties are NOT NULL DEFAULT
+        -- '{}'::jsonb to match the real schema (923) and the writer's ON CONFLICT DO
+        -- UPDATE COALESCE-against-existing-value.
+        input_schema    JSONB,
+        output_schema   JSONB,
+        property_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+        properties      JSONB NOT NULL DEFAULT '{}'::jsonb,
+        forced_past     JSONB,
         PRIMARY KEY (workspace_id, harness_slug, plan_slug)
       );
     `);
