@@ -316,4 +316,20 @@ describe('work_items:claim — an at-cap by-id claim SUCCEEDS and WARNS (by-id-u
     );
     expect(getClaimSpecRecordSpy).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'member-7' }));
   });
+
+  it('addresses an over-cap dispatch warning to the named assignee, not the dispatching leader', async () => {
+    store.held = [{ id: 'WI-HELD' }];
+    const b = await body({ id: 'WI-DISPATCH-WARNING', assignee: 'member-7' });
+    const result = b.results[0];
+
+    expect(result.concurrencyWarning).toMatch(/member-7 WAS ALREADY AT THEIR CONCURRENCY CAP/i);
+    expect(result.concurrencyWarning).toContain('scheduler:get_next WILL now refuse to serve member-7');
+    expect(result.concurrencyWarning).not.toMatch(/\bYOU WERE ALREADY AT YOUR CONCURRENCY CAP\b/i);
+    expect(result.concurrency).toMatchObject({
+      activeClaims: 1,
+      maxConcurrentClaims: 1,
+      heldIds: ['WI-HELD'],
+      subject: 'member-7',
+    });
+  });
 });

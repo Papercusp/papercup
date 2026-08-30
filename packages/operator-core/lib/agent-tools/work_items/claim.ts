@@ -229,6 +229,7 @@ export function blockedClaimWarning(blockers: readonly UnresolvedDepBlocker[] | 
 export function concurrencyClaimWarning(
   verdict: ClaimConcurrencyVerdict | null | undefined,
   claimedId: string,
+  dispatchedAssignee?: string | null,
 ): string | null {
   if (!verdict?.blocked) return null;
   // The verdict is PRE-claim, so the item just claimed is not in `heldIds` — subtract it
@@ -237,18 +238,23 @@ export function concurrencyClaimWarning(
   const held = verdict.heldIds.filter((id) => id !== claimedId);
   const shown = held.slice(0, 8);
   const more = held.length - shown.length;
+  const isDispatch = Boolean(dispatchedAssignee);
+  const subject = dispatchedAssignee ?? 'you';
+  const possessive = isDispatch ? 'their' : 'your';
+  const serveSubject = isDispatch ? subject : 'you';
   return (
-    `⚠ YOU WERE ALREADY AT YOUR CONCURRENCY CAP (${verdict.activeClaims}/${verdict.maxConcurrentClaims}) ` +
+    `⚠ ${isDispatch ? `${subject} WAS ALREADY AT THEIR` : 'YOU WERE ALREADY AT YOUR'} CONCURRENCY CAP ` +
+    `(${verdict.activeClaims}/${verdict.maxConcurrentClaims}) ` +
     `BEFORE THIS CLAIM` +
     (shown.length > 0 ? `, holding: ${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}` : '') +
     '. The claim SUCCEEDED — a by-id claim deliberately overrides self-select readiness floors, ' +
     'which is how a leader dispatches a specific item and how { ids:[…] } takes a swath — but ' +
-    'scheduler:get_next WILL now refuse to serve you (concurrencyBlocked), so do not read this ' +
-    'success as "the queue agrees I have capacity". Either release/complete a held item ' +
+    `scheduler:get_next WILL now refuse to serve ${serveSubject} (concurrencyBlocked), so do not read this ` +
+    `success as "the queue agrees ${subject} ${isDispatch ? 'has' : 'have'} capacity". Either release/complete a held item ` +
     '(work_items:release / work_items:complete), or — if this lane genuinely needs more than ' +
     'one item at a time — raise the cap deliberately with scheduler:set_claim_spec ' +
     '{ limits: { maxConcurrentClaims: N } } rather than accumulating past it one claim at a time. ' +
-    'A PARKED item still counts: it retains taken_by.'
+    `A PARKED item still counts: it retains taken_by; ${subject} must account for it under ${possessive} cap.`
   );
 }
 
@@ -700,7 +706,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       }).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
-    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
+    // A named assignee means the warning is being read by the dispatching caller, not the
+    // assignee whose capacity was measured. Pass that identity through so the prose cannot
+    // make the leader think its own lane changed (EI-21731818164781453).
+    const dispatchedAssignee = claimer !== claimerDefault ? claimer : null;
+    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id, dispatchedAssignee);
     const suggestedWatches = suggestedWatchesForItemBlockers({
       itemId: it.id,
       blockers: workItem.externalBlockers,
@@ -744,6 +754,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
                   activeClaims: concurrency!.activeClaims,
                   maxConcurrentClaims: concurrency!.maxConcurrentClaims,
                   heldIds: concurrency!.heldIds,
+                  ...(dispatchedAssignee ? { subject: dispatchedAssignee } : {}),
                 },
               }
             : {}),
@@ -788,6 +799,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
                   activeClaims: concurrency!.activeClaims,
                   maxConcurrentClaims: concurrency!.maxConcurrentClaims,
                   heldIds: concurrency!.heldIds,
+                  ...(dispatchedAssignee ? { subject: dispatchedAssignee } : {}),
                 },
               }
             : {}),
