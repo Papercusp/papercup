@@ -512,6 +512,13 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
 
     // Type parameters, compared POSITIONALLY and never by name — TS resolves type arguments by
     // position, so `<T>` → `<U>` is a rename that strands nobody and must stay silent.
+    //
+    // KNOWN GAP, tracked as EI-21909944792089774: this block is rename-blind, but the VALUE
+    // parameter comparison below is not. It compares literal type TEXT, so `a: T` → `a: U`
+    // still reports param-type-changed + return-type-changed on a pure rename. Fixing it needs
+    // type-parameter names alpha-normalised out of the recorded type text — and, for class
+    // members, the enclosing declaration's type parameters threaded down into them. That is a
+    // scoping change, which is why it is filed rather than patched here.
     const wasTp = was.typeParams ?? [];
     const nowTp = now.typeParams ?? [];
     for (let i = wasTp.length; i < nowTp.length; i++) {

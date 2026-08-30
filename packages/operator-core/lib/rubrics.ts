@@ -54,6 +54,7 @@ export {
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { recordPlanRevision } from './agent-tools/plans/revisions';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
@@ -1485,6 +1486,28 @@ function rubricFromLockedPlan(
 }
 
 /**
+ * Patch the generated frontmatter fields for an existing rubric plan while
+ * preserving its narrative body verbatim.
+ *
+ * Rubric plans are allowed to carry project-specific requirements, evidence
+ * matrices, plan items, and decisions in addition to the generated scaffold.
+ * Rebuilding the body with buildRubricPlanBody during a small criterion amend
+ * silently discarded those sections (the v8 → v9 acceptance-plan loss). Keep
+ * amendRubric a read-modify-write of the frontmatter instead; only the fields
+ * owned by the rubric amendment are changed and every other section survives.
+ */
+export function preserveRubricPlanBody(
+  current: string,
+  opts: { title: string; planStatus: string; owner: string | null; today?: Date },
+): string {
+  let body = current;
+  body = setFrontmatterScalar(body, 'title', opts.title);
+  body = setFrontmatterScalar(body, 'status', opts.planStatus);
+  body = setFrontmatterScalar(body, 'owner', opts.owner);
+  return bumpUpdatedDate(body, opts.today ?? new Date());
+}
+
+/**
  * EI-10443 audit trail: build the `withPlanLock` afterWrite that appends ONE
  * `plan_revisions` row for a rubric propose/ratify write. The rubric write path went
  * through withPlanLock with NO afterWrite, so the plan revision spine had ZERO rows for
@@ -1836,13 +1859,14 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       assertNoSilentRubricLoss(stored, amended);
       assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot });
 
-      const body = buildRubricPlanBody({
-        slug: amended.rubricId,
+      // Keep the current narrative body (requirements, plan items, decisions,
+      // and any hand-authored evidence context) intact. A criterion amendment
+      // owns only the rubric frontmatter fields and template_data; regenerating
+      // the generic scaffold here would erase those durable sections.
+      const body = preserveRubricPlanBody(current, {
         title: amended.title,
         planStatus: rubricStatusToPlanStatus(amended.status ?? stored.status),
         owner: amended.by ?? null,
-        date: new Date().toISOString().slice(0, 10),
-        ...(amended.description !== undefined ? { description: amended.description } : {}),
       });
 
       return {

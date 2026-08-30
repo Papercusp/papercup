@@ -1040,6 +1040,19 @@ export const CC_HOOK_FILES = [
   // `.PENDING-CODE-DEPLOY` files, since next-migration.mjs tells authors to iterate there and
   // that IS the authoring window.
   'posttooluse-migration-forward-compat-nudge.mjs',
+  // EI-19401978567233485: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an
+  // edited file adds an entry to a registry array whose sibling *.test.ts still asserts an
+  // exact-ordered-list census of that same array. The census test IS already the detector and
+  // it DOES fire — but at the fleet green-checkpoint ~an hour later, where the red holds `main`
+  // for EVERY agent and costs a release-fixer dispatch plus a ~55min re-run. Both genuine reds
+  // on candidate 2edd4735 (2026-08-03) were this identical class: GATE_OWNERSHIP_CELL added to
+  // BUILTIN_CELLS, and nulBytesDetector added to DEFAULT_CONTENT_DETECTORS (whose census title
+  // still read "all five seeded detectors"). Finding the drift was never the hard part — the
+  // census is cheap and deterministic; KNOWING TO LOOK is, at the one moment the fix is a
+  // one-line census bump by the author who still has the registry open. The detector
+  // (scripts/check-registry-census-drift.mjs) is imported rather than re-implemented, so the
+  // nudge cannot drift quiet on a shape the CLI still reports.
+  'posttooluse-registry-census-drift-nudge.mjs',
   // EI-19459260956682226: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when
   // an edited tool-definition file breaches the P-011 prompt-weight budget. Three detectors
   // already measure this and ALL THREE are post-hoc or opt-in — the gate test (after the
@@ -2661,6 +2674,22 @@ export function mergeClaudeHookSettings(
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-css-design-primitives-nudge.mjs'),
     });
+  // merge_registry_census_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19401978567233485). Advisory only, and it MUST stay advisory: PostToolUse cannot block,
+  // and the census test itself remains the authority — this only moves the SIGNAL from the
+  // ~55min-later fleet gate to the edit that caused it. Fires only when the edited file holds
+  // a registry array AND a sibling census asserting an exact count/list of that same array AND
+  // the two now disagree, so a registry with no census, or a census already updated in the same
+  // change, is silent by construction.
+  if (has('posttooluse-registry-census-drift-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-registry-census-drift-nudge.mjs'),
+      {
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: cmd('posttooluse-registry-census-drift-nudge.mjs'),
+      },
+    );
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
     const sl = p('statusline-fleet.sh');

@@ -42,8 +42,14 @@ describe('EI-21617008171422271 — verify-tauri-headless atomically reserves dis
   });
 
   it('routes both auto-picked and forced displays through the reservation', () => {
+    // EI-21903832503219853: the walk-forward+reserve loop was factored into a
+    // `pick_display()` function (so the GTK-init-panic retry can call the SAME
+    // logic on a freshly re-picked display) — the "too close to a real seat"
+    // guard moved INSIDE that function so a retry-path re-pick inherits it too,
+    // so the region now ends at the function's closing brace + its call site
+    // rather than at the (now-indented) guard line itself.
     const start = src.indexOf('DISPLAY_NUM="${VERIFY_TAURI_DISPLAY_NUM:-}"');
-    const end = src.indexOf('\n[ "$DISPLAY_NUM" -ge 2 ]', start);
+    const end = src.indexOf('\n}\npick_display\n', start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const picker = src.slice(start, end);
@@ -51,6 +57,7 @@ describe('EI-21617008171422271 — verify-tauri-headless atomically reserves dis
     expect(picker).toContain('reserve_display "$DISPLAY_NUM"');
     expect(picker).toContain('DISPLAY_NUM=$((DISPLAY_NUM + 1))');
     expect(picker).toContain('DISPLAY_AUTO_PICK=0');
+    expect(picker).toContain('[ "$DISPLAY_NUM" -ge 2 ]');
   });
 
   it('releases the reservation only after normal teardown has drained ports', () => {

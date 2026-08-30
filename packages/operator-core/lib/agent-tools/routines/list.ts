@@ -318,6 +318,72 @@ export function deriveGitSyncFreshness(
   };
 }
 
+/** Bound the path samples below; the COUNTS beside them stay the true totals. */
+const GIT_SYNC_EXCLUSION_SAMPLE = 10;
+
+function stringList(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/**
+ * Surface the exclusion evidence git-sync already writes and this reader dropped
+ * (EI-21900560691158244).
+ *
+ * `recordOutcome` persists `last_skipped_paths` / `last_skip_reason` / `last_oversized`
+ * for an explicitly stated reason — its own comment keeps the paths "even when the
+ * unlocked remainder synced: partial progress is useful evidence and is exactly the case
+ * where a holder otherwise cannot tell that their file is still stranded." The `healthOf`
+ * allowlist then omitted all three, so the one reader an agent actually calls discarded
+ * the evidence the writer recorded for them.
+ *
+ * The consequence is indirect enough to be misread as the agent's own fault: a skipped
+ * path is in no commit, therefore in no green-checkpoint candidate, so `work_items:complete`
+ * lands `completionAuthority:'proposed'` because the server cannot prove worktree blob ==
+ * HEAD blob. The item stays owned by its closer and off burn-down, which reads as a defect
+ * in the work rather than a sweep that never included the file.
+ *
+ * Emitted on EVERY git-sync row, including when nothing was excluded. A block that appeared
+ * only when non-empty would make "nothing was skipped" and "this reader does not report
+ * skips" the same shape — which is the defect being repaired here, one level up.
+ *
+ * Deliberately NOT folded into the `last_status` headline the way `git_sync_freshness` is.
+ * Excluding a locked path is normal and continuous on this tree (agents hold locks
+ * constantly), so a headline that degraded on every skip would be permanently red and
+ * therefore ignored — the same end state as the silence it replaced, reached from the
+ * other direction. A skip is not a contradiction of `synced`; it is missing attribution
+ * for one path, so it is reported as evidence and carries its own `warning`.
+ */
+export function deriveGitSyncExclusions(
+  metadata: Record<string, unknown> | null,
+): Record<string, unknown> {
+  const skipped = stringList(metadata?.last_skipped_paths);
+  const oversized = stringList(metadata?.last_oversized);
+  const skippedAtMs = epochMs(metadata?.last_skipped_at);
+  const parts: string[] = [];
+  if (skipped.length > 0) {
+    const reason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : 'unknown';
+    parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${reason})`);
+  }
+  if (oversized.length > 0) parts.push(`${oversized.length} oversized file(s) excluded`);
+  return {
+    skip_reason: typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null,
+    skipped_at: isoAt(skippedAtMs),
+    skipped_count: skipped.length,
+    skipped_sample: skipped.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
+    skipped_sample_truncated: skipped.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    oversized_count: oversized.length,
+    oversized_sample: oversized.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
+    oversized_sample_truncated: oversized.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    warning:
+      parts.length === 0
+        ? null
+        : `${parts.join('; ')}. An excluded path is in no commit and therefore in no ` +
+          'green-checkpoint candidate, so work_items:complete on it can land ' +
+          "completionAuthority:'proposed'. Release the lock (or gitignore/remove the oversized " +
+          'file) and let the next sweep pick it up.',
+  };
+}
+
 /**
  * Let the derived verdict OVERRIDE the headline `last_status` (EI-21807573331912223).
  *
@@ -370,6 +436,7 @@ export default defineTool({
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
+      '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, +_truncated markers, warning }. git-sync excludes every actively file-locked path and every oversized blob, so `last_status:"synced"` can be truthful while YOUR file was never committed. Counts are true totals; the samples are bounded and say so. Always present on a git-sync row, so `skipped_count:0` is a measurement, not a missing field. A non-null `warning` means an excluded path is in no green-checkpoint candidate, which is why work_items:complete on it can land completionAuthority:"proposed".',
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, stuck }, null when the row carries no git_sync_activity. `stuck:true` means one fire has been running longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
@@ -622,7 +689,15 @@ export default defineTool({
         // beside it hoping to be read (EI-21807573331912223). Raw value preserved at
         // git_sync_freshness.raw_last_status.
         health = applyDerivedGitSyncHeadline(
-          { ...(healthOf(r.metadata) ?? {}), git_sync_freshness: freshness },
+          {
+            ...(healthOf(r.metadata) ?? {}),
+            git_sync_freshness: freshness,
+            // EI-21900560691158244: the writer records which paths it excluded so a
+            // holder can tell their file is stranded; the healthOf allowlist dropped
+            // every one of those fields. Always present on a git-sync row, so zero is
+            // an affirmative measurement rather than an absent field.
+            git_sync_exclusions: deriveGitSyncExclusions(r.metadata),
+          },
           freshness,
         );
       } else {

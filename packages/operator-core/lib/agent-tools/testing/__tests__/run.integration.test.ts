@@ -92,6 +92,15 @@ const GREEN_TARGET = 'packages/operator-core/lib/testing-flakiness.test.ts';
 const OPERATOR_CORE_RELATIVE_GREEN_TARGET = 'lib/testing-flakiness.test.ts';
 
 /**
+ * A real in-repo suite that collects tests and executes NONE of them unless its env var is set
+ * (`describe.skipIf(!LIVE)`), for the all-skipped refusal. Deliberately a real file rather than a
+ * fixture: an always-skipped fixture committed for this test would itself be collected by every
+ * normal run. If this suite is ever un-gated, the case fails loudly instead of going vacuous.
+ */
+const ENV_GATED_TARGET = 'packages/operator-core/lib/agent-tools/computer/capture-geometry-live.test.ts';
+const ENV_GATED_TARGET_VAR = 'PAPERCUSP_CAPTURE_GEOMETRY_LIVE';
+
+/**
  * A name-filter fragment that DOES match inside GREEN_TARGET. Deliberately its top-level
  * `describe` — the name of the exported function under test — so this is only a tripwire for a
  * real API rename, not for incidental edits to the suite (same reasoning as the un-pinned counts
@@ -546,6 +555,48 @@ describe('testing:run (integration)', () => {
     const out = await body(call({ files: [GREEN_TARGET], testNamePattern: GREEN_TARGET_TEST_NAME_FRAGMENT }));
 
     expect(out.ok).toBe(true);
+    expect(out.passed).toBeGreaterThan(0);
+  }, 120_000);
+
+  // EI-21909191824649521 — the SAME vacuous-pass class as the two cases above, reached through
+  // the argument set that carries NO filter at all, which is why neither of them caught it. An
+  // env-gated `describe.skipIf` suite collects every test and executes none; vitest exits 0, so
+  // this returned ok:true / passed:0 / failed:0 with `skipped:3` sitting below the two fields a
+  // reader actually treats as the verdict. It fires in the expensive direction: acceptance
+  // rubrics routinely bind replication drills to `*-live` suites, so a grader following the
+  // drill gets a green and credits a criterion on which zero assertions ever ran.
+  it('refuses a file whose tests were ALL skipped instead of passing vacuously', async () => {
+    // The child inherits this process's env, so pin the gate CLOSED rather than trusting the
+    // ambient value — otherwise a box that happens to export it turns this into a false green,
+    // which is the very failure under test.
+    const prior = process.env[ENV_GATED_TARGET_VAR];
+    delete process.env[ENV_GATED_TARGET_VAR];
+    let out: RunResult;
+    try {
+      out = await body(call({ files: [ENV_GATED_TARGET] }));
+    } finally {
+      if (prior !== undefined) process.env[ENV_GATED_TARGET_VAR] = prior;
+    }
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe('all_tests_skipped');
+    // Collected-THEN-skipped, not "the path matched nothing" — `route_error` already owns that,
+    // and without this assertion the case would also pass against a missing file.
+    expect(out.skipped).toBeGreaterThan(0);
+    expect(out.passed ?? 0).toBe(0);
+    // The reason must be STATED: `ok:false` beside `failed:0` is the exact shape an agent
+    // misreads as "nothing failed".
+    expect(String(out.hint)).toContain('NONE executed');
+  }, 120_000);
+
+  // Non-vacuousness for the case above, and the specific way its fix could go wrong: refusing on
+  // `passed === 0` alone would refuse EVERY green run too. A run that really executed tests must
+  // still be green.
+  it('still returns a green for a run that actually executed tests', async () => {
+    const out = await body(call({ files: [GREEN_TARGET] }));
+
+    expect(out.ok).toBe(true);
+    expect(out.error).toBeUndefined();
     expect(out.passed).toBeGreaterThan(0);
   }, 120_000);
 

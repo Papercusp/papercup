@@ -654,7 +654,8 @@ export type TestFilesCoreResult =
         | 'timeout'
         | 'route_error'
         | 'no_report'
-        | 'name_filter_no_match';
+        | 'name_filter_no_match'
+        | 'all_tests_skipped';
       hint?: string;
       path?: string;
       matches?: string[];
@@ -664,6 +665,41 @@ export type TestFilesCoreResult =
       routerOutput?: string;
       detachedRunId?: string;
   };
+
+/**
+ * EI-21909191824649521: a run that COLLECTED tests and executed NONE of them produced no
+ * evidence — yet vitest exits 0, and the two fields a reader treats as the verdict (`ok:true`
+ * and `failed:0`) both read as success while `skipped:N` sits below them, outranked.
+ *
+ * That is the SAME epistemic event as the two refusals on either side of it — a path matching
+ * zero files (`route_error`) and a `testNamePattern` matching zero tests
+ * (`name_filter_no_match`) — and it was the one case left passing. The exposed consumer is an
+ * acceptance grader following a rubric drill that names an env-gated `*-live` suite: it gets
+ * `ok:true` and credits a criterion on which zero assertions ever ran.
+ *
+ * Deliberately NARROW to the zero-executed case. A PARTIALLY skipped run produced real
+ * evidence and keeps its current shape; and `skipped > 0` is required so this can never
+ * swallow a genuinely empty router result, which `route_error` / `no_report` already own.
+ */
+function zeroExecutedRefusal(
+  run: { passed: number; failed: number; skipped: number; files: number },
+  ctx: { runId: string; root: string },
+): TestFilesCoreResult | null {
+  if (run.passed + run.failed > 0 || run.skipped <= 0) return null;
+  return {
+    ok: false,
+    runId: ctx.runId,
+    root: ctx.root,
+    error: 'all_tests_skipped',
+    skipped: run.skipped,
+    files: run.files,
+    hint:
+      `all ${run.skipped} collected test(s) were SKIPPED and NONE executed, so NOTHING was ` +
+      'verified — this is NOT a pass, and `failed: 0` here is not evidence. The file is ' +
+      'typically env-gated (`describe.skipIf` / `it.skip`): set the suite\'s env var to actually ' +
+      'run it, or record the check as NOT EXECUTED.',
+  };
+}
 
 interface RouterOutcome extends TestProcessOutcome {
   code: number | null;
@@ -1269,6 +1305,8 @@ export async function runTestFilesCore(opts: {
         ...(opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {}),
       });
       if (routerResult) {
+        const executedNothing = zeroExecutedRefusal(routerResult, { runId, root });
+        if (executedNothing) return executedNothing;
         return boundTestRunPayload({ ok: routerResult.failed === 0 && outcome.code === 0, runId, root }, routerResult) as TestFilesCoreResult;
       }
       // Exit 1 with no report is the REFUSED false-green (the router bailed
@@ -1316,6 +1354,12 @@ export async function runTestFilesCore(opts: {
           'see the real test names.',
       };
     }
+    // The same vacuous-run class as the refusal above, arrived at WITHOUT a name filter:
+    // every collected test was skipped (an env-gated suite whose variable is unset), so this
+    // run executed nothing. See zeroExecutedRefusal.
+    const executedNothing = zeroExecutedRefusal(run, { runId, root });
+    if (executedNothing) return executedNothing;
+
     // D-062: bound the payload in BYTES, not entries. `maxFailures` caps the
     // LIST COUNT and so cannot bound bytes at all — one long assertion diff
     // outweighs fifty terse failures. Counts stay complete and a cut is stated

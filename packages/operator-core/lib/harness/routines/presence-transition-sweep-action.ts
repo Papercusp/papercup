@@ -30,6 +30,7 @@
  * migration and a write every sweep.
  */
 
+import { moduleEvaluationCount, pinModuleState } from '@papercusp/module-singleton';
 import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
 import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
@@ -56,13 +57,27 @@ const PRESENCE_ALERT_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
-/** The previous sweep's observations, keyed by agentId. Module-scoped and
- *  best-effort by design — see the header note. */
-let previousObservations = new Map<string, PresenceObservation>();
+/**
+ * The previous sweep's observations, keyed by agentId — PINNED to the realm
+ * (EI-21904761023329235), not a bare module-scoped `let`. `previousObservations`
+ * used to be reassigned directly (`previousObservations = indexPresenceObservations(...)`),
+ * which is exactly the shared-lib-singleton anti-pattern this repo's CLAUDE.md
+ * documents: if the loader ever produces a SECOND module record for this file
+ * (a tsx CJS/ESM double-load, a bare-vs-relative import, a symlinked
+ * node_modules copy), each record gets its OWN binding and a tick answered by
+ * record B never sees what record A wrote — a partial, silently-blind detector
+ * that looks complete. `pinModuleState` returns one shared object no matter how
+ * many times this module is evaluated, so state lives on `.previousObservations`
+ * of that object and is mutated in place (or the property reassigned), never the
+ * module-level binding itself. Best-effort by design — see the header note. */
+const presenceSweepState = pinModuleState<{ previousObservations: Map<string, PresenceObservation> }>(
+  '@papercusp/operator-core.presence-transition-sweep-action.previousObservations',
+  () => ({ previousObservations: new Map<string, PresenceObservation>() }),
+);
 
 /** Test-only: forget the previous snapshot so cases don't cross-contaminate. */
 export function __resetPresenceTransitionSnapshotForTests(): void {
-  previousObservations = new Map();
+  presenceSweepState.previousObservations = new Map();
 }
 
 /**
@@ -152,9 +167,28 @@ export async function runPresenceTransitionSweep(deps: PresenceTransitionSweepDe
   const gatherCommitments = deps.gatherCommitments ?? gatherCommitmentsOn;
   const deliver = deps.deliver ?? deliverNotice;
 
+  const prevSizeBeforeUpdate = presenceSweepState.previousObservations.size;
   const observations = await gather();
-  const edges = detectPresenceEdges(previousObservations, observations);
-  previousObservations = indexPresenceObservations(observations);
+  const edges = detectPresenceEdges(presenceSweepState.previousObservations, observations);
+  presenceSweepState.previousObservations = indexPresenceObservations(observations);
+  // TEMPORARY diagnostic (EI-21904761023329235), trimmed to fire ONLY on the
+  // suspicious case — a previous snapshot of size 0 on a NON-first tick (i.e.
+  // this module has been evaluated more than once in this realm). A genuinely
+  // first tick also has prevSizeBefore===0, but pairing it with
+  // moduleEvaluationCount lets a reader tell "first tick, expected" apart from
+  // "state silently reset again", instead of firing unconditionally every
+  // minute. Remove once pinModuleState has been observed live for a while with
+  // no further duplication.
+  const evaluations = moduleEvaluationCount(
+    '@papercusp/operator-core.presence-transition-sweep-action.previousObservations',
+  );
+  if (prevSizeBeforeUpdate === 0) {
+    console.log(
+      `[presence-transition-sweep][DIAG] pid=${process.pid} moduleEvaluations=${evaluations} ` +
+        `prevSizeBefore=0 obsCount=${observations.length} edges=${edges.length} ` +
+        `(first tick if moduleEvaluations<=1; otherwise state was unexpectedly empty)`,
+    );
+  }
   // The overwhelmingly common case: nothing crossed. Cost stops here — no
   // commitment read, no write, nothing on anyone's rail.
   if (edges.length === 0) return 0;

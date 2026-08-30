@@ -323,9 +323,10 @@ function scanSource(file, text, { allDiscriminants = false } = {}) {
     if (ts.isIfStatement(n)) {
       const path = discriminantPath(n.expression);
       if (path) {
-        // BAIL: `if (!r.ok) return/throw` arms every later narrow on r.ok.
-        if (isBailStatement(n.thenStatement) && !containsAssertion(n.thenStatement)) bailedPaths.add(path);
-        else if (isBailStatement(n.thenStatement)) bailedPaths.add(path);
+        // BAIL: `if (!r.ok) return/throw` arms every narrow on r.ok outside its own body.
+        if (isBailStatement(n.thenStatement)) {
+          bails.push({ path, start: n.getStart(sf), end: n.end });
+        }
 
         // A GATE is an in-scope narrowing `if` whose then-branch asserts.
         if (inScope(path) && containsAssertion(n.thenStatement)) {
@@ -333,6 +334,8 @@ function scanSource(file, text, { allDiscriminants = false } = {}) {
           gates.push({
             path,
             line: line + 1,
+            thenStart: n.thenStatement.getStart(sf),
+            thenEnd: n.thenStatement.end,
             hasAssertingElse: Boolean(n.elseStatement) && containsAssertion(n.elseStatement),
             suppressed: hasPragma(sf, text, n),
           });
@@ -348,10 +351,14 @@ function scanSource(file, text, { allDiscriminants = false } = {}) {
     const base = dot > 0 ? g.path.slice(0, dot) : null;
     const prop = dot > 0 ? g.path.slice(dot + 1) : null;
 
+    // Evidence inside the gate's own then-branch is not evidence: it only runs if the
+    // gate already passed. `outside` is what makes that structural rather than hoped-for.
+    const outside = (rec) => rec.start < g.thenStart || rec.start >= g.thenEnd;
+
     let arming = null;
-    if (assertedPaths.has(g.path)) arming = 'DIRECT';
-    else if (bailedPaths.has(g.path)) arming = 'BAIL';
-    else if (base && prop && matcherArmed.get(base)?.has(prop)) arming = 'MATCHER';
+    if (assertions.some((a) => a.path === g.path && outside(a))) arming = 'DIRECT';
+    else if (bails.some((b) => b.path === g.path && outside(b))) arming = 'BAIL';
+    else if (base && prop && matchers.some((m) => m.base === base && m.keys.has(prop) && outside(m))) arming = 'MATCHER';
     else if (g.hasAssertingElse) arming = 'ELSE';
 
     return { ...g, base, prop, arming, vacuous: arming === null && !g.suppressed };

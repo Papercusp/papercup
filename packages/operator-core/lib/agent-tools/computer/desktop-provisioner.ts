@@ -33,8 +33,8 @@ import {
 } from '../../desktop/kasmvnc-credentials';
 import {
   a11yBusSocketPath,
-  buildDesktopSandboxCommand,
   desktopAppSandboxEnabled,
+  desktopSandboxSession,
   desktopSandboxEnv,
   type DesktopSandboxDecision,
 } from './desktop-sandbox';
@@ -559,11 +559,16 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     // display only — never the operator's inherited DISPLAY=:0 / gdm XAUTHORITY.
     const env = sandboxXEnv(display);
 
-    // MEASURE the GL stack now that the X server is up. This has to happen after
-    // waitForDisplay: every rung of the ladder probes THROUGH the display, and a probe
-    // against a display that is not yet accepting connections reports `none` for a
-    // desktop that is actually fine.
-    const gl = opts.gl ?? detectGlStrategy(display);
+    // ⚠ GL IS MEASURED FURTHER DOWN, not here (WI-1223202). It used to be measured at this
+    // point, which is after `waitForDisplay` — necessary, because every rung probes THROUGH
+    // the display and a probe against a display that is not yet accepting connections
+    // reports `none` for a desktop that is fine. That constraint still holds; it is just not
+    // SUFFICIENT. The probe also has to run inside the same sandbox the apps get, and the
+    // sandbox context needs the a11y bus path and the resolved flag, neither of which exists
+    // yet at this line. So the measurement moved down to where BOTH conditions hold.
+    //
+    // Nothing between here and there consumes `gl`: the WM is unwrapped by design and the
+    // a11y bus has no GL.
 
     // The WM is deliberately NOT wrapped: openbox draws window chrome through plain X11
     // and needs no GL context. Wrapping it would pay VirtualGL's interposition cost on
@@ -602,6 +607,27 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     // sandbox then has to hand back. The app is the untrusted party here.
     const sandboxOn = opts.sandboxApps ?? (await desktopAppSandboxEnabled());
     const a11yBusPath = a11yBusSocketPath(appEnv.DBUS_SESSION_BUS_ADDRESS);
+
+    // ONE sandbox context for this desktop, handed to BOTH the GL probe and the apps
+    // (WI-1223202). Building them from one closure is what makes the two argvs provably the
+    // same confinement — `gl-probe-sandbox-parity.test.ts` asserts the prefixes match, with a
+    // permanent control that fails on the pre-fix host-probe shape.
+    const sandbox = desktopSandboxSession(
+      {
+        display,
+        a11yBusPath,
+        ...(opts.sandboxHomeDir ? { homeDir: opts.sandboxHomeDir } : {}),
+      },
+      { enabled: sandboxOn, ...(opts.denyAppNetwork ? { denyNetwork: true } : {}) },
+    );
+
+    // MEASURE the GL stack — after waitForDisplay (the ladder probes through the display) AND
+    // inside the apps' own sandbox (the ladder must describe the app's GL stack, not the
+    // host's). `forGlProbe` is the identity when apps are unsandboxed, so an unconfined
+    // desktop is still probed on the host, which is the honest measurement for it.
+    const glProbeSandboxed = sandbox.forGlProbe(['glxinfo'])[0] === 'bwrap';
+    const gl = opts.gl ?? detectGlStrategy(display, (cmd) => sandbox.forGlProbe(cmd));
+
     const sandboxDecisions: DesktopSandboxDecision[] = [];
     // WI-1105361 — retained so a caller can ask why a framebuffer stayed blank. See
     // SandboxDesktop.appDiagnostics for the failure this closes.
@@ -613,26 +639,17 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       // The GL prefix is applied BEFORE the sandbox wrap, so `vglrun` runs INSIDE the
       // sandbox rather than around it — otherwise VirtualGL's interposition would sit
       // outside the confinement it is supposed to be subject to.
-      const sandbox = buildDesktopSandboxCommand(
-        {
-          cmd: launch.argv,
-          display,
-          a11yBusPath,
-          glTier: gl.tier,
-          ...(opts.sandboxHomeDir ? { homeDir: opts.sandboxHomeDir } : {}),
-        },
-        { enabled: sandboxOn, ...(opts.denyAppNetwork ? { denyNetwork: true } : {}) },
-      );
-      sandboxDecisions.push(sandbox);
+      const appSandbox = sandbox.forApp(launch.argv, gl.tier);
+      sandboxDecisions.push(appSandbox);
       const app = await managedSpawn(
-        sandbox.binary,
-        sandbox.argv,
+        appSandbox.binary,
+        appSandbox.argv,
         {
           class: 'desktop',
           // Keep the APP's name in the title, not `bwrap` — a ledger row reading
           // "bwrap :110" for every app on every desktop is unreadable, which is the exact
           // provenance failure P-005's ledger exists to fix.
-          title: `${launch.argv[0]} ${display}${sandbox.sandboxed ? ' [sandboxed]' : ''}`,
+          title: `${launch.argv[0]} ${display}${appSandbox.sandboxed ? ' [sandboxed]' : ''}`,
           launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
           argv: [],
           parentTaskId: taskId,

@@ -274,8 +274,30 @@ export function applyGlStrategy(
   };
 }
 
-/** The live host probe. */
-export function hostGlProbe(): GlProbe {
+/**
+ * Wraps a probe argv in the SAME confinement the desktop's apps get, so the probe measures
+ * the app's GL stack rather than the host's.
+ *
+ * WI-1223202: without this the ladder ran `glxinfo` directly on the host while the apps ran
+ * under bubblewrap, so `capabilities.gl.tier` could record `hardware` for a desktop whose
+ * apps rendered in llvmpipe — which is exactly what D-031 found (the sandbox had never bound
+ * `/dev/nvidia*`). D-031 fixed the BINDING; this fixes the INSTRUMENT, so the two cannot
+ * silently disagree again the next time the sandbox argv changes.
+ *
+ * A wrap that returns its input unchanged is the honest no-op for an UNSANDBOXED desktop:
+ * when apps run raw, host probing is the correct measurement.
+ */
+export type GlProbeWrap = (cmd: readonly string[]) => readonly string[];
+
+/**
+ * The live host probe.
+ *
+ * `wrap` (optional) is applied AROUND the GL launch prefix, never inside it — `vglrun` has to
+ * run INSIDE the sandbox for the same reason the app loop applies `applyGlStrategy` before
+ * `buildDesktopSandboxCommand`: VirtualGL's interposition must be subject to the confinement,
+ * not sit outside it. Omit `wrap` and this is a host probe, as before.
+ */
+export function hostGlProbe(wrap?: GlProbeWrap): GlProbe {
   return {
     hasBinary(name) {
       try {
@@ -295,7 +317,8 @@ export function hostGlProbe(): GlProbe {
       }
     },
     probeRenderer(display, launchPrefix, env) {
-      const argv = [...launchPrefix, 'glxinfo'];
+      const probed = [...launchPrefix, 'glxinfo'];
+      const argv = wrap ? [...wrap(probed)] : probed;
       try {
         const res = spawnSync(argv[0]!, argv.slice(1), {
           env: { ...process.env, ...env, DISPLAY: display },
@@ -314,9 +337,14 @@ export function hostGlProbe(): GlProbe {
 /**
  * Detect the GL strategy for a live display. Thin wrapper over `selectGlStrategy` +
  * `hostGlProbe` so callers have one obvious entry point.
+ *
+ * ⚠ PASS `wrap` FOR ANY DESKTOP WHOSE APPS ARE SANDBOXED (WI-1223202). The 1-arg form
+ * measures the HOST, which is correct only when the apps run on the host too. A provisioner
+ * gets its wrap from `desktopSandboxSession().forGlProbe`, so the probe and the apps come out
+ * of one builder with one context and cannot drift apart.
  */
-export function detectGlStrategy(display: string): GlStrategy {
-  return selectGlStrategy(display, hostGlProbe());
+export function detectGlStrategy(display: string, wrap?: GlProbeWrap): GlStrategy {
+  return selectGlStrategy(display, hostGlProbe(wrap));
 }
 
 /* ────────────────────────── frame (bash) projection ────────────────────────── */

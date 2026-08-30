@@ -1161,8 +1161,17 @@ export async function readOutboxWindow(
       rowsScanned: paged.raw.length,
       pages: paged.pages,
     };
-  } catch {
-    // Any query error falls back to the authoritative full read.
+  } catch (err) {
+    // Any query error falls back to the authoritative full read — see the matching
+    // instrumentation on readInboxWindow's catch block (WI-1338374) for why this
+    // fallback is worth logging: it hits readOutbox's own unbounded no-since_ts
+    // LIMIT-capped fast path, the same shape of query implicated there.
+    console.warn(
+      `[readOutboxWindow] pageCoordEventLogDesc threw for owner=${ownerId} ` +
+        `since_ts=${opts.since_ts ?? '(none)'} pagesCompleted=${pages} — falling back to the ` +
+        `UNBOUNDED readOutbox fast path (no since_ts, LIMIT ${OUTBOX_FAST_PATH_ROW_CAP}). ` +
+        `error=${err instanceof Error ? err.message : String(err)}`,
+    );
     const entries = await readOutbox(ownerId, opts);
     return { entries, exhausted: true, rowsScanned: entries.length, pages };
   }

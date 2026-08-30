@@ -336,3 +336,58 @@ export function buildDesktopSandboxCommand(
 
   return { binary: 'bwrap', argv, sandboxed: true, reason: 'sandboxed' };
 }
+
+/**
+ * The tier the GL PROBE's sandbox is always built at.
+ *
+ * ⚠ THIS IS A DELIBERATE CIRCULARITY BREAK, not an oversight. The app's sandbox depends on
+ * the GL tier (`hardware` is the one tier that binds `/dev/dri` and the vendor nodes), but
+ * the tier is precisely what the probe is measuring — so the probe cannot be built at "the"
+ * tier. It is built at the MAXIMAL one instead, and the ladder stays sound because the
+ * measurement is MONOTONE in capability:
+ *
+ *   • probe finds hardware ⇒ the desktop runs at `hardware` ⇒ the app gets the IDENTICAL
+ *     sandbox the probe ran in. Exact parity, which is the case that matters.
+ *   • probe finds software/none ⇒ the desktop runs at a lower tier, whose sandbox binds
+ *     STRICTLY FEWER GPU nodes. Removing device nodes cannot conjure a hardware renderer,
+ *     so the app cannot beat a measurement taken with more access than it will have.
+ *
+ * The unsound direction — probing with LESS access than the app gets, and so under-reporting
+ * — is the one this ordering rules out.
+ */
+export const GL_PROBE_SANDBOX_TIER: GlTier = 'hardware';
+
+/**
+ * One desktop's sandbox context, shared by its GL PROBE and its APPS.
+ *
+ * WI-1223202 exists because those two were built from different places: the apps went
+ * through `buildDesktopSandboxCommand`, and the probe went through nothing at all. Handing
+ * out both from a single closure over a single `DesktopSandboxInput`/`DesktopSandboxOpts`
+ * pair is what makes the parity structural rather than remembered — the fix cannot rot by
+ * someone changing the app's mount plan and not knowing a probe existed.
+ *
+ * FAIL-OPEN inherits from the builder: with the flag off (or bwrap unavailable) `forGlProbe`
+ * returns its argv UNCHANGED, which is the correct probe for a desktop whose apps also run
+ * unconfined. No caller needs its own `if (sandboxEnabled)`.
+ */
+export interface DesktopSandboxSession {
+  /** Wrap an app argv (GL prefix already applied) at the desktop's MEASURED tier. */
+  forApp(cmd: readonly string[], glTier: GlTier): DesktopSandboxDecision;
+  /** Wrap the GL probe's argv, at `GL_PROBE_SANDBOX_TIER`. Returns a ready-to-spawn argv. */
+  forGlProbe(cmd: readonly string[]): string[];
+}
+
+export function desktopSandboxSession(
+  input: Omit<DesktopSandboxInput, 'cmd' | 'glTier'>,
+  opts: DesktopSandboxOpts,
+): DesktopSandboxSession {
+  const build = (cmd: readonly string[], glTier: GlTier): DesktopSandboxDecision =>
+    buildDesktopSandboxCommand({ ...input, cmd, glTier }, opts);
+  return {
+    forApp: (cmd, glTier) => build(cmd, glTier),
+    forGlProbe: (cmd) => {
+      const decision = build(cmd, GL_PROBE_SANDBOX_TIER);
+      return [decision.binary, ...decision.argv];
+    },
+  };
+}

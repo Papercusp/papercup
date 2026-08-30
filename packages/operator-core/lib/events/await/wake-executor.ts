@@ -84,6 +84,16 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
 import { getWorkItem, isClaimHoldParked, isSettledWorkItemState } from '../../work-items';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
+// EI-21901188813309549: the SAME shared liveness oracle fleet-transition-events.ts's
+// emit-time revalidation reads (there via the gatherCurrentFleetMemberObservation ⇒
+// reconcileWakeability path). Imported directly here rather than importing that
+// gather helper: fleet-transition-sweep-action.ts → fleet-transition-events.ts →
+// events/await/engine.ts → wake-executor.ts would be a live import cycle (the same
+// class of hazard the COORD_INBOX_WAKE_PREFIX duplication above exists to avoid).
+// liveness-oracle.ts has no path back into wake-executor.ts (verified: its only
+// events/await/* dependency is psu-pty-discovery.ts, which wake-executor already
+// imports directly and which does not import wake-executor).
+import { resolveSessionStates } from '../../agent-tools/coordination/liveness-oracle';
 // EI-20489286325396940: `payloadIsTimeout` + `wakeSummaryHeadline` live in
 // timeout-fallback.ts (PG-free, beside the other timeout wording) so engine.ts can
 // import the summary renderer WITHOUT going through this module — engine.test.ts
@@ -572,6 +582,77 @@ async function currentFleetClaimReleasedItem(
   } catch {
     // Fail open even if an injected lookup violates the Promise contract.
     return null;
+  }
+}
+
+/**
+ * EI-21901188813309549: `fleet:member-dead:<slug>` (and its `context-critical`
+ * sibling, sharing the same emitter) assert a PRESENT-TENSE transition —
+ * `{fleetSlug,agentId,transition:'member-dead',from,to:'ended'}` — captured once
+ * at emit time in fleet-transition-events.ts's `emitFleetTransitionEdge`, which
+ * DOES revalidate against the current roster before its own first `emit()` call.
+ *
+ * That revalidation runs exactly ONCE. If the resulting delivery then parks
+ * behind an unconfirmed psu-host turn-start proof (`injectPsuHostWake`'s
+ * "delivery accepted before turn-start proof; retry remains durable" park
+ * reason), the store's normal parked-row recheck retries the SAME frozen
+ * delivery — re-injecting the identical stale DEAD assertion, with no
+ * re-validation, for as long as the park persists. Measured: 7 identical
+ * deliveries over ~30 minutes for a member that was live the entire time
+ * (EI-21901188813309549's filing; EI-21634342529334849 independently confirms
+ * a stale delivery landing well after the emit-time check passed).
+ *
+ * Re-run the SAME shared liveness oracle at the delivery boundary — the exact
+ * discipline `currentFleetClaimReleasedItem` / `revalidateClaimableDelivery`
+ * already apply to `fleet:claim-released:*` / `work-item:claimable`. Only a
+ * POSITIVE non-'ended' current reading counts as stale; a missing/malformed
+ * payload, an unmatched event key, or an unknown/degraded oracle read all
+ * preserve the original wake (fail-open — a transient PG hiccup must never
+ * silently swallow a real death).
+ */
+const FLEET_MEMBER_DEAD_PREFIX = 'fleet:member-dead:';
+const FLEET_MEMBER_DEAD_LOOKUP_TIMEOUT_MS = 1_000;
+
+type FleetMemberDeadPayload = { fleetSlug: string; agentId: string };
+
+/** Parse only the payload shape needed by the delivery-time member-dead check. */
+function parseFleetMemberDeadPayload(payload: unknown): FleetMemberDeadPayload | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as { fleetSlug?: unknown; agentId?: unknown; transition?: unknown };
+  if (record.transition !== 'member-dead') return null;
+  if (typeof record.fleetSlug !== 'string' || record.fleetSlug.trim().length === 0) return null;
+  if (typeof record.agentId !== 'string' || record.agentId.trim().length === 0) return null;
+  return { fleetSlug: record.fleetSlug, agentId: record.agentId };
+}
+
+/**
+ * Whether a parked/retried `fleet:member-dead:*` delivery's asserted DEAD
+ * transition no longer holds. Deliberately mirrors
+ * fleet-transition-events.ts's CONFIRMED_DEAD_SESSION_STATES: only
+ * `sessionState !== 'ended'` on a KNOWN current reading counts as stale.
+ */
+async function currentFleetMemberDeadIsStale(
+  d: DeliveryWork,
+  resolveStates: typeof resolveSessionStates,
+  timeoutMs: number,
+): Promise<{ stale: boolean; currentState: string | null }> {
+  if (!d.eventKey.startsWith(FLEET_MEMBER_DEAD_PREFIX) || d.eventKey.length <= FLEET_MEMBER_DEAD_PREFIX.length) {
+    return { stale: false, currentState: null };
+  }
+  const parsed = parseFleetMemberDeadPayload(d.payload);
+  if (!parsed) return { stale: false, currentState: null };
+  try {
+    const verdicts = await withWakeTimeout(
+      Promise.resolve().then(() => resolveStates([{ ownerId: parsed.agentId }], { hydratePerId: true })),
+      `fleet member-dead revalidation/${parsed.agentId}`,
+      Math.max(1, timeoutMs),
+    );
+    const verdict = verdicts?.get(parsed.agentId);
+    if (!verdict || verdict.sessionState == null) return { stale: false, currentState: null }; // unknown → preserve
+    return { stale: verdict.sessionState !== 'ended', currentState: verdict.sessionState };
+  } catch {
+    // Fail open even if an injected resolver violates the Promise contract.
+    return { stale: false, currentState: null };
   }
 }
 
@@ -1840,6 +1921,13 @@ export interface ExecuteWakeDeps {
   fleetClaimReleasedLookupTimeoutMs?: number;
   /** Upper bound for the delivery-time canonical claimable lookup. */
   claimableLookupTimeoutMs?: number;
+  /** EI-21901188813309549: delivery-time liveness re-check for parked/retried
+   *  `fleet:member-dead:*` wakes. A confirmed non-'ended' current reading
+   *  downgrades the wake to inbox instead of re-injecting a stale DEAD
+   *  assertion. Injected for tests; defaults to the real resolveSessionStates. */
+  resolveMemberLiveness?: typeof resolveSessionStates;
+  /** Upper bound for the delivery-time fleet member-dead liveness lookup. */
+  fleetMemberDeadLookupTimeoutMs?: number;
   alive?: (pid: number | null) => boolean;
   /** WI-666: whether this owner has an active engine loop. Only loop owners
    *  are eligible for the bounded alive-but-uninjectable recovery leg. */
@@ -2436,6 +2524,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const fleetClaimReleasedLookupTimeoutMs =
     deps.fleetClaimReleasedLookupTimeoutMs ?? FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS;
   const claimableLookupTimeoutMs = deps.claimableLookupTimeoutMs ?? CLAIMABLE_LOOKUP_TIMEOUT_MS;
+  const resolveMemberLiveness = deps.resolveMemberLiveness ?? resolveSessionStates;
+  const fleetMemberDeadLookupTimeoutMs =
+    deps.fleetMemberDeadLookupTimeoutMs ?? FLEET_MEMBER_DEAD_LOOKUP_TIMEOUT_MS;
   const alive = deps.alive ?? pidAlive;
   const isLoopArmed =
     deps.isLoopArmed ?? (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
@@ -2524,6 +2615,36 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return degradeToInboxOrDrop(
         staleDelivery,
         `work item ${currentReleasedItem.id} is already claimed by ${currentReleasedItem.assignee}`,
+        sendCoordMessage,
+      );
+    }
+
+    // EI-21901188813309549: `fleet:member-dead:<slug>` asserts a present-tense
+    // DEAD transition captured once at emit time. That emit-time check does not
+    // re-run on a later retry of a parked delivery (or on any other path that
+    // re-delivers this same payload), so a member that recovers — or a
+    // transiently-misread observation — keeps re-waking the leader with a claim
+    // that is no longer true. Re-check the SAME shared liveness oracle right
+    // before injection; a confirmed non-'ended' current state downgrades the
+    // wake instead of re-asserting a stale death. Fail-open on every uncertain
+    // read, exactly like the claim-released check above.
+    const memberDeadCheck = await currentFleetMemberDeadIsStale(
+      d,
+      resolveMemberLiveness,
+      fleetMemberDeadLookupTimeoutMs,
+    );
+    if (memberDeadCheck.stale) {
+      const parsedMemberDead = parseFleetMemberDeadPayload(d.payload);
+      const staleAgentId = parsedMemberDead?.agentId ?? 'unknown';
+      const staleDelivery = {
+        ...d,
+        summary:
+          `${d.summary} (delivery-time check: ${staleAgentId} is currently ` +
+          `'${memberDeadCheck.currentState}', not 'ended'; wake downgraded to inbox)`,
+      };
+      return degradeToInboxOrDrop(
+        staleDelivery,
+        `fleet member ${staleAgentId} is currently '${memberDeadCheck.currentState}', not 'ended'`,
         sendCoordMessage,
       );
     }

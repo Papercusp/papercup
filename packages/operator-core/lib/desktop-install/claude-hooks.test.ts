@@ -112,7 +112,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // migration-fixture-drift nudge (EI-19359711978838614) +
     // migration-forward-compat nudge (EI-19462877357083817) + tool-prompt-weight nudge
     // (EI-19459260956682226) + mock-cast-escape nudge (WI-37497) + css-design-primitives
-    // nudge (EI-20023819609804890) + ask-gate-mirror (in install order). The separate
+    // nudge (EI-20023819609804890) + registry-census-drift nudge (EI-19401978567233485) +
+    // ask-gate-mirror (in install order). The separate
     // coord-inbox entry is retired — merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
       `${DEST}/posttooluse-locks-release.sh`,
@@ -128,27 +129,43 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-tool-prompt-weight-nudge.mjs`,
       `${DEST}/posttooluse-mock-cast-escape-nudge.mjs`,
       `${DEST}/posttooluse-css-design-primitives-nudge.mjs`,
+      `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
-    expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
-    expect(cfg.hooks.PostToolUse[0].matcher).toBe(FILE_WRITE_MATCHER); // lock release mirrors acquire
-    expect(cfg.hooks.PostToolUse[2].matcher).toBe(FILE_OVERWRITE_MATCHER); // byte-integrity guard
-    expect(cfg.hooks.PostToolUse[3].matcher).toBe('Edit|Write|MultiEdit'); // strand nudge
-    expect(cfg.hooks.PostToolUse[4].matcher).toBe('Edit|Write|MultiEdit'); // ts-parse nudge
-    expect(cfg.hooks.PostToolUse[5].matcher).toBe('Edit|Write|MultiEdit'); // MDX nudge
-    expect(cfg.hooks.PostToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // no-proc-path-fixture nudge
-    expect(cfg.hooks.PostToolUse[7].matcher).toBe('Edit|Write|MultiEdit'); // migration-fixture-drift nudge
-    expect(cfg.hooks.PostToolUse[8].matcher).toBe('Edit|Write|MultiEdit'); // migration-forward-compat nudge
-    expect(cfg.hooks.PostToolUse[9].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight nudge
-    expect(cfg.hooks.PostToolUse[10].matcher).toBe('Edit|Write|MultiEdit'); // mock-cast-escape nudge
-    expect(cfg.hooks.PostToolUse[11].matcher).toBe('Edit|Write|MultiEdit'); // css-design-primitives nudge
+    // Asserted BY COMMAND NAME, not by array index — same reasoning as PreToolUse above, and
+    // this block is why that reasoning is not hypothetical. Registering the registry-census-drift
+    // nudge (EI-19401978567233485) between css-design-primitives and the artifact guard
+    // re-pointed every index below the insertion: the new `[12]` assertion PASSED while naming a
+    // hook it was no longer looking at, and only the Artifact matcher two rows down failed. A
+    // green assertion pointing at the wrong subject is the exact failure the index form keeps
+    // producing, so the fix is the by-name form rather than another renumber.
+    const postMatcherOf = (name: string): string | undefined =>
+      (cfg.hooks.PostToolUse as any[]).find((e) => cmd(e) === `${DEST}/${name}`)?.matcher;
+
+    expect(postMatcherOf('posttooluse-activity-report.sh')).toBe('*'); // activity (+ coord fold)
+    expect(postMatcherOf('posttooluse-locks-release.sh')).toBe(FILE_WRITE_MATCHER); // mirrors acquire
+    expect(postMatcherOf('posttooluse-write-byte-integrity-guard.mjs')).toBe(FILE_OVERWRITE_MATCHER);
+    // Previously unasserted: under the index form `[3] // strand nudge` was in fact reading THIS
+    // hook, so the strand nudge itself had no assertion at all. Both happen to carry the same
+    // matcher, which is why the mislabel stayed green — the by-name form makes the gap visible.
+    expect(postMatcherOf('workitem-verify-nudge.sh')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-required-field-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-no-proc-path-fixture-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-migration-fixture-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-migration-forward-compat-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-tool-prompt-weight-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-mock-cast-escape-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-css-design-primitives-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-registry-census-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     // EI-21844056581395228: the ledger half of the artifact-URL delivery guard. It is
     // scoped to the Artifact tool because it only harvests ids from that tool's own
     // responses; the blocking half is matcher-less on Stop (assistant prose is not a
     // tool call, so no matcher can reach it).
-    expect(cfg.hooks.PostToolUse[13].matcher).toBe('Artifact|mcp__.*__[Aa]rtifact');
-    expect(cfg.hooks.PostToolUse[14].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    expect(postMatcherOf('artifact-url-delivery-guard.mjs')).toBe('Artifact|mcp__.*__[Aa]rtifact');
+    expect(postMatcherOf('ask-gate-mirror.sh')).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);

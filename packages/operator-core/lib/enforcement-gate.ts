@@ -33,6 +33,7 @@
  *   - "armed COLD loop without loop:checkpoint" → 'armed-loop-no-carry-note'.
  */
 import type { CarryBrief } from './carry-brief';
+import { parseCarryNote } from './carry-note';
 
 /** A held item's checkpoint older than this at a boundary is STALE — the turns
  *  since it was written will NOT carry across the boundary. 15 min ≈ several
@@ -89,7 +90,11 @@ export function staleCheckpointWarnings(
 export type GateBoundary = 'compaction' | 'handoff';
 
 /** The enforcement tripwire kinds (the three P-016 detectors, split by cause). */
-export type FlushTripwireKind = 'missing-checkpoint' | 'stale-checkpoint' | 'armed-loop-no-carry-note';
+export type FlushTripwireKind =
+  | 'missing-checkpoint'
+  | 'stale-checkpoint'
+  | 'armed-loop-no-carry-note'
+  | 'cold-successor-no-progress';
 
 export interface FlushTripwire {
   kind: FlushTripwireKind;
@@ -107,7 +112,20 @@ export interface FlushTripwire {
  * loop:checkpoint note. Warm loops carry their transcript and are not flagged.
  * Pure; empty when the brief is clean or unavailable.
  */
-export function detectFlushTripwires(brief: CarryBrief | null, nowMs: number = Date.now()): FlushTripwire[] {
+export function detectFlushTripwires(
+  brief: CarryBrief | null,
+  nowMs: number = Date.now(),
+  /**
+   * EI-21874665446367942: caller-resolved evidence (countAgentToolCallsInWindow)
+   * of how many real agent tool calls this owner made since its armed COLD
+   * loop's carry-note was last written. Only relevant to the
+   * 'cold-successor-no-progress' tripwire below. undefined/null means
+   * "evidence unavailable" and MUST NOT be read as zero — same fail-open
+   * discipline as every other best-effort signal on this boundary; a query
+   * failure must never manufacture a spurious refusal.
+   */
+  agentToolCallsSinceNote?: number | null,
+): FlushTripwire[] {
   if (!brief) return [];
   const out: FlushTripwire[] = [];
   for (const w of staleCheckpointWarnings(brief, nowMs)) {
@@ -137,6 +155,34 @@ export function detectFlushTripwires(brief: CarryBrief | null, nowMs: number = D
       subject: brief.loop.harness,
       detail: `armed loop @${brief.loop.harness} has NO loop:checkpoint carry-note — a cold wake would start blind.`,
     });
+  } else if (
+    // EI-21874665446367942 (cold-carry recurrence guard): the note EXISTS (the
+    // branch above is mutually exclusive) and already names a concrete next
+    // action, but this life is CONFIRMED to have made zero real tool calls
+    // since that note was written. Left unguarded, a cold successor can
+    // re-derive context / re-verify instead of running the named action, hit
+    // its soft compaction limit having tried nothing, and compact again —
+    // repeating indefinitely with no progress (the su-6627a incident: three
+    // consecutive checkpoints, each recording that no acceptance leg or
+    // mutation ran before another compaction boundary). Strictly `=== 0`:
+    // even ONE real tool call already satisfies "at least one scoped tool
+    // call before compaction" and must not re-trip this.
+    brief.loop &&
+    brief.loop.active &&
+    brief.loop.carry === 'cold' &&
+    agentToolCallsSinceNote === 0
+  ) {
+    const next = parseCarryNote(brief.loop.carryNote ?? '').next?.trim();
+    if (next) {
+      out.push({
+        kind: 'cold-successor-no-progress',
+        subject: brief.loop.harness,
+        detail:
+          `your carry-note already names a next action ("${next.length > 140 ? `${next.slice(0, 139)}…` : next}") ` +
+          'but you have made ZERO tool calls since it was written — run that action before compacting again ' +
+          '(re-deriving/re-verifying context first is exactly the loop this tripwire exists to break).',
+      });
+    }
   }
   return out;
 }
@@ -169,6 +215,7 @@ export function renderFlushRefusal(boundary: GateBoundary, tripwires: ReadonlyAr
     .filter((t) => t.kind === 'stale-checkpoint')
     .map((t) => `${t.subject} (${t.ageMinutes}m old)`);
   const armedLoop = tripwires.find((t) => t.kind === 'armed-loop-no-carry-note');
+  const coldNoProgress = tripwires.find((t) => t.kind === 'cold-successor-no-progress');
   const steps: string[] = [];
   if (noCheckpointIds.length > 0) {
     steps.push(
@@ -182,6 +229,9 @@ export function renderFlushRefusal(boundary: GateBoundary, tripwires: ReadonlyAr
     steps.push(
       `write your loop carry-note — loop:checkpoint { did, left, insight, next } (your armed loop @${armedLoop.subject} has none, so a cold wake starts blind)`,
     );
+  }
+  if (coldNoProgress) {
+    steps.push(coldNoProgress.detail);
   }
   const what = boundary === 'compaction' ? 'Compaction' : 'This handoff';
   return (

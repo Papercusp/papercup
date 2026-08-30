@@ -84,7 +84,7 @@ const gateOwnershipM = vi.mocked(readGateOwnership);
 
 const listModule = await import('./list');
 const listTool = listModule.default;
-const { attestGateHealth, deriveGitSyncFreshness } = listModule;
+const { attestGateHealth, deriveGitSyncFreshness, deriveGitSyncExclusions } = listModule;
 const setTool = (await import('./set')).default;
 
 type Out = { content?: { text: string }[]; data?: unknown };
@@ -285,6 +285,96 @@ describe('routines:list', () => {
     });
     // The whole point of the override: the headline can no longer be read as success.
     expect(b.routines[0].health.last_status).not.toBe('synced');
+  });
+
+  // EI-21900560691158244. git-sync WRITES last_skipped_paths/last_skip_reason/last_oversized
+  // specifically so a lock holder can tell their file is stranded; the healthOf allowlist
+  // dropped all three, so the one reader agents call discarded the evidence written for them.
+  it('surfaces the excluded paths the writer records, with TRUE counts and a bounded sample', () => {
+    const skipped = Array.from({ length: 14 }, (_, i) => `packages/app/file-${i}.ts`);
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skip_reason: 'locked-path',
+      last_skipped_at: Date.parse('2026-08-30T17:30:00.000Z'),
+      last_skipped_paths: skipped,
+      last_oversized: ['superproject:artifacts/huge.bin'],
+    });
+    expect(out).toMatchObject({
+      skip_reason: 'locked-path',
+      skipped_at: '2026-08-30T17:30:00.000Z',
+      // The COUNT is the true total even though the sample is capped — a bounded
+      // measurement must never be readable as the whole population.
+      skipped_count: 14,
+      skipped_sample_truncated: true,
+      oversized_count: 1,
+      oversized_sample: ['superproject:artifacts/huge.bin'],
+      oversized_sample_truncated: false,
+    });
+    expect((out.skipped_sample as string[])).toHaveLength(10);
+    expect(out.warning).toContain('14 path(s) excluded');
+    expect(out.warning).toContain('locked-path');
+  });
+
+  // The negative control for the test above: the block must still be EMITTED when nothing
+  // was excluded, so "nothing was skipped" cannot be confused with "this reader does not
+  // report skips" — the exact silence-equals-absence shape this field repairs.
+  it('emits the exclusions block with zero counts and a null warning when nothing was excluded', () => {
+    const out = deriveGitSyncExclusions({ last_status: 'synced', last_synced_at: Date.now() });
+    expect(out).toMatchObject({
+      skip_reason: null,
+      skipped_at: null,
+      skipped_count: 0,
+      skipped_sample: [],
+      skipped_sample_truncated: false,
+      oversized_count: 0,
+      oversized_sample: [],
+      warning: null,
+    });
+    // Present-and-zero, never absent: an omitted block is unreadable as a measurement.
+    expect(out).toHaveProperty('skipped_count');
+  });
+
+  // The wiring test. The derivation above can be perfectly correct and still ship inert if
+  // the tool never calls it — which is precisely how the original defect survived: the
+  // writer was right, the reader's allowlist silently dropped it.
+  it('includes git_sync_exclusions in the health the TOOL actually returns', async () => {
+    const now = Date.now();
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */3 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 60_000),
+        group_slug: null,
+        metadata: {
+          // A HEALTHY headline and a fresh clock — the case the old reader rendered as
+          // unqualified success while the holder's file sat uncommitted.
+          last_status: 'synced',
+          last_synced_at: now - 30_000,
+          last_skip_reason: 'locked-path',
+          last_skipped_at: now - 30_000,
+          last_skipped_paths: ['packages/operator-core/lib/mine.ts'],
+        },
+      },
+    ]);
+
+    const b = body(
+      await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
+    );
+    expect(b.routines[0].health.last_status).toBe('synced');
+    expect(b.routines[0].health.git_sync_freshness.status).toBe('fresh');
+    // Everything reads healthy — and the excluded path is now visible anyway.
+    expect(b.routines[0].health.git_sync_exclusions).toMatchObject({
+      skip_reason: 'locked-path',
+      skipped_count: 1,
+      skipped_sample: ['packages/operator-core/lib/mine.ts'],
+    });
+    expect(b.routines[0].health.git_sync_exclusions.warning).toContain('green-checkpoint candidate');
   });
 
   it('leaves the headline last_status untouched when the derived verdict is not degraded', async () => {

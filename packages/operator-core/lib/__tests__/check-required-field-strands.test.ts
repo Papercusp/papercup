@@ -1148,3 +1148,246 @@ describe('diffSignatureBreaks — an exported callable removed entirely', () => 
     expect(afterMap.has(found[0].path.replace(/\(\)$/, ''))).toBe(true);
   });
 });
+
+/**
+ * WI-1332206 item 3 — OVERLOAD SETS.
+ *
+ * An overload set publishes its body-less declarations and HIDES the implementation:
+ * TypeScript does not let a caller call the implementation signature at all. Keying every
+ * declaration by bare name left the implementation as the last writer, so the collector
+ * recorded a signature no caller can see — and that failed BOTH ways. Deleting or narrowing an
+ * overload reported nothing; widening the implementation reported a break that stranded nobody.
+ *
+ * The silence control on the implementation-only edit is the one that matters most here. The
+ * measured false-positive direction is what gets a guard switched off, and it is the half a
+ * positive-case-only suite would never notice.
+ */
+const OVERLOAD_BEFORE = `
+export function parse(raw: string): Claim;
+export function parse(raw: string, strict: boolean): Claim;
+export function parse(raw: string, strict?: boolean): Claim {}
+`;
+
+describe('collectExportedSignatures — overload sets', () => {
+  it('records the body-less overloads by name+ARITY and ignores the implementation', () => {
+    const sigs = collectExportedSignatures(OVERLOAD_BEFORE);
+
+    expect([...sigs.keys()].sort()).toEqual(['parse/1', 'parse/2']);
+    // The implementation's `strict?: boolean` never reaches the map: parse/2's second
+    // parameter is the OVERLOAD's required one, which is what callers actually face.
+    expect(sigs.get('parse/2').params[1]).toEqual({ name: 'strict', optional: false, rest: false, type: 'boolean' });
+  });
+
+  it('leaves a lone ambient declaration on its bare-name key — one declaration is not a set', () => {
+    const sigs = collectExportedSignatures('export declare function solo(a: string): void;');
+
+    expect([...sigs.keys()]).toEqual(['solo']);
+  });
+
+  it('KNOWN LIMIT: same-arity overloads still collide on one key, last declaration winning', () => {
+    // Strictly narrower than the collision it replaces — which lost the whole set to the
+    // implementation — but it does bound what a clean run proves, so it is pinned, not hidden.
+    const sigs = collectExportedSignatures(`
+export function f(a: string): string;
+export function f(a: number): number;
+export function f(a: any): any {}
+`);
+
+    expect([...sigs.keys()]).toEqual(['f/1']);
+    expect(sigs.get('f/1').params[0].type).toBe('number');
+  });
+});
+
+describe('diffSignatureBreaks — overload sets', () => {
+  const reasons = (after: string, before = OVERLOAD_BEFORE) =>
+    diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason);
+
+  it('flags an overload DELETED from the set — those callers have no matching signature left', () => {
+    const after = OVERLOAD_BEFORE.replace('export function parse(raw: string, strict: boolean): Claim;\n', '');
+
+    // Named `overload-removed`, NOT `callable-removed`: `parse` is still exported, and calling
+    // the loss of one arity a removed callable would send the reader hunting for a deleted
+    // function that is still right there.
+    expect(diffSignatureBreaks(OVERLOAD_BEFORE, after)).toEqual([{ path: 'parse/2()', reason: 'overload-removed' }]);
+  });
+
+  it("the filed MEASURED case: deleting a same-arity overload now reports, where the implementation-keyed map returned []", () => {
+    const before = `
+export function f(a: string): string;
+export function f(a: number): number;
+export function f(a: any): any {}
+`;
+    const after = `
+export function f(a: string): string;
+export function f(a: any): any {}
+`;
+
+    expect(diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason)).toEqual([
+      'param-type-changed',
+      'return-type-changed',
+    ]);
+  });
+
+  it('flags a NARROWED overload — invisible while the implementation was the recorded signature', () => {
+    const after = OVERLOAD_BEFORE.replace(
+      'parse(raw: string, strict: boolean): Claim;',
+      'parse(raw: ClaimId, strict: boolean): Claim;',
+    );
+
+    expect(reasons(after)).toEqual(['param-type-changed']);
+  });
+
+  it('reports callable-removed when the whole set leaves the export surface', () => {
+    expect(reasons('export function other(a: string): void {}')).toEqual(['callable-removed', 'callable-removed']);
+  });
+
+  // ——— The controls. The first is the false-positive direction that motivated the fix. ———
+
+  it('stays SILENT when only the IMPLEMENTATION signature widens — no caller can call it', () => {
+    const after = OVERLOAD_BEFORE.replace(
+      'export function parse(raw: string, strict?: boolean): Claim {}',
+      'export function parse(raw: unknown, strict?: unknown): unknown {}',
+    );
+
+    expect(diffSignatureBreaks(OVERLOAD_BEFORE, after)).toEqual([]);
+  });
+
+  it('stays SILENT on REORDERED overloads — arity keys, so ordering is a no-op refactor', () => {
+    const reordered = `
+export function parse(raw: string, strict: boolean): Claim;
+export function parse(raw: string): Claim;
+export function parse(raw: string, strict?: boolean): Claim {}
+`;
+
+    expect(diffSignatureBreaks(OVERLOAD_BEFORE, reordered)).toEqual([]);
+  });
+
+  it('KNOWN LIMIT: a plain callable GAINING an overload set is silent, though it can narrow', () => {
+    // The name survives on the export surface, so the removal walk suppresses it exactly as it
+    // suppresses every other refactor that keeps the name. Pinned so the silence is a recorded
+    // decision rather than something a later reader has to rediscover.
+    expect(diffSignatureBreaks('export function parse(raw: string): Claim {}', OVERLOAD_BEFORE)).toEqual([]);
+  });
+
+  /**
+   * FALSIFIABILITY, kept permanently rather than proved once by a mutation probe — the same
+   * choice made for WI-1324625 above, and the tier the repo prescribes for a module this suite
+   * IMPORTS: no in-tree mutation, no sweep race, and nothing that can be skipped later.
+   *
+   * The pre-fix collector keyed every declaration by bare NAME, so the implementation — the last
+   * declaration — was the one that survived. Both halves of that are asserted gone, and the
+   * calibration is what gives them meaning: without it, a collector that recorded NOTHING at all
+   * would satisfy the property just as well.
+   */
+  it('never records the IMPLEMENTATION signature of an overload set', () => {
+    const sigs = collectExportedSignatures(OVERLOAD_BEFORE);
+
+    expect(sigs.has('parse')).toBe(false);
+    // The implementation is the only declaration whose `strict` is optional; the overload's is
+    // required. Its absence is what proves the implementation never reached the map.
+    expect(
+      [...sigs.values()].some((s: { params: { name: string; optional: boolean }[] }) =>
+        s.params.some((p) => p.name === 'strict' && p.optional),
+      ),
+    ).toBe(false);
+  });
+
+  it('CALIBRATION: a NON-overloaded function IS recorded under its bare name, from its implementation', () => {
+    const sigs = collectExportedSignatures('export function parse(raw: string, strict?: boolean): Claim {}');
+
+    expect(sigs.has('parse')).toBe(true);
+    expect(
+      sigs.get('parse').params.some((p: { name: string; optional: boolean }) => p.name === 'strict' && p.optional),
+    ).toBe(true);
+  });
+});
+
+/**
+ * WI-1332206 item 2 — GENERIC TYPE PARAMETERS.
+ *
+ * Arity strands explicit `pick<A>()` type-argument sites; a tightened constraint strands the
+ * inference sites. Neither touches a value parameter or the return type, so both were invisible
+ * to a collector that read only `parameters` and the return annotation.
+ *
+ * Compared POSITIONALLY, because that is how TypeScript resolves type arguments — which makes a
+ * rename a no-op. See the KNOWN LIMIT at the end: this block is rename-blind, but the older
+ * value-parameter comparison is not (EI-21909944792089774).
+ */
+const GENERIC_BEFORE = 'export function pick<T>(items: T[], n: number): T {}';
+
+describe('diffSignatureBreaks — generic type parameters', () => {
+  const reasons = (after: string, before = GENERIC_BEFORE) =>
+    diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason);
+
+  it('flags a type parameter added WITHOUT a default — every explicit `pick<A>()` site broke', () => {
+    expect(reasons('export function pick<T, K>(items: T[], n: number): T {}')).toEqual(['type-param-added-required']);
+  });
+
+  it('flags a REMOVED type parameter — TS rejects the extra type argument callers still pass', () => {
+    const before = 'export function pick<T, K>(items: T[], n: number): T {}';
+
+    expect(reasons('export function pick<T>(items: T[], n: number): T {}', before)).toEqual(['type-param-removed']);
+  });
+
+  it('flags a TIGHTENED constraint — the inference sites that no longer satisfy it', () => {
+    expect(reasons('export function pick<T extends object>(items: T[], n: number): T {}')).toEqual([
+      'type-param-constraint-changed',
+    ]);
+  });
+
+  it('flags a type parameter that LOST its default — the sites that omitted the argument', () => {
+    const before = 'export function pick<T = string>(items: T[], n: number): T {}';
+
+    expect(reasons('export function pick<T>(items: T[], n: number): T {}', before)).toEqual([
+      'type-param-default-removed',
+    ]);
+  });
+
+  // ——— The controls. ———
+
+  it('stays SILENT on a type parameter added WITH a default — `pick<A>()` still resolves', () => {
+    expect(reasons('export function pick<T, K = string>(items: T[], n: number): T {}')).toEqual([]);
+  });
+
+  it('stays SILENT on constraint REFORMATTING — whitespace is not a constraint change', () => {
+    const before = 'export function pick<T extends { id: string }>(items: T[], n: number): T {}';
+    const after = 'export function pick<T extends {\n  id: string\n}>(items: T[], n: number): T {}';
+
+    expect(reasons(after, before)).toEqual([]);
+  });
+
+  it('KNOWN LIMIT (EI-21909944792089774): a type-param RENAME still reports, via the value-param path', () => {
+    // The positional type-param comparison above is correctly silent here; the noise comes from
+    // the older comparison of literal type TEXT (`a: T` vs `a: U`). Filed rather than patched:
+    // silencing it needs type-param names normalised out of the recorded text, and class members
+    // need the enclosing declaration's parameters threaded down into them.
+    expect(reasons('export function pick<U>(items: U[], n: number): U {}')).toEqual([
+      'param-type-changed',
+      'return-type-changed',
+    ]);
+  });
+
+  /**
+   * FALSIFIABILITY for the generic half, on the same permanent-control tier.
+   *
+   * `n: number` and the `void` return mention T NOWHERE, so no comparison of value-parameter or
+   * return-type TEXT can reach this change — the finding is only possible if typeParams are
+   * genuinely recorded and compared. The calibration then shows the same shape still producing
+   * an ordinary param finding, which is what rules out a diff that simply fires on everything.
+   */
+  it('detects a constraint change on a type parameter NO value parameter mentions', () => {
+    const before = 'export function tag<T>(n: number): void {}';
+    const after = 'export function tag<T extends object>(n: number): void {}';
+
+    expect(diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason)).toEqual([
+      'type-param-constraint-changed',
+    ]);
+  });
+
+  it('CALIBRATION: that same shape reports a PARAM reason, and no type-param reason, when only a value parameter moves', () => {
+    const before = 'export function tag<T>(n: number): void {}';
+    const after = 'export function tag<T>(n: string): void {}';
+
+    expect(diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason)).toEqual(['param-type-changed']);
+  });
+});

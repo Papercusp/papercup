@@ -7,9 +7,14 @@ import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import {
   readFrozenCandidateRepairQueue,
   retireFrozenCandidateRepairQueue,
+  writeFrozenCandidateRepairQueue,
 } from '../../harness/routines/release-actions';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 import { diagnoseFrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
+import {
+  assessConvergeRepairHead,
+  containmentForPaths,
+} from '../../release/converge-repair-head';
 import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
@@ -82,6 +87,13 @@ export default defineTool({
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),
     z.object({
+      op: z.literal('converge'),
+      /** Repo-relative paths your fix touched; each is reported as contained or not. */
+      paths: z.array(z.string().min(1)).max(50).optional(),
+      reason: z.string().min(8).max(2000).optional(),
+      confirm: z.boolean().optional(),
+    }),
+    z.object({
       op: z.literal('retire'),
       expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
       expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
@@ -94,6 +106,72 @@ export default defineTool({
     const inspected = await inspectQueue();
     if (args.op === 'get') {
       return json({ ok: true, op: 'get', target: inspected.target, repairQueue: inspected.diagnostic });
+    }
+    if (args.op === 'converge') {
+      const assessment = assessConvergeRepairHead(inspected.queue);
+      const containment =
+        args.paths?.length && assessment.judgedSha
+          ? containmentForPaths(args.paths, assessment.judgedSha, assessment.root, undefined, assessment.branch)
+          : null;
+      const base = {
+        op: 'converge' as const,
+        target: inspected.target,
+        verdict: assessment.verdict,
+        judgedSha: assessment.judgedSha,
+        stagingTip: assessment.stagingTip,
+        nextAction: assessment.nextAction,
+        containment,
+        repairQueue: inspected.diagnostic,
+      };
+      // Only 'would-converge' is a state change; every other verdict is a read.
+      if (assessment.verdict !== 'would-converge' || !assessment.newRepairHead || !inspected.queue) {
+        return json({ ok: true, converged: false, ...base });
+      }
+      if (ctx.role !== 'su' && !isOperatorConfigWriteRole(ctx.role)) {
+        throw new Error('release:repair-queue converge requires operator, architect, mug, or su authority');
+      }
+      if (args.confirm !== true) {
+        return json({
+          ok: true,
+          converged: false,
+          dryRun: true,
+          ...base,
+          wouldMoveRepairHead: { from: inspected.queue.repairHead, to: assessment.newRepairHead },
+          note:
+            'Pass confirm:true to fast-forward repairHead to the staging tip. The immutable ' +
+            'candidate is never touched. Every commit absorbed is already committed on staging.',
+        });
+      }
+      const converged = { ...inspected.queue, repairHead: assessment.newRepairHead };
+      let persisted = true;
+      try {
+        await writeFrozenCandidateRepairQueue(inspected.target, converged);
+      } catch {
+        persisted = false;
+      }
+      const identity = readIdentity(ctx);
+      const auditRecorded = await recordAudit(identity.ownerId, {
+        op: 'converge',
+        reason: args.reason ?? null,
+        from: inspected.queue.repairHead,
+        to: assessment.newRepairHead,
+        persisted,
+      });
+      return json({
+        ok: persisted,
+        converged: persisted,
+        ...base,
+        verdict: persisted ? ('converged' as const) : assessment.verdict,
+        movedRepairHead: { from: inspected.queue.repairHead, to: assessment.newRepairHead },
+        persisted,
+        auditRecorded,
+        ...(persisted
+          ? {}
+          : {
+              reason: 'persist_failed',
+              note: 'repairHead was NOT durably moved; re-run before relying on the judged sha.',
+            }),
+      });
     }
     if (ctx.role !== 'su' && !isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('release:repair-queue retire requires operator, architect, mug, or su authority');

@@ -2098,14 +2098,20 @@ while :; do
   log "waiting up to ${BUILD_TIMEOUT}s for the desktop binary to start (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
   BUILD_ELAPSED=0
   PORT_LOST=0
+  DISPLAY_LOST=0
   until desktop_binary_started; do
     if port_lost_to_squatter; then PORT_LOST=1; break; fi
+    # EI-21903832503219853: checked in the SAME position as port_lost_to_squatter
+    # (before kill -0) so a desktop binary that died OF a dead/contended display
+    # routes to the re-pick branch instead of the unconditional boot_failure_diag
+    # fatal below — previously a GTK-init panic exited fatally even on attempt 1.
+    if gtk_init_failed; then DISPLAY_LOST=1; break; fi
     kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the desktop binary started"
     [ "$BUILD_ELAPSED" -ge "$BUILD_TIMEOUT" ] && boot_failure_diag "desktop binary did not start within ${BUILD_TIMEOUT}s (cargo build phase)"
     sleep 2; BUILD_ELAPSED=$((BUILD_ELAPSED + 2))
   done
 
-  if [ "$PORT_LOST" = 0 ]; then
+  if [ "$PORT_LOST" = 0 ] && [ "$DISPLAY_LOST" = 0 ]; then
     # The bridge clock starts at zero only after the binary-start marker. Keep
     # the existing bridge wait loop and bind-race handling intact so a sidecar
     # squatter is still retried during either phase.
@@ -2123,17 +2129,20 @@ while :; do
       # Checked BEFORE the liveness/timeout probes so a sidecar that died OF this
       # cause routes to the re-pick instead of to a fatal.
       if port_lost_to_squatter; then PORT_LOST=1; break; fi
+      if gtk_init_failed; then DISPLAY_LOST=1; break; fi
       kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the bridge came up"
       [ "$ELAPSED" -ge "$TIMEOUT" ] && boot_failure_diag "bridge did not come up within ${TIMEOUT}s after the desktop binary started"
       sleep 2; ELAPSED=$((ELAPSED + 2))
     done
   else
     # Preserve the bind-race retry diagnostic's elapsed value when the sidecar
-    # lost its port while cargo was still compiling.
+    # lost its port (or its display) while cargo was still compiling.
     ELAPSED="$BUILD_ELAPSED"
   fi
 
-  if [ "$PORT_LOST" = 1 ]; then
+  if [ "$DISPLAY_LOST" = 1 ]; then
+    log "desktop binary PANICKED on gtk::rt::init after ${ELAPSED}s — display :$DISPLAY_NUM is dead/contended (environment, not a code fault; EI-21903832503219853)."
+  elif [ "$PORT_LOST" = 1 ]; then
     # Surface it on OUR stdout: the caller otherwise sees only "waiting up to 180s
     # for the dev bridge" and reads a dead boot as a slow one (the EADDRINUSE is
     # buried in tauri.log). Fall through to the shared re-pick/fatal branch below.
@@ -2147,20 +2156,61 @@ while :; do
     if ! grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
       break   # our sidecar owns the port — proceed
     fi
+    PORT_LOST=1
   fi
 
   if [ "$BOOT_ATTEMPTS" -lt "$MAX_BOOT_ATTEMPTS" ]; then
-    log "EADDRINUSE racing :$DEV_PORT at bind-time (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down this attempt and re-picking a fresh port once (EI-18734124566158657). Box contention right now: $(contention_summary)."
     [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
     if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
       systemctl --user stop --no-block "${TAURI_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
     fi
     mv "$LOG" "$WORK/tauri.attempt${BOOT_ATTEMPTS}.log" 2>/dev/null || true
-    fed_release_port_locks
-    PORT_BASE=$((DEV_PORT + 1))
-    pick_and_lock_ports
-    log "re-picked display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT"
+
+    if [ "$DISPLAY_LOST" = 1 ]; then
+      # EI-21903832503219853: re-pick BOTH display and ports — a bare process
+      # retry on the SAME display would panic identically, since the display
+      # itself (not the tauri binary) is what died. Tear down Xvfb/openbox for
+      # the dead display the same way teardown() does on final exit (TERM then
+      # KILL for Xvfb so it unlinks its own socket; KILL for openbox), release
+      # its lock so another launcher can reclaim it, then re-run the SAME
+      # pick+boot procedure the initial display selection used.
+      log "GTK-init panic (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down display :$DISPLAY_NUM and re-picking a fresh display + ports once. Box contention right now: $(contention_summary)."
+      [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
+      [ -n "$XVFB_PID" ] && { kill -TERM $XVFB_PID 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $XVFB_PID 2>/dev/null || break; sleep 0.2; done; kill -9 $XVFB_PID 2>/dev/null; }
+      pkill -9 -f "Xvfb :$DISPLAY_NUM " 2>/dev/null
+      rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" "/tmp/.X$DISPLAY_NUM-lock" 2>/dev/null
+      display_lock_release
+      fed_release_port_locks
+      DISPLAY_NUM=$((DISPLAY_NUM + 1))
+      pick_display
+      VERIFY_SCOPE_BASE="papercup-tauri-verify-${DISPLAY_NUM}-$$"
+      start_display_server
+      # Ports are DISPLAY-derived (WI-4342) — re-derive PORT_BASE for the new
+      # display exactly as the initial pick does, then walk/lock forward.
+      PORT_SLOT=$(( (DISPLAY_NUM - 90) % 60 ))
+      [ "$PORT_SLOT" -ge 0 ] || PORT_SLOT=$(( PORT_SLOT + 60 ))
+      PORT_BASE=$(( 33700 + PORT_SLOT * 10 ))
+      [ "$PORT_BASE" -ge 33700 ] || PORT_BASE=33700
+      pick_and_lock_ports
+      log "re-picked display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT"
+    else
+      log "EADDRINUSE racing :$DEV_PORT at bind-time (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down this attempt and re-picking a fresh port once (EI-18734124566158657). Box contention right now: $(contention_summary)."
+      fed_release_port_locks
+      PORT_BASE=$((DEV_PORT + 1))
+      pick_and_lock_ports
+      log "re-picked display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT"
+    fi
     continue
+  fi
+
+  if [ "$DISPLAY_LOST" = 1 ]; then
+    echo "FATAL: desktop binary panicked on gtk::rt::init (display :$DISPLAY_NUM dead/contended) again" >&2
+    echo "       after $BOOT_ATTEMPTS attempt(s) across freshly-picked displays. This is environment" >&2
+    echo "       contention (EI-21903832503219853), not a code fault. Box contention right now:" >&2
+    echo "       $(contention_summary)." >&2
+    echo "       Tail:" >&2
+    grep -aE "gtk|Failed to initialize" "$LOG" | head -5 >&2
+    exit 1
   fi
 
   echo "FATAL: our operator sidecar could not bind :$DEV_PORT (EADDRINUSE) — another instance owns it," >&2

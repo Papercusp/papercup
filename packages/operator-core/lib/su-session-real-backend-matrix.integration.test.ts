@@ -1461,11 +1461,24 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // closed it (ended_by='reconciler', which only stamps an unset ended_at).
       //
       // So an idle READY managed codex session does NOT have a ~30s lifetime, and
-      // the disturbance half below IS measurable. The deaths correlate with the
-      // session having been ATTACHED AND DRIVEN — every row that died in the tens
-      // of seconds carries a session_id, which is what driving stamps; the control
-      // never got one and did not die. Whether that post-drive death is a product
-      // defect or expected for a TTY-less codex session is still OPEN.
+      // the disturbance half below IS measurable.
+      //
+      // WHAT SEPARATES THE TWO POPULATIONS IS BEING ATTACHED AND DRIVEN. The
+      // control was never attached and lived 130.6s; the sessions this matrix
+      // drives through a real turn die in the tens of seconds. Measured on the
+      // 2026-08-30 run that first carried the idle control below: adv 21330 was
+      // driven (OWNER TURN passed, with a real tool invocation), and died 63.5s
+      // after launch — INSIDE a 15s idle window with no bare launch running.
+      //
+      // ⚠ DO NOT use adv_sessions.session_id as the "was it driven" marker. A
+      // previous version of this note claimed every row that died carries one
+      // "which is what driving stamps". That is FALSE: 21330 was driven through
+      // a real turn and its session_id is NULL. Driven-ness is not readable from
+      // that column, so read it from what the run actually DID, not from the row.
+      //
+      // Whether the post-drive death is a product defect or expected for a
+      // TTY-less codex session is still OPEN, and it is now the thing standing
+      // between this leg and green.
       // Tracked as EI-21908787009967815; do not close it by assumption.
       //
       // What this ordering DOES fix is the false causation: that ~30s death

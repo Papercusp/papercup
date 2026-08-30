@@ -438,6 +438,51 @@ Preserve this plan body.
     expect(amended?.proposedBy).toBe('author-a');
   });
 
+  it('amendRubric preserves hand-authored plan requirements, items, and decisions', async () => {
+    const rubricId = 'amend-preserves-plan-narrative';
+    await rubrics.proposeRubric({
+      rubricId,
+      characteristic: 'narrative-preservation',
+      title: 'Narrative preservation',
+      criteria: sampleCriteria,
+      by: 'author-a',
+    });
+
+    const [before] = await db.adminSql<{ content: string; created: string }[]>`
+      SELECT content, created::text AS created
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    expect(before).toBeDefined();
+    const enriched = `${before.content}\n## Requirements\n- Preserve P-003 evidence.\n\n## Decisions\n### D-001 — Keep the acceptance context\n`;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${enriched}, content_hash = md5(${enriched}), version = version + 1
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+
+    const amended = await rubrics.amendRubric({
+      rubricId,
+      criterion: { key: 'placement-health', field: 'title', mode: 'replace', text: 'Placement health (amended)' },
+      by: 'author-a',
+    });
+    expect(amended?.rubricId).toBe(rubricId);
+
+    const [after] = await db.adminSql<{ content: string; created: string }[]>`
+      SELECT content, created::text AS created
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    expect(after.content).toContain('## Requirements');
+    expect(after.content).toContain('Preserve P-003 evidence.');
+    expect(after.content).toContain('### D-001 — Keep the acceptance context');
+    expect(after.created).toBe(before.created);
+    expect(after.content).toMatch(/status:\s*proposed/);
+  });
+
   it('serializes concurrent amendments from the locked current snapshot (EI-21395928602431222)', async () => {
     const rubricId = 'concurrent-amendments';
     const criteria = Array.from({ length: 5 }, (_, index) => ({
