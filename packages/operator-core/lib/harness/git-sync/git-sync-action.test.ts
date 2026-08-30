@@ -1869,12 +1869,26 @@ describe('clean sync outcome', () => {
   });
 
   it('EI-21096441920219468: records skipped-locked holder provenance in metadata and pipeline detail', async () => {
-    const skippedPaths = [{
-      scope: 'superproject',
-      path: 'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
-      owner: 'su-peer',
-      intent: 'editing the source half of an atomic change',
-    }];
+    const skippedPaths = [
+      {
+        scope: 'superproject',
+        path: 'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+        owner: 'su-peer',
+        intent: 'editing the source half of an atomic change',
+      },
+      {
+        scope: 'superproject',
+        path: 'packages/operator-core/lib/harness/git-sync/git-sync-action.test.ts',
+        owner: 'su-peer',
+        intent: 'adding the action regression coverage',
+      },
+      {
+        scope: 'libs/papercusp',
+        path: 'packages/shared.ts',
+        owner: 'su-other-peer',
+        intent: 'editing the shared helper',
+      },
+    ];
     runGitSyncMock.mockResolvedValue({
       status: 'skipped-locked',
       dirtyPathCount: 1,
@@ -1901,7 +1915,77 @@ describe('clean sync outcome', () => {
       status: 'skipped-locked',
       detail: expect.objectContaining({ skippedPaths }),
     }));
+    expect(sendMessageMock).toHaveBeenCalledTimes(2);
+    const notices = new Map(
+      sendMessageMock.mock.calls.map(([, message]) => {
+        const msg = message as { to: string[]; summary: string; body: string; category: string };
+        return [msg.to[0], msg];
+      }),
+    );
+    expect(notices.get('su-peer')).toMatchObject({
+      to: ['su-peer'],
+      category: 'git-sync',
+      summary: expect.stringContaining('skipped 2 locked dirty paths'),
+      body: expect.stringContaining('locks:release'),
+    });
+    expect(notices.get('su-peer')?.body).toContain('run-git-sync.ts');
+    expect(notices.get('su-peer')?.body).toContain('adding the action regression coverage');
+    expect(notices.get('su-other-peer')).toMatchObject({
+      to: ['su-other-peer'],
+      category: 'git-sync',
+      summary: expect.stringContaining('skipped 1 locked dirty path'),
+    });
     expect(enqueueDocSweepMock).not.toHaveBeenCalled();
+  });
+
+  it('EI-21743795611133311: notifies holders and preserves provenance when unlocked work still syncs', async () => {
+    const skippedPaths = [
+      {
+        scope: 'superproject',
+        path: 'packages/operator-core/lib/agent-tools/locks/acquire_resource.test.ts',
+        owner: 'su-peer',
+        intent: 'finishing the lock-release regression test',
+      },
+    ];
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
+
+    await action(ctx);
+
+    expect(routinePatches()).toContainEqual(expect.objectContaining({
+      last_status: 'synced',
+      last_skip_reason: 'locked-path',
+      last_skipped_at: expect.any(Number),
+      last_skipped_paths: skippedPaths,
+    }));
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    const [, notice] = sendMessageMock.mock.calls[0];
+    expect(notice).toMatchObject({
+      to: ['su-peer'],
+      category: 'git-sync',
+    });
+    expect((notice as { body: string }).body).toContain('unlocked remainder may have synced');
+  });
+
+  it('EI-21743795611133311: a notification failure never fails the partial git-sync tick', async () => {
+    const skippedPaths = [{
+      scope: 'superproject',
+      path: 'packages/operator-core/lib/agent-tools/locks/acquire_resource.test.ts',
+      owner: 'su-peer',
+      intent: 'finishing the lock-release regression test',
+    }];
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
+    sendMessageMock.mockRejectedValue(new Error('coordination store unavailable'));
+
+    await expect(action(ctx)).resolves.toBeUndefined();
+
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+    expect(appendPipelineEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'git_sync', status: 'synced' }),
+    );
+    expect(routinePatches()[0]).toMatchObject({
+      last_status: 'synced',
+      last_skipped_paths: skippedPaths,
+    });
   });
 
   it('maps the routine trigger_config onto the pipeline config', async () => {

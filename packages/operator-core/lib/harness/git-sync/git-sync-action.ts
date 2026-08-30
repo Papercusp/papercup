@@ -176,6 +176,7 @@ import {
   type RunGit,
   type GitSyncConfig,
   type GitSyncOutcome,
+  type GitSyncSkippedPath,
   type RepoConflict,
   type RepoError,
   type ScopedOversized,
@@ -1730,15 +1731,15 @@ async function recordOutcome(
     // value is sticky, just like the legacy head_sha field: only a new local commit
     // writes it, while nothing/error/conflict ticks preserve the last observed head.
     local_sync_status: outcome.status,
-    // A completed non-skipped outcome supersedes any earlier eligibility skip.
+    // A tick with no locked-path exclusions supersedes any earlier lock skip.
     // JSONB patches are additive, so leaving these fields untouched makes a later
     // `synced` tick look contradictory (`last_status: synced` alongside an old
-    // `last_skip_reason: remote_hive_view`). That stale pair caused readers to
-    // compare a commit-only/P2P worktree head with origin and diagnose a false
-    // remote-sync failure (EI-20269018542485023).
-    last_skip_reason: skippedLocked ? 'locked-path' : null,
-    last_skipped_at: skippedLocked ? localSyncRecordedAt : null,
-    last_skipped_paths: skippedLocked ? skippedPaths : [],
+    // `last_skip_reason: locked-path`). Preserve the paths even when the unlocked
+    // remainder synced: partial progress is useful evidence and is exactly the
+    // case where a holder otherwise cannot tell that their file is still stranded.
+    last_skip_reason: skippedPaths.length > 0 ? 'locked-path' : null,
+    last_skipped_at: skippedPaths.length > 0 ? localSyncRecordedAt : null,
+    last_skipped_paths: skippedPaths,
     last_pushed: pushed,
     // EI-18812945811758018: rides the SAME single write, so `last_pushed` is never
     // readable without the mode that says what an empty one MEANS for this member.
@@ -2079,6 +2080,65 @@ async function assigneesForContentErrors(
     return agents.length ? agents : ['*'];
   } catch {
     return ['*'];
+  }
+}
+
+/**
+ * EI-21743795611133311: tell the live edit-lock holders when git-sync had to
+ * leave their dirty paths out of the commit. The lock TTL is only a backstop;
+ * it does not make the omission visible to the agent who can release the lock.
+ *
+ * Group by holder so one agent holding several files receives one actionable
+ * notice per tick. This is deliberately best-effort: a coordination-store
+ * outage must never turn a successful partial commit into a failed git-sync
+ * fire. The routine metadata + pipeline event retain the structured provenance
+ * regardless of delivery.
+ */
+async function notifySkippedLockedPaths(
+  slug: string,
+  outcome: GitSyncOutcome,
+): Promise<void> {
+  const skippedPaths = outcome.skippedPaths ?? [];
+  if (skippedPaths.length === 0) return;
+
+  const byHolder = new Map<string, GitSyncSkippedPath[]>();
+  for (const skipped of skippedPaths) {
+    const holder = skipped.owner.trim();
+    if (!holder) continue;
+    const rows = byHolder.get(holder);
+    if (rows) {
+      if (!rows.some((row) => row.scope === skipped.scope && row.path === skipped.path)) rows.push(skipped);
+    } else {
+      byHolder.set(holder, [skipped]);
+    }
+  }
+
+  for (const [holder, rows] of byHolder) {
+    const pathDetails = rows
+      .map(
+        (row) =>
+          `- ${row.scope}/${row.path}${row.intent.trim() ? ` — ${row.intent.trim()}` : ''}`,
+      )
+      .join('\n');
+    const count = rows.length;
+    const partial =
+      outcome.status === 'skipped-locked'
+        ? 'No locked path could be committed this tick.'
+        : `The unlocked remainder may have synced; this tick's local status is \`${outcome.status}\`.`;
+    const summary =
+      `git-sync skipped ${count} locked dirty ${count === 1 ? 'path' : 'paths'} on ${slug} — release your edit lock when done`;
+    const body =
+      `git-sync on ${slug} could not include the following dirty path${count === 1 ? '' : 's'} because your live edit lock is still held:\n` +
+      `${pathDetails}\n\n` +
+      `${partial} This exclusion repeats on every tick until the lock is released.\n\n` +
+      'If the edit is complete, call `locks:release { paths: [...] }` (or release the lock_id) now. ' +
+      'If you are still editing, keep the lock and no action is needed.';
+    await sendMessage(GIT_SYNC_IDENTITY, {
+      to: [holder],
+      summary,
+      body,
+      category: 'git-sync',
+    }).catch(() => {});
   }
 }
 
@@ -5222,6 +5282,8 @@ async function recordAndEscalateTick(a: {
       ...(outcome.status === 'synced' ? { headSha: outcome.headSha } : {}),
     },
   });
+
+  await notifySkippedLockedPaths(slug, outcome);
 
   if (outcome.status === 'conflict') {
     // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch
