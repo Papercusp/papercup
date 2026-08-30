@@ -191,6 +191,7 @@ describe('FleetPeersRail — what it reports', () => {
 describe('FleetPeersRail — the leader-brief overlay', () => {
   const alertsFor = (ownerId: string, ...alerts: MemberAlert[]): LeaderBriefAlertsModel => ({
     byMember: { [ownerId]: alerts },
+    metrics: null,
     fleet: null,
     briefed: true,
   });
@@ -291,6 +292,7 @@ describe('FleetPeersRail — the leader-brief overlay', () => {
 describe('FleetPeersRail — the fleet-level alert block (P-004)', () => {
   const withFleet = (fleet: LeaderBriefAlertsModel['fleet']): LeaderBriefAlertsModel => ({
     byMember: {},
+    metrics: null,
     fleet,
     briefed: true,
   });
@@ -325,7 +327,7 @@ describe('FleetPeersRail — the fleet-level alert block (P-004)', () => {
 
   it('renders NO block on a clean fleet, so its absence is the all-clear (D-003)', () => {
     render(
-      <FleetPeersRail model={model()} alerts={{ byMember: {}, fleet: null, briefed: true }} onClose={noop} />,
+      <FleetPeersRail model={model()} alerts={{ byMember: {}, metrics: null, fleet: null, briefed: true }} onClose={noop} />,
     );
     expect(screen.queryByTestId('fleet-alert-block')).toBeNull();
   });
@@ -363,5 +365,62 @@ describe('FleetPeersRail — the fleet-level alert block (P-004)', () => {
     );
     expect(screen.queryByTestId('fleet-alert-capacity')).toBeNull();
     expect(screen.queryByTestId('fleet-alert-invariants-ok')).toBeNull();
+  });
+});
+
+describe('FleetPeersRail — canonical work scope (fleet metrics P-008)', () => {
+  it('renders population, spec revision, lifetime window and quality above the roster', () => {
+    const { container } = render(
+      <FleetPeersRail
+        model={model()}
+        alerts={{
+          byMember: {},
+          metrics: {
+            status: 'measured',
+            remaining: '9 remaining',
+            scope: 'current-spec-work-items · p2p-spec@r7 · fleet-lifetime',
+            quality: 'exact · fresh',
+            detail:
+              'p2p-release/papercusp · unit: distinct canonical issue-family work-item ids · ' +
+              'window: 2026-08-29T02:00:00.000Z ≤ t < 2026-08-30T02:00:00.000Z',
+          },
+          fleet: null,
+          briefed: true,
+        }}
+        onClose={noop}
+      />,
+    );
+    const block = screen.getByTestId('fleet-metrics-block');
+    expect(block.getAttribute('data-status')).toBe('measured');
+    expect(screen.getByTestId('fleet-metrics-remaining').textContent).toContain('9 remaining');
+    expect(screen.getByTestId('fleet-metrics-scope').textContent).toContain('p2p-spec@r7');
+    expect(screen.getByTestId('fleet-metrics-quality').textContent).toContain('exact · fresh');
+    expect(block.getAttribute('aria-label')).toContain('distinct canonical issue-family work-item ids');
+    const list = container.querySelector('.pc-peers__list')!;
+    expect(block.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('renders unavailable as unavailable, never as an empty or zero stock', () => {
+    render(
+      <FleetPeersRail
+        model={model()}
+        alerts={{
+          byMember: {},
+          metrics: {
+            status: 'unavailable',
+            remaining: 'unavailable',
+            scope: 'p2p-release · papercusp · at-event-spec · fleet-lifetime',
+            quality: 'not measured',
+            detail: 'claim-spec history has a gap · recover via work_items:burn_down',
+          },
+          fleet: null,
+          briefed: true,
+        }}
+        onClose={noop}
+      />,
+    );
+    expect(screen.getByTestId('fleet-metrics-block').getAttribute('data-status')).toBe('unavailable');
+    expect(screen.getByTestId('fleet-metrics-remaining').textContent).toContain('unavailable');
+    expect(screen.getByTestId('fleet-metrics-remaining').textContent).not.toContain('0');
   });
 });

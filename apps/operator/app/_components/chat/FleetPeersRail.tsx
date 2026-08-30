@@ -50,7 +50,7 @@ import FleetRoleGlyph from '../FleetRoleGlyph';
 import { useChatClock } from './message-timestamp';
 import { formatAge, type HudColumnId } from '../../adv/hud/hud-board-model';
 import type { FleetPeer, FleetPeersModel } from './fleet-peers';
-import type { FleetAlertsModel, LeaderBriefAlertsModel, MemberAlert } from './leader-brief-alerts';
+import type { FleetAlertsModel, FleetMetricsModel, LeaderBriefAlertsModel, MemberAlert } from './leader-brief-alerts';
 
 /** The state word under each peer. Terse on purpose: this column is ~248px and
  *  the row's job is to be scanned, not read. The full sentence rides in `title`
@@ -239,6 +239,42 @@ function FleetAlertsBlock({ fleet }: { fleet: FleetAlertsModel }) {
   );
 }
 
+/**
+ * Canonical WORK scope, kept separate from member alerts because the two count
+ * different populations. The three visible rows are an atomic tuple: stock,
+ * population/spec/window, and exactness/freshness. Omitting any one would make
+ * the surviving count unsafe to compare with another fleet read (D-005).
+ */
+function FleetMetricsBlock({ metrics }: { metrics: FleetMetricsModel }) {
+  const accessible = `Fleet work scope: ${metrics.remaining}; ${metrics.scope}; ${metrics.quality}. ${metrics.detail}`;
+  return (
+    <section
+      className="pc-peers__alerts pc-peers__metrics"
+      data-testid="fleet-metrics-block"
+      data-status={metrics.status}
+      aria-label={accessible}
+      title={metrics.detail}
+    >
+      <header className="pc-peers__alerts-cap">
+        <span>Work scope</span>
+        <span className="pc-peers__cap-n">{metrics.status}</span>
+      </header>
+      <div className="pc-peers__alert-kv" data-testid="fleet-metrics-remaining">
+        <span>remaining</span>
+        <span>{metrics.remaining}</span>
+      </div>
+      <div className="pc-peers__alert-kv" data-testid="fleet-metrics-scope">
+        <span>scope</span>
+        <span>{metrics.scope}</span>
+      </div>
+      <div className="pc-peers__alert-kv" data-testid="fleet-metrics-quality">
+        <span>quality</span>
+        <span>{metrics.quality}</span>
+      </div>
+    </section>
+  );
+}
+
 export default function FleetPeersRail({
   model,
   alerts,
@@ -313,6 +349,7 @@ export default function FleetPeersRail({
           of them (a starved spec, a gated lane, a pause) are the REASON the rows
           below look calm. Reading the rows first and this second is how a leader
           concludes the fleet is fine. */}
+      {alerts?.metrics ? <FleetMetricsBlock metrics={alerts.metrics} /> : null}
       {alerts?.fleet ? <FleetAlertsBlock fleet={alerts.fleet} /> : null}
 
       <div className="pc-peers__list">

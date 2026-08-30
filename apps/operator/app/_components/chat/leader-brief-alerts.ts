@@ -37,6 +37,7 @@
 import type {
   AgentLeaderBrief,
   LeaderBriefCustomInvariant,
+  LeaderBriefFleetMetrics,
   LeaderBriefMemberRow,
 } from '../../adv/sessions/use-agent-leader-brief';
 
@@ -79,14 +80,120 @@ export interface FleetAlertsModel {
   invariantsNote: string | null;
 }
 
+/**
+ * A renderable canonical work-stock tuple. `remaining` is present only when
+ * every label needed to interpret it survived transport. The popup never
+ * substitutes a legacy top-level count or turns an unavailable read into zero.
+ */
+export interface FleetMetricsModel {
+  status: 'measured' | 'unavailable';
+  remaining: string;
+  scope: string;
+  quality: string;
+  /** Full unit/window/failure evidence for the row tooltip + accessible name. */
+  detail: string;
+}
+
 export interface LeaderBriefAlertsModel {
   /** ownerId → its alerts, most-severe first. Absent key ⇒ no glyphs. */
   byMember: Record<string, MemberAlert[]>;
+  /** Canonical work scope, independent of whether any fleet alert fired. */
+  metrics: FleetMetricsModel | null;
   /** null ⇒ render no fleet block at all (the all-clear). */
   fleet: FleetAlertsModel | null;
   /** True when the brief was fetched and genuinely returned member rows — the
    *  rail uses it to decide whether "no glyphs" means "healthy" or "unknown". */
   briefed: boolean;
+}
+
+function finiteNonNegativeInt(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Preserve the canonical snapshot atomically. A partial measured payload is an
+ * unavailable reading, not permission to render the surviving numeral.
+ */
+export function deriveFleetMetrics(fleetMetrics: LeaderBriefFleetMetrics | null | undefined): FleetMetricsModel | null {
+  if (!fleetMetrics) return null;
+
+  const requested = fleetMetrics.requested;
+  if (fleetMetrics.ok !== true) {
+    const requestedScope = [requested?.fleet, requested?.harness, requested?.flowMode, requested?.window].filter(
+      (part): part is string => typeof part === 'string' && part.length > 0,
+    );
+    const reason = fleetMetrics.reason ?? fleetMetrics.error ?? 'canonical fleet metrics were not measured';
+    const recover = fleetMetrics.recoverVia ? ` · recover via ${fleetMetrics.recoverVia}` : '';
+    return {
+      status: 'unavailable',
+      remaining: 'unavailable',
+      scope: requestedScope.length > 0 ? requestedScope.join(' · ') : 'scope unavailable',
+      quality: 'not measured',
+      detail: `${reason}${recover}`,
+    };
+  }
+
+  const snapshot = fleetMetrics.snapshot;
+  const scope = snapshot?.scope;
+  const window = scope?.window;
+  const stock = scope?.stock;
+  const population = scope?.population?.stock;
+  const remaining = finiteNonNegativeInt(snapshot?.remaining?.total);
+  const unit = snapshot?.remaining?.unit;
+  const revision = finiteNonNegativeInt(stock?.revision);
+  const exactness = snapshot?.quality?.exactness;
+  const freshness = snapshot?.quality?.freshness;
+
+  const complete =
+    snapshot?.schemaVersion === 'fleet-metrics-v1' &&
+    typeof scope?.fleet === 'string' &&
+    typeof scope.harness === 'string' &&
+    window?.kind === 'fleet-lifetime' &&
+    typeof window.startAt === 'string' &&
+    typeof window.endAt === 'string' &&
+    stock?.mode === 'current-spec' &&
+    typeof stock.specId === 'string' &&
+    revision != null &&
+    population === 'current-spec-work-items' &&
+    remaining != null &&
+    unit === 'distinct canonical issue-family work-item ids' &&
+    (exactness?.status === 'exact' || exactness?.status === 'truncated') &&
+    (freshness?.status === 'fresh' || freshness?.status === 'stale');
+
+  if (!complete) {
+    return {
+      status: 'unavailable',
+      remaining: 'unavailable',
+      scope: 'canonical scope incomplete',
+      quality: 'not measured',
+      detail:
+        'The leader brief carried a partial fleetMetrics snapshot. The remaining count is withheld ' +
+        'until population, spec revision, fleet-lifetime window, unit, exactness, and freshness all arrive.',
+    };
+  }
+
+  const exactnessDetail =
+    exactness.status === 'truncated'
+      ? `truncated${exactness.sourceCap != null ? ` at source cap ${exactness.sourceCap}` : ''}` +
+        `${exactness.reason ? ` (${exactness.reason})` : ''}` +
+        `${exactness.recoverVia ? `; recover via ${exactness.recoverVia}` : ''}`
+      : 'exact';
+  const freshnessDetail =
+    freshness.status === 'stale'
+      ? `stale${freshness.reason ? ` (${freshness.reason})` : ''}` +
+        `${freshness.recoverVia ? `; recover via ${freshness.recoverVia}` : ''}`
+      : 'fresh';
+
+  return {
+    status: 'measured',
+    remaining: `${remaining} remaining`,
+    scope: `${population} · ${stock.specId}@r${revision} · ${window.kind}`,
+    quality: `${exactness.status} · ${freshness.status}`,
+    detail:
+      `${scope.fleet}/${scope.harness} · unit: ${unit} · ` +
+      `window: ${window.startAt} ≤ t < ${window.endAt} · ` +
+      `exactness: ${exactnessDetail} · freshness: ${freshnessDetail}`,
+  };
 }
 
 /** Render order = the order a leader should act in. Dormant first because
@@ -293,6 +400,7 @@ export function deriveLeaderBriefAlerts(
   if (leaderBrief.skipped === 'read-failed') {
     return {
       byMember: {},
+      metrics: null,
       briefed: false,
       fleet: {
         fleetSlug: leaderBrief.fleetSlug,
@@ -345,6 +453,7 @@ export function deriveLeaderBriefAlerts(
     if (!driftAlert) return null;
     return {
       byMember: {},
+      metrics: null,
       briefed: false,
       fleet: {
         fleetSlug: leaderBrief.fleetSlug,
@@ -358,6 +467,7 @@ export function deriveLeaderBriefAlerts(
   if (brief.ok === false) {
     return {
       byMember: {},
+      metrics: null,
       briefed: false,
       fleet: {
         fleetSlug: leaderBrief.fleetSlug,
@@ -384,6 +494,7 @@ export function deriveLeaderBriefAlerts(
   }
 
   const s = brief.summary ?? {};
+  const metrics = deriveFleetMetrics(brief.fleetMetrics);
   // Drift leads: it qualifies how much of everything below can be trusted.
   const alerts: FleetAlert[] = driftAlert ? [driftAlert] : [];
 
@@ -515,10 +626,11 @@ export function deriveLeaderBriefAlerts(
     });
   }
 
-  if (alerts.length === 0) return { byMember, fleet: null, briefed: true };
+  if (alerts.length === 0) return { byMember, metrics, fleet: null, briefed: true };
 
   return {
     byMember,
+    metrics,
     briefed: true,
     fleet: {
       fleetSlug: leaderBrief.fleetSlug,

@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  deriveFleetMetrics,
   deriveLeaderBriefAlerts,
   deriveMemberAlerts,
   type MemberAlert,
@@ -38,6 +39,94 @@ function briefed(brief: Partial<LeaderBriefData>, over: Partial<AgentLeaderBrief
 }
 
 const keys = (alerts: MemberAlert[]) => alerts.map((a) => a.key);
+
+const measuredFleetMetrics = () =>
+  ({
+    ok: true,
+    snapshot: {
+      schemaVersion: 'fleet-metrics-v1',
+      generatedAt: '2026-08-30T02:00:00.000Z',
+      scope: {
+        fleet: 'p2p-release',
+        harness: 'papercusp',
+        window: {
+          kind: 'fleet-lifetime',
+          startAt: '2026-08-29T02:00:00.000Z',
+          endAt: '2026-08-30T02:00:00.000Z',
+          startInclusive: true,
+          endExclusive: true,
+        },
+        stock: {
+          mode: 'current-spec',
+          specId: 'p2p-spec',
+          revision: 7,
+          source: 'fleet',
+        },
+        population: { stock: 'current-spec-work-items' },
+      },
+      quality: {
+        exactness: { status: 'exact', sourceCap: null },
+        freshness: {
+          status: 'fresh',
+          measuredAt: '2026-08-30T02:00:00.000Z',
+          staleAfterMs: 120_000,
+        },
+      },
+      remaining: {
+        total: 9,
+        unit: 'distinct canonical issue-family work-item ids',
+      },
+    },
+  }) as const;
+
+describe('deriveFleetMetrics — canonical population labels stay atomic', () => {
+  it('keeps stock, spec revision, fleet-lifetime window, unit, exactness and freshness together', () => {
+    const model = deriveFleetMetrics(measuredFleetMetrics())!;
+    expect(model.status).toBe('measured');
+    expect(model.remaining).toBe('9 remaining');
+    expect(model.scope).toContain('current-spec-work-items');
+    expect(model.scope).toContain('p2p-spec@r7');
+    expect(model.scope).toContain('fleet-lifetime');
+    expect(model.quality).toBe('exact · fresh');
+    expect(model.detail).toContain('distinct canonical issue-family work-item ids');
+    expect(model.detail).toContain('2026-08-29T02:00:00.000Z ≤ t < 2026-08-30T02:00:00.000Z');
+  });
+
+  it('withholds a numeral when any canonical scope label is missing', () => {
+    const partial = measuredFleetMetrics();
+    const model = deriveFleetMetrics({
+      ...partial,
+      snapshot: {
+        ...partial.snapshot,
+        scope: { ...partial.snapshot.scope, population: {} },
+      },
+    })!;
+    expect(model.status).toBe('unavailable');
+    expect(model.remaining).toBe('unavailable');
+    expect(model.detail).toMatch(/count is withheld/i);
+    expect(model.detail).not.toContain('9 remaining');
+  });
+
+  it('renders an unavailable result with its requested scope and recovery path, never zero', () => {
+    const model = deriveFleetMetrics({
+      ok: false,
+      error: 'fleet_metrics_unavailable',
+      reason: 'claim-spec history has a gap',
+      recoverVia: "work_items:burn_down { fleet: 'p2p-release' }",
+      requested: {
+        fleet: 'p2p-release',
+        harness: 'papercusp',
+        flowMode: 'at-event-spec',
+        window: 'fleet-lifetime',
+      },
+    })!;
+    expect(model.remaining).toBe('unavailable');
+    expect(model.scope).toContain('at-event-spec');
+    expect(model.detail).toContain('claim-spec history has a gap');
+    expect(model.detail).toContain('work_items:burn_down');
+    expect(model.remaining).not.toContain('0');
+  });
+});
 
 describe('deriveMemberAlerts — the six intervene-now signals', () => {
   it('marks a dormant member as act-now, not merely a warning', () => {
@@ -257,8 +346,15 @@ describe('deriveLeaderBriefAlerts — an absence is never an all-clear', () => {
     )!;
     expect(model.fleet).toBeNull();
     expect(model.byMember).toEqual({});
+    expect(model.metrics).toBeNull();
     // …but it DID read a brief, which is different from having none.
     expect(model.briefed).toBe(true);
+  });
+
+  it('keeps canonical work scope visible even when the fleet has no alerts', () => {
+    const model = deriveLeaderBriefAlerts(briefed({ fleetMetrics: measuredFleetMetrics() }))!;
+    expect(model.fleet).toBeNull();
+    expect(model.metrics?.scope).toContain('p2p-spec@r7');
   });
 });
 
