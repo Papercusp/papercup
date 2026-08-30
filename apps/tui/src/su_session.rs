@@ -495,6 +495,8 @@ pub struct SuSessionCreateRequest {
     pub agent: SuSessionBackend,
     pub harness_slug: Option<String>,
     pub plan_slug: Option<String>,
+    pub fleet: Option<String>,
+    pub seat: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub account: Option<String>,
@@ -517,6 +519,8 @@ pub struct SuSessionKickoff {
 pub struct SuSessionLaunchOptions {
     pub plan_slug: Option<String>,
     pub feature_id: Option<String>,
+    pub fleet: Option<String>,
+    pub seat: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub account: Option<String>,
@@ -1024,6 +1028,8 @@ mod tests {
             agent: SuSessionBackend::Omp,
             harness_slug: Some("papercup".into()),
             plan_slug: Some("plan-a".into()),
+            fleet: Some("fed-drill".into()),
+            seat: Some("sonnet:high:auto".into()),
             model: Some("gpt-5.6-sol".into()),
             effort: Some("high".into()),
             account: Some("auto".into()),
@@ -1040,6 +1046,8 @@ mod tests {
         assert_eq!(create["agent"], "omp");
         assert_eq!(create["harness_slug"], "papercup");
         assert_eq!(create["plan_slug"], "plan-a");
+        assert_eq!(create["fleet"], "fed-drill");
+        assert_eq!(create["seat"], "sonnet:high:auto");
         assert_eq!(create["model"], "gpt-5.6-sol");
         assert_eq!(create["effort"], "high");
         assert_eq!(create["account"], "auto");
