@@ -497,12 +497,21 @@ DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5
 // LEDGER_COMPACT_BYTES, so a file stops being touched the moment its session ends
 // and then lives forever. Measured 2026-08-30 before this fix: 34,560 .jsonl files
 // / 63MB under ~/.papercusp/turn-provenance/, oldest dated 2026-07-11 (the day
-// P-001 landed), growing ~690 files/day. Deleting a fully-expired file cannot
-// change a verdict: classify() returns `unverified-claim` for BOTH an expired row
-// (stale/replay) and a missing row (spoof), so GC only moves the reason string,
-// never the classification. Pure machine-local FS housekeeping (D-001: the ledger
-// is a machine-local short-TTL file, not PG), no LLM, no owner-authority surface —
-// same class as fleet-logs-gc.
+// P-001 landed), growing ~690 files/day. Pure machine-local FS housekeeping
+// (D-001: the ledger is a machine-local short-TTL file, not PG), no LLM, no
+// owner-authority surface — same class as fleet-logs-gc.
+//
+// ⚠ CORRECTION (plan D-007). This comment first justified the sweep with
+// "deleting a fully-expired file cannot change a verdict: classify() returns
+// `unverified-claim` for BOTH an expired row and a missing row". That is true
+// only on the ENVELOPE branch. On the envelope-LESS hash-match branch an
+// expired row returns `unverified-claim` while a MISSING one falls through to
+// the affirmative OWNER default — so deleting it PROMOTES a machine turn to an
+// owner stamp, the exact failure this plan exists to prevent. The claim was
+// accidentally true when written (the pre-D-006 classifier sent both to OWNER)
+// and the D-006 fix falsified it. gcLedgerDir now retains rows for
+// LEDGER_GC_GRACE_MS past their TTL, which is what makes deletion
+// verdict-neutral; the invariant and its guard live with that constant.
 async function turnProvenanceGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
