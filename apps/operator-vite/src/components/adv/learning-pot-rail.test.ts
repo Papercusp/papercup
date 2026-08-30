@@ -231,3 +231,113 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(active.length + dormant.length).toBe(rail.length);
   });
 });
+
+/**
+ * A PAYLOAD FROM AN OLDER SERVER (WI-1397883 — owner-reported live crash).
+ *
+ * Every fixture above builds its arming through `arming()`, which always sets
+ * all four keys — so all 35 of them agreed with each other that the shape was
+ * complete, and none could see the field being MISSING. `potScope` was added to
+ * AutomationArming by P-005, so a catalog payload cached before that has no
+ * such key: `=== null` waved `undefined` through to `.disabledPots` and the
+ * error boundary took out the whole Learning tab.
+ *
+ * THE CAST IS THE POINT, NOT A SHORTCUT. `as unknown as AutomationArming` is
+ * what makes these cases expressible: the declared type forbids the shape at
+ * compile time, and that mismatch IS the bug — the type describes the current
+ * server, while the value crosses a sync CACHE boundary and describes whatever
+ * bytes the client happens to hold. Anything typed-only here would re-assert
+ * the assumption that crashed rather than test it.
+ */
+describe('an arming from an OLDER server — a declared field is not a runtime guarantee', () => {
+  const stale = (over: Record<string, unknown>): AutomationArming =>
+    over as unknown as AutomationArming;
+  const potsOf = (chips: ReturnType<typeof buildLearningPotRail>) => chips.map((c) => c.potSlug);
+
+  it('does not throw when potScope is MISSING, and reads it as unreadable', () => {
+    const build = () => buildLearningPotRail(stale({ gymPots: [gym('alpha', true)], lanes: [] }));
+    expect(build).not.toThrow();
+    const [chip] = build();
+    expect(chip.learning).toBe('unknown');
+    expect(chip.scout.state).toBe('unknown');
+  });
+
+  it('treats a MISSING potScope exactly like a null one — not like an empty scope', () => {
+    const missing = buildLearningPotRail(stale({ gymPots: [gym('a', true)], lanes: [] }))[0];
+    const explicitNull = buildLearningPotRail(arming({ gymPots: [gym('a', true)], potScope: null }))[0];
+    expect(missing.learning).toBe(explicitNull.learning);
+    const empty = buildLearningPotRail(arming({ gymPots: [gym('a', true)], potScope: scope([]) }))[0];
+    expect(missing.learning).not.toBe(empty.learning);
+  });
+
+  it('reads a potScope whose disabledPots did not survive as unreadable, never as all-enabled', () => {
+    const [chip] = buildLearningPotRail(
+      stale({ gymPots: [gym('alpha', true)], lanes: [], potScope: { rows: [] } }),
+    );
+    expect(chip.learning).toBe('unknown');
+  });
+
+  it('does not throw when gymPots is MISSING, and still surfaces lane-only pots', () => {
+    const build = () =>
+      buildLearningPotRail(stale({ lanes: [lane('l1', 'beta', true)], potScope: scope([]) }));
+    expect(build).not.toThrow();
+    expect(potsOf(build())).toEqual(['beta']);
+    expect(build()[0].gym.state).toBe('absent');
+  });
+
+  it('does not throw when lanes is MISSING, and still surfaces gym-only pots', () => {
+    const build = () =>
+      buildLearningPotRail(stale({ gymPots: [gym('alpha', true)], potScope: scope([]) }));
+    expect(build).not.toThrow();
+    expect(potsOf(build())).toEqual(['alpha']);
+    expect(build()[0].lanes.state).toBe('absent');
+  });
+
+  it('returns an empty rail for an arming with no keys at all, rather than throwing', () => {
+    expect(() => buildLearningPotRail(stale({}))).not.toThrow();
+    expect(buildLearningPotRail(stale({}))).toEqual([]);
+    expect(learningPotSlugs(stale({}))).toEqual([]);
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL — kept permanently, per the module-tier rule in
+   * CLAUDE.md ("a subject you `import`: keep a deliberately-wrong
+   * implementation in the test file as a control"). Mutating the real module
+   * to prove these tests can fail is not available here: the shared tree is
+   * swept by git-sync, so a probe that holds the source mutated can have the
+   * mutant committed even when nothing goes wrong.
+   *
+   * These two functions are the code as it was WHEN IT CRASHED. If a future
+   * refactor makes the payloads above harmless, they stop throwing and this
+   * test fails — which is the only way to be told that the regression suite
+   * above quietly stopped exercising the regression.
+   */
+  const preFixMasterSwitch = (a: AutomationArming, potSlug: string): string =>
+    // eslint-disable-next-line eqeqeq
+    a.potScope === null ? 'unknown' : a.potScope.disabledPots.includes(potSlug) ? 'off' : 'on';
+  const preFixGymMap = (a: AutomationArming) =>
+    new Map(a.gymPots.map((g) => [g.harnessSlug, g] as const));
+
+  it('CONTROL: the pre-fix code really does throw on these exact payloads', () => {
+    const noScope = stale({ gymPots: [gym('alpha', true)], lanes: [] });
+    expect(() => preFixMasterSwitch(noScope, 'alpha')).toThrow(/disabledPots/);
+    expect(() => preFixGymMap(stale({ lanes: [], potScope: scope([]) }))).toThrow();
+    // Calibration: the payloads are only meaningful if the REAL subject, which
+    // is what these controls are being compared against, handles them.
+    expect(() => buildLearningPotRail(noScope)).not.toThrow();
+    expect(buildLearningPotRail(noScope)[0].learning).toBe('unknown');
+  });
+
+  it('survives null ENTRIES inside the collections, not just missing collections', () => {
+    const build = () =>
+      buildLearningPotRail(
+        stale({
+          gymPots: [null, gym('alpha', true)],
+          lanes: [null, lane('l1', 'alpha', true)],
+          potScope: scope([]),
+        }),
+      );
+    expect(build).not.toThrow();
+    expect(potsOf(build())).toEqual(['alpha']);
+  });
+});
