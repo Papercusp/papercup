@@ -15,8 +15,16 @@ import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@pap
 import { subscribe, backfillSince, type SyncEvent } from '../../../sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
 
-function payloadFor(ev: SyncEvent): { name: string; args?: unknown; data?: unknown[] } {
-  const out: { name: string; args?: unknown; data?: unknown[] } = { name: ev.name };
+function payloadFor(ev: SyncEvent): {
+  name: string;
+  args?: unknown;
+  data?: unknown[];
+  tsMs: number;
+} {
+  const out: { name: string; args?: unknown; data?: unknown[]; tsMs: number } = {
+    name: ev.name,
+    tsMs: ev.ts,
+  };
   if (ev.args !== undefined) out.args = ev.args;
   if (ev.data !== undefined) out.data = ev.data;
   return out;
