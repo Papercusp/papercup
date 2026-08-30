@@ -85,6 +85,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
   { name: 'coverage-census', seedScript: 'seed-coverage-census-routine.ts' },
   { name: 'cross-hive-outbox-drain', seedScript: 'seed-cross-hive-drain-routine.ts' },
+  {
+    name: 'frozen-candidate-drift-sweep',
+    seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',
+  },
   { name: 'fleet-headcount-governor', seedScript: 'seed-fleet-headcount-routine.ts' },
   { name: 'gc-dead-loops', seedScript: 'seed-gc-dead-loops-routine.ts' },
   { name: 'gc-desktop-sessions', seedScript: 'seed-gc-desktop-sessions-routine.ts' },
