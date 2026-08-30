@@ -338,6 +338,7 @@ export async function supersedeConversationCore(
 ): Promise<
   | SupersedeConversationResult
   | { error: 'not_found' }
+  | { error: 'not_owner' }
   | { error: 'already_superseded' }
   | { error: 'already_terminal' }
   | { error: 'invalid_replacement' }
@@ -346,6 +347,17 @@ export async function supersedeConversationCore(
   if (!old) return { error: 'not_found' };
   if (old.state === 'superseded') return { error: 'already_superseded' };
   if (old.state !== 'open') return { error: 'already_terminal' };
+  // Owner questions are gates owned by the agent that asked them. A peer that
+  // misidentifies a conversation id must not be able to retract that gate (the
+  // replacement would silently move the human decision to the wrong lane). The
+  // producer check keeps peer-to-peer `coord:ask` questions and discussions
+  // supersedable by their coordinators, while legacy unattributed questions
+  // fail closed because they cannot prove a different ownership contract.
+  // WI-1373235: a P-011 correction accidentally superseded an unrelated P-003
+  // owner gate and cancelled its answer await.
+  const ownerQuestion =
+    old.kind === 'question' && (old.producer === 'coord:ask-owner' || old.producer == null);
+  if (ownerQuestion && old.asker_id !== identity.ownerId) return { error: 'not_owner' };
   if (!input.replacement.body.trim()) return { error: 'invalid_replacement' };
 
   const now = deps.nowIso();

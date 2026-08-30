@@ -363,6 +363,26 @@ describe('openConversationCore', () => {
 });
 
 describe('supersedeConversationCore', () => {
+  it('does not let a peer retract another agent\'s owner-question gate', async () => {
+    const old = await openConversationCore(deps, ident('original-asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'Can we ship the current release?',
+    });
+
+    const result = await supersedeConversationCore(deps, ident('different-agent'), {
+      conversation_id: old.conversation.id,
+      replacement: { body: 'Can we ship a different release?' },
+    });
+
+    expect(result).toEqual({ error: 'not_owner' });
+    expect(await store.get(old.conversation.id)).toMatchObject({
+      state: 'open',
+      superseded_by: null,
+    });
+    expect(await store.list({ state: 'open' })).toHaveLength(1);
+  });
+
   it('retires the old gate, points to an open replacement, and notifies old subscribers', async () => {
     const old = await openConversationCore(deps, ident('asker'), {
       kind: 'question',
