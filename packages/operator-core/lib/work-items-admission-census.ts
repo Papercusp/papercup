@@ -508,6 +508,38 @@ async function readUnadjudicatedCensus(
   return Number(rows[0]?.n ?? 0);
 }
 
+/**
+ * WI-1194246 — the admission census's DECLARED bound.
+ *
+ * Measured 2026-08-30 from `pg_stat_statements` (harness_admin, 9d+ window):
+ * the two `WITH corpus AS MATERIALIZED` families in this file reach **367.4s**
+ * max / 27.5s mean over 690 calls, and 208.3s max / 42.8s mean. Both ran on a
+ * bare `getOrgPg().sql` pool checkout (`runWorkItemAdmissionCensus` line ~777)
+ * with no transaction wrapper, so — exactly like `reconcileReadiness` before
+ * its own fix — nothing bounded them at all.
+ *
+ * That is what makes them WI-1194246's blockers: you cannot pick a safe
+ * role-level `statement_timeout` default while a legitimate 367s pairwise
+ * cosine scan is indistinguishable from a runaway one. Every other long path
+ * on this box already declares itself (migrations via MIGRATION_TRANSACTION_PREFIX,
+ * pg_dump via PGOPTIONS, the backup↔migration rendezvous via `SET statement_timeout = 0`,
+ * the readiness detector via READINESS_RECONCILE_STATEMENT_TIMEOUT_MS).
+ * These two simply never said anything.
+ *
+ * 900s, NOT the 600s the readiness detector uses, and the difference is
+ * deliberate: 600s is ~4x that detector's 154.8s worst case, whereas this
+ * query's worst case is already 367.4s AND grows with corpus size (it is a
+ * pairwise scan over the work-item corpus, which only gets bigger). 600s would
+ * be ~1.6x today and would start failing honest runs as the corpus grows.
+ * Note also that 367.4s is a FLOOR, not a ceiling: `pg_stat_statements`
+ * evicts low-call rows, and `max_exec_time` carries no timestamp, so the true
+ * worst case may be higher and may predate any recent change.
+ *
+ * NOT 0 (unbounded): `getOrgPg`'s shared handle is max:2, so a genuinely
+ * runaway scan would pin half the admin pool indefinitely.
+ */
+export const ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS = 900_000;
+
 async function scanEdgeChunk(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
@@ -517,7 +549,15 @@ async function scanEdgeChunk(
   chunkIndex: number,
   chunkCount: number,
 ): Promise<{ anchors: number; edges: number; hard: number }> {
-  const rows = await sql<Array<{ anchors: number; edges: number; hard: number }>>`
+  // WI-1194246: wrapped in a transaction PURELY to carry `SET LOCAL
+  // statement_timeout`. It MUST be SET LOCAL, never a session-level `SET`:
+  // this runs on a SHARED pool checkout, so a session-level set would leak
+  // this bound onto whatever ran next on the same connection — silently
+  // un-capping an unrelated caller. SET LOCAL reverts at COMMIT. The body is a
+  // single statement, so the wrapper does not change atomicity.
+  const rows = await sql.begin<Array<{ anchors: number; edges: number; hard: number }>>(async (tx) => {
+    await tx.unsafe(`SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`);
+    return (tx as unknown as OrgSql)<Array<{ anchors: number; edges: number; hard: number }>>`
     WITH corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
@@ -556,6 +596,7 @@ async function scanEdgeChunk(
            count(*)::int AS edges,
            count(*) FILTER (WHERE cos >= ${ADMISSION_COMPONENT_FLOOR})::int AS hard
       FROM written`;
+  });
   return {
     anchors: Number(rows[0]?.anchors ?? 0),
     edges: Number(rows[0]?.edges ?? 0),
@@ -670,7 +711,13 @@ async function readTextContextEdges(
 ): Promise<AdmissionCensusEdge[]> {
   const textEdges: AdmissionCensusEdge[] = [];
   for (const missingChunk of partitionTextContextIds(missingEmbeddingIds)) {
-    const rows = await sql<TextEdgeDbRow[]>`
+    // WI-1194246: transaction wrapper exists PURELY to carry `SET LOCAL
+    // statement_timeout` on this shared pool checkout — see
+    // ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS above. SET LOCAL reverts at COMMIT,
+    // so it cannot leak the bound onto the next caller of this connection.
+    const rows = await sql.begin<TextEdgeDbRow[]>(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}`);
+      return (tx as unknown as OrgSql)<TextEdgeDbRow[]>`
     WITH corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
@@ -705,6 +752,7 @@ async function readTextContextEdges(
          LIMIT ${TEXT_CONTEXT_NEIGHBOURS}
       ) neighbour ON neighbour.exact_key OR neighbour.trgm >= ${TEXT_CONTEXT_TRGM_FLOOR}
      ORDER BY m.id, neighbour.exact_key DESC, neighbour.trgm DESC, neighbour.id`;
+    });
     textEdges.push(
       ...rows.map((row) => ({
         a: row.missing_id,
