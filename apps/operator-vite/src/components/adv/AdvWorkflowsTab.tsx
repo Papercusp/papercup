@@ -561,6 +561,7 @@ export default function AdvWorkflowsTab() {
   const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
   const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
   const filtered = stateFacet !== 'all' || kindFacet !== 'all' || sourceFacet != null || query.trim() !== '';
+  const populationEmpty = !loading && rows.length === 0;
 
   // The expansion (D-002). A `wfId` that resolves to nothing (a stale URL) falls through to
   // the frame rather than rendering an empty shell.
@@ -829,7 +830,7 @@ export default function AdvWorkflowsTab() {
         ) : null}
       </section>
 
-      <div className="pc-wf__body">
+      <div className="pc-wf__body" data-population-empty={populationEmpty || undefined}>
         {mode === 'activity' ? (
           <ActivityList
             activity={activity.slice(0, ROW_RENDER_CAP)}
@@ -842,6 +843,7 @@ export default function AdvWorkflowsTab() {
             hiddenCount={Math.max(0, visibleRows.length - ROW_RENDER_CAP)}
             selectedId={selectedRow?.id ?? null}
             loading={loading}
+            emptyTitle={filtered ? 'No matching workflows' : 'Your workflow control center starts here'}
             emptyLabel={filtered
               ? 'No workflows match these filters.'
               : 'No workflows are installed yet. Describe one above and the agent will wire it.'}
@@ -852,40 +854,44 @@ export default function AdvWorkflowsTab() {
               : null}
           />
         )}
-        <WorkflowInspector
-          item={inspected}
-          row={selectedRow}
-          inputs={inputs}
-          runs={runHistory}
-          binding={inspectedBinding}
-          bindingLoaded={external !== null}
-          busy={busy}
-          onRun={() => inspected?.planSlug && void invoke(
-            `run:${inspected.id}`,
-            'plans:run-now',
-            { slug: inspected.planSlug, ...(inspected.harness ? { harness: inspected.harness } : {}) },
-            `${inspected.label} started`,
-          )}
-          onToggleSchedule={(armed) => inspected?.planSlug && void invoke(
-            `schedule:${inspected.id}`,
-            armed ? 'plans:arm-schedule' : 'plans:disarm-schedule',
-            { slug: inspected.planSlug, ...(inspected.harness ? { harness: inspected.harness } : {}) },
-            armed ? 'Schedule armed' : 'Schedule paused',
-          )}
-          onToggleBinding={(id, armed) => void setBindingArmed(id, armed)}
-          onToggleRoutine={() => inspected && void toggleRoutine(inspected)}
-          onPauseAll={() => inspected && void pauseAutomaticTriggers(inspected)}
-          onEditSchedule={() => {
-            if (!inspected?.planSlug) return;
-            void setCalendarPlan(inspected.planSlug);
-            void setAdvTab('calendar');
-          }}
-          onExpand={() => inspected && void setWfId(inspected.id)}
-          onAsk={() => {
-            if (!inspected) return;
-            openComposer(`About the workflow "${inspected.label}": `);
-          }}
-        />
+        {!populationEmpty ? (
+          <WorkflowInspector
+            item={inspected}
+            row={selectedRow}
+            inputs={inputs}
+            runs={runHistory}
+            binding={inspectedBinding}
+            bindingLoaded={external !== null}
+            loading={loading}
+            emptyReason={filtered && visibleRows.length === 0 ? 'filtered' : 'selection'}
+            busy={busy}
+            onRun={() => inspected?.planSlug && void invoke(
+              `run:${inspected.id}`,
+              'plans:run-now',
+              { slug: inspected.planSlug, ...(inspected.harness ? { harness: inspected.harness } : {}) },
+              `${inspected.label} started`,
+            )}
+            onToggleSchedule={(armed) => inspected?.planSlug && void invoke(
+              `schedule:${inspected.id}`,
+              armed ? 'plans:arm-schedule' : 'plans:disarm-schedule',
+              { slug: inspected.planSlug, ...(inspected.harness ? { harness: inspected.harness } : {}) },
+              armed ? 'Schedule armed' : 'Schedule paused',
+            )}
+            onToggleBinding={(id, armed) => void setBindingArmed(id, armed)}
+            onToggleRoutine={() => inspected && void toggleRoutine(inspected)}
+            onPauseAll={() => inspected && void pauseAutomaticTriggers(inspected)}
+            onEditSchedule={() => {
+              if (!inspected?.planSlug) return;
+              void setCalendarPlan(inspected.planSlug);
+              void setAdvTab('calendar');
+            }}
+            onExpand={() => inspected && void setWfId(inspected.id)}
+            onAsk={() => {
+              if (!inspected) return;
+              openComposer(`About the workflow "${inspected.label}": `);
+            }}
+          />
+        ) : null}
       </div>
     </section>
   );

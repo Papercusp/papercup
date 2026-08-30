@@ -466,6 +466,7 @@
   flex: 1;
   min-height: 0;
 }
+.pc-wf__body[data-population-empty='true'] { grid-template-columns: minmax(0, 1fr); }
 
 .pc-wf__panel {
   min-width: 0;
@@ -493,6 +494,12 @@
 .pc-wf__ledger { overflow-x: auto; }
 .pc-wf__table { min-width: 720px; }
 
+.pc-wf__ledger--empty {
+  min-height: 190px;
+  max-height: none;
+  overflow: hidden;
+}
+
 .pc-wf__more {
   margin: 0;
   padding: 9px 12px;
@@ -508,6 +515,100 @@
   font-size: 13px;
   text-align: center;
 }
+
+.pc-wf__empty-state {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 11px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 42px 24px;
+}
+
+.pc-wf__empty-state--inspector {
+  align-items: center;
+  flex: 1;
+  padding-inline: 18px;
+}
+
+.pc-wf__empty-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 62%);
+  border-radius: 9px;
+  color: var(--accent, #38bdf8);
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 91%);
+}
+
+.pc-wf__empty-state strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.pc-wf__empty-state p {
+  margin: 4px 0 0;
+  color: var(--fg-dim, #b9d4e8);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pc-wf__loading {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+}
+
+.pc-wf__loading--inspector { height: 100%; }
+
+.pc-wf__loading-copy strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.pc-wf__loading-copy span {
+  display: block;
+  margin-top: 3px;
+  color: var(--fg-dim, #b9d4e8);
+  font-size: 12px;
+}
+
+.pc-wf__loading-rows,
+.pc-wf__loading-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pc-wf__loading-row {
+  display: grid;
+  grid-template-columns: 8px minmax(110px, 1fr) minmax(70px, .42fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-muted, rgba(125, 211, 252, 0.08));
+}
+
+.pc-wf__skeleton {
+  display: block;
+  height: 9px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--fg-dim, #b9d4e8), transparent 84%);
+}
+
+.pc-wf__skeleton--dot { width: 7px; height: 7px; }
+.pc-wf__skeleton--name { width: min(100%, 210px); }
+.pc-wf__skeleton--meta { width: min(100%, 110px); justify-self: end; }
+.pc-wf__skeleton--heading { width: 62%; height: 14px; margin-top: 6px; }
+.pc-wf__skeleton--line { width: 88%; }
+.pc-wf__skeleton--block { width: 100%; height: 54px; border-radius: 8px; }
 
 /* ── ledger rows ─────────────────────────────────────────────────────────────────────── */
 
@@ -619,6 +720,7 @@
   display: flex;
   flex-direction: column;
 }
+.pc-wf__insp--empty { min-height: 220px; }
 
 .pc-wf__insp-sec {
   display: flex;
@@ -784,18 +886,34 @@
 
 /* ── narrow panes ────────────────────────────────────────────────────────────────────── */
 
-/* The tab shares the viewport with two independently resizable rails, so a viewport media
-   query cannot see when those rails leave this panel too narrow. Key the collapse to the
-   container as well. */
-/* Stacked panes each keep their own scroll box; without an explicit budget the stacked grid
-   rows collapse and the ledger renders at zero height. */
-@container (max-width: 1000px) {
+/* The shell's rails routinely leave this tab ~792px wide inside a 1600px viewport. At that
+   real working width, keep the selected inspector beside the ledger and let it carry the
+   row facts that do not fit. The viewport cannot observe this constraint; the container can. */
+@container (max-width: 1120px) {
+  .pc-wf__body { grid-template-columns: minmax(0, 1fr) minmax(280px, 320px); gap: 10px; }
+  .pc-wf__table--ledger { min-width: 0; table-layout: fixed; }
+  .pc-wf__table--ledger th:nth-child(2),
+  .pc-wf__table--ledger td:nth-child(2),
+  .pc-wf__table--ledger th:nth-child(3),
+  .pc-wf__table--ledger td:nth-child(3),
+  .pc-wf__table--ledger th:nth-child(5),
+  .pc-wf__table--ledger td:nth-child(5) { display: none; }
+  .pc-wf__table--ledger th:nth-child(4),
+  .pc-wf__table--ledger td:nth-child(4) { width: 72px; }
+  .pc-wf__table--ledger th:nth-child(6),
+  .pc-wf__table--ledger td:nth-child(6) { width: 78px; }
+  .pc-wf__cell-name { max-width: 100%; }
+}
+
+/* Only a genuinely narrow content pane stacks. Each stacked pane keeps its own definite
+   height budget; otherwise the ledger can resolve to zero height inside the grid row. */
+@container (max-width: 740px) {
   .pc-wf__body { grid-template-columns: minmax(0, 1fr); }
   .pc-wf__ledger { min-height: 320px; max-height: 60vh; }
   .pc-wf__insp { min-height: 260px; max-height: 520px; }
 }
 
-@media (max-width: 1000px) {
+@media (max-width: 760px) {
   .pc-wf__body { grid-template-columns: minmax(0, 1fr); }
   .pc-wf__ledger { min-height: 320px; max-height: 60vh; }
   .pc-wf__insp { min-height: 260px; max-height: 520px; }

@@ -19,6 +19,7 @@
  */
 
 import type { PlanInputSchemaInfo } from '@/app/admin/plans/plans-api';
+import { Workflow } from 'lucide-react';
 import type { AutomationItem, AutomationTrigger } from './workflows-model';
 import { relativeTime } from './workflows-model';
 import type { LedgerRow } from './workflows-ledger-model';
@@ -69,6 +70,10 @@ export interface WorkflowInspectorProps {
   binding: WorkflowBindingInput | null;
   /** False while the trigger snapshot is still loading — keeps "pending" out of "unwired". */
   bindingLoaded: boolean;
+  /** The frame's core inventory is still loading; absence must not read as no selection. */
+  loading: boolean;
+  /** Why a loaded frame has no row to inspect. */
+  emptyReason: 'filtered' | 'selection';
   busy: string | null;
   nowMs?: number;
   onRun: () => void;
@@ -88,6 +93,8 @@ export default function WorkflowInspector({
   runs,
   binding,
   bindingLoaded,
+  loading,
+  emptyReason,
   busy,
   nowMs,
   onRun,
@@ -99,10 +106,36 @@ export default function WorkflowInspector({
   onExpand,
   onAsk,
 }: WorkflowInspectorProps) {
-  if (!item || !row) {
+  if (loading) {
     return (
-      <aside className="pc-wf__panel pc-wf__insp" aria-label="Workflow inspector">
-        <p className="pc-wf__empty">Select a workflow to inspect it.</p>
+      <aside className="pc-wf__panel pc-wf__insp" aria-label="Workflow inspector" aria-busy="true">
+        <div className="pc-wf__loading pc-wf__loading--inspector" role="status" aria-label="Loading workflow details">
+          <div className="pc-wf__loading-copy">
+            <strong>Preparing the inspector</strong>
+            <span>Waiting for a workflow selection and its latest run details…</span>
+          </div>
+          <div className="pc-wf__loading-inspector" aria-hidden>
+            <i className="pc-wf__skeleton pc-wf__skeleton--heading" />
+            <i className="pc-wf__skeleton pc-wf__skeleton--line" />
+            <i className="pc-wf__skeleton pc-wf__skeleton--block" />
+            <i className="pc-wf__skeleton pc-wf__skeleton--block" />
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  if (!item || !row) {
+    const filtered = emptyReason === 'filtered';
+    return (
+      <aside className="pc-wf__panel pc-wf__insp pc-wf__insp--empty" aria-label="Workflow inspector">
+        <div className="pc-wf__empty-state pc-wf__empty-state--inspector" role="status">
+          <span className="pc-wf__empty-icon" aria-hidden><Workflow size={19} /></span>
+          <div>
+            <strong>{filtered ? 'No workflow in this view' : 'Choose a workflow'}</strong>
+            <p>{filtered ? 'Adjust the filters to bring a workflow back into view.' : 'Select a row to see triggers, topology, controls, and recent runs.'}</p>
+          </div>
+        </div>
       </aside>
     );
   }

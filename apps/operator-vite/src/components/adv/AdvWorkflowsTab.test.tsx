@@ -23,6 +23,8 @@ const H = vi.hoisted(() => ({
   manyPlans: false,
   /** A triggered plan whose run history has no rollup — the "No verified run cost" path. */
   noRollup: false,
+  /** Core inventory queries are unresolved — absence must render as loading, never zero. */
+  loadingData: false,
 }));
 
 /** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
@@ -80,6 +82,7 @@ vi.mock('@papercusp/sync', () => ({
     // without it the mock hands run history to a routine that has no plan, and the
     // inspector's "no verified run cost" path can never be exercised.
     if (enabled === false) return { data: [], loading: false, invalidate };
+    if (H.loadingData) return { data: [], loading: true, invalidate };
     if (H.emptyData) return { data: [], loading: false, invalidate };
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
@@ -168,6 +171,7 @@ beforeEach(() => {
   H.emptyData = false;
   H.manyPlans = false;
   H.noRollup = false;
+  H.loadingData = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
@@ -230,6 +234,17 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     // Filtering to Slack keeps the slack-triggered plan and drops the internal routine.
     expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
     expect(screen.queryByTestId('wf-row:routine:git-sync:papercusp')).toBeNull();
+  });
+
+  it('renders structured loading states without asserting a false zero population', async () => {
+    H.loadingData = true;
+    renderTab();
+
+    expect(await screen.findByText('Loading workflow inventory…')).toBeTruthy();
+    expect(screen.queryByText(/0 triggered/)).toBeNull();
+    expect(screen.getByRole('status', { name: 'Loading workflows' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Loading workflow details' })).toBeTruthy();
+    expect(screen.queryByText('Select a workflow to inspect it.')).toBeNull();
   });
 
   it('renders NOTHING for the needs-you strip when nothing needs the operator (D-018/D-004)', async () => {
@@ -295,6 +310,10 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     H.emptyData = true;
     renderTab();
     expect(await screen.findByText(/No workflows are installed yet/)).toBeTruthy();
+    expect(screen.getByText('Your workflow control center starts here')).toBeTruthy();
+    // With no population there is nothing for a persistent inspector to inspect; a second
+    // empty panel would repeat the state and consume half the working width.
+    expect(screen.queryByLabelText('Workflow inspector')).toBeNull();
   });
 
   it('renders the ledger truthfully: a spend classification, never invented dollars (D-005)', async () => {

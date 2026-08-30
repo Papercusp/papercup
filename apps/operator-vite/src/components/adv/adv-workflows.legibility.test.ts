@@ -53,7 +53,9 @@ describe('Workflows legibility contract', () => {
   it('keeps essential frame, row, control and inspector copy at 13px or larger', () => {
     const essentialSelectors = [
       '.pc-wf__summary',
+      '.pc-wf__lede',
       '.pc-wf__btn',
+      '.pc-wf__composer-title',
       '.pc-wf__composer-label',
       '.pc-wf__composer-input',
       '.pc-wf__needs-lead',
@@ -70,6 +72,8 @@ describe('Workflows legibility contract', () => {
       '.pc-wf__insp-desc',
       '.pc-wf__trig-label',
       '.pc-wf__fail-copy',
+      '.pc-wf__empty-state p',
+      '.pc-wf__loading-copy strong',
     ];
     for (const selector of essentialSelectors) expectFontFloor(selector, 13);
   });
@@ -78,6 +82,7 @@ describe('Workflows legibility contract', () => {
     const metadataSelectors = [
       '.pc-wf__source-name',
       '.pc-wf__source-count',
+      '.pc-wf__composer-copy',
       '.pc-wf__btn--sm',
       '.pc-wf__suggest',
       '.pc-wf__facet-n',
@@ -95,6 +100,7 @@ describe('Workflows legibility contract', () => {
       '.pc-wf__run-what',
       '.pc-wf__run-cost',
       '.pc-wf__more',
+      '.pc-wf__loading-copy span',
     ];
     for (const selector of metadataSelectors) expectFontFloor(selector, 12);
   });
@@ -121,9 +127,20 @@ describe('Workflows legibility contract', () => {
     expect(ledger, '.pc-wf__ledger must scroll horizontally').toMatch(/overflow-x:\s*auto/);
   });
 
+  it('keeps the inspector beside a compact ledger at normal shell width and stacks only when genuinely narrow', () => {
+    // The 1600px desktop shell leaves this container about 792px wide after its two rails.
+    // A 1000px collapse therefore removed the "persistent" inspector from the first frame.
+    expect(CSS).toContain('@container (max-width: 1120px)');
+    expect(CSS).toMatch(/@container \(max-width: 1120px\)[\s\S]*?\.pc-wf__table--ledger th:nth-child\(2\)/);
+    expect(CSS).toMatch(/@container \(max-width: 740px\)[\s\S]*?\.pc-wf__body\s*\{\s*grid-template-columns: minmax\(0, 1fr\)/);
+    expect(CSS).not.toContain('@container (max-width: 1000px)');
+  });
+
   it('uses the stronger dim foreground token for secondary production copy', () => {
     const contrastSelectors = [
       '.pc-wf__summary',
+      '.pc-wf__lede',
+      '.pc-wf__composer-copy',
       '.pc-wf__needs-msg',
       '.pc-wf__chain-text',
       '.pc-wf__num',
@@ -131,6 +148,8 @@ describe('Workflows legibility contract', () => {
       '.pc-wf__trig-detail',
       '.pc-wf__run-what',
       '.pc-wf__fail-copy',
+      '.pc-wf__empty-state p',
+      '.pc-wf__loading-copy span',
     ];
     for (const selector of contrastSelectors) {
       expect(rulesFor(selector).join('\n'), `${selector} must use the stronger secondary foreground`).toContain('var(--fg-dim');
