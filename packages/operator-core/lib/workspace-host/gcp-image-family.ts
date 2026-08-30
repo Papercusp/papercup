@@ -78,6 +78,41 @@ export interface GcpImageScanEvidence {
    */
   vulnerabilityByEcosystem?: Readonly<Record<string, number>>;
   vulnerabilityFixableByEcosystem?: Readonly<Record<string, number>>;
+  /**
+   * Severity x ecosystem, crossed — the field that says whether a red gate is reachable at all.
+   * The two marginals above cannot be combined after the fact, which is what left "how many of
+   * the DENIED findings are kernel" unanswerable until it existed (WI-1182614 / D-201).
+   */
+  vulnerabilityBySeverityAndEcosystem?: Readonly<Record<string, number>>;
+  /** Findings ranked by artifact, capped — carried WITH its denominator, never alone. */
+  vulnerabilityByArtifact?: Readonly<Record<string, number>>;
+  vulnerabilityDistinctArtifacts?: number;
+  /** The same ranking restricted to the DENIED band — what a remediation actually targets. */
+  vulnerabilityCriticalHighByArtifact?: Readonly<Record<string, number>>;
+  vulnerabilityCriticalHighDistinctArtifacts?: number;
+  /**
+   * SCOPE — papercusp-bundled versus inherited base image, the mechanism D-201 left open.
+   *
+   * The scan deliberately measures the WHOLE mounted image (that is what proves it mounted an
+   * OS and cataloged what the OS contains), but the release it reports on is only the content
+   * under the bundle path. D-201: linux-kernel alone carries 1054 findings at or above high, so
+   * a gate measuring the whole mount can never be greened by any change to the release; D-202:
+   * the npm findings under the bundle are ours and every one is fixable. Two populations with
+   * opposite remediations, indistinguishable in this document until these fields.
+   *
+   * EVIDENCE ONLY — no policy reads them yet, deliberately. D-202 section 4 sequences the npm
+   * remediation BEFORE the gate changes what it accepts, and D-196 set the precedent that the
+   * carry half is inert while the enforcement half is not.
+   */
+  vulnerabilityByScope?: Readonly<Record<string, number>>;
+  vulnerabilityCriticalHighByScope?: Readonly<Record<string, number>>;
+  /**
+   * How many SBOM packages attributed to the bundle path — the denominator that makes the split
+   * above falsifiable. Without it, "no findings are ours" (the goal state) and "the path matcher
+   * matched nothing" (an instrument fault) are the same reading. The guest already fails closed
+   * on the latter; this carries the number so a human can check it without a second scan.
+   */
+  bundleCatalogedArtifacts?: number;
   secretsByRule?: Readonly<Record<string, number>>;
   /**
    * Census of every secret finding by rule x top-level directory. Bounded by distinct
@@ -86,6 +121,13 @@ export interface GcpImageScanEvidence {
    * Location only, never a matched value.
    */
   secretsByArea?: Readonly<Record<string, number>>;
+  /**
+   * The secrets leg of the scope split. D-201 established both legs are ONE defect: the policy
+   * module already concedes in code that gitleaks reads the entire mounted userland, so its
+   * count says nothing about papercusp-authored content. This says which findings, if any, are.
+   * Location only, never a matched value — same rule as secretsByArea and secretSample.
+   */
+  secretsByScope?: Readonly<Record<string, number>>;
   /** rule/file/line only — the scanner never emits the matched value, and neither do we. */
   secretSample?: readonly unknown[];
   evidenceRef: string;
