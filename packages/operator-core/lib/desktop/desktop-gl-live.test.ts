@@ -37,7 +37,9 @@
 import { spawnSync } from 'node:child_process';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { afterEach, describe, expect, it } from 'vitest';
+import { capabilityBwrapWorks } from '../agent-tools/capability/exec-sandbox';
 import { captureCommand } from '../agent-tools/computer/desktop-driver';
+import { desktopAppSandboxEnabled } from '../agent-tools/computer/desktop-sandbox';
 import {
   provisionSandboxDesktop,
   type DesktopAppDiagnostic,
@@ -261,10 +263,30 @@ describe.skipIf(!liveEnabled)('P-002 — a GL app on a sandbox desktop paints re
     expect(['virtualgl', 'native', 'mesa-software', 'none']).toContain(desktop.gl.id);
     expect(desktop.gl.reason).toBeTruthy();
 
-    const redetected = detectGlStrategy(desktop.display);
+    // WI-1223202 — the provisioner now measures GL INSIDE the apps' sandbox. Record which
+    // instrument produced `desktop.gl`, because the tier alone cannot tell you whether it
+    // describes the apps' machine or the host's.
+    const sandboxOn = (await desktopAppSandboxEnabled()) && capabilityBwrapWorks();
     expect(
-      redetected.tier,
-      'the GL tier changed between two probes of the same live display — the measurement is not stable',
+      desktop.glProbeSandboxed,
+      'the apps are sandboxed but GL was measured on the host — WI-1223202: the recorded tier\n' +
+        '  then describes a different machine than the apps run on.',
+    ).toBe(sandboxOn);
+
+    // `detectGlStrategy` with no wrap is deliberately the HOST probe, so this is no longer a
+    // repeat measurement — it is a CROSS-CHECK of the two machines, and it is the cheapest
+    // detector of D-031 that exists. A host that reaches the GPU while the sandbox does not
+    // is exactly the state that let a `hardware` desktop render in llvmpipe; it shows up here
+    // as a tier disagreement rather than as blank pixels three suites away.
+    const hostTier = detectGlStrategy(desktop.display).tier;
+    expect(
+      hostTier,
+      sandboxOn
+        ? 'the host and the sandbox disagree about this display\'s GL tier — the sandbox is\n' +
+          '  dropping GPU access the host has (D-031: check the vendor device-node binds in\n' +
+          '  discoverGpuDeviceNodes / buildDesktopSandboxCommand), or the probe wrap regressed.'
+        : 'the GL tier changed between two probes of the same live display — the measurement\n' +
+          '  is not stable.',
     ).toBe(desktop.gl.tier);
 
     if (desktop.gl.tier !== 'none') {

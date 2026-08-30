@@ -29,6 +29,9 @@ function fakeLease(display: string, width = 1024, height = 768) {
     width,
     height,
     gl: NO_GL_STRATEGY,
+    // WI-1223202: nothing was probed at all here, so it was certainly not probed inside a
+    // sandbox. `false` is the honest value, not a placeholder.
+    glProbeSandboxed: false,
     xServer: 'xvfb' as const,
     // P-005: a fixture enrols nothing in the task ledger — the honest
     // "unenrolled" value, which the lifecycle governor reports as unfreezable.

@@ -62,6 +62,17 @@ export interface SandboxDesktop {
    */
   gl: GlStrategy;
   /**
+   * WI-1223202 — was `gl` measured INSIDE the sandbox the apps run in?
+   *
+   * The provenance of the measurement, carried beside the measurement, because the two
+   * answer different questions and a consumer of `gl.tier` cannot tell them apart. `false`
+   * is not a fault: it is the correct and honest state for a desktop whose apps are NOT
+   * sandboxed, where the host IS the app's machine. `false` on a SANDBOXED desktop would be
+   * the D-031 failure mode returning — a tier describing a different machine than the apps
+   * run on — which is why this is a field a test can assert rather than a comment.
+   */
+  glProbeSandboxed: boolean;
+  /**
    * P-005 — the task-ledger id of the Xvfb, when the ledger enrolled it.
    *
    * This is what makes the desktop governable ACROSS PROCESSES: the in-process
@@ -695,6 +706,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       width,
       height,
       gl,
+      glProbeSandboxed,
       taskId,
       xServer,
       ...(xCommand.endpoint ? { endpoint: xCommand.endpoint } : {}),

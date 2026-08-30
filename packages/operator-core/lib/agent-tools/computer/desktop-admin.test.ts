@@ -39,6 +39,9 @@ function fakeProvisioner() {
       height: opts?.height ?? 768,
       // No live X server here, so no GL was measured — the honest zero value.
       gl: NO_GL_STRATEGY,
+      // WI-1223202: nothing was probed at all here, so it was certainly not probed inside a
+      // sandbox. `false` is the honest value, not a placeholder.
+      glProbeSandboxed: false,
       // WI-1105361: this fake spawned no apps, so there is nothing to diagnose. Empty is
       // the honest answer; a fabricated "alive" row would assert a process that never was.
       appDiagnostics: () => [],
