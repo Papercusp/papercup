@@ -189,11 +189,12 @@ export default defineTool({
     // CLAIM — the acceptance gate demands the vetted, independently-graded rubric.
     // Positive-finding-only (infra faults pass), and it runs BEFORE deactivateLoop so
     // a refusal never strands an already-ended loop. killed/handoff never reach it.
-    if (activeGoal && args.disposition === 'achieved') {
+    if (activeGoal && workspaceId && args.disposition === 'achieved') {
       const acceptance = await evaluateGoalAcceptanceGate({
         goalId: activeGoal.goalId,
         goalTitle: activeGoal.title,
         goalOwner: ownerId,
+        workspaceId,
       });
       if (!acceptance.satisfied) {
         return {

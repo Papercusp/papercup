@@ -187,11 +187,12 @@ export default defineTool({
       // P-009 (consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2): 'achieved'
       // is a CLAIM — the acceptance gate demands the vetted, independently-graded
       // rubric. Positive-finding-only (infra faults pass); killed/handoff exempt.
-      if (activeGoal && args.disposition === 'achieved') {
+      if (activeGoal && workspaceId && args.disposition === 'achieved') {
         const acceptance = await evaluateGoalAcceptanceGate({
           goalId: activeGoal.goalId,
           goalTitle: activeGoal.title,
           goalOwner: identity.ownerId,
+          workspaceId,
         });
         if (!acceptance.satisfied) {
           return {

@@ -65,7 +65,7 @@ import { readCoverage } from '../testing/coverage';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
-import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
+import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 
 /**
  * A tests-backed scorecard is intentionally a long-running write: it shells one
@@ -356,6 +356,8 @@ export async function emitScorecard(
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
     /** Audited coord-identity continuity resolver. */
     sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
+    /** Spawn/rebind ancestry resolver for independent-grader enforcement. */
+    lineageRelated?: typeof areAcceptanceLineageRelated;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -394,10 +396,23 @@ export async function emitScorecard(
     }
     if (rubric.kind === 'acceptance') {
       const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
+      const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
       const identityWorkspace = rubric.workspaceId || input.workspaceId || activeWorkspaceId();
       const callerIsImplementer =
         implementer != null &&
         (await sameAcceptanceAuthor(implementer, input.createdBy, { workspaceId: identityWorkspace }));
+      const callerInImplementerLineage =
+        implementer != null &&
+        (await lineageRelated(implementer, input.createdBy, { workspaceId: identityWorkspace }));
+      if (!callerIsImplementer && callerInImplementerLineage) {
+        return {
+          ok: false as const,
+          code: 'grader_in_implementer_lineage' as const,
+          error:
+            `grader '${input.createdBy}' is in acceptance-rubric author '${implementer}'s spawn/rebind lineage — ` +
+            'a related session cannot supply the independent grading; launch or assign a lineage-independent grader',
+        };
+      }
       // EI-21461866696604065: an acceptance rubric's sole vetting critic cannot
       // also be its independent grader. That collapses the intended three-party
       // chain (author -> critic -> grader) into two parties and makes the result
@@ -424,7 +439,7 @@ export async function emitScorecard(
         const critics = currentVetting?.vetting?.critics ?? [];
         if (
           critics.length === 1 &&
-          (await sameAcceptanceAuthor(critics[0]!, input.createdBy, { workspaceId: identityWorkspace }))
+          (await lineageRelated(critics[0]!, input.createdBy, { workspaceId: identityWorkspace }))
         ) {
           return {
             ok: false as const,
@@ -464,7 +479,7 @@ export async function emitScorecard(
         for (const card of prior) {
           if (!card.rubricResolved || card.missingKeys.length !== 0 || card.synthesized || card.createdBy == null)
             continue;
-          if (!(await sameAcceptanceAuthor(implementer, card.createdBy, { workspaceId: identityWorkspace }))) {
+          if (!(await lineageRelated(implementer, card.createdBy, { workspaceId: identityWorkspace }))) {
             independent = card;
             break;
           }

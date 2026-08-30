@@ -23,7 +23,7 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { Rubric } from '../../rubrics';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
-import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
+import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -41,6 +41,7 @@ vi.mock('../../scorecards', async (importOriginal) => {
 });
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
 }));
 
 import { getRubric, getRubricPlanRevision } from '../../rubrics';
@@ -56,6 +57,7 @@ const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
 const sameAuthorM = vi.mocked(isAcceptanceAuthorIdentity);
+const lineageRelatedM = vi.mocked(areAcceptanceLineageRelated);
 
 const RUBRIC: Rubric = {
   rubricId: 'test-rubric',
@@ -122,6 +124,7 @@ const RERUN_RECIPE = {
 beforeEach(() => {
   vi.clearAllMocks();
   sameAuthorM.mockImplementation(async (author, candidate) => author === candidate);
+  lineageRelatedM.mockImplementation(async (author, candidate) => author === candidate);
   getRubricM.mockResolvedValue(RUBRIC);
   getRubricPlanRevisionM.mockResolvedValue(7);
   listM.mockResolvedValue([]);
@@ -496,6 +499,23 @@ describe('emitScorecard', () => {
     expect(captureM.mock.calls[0][0].payloadExtra?.observation).not.toHaveProperty('acceptance');
   });
 
+  it('refuses an acceptance grader descended from the implementer even when its owner id differs', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    lineageRelatedM.mockImplementation(
+      async (author, candidate) => author === candidate || (author === 'su-implementer' && candidate === 'su-child'),
+    );
+    const r = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-child' },
+    );
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'grader_in_implementer_lineage',
+      error: expect.stringContaining('spawn/rebind lineage'),
+    });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('refuses an independent grade from the acceptance rubric sole vetting critic', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
     listM.mockResolvedValue([
@@ -674,6 +694,10 @@ describe('emitScorecard', () => {
   it('lets an audited successor record the author verdict and never treats that successor as an independent grader', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
     sameAuthorM.mockImplementation(
+      async (author, candidate) =>
+        author === candidate || (author === 'su-implementer' && candidate === 'su-successor'),
+    );
+    lineageRelatedM.mockImplementation(
       async (author, candidate) =>
         author === candidate || (author === 'su-implementer' && candidate === 'su-successor'),
     );

@@ -20,7 +20,7 @@ import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
-import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
+import { areAcceptanceLineageRelated } from './acceptance-author-identity';
 import {
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageGateVerdict,
@@ -42,7 +42,9 @@ vi.mock('./scorecards', () => ({
   listScorecards: vi.fn(),
 }));
 vi.mock('./acceptance-author-identity', () => ({
-  isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  areAcceptanceLineageRelated: vi.fn(
+    async (author: string | null, candidate: string | null) => author === candidate,
+  ),
 }));
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(),
@@ -75,7 +77,7 @@ const mockRevisionRead = vi.mocked(readRubricPlanRevision);
 const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
-const mockAuthorIdentity = vi.mocked(isAcceptanceAuthorIdentity);
+const mockLineageRelated = vi.mocked(areAcceptanceLineageRelated);
 const mockSpecCoverage = vi.mocked(evaluatePlanSpecCoverageGate);
 
 const coverageVerdict = (over: Partial<PlanSpecCoverageGateVerdict> = {}): PlanSpecCoverageGateVerdict => ({
@@ -137,7 +139,7 @@ beforeEach(() => {
     const one = await mockRubric(planSlug);
     return one ? [one] : [];
   });
-  mockAuthorIdentity.mockImplementation(async (author, candidate) => author === candidate);
+  mockLineageRelated.mockImplementation(async (author, candidate) => author === candidate);
   // Delegate the ok/failed-aware read to the plain value mock every existing case
   // already drives, so those cases keep expressing "the revision is N" unchanged.
   mockRevisionRead.mockImplementation(async (rubricId: string) => ({
@@ -391,7 +393,7 @@ describe('evaluatePlanAcceptanceGate', () => {
 
   it('accepts an audited successor verdict but never counts that successor as the independent grader', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
-    mockAuthorIdentity.mockImplementation(
+    mockLineageRelated.mockImplementation(
       async (author, candidate) =>
         author === candidate || (author === 'su-implementer' && candidate === 'su-successor'),
     );

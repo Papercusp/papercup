@@ -33,7 +33,7 @@ import {
   readRubricPlanRevision,
 } from './rubrics';
 import { listScorecards } from './scorecards';
-import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
+import { areAcceptanceLineageRelated } from './acceptance-author-identity';
 import {
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageGateVerdict,
@@ -642,7 +642,7 @@ export async function evaluatePlanAcceptanceGate(
     const candidateIds = [...new Set(allComplete.map((s) => s.createdBy).filter((id): id is string => id != null))];
     await Promise.all(
       candidateIds.map(async (candidateId) => {
-        if (await isAcceptanceAuthorIdentity(implementer, candidateId, { workspaceId: rubric.workspaceId })) {
+        if (await areAcceptanceLineageRelated(implementer, candidateId, { workspaceId: rubric.workspaceId })) {
           implementerIdentities.add(candidateId);
         }
       }),

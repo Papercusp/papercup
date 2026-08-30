@@ -27,6 +27,7 @@ import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { getModeSubject } from '../modes/store';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { areAcceptanceLineageRelated } from '../acceptance-author-identity';
 
 export const GOAL_DISPOSITIONS = ['achieved', 'killed', 'handoff'] as const;
 export type GoalDisposition = (typeof GOAL_DISPOSITIONS)[number];
@@ -310,6 +311,8 @@ export interface GoalAcceptanceGateDeps {
   getRubricRevision: (rubricId: string) => Promise<number | null>;
   listCards: (filter: { rubricRef: string; subjectRef?: string }) => Promise<GoalAcceptanceCard[]>;
   metaRubricId: string;
+  /** Identity relation used to exclude the goal/rubric author's spawn lineage. */
+  areLineageRelated?: typeof areAcceptanceLineageRelated;
 }
 
 /** FLAGS.GOAL_ACHIEVED_ACCEPTANCE_GATE, default ON. Fail-CLOSED on flag-infra errors —
@@ -347,7 +350,7 @@ async function defaultGoalAcceptanceGateDeps(): Promise<GoalAcceptanceGateDeps> 
  * this ONLY for disposition:'achieved'; killed/handoff never reach it.
  */
 export async function evaluateGoalAcceptanceGate(
-  opts: { goalId: string; goalTitle: string; goalOwner: string },
+  opts: { goalId: string; goalTitle: string; goalOwner: string; workspaceId: string },
   depsOverride?: GoalAcceptanceGateDeps,
 ): Promise<GoalAcceptanceVerdict> {
   try {
@@ -428,7 +431,19 @@ export async function evaluateGoalAcceptanceGate(
     }
     const author = rubric.proposedBy ?? rubric.createdBy ?? null;
     const disqualified = new Set([opts.goalOwner, ...(author ? [author] : [])]);
-    const independent = cards.find((s) => s.createdBy != null && !disqualified.has(s.createdBy));
+    const related = deps.areLineageRelated ?? areAcceptanceLineageRelated;
+    let independent: GoalAcceptanceCard | undefined;
+    for (const card of cards) {
+      if (card.createdBy == null || disqualified.has(card.createdBy)) continue;
+      const relatedToOwner = await related(opts.goalOwner, card.createdBy, { workspaceId: opts.workspaceId });
+      const relatedToAuthor = author
+        ? await related(author, card.createdBy, { workspaceId: opts.workspaceId })
+        : false;
+      if (!relatedToOwner && !relatedToAuthor) {
+        independent = card;
+        break;
+      }
+    }
     if (!independent) {
       return {
         satisfied: false,
@@ -436,9 +451,9 @@ export async function evaluateGoalAcceptanceGate(
         rubricId: rubric.rubricId,
         message:
           `REFUSED — goal ${opts.goalId}'s acceptance rubric '${rubric.rubricId}' is graded only by the goal's ` +
-          `own owner${author && author !== opts.goalOwner ? ` or the rubric's author` : ''} — grader must be a ` +
-          `NON-owner of the goal (the self-graded-homework guard). Ask a peer or the owner to file the grading ` +
-          `scorecard, then retry disposition:'achieved'.`,
+          `own owner${author && author !== opts.goalOwner ? ` or the rubric's author` : ''}, including their ` +
+          `spawn/rebind lineage — grader must be lineage-independent (the self-graded-homework guard). Launch or ` +
+          `assign an unrelated grader to file the scorecard, then retry disposition:'achieved'.`,
       };
     }
     return { satisfied: true, rubricId: rubric.rubricId, gradedBy: independent.createdBy ?? null };
