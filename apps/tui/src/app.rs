@@ -192,6 +192,7 @@ pub enum Action {
         role: String,
         backend: crate::su_session::SuSessionBackend,
         carry: String,
+        launch: crate::su_session::SuSessionLaunchOptions,
         initial_turn: Option<String>,
     },
     /// Deliver one owner turn through the already-bound SU-session host.
@@ -1689,8 +1690,13 @@ pub struct App {
     /// Explicit reasoning effort for the next turn. None keeps the model tier's
     /// own suffix/provider default.
     pub chat_effort: Option<String>,
-    /// Explicit per-request inference-gateway account. None = auto-routing.
+    /// Explicit account route selected for the next turn or fresh SU launch.
+    /// None keeps the surface default; a fresh SU launch resolves it to the
+    /// noninteractive `default` system route.
     pub chat_account: Option<String>,
+    /// Optional launch-time posture for the next fresh SU session. The menu is
+    /// projected from the server's canonical mode registry.
+    pub chat_mode: Option<String>,
     pub account_rows: Vec<crate::session_config::AccountRow>,
     /// What the last picker action actually did — the SETTER's own report, never
     /// an echo of what was picked.
@@ -2225,6 +2231,7 @@ impl App {
             chat_model: None,
             chat_effort: None,
             chat_account: None,
+            chat_mode: None,
             account_rows: Vec::new(),
             session_note: None,
             active_harness: Arc::new(Mutex::new("papercup".to_string())),
@@ -3886,9 +3893,15 @@ impl App {
     }
 
     pub fn open_effort_picker(&mut self) {
+        let levels = self
+            .operator_config
+            .agent
+            .as_ref()
+            .map(|agent| agent.effort_levels.as_slice())
+            .unwrap_or(&[]);
         self.session_picker = Some(crate::session_config::SessionPicker::new(
             crate::session_config::PickerAxis::Effort,
-            crate::session_config::effort_options(),
+            crate::session_config::effort_options(levels),
         ));
     }
 
@@ -3897,6 +3910,44 @@ impl App {
             crate::session_config::PickerAxis::Account,
             crate::session_config::chat_account_options(&self.account_rows),
         ));
+    }
+
+    pub fn open_mode_picker(&mut self) {
+        let modes = self
+            .operator_config
+            .agent
+            .as_ref()
+            .map(|agent| agent.launchable_modes.as_slice())
+            .unwrap_or(&[]);
+        self.session_picker = Some(crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Mode,
+            crate::session_config::mode_options(modes),
+        ));
+    }
+
+    fn su_session_launch_options(&self) -> crate::su_session::SuSessionLaunchOptions {
+        // A singleton plan filter is an explicit context choice. A mere list
+        // cursor is not: stale UI selection must not become launch authority.
+        let plan_slug = (self.plan_filter.len() == 1)
+            .then(|| self.plan_filter.iter().next().cloned())
+            .flatten();
+        crate::su_session::SuSessionLaunchOptions {
+            plan_slug,
+            feature_id: None,
+            model: self.chat_model.clone(),
+            effort: self.chat_effort.clone(),
+            // launch-su must always receive an account value: psu without
+            // --account opens an interactive picker, which a PUI-spawned host
+            // cannot answer. The platform launch default is the system account.
+            account: Some(
+                self.chat_account
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            ),
+            mode: self.chat_mode.clone(),
+            kickoff: None,
+            kickoff_prompt: None,
+        }
     }
 
     /// Apply the highlighted row. A DISABLED row NEVER applies and the overlay
@@ -4052,8 +4103,24 @@ impl App {
                     crate::session_config::PickerAxis::Account => {
                         self.chat_account = crate::session_config::chat_account_pick(&id);
                         self.session_note = Some(match &self.chat_account {
+                            Some(account) if account == "auto" => {
+                                "next turn uses gateway auto-routing".to_string()
+                            }
+                            Some(account) if account == "default" => {
+                                "next fresh SU session uses the default system account".to_string()
+                            }
                             Some(account) => format!("next turn routes through account {account}"),
-                            None => "next turn uses gateway auto-routing".to_string(),
+                            None => "next turn keeps the surface account default".to_string(),
+                        });
+                    }
+                    crate::session_config::PickerAxis::Mode => {
+                        self.chat_mode = crate::session_config::mode_pick(&id);
+                        self.session_note = Some(match &self.chat_mode {
+                            Some(mode) => {
+                                format!("next fresh SU session launches in {mode} mode")
+                            }
+                            None => "next fresh SU session launches without an autonomy mode"
+                                .to_string(),
                         });
                     }
                 }
@@ -4085,13 +4152,14 @@ impl App {
             .unwrap_or_else(|| "new".to_string());
         let model = self.chat_model.as_deref().unwrap_or("server default");
         let effort = self.chat_effort.as_deref().unwrap_or("model/default");
-        let account = self.chat_account.as_deref().unwrap_or("auto");
+        let account = self.chat_account.as_deref().unwrap_or("default");
+        let mode = self.chat_mode.as_deref().unwrap_or("manual");
         let backend = self
             .backend_identity_status()
             .unwrap_or_else(|| "backend loading".to_string());
         format!(
-            "pot {} · role {} · session {} · model {} · effort {} · account {} · {}",
-            self.harness, self.agent_chat_role, session, model, effort, account, backend
+            "pot {} · role {} · session {} · model {} · effort {} · account {} · mode {} · {}",
+            self.harness, self.agent_chat_role, session, model, effort, account, mode, backend
         )
     }
 
@@ -8668,6 +8736,7 @@ impl App {
                                 role: self.agent_chat_role.clone(),
                                 backend,
                                 carry: "warm".into(),
+                                launch: self.su_session_launch_options(),
                                 initial_turn: Some(text),
                             }
                         }
@@ -8881,6 +8950,10 @@ impl App {
             }
             KeyCode::Char('a') if self.tab == Tab::Operator => {
                 self.open_account_picker();
+                Action::Render
+            }
+            KeyCode::Char('u') if self.tab == Tab::Operator => {
+                self.open_mode_picker();
                 Action::Render
             }
             // P-009 controls use uppercase keys so they remain discoverable
@@ -11108,6 +11181,16 @@ mod tests {
     #[test]
     fn effort_and_account_pickers_drive_the_visible_next_turn_selection() {
         let mut a = App::new();
+        a.set_operator_config(crate::models::OperatorConfig {
+            agent: Some(crate::models::AgentConfigResponse {
+                effort_levels: ["low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
         a.open_effort_picker();
         a.session_picker.as_mut().unwrap().sel = 4; // xhigh
         assert_eq!(a.commit_session_picker(), Action::Render);
@@ -15014,14 +15097,87 @@ mod tests {
         let mut a = composing("hello");
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         match action {
-            Action::OpenSuSession { backend, .. } => {
+            Action::OpenSuSession {
+                backend, launch, ..
+            } => {
                 assert_eq!(backend, crate::su_session::PUI_DEFAULT_SU_BACKEND);
+                assert_eq!(
+                    launch.account.as_deref(),
+                    Some("default"),
+                    "fresh launches must never leave psu waiting on its account picker"
+                );
             }
             other => panic!("a new conversation must default to the SU host, got {other:?}"),
         }
         assert_eq!(
             a.su_last_dispatch.map(|d| d.reason),
             Some(crate::su_session::SuDispatchReason::CutoverDefault)
+        );
+    }
+
+    #[test]
+    fn fresh_su_session_carries_projected_mode_and_explicit_launch_context() {
+        let mut a = composing("start the selected plan");
+        a.set_operator_config(crate::models::OperatorConfig {
+            agent: Some(crate::models::AgentConfigResponse {
+                launchable_modes: vec![crate::session_config::LaunchableMode {
+                    id: "auto".into(),
+                    title: "AUTO".into(),
+                    one_liner: "Act without confirmation stops.".into(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        a.open_mode_picker();
+        assert_eq!(
+            a.session_picker.as_ref().unwrap().options[1].id,
+            "auto",
+            "the picker must use the server-projected registry row"
+        );
+        a.session_picker.as_mut().unwrap().sel = 1;
+        assert_eq!(a.commit_session_picker(), Action::Render);
+
+        a.chat_model = Some("gpt-5.6-sol".into());
+        a.chat_effort = Some("high".into());
+        a.open_account_picker();
+        assert_eq!(
+            a.session_picker.as_ref().unwrap().options[1].id,
+            crate::session_config::ACCOUNT_DEFAULT
+        );
+        assert!(
+            !a.session_picker.as_ref().unwrap().options[1].disabled,
+            "fresh launch must make the default system account selectable"
+        );
+        a.session_picker.as_mut().unwrap().sel = 1;
+        assert_eq!(a.commit_session_picker(), Action::Render);
+        a.plan_filter.insert("plan-a".into());
+
+        match a.on_key(KeyCode::Enter, KeyModifiers::NONE) {
+            Action::OpenSuSession {
+                harness,
+                launch,
+                initial_turn,
+                ..
+            } => {
+                assert_eq!(harness, "papercup");
+                assert_eq!(launch.plan_slug.as_deref(), Some("plan-a"));
+                assert_eq!(launch.model.as_deref(), Some("gpt-5.6-sol"));
+                assert_eq!(launch.effort.as_deref(), Some("high"));
+                assert_eq!(launch.account.as_deref(), Some("default"));
+                assert_eq!(launch.mode.as_deref(), Some("auto"));
+                assert_eq!(initial_turn.as_deref(), Some("start the selected plan"));
+            }
+            other => panic!("expected typed SU-session launch options, got {other:?}"),
+        }
+
+        let mut ambiguous = composing("do not guess a plan");
+        ambiguous.plan_filter.insert("plan-a".into());
+        ambiguous.plan_filter.insert("plan-b".into());
+        assert_eq!(
+            ambiguous.su_session_launch_options().plan_slug,
+            None,
+            "a multi-plan list filter is not launch authority"
         );
     }
 

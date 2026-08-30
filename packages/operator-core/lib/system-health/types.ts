@@ -630,8 +630,42 @@ export interface McpProxyHealth {
   newestAt: number | null;
 }
 
-/** Infra — PG + gateway reachability + the per-thread perf verdict (F1/P-030) + the
- *  MCP tool-call transport SLO (W8/P-008). */
+/**
+ * Fresh host-pressure evidence folded from the resource-governor live-health
+ * snapshot. The sample is deliberately separate from the verdict: a missing,
+ * stale, or malformed reading is unknown, never a healthy zero.
+ */
+export interface HostPressureSample {
+  sampledAtMs: number | null;
+  effectiveCores: number | null;
+  cpuPsiSomePct: number | null;
+  memoryPsiSomePct: number | null;
+  memoryPsiFullPct: number | null;
+  runnableCount: number | null;
+  blockedCount: number | null;
+}
+
+export interface HostPressureHealth {
+  status: PanelStatus;
+  summary: string;
+  sampledAtMs: number | null;
+  ageMs: number | null;
+  effectiveCores: number | null;
+  cpuPsiSomePct: number | null;
+  memoryPsiSomePct: number | null;
+  memoryPsiFullPct: number | null;
+  runnableCount: number | null;
+  blockedCount: number | null;
+  runnablePerCore: number | null;
+  blockedPerCore: number | null;
+  /** Threshold reasons only; these describe pressure, not causality. */
+  reasons: string[];
+  /** Missing/stale/invalid inputs that prevented a healthy verdict. */
+  unknown: string[];
+}
+
+/** Infra — PG + gateway reachability + fresh host pressure + the per-thread perf
+ *  verdict (F1/P-030) + the MCP tool-call transport SLO (W8/P-008). */
 export interface InfraHealth {
   pg: {
     version: string;
@@ -643,6 +677,10 @@ export interface InfraHealth {
     postmasterStartMs: number | null;
   } | null;
   gatewayReachable: boolean | null;
+  /** Fresh host-pressure observation from resource-governor live-health.
+   *  `unknown` is an honest lack of current evidence, never a healthy zero.
+   *  Optional for deploy-skew compatibility with older shared snapshots. */
+  hostPressure?: HostPressureHealth | null;
   /** Per-thread perf-SLO verdict from Lane E's latest perf-signals-v1 capture
    *  (F1/P-030). null = no capture / E1 not running on this box; status 'unknown' =
    *  stale. Budgets are per-thread (worker CPU%, event-loop lag, CLOSE_WAIT,

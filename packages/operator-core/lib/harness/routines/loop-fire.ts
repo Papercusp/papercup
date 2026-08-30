@@ -723,6 +723,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       ? async (ref: Parameters<typeof defaultGetLoopCarryNoteWithMeta>[0]) => ({
           note: await deps.getLoopCarryNote!(ref),
           updatedAtMs: null,
+          readFailed: false,
         })
       : defaultGetLoopCarryNoteWithMeta);
   const recordWithheld = deps.recordWithheld ?? defaultRecordWithheld;
@@ -868,7 +869,9 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     ownerId: input.targetOwnerId,
     workspaceId: input.workspaceId,
   }).then(
-    (m) => ({ ...m, readFailed: false }),
+    // Preserve the canonical reader's explicit failure sentinel. Older injected
+    // readers omit it, which remains the successful/confirmed-empty default.
+    (m) => ({ ...m, readFailed: m.readFailed === true }),
     () => ({ note: null, updatedAtMs: null, readFailed: true }),
   );
   // P-006: walls render OUTSIDE the truncatable checkpoint body (a commitment

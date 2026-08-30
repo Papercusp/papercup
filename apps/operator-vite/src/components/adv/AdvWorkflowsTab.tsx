@@ -785,7 +785,7 @@ export default function AdvWorkflowsTab() {
           <div className="pc-wf__control-row pc-wf__control-row--secondary">
             <div className="pc-wf__control-cluster">
               <span className="pc-wf__control-label">Kind</span>
-              <div className="pc-wf__facet-group" role="group" aria-label="Filter by kind">
+              <div className="pc-wf__facet-group pc-wf__kind-facets" role="group" aria-label="Filter by kind">
                 {KIND_FACETS.map((facet) => (
                   <button
                     key={facet.id}
@@ -802,6 +802,15 @@ export default function AdvWorkflowsTab() {
                     </span>
                   </button>
                 ))}
+              </div>
+              <div className="pc-wf__kind-select">
+                <Select
+                  value={kindFacet}
+                  onChange={(value) => void setKindFacet(value as KindFacet)}
+                  ariaLabel="Filter workflows by kind"
+                  triggerClassName="pc-wf__sort pc-wf__kind-select-trigger"
+                  options={KIND_FACETS.map((entry) => ({ value: entry.id, label: entry.label }))}
+                />
               </div>
             </div>
             <div className="pc-wf__control-cluster pc-wf__control-cluster--search">

@@ -113,6 +113,35 @@ describe('sendMessage / readInbox', () => {
     expect((await readInbox('B'))[0]?.msg_id).toBe(msgId);
   });
 
+  it('replays the durable winner for a deterministic msg_id without persisting a duplicate', async () => {
+    const A = fakeIdentity('A');
+    const msgId = 'coord-send-stable-0123456789abcdef0123456789abcdef';
+    const first = await sendMessage(A, {
+      to: ['B'],
+      msgId,
+      summary: 'first attempt',
+      body: 'the durable content',
+    });
+    const replay = await sendMessage(A, {
+      to: ['B'],
+      msgId,
+      summary: 'retry after outcome-unknown transport failure',
+      body: 'a freshly-built retry must not win',
+    });
+
+    // appendLineIfAbsent returns the stored envelope on a replay, rather than
+    // the newly-built candidate. That is the caller-visible idempotency
+    // contract needed after a post-connect transport failure.
+    expect(replay).toEqual(first);
+    expect(replay.summary).toBe('first attempt');
+    expect(replay.body).toBe('the durable content');
+
+    // The message surface and both derived views still contain one record.
+    expect(await coordLog.readLines('messages')).toEqual([first]);
+    expect(await readInbox('B')).toEqual([first]);
+    expect(await readOutbox('A')).toEqual([first]);
+  });
+
   it('persists the sender-declared expectsReply envelope field', async () => {
     const A = fakeIdentity('A');
     const sent = await sendMessage(A, { to: ['B'], summary: 'question', expectsReply: true });

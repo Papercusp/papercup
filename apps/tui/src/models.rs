@@ -2164,6 +2164,13 @@ pub struct AgentConfigResponse {
     pub config: AgentConfigInner,
     #[serde(default)]
     pub effective_backend: String,
+    /// The exact effort vocabulary the PSU launcher validates, projected by
+    /// the operator from `MODEL_EFFORT_LEVELS`.
+    #[serde(default)]
+    pub effort_levels: Vec<String>,
+    /// The exact launch-time modes from the shared mode registry.
+    #[serde(default)]
+    pub launchable_modes: Vec<crate::session_config::LaunchableMode>,
 }
 
 /// One provider's credential status from `operator:credentials_status` — whether a
@@ -4026,7 +4033,9 @@ mod tests {
         let j = r#"{"config":{"backend":"claude-code","cmd":"claude -p --model haiku",
             "models":{"worker":"opus","merge-resolver":"opus:xhigh"},"backends":{},
             "surfaceModels":{"operator":"sonnet"}},"binaries":{"claude":"/x/claude"},
-            "effectiveBackend":"claude-code","envOverrides":{"AGENT_BACKEND":"claude-code"}}"#;
+            "effectiveBackend":"claude-code","effortLevels":["low","high"],
+            "launchableModes":[{"id":"auto","title":"AUTO","oneLiner":"Act without asks."}],
+            "envOverrides":{"AGENT_BACKEND":"claude-code"}}"#;
         let r: AgentConfigResponse = serde_json::from_str(j).unwrap();
         assert_eq!(r.config.backend, "claude-code");
         assert_eq!(r.effective_backend, "claude-code");
@@ -4043,6 +4052,10 @@ mod tests {
             r.config.surface_models.get("operator").map(String::as_str),
             Some("sonnet")
         );
+        assert_eq!(r.effort_levels, ["low", "high"]);
+        assert_eq!(r.launchable_modes.len(), 1);
+        assert_eq!(r.launchable_modes[0].id, "auto");
+        assert_eq!(r.launchable_modes[0].one_liner, "Act without asks.");
         // Empty shape defaults cleanly.
         assert!(serde_json::from_str::<AgentConfigResponse>("{}")
             .unwrap()

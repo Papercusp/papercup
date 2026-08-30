@@ -132,6 +132,8 @@ describe('Workflows legibility contract', () => {
     // A 1000px collapse therefore removed the "persistent" inspector from the first frame.
     expect(CSS).toContain('@container (max-width: 1120px)');
     expect(CSS).toMatch(/@container \(max-width: 1120px\)[\s\S]*?\.pc-wf__table--ledger th:nth-child\(2\)/);
+    expect(CSS).toMatch(/@container \(max-width: 1120px\)[\s\S]*?\.pc-wf__kind-facets\s*\{\s*display: none/);
+    expect(CSS).toMatch(/@container \(max-width: 1120px\)[\s\S]*?\.pc-wf__kind-select\s*\{\s*display: block/);
     expect(CSS).toMatch(/@container \(max-width: 740px\)[\s\S]*?\.pc-wf__body\s*\{\s*grid-template-columns: minmax\(0, 1fr\)/);
     expect(CSS).not.toContain('@container (max-width: 1000px)');
   });

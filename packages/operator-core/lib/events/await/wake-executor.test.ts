@@ -1042,6 +1042,21 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     expect(out).toMatch(/LOOP CHECKPOINT RE-CHECK FAILED/);
   });
 
+  it('surfaces a resolved read-failure sentinel instead of claiming no checkpoint exists', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: null,
+      updatedAtMs: null,
+      readFailed: true,
+    }));
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 1 }, subscriberId: 'su-loop-read-failed' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
+
+    expect(out).toContain('LOOP CHECKPOINT RE-CHECK FAILED');
+    expect(out).toContain('carry-note store read failed');
+    expect(out).not.toContain('NO delivery-time loop:checkpoint was found');
+    expect(out).toContain(STALE_TEXT);
+  });
+
   it('keeps the delivery-time narrative checkpoint ahead of the injection-door spill (EI-20230529647745311)', async () => {
     const d = work({
       id: 990_002,

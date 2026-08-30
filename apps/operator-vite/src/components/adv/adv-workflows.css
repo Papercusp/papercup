@@ -405,6 +405,8 @@
 }
 
 .pc-wf__facet-group { display: flex; gap: 3px; flex-wrap: wrap; }
+.pc-wf__kind-select { display: none; }
+.pc-wf__kind-select-trigger { min-width: 120px; }
 
 .pc-wf__facet {
   min-height: 28px;
@@ -891,6 +893,8 @@
    row facts that do not fit. The viewport cannot observe this constraint; the container can. */
 @container (max-width: 1120px) {
   .pc-wf__body { grid-template-columns: minmax(0, 1fr) minmax(280px, 320px); gap: 10px; }
+  .pc-wf__kind-facets { display: none; }
+  .pc-wf__kind-select { display: block; }
   .pc-wf__table--ledger { min-width: 0; table-layout: fixed; }
   .pc-wf__table--ledger th:nth-child(2),
   .pc-wf__table--ledger td:nth-child(2),

@@ -255,6 +255,19 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan Y' } }, depsReadFail);
     expect((depsReadFail.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe('work plan Y');
+
+    // The production reader fails soft and resolves with a sentinel instead of
+    // rejecting. loop-fire must preserve that sentinel or it will reintroduce
+    // the false "no checkpoint" assertion.
+    const depsSwallowedReadFail = mkDeps({
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({
+        note: null,
+        updatedAtMs: null,
+        readFailed: true,
+      })) as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan Z' } }, depsSwallowedReadFail);
+    expect((depsSwallowedReadFail.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary).toBe('work plan Z');
   });
 
   it('caps an oversized checkpoint before putting it in the wake prompt', () => {

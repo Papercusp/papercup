@@ -3828,7 +3828,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             // optional dock cannot render: one key always lands in the composer.
             "o:Agent Chat · ?:help".to_string()
         } else {
-            "s/m/e/a:select · i:compose · ?:help".to_string()
+            "s/m/e/a/u:select · i:compose · ?:help".to_string()
         }
     });
     let w = (right.chars().count() as u16 + 1).min(area.width);
@@ -3846,7 +3846,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c a n  switch the 14 destinations (Agent Chat · Inbox · Plans · Fleet · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  s / m / e / a  choose role/session · model · effort · account route\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c a n  switch the 14 destinations (Agent Chat · Inbox · Plans · Fleet · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  s/m/e/a/u   choose role/session · model · effort · account route · launch mode\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -5903,6 +5903,8 @@ mod tests {
                     surface_models: surf,
                 },
                 effective_backend: "claude-code".into(),
+                effort_levels: Vec::new(),
+                launchable_modes: Vec::new(),
             }),
             providers: vec![("openai".into(), true), ("elevenlabs".into(), false)],
             ..Default::default()
@@ -7556,7 +7558,7 @@ mod tests {
         app.tab = Tab::Operator;
         let text = render(&app, 100, 12);
         assert!(text.contains("?:help"), "help hint missing from status bar");
-        assert!(text.contains("s/m/e/a:select"));
+        assert!(text.contains("s/m/e/a/u:select"));
     }
 
     #[test]

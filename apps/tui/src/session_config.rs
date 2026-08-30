@@ -87,6 +87,17 @@ pub struct ModelTier {
     pub loop_capability: Option<LoopModelCapability>,
 }
 
+/// One launch-time mode projected from operator-core's canonical mode registry.
+/// PUI deliberately stores only renderable fields; validation remains owned by
+/// the launch-su route and the same registry.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchableMode {
+    pub id: String,
+    pub title: String,
+    pub one_liner: String,
+}
+
 /// The owned Agent Chat loop's executable boundary for one model tier. The
 /// generic tier menu may contain selectors understood only by an OMP
 /// subprocess; those rows remain visible but cannot be selected for Agent Chat.
@@ -168,9 +179,8 @@ pub fn model_pick(id: &str) -> Option<String> {
 // ───────────────────────── effort ─────────────────────────
 
 pub const EFFORT_INHERIT: &str = "__inherit_effort";
-pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-pub fn effort_options() -> Vec<PickerOption> {
+pub fn effort_options(levels: &[String]) -> Vec<PickerOption> {
     std::iter::once(PickerOption {
         id: EFFORT_INHERIT.to_string(),
         label: "Model/default effort".to_string(),
@@ -179,15 +189,46 @@ pub fn effort_options() -> Vec<PickerOption> {
         ),
         disabled: false,
     })
-    .chain(EFFORT_LEVELS.into_iter().map(|effort| PickerOption {
-        id: effort.to_string(),
-        label: effort.to_string(),
+    .chain(levels.iter().map(|effort| PickerOption {
+        id: effort.clone(),
+        label: effort.clone(),
         hint: Some(
             "The provider validates whether this model supports the requested effort.".to_string(),
         ),
         disabled: false,
     }))
     .collect()
+}
+
+// ───────────────────────── launch mode ─────────────────────────
+
+pub const MODE_INHERIT: &str = "__inherit_mode";
+
+pub fn mode_options(modes: &[LaunchableMode]) -> Vec<PickerOption> {
+    std::iter::once(PickerOption {
+        id: MODE_INHERIT.to_string(),
+        label: "Manual (no launch mode)".to_string(),
+        hint: Some(
+            "Launch without an autonomy mode; it can still be entered later via mode:set."
+                .to_string(),
+        ),
+        disabled: false,
+    })
+    .chain(modes.iter().map(|mode| PickerOption {
+        id: mode.id.clone(),
+        label: mode.title.clone(),
+        hint: Some(mode.one_liner.clone()),
+        disabled: false,
+    }))
+    .collect()
+}
+
+pub fn mode_pick(id: &str) -> Option<String> {
+    if id == MODE_INHERIT || id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 pub fn effort_pick(id: &str) -> Option<String> {
@@ -348,8 +389,9 @@ pub fn account_options(pool: &[AccountRow], launch_account: Option<&str>) -> Vec
     out
 }
 
-/// Account rows for a native chat turn. The selected pool id rides directly on
-/// the next owned-loop request; it is not an external agent-session pin.
+/// Account rows for a native chat turn or a fresh SU-session launch. Unlike a
+/// live external-session re-pin, a fresh launch can explicitly choose the
+/// gateway-free `default` system credential.
 pub fn chat_account_options(pool: &[AccountRow]) -> Vec<PickerOption> {
     let mut out = account_options(pool, None);
     if let Some(auto) = out.first_mut() {
@@ -357,14 +399,21 @@ pub fn chat_account_options(pool: &[AccountRow]) -> Vec<PickerOption> {
             "No request pin; the inference gateway auto-routes and can fail over.".to_string(),
         );
     }
+    if let Some(default) = out.get_mut(1) {
+        default.disabled = false;
+        default.hint = Some(
+            "Use the system credential directly; the inference gateway is skipped.".to_string(),
+        );
+    }
     out
 }
 
 pub fn chat_account_pick(id: &str) -> Option<String> {
-    if id == ACCOUNT_AUTO || id.is_empty() {
-        None
-    } else {
-        Some(id.to_string())
+    match id {
+        "" => None,
+        ACCOUNT_AUTO => Some("auto".to_string()),
+        ACCOUNT_DEFAULT => Some("default".to_string()),
+        account => Some(account.to_string()),
     }
 }
 
@@ -491,6 +540,7 @@ pub enum PickerAxis {
     Model,
     Effort,
     Account,
+    Mode,
 }
 
 /// The open picker overlay. Pure state — navigation and the disabled-row rule
@@ -517,6 +567,7 @@ impl SessionPicker {
             PickerAxis::Model => " Model — Enter select · Esc close ",
             PickerAxis::Effort => " Effort — Enter select · Esc close ",
             PickerAxis::Account => " Account route — Enter select · Esc close ",
+            PickerAxis::Mode => " Launch mode — Enter select · Esc close ",
         }
     }
 
@@ -681,6 +732,40 @@ mod tests {
         assert_eq!(model_pick("opus:high"), Some("opus:high".to_string()));
     }
 
+    #[test]
+    fn effort_and_mode_menus_only_project_server_vocabularies() {
+        assert_eq!(
+            effort_options(&[]).len(),
+            1,
+            "inherit only until config loads"
+        );
+        let efforts = vec!["low".to_string(), "xhigh".to_string()];
+        let effort_rows = effort_options(&efforts);
+        assert_eq!(
+            effort_rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![EFFORT_INHERIT, "low", "xhigh"]
+        );
+
+        assert_eq!(mode_options(&[]).len(), 1, "manual only until config loads");
+        let modes = vec![LaunchableMode {
+            id: "auto".into(),
+            title: "AUTO".into(),
+            one_liner: "Act without confirmation stops.".into(),
+        }];
+        let mode_rows = mode_options(&modes);
+        assert_eq!(mode_rows[1].id, "auto");
+        assert_eq!(mode_rows[1].label, "AUTO");
+        assert_eq!(
+            mode_rows[1].hint.as_deref(),
+            Some("Act without confirmation stops.")
+        );
+        assert_eq!(mode_pick(MODE_INHERIT), None);
+        assert_eq!(mode_pick("auto"), Some("auto".to_string()));
+    }
+
     // ---- capacity tri-state ----
 
     #[test]
@@ -733,6 +818,27 @@ mod tests {
             opts[1].hint.as_deref().unwrap().contains("RESPAWNED"),
             "a disabled row must carry its reason"
         );
+    }
+
+    #[test]
+    fn fresh_launch_menu_enables_the_default_system_account() {
+        let opts = chat_account_options(&[]);
+        assert_eq!(opts[1].id, ACCOUNT_DEFAULT);
+        assert!(
+            !opts[1].disabled,
+            "fresh launch can choose gateway-free default"
+        );
+        assert!(opts[1]
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("gateway is skipped"));
+        assert_eq!(
+            chat_account_pick(ACCOUNT_DEFAULT),
+            Some("default".to_string())
+        );
+        assert_eq!(chat_account_pick(ACCOUNT_AUTO), Some("auto".to_string()));
+        assert_eq!(chat_account_pick("acct-7"), Some("acct-7".to_string()));
     }
 
     #[test]

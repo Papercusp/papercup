@@ -97,6 +97,28 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     expect(await rowCount()).toBe(1);
   });
 
+  it('distinguishes a failed meta read from a confirmed-empty meta read', async () => {
+    expect(await getLoopCarryNoteWithMeta(LOOP)).toEqual({
+      note: null,
+      updatedAtMs: null,
+      readFailed: false,
+    });
+
+    const previousSql = h.sql;
+    h.sql = (() => {
+      throw new Error('simulated carry-note read failure');
+    }) as never;
+    try {
+      await expect(getLoopCarryNoteWithMeta(LOOP)).resolves.toEqual({
+        note: null,
+        updatedAtMs: null,
+        readFailed: true,
+      });
+    } finally {
+      h.sql = previousSql;
+    }
+  });
+
   it('a cold wake reads the SAME note the warm session left (the whole point)', async () => {
     await setLoopCarryNote(LOOP, 'reconstruct: mid-Phase-2, psu-host verbs half-wired');
     // A "cold" reader is just a fresh read on the same (harness, ownerId).
@@ -386,6 +408,7 @@ describe('the three roles converge on ONE store, isolated by scope + workspace',
     expect(await getLoopCarryNoteWithMeta(LOOP)).toEqual({
       note: 'new fallback checkpoint',
       updatedAtMs: 1700000001000,
+      readFailed: false,
     });
     expect((await getLoopCarryJournal(LOOP)).map((entry) => entry.note)).toEqual(['new']);
 
@@ -396,6 +419,7 @@ describe('the three roles converge on ONE store, isolated by scope + workspace',
     expect(await getLoopCarryNoteWithMeta(LOOP)).toEqual({
       note: 'stale pinned checkpoint',
       updatedAtMs: 1700000000000,
+      readFailed: false,
     });
   });
 

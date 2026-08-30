@@ -303,6 +303,27 @@ export {
   validateWorkspaceHostBootstrapAttestation,
 } from "./workspace-host-bootstrap";
 export type {
+  WorkspaceHostDesktopPackArtifact,
+  WorkspaceHostDesktopPackPhase,
+  WorkspaceHostDesktopPackCheckName,
+  WorkspaceHostDesktopPackIsolation,
+  WorkspaceHostDesktopPackInput,
+  WorkspaceHostDesktopPackAttestation,
+} from "./workspace-host-desktop-pack";
+export {
+  WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION,
+  WORKSPACE_HOST_DESKTOP_PACK_ATTESTATION_PREFIX,
+  WORKSPACE_HOST_DESKTOP_PACK_PHASES,
+  WORKSPACE_HOST_DESKTOP_PACK_CHECKS,
+  WORKSPACE_HOST_DESKTOP_PACK_APT,
+  DEFAULT_WORKSPACE_HOST_DESKTOP_USER,
+  DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP,
+  WORKSPACE_HOST_DESKTOP_ROOT,
+  PINNED_KASMVNC_ARTIFACT,
+  buildWorkspaceHostDesktopPackScript,
+  parseWorkspaceHostDesktopPackAttestation,
+} from "./workspace-host-desktop-pack";
+export type {
   WorkspaceHostApplicationBackupRef,
   WorkspaceHostProviderSnapshotPolicy,
   WorkspaceHostSchemaRecoveryContract,

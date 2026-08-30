@@ -1235,14 +1235,23 @@ export async function rehydrateLoopWakeText(
           ownerId: d.subscriberId,
           workspaceId: d.workspaceId,
         });
-    const { walls } = splitCarryNoteWalls(meta.note);
-    const wallsNow = renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
+    const carryNoteReadFailed = meta.readFailed === true;
+    // A failed read must not be rendered as an empty note. In particular, the
+    // "none open" wall text would turn an unavailable store into a false
+    // clearance signal and invite a stale wake to proceed.
+    const readableNote = carryNoteReadFailed ? null : meta.note;
+    const { walls } = splitCarryNoteWalls(readableNote);
+    const wallsNow = carryNoteReadFailed
+      ? '  ⚠ UNKNOWN — the carry-note read failed at delivery time; do not infer that no walls are open'
+      : renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
     // P-001 (cold-carry-system-hardening) delivery parity: the live re-read covers
     // carried checks too — a stale staged wake must not resurrect a cleared check
     // (or hide a fresh one) any more than a wall.
-    const { checks } = splitCarryNoteChecks(meta.note);
-    const checksNow = renderLoopChecksBlock(checks);
-    const ageMs = meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
+    const { checks } = splitCarryNoteChecks(readableNote);
+    const checksNow = carryNoteReadFailed
+      ? '🧪 CARRIED CHECKS — UNKNOWN: the delivery-time carry-note read failed; do not infer that no checks are open.'
+      : renderLoopChecksBlock(checks);
+    const ageMs = readableNote && meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
 
     // EI-20230529647745311: the re-check used to be appended after the fire-time
@@ -1252,13 +1261,13 @@ export async function rehydrateLoopWakeText(
     // so the state that governs the turn survives the door. Keep the narrative note in
     // this high-priority block (not only walls/checks): those fields carry the candidate
     // and next action that a stale wake can otherwise resurrect.
-    const liveNote = meta.note ? clipLoopCheckpointForWake(meta.note, 2_200) : null;
+    const liveNote = readableNote ? clipLoopCheckpointForWake(readableNote, 2_200) : null;
     // A note body alone is not enough to call the delivery-time read current: a
     // legacy/corrupt row (or a degraded reader) can return text without the
     // committed write timestamp needed to order it against later checkpoint writes.
     // Derive the same short hash the checkpoint writer returns so the recipient can
     // compare this exact body with a verified loop:checkpoint result.
-    const checkpointHash = meta.note ? shortCarryHash(meta.note) : null;
+    const checkpointHash = readableNote ? shortCarryHash(readableNote) : null;
     const hasCommittedTimestamp =
       typeof meta.updatedAtMs === 'number' && Number.isFinite(meta.updatedAtMs) && meta.updatedAtMs > 0;
     const checkpointProvenCurrent = Boolean(liveNote && checkpointHash && hasCommittedTimestamp);
@@ -1267,6 +1276,11 @@ export async function rehydrateLoopWakeText(
         `${lineageMismatch.markerHarness}, but the current active loop is scoped to harness ` +
         `${lineageMismatch.currentHarness}. The marker-scoped carry-note was NOT read; the wake text below ` +
         `may be a stale prior-lineage snapshot. Reconcile loop:status / coord:orient before acting.`
+      : carryNoteReadFailed
+        ? `⚠ LOOP CHECKPOINT RE-CHECK FAILED at delivery time for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+          `The carry-note store read failed; this is NOT confirmation that no checkpoint exists. The wake text below ` +
+          `may be a stale fire-time snapshot, so do not re-execute it or overwrite a possibly existing checkpoint. ` +
+          `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`
       : checkpointProvenCurrent
         ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}; ` +
           `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}):\n${liveNote}`

@@ -2321,6 +2321,12 @@ export interface LoopCarryNoteWithMeta {
   note: string | null;
   /** Epoch ms of the note's last write (carry_notes.updated_ts), null when no note. */
   updatedAtMs: number | null;
+  /**
+   * True when the carry-note store could not be read. Optional for compatibility
+   * with older injected readers; the canonical reader always sets it so a
+   * failed read cannot be mistaken for a confirmed-empty note.
+   */
+  readFailed?: boolean;
 }
 
 /** Read an su AUTO loop's carry-note WITH its write instant. The newest row for
@@ -2337,11 +2343,14 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
        ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
     );
     const note = (rows[0]?.note ?? '').trim();
-    if (note.length === 0) return { note: null, updatedAtMs: null };
+    if (note.length === 0) return { note: null, updatedAtMs: null, readFailed: false };
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
-    return { note, updatedAtMs: Number.isFinite(ts) ? ts : null };
+    return { note, updatedAtMs: Number.isFinite(ts) ? ts : null, readFailed: false };
   } catch {
-    return { note: null, updatedAtMs: null };
+    // Keep an unavailable store distinct from a successful read that found no
+    // note. Consumers use this to avoid asserting that a checkpoint is absent
+    // (or prompting an overwrite) when the row may simply be unreadable.
+    return { note: null, updatedAtMs: null, readFailed: true };
   }
 }
 

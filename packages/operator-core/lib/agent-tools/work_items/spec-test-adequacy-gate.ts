@@ -182,6 +182,41 @@ function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): b
   );
 }
 
+/**
+ * Keep the machine-readable would-block list, but do not throw away the evaluator's
+ * criterion evidence. In particular, `unknown [freshness]` is not actionable when the
+ * actual cause is an omitted `testFingerprint`/`fixtureFingerprint`/other dimension.
+ * Bound the appended prose because evidence refs are caller-controlled and the evaluator
+ * may have selected many historical bindings.
+ */
+const FINGERPRINT_FIELD_BY_DIMENSION = {
+  source: 'sourceFingerprint',
+  test: 'testFingerprint',
+  fixture: 'fixtureFingerprint',
+  rubric: 'rubricFingerprint',
+  environment: 'environmentFingerprint',
+} as const;
+
+function humanizeFreshnessEvidence(evidence: string): string {
+  return evidence.replace(
+    /\b(source|test|fixture|rubric|environment)(-current-fingerprint-not-supplied|-stale|_fingerprint_absent|_fingerprint_mismatch)\b/g,
+    (_match, dimension: keyof typeof FINGERPRINT_FIELD_BY_DIMENSION, reason: string) => {
+      const field = FINGERPRINT_FIELD_BY_DIMENSION[dimension];
+      return reason === '-stale' || reason === '_fingerprint_mismatch'
+        ? `${field} mismatched`
+        : `${field} omitted`;
+    },
+  );
+}
+
+function adequacyFailureReason(label: string, result: SpecTestAdequacyResult): string {
+  const blockers = result.wouldBlock.join(', ') || 'no passing verdict';
+  const freshness = result.wouldBlock.includes('freshness') ? result.ratings.freshness : undefined;
+  const details = freshness ? `freshness: ${humanizeFreshnessEvidence(freshness.evidence)}` : '';
+  const boundedDetails = details.length > 2_000 ? `${details.slice(0, 1_997)}…` : details;
+  return `${label}: ${result.verdict} [${blockers}]${boundedDetails ? ` — ${boundedDetails}` : ''}`;
+}
+
 export async function specTestAdequacyCompletionGate(
   input: {
     workItem: WorkItemForSpecGate;
@@ -302,7 +337,7 @@ export async function specTestAdequacyCompletionGate(
     });
     const label = `${clause.specId}@${clause.revision}`;
     if (result.verdict !== 'pass') {
-      failures.push(`${label}: ${result.verdict} [${result.wouldBlock.join(', ') || 'no passing verdict'}]`);
+      failures.push(adequacyFailureReason(label, result));
       continue;
     }
     const subjectRef = specTestAdequacySubjectRef(result.planSlug, result.specId, result.specRevision);

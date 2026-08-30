@@ -302,6 +302,18 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
   });
 
+  it('wires the compact kind selector to the same URL-backed facet', async () => {
+    renderTab();
+    const compactKind = await screen.findByLabelText('Filter workflows by kind');
+
+    // This fixture is an infra/system task despite its `routine:*` row id.
+    fireEvent.change(compactKind, { target: { value: 'system' } });
+    await waitFor(() => {
+      expect(screen.queryByTestId(`wf-row:${DIGEST}`)).toBeNull();
+      expect(screen.getByTestId('wf-row:routine:git-sync:papercusp')).toBeTruthy();
+    });
+  });
+
   it('says which kind of empty it is', async () => {
     renderTab({ wfQ: 'nothing-matches-this' });
     expect(await screen.findByText('No workflows match these filters.')).toBeTruthy();

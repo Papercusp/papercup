@@ -420,6 +420,64 @@ describe('specTestAdequacyCompletionGate', () => {
     if (!result.ok) expect(result.reason).toContain('freshness');
   });
 
+  it('names the omitted fingerprint dimension in a freshness refusal', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([
+      listedEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'unknown',
+          dimensions: {
+            ...evidence().currentness.dimensions,
+            test: 'unknown',
+          },
+          unknownReasons: ['test-current-fingerprint-not-supplied'],
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    if (!result.ok) {
+      expect(result.reason).toContain('unknown [freshness]');
+      expect(result.reason).toContain('Current fingerprints are missing for: test:reconnect');
+      expect(result.reason).toContain('testFingerprint omitted');
+    }
+  });
+
+  it('distinguishes a mismatched fingerprint dimension in a freshness refusal', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([
+      listedEvidence({
+        currentness: {
+          ...evidence().currentness,
+          overall: 'stale',
+          dimensions: {
+            ...evidence().currentness.dimensions,
+            test: 'stale',
+          },
+          staleReasons: ['test_fingerprint_mismatch'],
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    if (!result.ok) {
+      expect(result.reason).toContain('fail [freshness]');
+      expect(result.reason).toContain('testFingerprint mismatched');
+      expect(result.reason).not.toContain('testFingerprint omitted');
+    }
+  });
+
   it('treats an active non-automated clause with no required layers as non-applicable', async () => {
     const deps = passingDeps();
     deps.listClauses.mockResolvedValue([

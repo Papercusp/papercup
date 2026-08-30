@@ -30,6 +30,8 @@ import type {
   CoordinationHealth,
   MemoryPanelHealth,
   PanelAck,
+  HostPressureHealth,
+  HostPressureSample,
 } from './types';
 
 // ── tunable thresholds (the status boundaries) ───────────────────────────────
@@ -471,6 +473,199 @@ export function improvementsStatus(_d: ImprovementsHealth): PanelStatus {
  * WARN (visible), ending the culture of dismissing tool-call errors as normal. */
 export const MCP_PROXY_HARD_FAIL_CRIT = 10;
 
+/**
+ * Fresh host-pressure thresholds. CPU/memory PSI are stall percentages; the
+ * scheduler counters are normalized by the resource profile's effective cores
+ * so the same detector works on a 2-core guest and a 128-core host. These are
+ * observation thresholds, not resource-governor admission limits.
+ */
+export const HOST_PRESSURE_MAX_AGE_MS = 15_000;
+export const HOST_PRESSURE_CPU_PSI_WARN_PCT = 20;
+export const HOST_PRESSURE_CPU_PSI_CRIT_PCT = 85;
+export const HOST_PRESSURE_MEMORY_PSI_SOME_WARN_PCT = 10;
+export const HOST_PRESSURE_MEMORY_PSI_FULL_CRIT_PCT = 5;
+export const HOST_PRESSURE_RUNNABLE_WARN_PER_CORE = 1.5;
+export const HOST_PRESSURE_RUNNABLE_CRIT_PER_CORE = 3;
+export const HOST_PRESSURE_BLOCKED_WARN_PER_CORE = 0.25;
+export const HOST_PRESSURE_BLOCKED_CRIT_PER_CORE = 1;
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function formatPressureNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+/**
+ * Pure detector for the resource-governor's current host-pressure sample.
+ *
+ * A stale snapshot is not thresholded at all. Missing/invalid individual legs
+ * remain explicit unknowns; a measured pressure leg may still surface warn/crit
+ * rather than being hidden by an unavailable corroborator. If no pressure leg
+ * is measurable, any unknown required leg keeps the result unknown instead of
+ * fabricating a healthy `ok`.
+ */
+export function evaluateHostPressure(
+  sample: HostPressureSample | null | undefined,
+  nowMs: number,
+  maxAgeMs = HOST_PRESSURE_MAX_AGE_MS,
+): HostPressureHealth {
+  const empty: HostPressureHealth = {
+    status: 'unknown',
+    summary: 'HOST PRESSURE UNKNOWN — no current live-health evidence',
+    sampledAtMs: null,
+    ageMs: null,
+    effectiveCores: null,
+    cpuPsiSomePct: null,
+    memoryPsiSomePct: null,
+    memoryPsiFullPct: null,
+    runnableCount: null,
+    blockedCount: null,
+    runnablePerCore: null,
+    blockedPerCore: null,
+    reasons: [],
+    unknown: [],
+  };
+  if (!sample) {
+    return { ...empty, unknown: ['live-health snapshot unavailable'] };
+  }
+
+  const unknown: string[] = [];
+  const sampledAtMs = finiteNumber(sample.sampledAtMs) ? sample.sampledAtMs : null;
+  if (sampledAtMs === null) {
+    unknown.push('live-health sampledAtMs is missing or invalid');
+  }
+  if (!finiteNumber(nowMs)) {
+    unknown.push('health evaluation time is invalid');
+  }
+  if (!finiteNumber(maxAgeMs) || maxAgeMs < 0) {
+    unknown.push('live-health freshness bound is invalid');
+  }
+  const ageMs = sampledAtMs !== null && finiteNumber(nowMs) ? nowMs - sampledAtMs : null;
+  if (ageMs !== null && ageMs < 0) {
+    unknown.push('live-health snapshot is from the future');
+  } else if (ageMs !== null && finiteNumber(maxAgeMs) && ageMs > maxAgeMs) {
+    unknown.push(`live-health snapshot is ${ageMs}ms old, beyond the ${maxAgeMs}ms freshness bound`);
+  }
+  // Do not threshold any values from an expired/future snapshot.
+  if (unknown.some((reason) => reason.includes('sampledAtMs') || reason.includes('evaluation time') || reason.includes('freshness') || reason.includes('from the future') || reason.includes('old,'))) {
+    return {
+      ...empty,
+      sampledAtMs,
+      ageMs,
+      unknown,
+    };
+  }
+
+  const effectiveCores =
+    finiteNumber(sample.effectiveCores) && sample.effectiveCores > 0 ? sample.effectiveCores : null;
+  if (effectiveCores === null) unknown.push('effectiveCores is missing, non-positive, or invalid');
+
+  const readPct = (value: unknown, label: string): number | null => {
+    if (value === null || value === undefined) {
+      unknown.push(`${label} is unavailable`);
+      return null;
+    }
+    if (!finiteNumber(value) || value < 0 || value > 100) {
+      unknown.push(`${label} is invalid`);
+      return null;
+    }
+    return value;
+  };
+  const readCount = (value: unknown, label: string): number | null => {
+    if (value === null || value === undefined) {
+      unknown.push(`${label} is unavailable`);
+      return null;
+    }
+    if (!finiteNumber(value) || value < 0) {
+      unknown.push(`${label} is invalid`);
+      return null;
+    }
+    return value;
+  };
+
+  const cpuPsiSomePct = readPct(sample.cpuPsiSomePct, 'cpu.psiSomePct');
+  const memoryPsiSomePct = readPct(sample.memoryPsiSomePct, 'memory.psiSomePct');
+  const memoryPsiFullPct = readPct(sample.memoryPsiFullPct, 'memory.psiFullPct');
+  const runnableCount = readCount(sample.runnableCount, 'scheduler.runnableCount');
+  const blockedCount = readCount(sample.blockedCount, 'scheduler.blockedCount');
+  const runnablePerCore = effectiveCores !== null && runnableCount !== null ? runnableCount / effectiveCores : null;
+  const blockedPerCore = effectiveCores !== null && blockedCount !== null ? blockedCount / effectiveCores : null;
+
+  const criticalReasons: string[] = [];
+  const warningReasons: string[] = [];
+  if (cpuPsiSomePct !== null) {
+    if (cpuPsiSomePct >= HOST_PRESSURE_CPU_PSI_CRIT_PCT) {
+      criticalReasons.push(
+        `CPU PSI some avg60 ${formatPressureNumber(cpuPsiSomePct)} ≥ ${HOST_PRESSURE_CPU_PSI_CRIT_PCT} — host CPU starvation pressure`,
+      );
+    } else if (cpuPsiSomePct >= HOST_PRESSURE_CPU_PSI_WARN_PCT) {
+      warningReasons.push(
+        `CPU PSI some avg60 ${formatPressureNumber(cpuPsiSomePct)} ≥ ${HOST_PRESSURE_CPU_PSI_WARN_PCT} — host CPU starvation pressure`,
+      );
+    }
+  }
+  if (memoryPsiFullPct !== null && memoryPsiFullPct >= HOST_PRESSURE_MEMORY_PSI_FULL_CRIT_PCT) {
+    criticalReasons.push(
+      `memory PSI full avg60 ${formatPressureNumber(memoryPsiFullPct)} ≥ ${HOST_PRESSURE_MEMORY_PSI_FULL_CRIT_PCT} — host memory reclaim pressure`,
+    );
+  }
+  if (memoryPsiSomePct !== null && memoryPsiSomePct >= HOST_PRESSURE_MEMORY_PSI_SOME_WARN_PCT) {
+    warningReasons.push(
+      `memory PSI some avg60 ${formatPressureNumber(memoryPsiSomePct)} ≥ ${HOST_PRESSURE_MEMORY_PSI_SOME_WARN_PCT} — host memory reclaim pressure`,
+    );
+  }
+  if (runnablePerCore !== null) {
+    if (runnablePerCore >= HOST_PRESSURE_RUNNABLE_CRIT_PER_CORE) {
+      criticalReasons.push(
+        `scheduler runnable ${formatPressureNumber(runnableCount!)} / ${formatPressureNumber(effectiveCores!)} effective cores = ${formatPressureNumber(runnablePerCore)} per core ≥ ${HOST_PRESSURE_RUNNABLE_CRIT_PER_CORE} — host run-queue pressure`,
+      );
+    } else if (runnablePerCore >= HOST_PRESSURE_RUNNABLE_WARN_PER_CORE) {
+      warningReasons.push(
+        `scheduler runnable ${formatPressureNumber(runnableCount!)} / ${formatPressureNumber(effectiveCores!)} effective cores = ${formatPressureNumber(runnablePerCore)} per core ≥ ${HOST_PRESSURE_RUNNABLE_WARN_PER_CORE} — host run-queue pressure`,
+      );
+    }
+  }
+  if (blockedPerCore !== null) {
+    if (blockedPerCore >= HOST_PRESSURE_BLOCKED_CRIT_PER_CORE) {
+      criticalReasons.push(
+        `scheduler blocked ${formatPressureNumber(blockedCount!)} / ${formatPressureNumber(effectiveCores!)} effective cores = ${formatPressureNumber(blockedPerCore)} per core ≥ ${HOST_PRESSURE_BLOCKED_CRIT_PER_CORE} — host blocked-task pressure`,
+      );
+    } else if (blockedPerCore >= HOST_PRESSURE_BLOCKED_WARN_PER_CORE) {
+      warningReasons.push(
+        `scheduler blocked ${formatPressureNumber(blockedCount!)} / ${formatPressureNumber(effectiveCores!)} effective cores = ${formatPressureNumber(blockedPerCore)} per core ≥ ${HOST_PRESSURE_BLOCKED_WARN_PER_CORE} — host blocked-task pressure`,
+      );
+    }
+  }
+
+  const reasons = [...criticalReasons, ...warningReasons];
+  const status: PanelStatus =
+    criticalReasons.length > 0 ? 'crit' : warningReasons.length > 0 ? 'warn' : unknown.length > 0 ? 'unknown' : 'ok';
+  const summary =
+    status === 'crit' || status === 'warn'
+      ? `HOST PRESSURE: ${reasons.join('; ')}`
+      : status === 'unknown'
+        ? `HOST PRESSURE UNKNOWN — ${unknown.join('; ')}`
+        : `host pressure normal — CPU PSI ${formatPressureNumber(cpuPsiSomePct!)}%, memory PSI some/full ${formatPressureNumber(memoryPsiSomePct!)}%/${formatPressureNumber(memoryPsiFullPct!)}%, run queue ${formatPressureNumber(runnablePerCore!)} per effective core`;
+  return {
+    status,
+    summary,
+    sampledAtMs,
+    ageMs,
+    effectiveCores,
+    cpuPsiSomePct,
+    memoryPsiSomePct,
+    memoryPsiFullPct,
+    runnableCount,
+    blockedCount,
+    runnablePerCore,
+    blockedPerCore,
+    reasons,
+    unknown,
+  };
+}
+
 /** Infra. crit = a per-thread perf WEDGE (operator unreachable / event-loop-lag /
  *  CLOSE_WAIT storm — F1/P-030), a sustained MCP tool-call-transport failure stream
  *  (W8/P-008, ≥ MCP_PROXY_HARD_FAIL_CRIT hard failures/window), a tool HANDLER failing
@@ -496,12 +691,14 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   // hysteresis against boundary noise (EI-19944041837110102) via `worstDiskBand`.
   const diskBand = worstDiskBand(d.disk);
   if (diskBand === 'crit') return 'crit';
+  if (d.hostPressure?.status === 'crit') return 'crit';
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
   // A partial/ramping handler failure — visible, sub-page (EI-18798264517111160).
   if (d.toolFailures?.rating === 'degraded') return 'warn';
+  if (d.hostPressure?.status === 'warn') return 'warn';
   if (diskBand === 'warn') return 'warn';
   // Unapplied migrations = every deploy is one restart away from surprise DDL (P-011).
   if ((d.migrationDrift?.unapplied ?? 0) > 0) return 'warn';
@@ -553,6 +750,8 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
   const worstDiskVol = d.disk && d.disk.length > 0 ? d.disk.reduce((a, b) => (b.usedPct > a.usedPct ? b : a)) : null;
   const worstDisk = worstDiskVol?.usedPct ?? null;
   const diskCrit = worstDiskBand(d.disk) === 'crit';
+  const hostPressureCrit = d.hostPressure?.status === 'crit';
+  const hostPressureWarn = d.hostPressure?.status === 'warn';
   const poolNote = d.pool?.band === 'critical' ? ', POOL STARVATION' : d.pool?.band === 'elevated' ? ', pool elevated' : '';
   // A disk WARN has no branch of its own (the panel is only `warn` overall), but it
   // still belongs in the line — it is the leading indicator of the crit above.
@@ -582,11 +781,13 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
     const verdict = urgent ? 'writes are about to fail' : 'critically low — reclaim space soon';
     return `DISK ${worstDisk}% used on ${worstDiskVol!.path}${freeNote} — ${verdict}`;
   }
+  if (hostPressureCrit) return d.hostPressure!.summary;
   if (!d.pg) return 'PG unreadable';
   const gatewayNote = gatewayEnabled ? `, gateway ${d.gatewayReachable ? 'up' : 'down'}` : '';
   const mcpNote = mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : '';
   const perfNote = d.perf?.status === 'warn' ? `, perf warn (${d.perf.reasons[0] ?? ''})` : '';
-  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${perfNote}`;
+  const hostPressureNote = hostPressureWarn ? `, ${d.hostPressure!.summary}` : '';
+  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${perfNote}${hostPressureNote}`;
 }
 
 /**
@@ -621,9 +822,13 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
  * the same fail-safe stance `evaluatePerfSignals` itself documents for this split.
  */
 export function infraCritAmbientOnly(d: InfraHealth): boolean {
-  if (d.perf?.status !== 'crit') return false;
-  const attribution = d.perf.critAttribution;
-  if (!attribution || attribution.operatorDefect.length > 0) return false;
+  const perfCrit = d.perf?.status === 'crit';
+  const hostPressureCrit = d.hostPressure?.status === 'crit';
+  if (!perfCrit && !hostPressureCrit) return false;
+  if (perfCrit) {
+    const attribution = d.perf!.critAttribution;
+    if (!attribution || attribution.operatorDefect.length > 0) return false;
+  }
   if ((d.mcpProxy?.hardFailures ?? 0) >= MCP_PROXY_HARD_FAIL_CRIT) return false;
   if (d.toolFailures?.rating === 'broken') return false;
   if (worstDiskBand(d.disk) === 'crit') return false;

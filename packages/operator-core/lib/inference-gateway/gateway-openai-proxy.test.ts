@@ -1426,3 +1426,199 @@ describe('proxyOpenAi — owner-outcome taxonomy (pinned directly, not via respo
     expect(ledger.recent[0].account).toBe('cdx-1');
   });
 });
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * P-005 characterization — the `cli-exec` transport (`serveCodexCliBridge`).
+ *
+ * WHY THESE AND NOT MORE: gateway.test.ts already carries eight `[codex-cli]`
+ * tests, but all eight are about SELECTION and the wire (pin-vs-pool priority,
+ * the early-SSE open + keepalive, GET /v1/models, the single-account 502, the
+ * no-account 503). None of them touches the ATTEMPT LADDER, which is precisely
+ * the part a kernel migration replaces. Everything below is that gap, pinned
+ * against the UNMIGRATED handler first, in plan D-003 order.
+ *
+ * Note the ladder here is NOT the bearer ladder with different names: the
+ * quarantine is unconditional for an auth-class failure and outlives the
+ * request, which is the fix EI-21618978789879488 landed with NO regression test
+ * — the reason `an auth-dead account is not re-chosen` below exists at all.
+ * ────────────────────────────────────────────────────────────────────────────── */
+describe('codex cli-exec bridge — attempt ladder (P-005 characterization)', () => {
+  /** A cli-exec gateway: codex-cli accounts + their failover pool, and NO bearer
+   *  codexPool, which is what routes `/v1/responses` to the bridge at all. */
+  async function bootCliBridge(opts: {
+    accounts: string[];
+    run: (o: { home: string }) => Promise<{ text: string; inputTokens: number; outputTokens: number }>;
+    oauthProxy?: boolean;
+    oauthNonStream?: boolean;
+    bare429FailoverBackoffMs?: number;
+  }) {
+    const cliAccounts = opts.accounts.map((accountId) => ({ accountId, home: `/tmp/${accountId}-home` }));
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: opts.run as never,
+      ...(opts.oauthProxy === undefined ? {} : { codexOAuthProxy: opts.oauthProxy }),
+      ...(opts.oauthNonStream === undefined ? {} : { codexOAuthNonStream: opts.oauthNonStream }),
+      ...(opts.bare429FailoverBackoffMs === undefined
+        ? {}
+        : { bare429FailoverBackoffMs: opts.bare429FailoverBackoffMs }),
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    return cliAccounts;
+  }
+
+  /** Resolve which account a run was for from the home path `bootCliBridge` mints. */
+  const acctOf = (home: string) => home.replace('/tmp/', '').replace('-home', '');
+
+  it('fails over to the next CLI account when a run fails, and counts it as a failover', async () => {
+    const seen: string[] = [];
+    await bootCliBridge({
+      accounts: ['cli-a', 'cli-b'],
+      run: async ({ home }) => {
+        const acct = acctOf(home);
+        seen.push(acct);
+        if (acct === 'cli-a') throw new Error('codex exited 1: transient upstream blip');
+        return { text: 'SERVED BY B', inputTokens: 1, outputTokens: 1 };
+      },
+    });
+
+    const res = await postResponses({ model: 'gpt-5.4', input: 'hi' });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['cli-a', 'cli-b']);
+    // The header reports who ACTUALLY served it, not who was chosen first.
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-b');
+    expect(await res.text()).toContain('SERVED BY B');
+    // An account CHANGE is the thing that counts as a failover on this lane.
+    expect(gw!.stats().codex.failovers).toBe(1);
+  });
+
+  it('a HARD pin suppresses cli-exec failover — the failure is forwarded on the pinned account', async () => {
+    const seen: string[] = [];
+    await bootCliBridge({
+      accounts: ['cli-a', 'cli-b'],
+      run: async ({ home }) => {
+        seen.push(acctOf(home));
+        throw new Error('codex exited 1: transient upstream blip');
+      },
+    });
+
+    const res = await postResponses(
+      { model: 'gpt-5.4', input: 'hi' },
+      { [ACCOUNT_HEADER]: 'cli-a', [ACCOUNT_PIN_HEADER]: 'hard' },
+    );
+    expect(res.status).toBe(502);
+    // Exactly ONE attempt: a hard pin forbids leaving the account, and this lane has
+    // no same-account re-attempt to fall back on (contrast the OAuth lane's refresh).
+    expect(seen).toEqual(['cli-a']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-a');
+    expect(gw!.stats().codex.failovers).toBe(0);
+  });
+
+  it('an AUTH-DEAD account is quarantined and not re-chosen on the NEXT request (EI-21618978789879488)', async () => {
+    const seen: string[] = [];
+    await bootCliBridge({
+      accounts: ['cli-dead', 'cli-good'],
+      run: async ({ home }) => {
+        const acct = acctOf(home);
+        seen.push(acct);
+        // Auth-class, NOT a quota wall — `isCodexAuthFailure` separates the two.
+        if (acct === 'cli-dead') throw new Error('codex exited 1: 401 unauthorized — please run `codex login`');
+        return { text: 'GOOD', inputTokens: 1, outputTokens: 1 };
+      },
+    });
+
+    const first = await postResponses({ model: 'gpt-5.4', input: 'one' });
+    expect(first.status).toBe(200);
+    expect(first.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-good');
+    expect(seen).toEqual(['cli-dead', 'cli-good']);
+
+    // THE REGRESSION CATCHER. Before the fix, `available` only ever described QUOTA, so a
+    // home whose auth.json cannot authenticate stayed fully selectable and was re-chosen on
+    // the very next request, forever. The quarantine has to outlive the request that found it.
+    const second = await postResponses({ model: 'gpt-5.4', input: 'two' });
+    expect(second.status).toBe(200);
+    expect(second.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-good');
+    expect(seen).toEqual(['cli-dead', 'cli-good', 'cli-good']);
+  });
+
+  it('CONTROL: a QUOTA wall is not credential death — the account returns once its short backoff lapses', async () => {
+    // This is the calibration case for the test above, and it is why that one is not
+    // vacuous. BOTH failure classes call `onExhausted`, so "the account was skipped on
+    // the next request" alone proves nothing — the two differ only in DURATION
+    // (bare429FailoverBackoffMs vs the 15-minute CODEX_CLI_AUTH_QUARANTINE_MS). Driving
+    // the 429 backoff to ~nothing makes that difference observable: a quota-walled
+    // account comes BACK, an auth-dead one does not. If this control ever starts
+    // behaving like the auth case, the auth golden has stopped measuring quarantine.
+    const seen: string[] = [];
+    let walled = true;
+    await bootCliBridge({
+      accounts: ['cli-walled', 'cli-good'],
+      bare429FailoverBackoffMs: 1,
+      run: async ({ home }) => {
+        const acct = acctOf(home);
+        seen.push(acct);
+        // A usage wall — `isCodexAuthFailure` returns false for this, by design.
+        if (acct === 'cli-walled' && walled) throw new Error('codex exited 1: usage limit reached, try again later');
+        return { text: `SERVED BY ${acct}`, inputTokens: 1, outputTokens: 1 };
+      },
+    });
+
+    const first = await postResponses({ model: 'gpt-5.4', input: 'one' });
+    expect(first.status).toBe(200);
+    expect(first.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cli-good');
+    expect(seen).toEqual(['cli-walled', 'cli-good']);
+
+    // Let the 1ms 429 backoff lapse, then clear the wall: the account is selectable again.
+    walled = false;
+    await new Promise((r) => setTimeout(r, 25));
+    const second = await postResponses({ model: 'gpt-5.4', input: 'two' });
+    expect(second.status).toBe(200);
+    // The walled account is back in rotation — the exclusion was a short backoff, not a quarantine.
+    expect(seen.slice(2)).toContain('cli-walled');
+  });
+
+  it('once the SSE stream is committed, a terminal failure travels IN-BAND, not as a status code', async () => {
+    await bootCliBridge({
+      accounts: ['cli-only'],
+      run: async () => {
+        throw new Error('codex exited 1: transient upstream blip');
+      },
+    });
+
+    const res = await postResponses({ model: 'gpt-5.4', input: 'hi', stream: true });
+    // The 200 was committed by `openSse()` BEFORE the run — the failure cannot change it.
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/event-stream/);
+    const body = await res.text();
+    expect(body).toContain('event: response.created');
+    expect(body).toContain('event: error');
+    expect(body).toContain('codex-cli bridge failed');
+    // Terminating the frame properly is what stops a client retrying blindly against
+    // what would otherwise be indistinguishable from a network drop.
+    expect(body.trimEnd().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('the OAuth non-stream kill-switch hands an ALREADY-READ body to the bridge (the live-reachable cli-exec entry)', async () => {
+    let sawPrompt = '';
+    await bootCliBridge({
+      accounts: ['cli-a'],
+      // With the OAuth proxy ON, this is the ONLY way cli-exec is reached: a
+      // non-streaming request with PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0.
+      oauthProxy: true,
+      oauthNonStream: false,
+      run: async (o) => {
+        sawPrompt = (o as { prompt?: string }).prompt ?? '';
+        return { text: 'VIA PREBODY', inputTokens: 1, outputTokens: 1 };
+      },
+    });
+
+    const res = await postResponses({ model: 'gpt-5.4', input: 'carried body', instructions: 'be terse' });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('VIA PREBODY');
+    // The handover must preserve the body: instructions are prepended to the input.
+    expect(sawPrompt).toBe('be terse\n\ncarried body');
+  });
+});
