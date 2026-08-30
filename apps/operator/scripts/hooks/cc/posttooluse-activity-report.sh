@@ -40,17 +40,19 @@
 # HTTP_TIMEOUT below so a slow/wedged operator degrades to "no injection this
 # call" rather than stalling the agent's turn.
 #
-# Per-owner CURSOR (generation only) persists in
+# Per-owner CURSOR (generation + the last complete glance snapshot) persists in
 # $PAPERCUSP_LOCKS_CACHE_DIR/activity-hook-bundle-<owner>.json — the same
 # cache dir + per-owner-file convention the old coord-inbox hook used for its
-# `coord-cursor-<owner>.json`. The server owns the inbox floor now; the client
-# sends only the generation, so a first call cannot seed itself past unread mail.
+# `coord-cursor-<owner>.json`. The glance observation time drives a bounded 15s
+# force-resync on an active tool stream, and the objective-title hook reads this
+# same cache instead of making a second coord:glance RPC. The server owns the
+# inbox floor; a first call still cannot seed itself past unread mail.
 #
 # Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set + su-token present),
 # exactly like the deleted coord-inbox hook. A plain `claude`/`codex` elsewhere has no
-# PAPERCUSP_SID and bails instantly. owner == PAPERCUSP_SID (the same id baked
-# into the agent's MCP `?client=`), so activity is grouped AND coord is folded
-# under the worker's coordination identity.
+# PAPERCUSP_SID and bails instantly. The native session-owner registry may
+# supersede a stale ambient SID after a client self-reexec; the resolved owner is
+# used for the MCP client, activity row, fold, and cache filename together.
 #
 # Output contract (Claude Code PostToolUse), unchanged from the old coord-inbox
 # hook: exit 0 with
@@ -87,18 +89,20 @@ AGENT="${PAPERCUSP_AGENT:-}"
 # must never affect a tool.
 report() {
   python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
-import json, os, re, sys, urllib.request, urllib.parse
+import datetime, json, os, re, sys, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token_path, owner, agent, cache_dir, coord_fold_flag, harness_slug, hook_dir = sys.argv[1:9]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from pc_tty import coordination_owner_id  # noqa: E402
 raw = read_hook_payload()
 token = read_token_file(token_path)
 coord_fold = coord_fold_flag != '0'
 HTTP_TIMEOUT = 4
 STR_CAP = 500
 ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1'
+GLANCE_MAX_AGE_SEC = 15
 
 try:
     ev = json.loads(raw)
@@ -124,6 +128,7 @@ tool_use_id = first('tool_use_id', 'toolCallId', 'tool_call_id') or ''
 session_id = first('session_id', 'sessionId') or ''
 cwd = first('cwd') or ''
 tool_response = first('tool_response', 'toolResponse')
+owner = coordination_owner_id(str(session_id), os.environ)
 
 # Native Claude Grep reports a zero-result search as a plain "No files found"
 # or "No matches found" string.  Those strings do not distinguish a completed
@@ -249,26 +254,55 @@ if coord_fold:
         try:
             with open(cursor_path()) as f:
                 v = json.load(f)
-            gen = v.get('generation')
-            return gen if isinstance(gen, str) and gen else None
+            return v if isinstance(v, dict) else {}
         except Exception:
-            return None
+            return {}
 
-    def write_cursor(gen):
+    def write_cursor(gen, glance, glance_observed_at):
         try:
             p = cursor_path()
             tmp = p + '.tmp-' + str(os.getpid())
+            state = {'generation': gen}
+            if isinstance(glance, dict):
+                state['glance'] = glance
+            if isinstance(glance_observed_at, str) and glance_observed_at:
+                state['glanceObservedAt'] = glance_observed_at
             with open(tmp, 'w') as f:
-                f.write(json.dumps({'generation': gen}))
+                f.write(json.dumps(state))
             os.replace(tmp, p)
         except Exception:
             pass
 
-    generation = read_cursor()
+    def observed_epoch(value):
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+            return parsed.timestamp()
+        except Exception:
+            return None
+
+    cursor = read_cursor()
+    raw_generation = cursor.get('generation')
+    generation = raw_generation if isinstance(raw_generation, str) and raw_generation else None
+    raw_glance = cursor.get('glance')
+    cached_glance = raw_glance if isinstance(raw_glance, dict) else None
+    raw_observed_at = cursor.get('glanceObservedAt')
+    cached_glance_observed_at = raw_observed_at if isinstance(raw_observed_at, str) and raw_observed_at else None
 
     args['hook_bundle'] = {
         'generation': generation,
     }
+    # A null generation already forces a full baseline. Once a generation exists,
+    # a missing/corrupt/stale glance explicitly forces the same complete bundle so
+    # title/fleet display age stays bounded on an otherwise owner-irrelevant stream.
+    if generation is not None:
+        observed = observed_epoch(cached_glance_observed_at)
+        age = None if observed is None else time.time() - observed
+        if cached_glance is None or age is None or age < 0 or age > GLANCE_MAX_AGE_SEC:
+            args['hook_bundle']['force_resync'] = True
 
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
@@ -310,11 +344,11 @@ if not isinstance(new_generation, str) or not new_generation:
     new_generation = None
 complete = bundle.get('complete') is True
 changed = bundle.get('changed') is True
+surfaces = bundle.get('surfaces') if isinstance(bundle.get('surfaces'), dict) else {}
 
 context_parts = []
 
 if changed:
-    surfaces = bundle.get('surfaces') if isinstance(bundle.get('surfaces'), dict) else {}
     inbox = surfaces.get('inbox') if isinstance(surfaces, dict) else None
     if isinstance(inbox, dict):
         summ = inbox.get('summary') if isinstance(inbox.get('summary'), dict) else {}
@@ -334,10 +368,18 @@ if changed:
 if grep_no_result_advisory:
     context_parts.append(grep_no_result_advisory)
 
-# Only a COMPLETE fold advances the generation — an incomplete one (partial
-# hydrate failure) must retry the FULL hydrate next call, mirroring the OMP
-# consumer (consumeActivityHookBundle: `bundle.complete ? bundle.generation : null`).
-write_cursor(new_generation if complete else None)
+# Only a COMPLETE fold advances the generation. A fresh glance replaces the
+# cached snapshot only when the same complete bundle carries its server
+# observation time; changed:false owner-irrelevant advances keep the prior
+# snapshot/age. An incomplete fold retains that stale rendering fallback but
+# resets generation so the next call retries a FULL hydrate.
+new_glance = surfaces.get('glance') if isinstance(surfaces, dict) else None
+provenance = bundle.get('provenance') if isinstance(bundle.get('provenance'), dict) else {}
+new_glance_observed_at = provenance.get('observedAt') if isinstance(provenance, dict) else None
+if complete and isinstance(new_glance, dict) and isinstance(new_glance_observed_at, str) and new_glance_observed_at:
+    cached_glance = new_glance
+    cached_glance_observed_at = new_glance_observed_at
+write_cursor(new_generation if complete else None, cached_glance, cached_glance_observed_at)
 
 emit_context(*context_parts)
 PYEOF

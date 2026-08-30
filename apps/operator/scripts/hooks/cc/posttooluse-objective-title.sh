@@ -22,27 +22,23 @@
 # is reserved for the additionalContext JSON (the harness consumes it; a title
 # written there would corrupt the tool result).
 #
-# SYNC + FAIL-OPEN: one short coord:glance read per tool call (the notice must
-# reach stdout before the hook exits — same latency contract as
-# posttooluse-coord-inbox.sh, ~10-30ms localhost, 1.5s worst-case timeout); on
-# any trouble (operator down/slow, no tty) it emits nothing and exits 0.
-# PAPERCUSP_OBJECTIVE_SYNC is kept as an accepted env for back-compat (the hook
-# is now always synchronous).
+# CACHE-ONLY + FAIL-OPEN: posttooluse-activity-report.sh runs first and stores
+# the last complete coord:glance snapshot in the existing per-owner activity
+# cursor. This hook reads that file and performs ZERO network calls. Missing or
+# corrupt cache degrades to the embedded bare title; a stale cache remains a
+# usable stale title while the activity hook retries its bounded refresh.
+# PAPERCUSP_OBJECTIVE_SYNC remains an accepted no-op env for back-compat.
 #
-# Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set + su-token present),
-# exactly like the coord-inbox / activity hooks; a plain codex/omp elsewhere has
-# no PAPERCUSP_SID and bails instantly.
+# Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set). A plain codex/omp
+# elsewhere has no PAPERCUSP_SID and bails instantly; the cache-only consumer no
+# longer needs a token because it never contacts the operator.
 
 set -euo pipefail
 
-OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
-TOKEN_PATH="${HOME}/.papercusp/superuser-token"
-
-# psu-session + install gate (mirror posttooluse-activity-report.sh). In test mode
-# a glance-shaped payload in $PAPERCUSP_OBJECTIVE_FIXTURE drives the render with no
-# operator/token.
+# psu-session gate. In test mode a glance-shaped payload in
+# $PAPERCUSP_OBJECTIVE_FIXTURE drives the render with no activity cache.
 if [ -z "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" ]; then
-  if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
+  if [ -z "${PAPERCUSP_SID:-}" ]; then
     exit 0
   fi
 fi
@@ -60,69 +56,36 @@ TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 # the renderer, rather than copying the full JSON into argv (ARG_MAX).
 NATIVE_SESSION_ID="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; p=json.load(sys.stdin); v=p.get("session_id") if isinstance(p, dict) else ""; print(v if isinstance(v, str) else "")' 2>/dev/null)" || NATIVE_SESSION_ID=""
 
-# Read coord:glance self.objective and (when present + non-blank) write the OSC-0
-# title escape DIRECTLY to the tty from python — the title IO lives in python (the
+# Read the cached glance and (when present + non-blank) write the OSC-0 title
+# escape DIRECTLY to the tty from python — the title IO lives in python (the
 # activity-hook pattern), NOT in a fragile `$(...)`-around-heredoc command
-# substitution. Kept in a function so the SYNC + DETACHED paths share one body; the
-# `|| true` at the call sites keeps any crash fail-open.
+# substitution. The `|| true` call site keeps any crash fail-open.
 set_title() {
-  python3 - "$OPERATOR_URL" "$TOKEN_PATH" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$NATIVE_SESSION_ID" "$(dirname "$0")" <<'PYEOF'
-import json, os, re, sys, urllib.request, urllib.parse
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
+  python3 - "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$NATIVE_SESSION_ID" "$(dirname "$0")" <<'PYEOF'
+import json, os, re, sys
 
-operator_url, token_path, me, fixture, title_tty = sys.argv[1:6]
-model_spec = sys.argv[6] if len(sys.argv) > 6 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
-stdin_raw = sys.argv[7] if len(sys.argv) > 7 else ''  # bounded native session_id extracted from PostToolUse
+me, fixture, title_tty = sys.argv[1:4]
+model_spec = sys.argv[4] if len(sys.argv) > 4 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
+stdin_raw = sys.argv[5] if len(sys.argv) > 5 else ''  # bounded native session_id extracted from PostToolUse
 # Shared tty resolution (WI-3665) — see pc_tty.py. Sits beside this script in both the
 # repo and the installed runtime dir, so $0's dirname resolves it either way.
-sys.path.insert(0, sys.argv[8] if len(sys.argv) > 8 else os.path.dirname(os.path.abspath(__file__)))
-from mcp_response import read_token_file  # noqa: E402
+sys.path.insert(0, sys.argv[6] if len(sys.argv) > 6 else os.path.dirname(os.path.abspath(__file__)))
 from pc_tty import coordination_owner_id, write_osc_title  # noqa: E402  (path must be primed first)
-token = read_token_file(token_path)
 me = coordination_owner_id(stdin_raw, os.environ)
-HTTP_TIMEOUT = 1.5
 
 
-def call_glance():
-    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                       'params': {'name': 'coord:glance',
-                                  'arguments': {'audience': 'user', 'activity_limit': 0}}}).encode()
-    # `format=json` is REQUIRED (result-format negotiation, P-009). Without it the operator
-    # answers in TOON ("format: toon\nok: true\n…"), json.loads() below throws, call_glance
-    # returns None, and the title silently degrades to the bare session id — no fleet, no 👑.
-    # That is EI-7029, fixed in statusline-fleet.sh but never here: this hook rendered a
-    # crownless title on codex/omp from the day TOON became the default (WI-3665). The
-    # fixture-driven parity test never caught it because fixtures bypass the network.
-    req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client=' + urllib.parse.quote(me, safe=''),
-        data=body,
-        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-                 'Accept': 'application/json, text/event-stream'},
-        method='POST')
-    raw = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read().decode('utf-8', 'replace')
-    result = None
-    for line in raw.splitlines():
-        line = line.strip()
-        if line.startswith('data:'):
-            line = line[5:].strip()
-        if not line:
-            continue
-        try:
-            cand = json.loads(line)
-            if isinstance(cand, dict) and 'result' in cand:
-                result = cand['result']
-                break
-        except Exception:
-            pass
-    if not result or result.get('isError'):
+def read_cached_glance():
+    cache_dir = os.environ.get('PAPERCUSP_LOCKS_CACHE_DIR') or os.path.join(
+        os.path.expanduser('~'), '.papercusp', 'locks-cache')
+    safe_owner = re.sub(r'[^A-Za-z0-9._-]', '_', me)[:120]
+    cache_path = os.path.join(cache_dir, f'activity-hook-bundle-{safe_owner}.json')
+    try:
+        with open(cache_path) as f:
+            state = json.load(f)
+        glance = state.get('glance') if isinstance(state, dict) else None
+        return glance if isinstance(glance, dict) else None
+    except Exception:
         return None
-    for item in (result.get('content') or []):
-        if item.get('type') == 'text':
-            try:
-                return json.loads(item['text'])
-            except Exception:
-                pass
-    return None
 
 
 # ── Title assembly — kept BYTE-IDENTICAL to statusline-fleet.sh's term_title so a codex/omp
@@ -302,7 +265,7 @@ try:
             with open(fixture) as f:
                 glance = json.load(f)
         else:
-            glance = call_glance()
+            glance = read_cached_glance()
     except Exception:
         glance = None
 
