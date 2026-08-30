@@ -45,6 +45,7 @@ import type { CodexCliAccount } from './codex-cli-bridge';
 import type { CodexAuth } from './codex-oauth-proxy';
 import {
   GatewayRequestKernelError,
+  withPromiseDeadline,
   type GatewayKernelAdapter,
   type GatewayKernelAttemptContext,
   type GatewayKernelRoute,
@@ -191,24 +192,6 @@ function egressView(account: CodexCliAccount, token: () => Promise<string>): Act
   };
 }
 
-/** Bound the token read exactly as the live handler's `withDeadline` does. The
- *  kernel owns the TTFB and body-idle deadlines, but token work happens inside
- *  `prepareAttempt` and carries its own. */
-async function withTokenDeadline<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): CodexOAuthKernelAdapter {
   const now = opts.now ?? (() => Date.now());
 
@@ -323,7 +306,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           );
         }
         try {
-          auth = await withTokenDeadline(
+          auth = await withPromiseDeadline(
             opts.refreshAccessToken(account.home, auth),
             opts.tokenTimeoutMs,
             `codex oauth refresh '${account.accountId}'`,
@@ -339,7 +322,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         }
       } else if (!auth || authAccount !== account.accountId) {
         try {
-          auth = await withTokenDeadline(
+          auth = await withPromiseDeadline(
             opts.resolveAccessToken(account.home),
             opts.tokenTimeoutMs,
             `codex oauth token '${account.accountId}'`,
