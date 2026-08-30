@@ -645,7 +645,7 @@ const arming = {
     { harnessSlug: 'papercusp', enabled: true, budgetUsd: 50, spentUsd: 12.892153, status: 'running' },
   ],
   lanes: [
-    { loopId: 'red-queen', displayName: 'Red Queen', potSlug: 'papercusp', enabled: false, budgetUsd: null, spentUsd: 0, enforcement: 'governor' },
+    { loopId: 'red-queen', displayName: 'Red Queen', potSlug: 'papercusp', enabled: false, budgetUsd: null, budgetKind: 'lifetime', spentUsd: 0, enforcement: 'governor' },
   ],
   scoutCeiling: { overrideUsd: null, effectiveUsd: 400, envUsd: 400 },
 };
@@ -659,8 +659,25 @@ describe('armingLaneValue / armBudgetLabel', () => {
     ).toBe('All disarmed');
   });
   it('renders one honest money label per row', () => {
-    expect(armBudgetLabel(12.892153, 50)).toBe('$12.89 of $50');
-    expect(armBudgetLabel(0, null)).toBe('$0 · no budget');
+    expect(armBudgetLabel(12.892153, 50, 'lifetime')).toBe('$12.89 of $50');
+    expect(armBudgetLabel(0, null, 'lifetime')).toBe('$0 · no budget');
+    // An unbudgeted row reads the same either way — the kind only matters once a cap exists.
+    expect(armBudgetLabel(0, null, 'per-cycle')).toBe('$0 · no budget');
+  });
+  it('renders a per-cycle cap as a RATE, never as a lifetime overrun (WI-1337092)', () => {
+    // THE REGRESSION. A per-cycle cap bounds ONE run and never the accumulating total
+    // (remainingLoopBudgetUsd returns the cap unchanged for 'per-cycle'), so spend climbing past
+    // it is normal healthy operation. The old 2-arg label rendered this as "$500 of $1" — a 500x
+    // overrun that never happened.
+    expect(armBudgetLabel(500, 1, 'per-cycle')).toBe('$500 · $1/cycle');
+    // money() strips a trailing '.00' only, so 0.5 keeps both decimals.
+    expect(armBudgetLabel(0.5, 1, 'per-cycle')).toBe('$0.50 · $1/cycle');
+
+    // CALIBRATION — the SAME numbers under a lifetime cap really ARE an overrun and must still
+    // read as one. Without this pair, "fixing" the line above by clamping spend to the cap, or by
+    // dropping the comparison entirely, would pass while hiding a genuine accumulating overrun —
+    // the strictly worse failure of the two.
+    expect(armBudgetLabel(500, 1, 'lifetime')).toBe('$500 of $1');
   });
 });
 

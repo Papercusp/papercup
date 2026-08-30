@@ -39,6 +39,7 @@ import {
   resolveScoutWorkspaceCeilingUsd,
   resolveScoutWorkspaceCeilingUsdLive,
 } from '../learning-governor/scout-budget-overrides';
+import type { LearningBudgetKind } from '../learning-governor/core';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { ScheduleSource } from '../schedule-inventory';
 
@@ -202,6 +203,13 @@ export interface AutomationLaneArm {
   potSlug: string | null;
   enabled: boolean;
   budgetUsd: number | null;
+  /**
+   * How `budgetUsd` bounds spend — WITHOUT this a per-cycle cap renders as a lifetime overrun.
+   * 'lifetime' accumulates (remaining = budget − spent); 'per-cycle' caps ONE run, so
+   * `remainingLoopBudgetUsd` returns the cap unchanged and `spentUsd` is a cumulative total the
+   * cap never bounds (learning-governor/core.ts:83-87).
+   */
+  budgetKind: LearningBudgetKind;
   spentUsd: number;
   enforcement: string;
 }
@@ -687,9 +695,9 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
        WHERE workspace_id = ${ws}
        ORDER BY enabled DESC, harness_slug ASC`;
     const laneRows = await sql<
-      Array<{ loop_id: string; display_name: string | null; pot_slug: string | null; enabled: boolean; budget_usd: string | null; spent_usd: string | null; enforcement: string | null }>
+      Array<{ loop_id: string; display_name: string | null; pot_slug: string | null; enabled: boolean; budget_usd: string | null; budget_kind: string | null; spent_usd: string | null; enforcement: string | null }>
     >`
-      SELECT loop_id, display_name, pot_slug, enabled, budget_usd, spent_usd, enforcement
+      SELECT loop_id, display_name, pot_slug, enabled, budget_usd, budget_kind, spent_usd, enforcement
         FROM harness_shared.learning_governor_loops
        WHERE workspace_id = ${ws}
          AND loop_id NOT LIKE 'gym:%'
@@ -708,6 +716,10 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
         potSlug: r.pot_slug,
         enabled: r.enabled === true,
         budgetUsd: r.budget_usd === null ? null : Number(r.budget_usd),
+        // 'lifetime' on anything unrecognized, matching the storage default that writes these
+        // rows (learning-governor/store.ts:114). Defaulting the OTHER way would render a real
+        // accumulating overrun as a harmless per-run rate — the failure this field exists to fix.
+        budgetKind: r.budget_kind === 'per-cycle' ? 'per-cycle' : 'lifetime',
         spentUsd: Number(r.spent_usd ?? 0) || 0,
         enforcement: r.enforcement ?? 'governor',
       })),

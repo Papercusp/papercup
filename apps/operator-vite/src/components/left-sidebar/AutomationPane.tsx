@@ -247,10 +247,30 @@ export function armingLaneValue(
   return armed > 0 ? `${armed} armed` : 'All disarmed';
 }
 
-/** "$12.89 of $50" / "$0 · no budget" — one honest money label per arming row. */
-export function armBudgetLabel(spentUsd: number, budgetUsd: number | null): string {
+/**
+ * "$12.89 of $50" / "$500 · $1/cycle" / "$0 · no budget" — one honest money label per arming row.
+ *
+ * `budgetKind` is REQUIRED, deliberately. A per-cycle cap bounds ONE run and never the accumulating
+ * total: `remainingLoopBudgetUsd` returns the cap unchanged for 'per-cycle'
+ * (operator-core/lib/learning-governor/core.ts:83-87), so `spentUsd` climbs past `budgetUsd` in
+ * normal healthy operation. Rendering that with "of" read a $500 total under a $1-per-run cap as a
+ * 500x overrun. Giving this parameter a default would let a new call site silently reintroduce
+ * exactly that, so callers must state the kind — gym rows pass the literal 'lifetime' because
+ * gym_autoloop_config has no budget_kind column and the gym pattern IS the accumulating one.
+ *
+ * The fix is to make the label kind-AWARE, never to clamp spend to the cap: clamping would hide a
+ * real lifetime overrun, which is the strictly worse failure.
+ */
+export function armBudgetLabel(
+  spentUsd: number,
+  budgetUsd: number | null,
+  budgetKind: 'lifetime' | 'per-cycle',
+): string {
   const money = (n: number) => `$${n >= 100 ? Math.round(n) : n.toFixed(2).replace(/\.00$/, '')}`;
-  return budgetUsd === null ? `${money(spentUsd)} · no budget` : `${money(spentUsd)} of ${money(budgetUsd)}`;
+  if (budgetUsd === null) return `${money(spentUsd)} · no budget`;
+  return budgetKind === 'per-cycle'
+    ? `${money(spentUsd)} · ${money(budgetUsd)}/cycle`
+    : `${money(spentUsd)} of ${money(budgetUsd)}`;
 }
 
 /**
@@ -1007,6 +1027,9 @@ export default function AutomationPane({
                       hint: `Gym autoloop for the ${g.harnessSlug} pot — arming writes the autoloop config AND its governor row together`,
                       enabled: g.enabled,
                       budgetUsd: g.budgetUsd,
+                      // gym_autoloop_config has no budget_kind column; the gym pattern IS the
+                      // accumulating cap (learning-governor/core.ts:33), so this is a fact, not a fallback.
+                      budgetKind: 'lifetime' as const,
                       spentUsd: g.spentUsd,
                       meta: g.status,
                     })),
@@ -1018,6 +1041,7 @@ export default function AutomationPane({
                       hint: l.loopId + (l.potSlug ? ` · pot ${l.potSlug}` : ''),
                       enabled: l.enabled,
                       budgetUsd: l.budgetUsd,
+                      budgetKind: l.budgetKind,
                       spentUsd: l.spentUsd,
                       meta: l.enforcement,
                     })),
@@ -1064,7 +1088,8 @@ export default function AutomationPane({
                                 }
                                 data-testid={`arming-budget-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
                               >
-                                <Coins size={10} aria-hidden /> {armBudgetLabel(row.spentUsd, row.budgetUsd)}
+                                <Coins size={10} aria-hidden />{' '}
+                                {armBudgetLabel(row.spentUsd, row.budgetUsd, row.budgetKind)}
                               </button>
                             </Tooltip>
                           )}
