@@ -726,6 +726,14 @@ export type RebaseVia =
   | 'lifecycle'
   | 'turn-journal'
   | 'note-refresh'
+  /** EI-21743034835075378: a strict assistant turn paired to this fire's
+   *  `turn_origin='loop-fire'` prompt. */
+  | 'loop-turn'
+  /** EI-21743034835075378: the wake ledger says this exact loop fire was delivered,
+   *  but no assistant turn paired to a `turn_origin='loop-fire'` prompt arrived.
+   *  Re-arm from the delivery clock after a bounded grace instead of allowing
+   *  owner-wide presence/journal signals to strand the pure loop at infinity. */
+  | 'delivered-wake-no-loop-turn'
   /** EI-20988940040434762: the first cold fire was parked at arm time and is
    *  released by the first carry-note written after that arm. No fire outcome
    *  is recorded because no wake has been delivered yet. */
@@ -795,6 +803,12 @@ interface LoopRow {
   fire_state_last_withheld_at: Date | string | null;
   /** Latest delivery-attempt clock for this exact routine source (`loop:<routineId>`). */
   last_wake_at: Date | string | null;
+  /** Latest delivery state for this exact routine source (`loop:<routineId>`). */
+  last_wake_status?: string | null;
+  /** Strict per-fire loop-turn completion clock. This is the latest assistant
+   *  turn paired to a user prompt carrying `turn_origin='loop-fire'`, not an
+   *  owner-wide assistant/journal signal. */
+  last_loop_turn_at?: Date | string | null;
   /** max(agent_activity.created_at) for a kind='lifecycle' 'ended' marker after the fire. */
   lifecycle_completed_at: Date | string | null;
   /** WI-6069: max(session_turn_journal.created_at) for this owner after the fire — the
@@ -834,6 +848,77 @@ interface LoopRow {
    *  `loop:checkpoint { monitorDelta: true }`. Newer than `last_fired_at` ⇒ this fire
    *  reported a delta and the consecutive-quiet budget resets. */
   monitor_delta_at: Date | string | null;
+}
+
+/**
+ * Detect the delivered-wake/no-loop-turn wedge for a warm pure loop.
+ *
+ * `event_wake_deliveries.status='delivered'` is stamped when the wake is accepted
+ * by the pty/resume/inbox delivery channel, before the target necessarily gets a
+ * model turn. The older completion ladder is intentionally owner-wide: a manual
+ * turn, a journal write, or a presence beat can therefore look like completion
+ * for this loop fire and leave the pure routine parked at infinity when the
+ * delivered wake never became a turn.
+ *
+ * The strict `last_loop_turn_at` clock is the discriminator. While it is absent
+ * (or older than this fire's delivery), hold the row through a bounded grace so
+ * ingest can catch a genuinely active loop turn. Recent genuine presence also
+ * keeps the row in flight; once that activity is quiet and the grace expires,
+ * return the delivery clock as the retry base. Cold loops are excluded because
+ * their reset-boundary/note-refresh ladder has different semantics, and
+ * cron+loops have a standing finite schedule rather than the pure-loop infinity
+ * sentinel.
+ */
+function deliveredWakeWithoutLoopTurn(
+  row: LoopRow,
+  lastFiredMs: number,
+  nowMs: number,
+):
+  | { kind: 'awaiting-turn' }
+  | { kind: 'retry'; completedAt: number; via: 'delivered-wake-no-loop-turn' }
+  | null {
+  if (row.carry === 'cold' || row.is_cron || !row.parked) return null;
+  // Production SELECTs always include these discriminator fields. Legacy/unit
+  // seams may omit them; absence is evidence-unavailable and must preserve the
+  // established completion/retry ladder rather than manufacture a wedge.
+  if (
+    !Object.prototype.hasOwnProperty.call(row, 'last_wake_status') ||
+    !Object.prototype.hasOwnProperty.call(row, 'last_loop_turn_at')
+  ) {
+    return null;
+  }
+  if (row.last_wake_status !== 'delivered') return null;
+
+  const wakeAtMs = tsMs(row.last_wake_at);
+  if (wakeAtMs == null || wakeAtMs <= lastFiredMs) return null;
+
+  const loopTurnAtMs = tsMs(row.last_loop_turn_at);
+  if (loopTurnAtMs != null && loopTurnAtMs >= wakeAtMs) return null;
+
+  // A delivery is a handoff attempt, not proof that a model turn completed.
+  // While the bounded grace is open, suppress the owner-wide completion
+  // signals below so unrelated activity cannot settle this fire early.
+  if (nowMs - wakeAtMs < claimDispatchGraceMs(row.interval_sec * 1000)) {
+    return { kind: 'awaiting-turn' };
+  }
+
+  const lastActiveMs = tsMs(row.presence_last_active_at);
+  if (lastActiveMs != null && lastActiveMs >= wakeAtMs && nowMs - lastActiveMs < FALLBACK_QUIET_MS) {
+    return { kind: 'awaiting-turn' };
+  }
+  return { kind: 'retry', completedAt: wakeAtMs, via: 'delivered-wake-no-loop-turn' };
+}
+
+/** Return the strict loop-origin assistant completion for this fire, when the
+ *  provenance clock proves it belongs to the latest delivered wake. */
+function loopTurnCompletionAt(row: LoopRow, lastFiredMs: number): number | null {
+  if (!Object.prototype.hasOwnProperty.call(row, 'last_loop_turn_at')) return null;
+  const loopTurnAtMs = tsMs(row.last_loop_turn_at);
+  if (loopTurnAtMs == null || loopTurnAtMs <= lastFiredMs) return null;
+
+  const wakeAtMs = tsMs(row.last_wake_at);
+  if (row.last_wake_status === 'delivered' && wakeAtMs != null && loopTurnAtMs < wakeAtMs) return null;
+  return loopTurnAtMs;
 }
 
 /**
@@ -878,6 +963,20 @@ function completionSignal(
       return { completedAt: noteRefreshed, via: 'note-refresh' };
     }
     return null;
+  }
+  const strictLoopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
+  if (strictLoopTurnAtMs != null) {
+    return { completedAt: strictLoopTurnAtMs, via: 'loop-turn' };
+  }
+  // EI-21743034835075378 — once a warm pure-loop wake is known to have been
+  // delivered, generic owner-wide lifecycle/journal/presence signals are not
+  // enough to prove THIS wake became a turn. Keep the row parked through the
+  // bounded delivery grace, then retry from the delivery clock if the strict
+  // loop-origin assistant clock is still absent/older.
+  const deliveredWakeState = deliveredWakeWithoutLoopTurn(row, lastFiredMs, nowMs);
+  if (deliveredWakeState?.kind === 'awaiting-turn') return null;
+  if (deliveredWakeState?.kind === 'retry') {
+    return { completedAt: deliveredWakeState.completedAt, via: deliveredWakeState.via };
   }
   // ── WARM loop — the original two-layer ladder ────────────────────────────────────
   // 1. PRIMARY: the Stop-hook lifecycle 'ended' marker (already filtered > last_fired by
@@ -1026,6 +1125,34 @@ export async function reconcileLoopRoutines(
            fs.last_fired_at AS fire_state_last_fired_at,
            fs.last_withheld_at AS fire_state_last_withheld_at,
            lw.last_wake_at,
+           lw.status AS last_wake_status,
+           -- EI-21743034835075378: pair each loop-fire USER prompt with the
+           -- assistant output before the next user prompt. Unlike the
+           -- owner-wide lifecycle/journal/presence clocks below, this proves
+           -- that THIS routine's delivered wake became an actual loop turn.
+           (SELECT max((
+              SELECT max(a2.ts)
+                FROM harness_shared.session_turns a2
+               WHERE a2.workspace_id = u.workspace_id
+                 AND a2.source_kind = u.source_kind
+                 AND a2.session_id = u.session_id
+                 AND a2.speaker = 'assistant'
+                 AND a2.turn_idx > u.turn_idx
+                 AND a2.turn_idx < COALESCE((
+                       SELECT min(u2.turn_idx)
+                         FROM harness_shared.session_turns u2
+                        WHERE u2.workspace_id = u.workspace_id
+                          AND u2.source_kind = u.source_kind
+                          AND u2.session_id = u.session_id
+                          AND u2.speaker = 'user'
+                          AND u2.turn_idx > u.turn_idx
+                     ), 2147483647)
+            ))
+              FROM harness_shared.session_turns u
+             WHERE u.owner = r.target_owner_id
+               AND u.speaker = 'user'
+               AND u.turn_origin = 'loop-fire'
+               AND u.ts > r.last_fired_at) AS last_loop_turn_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
              WHERE a.owner_id = r.target_owner_id
@@ -1101,11 +1228,14 @@ export async function reconcileLoopRoutines(
            AND s.role = r.name
       ) fs ON true
       LEFT JOIN LATERAL (
-        SELECT max(COALESCE(w.delivered_at, w.created_at)) AS last_wake_at
+        SELECT w.status,
+               COALESCE(w.delivered_at, w.created_at) AS last_wake_at
           FROM harness_shared.event_wake_deliveries w
          WHERE w.subscriber_id = r.target_owner_id
            AND w.source = ('loop:' || r.id)
-      ) lw ON true
+         ORDER BY w.created_at DESC
+         LIMIT 1
+       ) lw ON true
      WHERE r.active = TRUE
        AND r.reschedule_interval_sec IS NOT NULL
        AND r.target_owner_id IS NOT NULL
@@ -1492,7 +1622,11 @@ export async function reconcileLoopRoutines(
       // DISPATCHED fire has reached a settle/stuck decision: gate-backoff is deliberately excluded
       // because the gate refused the fire and no turn ran. The canonical counter excludes automatic
       // carry bookkeeping. A null read is evidence-unavailable, not zero, so it fails open.
-      if (via !== 'gate-backoff' && via !== 'claim-dispatch-gap') {
+      if (
+        via !== 'gate-backoff' &&
+        via !== 'claim-dispatch-gap' &&
+        via !== 'delivered-wake-no-loop-turn'
+      ) {
         const evidenceUntilMs = via === 'stuck-backstop' ? nowMs : completedAt;
         const toolCalls = await runWithWorkspace(row.routine_workspace_id, () =>
           countAgentToolCallsInWindow(row.target_owner_id, lastFiredMs, evidenceUntilMs, { sql: db }),
@@ -1734,7 +1868,10 @@ export async function reconcileLoopRoutines(
         const outcome: 'ok' | 'error' | null =
           via === 'gate-backoff'
             ? null
-            : turnDeath != null || via === 'stuck-backstop' || via === 'claim-dispatch-gap'
+            : turnDeath != null ||
+                via === 'stuck-backstop' ||
+                via === 'claim-dispatch-gap' ||
+                via === 'delivered-wake-no-loop-turn'
               ? 'error'
               : 'ok';
         if (outcome != null) {
@@ -1772,6 +1909,13 @@ export async function reconcileLoopRoutines(
             `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +
               `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry ` +
               `(circuit fed 'error'${quickRetry ? ', WI-2714 quick-retry leg' : ''})`,
+          );
+        }
+        if (via === 'delivered-wake-no-loop-turn') {
+          console.warn(
+            `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) wake was marked ` +
+              `delivered at ${new Date(completedAt).toISOString()} but no loop-origin assistant turn ` +
+              `was observed after the bounded grace — re-armed to retry (circuit fed 'error')`,
           );
         }
         if (via === 'gate-backoff') {
