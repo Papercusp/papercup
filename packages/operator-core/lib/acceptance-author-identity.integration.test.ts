@@ -1,7 +1,11 @@
 /** Real-PG regression for successor-author acceptance continuity. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from './acceptance-author-identity';
+import {
+  areAcceptanceLineageRelated,
+  isAcceptanceAuthorIdentity,
+  lineagePartyKeys,
+} from './acceptance-author-identity';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -194,5 +198,80 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     await expect(areAcceptanceLineageRelated('su-author', 'su-unrelated', opts)).resolves.toBe(false);
     await expect(areAcceptanceLineageRelated('su-author', 'su-cross-tenant-child', opts)).resolves.toBe(false);
     await expect(areAcceptanceLineageRelated('su-author', 'su-cross-tenant-psu-child', opts)).resolves.toBe(false);
+  });
+
+  /**
+   * D-008 / P-005. These MUST be real-PG: `lineagePartyKeys` fails toward "no
+   * pairs found", which a stubbed test reads as a clean "no duplicate parties"
+   * while the guard is silently inert — the same class of invisible-malformed-
+   * query D-007 hit. Only executing the recursive CTE proves it composes.
+   */
+  describe('lineagePartyKeys', () => {
+    const opts = () => ({ sql: db.adminSql, workspaceId });
+
+    it('groups a spawn chain and a launch chain into one party each, keyed by CALLER order', async () => {
+      const keys = await lineagePartyKeys(['su-author', 'su-child-1', 'su-grandchild', 'su-unrelated'], opts());
+      expect(keys.get('su-author')).toBe('su-author');
+      expect(keys.get('su-child-1')).toBe('su-author');
+      expect(keys.get('su-grandchild')).toBe('su-author');
+      // An id with no edge into the set is its own party, never merged by default.
+      expect(keys.get('su-unrelated')).toBe('su-unrelated');
+
+      const launched = await lineagePartyKeys(['su-author', 'su-psu-grandchild'], opts());
+      expect(launched.get('su-psu-grandchild')).toBe('su-author');
+    });
+
+    it('the key is the EARLIEST caller-order member, so a ranked pool keeps its best-ranked face', async () => {
+      // Reversing the input must reverse the representative — that is what makes
+      // "collapse a ranked pool" keep the top-ranked candidate rather than an
+      // arbitrary one. A key derived from the ledger instead of caller order
+      // would return 'su-author' both times and pass the test above regardless.
+      const forward = await lineagePartyKeys(['su-author', 'su-child-1'], opts());
+      const reversed = await lineagePartyKeys(['su-child-1', 'su-author'], opts());
+      expect(forward.get('su-child-1')).toBe('su-author');
+      expect(reversed.get('su-author')).toBe('su-child-1');
+    });
+
+    it('keeps SIBLINGS apart when their shared parent is not in the set (not connected components)', async () => {
+      // The calibration for the over-merge below: sharing a parent is not lineage,
+      // so an undirected-reachability implementation would wrongly merge these and
+      // this is the only assertion that would catch it.
+      const spawned = await lineagePartyKeys(['su-sibling-a', 'su-sibling-b'], opts());
+      expect(spawned.get('su-sibling-a')).toBe('su-sibling-a');
+      expect(spawned.get('su-sibling-b')).toBe('su-sibling-b');
+
+      const launchedSiblings = await lineagePartyKeys(['su-psu-sibling-a', 'su-psu-sibling-b'], opts());
+      expect(launchedSiblings.get('su-psu-sibling-a')).toBe('su-psu-sibling-a');
+      expect(launchedSiblings.get('su-psu-sibling-b')).toBe('su-psu-sibling-b');
+    });
+
+    it('DISCLOSED (D-008): siblings DO merge once their shared parent is also a candidate', async () => {
+      // Union-find over in-set pairs, so the parent bridges its children. Asserted
+      // deliberately: this over-EXCLUDES, the safe direction for an independence
+      // guard, and recording it stops a later reader "fixing" it into an
+      // under-exclusion that would re-open the n=2 self-review path.
+      const keys = await lineagePartyKeys(
+        ['su-psu-common-parent', 'su-psu-sibling-a', 'su-psu-sibling-b'],
+        opts(),
+      );
+      expect(keys.get('su-psu-sibling-a')).toBe('su-psu-common-parent');
+      expect(keys.get('su-psu-sibling-b')).toBe('su-psu-common-parent');
+    });
+
+    it('never merges across workspaces, and short-circuits below two ids', async () => {
+      const crossTenant = await lineagePartyKeys(
+        ['su-author', 'su-cross-tenant-child', 'su-cross-tenant-psu-child'],
+        opts(),
+      );
+      expect(crossTenant.get('su-cross-tenant-child')).toBe('su-cross-tenant-child');
+      expect(crossTenant.get('su-cross-tenant-psu-child')).toBe('su-cross-tenant-psu-child');
+
+      await expect(lineagePartyKeys([], opts())).resolves.toEqual(new Map());
+      await expect(lineagePartyKeys(['su-author'], opts())).resolves.toEqual(new Map([['su-author', 'su-author']]));
+      // Blank/duplicate ids are dropped rather than becoming their own parties.
+      await expect(lineagePartyKeys(['su-author', ' ', null, 'su-author'], opts())).resolves.toEqual(
+        new Map([['su-author', 'su-author']]),
+      );
+    });
   });
 });
