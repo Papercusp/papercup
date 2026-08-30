@@ -654,6 +654,16 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > a CONTENT question, never a date one → `git rev-parse <sha>:<path>` vs
 > `git rev-parse staging:<path>` (equal blobs ⇒ it carries it), or `git show --stat <sha>`.
 >
+> ⛔ **Use `--verify --quiet`, and NEVER `staging:` inside a submodule — both misreport SILENTLY.**
+> A bare `git rev-parse staging:<missing-path>` PRINTS the ref string to STDOUT before exiting 128,
+> so `S=$(git rev-parse "staging:$p" 2>/dev/null || echo ABSENT)` captures `staging:<path>` as if it
+> were a sha. And a SUBMODULE has no `staging` ref at all (`libs/papercusp` tracks `main`), so the
+> check above reports a file committed minutes ago as missing — the false-negative direction, which
+> sends you to re-fire git-sync or escalate "my work did not land". Correct forms:
+> `git rev-parse --verify --quiet "staging:$p" || echo ABSENT` in the superproject, and
+> `git -C libs/papercusp rev-parse --verify --quiet "HEAD:$p" || echo ABSENT` under a submodule.
+> An unresolvable REF and an absent PATH look identical — tell them apart before acting.
+>
 > ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is.** When a failing
 > test's runtime SUBJECT lives in a submodule (e.g. `readdirSync('…/libs/papercusp/libs/db/sql')`),
 > the test blob is identical in both refs while the gitlink moved underneath it — so containment
