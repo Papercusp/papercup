@@ -8,6 +8,7 @@ import {
   connectWithLocalRetry,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
+  importSdkModuleWithInstallAwareness,
   parseArgs,
   parseJsonInput,
   resolveContextTier,
@@ -1000,5 +1001,123 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(proxyError.message).toMatch(
       /\[2 connect attempt\(s\) over \d+s: 2x proxy-upstream-502\]$/,
     );
+  });
+});
+
+describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () => {
+  const moduleNotFound = (specifier: string) =>
+    Object.assign(new Error(`Cannot find module '${specifier}'`), { code: 'ERR_MODULE_NOT_FOUND' });
+
+  it('returns the imported module on a clean first attempt without consulting the mutex', async () => {
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const loadInstallMutex = vi.fn();
+    const result = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
+      doImport,
+      loadInstallMutex,
+      sleep: vi.fn(),
+    });
+    expect(result).toEqual({ Client: 'ok' });
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(loadInstallMutex).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-MODULE_NOT_FOUND failure immediately, without consulting the mutex', async () => {
+    const otherError = new TypeError('boom');
+    const doImport = vi.fn().mockRejectedValue(otherError);
+    const loadInstallMutex = vi.fn();
+    await expect(
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
+    ).rejects.toBe(otherError);
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(loadInstallMutex).not.toHaveBeenCalled();
+  });
+
+  it('rethrows MODULE_NOT_FOUND immediately when no install:safe write is in flight (genuine missing dep)', async () => {
+    const notFound = moduleNotFound('@modelcontextprotocol/sdk/types.js');
+    const doImport = vi.fn().mockRejectedValue(notFound);
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { peekFsMutexSync: () => ({ held: false }) },
+      { repoLockName: () => 'npm-install-abc123' },
+    ]);
+    const sleep = vi.fn();
+    await expect(
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex, sleep }),
+    ).rejects.toBe(notFound);
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('rethrows MODULE_NOT_FOUND immediately when the mutex helper itself cannot be loaded', async () => {
+    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
+    const doImport = vi.fn().mockRejectedValue(notFound);
+    const loadInstallMutex = vi.fn().mockRejectedValue(new Error('cannot resolve helper'));
+    await expect(
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', { doImport, loadInstallMutex }),
+    ).rejects.toBe(notFound);
+    expect(doImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits out a live install:safe write and returns the module once the retry succeeds', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const doImport = vi.fn()
+      .mockRejectedValueOnce(notFound)
+      .mockRejectedValueOnce(notFound)
+      .mockResolvedValueOnce({ StreamableHTTPClientTransport: 'ok' });
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { peekFsMutexSync: () => ({ held: true, owner: { pid: 4242, host: 'devbox' } }) },
+      { repoLockName: () => 'npm-install-abc123' },
+    ]);
+    const sleeps: number[] = [];
+    const result = await importSdkModuleWithInstallAwareness(
+      '@modelcontextprotocol/sdk/client/streamableHttp.js',
+      {
+        doImport,
+        loadInstallMutex,
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+        },
+        totalMs: 10_000,
+        intervalMs: 1_500,
+      },
+    );
+    expect(result).toEqual({ StreamableHTTPClientTransport: 'ok' });
+    expect(doImport).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([1_500, 1_500]);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
+  });
+
+  it('gives up and rethrows the original MODULE_NOT_FOUND once the retry budget is exhausted', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
+    const doImport = vi.fn().mockRejectedValue(notFound);
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { peekFsMutexSync: () => ({ held: true, owner: { pid: 4242 } }) },
+      { repoLockName: () => 'npm-install-abc123' },
+    ]);
+    let now = 0;
+    const sleep = vi.fn(async (ms: number) => {
+      now += ms;
+    });
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      await expect(
+        importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
+          doImport,
+          loadInstallMutex,
+          sleep,
+          totalMs: 5_000,
+          intervalMs: 2_000,
+        }),
+      ).rejects.toBe(notFound);
+    } finally {
+      Date.now = originalNow;
+      consoleError.mockRestore();
+    }
+    // Bounded: stops retrying once elapsed time reaches the budget rather than looping forever.
+    expect(doImport.mock.calls.length).toBeGreaterThan(1);
+    expect(doImport.mock.calls.length).toBeLessThan(10);
   });
 });
