@@ -92,6 +92,21 @@ describe('fetchWithTimeout', () => {
     expect(calls).toBe(2);
   });
 
+  it('never retries a rejected non-idempotent write', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('ambiguous transport failure');
+    });
+    await expect(
+      fetchWithTimeout('/api/lifecycle', {
+        init: { method: 'POST', body: '{}' },
+        retries: 3,
+        fetchImpl,
+        sleep: noopSleep,
+      }),
+    ).rejects.toThrow('ambiguous transport failure');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates a CALLER abort immediately and never retries', async () => {
     const ac = new AbortController();
     ac.abort();

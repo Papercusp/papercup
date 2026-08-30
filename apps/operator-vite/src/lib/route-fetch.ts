@@ -32,7 +32,7 @@
 export interface FetchWithTimeoutOptions {
   /** Abort (and reject) a single attempt after this many ms. Default 4000. */
   timeoutMs?: number;
-  /** Additional attempts after the first, on timeout/network failure. Default 0. */
+  /** Additional attempts after the first, on timeout/network failure for GET/HEAD only. Default 0. */
   retries?: number;
   /**
    * Backoff before each retry; the attempt index is clamped to the last entry.
@@ -74,6 +74,11 @@ export async function fetchWithTimeout(
   } = opts;
 
   const callerSignal = init?.signal ?? null;
+  // A rejected mutation may have reached the server before the transport
+  // reported its failure. Keep this helper aligned with ipcFetch's existing
+  // safe-retry boundary: only GET and HEAD may be replayed automatically.
+  const method = String(init?.method ?? 'GET').toUpperCase();
+  const retryableMethod = method === 'GET' || method === 'HEAD';
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -100,7 +105,7 @@ export async function fetchWithTimeout(
       lastErr = err;
       // A genuine caller cancel propagates immediately; never burn a retry on it.
       if (callerAborted(callerSignal) && !timedOut) throw err;
-      if (attempt >= retries) throw err;
+      if (!retryableMethod || attempt >= retries) throw err;
       await sleep(retryBackoffMs[Math.min(attempt, retryBackoffMs.length - 1)]);
     }
   }
