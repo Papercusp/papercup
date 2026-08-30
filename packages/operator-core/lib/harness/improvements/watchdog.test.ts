@@ -3632,10 +3632,15 @@ describe('collectSchemaObjectDriftSignals (WI-918476)', () => {
     definition: `CREATE INDEX ${name} ON harness_shared.${table} USING btree (c)`,
     constraintBacked: false,
   });
+  type Entry = ReturnType<typeof entry>;
   const clean = {
-    liveOnly: [],
-    referenceOnly: [],
-    definitionMismatch: [],
+    // Annotated: a bare `[]` here infers as never[], which then rejects every
+    // override below with an unhelpful "not assignable to type 'never'".
+    liveOnly: [] as Entry[],
+    referenceOnly: [] as Entry[],
+    definitionMismatch: [] as Array<{
+      schema: string; name: string; table: string; reference: string; live: string;
+    }>,
     schemasCompared: ['harness_shared'],
     schemasNotCompared: ['dbos'],
     liveIndexCount: 100,
