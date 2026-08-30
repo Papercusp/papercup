@@ -1013,6 +1013,15 @@ export function fleetScopeLeaderRemedy(
       `without the spec being malformed. Re-steer the fleet to a live plan (or another positive filter) with ` +
       `scheduler:set_claim_spec; do not keep bumping this revision for individual rows. `
     : '';
+  // EI-21884167889601047: this note used to LEAD the refusal, ahead of the safer
+  // "widen the lane" / "complete it yourself" remedies — the one-call fix reads as
+  // THE intended path under an agent's bias toward unblocking itself, and the
+  // "do not stamp a mere blocker" guard that followed it lost to that framing.
+  // The stamp is not a neutral relabel: it creates a coverage edge, so closing the
+  // plan item later auto-resolves the stamped work-item as residue — a false stamp
+  // on a blocker silently makes the blocker disappear. Demoted to LAST, phrased as
+  // a conditional test rather than an instruction, with the consequence stated
+  // inline instead of left for the reader to infer at the decision point.
   const planStampNote = planScoped && !retiredPlans?.length
     ? (() => {
         const plans = planPredicateValues(spec);
@@ -1021,11 +1030,13 @@ export function fleetScopeLeaderRemedy(
           : 'a plan/plan-item predicate';
         const planSlug = plans.length === 1 ? `"${plans[0]}"` : '"<plan-slug>"';
         return (
-          `This member's lane is plan-scoped to ${planScope}. If the refused work-item genuinely IMPLEMENTS ` +
-          `one of that plan's items but carries no plan_item stamp, backfill it before changing the lane: ` +
-          `work_items:update { id: "<work-item-id>", plan_item: { slug: ${planSlug}, item: "<P-NNN>" } } — ` +
-          `the existing claim can then succeed without a spec revision. Do not stamp a bug merely discovered ` +
-          `while working the plan; leave it unlinked and route it to the leader or another admitting lane. `
+          ` LAST RESORT — this member's lane is plan-scoped to ${planScope}. ONLY if the refused work-item's own ` +
+          `body describes it as IMPLEMENTING one of that plan's items (never a blocker merely discovered while ` +
+          `working the plan — leave that unlinked and route it via the options above instead), you may backfill ` +
+          `it before changing the lane: work_items:update { id: "<work-item-id>", plan_item: { slug: ${planSlug}, ` +
+          `item: "<P-NNN>" } } — the existing claim can then succeed without a spec revision. ⚠ CONSEQUENCE: the ` +
+          `stamp creates a coverage edge, so closing that plan item later auto-resolves this work-item as residue ` +
+          `even if its own work was never done — a wrong stamp on a blocker silently makes the blocker disappear.`
         );
       })()
     : '';
@@ -1058,10 +1069,11 @@ export function fleetScopeLeaderRemedy(
     // per-row advice that follows it — a leader who reads only the first sentence must not
     // walk away with "bump a revision for this row" when the spec matches nothing.
     // Plan-scoped lanes are intentionally narrow: their exclusion ratio is not evidence of
-    // a malformed class filter, and a missing plan_item stamp has a safer row-local remedy.
-    `${retiredPlanNote}${planStampNote}${planScoped ? '' : fleetScopeClassRefusalNote(classRefusal)}` +
+    // a malformed class filter — but see EI-21884167889601047 below for why the plan-item
+    // stamp itself is demoted to LAST rather than treated as the safe row-local remedy.
+    `${retiredPlanNote}${planScoped ? '' : fleetScopeClassRefusalNote(classRefusal)}` +
     `To let this member self-claim it, ${laneAction} — the member picks it up on its next scheduler:get_next, ` +
-    `no re-dispatch. ${routeElsewhereNote}${trackerNote ? ` ${trackerNote}` : ''}`
+    `no re-dispatch. ${routeElsewhereNote}${trackerNote ? ` ${trackerNote}` : ''}${planStampNote}`
   );
 }
 

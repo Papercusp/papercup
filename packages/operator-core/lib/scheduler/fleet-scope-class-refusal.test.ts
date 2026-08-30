@@ -139,7 +139,13 @@ describe('fleetScopeLeaderRemedy — how the class reading reaches the leader', 
     expect(unknownReporter).not.toContain('only TRACKS work you can perform without holding it');
   });
 
-  it('leads a plan-scoped refusal with a conditional plan_item backfill and suppresses the ratio warning', () => {
+  it('EI-21884167889601047: demotes the plan_item backfill to LAST RESORT, after the safe widen/route remedies, and suppresses the ratio warning', () => {
+    // The stamp used to LEAD the refusal, ahead of "widen the lane" / "complete it
+    // yourself" — the one-call fix read as THE intended path under an agent's bias
+    // toward unblocking itself, and it is not a neutral relabel: a wrong stamp
+    // creates a coverage edge that silently makes a blocker disappear once the plan
+    // item closes. Demoted to last, phrased as a conditional test, consequence stated
+    // inline.
     const base = refusal();
     const planViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
       ...base,
@@ -161,9 +167,13 @@ describe('fleetScopeLeaderRemedy — how the class reading reaches the leader', 
     expect(body).toContain("plan-scoped to 'mail-retirement'");
     expect(body).toContain('work_items:update');
     expect(body).toContain('without a spec revision');
+    expect(body).toContain('LAST RESORT');
+    expect(body).toContain('CONSEQUENCE');
+    expect(body).toContain('auto-resolves this work-item as residue');
     expect(body).not.toContain('POSSIBLE CLASS REFUSAL');
     expect(stampAt).toBeGreaterThanOrEqual(0);
-    expect(stampAt).toBeLessThan(widenAt);
+    expect(widenAt).toBeGreaterThanOrEqual(0);
+    expect(widenAt).toBeLessThan(stampAt);
   });
 
   it('PREPENDS the class note, so it is read before the per-row advice it can invalidate', () => {
