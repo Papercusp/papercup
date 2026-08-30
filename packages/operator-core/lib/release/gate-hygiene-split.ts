@@ -70,7 +70,8 @@
 export type HygieneCategory =
   | "generated-artifact-stale"
   | "budget-exceeded"
-  | "fixture-drift";
+  | "fixture-drift"
+  | "detector-coverage-drift";
 
 export type GateFailureClass = "product" | "hygiene";
 
@@ -106,6 +107,67 @@ export const EXPLICIT_HYGIENE_GATE_SCRIPTS: Record<string, ExplicitHygieneEntry>
   },
 };
 
+/** ## The one admitted exception to "a test file is never hygiene" (WI-41765, D-010)
+ *
+ * The header above rejects exempting a doc-claims FILE, and that rejection stands: the
+ * measured reason was that `gate-candidate-ref.test.ts` held a SUBSTANTIVE pin and a
+ * COVERAGE floor inside ONE `it()`, so a file-level exemption switched off the pin.
+ *
+ * That premise no longer holds for the block it was measured on. WI-41765 SPLIT those two
+ * assertion kinds into separate `it()`s, which is precisely the precondition the header
+ * names ("Admitting them requires first separating those two assertion kinds inside the
+ * guards themselves"). Once separated, a single failing CASE is a sound unit: its whole
+ * body is one kind of claim. The unit here is therefore the CASE, never the file — a file
+ * is admitted only when EVERY one of its failing cases is registered below.
+ *
+ * WHY A REGISTRY AND NOT A HEURISTIC. There is no textual property of a case name that
+ * makes it coverage-class; "coverage" in a title is a naming convention, and deriving from
+ * it would let any future test opt itself out of the gate by choosing a word. Each entry is
+ * a hand-audited judgement about one specific case, exactly like EXPLICIT_HYGIENE_GATE_SCRIPTS.
+ *
+ * WHY THE re-merge GUARD IS LOAD-BEARING. A registered case is trusted to contain only
+ * instrument assertions. If someone later adds a substantive assertion back into it, this
+ * registry silently converts a REAL product failure into hygiene — the original D-008 hazard,
+ * one level down. `forbiddenSymbols` is what makes that detectable rather than a comment
+ * nobody re-reads: gate-hygiene-coverage-cases.test.ts reads the real file and fails if any
+ * of them appears in an `expect(...)` inside the registered case. */
+export interface CoverageClassCase {
+  /** Workspace-relative path, exactly as vitest's `❯ <file> (N tests | M failed)` header
+   *  renders it — that header is what `extractFailingCasesByFile` keys its map by, and the
+   *  gate's `failingTests` entries use the same shape. */
+  file: string;
+  /** Repo-relative path to the SAME file. Only the guard test uses it (to read the file);
+   *  matching never does. Its presence is what lets the guard prove the workspace-relative
+   *  key above resolves to exactly one real file, closing the ambiguity that two workspaces
+   *  could both contain a `lib/…/x.test.ts`. */
+  repoPath: string;
+  /** The LEAF case name, exactly as vitest's `× <name>` row renders it. NOT the
+   *  `describe > describe > it` path: a nested describe is emitted on its own `❯` row and
+   *  does not prefix the case name (green-checkpoint.test.ts pins both shapes). */
+  caseName: string;
+  /** Symbols that would make this case substantive again. Presence of any inside an
+   *  `expect(...)` in the registered case is a re-merge and fails the guard. */
+  forbiddenSymbols: string[];
+  /** Why this case is an instrument claim rather than a system claim. */
+  why: string;
+}
+
+export const COVERAGE_CLASS_TEST_CASES: readonly CoverageClassCase[] = [
+  {
+    file: "lib/doc-claims/gate-candidate-ref.test.ts",
+    repoPath: "packages/operator-core/lib/doc-claims/gate-candidate-ref.test.ts",
+    caseName:
+      "detector coverage: still sees both candidate-resolution sites (instrument health, not a system claim)",
+    forbiddenSymbols: ["violations", "verdict.ok"],
+    why:
+      "Asserts the detector can still SEE both candidate-resolution sites. It makes no claim " +
+      "about what the gate does — the sibling case 'cuts the candidate from the LOCAL " +
+      "integration branch, and never fetches' holds that pin and stays product. On 2026-08-25 " +
+      "this case alone failed because green-checkpoint.ts passed 14,500 lines and its calls " +
+      "became multi-line: pure measurement drift, which froze every agent's promotions.",
+  },
+];
+
 export interface ClassifiedGateFailure {
   /** The failing entry exactly as the gate reported it. */
   entry: string;
@@ -121,6 +183,11 @@ export interface HygieneClassificationContext {
   /** The root package.json `scripts` map, passed in rather than read, so this module
    *  stays pure and the pair derivation is testable against synthetic script sets. */
   rootScripts: Record<string, string>;
+  /** Failing CASE names attributed to the file they failed in, from the gate's own
+   *  `extractFailingCasesByFile`. ABSENT ⇒ every test file classifies product, which is
+   *  byte-identical to the behaviour before WI-41765 — the attribution can only ever
+   *  ADMIT a file, never hold one it would otherwise have promoted. */
+  failingCasesByFile?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** `<workspace> :: <script>` → the script half; a bare id → itself; a bare workspace
