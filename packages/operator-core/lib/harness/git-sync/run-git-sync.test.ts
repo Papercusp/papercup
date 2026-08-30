@@ -35,6 +35,8 @@ import {
   isConfigLockFailure,
   isPathspecBeyondSymbolicLinkFailure,
   isTransientStatFailure,
+  preflightInvalidIndex,
+  MIN_VALID_GIT_INDEX_BYTES,
   clearStaleIndexLock,
   clearStaleConfigLock,
   scavengeStaleTempPacks,
@@ -1052,6 +1054,84 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(out.status).not.toBe('synced'); // the failure still surfaces (watchdog sees it)
     expect(existsSync(lockPath)).toBe(true); // the live writer keeps its lock
+  });
+
+  it('EI-21872458801896676: repairs a truncated canonical index before the dirty census and still commits the working tree', async () => {
+    writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+    const indexPath = join(repo, '.git', 'index');
+    writeFileSync(indexPath, Buffer.alloc(0));
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(readFileSync(indexPath).length).toBeGreaterThanOrEqual(MIN_VALID_GIT_INDEX_BYTES);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
+    expect(logs.join('\n')).toMatch(/repaired invalid Git index.*read-tree HEAD/i);
+  });
+
+  it.each([
+    ['live writer', true],
+    ['unknown writer state', null],
+  ] as const)(
+    'EI-21872458801896676: refuses a truncated index when the %s cannot be ruled out',
+    async (_label, open) => {
+      const indexPath = join(repo, '.git', 'index');
+      writeFileSync(indexPath, Buffer.alloc(0));
+      const calls: string[][] = [];
+      const logs: string[] = [];
+      const runGit: RunGit = async (args) => {
+        calls.push([...args]);
+        if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir') {
+          return { code: 0, stdout: `${join(repo, '.git')}\n`, stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      };
+
+      const result = await preflightInvalidIndex(runGit, repo, (message) => logs.push(message), {
+        isOpen: async () => open,
+      });
+
+      expect(result.status).toBe('refused');
+      expect(calls.some((args) => args[0] === 'read-tree')).toBe(false);
+      expect(readFileSync(indexPath).length).toBe(0);
+      expect(logs.join('\n')).toMatch(/refusing invalid Git index preflight/i);
+    },
+  );
+
+  it('EI-21872458801896676: refuses a truncated index when index.lock appears during the re-stat window', async () => {
+    const indexPath = join(repo, '.git', 'index');
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(indexPath, Buffer.alloc(0));
+    let indexReads = 0;
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push([...args]);
+      if (args[0] === 'rev-parse' && args[1] === '--absolute-git-dir') {
+        return { code: 0, stdout: `${join(repo, '.git')}\n`, stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const result = await preflightInvalidIndex(runGit, repo, () => {}, {
+      isOpen: async () => false,
+      inspectFile: async (path) => {
+        if (path === indexPath) {
+          indexReads++;
+          return { size: 0, mtimeMs: 1, dev: 1, ino: 1, isFile: true };
+        }
+        if (path === lockPath && indexReads >= 2) {
+          return { size: 0, mtimeMs: 1, dev: 1, ino: 2, isFile: true };
+        }
+        return null;
+      },
+    });
+
+    expect(result.status).toBe('refused');
+    expect(calls.some((args) => args[0] === 'read-tree')).toBe(false);
   });
 
   it('EI-20345390379109755: an orphaned config.lock is cleared before canonical submodule URL sync retries', async () => {

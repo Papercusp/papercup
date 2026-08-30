@@ -2091,6 +2091,222 @@ async function defaultOpenFileCheck(path: string): Promise<boolean | null> {
   return null;
 }
 
+/**
+ * The minimum byte length of a Git index with its fixed header and SHA-1
+ * checksum. Git's index starts with a 12-byte `DIRC` header and ends with a
+ * 20-byte repository-hash checksum. A shorter file can only be a torn write;
+ * it is not a usable empty index. (SHA-256 repositories have a larger
+ * checksum, so this floor remains deliberately conservative and still catches
+ * the zero/short index class this guard protects.)
+ */
+export const MIN_VALID_GIT_INDEX_BYTES = 12 + 20;
+
+export interface GitIndexFileSnapshot {
+  size: number;
+  mtimeMs: number;
+  dev?: number;
+  ino?: number;
+  /** `lstat().isFile()`. Optional for injected test seams; undefined means regular. */
+  isFile?: boolean;
+}
+
+export interface InvalidIndexPreflightDeps {
+  /** Read one path without following a symlink. ENOENT is returned as null. */
+  inspectFile?: (path: string) => Promise<GitIndexFileSnapshot | null>;
+  /** `true` = a writer has the path open, `false` = no writer, `null` = unknown. */
+  isOpen?: (path: string) => Promise<boolean | null>;
+  /** Override the minimum size for deterministic format/edge tests. */
+  minimumBytes?: number;
+}
+
+export type InvalidIndexPreflightResult =
+  | { status: 'unavailable'; reason: string }
+  | { status: 'absent' | 'valid'; indexPath: string; size?: number; minimumBytes: number }
+  | { status: 'repaired'; indexPath: string; previousSize: number; size: number; minimumBytes: number }
+  | { status: 'refused' | 'error'; indexPath: string; reason: string; previousSize?: number; minimumBytes: number };
+
+const defaultIndexFileSnapshot = async (path: string): Promise<GitIndexFileSnapshot | null> => {
+  try {
+    const st = await lstat(path);
+    return { size: st.size, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino, isFile: st.isFile() };
+  } catch (error) {
+    // An absent index is a normal state for a newly-created repository. Other
+    // errors (permissions, I/O, a disappearing mount) are uncertainty and are
+    // handled by the caller as a fail-closed refusal.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+};
+
+const sameGitIndexSnapshot = (a: GitIndexFileSnapshot, b: GitIndexFileSnapshot): boolean =>
+  a.size === b.size && a.mtimeMs === b.mtimeMs && a.dev === b.dev && a.ino === b.ino && a.isFile === b.isFile;
+
+/**
+ * Detect and safely rebuild a torn `.git/index` before any status/submodule
+ * census can mistake the checkout for a clean tree.
+ *
+ * The repair is intentionally narrow and non-destructive: only an existing
+ * regular index shorter than the fixed header+checksum floor is eligible, and
+ * `git read-tree HEAD` rebuilds the replaceable index without changing the
+ * working tree. Before invoking it we prove that no process has the index open,
+ * no `index.lock` exists, and the file did not change during inspection. Any
+ * unknown/live state refuses the repair. The default `runGit` supplied by
+ * `runGitSync` is the bounded runner, so the read-tree itself cannot wedge a
+ * scheduled tick; injected runners remain available for deterministic tests.
+ */
+export async function preflightInvalidIndex(
+  runGit: RunGit,
+  repoPath: string,
+  log: (message: string) => void,
+  deps: InvalidIndexPreflightDeps = {},
+): Promise<InvalidIndexPreflightResult> {
+  const minimumBytes = Math.max(1, Math.floor(deps.minimumBytes ?? MIN_VALID_GIT_INDEX_BYTES));
+  const inspectFile = deps.inspectFile ?? defaultIndexFileSnapshot;
+  const isOpen = deps.isOpen ?? defaultOpenFileCheck;
+
+  let gitDirResult: GitCommandResult;
+  try {
+    gitDirResult = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  } catch (error) {
+    // A caller-supplied fake or a path that is not a Git checkout cannot be
+    // preflighted. Preserve the existing fail-soft behavior for that case; a
+    // real canonical checkout always resolves this command successfully.
+    return { status: 'unavailable', reason: `could not resolve the Git directory: ${String(error)}` };
+  }
+  const gitDir = gitDirResult.stdout.trim();
+  if (gitDirResult.code !== 0 || !gitDir) {
+    return {
+      status: 'unavailable',
+      reason: `could not resolve the Git directory: ${(gitDirResult.stderr || gitDirResult.stdout || 'unknown error').trim()}`,
+    };
+  }
+
+  const indexPath = join(gitDir, 'index');
+  const lockPath = join(gitDir, 'index.lock');
+  const refuse = (
+    reason: string,
+    status: 'refused' | 'error' = 'refused',
+    previousSize?: number,
+  ): InvalidIndexPreflightResult => {
+    log(
+      `[git-sync] ${repoPath}: refusing invalid Git index preflight — ${reason}; leaving the index and working tree untouched`,
+    );
+    return { status, indexPath, reason, previousSize, minimumBytes };
+  };
+  const inspect = async (path: string): Promise<GitIndexFileSnapshot | null | 'unknown'> => {
+    try {
+      return await inspectFile(path);
+    } catch {
+      return 'unknown';
+    }
+  };
+
+  const before = await inspect(indexPath);
+  if (before === 'unknown') return refuse(`could not inspect ${indexPath}`);
+  if (before === null) return { status: 'absent', indexPath, minimumBytes };
+  if (before.isFile === false) return refuse(`${indexPath} is not a regular file`, 'error', before.size);
+  if (before.size >= minimumBytes) return { status: 'valid', indexPath, size: before.size, minimumBytes };
+
+  // The lock's mere presence is enough to refuse: even a stale-looking lock
+  // may belong to a writer whose descriptor we cannot observe. Existing
+  // index.lock recovery remains responsible for its own age-checked path.
+  const lock = await inspect(lockPath);
+  if (lock === 'unknown') return refuse(`could not determine whether ${lockPath} exists`, 'refused', before.size);
+  if (lock !== null) {
+    let lockOpen: boolean | null = null;
+    try {
+      lockOpen = await isOpen(lockPath);
+    } catch {
+      // Unknown is deliberately retained in the message below.
+      lockOpen = null;
+    }
+    return refuse(
+      `${lockPath} is present${lockOpen === true ? ' and open by a writer' : lockOpen === null ? ' (writer state unknown)' : ''}`,
+      'refused',
+      before.size,
+    );
+  }
+
+  let open: boolean | null;
+  try {
+    open = await isOpen(indexPath);
+  } catch {
+    open = null;
+  }
+  if (open !== false) {
+    return refuse(
+      open === true ? `${indexPath} is open by a live writer` : `could not prove that ${indexPath} has no live writer`,
+      'refused',
+      before.size,
+    );
+  }
+
+  // Re-stat immediately before repair. A changed file may already have been
+  // repaired by its owner; accept that valid replacement, but never overwrite
+  // another short/torn replacement whose provenance we cannot prove.
+  const stable = await inspect(indexPath);
+  if (stable === 'unknown') return refuse(`could not re-stat ${indexPath} before repair`, 'refused', before.size);
+  if (stable === null) return refuse(`${indexPath} disappeared during preflight`, 'refused', before.size);
+  if (stable.isFile === false)
+    return refuse(`${indexPath} became non-regular during preflight`, 'refused', before.size);
+  if (!sameGitIndexSnapshot(before, stable)) {
+    if (stable.size >= minimumBytes) {
+      return { status: 'valid', indexPath, size: stable.size, minimumBytes };
+    }
+    return refuse(`${indexPath} changed during preflight`, 'refused', before.size);
+  }
+
+  // Repeat both safety proofs after the re-stat so a lock/writer that appeared
+  // during the first inspection cannot be clobbered by read-tree.
+  const lockBeforeRepair = await inspect(lockPath);
+  if (lockBeforeRepair === 'unknown')
+    return refuse(`could not re-check ${lockPath} before repair`, 'refused', before.size);
+  if (lockBeforeRepair !== null) return refuse(`${lockPath} appeared during preflight`, 'refused', before.size);
+  try {
+    open = await isOpen(indexPath);
+  } catch {
+    open = null;
+  }
+  if (open !== false) {
+    return refuse(
+      open === true
+        ? `${indexPath} became open by a live writer during preflight`
+        : `writer state for ${indexPath} became unknown during preflight`,
+      'refused',
+      before.size,
+    );
+  }
+
+  let repair: GitCommandResult;
+  try {
+    // This is the bounded local git seam in production (`runGitBounded` via
+    // runGitSync); never use execFileSync here, which could wedge the routine.
+    repair = await runGit(['read-tree', 'HEAD'], repoPath);
+  } catch (error) {
+    return refuse(`bounded git read-tree HEAD threw: ${String(error)}`, 'error', before.size);
+  }
+  if (repair.code !== 0) {
+    return refuse(
+      `bounded git read-tree HEAD failed: ${(repair.stderr || repair.stdout || `exit ${repair.code}`).trim().slice(0, 300)}`,
+      'error',
+      before.size,
+    );
+  }
+
+  const after = await inspect(indexPath);
+  if (after === 'unknown' || after === null || after.isFile === false || after.size < minimumBytes) {
+    return refuse(`git read-tree HEAD completed but ${indexPath} is still invalid`, 'error', before.size);
+  }
+  const lockAfterRepair = await inspect(lockPath);
+  if (lockAfterRepair === 'unknown' || lockAfterRepair !== null) {
+    return refuse(`${lockPath} remained after git read-tree HEAD`, 'error', before.size);
+  }
+  log(
+    `[git-sync] ${repoPath}: repaired invalid Git index (${before.size} bytes < ${minimumBytes}) via bounded git read-tree HEAD; working-tree content was preserved`,
+  );
+  return { status: 'repaired', indexPath, previousSize: before.size, size: after.size, minimumBytes };
+}
+
 export interface TempPackScavengeDeps {
   now?: () => number;
   staleMs?: number;
@@ -2646,6 +2862,23 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   let committedCount = 0;
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
+  // A torn index makes `git status` report an empty census and would therefore
+  // strand every working-tree edit. Preflight before the first status call for
+  // both the superproject and each submodule. The helper is idempotent, so the
+  // root-level preflight (needed before submodule discovery) may have already
+  // established a valid index.
+  const indexPreflight = await preflightInvalidIndex(runGit, repoPath, o.log);
+  if (indexPreflight.status === 'refused' || indexPreflight.status === 'error') {
+    return {
+      committedLocal: false,
+      dirtyPathCount: 0,
+      committedCount,
+      error: `invalid-index preflight refused the commit: ${indexPreflight.reason}`,
+      oversized,
+      contentErrors,
+      skippedPaths: [],
+    };
+  }
   const dirty = await dirtyFiles(runGit, repoPath);
   const dirtyPathCount = dirty.length;
   const skippedPaths = o.protectedHoldings
@@ -3474,6 +3707,32 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       contentErrors: [],
       // No repo to inspect: nothing was measured, so null (never []) — an all-clear we
       // did not earn would retire a live strand escalation.
+      strandedSubmodules: null,
+    };
+  }
+
+  // Run before `git submodule status --recursive`: that census reads the
+  // superproject index and otherwise turns a torn zero-byte index into a
+  // misleading empty-submodule/clean-tree result. A refusal is surfaced as a
+  // normal repo error; an unavailable probe is retained as the legacy fail-soft
+  // path used by injected non-repository test seams.
+  const rootIndexPreflight = await preflightInvalidIndex(runGit, repo, log);
+  if (rootIndexPreflight.status === 'refused' || rootIndexPreflight.status === 'error') {
+    return {
+      status: 'error',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      errors: [
+        {
+          scope: 'superproject',
+          message: `invalid-index preflight refused the sync: ${rootIndexPreflight.reason}`,
+        },
+      ],
+      pushed: [],
+      merged: [],
+      mergeCompleted: [],
+      oversized: [],
+      contentErrors: [],
       strandedSubmodules: null,
     };
   }
