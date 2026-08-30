@@ -1433,17 +1433,27 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // endedBy='self', exitCode=0, endedSignal=null, i.e. a clean voluntary
       // exit, never a kill". That is FALSE reasoning: `self` is the value a row
       // DEGRADES TO when end provenance is not captured, so it is absence of
-      // evidence, not evidence of a voluntary exit. What is actually measured is
-      // that EVERY codex managed session dies 11.5-49.2s after launch, and the
-      // same population records it BOTH ways — some `signal`/SIGHUP, some
-      // `self`/no-signal:
+      // evidence, not evidence of a voluntary exit.
       //
-      //   21326 34.9s self    (no end command was sent at all)
-      //   21318 49.2s self      21315 23.7s self     21312 27.2s self
-      //   21310 32.5s self      21307 13.6s SIGHUP   21305 11.5s SIGHUP
+      // ⚠ A SECOND CLAIM WAS HERE AND IT IS ALSO RETRACTED. This note used to say
+      // "EVERY codex managed session dies 11.5-49.2s after launch", listing rows
+      // 21326/21318/21315/21312/21310/21307/21305. That range was an artifact of
+      // the 8h window it was measured in, stated as a property of the population.
+      // Over 12h the max is 295.6s (adv 21291). Do not restore it.
       //
-      // So the death is NOT END-correlated (21326 had no end), and whether it is
-      // a product defect or expected for a TTY-less codex session is OPEN.
+      // WHAT IS ACTUALLY MEASURED, by a deliberate no-end control (adv 21328,
+      // 2026-08-30): PUI create -> claim -> run the row's launchArgv under a pty,
+      // then send NOTHING — no end, no attach, no bare launch — and watch. The
+      // session reached "Ready · gpt-5.6-sol default · staging" with both MCP
+      // servers up and was STILL OPEN at +130.6s, when the control's own cleanup
+      // closed it (ended_by='reconciler', which only stamps an unset ended_at).
+      //
+      // So an idle READY managed codex session does NOT have a ~30s lifetime, and
+      // the disturbance half below IS measurable. The deaths correlate with the
+      // session having been ATTACHED AND DRIVEN — every row that died in the tens
+      // of seconds carries a session_id, which is what driving stamps; the control
+      // never got one and did not die. Whether that post-drive death is a product
+      // defect or expected for a TTY-less codex session is still OPEN.
       // Tracked as EI-21908787009967815; do not close it by assumption.
       //
       // What this ordering DOES fix is the false causation: that ~30s death
