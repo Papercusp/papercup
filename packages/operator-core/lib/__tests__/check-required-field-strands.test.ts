@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFil
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { attributedTypeErrors, collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
+import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSignatures, collectExportedTypeNames, diffRequiredAdditions, diffSignatureBreaks, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
@@ -815,5 +815,126 @@ describe('attributedTypeErrors — a typechecker that fell over is not a finding
     const out = 'Do NOT make the new field optional just to silence these type errors.';
 
     expect(attributedTypeErrors(out)).toBe(false);
+  });
+});
+
+/**
+ * EI-18832053511250483 — widening the trigger to EXPORTED SIGNATURE changes.
+ *
+ * The measured reason this shape, and not an unconditional tsc on test:affected: `--files=`
+ * is a post-tsc REPORTING filter, so scoping buys nothing (one file 42s vs whole tree 36s),
+ * and ~98.5% of operator-core files carry a zero tsc baseline, so a "only when a baseline-0
+ * file is touched" trigger fires on nearly every edit. The affordable pattern is the one
+ * already proven here: a cheap AST predicate that gates the expensive precise detector.
+ *
+ * The motivating first-hand case: an OPTIONAL-parameter change (`source = null`, narrowing
+ * the inferred type) stranded call sites, and the required-field predicate cannot see it.
+ */
+const SIG_BEFORE = `
+export function claimNext(owner: string, harness?: string): Promise<Claim> {}
+export const formatClaim = (c: Claim, verbose?: boolean): string => '';
+export interface ClaimStore {
+  read(id: string): Claim;
+}
+`;
+
+describe('collectExportedSignatures', () => {
+  it('collects function declarations, exported arrow consts, and interface methods', () => {
+    const sigs = collectExportedSignatures(SIG_BEFORE);
+
+    expect([...sigs.keys()].sort()).toEqual(['ClaimStore.read', 'claimNext', 'formatClaim']);
+    expect(sigs.get('claimNext').params).toEqual([
+      { name: 'owner', optional: false, rest: false, type: 'string' },
+      { name: 'harness', optional: true, rest: false, type: 'string' },
+    ]);
+    expect(sigs.get('claimNext').ret).toBe('Promise<Claim>');
+  });
+
+  it('ignores non-exported callables — they have no cross-file call sites to strand', () => {
+    const sigs = collectExportedSignatures('function helper(a: string) {}\nconst f = (b: number) => b;');
+
+    expect(sigs.size).toBe(0);
+  });
+});
+
+describe('diffSignatureBreaks', () => {
+  const reasons = (after: string, before = SIG_BEFORE) =>
+    diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason);
+
+  it('flags a new REQUIRED parameter — every existing call site just went stale', () => {
+    const after = SIG_BEFORE.replace(
+      'claimNext(owner: string, harness?: string)',
+      'claimNext(owner: string, harness: string | undefined, force: boolean)',
+    );
+
+    expect(reasons(after)).toContain('param-added-required');
+  });
+
+  it('flags an optional parameter that became required', () => {
+    const after = SIG_BEFORE.replace('harness?: string', 'harness: string');
+
+    expect(reasons(after)).toContain('param-optional-to-required');
+  });
+
+  it('flags a removed parameter — TS rejects the extra argument callers still pass', () => {
+    const after = SIG_BEFORE.replace('claimNext(owner: string, harness?: string)', 'claimNext(owner: string)');
+
+    expect(reasons(after)).toContain('param-removed');
+  });
+
+  it('flags a changed parameter type and a changed return type', () => {
+    const after = SIG_BEFORE
+      .replace('read(id: string): Claim', 'read(id: ClaimId): Claim')
+      .replace('formatClaim = (c: Claim, verbose?: boolean): string', 'formatClaim = (c: Claim, verbose?: boolean): Promise<string>');
+
+    expect(reasons(after)).toContain('param-type-changed');
+    expect(reasons(after)).toContain('return-type-changed');
+  });
+
+  it('catches the optional-param narrowing that motivated this widening', () => {
+    // `source = null` gives the parameter an inferred null-only type; the required-field
+    // predicate is blind to it because no interface field changed.
+    const before = 'export function record(id: string, source: string | null): void {}';
+    const after = 'export function record(id: string, source: null): void {}';
+
+    expect(diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason)).toEqual(['param-type-changed']);
+  });
+
+  // ——— The controls. A detector that only ever fires is not a detector. ———
+
+  it('stays SILENT on an added OPTIONAL or REST parameter — both are additive', () => {
+    const optional = SIG_BEFORE.replace('claimNext(owner: string, harness?: string)', 'claimNext(owner: string, harness?: string, force?: boolean)');
+    const rest = SIG_BEFORE.replace('claimNext(owner: string, harness?: string)', 'claimNext(owner: string, harness?: string, ...rest: string[])');
+
+    expect(reasons(optional)).toEqual([]);
+    expect(reasons(rest)).toEqual([]);
+  });
+
+  it('stays SILENT on a callable that is NEW in this diff — it has no pre-existing callers', () => {
+    const after = `${SIG_BEFORE}\nexport function freshlyAdded(a: string, b: number): void {}\n`;
+
+    expect(reasons(after)).toEqual([]);
+  });
+
+  it('stays SILENT on pure REFORMATTING — whitespace is not a type change', () => {
+    const after = SIG_BEFORE.replace(
+      'export const formatClaim = (c: Claim, verbose?: boolean): string => \'\';',
+      'export const formatClaim = (\n  c: Claim,\n  verbose?: boolean,\n): string => \'\';',
+    );
+
+    expect(reasons(after)).toEqual([]);
+  });
+
+  it('stays SILENT on an unrelated body-only edit', () => {
+    const after = SIG_BEFORE.replace("=> ''", "=> String(c)");
+
+    expect(reasons(after)).toEqual([]);
+  });
+
+  it('stays SILENT when a non-exported callable changes shape', () => {
+    const before = 'function internal(a: string): void {}';
+    const after = 'function internal(a: string, b: number): void {}';
+
+    expect(diffSignatureBreaks(before, after)).toEqual([]);
   });
 });

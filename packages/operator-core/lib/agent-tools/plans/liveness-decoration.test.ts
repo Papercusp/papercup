@@ -22,25 +22,41 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   // rejects outright ("No 'generated' export is defined on the mock"). Spread
   // the real module (schema-only, no I/O) and override just `getOrgPg`.
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  // Imported INSIDE the factory: `vi.mock` is hoisted above the import block, so
+  // a top-level binding referenced here can be in its TDZ when the factory runs.
+  const { mockSqlThrowOnUnmatched } = await import('@papercusp/test-config');
   return {
     ...actual,
+    // EI-14882: ROUTED, not catch-all. This mock used to answer EVERY query with
+    // the presence fixture, so when the module grew an adv_sessions query it
+    // silently received coord_presence rows — leaking the fixture owner into the
+    // recorded-live set and rescuing ENDED sessions to RECORDED. No error, just a
+    // plausible wrong verdict. An unrouted query now throws, naming the SQL.
     getOrgPg: () => ({
-      sql: Object.assign(
-        async (..._args: unknown[]) => {
-          if (H.state.sqlError) throw new Error('pg unavailable');
-          return H.state.presenceRows;
-        },
-        { json: (x: unknown) => ({ __json: x }) },
+      sql: mockSqlThrowOnUnmatched(
+        [
+          {
+            match: /coord_presence/,
+            label: 'coord_presence',
+            rows: () => {
+              if (H.state.sqlError) throw new Error('pg unavailable');
+              return H.state.presenceRows;
+            },
+          },
+        ],
+        { name: 'liveness-decoration db-org mock' },
       ),
     }),
   };
 });
 
 // Unification P-003: liveness-decoration now derives through the shared oracle,
-// whose recorded-session rescue leg reads adv_sessions. Without this mock the
-// REAL recordedLiveOwnerIds runs against the catch-all getOrgPg sql mock above
-// (which returns the presence fixture rows for EVERY query), leaking the fixture
-// owner into the recorded-live set and rescuing ENDED fixtures to RECORDED.
+// whose recorded-session rescue leg reads adv_sessions. This mock keeps that leg
+// out of the picture deliberately. It is no longer the only thing standing
+// between us and a wrong verdict — the routed sql mock above would now REFUSE an
+// unrouted adv_sessions query rather than answer it with presence rows — but an
+// explicit empty set states the intent, and a loud throw is not what this file
+// is here to assert.
 vi.mock('../../adv-sessions', async (orig) => {
   const actual = await orig<typeof import('../../adv-sessions')>();
   return {

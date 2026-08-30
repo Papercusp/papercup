@@ -23,27 +23,48 @@ import {
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 
-const mutationSchema = z.discriminatedUnion('op', [
-  z
-    .object({
-      op: z.literal('attach-external'),
-      sourceId: z.string().uuid(),
-      planHarnessSlug: z.string().min(1).max(120),
-      planSlug: z.string().min(1).max(240),
-      eventPattern: z.string().min(1).max(500),
-      eventFilter: z.record(z.string(), z.unknown()).default({}),
-      // NO zod defaults here, deliberately. `.default(null)` + `.default(60)`
-      // manufactured a `{ windowSeconds: 60 }` policy for a caller who stated
-      // none — a rate window with no cap (EI-21500982767775449) — and, because
-      // createExternalTriggerBinding only reaches for a source's own default
-      // when `stormPolicy` is absent, that manufactured object also silently
-      // disabled the P-023 per-platform social default for every binding
-      // created through this route. Silence must stay distinguishable from a
-      // stated policy.
-      maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
-      windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
-    })
-    .strict(),
+// Keep the three target shapes explicit at the HTTP boundary. Besides making the
+// generated contract legible, a union here prevents a caller from accidentally
+// supplying plan + goal (or plan + direct work) and relying on the deeper SQL
+// guard to decide which one wins.
+const attachExternalCommon = {
+  op: z.literal('attach-external'),
+  sourceId: z.string().uuid(),
+  eventPattern: z.string().min(1).max(500),
+  eventFilter: z.record(z.string(), z.unknown()).default({}),
+  // NO zod defaults here, deliberately. `.default(null)` + `.default(60)`
+  // manufactured a `{ windowSeconds: 60 }` policy for a caller who stated
+  // none — a rate window with no cap (EI-21500982767775449) — and, because
+  // createExternalTriggerBinding only reaches for a source's own default
+  // when `stormPolicy` is absent, that manufactured object also silently
+  // disabled the P-023 per-platform social default for every binding
+  // created through this route. Silence must stay distinguishable from a
+  // stated policy.
+  maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
+  windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
+} as const;
+
+const attachPlanSchema = z.object({
+  ...attachExternalCommon,
+  planHarnessSlug: z.string().min(1).max(120),
+  planSlug: z.string().min(1).max(240),
+}).strict();
+
+const attachGoalSchema = z.object({
+  ...attachExternalCommon,
+  goalId: z.string().min(1).max(240),
+}).strict();
+
+const attachDirectWorkItemSchema = z.object({
+  ...attachExternalCommon,
+  workItemHarnessSlug: z.string().min(1).max(120),
+  workItemKind: z.string().min(1).max(240),
+}).strict();
+
+const mutationSchema = z.union([
+  attachPlanSchema,
+  attachGoalSchema,
+  attachDirectWorkItemSchema,
   z
     .object({
       op: z.literal('detach-external'),
@@ -148,8 +169,16 @@ const mutate = defineTool({
       try {
         const binding = await createExternalTriggerBinding(sql, workspaceId, {
           sourceId: parsed.data.sourceId,
-          planHarnessSlug: parsed.data.planHarnessSlug,
-          planSlug: parsed.data.planSlug,
+          ...('planHarnessSlug' in parsed.data
+            ? { planHarnessSlug: parsed.data.planHarnessSlug, planSlug: parsed.data.planSlug }
+            : {}),
+          ...('goalId' in parsed.data ? { goalId: parsed.data.goalId } : {}),
+          ...('workItemHarnessSlug' in parsed.data
+            ? {
+                workItemHarnessSlug: parsed.data.workItemHarnessSlug,
+                workItemKind: parsed.data.workItemKind,
+              }
+            : {}),
           eventPattern: parsed.data.eventPattern,
           eventFilter: parsed.data.eventFilter,
           // Undefined when the caller stated nothing, so the source's own

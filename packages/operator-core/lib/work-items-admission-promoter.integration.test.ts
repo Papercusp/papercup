@@ -9,6 +9,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const {
+  admissionPairKey,
+  judgedPairsMissingAdjudication,
   readWorkItemAdmissionSnapshot,
   readWorkItemAdmissionProducerPressure,
   runWorkItemAdmissionFailOpen,
@@ -186,7 +188,14 @@ describe('work-item admission promoter (real Postgres)', () => {
       now: () => NOW,
     });
 
-    expect(result).toMatchObject({ batchSize: 6, promoted: 1, merged: 5, held: 0, modelCalled: true });
+    expect(result).toMatchObject({
+      batchSize: 6,
+      promoted: 1,
+      merged: 5,
+      held: 0,
+      modelCalled: true,
+      writerCoverageGap: [],
+    });
     expect(llmCall).toHaveBeenCalledTimes(1);
     const rows = await db.sql<
       Array<{
@@ -264,6 +273,101 @@ describe('work-item admission promoter (real Postgres)', () => {
       { feature_id: 'WI-1', admission: 'admitted', see_also: ['WI-2'] },
       { feature_id: 'WI-2', admission: 'admitted', see_also: ['WI-1'] },
     ]);
+  });
+
+  // EI-21728201456300634 / EI-21866311570152646: the ticking promoter's own census-rise
+  // alarm fired "major bug" TWICE on a run whose writer did nothing wrong. Root cause was a
+  // TOCTOU race — censusBefore/censusAfter are two non-atomic reads of a workspace-wide,
+  // continuously-growing count, separated by real time (the LLM call). Reproduce that race
+  // deterministically: insert an unrelated dedup_edges row (simulating another agent's
+  // concurrently-created near-duplicate items) INSIDE the mocked llmCall, so it lands exactly
+  // between censusBefore and censusAfter, exactly as it would in production.
+  it('does not flag a concurrent dedup_edges insert from organic corpus growth, even though the raw census rises', async () => {
+    await seedItem({ id: 'WI-1', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-2', createdAtMs: NOW - 19_000 });
+    const llmCall = vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+      await db.sql`
+        INSERT INTO harness_shared.dedup_edges (workspace_id, harness_slug, a, b, cos, run_id)
+        VALUES (${WS}, ${HARNESS}, 'WI-concurrent-a', 'WI-concurrent-b', 0.97, 'concurrent-edge-run')`;
+      const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+      return {
+        text: '',
+        json: {
+          judgements: keys.map((pairKey) => ({
+            pairKey,
+            verdict: 'r-finding-merge' as const,
+            reason: 'fixture verdict',
+          })),
+        },
+        inputTokens: 100,
+        outputTokens: 20,
+      };
+    });
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-organic-growth',
+      sql: db.sql,
+      llmCall,
+      now: () => NOW,
+    });
+
+    // The precondition that caused the false alarms genuinely reproduces here.
+    expect(result.censusAfter).toBeGreaterThan(result.censusBefore);
+    // ...yet the writer correctly retired the one pair it actually judged, so the targeted
+    // signal — the only thing that should ever alarm — stays clean.
+    expect(result.merged).toBe(1);
+    expect(result.writerCoverageGap).toEqual([]);
+  });
+
+  // A `hold` verdict is a deliberate "still needs review" — persistAdmissionPlan intentionally
+  // never writes a dedup_adjudications row for it (work-items-admission-promoter.ts:1170,1184).
+  // That must never register as a writer defect: held pairs are excluded from
+  // plan.adjudications entirely, so they can never appear in writerCoverageGap.
+  it('does not flag a hold verdict as a writer coverage gap', async () => {
+    await seedItem({ id: 'WI-1', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-2', createdAtMs: NOW - 19_000 });
+    const llmCall = vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+      const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+      return {
+        text: '',
+        json: {
+          judgements: keys.map((pairKey) => ({ pairKey, verdict: 'hold' as const, reason: 'ambiguous' })),
+        },
+        inputTokens: 100,
+        outputTokens: 20,
+      };
+    });
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-hold',
+      sql: db.sql,
+      llmCall,
+      now: () => NOW,
+    });
+
+    expect(result.held).toBe(2);
+    expect(result.writerCoverageGap).toEqual([]);
+    const adjudications = await db.sql`SELECT a, b FROM harness_shared.dedup_adjudications`;
+    expect(adjudications).toHaveLength(0);
+  });
+
+  it('judgedPairsMissingAdjudication reports only pairs with no dedup_adjudications row', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.dedup_adjudications
+        (workspace_id, harness_slug, a, b, verdict, canonical, judged_by, run_id, evidence)
+      VALUES (${WS}, ${HARNESS}, 'WI-1', 'WI-2', 'r-finding-merge', 'WI-1', 'model', 'run-x', '{}'::jsonb)`;
+
+    const gap = await judgedPairsMissingAdjudication(db.sql, WS, HARNESS, [
+      { pairKey: admissionPairKey('WI-1', 'WI-2'), a: 'WI-1', b: 'WI-2' },
+      { pairKey: admissionPairKey('WI-3', 'WI-4'), a: 'WI-3', b: 'WI-4' },
+    ]);
+
+    expect(gap).toEqual([admissionPairKey('WI-3', 'WI-4')]);
+    expect(await judgedPairsMissingAdjudication(db.sql, WS, HARNESS, [])).toEqual([]);
   });
 
   it('admits only rows older than two ticks and alarms when the promoter is killed', async () => {

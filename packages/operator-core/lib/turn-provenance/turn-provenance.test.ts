@@ -182,11 +182,36 @@ describe('classifier boundaries', () => {
     expect(res.origin).toBe('self-compaction');
   });
 
-  it('NO envelope + EXPIRED hash match → owner-interactive (stale rows never verify)', () => {
+  // D-006. This test previously asserted `owner-interactive` under the name
+  // "stale rows never verify". That half was right — a stale row must never
+  // produce verified-agent — but the fallback it chose was the AFFIRMATIVE
+  // owner stamp, which is the dangerous direction: the same expired row
+  // demotes an envelope-carrying turn to unverified-claim, so expiry was
+  // PROMOTING an envelope-less machine turn to OWNER. It also reached the
+  // provenance hook's owner-only autonomy grant. Not-verified and
+  // affirmatively-owner are different verdicts; an expired match earns the
+  // former, never the latter.
+  it('NO envelope + EXPIRED hash match → unverified-claim, NOT owner (D-006)', () => {
     const text = 'old injected text retyped much later';
     const r = row({ sha256: payloadSha256(text) });
     const res = classify(text, [r], { nowMs: NOW + TTL + 60_000, ttlMs: TTL });
-    expect(res.verdict).toBe('owner-interactive');
+    expect(res.verdict).toBe('unverified-claim');
+    expect(res.verdict).not.toBe('verified-agent'); // stale rows still never verify
+    expect(res.reason).toMatch(/EXPIRED/);
+  });
+
+  // The invariant the fix encodes, stated directly so it survives rewording of
+  // the cases above: absence and expiry are ONE class (GC deleting a row is
+  // just absence on a schedule), and neither may out-rank a live row.
+  it('D-006 invariant: an expired row never yields a MORE authoritative verdict than a live one', () => {
+    const text = 'an injected turn whose envelope was stripped in transit';
+    const r = row({ origin: 'wake-pump', sha256: payloadSha256(text) });
+    const live = classify(text, [r], { nowMs: NOW + 1000, ttlMs: TTL });
+    const expired = classify(text, [r], { nowMs: NOW + TTL + 60_000, ttlMs: TTL });
+    const authority = { 'verified-agent': 3, 'unverified-claim': 1, 'machine-surface': 1, 'owner-interactive': 3 };
+    expect(live.verdict).toBe('verified-agent');
+    expect(authority[expired.verdict]).toBeLessThan(authority[live.verdict]);
+    expect(expired.verdict).not.toBe('owner-interactive');
   });
 
   it('NO envelope + no match → AFFIRMATIVE owner-interactive', () => {
@@ -211,18 +236,19 @@ describe('classifier boundaries', () => {
       expect(res.origin).toBe('cli-schedule-wakeup');
     });
 
-    it('a row past its OWN longer ttlMs still expires — never a false verify', () => {
+    it('a row past its OWN longer ttlMs still expires — never a false verify, and never a false OWNER (D-006)', () => {
       const text = 'a scheduled wake nobody delivered in time';
       const r = row({ origin: 'cli-schedule-wakeup', sha256: payloadSha256(text), ttlMs: 65 * 60_000 });
       const res = classify(text, [r], { nowMs: NOW + 71 * 60_000, ttlMs: TTL });
-      expect(res.verdict).toBe('owner-interactive');
+      expect(res.verdict).toBe('unverified-claim');
+      expect(res.verdict).not.toBe('verified-agent');
     });
 
     it('a row with no ttlMs field (every pre-existing origin) is unaffected — global TTL still applies', () => {
       const text = 'a normal wake-pump delivery';
       const r = row({ origin: 'wake-pump', sha256: payloadSha256(text) }); // no ttlMs
       const dead = classify(text, [r], { nowMs: NOW + TTL + 60_000, ttlMs: TTL });
-      expect(dead.verdict).toBe('owner-interactive');
+      expect(dead.verdict).toBe('unverified-claim'); // D-006: expired, not owner
       const alive = classify(text, [r], { nowMs: NOW + 1000, ttlMs: TTL });
       expect(alive.verdict).toBe('verified-agent');
     });

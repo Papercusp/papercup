@@ -75,7 +75,8 @@ export default defineTool({
         });
         throw err;
       }
-      observeResolve({ name, argsJson, elapsedMs: Date.now() - startedMs });
+      const resolverCompletedAtMs = Date.now();
+      observeResolve({ name, argsJson, elapsedMs: resolverCompletedAtMs - startedMs });
       if (v2 === NAME_NOT_FOUND) {
         return Response.json(
           { error: `unknown queryName: ${name}`, name },
@@ -99,6 +100,12 @@ export default defineTool({
       // (see host-handler.ts §1); do not re-add gzip here.
       const deltaParam = u.searchParams.get('delta');
       const dcfg = deltaParam !== null ? resourceDeltaConfig(name) : undefined;
+      const timing = {
+        unit: 'ms' as const,
+        resolverStartedAtMs: startedMs,
+        resolverCompletedAtMs,
+        resolverMs: Math.max(0, resolverCompletedAtMs - startedMs),
+      };
       let responseValue: unknown;
       let itemCount: number;
       if (dcfg && Array.isArray(rows)) {
@@ -134,14 +141,14 @@ export default defineTool({
           ...(neg.fullReason ? { fullReason: neg.fullReason } : {}),
         };
         if (neg.mode === 'delta') {
-          responseValue = { changes: neg.changes, version: String(Date.now()), delta: meta };
+          responseValue = { changes: neg.changes, version: String(Date.now()), delta: meta, timing };
           itemCount = neg.changes?.length ?? 0;
         } else {
-          responseValue = { rows: neg.rows, version: String(Date.now()), delta: meta };
+          responseValue = { rows: neg.rows, version: String(Date.now()), delta: meta, timing };
           itemCount = neg.rows?.length ?? 0;
         }
       } else {
-        responseValue = { rows, version: String(Date.now()) };
+        responseValue = { rows, version: String(Date.now()), timing };
         itemCount = Array.isArray(rows) ? rows.length : 1;
       }
       const body = await serializeJsonResponse(responseValue, itemCount);

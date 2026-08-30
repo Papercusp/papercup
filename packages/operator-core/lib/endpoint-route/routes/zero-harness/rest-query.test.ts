@@ -71,4 +71,27 @@ describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
     expect(response.status).toBe(500);
     expect(body).toEqual({ error: 'database connection refused', name: 'plans.list' });
   });
+
+  it('carries resolver timing with an explicit millisecond unit on successful reads', async () => {
+    resolveNamedQueryMock.mockResolvedValueOnce([{ id: 'p-1' }]);
+
+    const response = await (await route()).handler(
+      new Request('http://localhost:3070/api/zero-harness/rest-query?name=plans.list&args=%7B%7D'),
+    );
+    const body = (await response.json()) as {
+      timing?: {
+        unit: string;
+        resolverStartedAtMs: number;
+        resolverCompletedAtMs: number;
+        resolverMs: number;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.timing?.unit).toBe('ms');
+    expect(body.timing?.resolverCompletedAtMs).toBeGreaterThanOrEqual(body.timing?.resolverStartedAtMs ?? 0);
+    expect(body.timing?.resolverMs).toBe(
+      body.timing!.resolverCompletedAtMs - body.timing!.resolverStartedAtMs,
+    );
+  });
 });

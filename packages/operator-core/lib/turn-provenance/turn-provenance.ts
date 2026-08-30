@@ -558,9 +558,24 @@ export function classify(
   }
 
   // No envelope: hash-only corroboration (envelope stripped/mangled in transit).
+  //
+  // Find by hash WITHOUT the liveness predicate, then branch on liveness —
+  // mirroring the envelope branch above. Applying `isLive` INSIDE the find
+  // drops an expired row entirely, and the fall-through then lands on the
+  // affirmative OWNER default. That made expiry asymmetric in the dangerous
+  // direction: the same expired row DEMOTES an envelope-carrying turn to
+  // unverified-claim (safe) but PROMOTED an envelope-less one to
+  // owner-interactive — a machine turn earning an affirmative owner stamp,
+  // which is the exact bug class this module exists to kill. It also defeated
+  // the provenance hook's own stated security gate, since the OWNER branch is
+  // the only place an owner-granted mode is auto-registered.
+  //
+  // INVARIANT (D-006): an absent or expired row must never yield a MORE
+  // authoritative verdict than a live row would have. Absence and expiry are
+  // one class — GC deleting a row is just absence arriving on a schedule.
   const hash = payloadSha256(promptText);
-  const row = rows.find((r) => isLive(r) && r.sha256 === hash);
-  if (row) {
+  const row = rows.find((r) => r.sha256 === hash);
+  if (row && isLive(row)) {
     return {
       verdict: 'verified-agent',
       origin: row.origin,
@@ -569,6 +584,17 @@ export function classify(
       textMangled: false,
       originMismatch: false,
       reason: `verified agent-origin (${row.origin}) — no envelope but payload hash matches a live ledger row (envelope lost in transit)`,
+    };
+  }
+  if (row) {
+    return {
+      verdict: 'unverified-claim',
+      origin: row.origin,
+      nonce: row.nonce,
+      matchedBy: null,
+      textMangled: false,
+      originMismatch: false,
+      reason: `UNVERIFIED origin claim — no envelope, but the payload hash matches a ledger row that is EXPIRED (age ${Math.round((nowMs - row.ts) / 1000)}s > ttl ${Math.round(ttlMs / 1000)}s); treat as replay/lagged injection, NOT owner input`,
     };
   }
   // A KNOWN machine surface (e.g. Claude's background-task notification, which
