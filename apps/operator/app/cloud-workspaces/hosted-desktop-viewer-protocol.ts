@@ -289,6 +289,11 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
         this.inputAllowed = parsed.inputAllowed;
         this.readyState = this.OPEN;
         this.onready?.(parsed);
+        // `onready` may deliberately fail closed (for example when the relay
+        // reports a different action than the ticket requested) and close the
+        // channel synchronously. Never hand an already-closing channel to
+        // noVNC's onopen callback in that case.
+        if (this.readyState !== this.OPEN) return;
         this.onopen?.();
       } else if (parsed.kind === "data") {
         if (this.readyState !== this.OPEN) return;

@@ -195,7 +195,9 @@ describe("<HostedDesktopViewer>", () => {
   });
 
   it("fails closed on an action mismatch and keeps fullscreen explicitly unavailable", async () => {
-    const { socket, onStateChange } = await renderViewer({ mode: "takeover" });
+    const { socket, rfb, onStateChange } = await renderViewer({
+      mode: "takeover",
+    });
     act(() => {
       socket.emit("message", {
         data: JSON.stringify({
@@ -218,6 +220,14 @@ describe("<HostedDesktopViewer>", () => {
         .getAttribute("data-state"),
     ).toBe("error");
     expect(onStateChange).toHaveBeenCalledWith("error");
+    // noVNC owns the raw channel's close callback and reports the same
+    // rejection as a disconnect; the protocol error must remain visible.
+    act(() => rfb.emit("disconnect"));
+    expect(
+      screen
+        .getByRole("region", { name: /Desktop viewer/ })
+        .getAttribute("data-state"),
+    ).toBe("error");
     const fullscreen = screen.getByRole("button", { name: /Fullscreen/ });
     expect((fullscreen as HTMLButtonElement).disabled).toBe(true);
   });

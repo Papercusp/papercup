@@ -197,7 +197,7 @@ export function HostedDesktopViewer({
       rfb.addEventListener("disconnect", () => {
         if (epoch === epochRef.current) {
           setInputAllowed(false);
-          updateState("closed");
+          if (!readyRejectedRef.current) updateState("closed");
         }
       });
       rfbRef.current = rfb;
