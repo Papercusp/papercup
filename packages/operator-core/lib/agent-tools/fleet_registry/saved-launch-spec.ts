@@ -88,6 +88,44 @@ export interface SavedFleetLaunchSpec {
   member: MemberSpec;
 }
 
+/**
+ * Normalize the one legacy value that can appear in a persisted launch profile
+ * but is not a psu persona. Fleet membership stores `member` as its role label;
+ * launch profiles store a psu `role`, where omission means the standard su
+ * collaborator. Keep this intentionally narrow so real persona names continue
+ * to round-trip unchanged.
+ */
+export function normalizePersistedFleetLaunchRole(role: unknown): string | undefined {
+  const trimmed = typeof role === 'string' ? role.trim() : undefined;
+  return trimmed && trimmed !== 'member' ? trimmed : undefined;
+}
+
+/** Return a copy of a saved config with the legacy membership label removed. */
+export function normalizePersistedFleetLaunchConfig<T extends SavedFleetLaunchConfig>(
+  config: T,
+): T {
+  const role = normalizePersistedFleetLaunchRole(config.role);
+  if (role === config.role) return config;
+
+  const normalized = { ...config } as T;
+  if (role === undefined) delete normalized.role;
+  else normalized.role = role;
+  return normalized;
+}
+
+/** Return a copy of a command-neutral spec with the legacy membership label removed. */
+export function normalizePersistedFleetLaunchSpec(
+  spec: SavedFleetLaunchSpec,
+): SavedFleetLaunchSpec {
+  const role = normalizePersistedFleetLaunchRole(spec.member.role);
+  if (role === spec.member.role) return spec;
+
+  const member = { ...spec.member };
+  if (role === undefined) delete member.role;
+  else member.role = role;
+  return { ...spec, member };
+}
+
 export interface SavedFleetLaunchSpecProvenance {
   source: SavedFleetLaunchSpecSource;
   workspaceId: string;
@@ -164,24 +202,25 @@ function provenanceFor(
 
 /** Convert the validated headcount recipe to the command-neutral member spec. */
 export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): SavedFleetLaunchSpec {
-  const normalizedContextSize = normalizeSuContextSize((config as { contextSize?: unknown }).contextSize);
+  const normalizedConfig = normalizePersistedFleetLaunchConfig(config);
+  const normalizedContextSize = normalizeSuContextSize((normalizedConfig as { contextSize?: unknown }).contextSize);
   if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
   return {
-    ...(config.plan !== undefined ? { plan: config.plan } : {}),
-    harness: config.harness,
+    ...(normalizedConfig.plan !== undefined ? { plan: normalizedConfig.plan } : {}),
+    harness: normalizedConfig.harness,
     member: {
-      agent: config.agent,
-      ...(config.model !== undefined ? { model: config.model } : {}),
-      ...(config.effort !== undefined ? { effort: config.effort } : {}),
-      ...(config.account !== undefined ? { account: config.account } : {}),
-      headless: config.headless ?? true,
-      ...(config.carry !== undefined ? { carry: config.carry } : {}),
-      ...(config.role !== undefined ? { role: config.role } : {}),
-      ...(config.brief !== undefined ? { brief: config.brief } : {}),
-      ...(config.launchContext !== undefined ? { launchContext: config.launchContext } : {}),
-      ...(config.contextSize !== undefined ? { contextSize: normalizedContextSize.contextSize } : {}),
-      ...(config.compactionLimit !== undefined ? { compactionLimit: config.compactionLimit } : {}),
-      ...(config.extraArgs !== undefined ? { extraArgs: [...config.extraArgs] } : {}),
+      agent: normalizedConfig.agent,
+      ...(normalizedConfig.model !== undefined ? { model: normalizedConfig.model } : {}),
+      ...(normalizedConfig.effort !== undefined ? { effort: normalizedConfig.effort } : {}),
+      ...(normalizedConfig.account !== undefined ? { account: normalizedConfig.account } : {}),
+      headless: normalizedConfig.headless ?? true,
+      ...(normalizedConfig.carry !== undefined ? { carry: normalizedConfig.carry } : {}),
+      ...(normalizedConfig.role !== undefined ? { role: normalizedConfig.role } : {}),
+      ...(normalizedConfig.brief !== undefined ? { brief: normalizedConfig.brief } : {}),
+      ...(normalizedConfig.launchContext !== undefined ? { launchContext: normalizedConfig.launchContext } : {}),
+      ...(normalizedConfig.contextSize !== undefined ? { contextSize: normalizedContextSize.contextSize } : {}),
+      ...(normalizedConfig.compactionLimit !== undefined ? { compactionLimit: normalizedConfig.compactionLimit } : {}),
+      ...(normalizedConfig.extraArgs !== undefined ? { extraArgs: [...normalizedConfig.extraArgs] } : {}),
     },
   };
 }
@@ -353,7 +392,7 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     item === '--brain' || item === '--allow-subagents' || item === '--no-subagents' ||
     item.startsWith('--feature=') || item.startsWith('--profile=') || item.startsWith('--add-dir='),
   );
-  const config: SavedFleetLaunchConfig = {
+  const config = normalizePersistedFleetLaunchConfig({
     ...(plan.value ? { plan: plan.value } : {}),
     harness: effectiveHarness,
     agent: effectiveAgent as FleetHeadcountConfig['agent'],
@@ -367,7 +406,7 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     ...(contextSizeRaw ? { contextSize: normalizedContextSize.contextSize } : {}),
     ...(compactionLimit !== undefined ? { compactionLimit } : {}),
     ...(extraArgs.length ? { extraArgs } : {}),
-  };
+  });
   return {
     ok: true,
     config,
@@ -534,9 +573,8 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
   }
 
   const requested = opts.requested ?? {};
-  const saved = opts.saved ?? savedFleetLaunchSpecFromConfig(target!.config);
-  const config = target?.config ?? opts.config;
-  if (!config) {
+  const rawConfig = target?.config ?? opts.config;
+  if (!rawConfig) {
     return {
       ok: false,
       found: true,
@@ -547,6 +585,10 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
       reusePath,
     };
   }
+  const config = normalizePersistedFleetLaunchConfig(rawConfig);
+  const saved = normalizePersistedFleetLaunchSpec(
+    opts.saved ?? savedFleetLaunchSpecFromConfig(config),
+  );
   let effective: SavedFleetLaunchSpec;
   try {
     // Validate both the stored model/effort pair and the requested merge before

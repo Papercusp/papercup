@@ -89,6 +89,27 @@ describe('fleet:headcount-target canonical launch profile', () => {
     });
   });
 
+  it('does not persist the legacy fleet membership label as a psu persona', async () => {
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce({
+      ...savedProfile,
+      config: { ...savedProfile.config, role: 'member' },
+    });
+
+    const result = await tool.handler(
+      { fleet: 'byoc', target: 4, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+    const payload = parse(result);
+
+    expect(payload.config).not.toHaveProperty('role');
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      target: 4,
+      config: savedProfile.config,
+    });
+  });
+
   it('fails closed on a silent boot-setting change and allows only an explicitly reasoned replacement', async () => {
     const refused = await tool.handler(
       { fleet: 'byoc', target: 4, harness: 'papercusp', plan: 'byoc-plan', headless: false } as never,

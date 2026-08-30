@@ -3,6 +3,8 @@ import type { AdvSessionLaunchRecord } from '../../adv-sessions';
 import type { FleetHeadcountTarget } from '../../agent-fleets-store';
 import {
   LEGACY_FLEET_LAUNCH_SPEC_SOURCE,
+  normalizePersistedFleetLaunchConfig,
+  normalizePersistedFleetLaunchRole,
   resolveLoadedSavedFleetLaunchSpec,
   resolveSavedFleetLaunchSpec,
   savedFleetLaunchSpecFromLegacyRecord,
@@ -122,6 +124,32 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
         carry: 'warm',
       },
     });
+  });
+
+  it('normalizes the legacy fleet membership label without changing explicit personas', () => {
+    expect(normalizePersistedFleetLaunchRole(' member ')).toBeUndefined();
+    expect(normalizePersistedFleetLaunchRole('su')).toBe('su');
+    expect(normalizePersistedFleetLaunchRole('builder')).toBe('builder');
+
+    expect(
+      normalizePersistedFleetLaunchConfig({ ...target.config, role: ' member ' }),
+    ).not.toHaveProperty('role');
+    expect(
+      normalizePersistedFleetLaunchConfig({ ...target.config, role: 'builder' }),
+    ).toMatchObject({ role: 'builder' });
+  });
+
+  it('normalizes a legacy membership role across config, saved, and effective recovery specs', () => {
+    const result = resolveLoadedSavedFleetLaunchSpec({
+      ...base,
+      target: { ...target, config: { ...target.config, role: 'member' } },
+    });
+
+    expect(result).toMatchObject({ ok: true, found: true });
+    if (!result.ok || !result.found) throw new Error('expected saved resolution');
+    expect(result.config).not.toHaveProperty('role');
+    expect(result.saved.member).not.toHaveProperty('role');
+    expect(result.effective.member).not.toHaveProperty('role');
   });
 
   it('preserves every omitted saved field and records provenance + reuse path', () => {

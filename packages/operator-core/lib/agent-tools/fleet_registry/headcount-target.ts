@@ -3,10 +3,13 @@
  * tool records the validated recipe that later routine ticks may top up. */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { getFleet, getFleetHeadcountTarget, setFleetHeadcountTarget, type FleetHeadcountConfig } from '../../agent-fleets-store';
+import { getFleet, getFleetHeadcountTarget, setFleetHeadcountTarget } from '../../agent-fleets-store';
 import { FLEET_MAX_TARGET_MEMBERS } from '../../agent-config-constants';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
-import { resolveLoadedSavedFleetLaunchSpec } from './saved-launch-spec';
+import {
+  normalizePersistedFleetLaunchConfig,
+  resolveLoadedSavedFleetLaunchSpec,
+} from './saved-launch-spec';
 import { json, resolveFleetCaller } from './_shared';
 
 export default defineTool({
@@ -98,7 +101,7 @@ export default defineTool({
         replacementConflicts = resolution.conflicts;
       }
     }
-    const config: FleetHeadcountConfig = {
+    const config = normalizePersistedFleetLaunchConfig({
       ...(existing?.config ?? {}),
       plan: args.plan,
       harness: args.harness,
@@ -117,7 +120,7 @@ export default defineTool({
       ...(args.compactionLimit ? { compactionLimit: args.compactionLimit } : {}),
       ...(args.carry ? { carry: args.carry } : {}),
       ...(args.extraArgs?.length ? { extraArgs: args.extraArgs } : {}),
-    };
+    });
     await setFleetHeadcountTarget({ workspaceId, fleetSlug: args.fleet, target: args.target, config });
     return json({
       ok: true,
