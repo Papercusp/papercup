@@ -94,6 +94,12 @@ describe('scorecards:list correctness payload', () => {
       { rubricRef: 'acceptance-test-rubric' } as never,
       { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
     )) as { data: unknown };
+    expect(raw.data).toMatchObject({
+      ok: true,
+      count: 1,
+      hasMore: true,
+      truncatedByLimit: true,
+    });
     const rawChars = JSON.stringify(raw).length;
     expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
     expect(rawChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
@@ -114,6 +120,8 @@ describe('scorecards:list correctness payload', () => {
     const payload = readJsonResult<{
       ok: boolean;
       count: number;
+      hasMore: boolean;
+      truncatedByLimit: boolean;
       scorecards: Array<{
         ratings: Record<string, unknown>;
         nKeys: number;
@@ -124,6 +132,8 @@ describe('scorecards:list correctness payload', () => {
     }>(dispatched.result!);
     expect(payload?._projection).toBeUndefined();
     expect(payload?.count).toBe(1);
+    expect(payload?.hasMore).toBe(true);
+    expect(payload?.truncatedByLimit).toBe(true);
     expect(payload?.scorecards[0]?.nKeys).toBe(7);
     expect(Object.keys(payload?.scorecards[0]?.ratings ?? {})).toHaveLength(7);
     expect(payload?.scorecards[0]?.missingKeys).toEqual([]);
@@ -131,7 +141,7 @@ describe('scorecards:list correctness payload', () => {
   });
 
   it('returns a typed retryable envelope when the bounded read exhausts contention retries', async () => {
-    listScorecardsM.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
+    listScorecardPageM.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
 
     const result = (await listTool.handler(
       { subjectRef: 'EI-subject' } as never,

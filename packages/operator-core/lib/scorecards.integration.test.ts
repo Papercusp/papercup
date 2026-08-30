@@ -189,6 +189,31 @@ describe('listScorecards (P-013) — real PG', () => {
         },
       },
     });
+    // A malformed historical candidate still passes the SQL rubricRef/sourceHive
+    // predicates, but the canonical observation parser drops its invalid rating
+    // entry. Pagination must advance past this raw row without consuming a public
+    // scorecard page slot or making `hasMore` read false.
+    await db.adminSql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source,
+         state, payload, created_by, signal_origin, created_at, updated_at)
+      VALUES (
+        ${issuesScopeWorkspace()}, 'EI-scorecard-malformed', 'change',
+        'harness:papercusp', 'malformed scorecard', '', 'minor', 'test',
+        'done',
+        ${JSON.stringify({
+          observation: {
+            rubricRef: RUBRIC,
+            sourceHive: 'papercusp',
+            ratings: {
+              malformed: { rating: 42, evidence: null },
+            },
+          },
+        })}::text::jsonb,
+        'su-test', 'organic',
+        timestamptz '2026-06-20T13:00:00Z',
+        timestamptz '2026-06-20T13:00:00Z'
+      )`;
     // A PARTIAL papercusp scorecard (1 of 3) — the drift P-014 must catch.
     await fileScorecard(db, {
       id: 'partial',
@@ -422,6 +447,26 @@ describe('listScorecards (P-013) — real PG', () => {
   it('respects the limit (newest-first)', async () => {
     const rows = await listScorecards({ limit: 2 });
     expect(rows.map((r) => r.createdAt)).toEqual(['2026-06-20T12:00:00.000Z', '2026-06-20T11:00:00.000Z']);
+  });
+
+  it('fills valid page slots past malformed raw rows and reports authoritative hasMore', async () => {
+    const first = await listScorecardPage({ rubricRef: RUBRIC, sourceHive: 'papercusp', limit: 1 });
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0]?.createdAt).toBe('2026-06-20T12:00:00.000Z');
+    expect(first.hasMore).toBe(true);
+
+    const second = await listScorecardPage({
+      rubricRef: RUBRIC,
+      sourceHive: 'papercusp',
+      limit: 1,
+      before: {
+        createdAt: first.rows[0]!.createdAt,
+        issueId: first.rows[0]!.issueId,
+      },
+    });
+    expect(second.rows).toHaveLength(1);
+    expect(second.rows[0]?.createdAt).toBe('2026-06-20T10:00:00.000Z');
+    expect(second.hasMore).toBe(false);
   });
 
   // ── scorecardTrend (P-010) — end-to-end aggregation over the same seeded data.
