@@ -29,11 +29,68 @@ function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
 }
 
+/**
+ * EI-21866253550551759 — applied-vs-stored for the WI-832 admin-pool cap.
+ *
+ * `adminPoolStatementTimeoutMs` is a CONNECT-TIME GUC, so a stored value is NOT
+ * evidence that anything is bounded. Two independent gates can swallow it silently:
+ *   1. the papercusp-txn-timeouts-config kill-switch — OFF ⇒ the resolver returns 0
+ *      however large the stored value is;
+ *   2. PgBouncer — under transaction pooling the pooler rejects `statement_timeout`
+ *      as an unsupported startup parameter, so buildConnectionOptions omits it and
+ *      the cap survives ONLY inside boundedOrgTxn / inWorkspaceTxn (per-tx SET
+ *      LOCAL). A bare `await sql` on a pool checkout then runs UNBOUNDED — which is
+ *      the class measured at >=180s (a 161s DELETE, a 112s corpus read) while op:get
+ *      reported a reassuring 30000.
+ *
+ * The applied answer is DERIVED by asking buildConnectionOptions what it would send,
+ * never by restating its `!pooled` branch here: that duplicate is exactly what let
+ * this tool's own description claim the cap bound the class "at the source"
+ * (derived-truth ladder, rung 1 — a second copy of a truth the code owns drifts).
+ */
+export function adminPoolTimeoutReport(
+  storedMs: number | undefined,
+  // Injectable ONLY so the guard test can drive both branches while still exercising
+  // the real buildConnectionOptions below — mocking that away would test the mock,
+  // not the omission this whole report exists to expose. Production passes neither.
+  deps: { resolvedMs?: number; pooled?: boolean } = {},
+) {
+  const resolvedMs = deps.resolvedMs ?? adminPoolStatementTimeoutMs();
+  const behindPgBouncer = deps.pooled ?? pgbouncerEnabled();
+  const sent = buildConnectionOptions({
+    searchPath: '',
+    applicationName: '',
+    idleInTxMs: 0,
+    stmtTimeoutMs: resolvedMs,
+    pooled: behindPgBouncer,
+  }).statement_timeout;
+  const appliedAtConnect = sent !== undefined;
+  const stored = storedMs ?? 0;
+  return {
+    storedMs: stored,
+    resolvedMs,
+    behindPgBouncer,
+    appliedAtConnect,
+    appliedStatementTimeoutMs: sent === undefined ? null : Number(sent),
+    bounds: appliedAtConnect
+      ? 'every new org pool connection (connect-time GUC)'
+      : 'per-tx SET LOCAL only (boundedOrgTxn / inWorkspaceTxn) — a bare pool query is UNBOUNDED',
+    why:
+      resolvedMs === 0 && stored > 0
+        ? 'STORED BUT INERT: the papercusp-txn-timeouts-config kill-switch is OFF, so the resolver returns 0 and no cap is configured at all.'
+        : resolvedMs === 0
+          ? 'OFF: no admin-pool cap configured (0 = the admin pool is deliberately unbounded).'
+          : appliedAtConnect
+            ? 'APPLIED: sent as a startup parameter on each new org pool connection.'
+            : 'CONFIGURED BUT NOT APPLIED AT CONNECT: PgBouncer rejects statement_timeout as an unsupported startup parameter, so it is omitted. Only queries already inside boundedOrgTxn / inWorkspaceTxn are bounded.',
+  };
+}
+
 export default defineTool({
   name: 'db:txn-timeouts',
   profile: 'engineer',
   description:
-    "Read/set/reset runtime PG timeouts. The required op discriminator selects the operation: use { op: 'get' } to read, { op: 'set', ... } to write, or { op: 'reset' } to clear. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections that bounds the whole interactive admin-pool write class at the source; 0 = OFF (today's behavior). Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
+    "Read/set/reset runtime PG timeouts. The required op discriminator selects the operation: use { op: 'get' } to read, { op: 'set', ... } to write, or { op: 'reset' } to clear. (1) per-workspace inWorkspaceTxn lockTimeoutMs / statementTimeoutMs over the baked 5s/5s defaults — mid-incident raise lockTimeoutMs to ride out same-workspace contention or statementTimeoutMs to let a slow mutation finish. (2) adminPoolStatementTimeoutMs (WI-832) — a DEFAULT statement_timeout for NEW org pool connections applied at connect ONLY when not behind PgBouncer (op:get adminPool); 0 = OFF (today's behavior). Empty override / kill-switch off (papercusp-txn-timeouts-config) = byte-identical (5s/5s + no pool default). set/reset audited + one-call-revertible.",
   capability: 'operator:write',
   guidance: {
     when: 'To inspect the effective timeouts + override, call db:txn-timeouts with { op: "get" } — op is required; do not call it with {}. For state-mutating tools failing with workspace_contended (PG lock_timeout 55P03 / statement_timeout 57014) under same-workspace contention, widen the incident window by raising lockTimeoutMs and/or statementTimeoutMs.',
@@ -57,8 +114,12 @@ export default defineTool({
       // WI-832 field during a rolling deploy when the advertised schema lagged the handler).
       lockTimeoutMs: z.coerce.number().int().min(1000).max(120_000).optional(),
       statementTimeoutMs: z.coerce.number().int().min(1000).max(600_000).optional(),
-      // WI-832: default statement_timeout (ms) for NEW org POOL connections — bounds the
-      // whole interactive admin-pool write class at the source. 0 = OFF (unset GUC = the
+      // WI-832: default statement_timeout (ms) for NEW org POOL connections. EI-21866253550551759:
+      // this is a CONNECT-TIME GUC, and buildConnectionOptions omits it whenever the pool is
+      // behind PgBouncer (the pooler rejects it as an unsupported startup parameter), so under
+      // pooling it bounds ONLY what already runs inside boundedOrgTxn / inWorkspaceTxn — a bare
+      // pool checkout stays unbounded. Read op:get's `adminPool` block for applied-vs-stored
+      // rather than assuming a stored value is in force. 0 = OFF (unset GUC = the
       // admin pool stays deliberately unbounded). OWNER-GATED to a non-zero value live:
       // migrations share this pool and opt out per-txn (SET LOCAL statement_timeout=0); a
       // too-small value would kill long migrations. Distinct from statementTimeoutMs (the
@@ -70,7 +131,16 @@ export default defineTool({
   ]),
   async handler(args, ctx) {
     if (args.op === 'get') {
-      return json({ effective: txnTimeoutsConfig(), defaults: TXN_TIMEOUTS_DEFAULTS, override: await readTxnTimeoutsOverride() });
+      const override = await readTxnTimeoutsOverride();
+      return json({
+        effective: txnTimeoutsConfig(),
+        defaults: TXN_TIMEOUTS_DEFAULTS,
+        override,
+        // EI-21866253550551759: `effective` covers only the per-workspace pair, so
+        // without this block the admin-pool cap appeared solely as a stored override
+        // value with nothing to contradict it.
+        adminPool: adminPoolTimeoutReport(override.adminPoolStatementTimeoutMs),
+      });
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {

@@ -52,8 +52,11 @@ export const TXN_TIMEOUTS_DEFAULTS: TxnTimeoutsConfig = {
 
 /** A partial override of the defaults (only the keys the operator set).
  *  WI-832 adds `adminPoolStatementTimeoutMs` — a SEPARATE concern that rides the same
- *  store/flag/cache: the default statement_timeout (ms) for NEW org POOL connections
- *  (bounds the whole interactive admin-pool write class at the source). It is NOT part of
+ *  store/flag/cache: the default statement_timeout (ms) for NEW org POOL connections.
+ *  EI-21866253550551759: it is a CONNECT-TIME GUC that buildConnectionOptions omits when
+ *  the pool is behind PgBouncer, so under pooling it bounds only what already runs inside
+ *  boundedOrgTxn / inWorkspaceTxn — never treat a stored value as proof the class is
+ *  bounded (db:txn-timeouts op:get reports applied-vs-stored). It is NOT part of
  *  TxnTimeoutsConfig — that type is the per-WORKSPACE inWorkspaceTxn wrapper's pair, whose
  *  return shape the locks host destructures and must stay {lockTimeoutMs, statementTimeoutMs}. */
 export type TxnTimeoutsOverride = Partial<TxnTimeoutsConfig> & {
