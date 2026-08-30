@@ -177,3 +177,47 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
     return a.potSlug.localeCompare(b.potSlug);
   });
 }
+
+/**
+ * DORMANT: a pot with a learning SETUP but nothing armed and no decision ever
+ * recorded about it — a gym row that was configured and disarmed, or governor
+ * lanes that all sit off. It is genuinely "not learning" right now.
+ *
+ * WHY THIS EXISTS. Presence alone is far too wide to be a rail. Measured
+ * against the live workspace on 2026-08-30: 54 pots have a learning presence
+ * and exactly 7 have anything armed, with learning_pot_scope empty — so a rail
+ * built on presence renders 54 identical chips (every one 'on', since an absent
+ * scope row fails open) in a wrapping wall under the stage stepper. That is the
+ * every-pot picker's job, not the rail's.
+ *
+ * WHAT KEEPS A DORMANT POT REACHABLE. It is partitioned, never dropped:
+ * `dormant` is returned alongside `active` so the rail can account for all of
+ * them in one affordance and hand them to the picker. And a pot someone has
+ * DECIDED about is never dormant, whatever it has armed:
+ *
+ *   - `learning === 'off'` — switched off deliberately. It must stay on the
+ *     rail, because the rail chip is what switches it back on; burying it is
+ *     what would strand it.
+ *   - `learning === 'unknown'` — the scope read failed. Hiding a pot whose
+ *     state we could not read would silently under-report the rail, which is
+ *     the same fail-open mistake the module header exists to prevent.
+ */
+export function isPotChipDormant(chip: LearningPotChip): boolean {
+  if (chip.learning !== 'on') return false;
+  return chip.gym.state !== 'on' && chip.lanes.state !== 'on';
+}
+
+export interface LearningPotRailPartition {
+  /** Chips the rail renders: something armed, switched off, or unreadable. */
+  active: LearningPotChip[];
+  /** Setup-but-idle pots, summarised behind one affordance rather than dropped. */
+  dormant: LearningPotChip[];
+}
+
+/** Split a built rail into what it renders and what it summarises. Order-preserving. */
+export function partitionLearningPotRail(chips: LearningPotChip[]): LearningPotRailPartition {
+  const active: LearningPotChip[] = [];
+  const dormant: LearningPotChip[] = [];
+  for (const chip of chips) (isPotChipDormant(chip) ? dormant : active).push(chip);
+  return { active, dormant };
+}

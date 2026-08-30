@@ -4,7 +4,12 @@ import type {
   AutomationGymArm,
   AutomationLaneArm,
 } from '@papercusp/operator-core/lib/automation/catalog';
-import { buildLearningPotRail, learningPotSlugs } from './learning-pot-rail';
+import {
+  buildLearningPotRail,
+  isPotChipDormant,
+  learningPotSlugs,
+  partitionLearningPotRail,
+} from './learning-pot-rail';
 
 function gym(harnessSlug: string, enabled: boolean, spentUsd = 0): AutomationGymArm {
   return { harnessSlug, enabled, budgetUsd: null, spentUsd, status: 'idle' };
@@ -170,5 +175,59 @@ describe('population and ordering', () => {
   it('returns an empty rail for missing arming rather than throwing', () => {
     expect(buildLearningPotRail(null)).toEqual([]);
     expect(buildLearningPotRail(undefined)).toEqual([]);
+  });
+});
+
+/**
+ * The DORMANT split. Presence alone is not "learning": measured on the live
+ * workspace 2026-08-30, 54 pots have a setup and 7 have anything armed, with
+ * learning_pot_scope empty — so a presence rail renders 54 chips that all read
+ * 'on'. These assert the narrowing WITHOUT letting it hide a pot someone has
+ * actually decided about, which is the way this rule fails dangerously.
+ */
+describe('the dormant split — a setup is not the same as learning', () => {
+  const potsOf = (chips: ReturnType<typeof buildLearningPotRail>) => chips.map((c) => c.potSlug);
+
+  it('treats a configured-but-disarmed pot as dormant', () => {
+    const [chip] = buildLearningPotRail(
+      arming({ gymPots: [gym('idle', false)], potScope: scope([]) }),
+    );
+    expect(isPotChipDormant(chip)).toBe(true);
+  });
+
+  it('treats a pot with any armed lane as active, even with no gym at all', () => {
+    const [chip] = buildLearningPotRail(
+      arming({ lanes: [lane('l1', 'busy', true)], potScope: scope([]) }),
+    );
+    expect(chip.gym.state).toBe('absent');
+    expect(isPotChipDormant(chip)).toBe(false);
+  });
+
+  it('NEVER hides a switched-off pot — the rail chip is what switches it back on', () => {
+    const [chip] = buildLearningPotRail(
+      // Nothing armed AND switched off: dormant by arming, but a recorded decision.
+      arming({ gymPots: [gym('paused', false)], potScope: scope(['paused']) }),
+    );
+    expect(chip.learning).toBe('off');
+    expect(isPotChipDormant(chip)).toBe(false);
+  });
+
+  it('NEVER hides a pot whose scope could not be read', () => {
+    const [chip] = buildLearningPotRail(arming({ gymPots: [gym('mystery', false)], potScope: null }));
+    expect(chip.learning).toBe('unknown');
+    expect(isPotChipDormant(chip)).toBe(false);
+  });
+
+  it('partitions without dropping anything, preserving rail order', () => {
+    const rail = buildLearningPotRail(
+      arming({
+        gymPots: [gym('armed', true, 5), gym('idle-a', false), gym('idle-b', false)],
+        potScope: scope([]),
+      }),
+    );
+    const { active, dormant } = partitionLearningPotRail(rail);
+    expect(potsOf(active)).toEqual(['armed']);
+    expect(potsOf(dormant)).toEqual(['idle-a', 'idle-b']);
+    expect(active.length + dormant.length).toBe(rail.length);
   });
 });
