@@ -396,6 +396,47 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(styles).not.toContain('.pc-advconv__shell.is-detail-open .pc-advconv__back');
   });
 
+  // P-003 regression coverage (plan conversations-tab-intuitive-hierarchy-2026-07-10,
+  // decisions D-001 + D-002). The shell is min-width:760px inside an overflow-x:auto
+  // root and the /adv content column is routinely narrower than that, so the shell
+  // scrolls horizontally at ordinary window sizes -- measured on an isolated verifier
+  // rig 2026-08-30: a 648px scroll container (112px of scroll) at the desktop's own
+  // 800px minimum window, and a 470px container (290px of scroll) at 1200px. Unpinned,
+  // the nav rail scrolled to left:-8px at maximum scroll, i.e. navigation went
+  // off-screen exactly when the user scrolled to read the detail pane. These
+  // assertions pin the fix that keeps navigation usable WITHOUT a drill-in, which the
+  // negative assertions above forbid.
+  it('keeps the narrow-width nav rail pinned and un-capped while the panes scroll', () => {
+    render(<AdvConversationsTab />);
+    const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+    const navRule = styles.match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '';
+    expect(navRule).not.toBe('');
+
+    // The rail must stay pinned to the horizontal scrollport. Without all three of
+    // these the rail scrolls away with the panes and P-003's "navigation remains
+    // usable" fails at every width where the shell overflows.
+    expect(navRule).toContain('position: sticky');
+    expect(navRule).toContain('left: 0');
+    expect(navRule).toContain('z-index:');
+
+    // .pc-plans__rail's own background is a translucent gradient, so a sticky rail
+    // needs an opaque base colour or the inbox shows through it while scrolling.
+    // background-color (not the background shorthand) so the gradient survives.
+    expect(navRule).toContain('background-color:');
+
+    // plans.css is imported globally by routes/adv/index.tsx, and its
+    // "@media (max-width: 980px) .pc-plans__rail" rule -- written for the plans
+    // page's single-column collapse -- otherwise capped THIS rail at max-height 58vh
+    // (measured 522px at both 900px and 800px windows, against 800px-tall panes).
+    // This shell does not collapse, so the cap must stay reset.
+    expect(navRule).toContain('max-height: none');
+
+    // The horizontal scroll itself is the sanctioned narrow-width behaviour (D-001):
+    // the root scrolls rather than changing the information architecture.
+    const rootRule = styles.match(/\.pc-advconv\s*{[^}]*}/)?.[0] ?? '';
+    expect(rootRule).toContain('overflow-x: auto');
+  });
+
   it('connects the selected tab to one labelled detail panel', () => {
     render(<AdvConversationsTab />);
     const selected = screen.getByRole('tab', { name: 'Conversations', selected: true });
