@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -119,6 +119,24 @@ function cleanRoomReport(imageId: string, overrides: Record<string, unknown> = {
       passed: true,
       checks: ["artifact-identity", "compatibility-matrix", "deterministic-bootstrap-fixture", "exact-bootstrap-attestation"],
       issues: [],
+      bootstrapScriptSha256: BOOTSTRAP_SCRIPT_SHA,
+      // The gate binds the attestation's release identity to the artifact's, so these three
+      // fields are not decoration — a mismatch is a rejected release.
+      attestation: {
+        contractVersion: "papercusp-workspace-host-bootstrap-v2",
+        hostId: "fixture",
+        action: "install",
+        ubuntuVersion: "24.04",
+        observedAt: "2026-08-30T02:39:29Z",
+        status: "healthy",
+        release: {
+          version: "0.0.18",
+          source: `${CUPBOARD}/artifacts/workspace-host/sha256/${BUNDLE_SHA}/server.tgz`,
+          bundleSha256: BUNDLE_SHA,
+          signingKeySha256: KEY_SHA,
+          signatureVerified: true,
+        },
+      },
       ...overrides,
     },
   };
@@ -133,6 +151,8 @@ async function fixture(
   const root = await mkdtemp(join(tmpdir(), "gcp-image-request-"));
   roots.push(root);
   await writeFile(join(root, "template.pkr.hcl"), TEMPLATE_BODY, "utf8");
+  await mkdir(join(root, "bin"), { recursive: true });
+  await writeFile(join(root, INITIALIZER_PATH), INITIALIZER_BODY, "utf8");
   const manifestPath = join(root, "manifest.json");
   await writeFile(manifestPath, JSON.stringify(publication), "utf8");
   const inputPath = join(root, "input.json");
@@ -205,6 +225,20 @@ describe("buildImageArtifact", () => {
     expect(artifact.buildManifest.releaseArtifact.sha256).toBe(BUNDLE_SHA);
   });
 
+  it("copies the signing public key VERBATIM, so its recorded digest still pins it", async () => {
+    // Regression: trimming this value strips the trailing newline the digest was taken over, which
+    // emits an artifact whose signingKeySha256 no longer matches its own key. The gate rejects it,
+    // but names the digest rather than the trim — so the guard belongs here.
+    const { args } = await fixture();
+    const { artifact } = await buildImageArtifact(args);
+    expect(artifact.release.signingPublicKey).toBe(SIGNING_PUBLIC_KEY);
+    expect(artifact.release.signingPublicKey.endsWith("\n")).toBe(true);
+    const { createHash } = await import("node:crypto");
+    expect(createHash("sha256").update(artifact.release.signingPublicKey, "utf8").digest("hex")).toBe(
+      artifact.release.signingKeySha256,
+    );
+  });
+
   it("refuses a publication manifest whose three bundle digests disagree", async () => {
     const broken = publicationManifest();
     const artifactBlock = broken.artifact as Record<string, unknown>;
@@ -254,6 +288,37 @@ describe("buildImageArtifact", () => {
     await expect(buildImageArtifact(withoutSourceRoot)).rejects.toThrow(/no --source-root was given to measure it/);
   });
 
+  it("transcribes a built material's measurement from the publication manifest", async () => {
+    // The remote initializer lives inside the published bundle, not the repo, so its digest can
+    // only come from the run that measured it. Citing that measurement is not the same as
+    // hand-typing a digest, and it is the only honest way to name a non-repository input.
+    const publication = publicationManifest();
+    const artifactBlock = publication.artifact as Record<string, unknown>;
+    (artifactBlock.buildManifest as Record<string, unknown>).materials = [
+      { path: INITIALIZER_PATH, sha256: "d".repeat(64), sizeBytes: 36345, executable: true },
+    ];
+    const { args } = await fixture(
+      inputDocument({
+        materials: [{ path: "template.pkr.hcl" }, { path: INITIALIZER_PATH, from: "publication-manifest" }],
+      }),
+      publication,
+    );
+    const { artifact } = await buildImageArtifact(args);
+    expect(artifact.buildManifest.materials).toContainEqual({
+      path: INITIALIZER_PATH,
+      sha256: "d".repeat(64),
+      sizeBytes: 36345,
+      executable: true,
+    });
+  });
+
+  it("refuses to cite a publication-manifest measurement that does not exist", async () => {
+    const { args } = await fixture(
+      inputDocument({ materials: [{ path: "template.pkr.hcl" }, { path: INITIALIZER_PATH, from: "publication-manifest" }] }),
+    );
+    await expect(buildImageArtifact(args)).rejects.toThrow(/records no material at that path/);
+  });
+
   it("refuses a manifest that names no build inputs at all", async () => {
     const { args } = await fixture(inputDocument({ materials: [] }));
     await expect(buildImageArtifact(args)).rejects.toThrow(/at least one build input/);
@@ -283,9 +348,11 @@ describe("composeRequest", () => {
       cleanRoomReport(`projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`),
     );
     const composed = await composeRequest(args);
+    // Typed reference, not a bare string — the composition seam reads `.ref`, so a string reads as
+    // a MISSING credential and kills the release at the connection parse.
     expect(composed.connection).toMatchObject({
       target: "gcp",
-      cloudCredentialRef: "gcloud://active-user",
+      cloudCredentialRef: { kind: "cloud", ref: "gcloud://active-user" },
       scope: { kind: "project", id: PROJECT },
     });
   });
