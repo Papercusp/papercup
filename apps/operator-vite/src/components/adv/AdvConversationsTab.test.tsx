@@ -406,10 +406,10 @@ describe('AdvConversationsTab — Create-style shell', () => {
   // off-screen exactly when the user scrolled to read the detail pane. These
   // assertions pin the fix that keeps navigation usable WITHOUT a drill-in, which the
   // negative assertions above forbid.
-  it('keeps the narrow-width nav rail pinned and un-capped while the panes scroll', () => {
-    render(<AdvConversationsTab />);
-    const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
-    const navRule = styles.match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '';
+  // The pinning predicate is factored out of the guard so the falsifiability control
+  // below can exercise the SAME function the guard runs. Keeping one copy is the whole
+  // point: a control that re-implements the assertions proves only that the copy fails.
+  function expectNavRailPinnedAndUncapped(navRule: string) {
     expect(navRule).not.toBe('');
 
     // The rail must stay pinned to the horizontal scrollport. Without all three of
@@ -430,11 +430,69 @@ describe('AdvConversationsTab — Create-style shell', () => {
     // (measured 522px at both 900px and 800px windows, against 800px-tall panes).
     // This shell does not collapse, so the cap must stay reset.
     expect(navRule).toContain('max-height: none');
+  }
+
+  // The .pc-advconv__nav rule EXACTLY as it stood at 66d7970942 (2026-08-30T18:01:51Z),
+  // the last commit before the P-003 fix -- a real observed negative, not an invented one.
+  const NAV_RULE_BEFORE_P003_FIX = `.pc-advconv__nav {
+        flex: 0 0 auto;
+        width: 64px;
+        min-height: 0;
+        border-right: 1px solid var(--advconv-border);
+      }`;
+
+  const readNavRule = () =>
+    [...document.querySelectorAll('style')]
+      .map((s) => s.textContent)
+      .join('\n')
+      .match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '';
+
+  it('keeps the narrow-width nav rail pinned and un-capped while the panes scroll', () => {
+    render(<AdvConversationsTab />);
+    const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+    expectNavRailPinnedAndUncapped(styles.match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '');
 
     // The horizontal scroll itself is the sanctioned narrow-width behaviour (D-001):
     // the root scrolls rather than changing the information architecture.
     const rootRule = styles.match(/\.pc-advconv\s*{[^}]*}/)?.[0] ?? '';
     expect(rootRule).toContain('overflow-x: auto');
+  });
+
+  // P-004 falsifiability control. A guard that has never failed is not yet a guard, and
+  // the obvious way to prove one -- mutating the tracked component in place and re-running
+  // -- is unsafe here: git-sync commits the WHOLE working tree on a schedule, so an
+  // in-tree mutant can be committed even when nothing goes wrong and no restore handler
+  // fails. CLAUDE.md ("Proving a guard is falsifiable") puts a subject the test IMPORTS on
+  // the permanent-in-test-control tier for exactly that reason, so the control lives here
+  // and re-proves itself on every run instead of once, in a session nobody can re-read.
+  it('P-004: the nav-rail guard is falsifiable -- pre-fix CSS and every single-declaration mutant fail it', () => {
+    render(<AdvConversationsTab />);
+    const navRule = readNavRule();
+
+    // Calibration. The REAL subject must pass, or a predicate broken into vacuity would
+    // let every control below "fail" for the wrong reason and still look like proof.
+    expectNavRailPinnedAndUncapped(navRule);
+
+    // The real historical negative: the rule as it actually shipped before the fix.
+    expect(() => expectNavRailPinnedAndUncapped(NAV_RULE_BEFORE_P003_FIX)).toThrow();
+
+    // ...and each pinning declaration is INDEPENDENTLY load-bearing. Without this matrix,
+    // deleting any assertion except 'position: sticky' would leave the historical control
+    // still throwing -- i.e. still green while that property had stopped being guarded.
+    for (const declaration of [
+      'position: sticky',
+      'left: 0',
+      'z-index:',
+      'background-color:',
+      'max-height: none',
+    ]) {
+      const escaped = declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const mutant = navRule.replace(new RegExp(`^.*${escaped}.*\\n?`, 'm'), '');
+      // A mutation that changed nothing makes any guard look strong -- the same no-op
+      // refusal scripts/mutation-probe.sh applies before it will report a verdict.
+      expect(mutant, `removing "${declaration}" changed nothing`).not.toBe(navRule);
+      expect(() => expectNavRailPinnedAndUncapped(mutant)).toThrow();
+    }
   });
 
   it('connects the selected tab to one labelled detail panel', () => {
