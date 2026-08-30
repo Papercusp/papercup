@@ -65,6 +65,7 @@ import {
   readGoalPortfolioBrief,
   compileGoalPlanPlacement,
   readGoalLaunchSettings,
+  readGoalLaunchSettingsForLauncher,
   renderGoalPortfolioBrief,
   writeGoalLaunchSettings,
   resolveCeiling,
@@ -674,6 +675,55 @@ describe('resolveGoalLaunch — goal resolution', () => {
     expect(r.refusal).toBeNull();
     expect(r.ceilings).toEqual({ maxAgents: null, maxPerFleet: null });
     expect(r.degraded).toBe(false);
+  });
+});
+
+describe('an UNREADABLE holder-authority store degrades, it does not throw the launch (WI-1195329)', () => {
+  // 02d9c38d1f widened GoalHolderAuthorityError from "the store said SUPERSEDED"
+  // to also mean "the store could not be read". Both read doors below rethrew it
+  // unconditionally, so a transient DB failure hard-failed a fleet launch —
+  // contradicting their own documented contract ("never a thrown launch") and
+  // red-ing 94 launch-on-plan unit tests, where pg() refuses a real connection.
+  //
+  // These pin the READ doors as fail-soft. The MUTATION fence
+  // (assertGoalHolderMutationAuthority) still refuses both conditions by design;
+  // that asymmetry is the whole point and must not be "simplified" away.
+  const unreadable = () => mockSql({ failOn: /agent_modes/ });
+
+  it('readGoalLaunchSettingsForLauncher degrades with a reason instead of throwing', async () => {
+    const r = await readGoalLaunchSettingsForLauncher({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: unreadable(),
+    });
+    expect(r.goalId).toBeNull();
+    expect(r.settings).toBeNull();
+    expect(r.degraded).toBe(true);
+    expect(r.degradedReasons.join(' ')).toMatch(/goal context unresolved/);
+  });
+
+  it('resolveGoalLaunch degrades instead of throwing, and imposes no ceiling', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: unreadable(),
+    });
+    expect(r.goalId).toBeNull();
+    // Load-bearing: an unreadable store must not silently become a REFUSAL either.
+    expect(r.refusal).toBeNull();
+    expect(r.ceilings).toEqual({ maxAgents: null, maxPerFleet: null });
+    expect(r.degraded).toBe(true);
+  });
+
+  it('says WHY it degraded — an unexplained degrade is undebuggable in production', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: unreadable(),
+    });
+    // The underlying authority message must survive into the reason, so an
+    // operator can tell a storage blip from a genuine absence of goal context.
+    expect(r.degradedReasons.join(' ')).toMatch(/unreadable|goal context unresolved/i);
   });
 });
 
