@@ -25,6 +25,8 @@ import { describe, expect, it } from 'vitest';
 
 const SCANNER_SOURCE = fileURLToPath(new URL('../../bin/papercusp-image-scan.mjs', import.meta.url));
 const ADAPTER_SOURCE = fileURLToPath(new URL('./gcp-image-family-adapter.ts', import.meta.url));
+/** The far end of the carry chain: the type a consumer actually reads the evidence through. */
+const EVIDENCE_SOURCE = fileURLToPath(new URL('./gcp-image-family.ts', import.meta.url));
 
 /**
  * Keys of the conditional `findings` projection: each appears as `{ X: measurement.X }`.
@@ -105,5 +107,49 @@ describe('image scan host -> adapter field delivery', () => {
     const adapter = readFileSync(ADAPTER_SOURCE, 'utf8');
     expect(adapter).toContain('result.mountedFilesystems');
     expect(adapter).toContain('result.candidateRootProof');
+  });
+
+  it('DECLARES every carried field on GcpImageScanEvidence, so a consumer can actually read it', () => {
+    // The third hop, and the one that was silently broken until 2026-08-30.
+    //
+    // The guard above proves the adapter READS each field; it cannot prove a consumer can. The
+    // adapter builds `const evidence: GcpImageScanEvidence = { ...(cond ? { x } : {}) }`, and a
+    // CONDITIONAL SPREAD is exempt from TypeScript's excess-property check — so a field the
+    // interface never declared type-checks cleanly, arrives at runtime, and is invisible to
+    // every typed reader. Nothing fails; the field is simply unreadable at the far end.
+    //
+    // This is not a one-off that got fixed. MEASURED over the 25 most recent commits touching
+    // either file, the gap had opened and been closed again at least six separate times in two
+    // days, always the same way — the scanner gains a field, the interface lags behind:
+    //
+    //   2026-08-29T07:31Z  4 undeclared   2026-08-30T06:37Z  6 undeclared
+    //   2026-08-29T17:01Z  3 undeclared   2026-08-30T10:42Z  3 undeclared
+    //   2026-08-30T05:44Z  3 undeclared   2026-08-30T11:31Z  5 undeclared
+    //
+    // The 11:31Z set included vulnerabilityBySeverityAndEcosystem — the severity x ecosystem
+    // cross-tab that D-201's entire verdict rests on, carried but untyped.
+    //
+    // That recurrence is the argument for deriving this check rather than remembering to update
+    // a list: it is WI-1092039's defect one level up (measured on the VM, carried through the
+    // adapter, still unreadable), and a hand-maintained "fields to declare" list is precisely
+    // the mechanism that failed here six times.
+    const source = readFileSync(SCANNER_SOURCE, 'utf8');
+    const evidence = readFileSync(EVIDENCE_SOURCE, 'utf8');
+    const emitted = [...new Set([...returnedFields(source), ...findingsFields(source)])];
+
+    const iface = evidence.match(/export interface GcpImageScanEvidence \{[\s\S]*?\n\}/);
+    expect(iface, 'could not locate GcpImageScanEvidence — extraction is stale, not the subject')
+      .toBeTruthy();
+    const declared = new Set(
+      [...(iface as RegExpMatchArray)[0].matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]),
+    );
+
+    // Positive control: the extraction must actually find fields, or the filter below passes
+    // by measuring nothing — the same vacuity trap the first test in this file guards against.
+    expect(declared.size).toBeGreaterThanOrEqual(13);
+    expect(declared).toContain('sbomSha256');
+
+    const undeclared = emitted.filter((field) => !declared.has(field));
+    expect(undeclared).toEqual([]);
   });
 });
