@@ -161,13 +161,24 @@ describe('learning-pot-scope store', () => {
         (workspace_id, loop_id, pot_slug, display_name, budget_kind, budget_usd, enabled, enforcement)
       VALUES (${WS}, ${'gym:' + POT}, ${POT}, 'gym lane', 'usd', 40, true, 'native')`;
 
+    // Spread rather than cast. postgres.js hands back a `RowList`, which is not a plain
+    // array: it carries query metadata (count, command, columns, statement) alongside the
+    // rows, and it is readonly — so `as unknown[]` is both a type error and the wrong shape
+    // to compare. `toEqual` on the RowList itself would fold that metadata into the
+    // assertion, which is not what this test means by "byte-identical"; the comment above
+    // says the subject is the lane ROWS. Spreading takes an actual copy of exactly those,
+    // which is also what makes `before` a real snapshot instead of a live handle.
     const laneSnapshot = async () => ({
-      gym: (await sql`
+      gym: [
+        ...(await sql`
         SELECT * FROM harness_shared.gym_autoloop_config
-         WHERE workspace_id = ${WS} AND harness_slug = ${POT}`) as unknown[],
-      governor: (await sql`
+         WHERE workspace_id = ${WS} AND harness_slug = ${POT}`),
+      ],
+      governor: [
+        ...(await sql`
         SELECT * FROM harness_shared.learning_governor_loops
-         WHERE workspace_id = ${WS} AND loop_id = ${'gym:' + POT}`) as unknown[],
+         WHERE workspace_id = ${WS} AND loop_id = ${'gym:' + POT}`),
+      ],
     });
 
     const before = await laneSnapshot();
