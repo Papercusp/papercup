@@ -286,10 +286,11 @@ export function transformCulpritsFrom(output: string): string[];
  *   entries?: Array<{ workspace: string, file: string }>,
  *   unattributed?: Array<{ task: string, reason: string }>,
  *   transformCulprits?: string[],
+ *   attributionFallbacks?: Array<{ task: string, source: string }>,
  * }} args
  * @returns {string}
  */
-export function formatFailingFilesLine({ runToken, entries, unattributed, transformCulprits }: {
+export function formatFailingFilesLine({ runToken, entries, unattributed, transformCulprits, attributionFallbacks, }: {
     runToken: string;
     entries?: Array<{
         workspace: string;
@@ -300,6 +301,10 @@ export function formatFailingFilesLine({ runToken, entries, unattributed, transf
         reason: string;
     }>;
     transformCulprits?: string[];
+    attributionFallbacks?: Array<{
+        task: string;
+        source: string;
+    }>;
 }): string;
 /**
  * Stable key for one workspace-relative failure entry.
@@ -507,17 +512,21 @@ export function hasRouteRefusal(output?: string): boolean;
  * was built for.
  *
  * @param {{ workspace: string, task: string, captured: boolean, output?: string,
- *           fallbackReason?: string }} args
+ *           fallbackReason?: string, fallbackOutput?: string,
+ *           fallbackSource?: string }} args
  * @returns {{ entries: Array<{ workspace: string, file: string }>,
  *             unattributed: Array<{ task: string, reason: string }>,
- *             transformCulprits: string[] }}
+ *             transformCulprits: string[],
+ *             attributionSource?: string }}
  */
-export function attributeFailedTask({ workspace, task, captured, output, fallbackReason }: {
+export function attributeFailedTask({ workspace, task, captured, output, fallbackReason, fallbackOutput, fallbackSource, }: {
     workspace: string;
     task: string;
     captured: boolean;
     output?: string;
     fallbackReason?: string;
+    fallbackOutput?: string;
+    fallbackSource?: string;
 }): {
     entries: Array<{
         workspace: string;
@@ -528,6 +537,7 @@ export function attributeFailedTask({ workspace, task, captured, output, fallbac
         reason: string;
     }>;
     transformCulprits: string[];
+    attributionSource?: string;
 };
 /**
  * The whole failure-summary block a run prints for its break set: the human list a triager
@@ -551,10 +561,11 @@ export function attributeFailedTask({ workspace, task, captured, output, fallbac
  *   entries?: Array<{ workspace: string, file: string }>,
  *   unattributed?: Array<{ task: string, reason: string }>,
  *   transformCulprits?: string[],
+ *   attributionFallbacks?: Array<{ task: string, source: string }>,
  * }} args
  * @returns {string[]}
  */
-export function renderFailingFilesSummary({ runToken, failedTaskCount, entries, unattributed, transformCulprits, }: {
+export function renderFailingFilesSummary({ runToken, failedTaskCount, entries, unattributed, transformCulprits, attributionFallbacks, }: {
     runToken: string;
     failedTaskCount: number;
     entries?: Array<{
@@ -566,6 +577,10 @@ export function renderFailingFilesSummary({ runToken, failedTaskCount, entries, 
         reason: string;
     }>;
     transformCulprits?: string[];
+    attributionFallbacks?: Array<{
+        task: string;
+        source: string;
+    }>;
 }): string[];
 /**
  * Count vitest's own hard-timeout failures — `"Test timed out in Nms."` / `"Hook timed

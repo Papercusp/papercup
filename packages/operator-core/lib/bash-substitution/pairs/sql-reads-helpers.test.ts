@@ -255,7 +255,7 @@ describe('work_items pairs — a predicate the verb cannot express is not silent
 
   /* ── WI-38339: the four widened slices ────────────────────────────────────────
    *
-   * The tool grew `states` / `notTerminal` / `createdSince` / `updatedSince` /
+   * The tool grew array-valued `state` / `notTerminal` / `createdSince` / `updatedSince` /
    * `sourcePlanSlug`; this pair had to be widened DELIBERATELY to match, because
    * its shape is a positive whitelist. The division of labour these tests pin:
    * the SHAPE decides syntax, `cover()` decides semantics. Two of the three
@@ -282,9 +282,10 @@ describe('work_items pairs — a predicate the verb cannot express is not silent
     }
   });
 
-  it('renders a state SET as `states`, lowercased', () => {
+  it('renders a state SET as array-valued `state`, lowercased', () => {
     const call = workItemsListCallFromQuery("SELECT id FROM w WHERE status IN ('OPEN','wip')");
-    expect(call).toContain('states: ["open", "wip"]');
+    expect(call).toContain('state: ["open", "wip"]');
+    expect(call).not.toContain('states:');
   });
 
   // THE HIGH-VALUE CASE. Measured over 7d of real agent SQL naming `work_items`:

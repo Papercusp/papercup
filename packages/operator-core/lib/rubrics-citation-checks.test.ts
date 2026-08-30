@@ -1,0 +1,181 @@
+/**
+ * rubrics-citation-checks.test.ts — recurrence coverage for the acceptance
+ * rubric citation guard (EI-21818117666341180).
+ *
+ * The measured defect was not a missing file.  The cited file existed, but a
+ * criterion's symbol-level subject lived in a sibling module, so a grader
+ * received a false `unknown`.  These tests keep both halves falsifiable:
+ * existence-only would accept the bad fixture, while the content anchor rejects
+ * it; matching path + matching literal remains a positive control.
+ */
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import {
+  assertAcceptanceRubricCitationPathsResolve,
+  validateAcceptanceRubricCitationPaths,
+  type AcceptanceRubricCitationCriterion,
+} from './rubrics-citation-checks';
+
+const root = mkdtempSync(join(tmpdir(), 'rubric-citations-test-'));
+const store = 'packages/operator-core/lib/events/await/store.ts';
+const executor = 'packages/operator-core/lib/events/await/wake-executor.ts';
+const executorTest = 'packages/operator-core/lib/events/await/wake-executor.test.ts';
+for (const file of [store, executor, executorTest]) {
+  mkdirSync(resolve(root, file, '..'), { recursive: true });
+}
+
+writeFileSync(resolve(root, store), 'export function takeOverLineage() {}\n');
+writeFileSync(resolve(root, executor), '// delivery path\nexport function executeWake() {}\n');
+writeFileSync(
+  resolve(root, executorTest),
+  [
+    "describe('cross-lineage delivery case', () => {",
+    "  it('rejects a registration and returns the compatible binding', () => {});",
+    '});',
+    '',
+  ].join('\n'),
+);
+
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+const deps = {
+  statFile: (selectedRoot: string, path: string) => {
+    try {
+      return { isFile: statSync(resolve(selectedRoot, path)).isFile() };
+    } catch {
+      return null;
+    }
+  },
+  readFile: (selectedRoot: string, path: string) => {
+    try {
+      return readFileSync(resolve(selectedRoot, path), 'utf8');
+    } catch {
+      return null;
+    }
+  },
+};
+
+const c6 = (over: Partial<AcceptanceRubricCitationCriterion> = {}): AcceptanceRubricCitationCriterion => ({
+  key: 'C6',
+  method:
+    'Read the lineage check in packages/operator-core/lib/events/await/store.ts (symbol-level; ~1279 is a hint) and the delivery path in packages/operator-core/lib/events/await/wake-executor.ts.',
+  replication:
+    "Run testing:run { files: ['packages/operator-core/lib/events/await/wake-executor.test.ts'] }; inspect the test named 'rejects a registration and returns the compatible binding'.",
+  ...over,
+});
+
+describe('validateAcceptanceRubricCitationPaths — EI-21818117666341180', () => {
+  it('reproduces the measured false-unknown shape: an existing but misaddressed symbol-level file is refused', () => {
+    // FALSIFIABILITY CONTROL: the pre-fix existence-only rule would accept the
+    // same fixture, so this red result is caused by content, not path absence.
+    expect(deps.statFile(root, store)).toEqual({ isFile: true });
+    const existenceOnly = deps.statFile(root, store)?.isFile === true;
+    expect(existenceOnly).toBe(true);
+
+    const result = validateAcceptanceRubricCitationPaths([c6()], { root, deps });
+    expect(result.ok).toBe(false);
+    expect(result.checkedPaths).toBe(3);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        criterionKey: 'C6',
+        source: 'method',
+        path: store,
+        reason: 'literal_missing',
+        literal: 'lineage check',
+      }),
+    ]);
+  });
+
+  it('accepts the corrected citation when the path and every named anchor are present', () => {
+    writeFileSync(
+      resolve(root, store),
+      '// lineage check\nexport function takeOverLineage() {}\n',
+    );
+    const result = validateAcceptanceRubricCitationPaths([c6()], { root, deps });
+    expect(result.ok).toBe(true);
+    expect(result.checkedPaths).toBe(3);
+    expect(result.failures).toEqual([]);
+    expect(result.checkedAnchors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          criterionKey: 'C6',
+          source: 'method',
+          path: store,
+          literal: 'lineage check',
+          kind: 'symbol',
+        }),
+        expect.objectContaining({
+          criterionKey: 'replication',
+          path: executorTest,
+          literal: 'rejects a registration and returns the compatible binding',
+          kind: 'test-case',
+        }),
+      ]),
+    );
+  });
+
+  it('refuses a missing path and an explicit symbol absent from an otherwise live file', () => {
+    const result = validateAcceptanceRubricCitationPaths(
+      [
+        {
+          key: 'missing',
+          method: 'Read packages/operator-core/lib/events/await/no-such.ts.',
+        },
+        {
+          key: 'symbol',
+          method: 'Inspect symbol: missingBranch in packages/operator-core/lib/events/await/store.ts.',
+        },
+      ],
+      { root, deps },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ criterionKey: 'missing', reason: 'path_missing' }),
+        expect.objectContaining({
+          criterionKey: 'symbol',
+          reason: 'literal_missing',
+          literal: 'missingBranch',
+        }),
+      ]),
+    );
+  });
+
+  it('ignores prose without an explicit path or named symbol/test anchor', () => {
+    const result = validateAcceptanceRubricCitationPaths(
+      [
+        {
+          key: 'fuzzy',
+          method: 'Judge the outcome from the current implementation and report any uncertainty.',
+          replication: 'Use the normal review procedure; no source file is named.',
+        },
+      ],
+      { root, deps },
+    );
+    expect(result).toEqual({
+      ok: true,
+      checkedPaths: 0,
+      checkedAnchors: [],
+      failures: [],
+    });
+  });
+});
+
+describe('assertAcceptanceRubricCitationPathsResolve', () => {
+  it('throws an invalid_args teaching error naming the criterion, path, and missing literal', () => {
+    expect(() => assertAcceptanceRubricCitationPathsResolve([c6()], { root, deps })).toThrowError(
+      /invalid_args:.*C6.*store\.ts.*lineage check/s,
+    );
+  });
+
+  it('does not throw for a path-only citation that resolves', () => {
+    expect(() =>
+      assertAcceptanceRubricCitationPathsResolve(
+        [{ key: 'path-only', method: `Read ${executor}.` }],
+        { root, deps },
+      ),
+    ).not.toThrow();
+  });
+});

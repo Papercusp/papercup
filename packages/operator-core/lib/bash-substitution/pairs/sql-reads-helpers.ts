@@ -689,10 +689,10 @@ export function workItemsListCallFromQuery(atom: string): string | null {
     if (kind) args.push(['kind', JSON.stringify(kind.toLowerCase())]);
   }
 
-  // WI-38339 — a state SET. `states` ANDs with `state`, exactly as the SQL ANDs an
-  // `IN` list with an `=`, so an atom carrying both still renders one faithful call.
+  // WI-38339 — a state SET. The singular `state` arg accepts an array, exactly as
+  // the SQL `IN` list does; an atom carrying both still renders one faithful call.
   const states = inStatesFor(atom);
-  if (states.length) args.push(['states', `[${states.map((s) => JSON.stringify(s)).join(', ')}]`]);
+  if (states.length) args.push(['state', `[${states.map((s) => JSON.stringify(s)).join(', ')}]`]);
 
   // WI-38339 — "everything still live". Only when the NOT-IN list IS the canonical
   // union (see isCanonicalTerminalUnion); `cover()` refuses every other list rather

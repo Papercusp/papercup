@@ -33,6 +33,7 @@ import {
   CHECKPOINT_MAX_RUNTIME_SEC,
   checkpointCandidateContainment,
   checkpointEligibilityCompletionEvents,
+  checkpointUnitForRoot,
   checkpointEligibilityPendingId,
   classifyReplaceRequest,
   launchDetachedCheckpoint,
@@ -1457,6 +1458,10 @@ export default defineTool({
       candidate: launchCandidate,
       leaseDurationMs: CHECKPOINT_MAX_RUNTIME_SEC * 1_000,
       evidenceRefs: ['tool:release:checkpoint-run'],
+      // Record WHICH process this lease belongs to. Without it the lease is unfalsifiable: a runner
+      // that dies without settling holds the gate for the full 3h, and every scheduled fire in that
+      // window is skipped (`writer-starved`) — a gate that renders no verdict while reading as red.
+      unit: `${checkpointUnitForRoot(integrationRoot())}.service`,
     });
     if (!qualificationMutationContinues(qualificationReservation)) {
       const transaction = 'transaction' in qualificationReservation ? qualificationReservation.transaction : null;

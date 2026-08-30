@@ -576,7 +576,7 @@ export const workItemsSearch: SqlSubstitutionPair = {
   // id filter at all.
   //
   // WI-38339 WIDENED THIS, and the widening was NOT automatic: the tool grew four
-  // arguments (`states`, `notTerminal`, `createdSince`/`updatedSince`,
+  // arguments (array-valued `state`, `notTerminal`, `createdSince`/`updatedSince`,
   // `sourcePlanSlug`) and this whitelist admitted them one at a time, each with a
   // rendering read by eye. Three shapes the corpus writes are STILL excluded on
   // purpose, and the reasons are semantic rather than syntactic — see `cover()`
@@ -587,10 +587,10 @@ export const workItemsSearch: SqlSubstitutionPair = {
   sqlShape: WORK_ITEMS_SEARCH_SHAPE,
   toolName: 'work_items:list',
   advisoryText:
-    "work_items:list { q, state, states, notTerminal, kind, assignee, harness, sourcePlanSlug, createdSince, updatedSince, completionAuthority, limit } reads a filtered slice with server-side filters. ⚠ `q` is a literal substring over title AND body/summary, so a title-only ILIKE routes to a SUPERSET. ⚠ It EXCLUDES observation-lane rows by default — pass includeObservations:true to match what a raw SELECT returns. ⚠ `notTerminal` means one specific set (the canonical terminal union) — for any OTHER exclusion, stay in SQL. ⚠ createdSince/updatedSince are INCLUSIVE (`>=`) and take an ISO literal, so an exclusive `>` or a `now() - interval` bound stays SQL, and reading either timestamp back needs payloadTier:\"full\". No id filter (that is work_items:get), and source_plan_slug can be FILTERED but is projected on feature rows only, so selecting it, a kind IN-list, a payload-> predicate, an aggregate or a JOIN still wants SQL.",
+    "work_items:list { q, state, notTerminal, kind, assignee, harness, sourcePlanSlug, createdSince, updatedSince, completionAuthority, limit } reads a filtered slice with server-side filters; `state` accepts one value or an array for a state set. ⚠ `q` is a literal substring over title AND body/summary, so a title-only ILIKE routes to a SUPERSET. ⚠ It EXCLUDES observation-lane rows by default — pass includeObservations:true to match what a raw SELECT returns. ⚠ `notTerminal` means one specific set (the canonical terminal union) — for any OTHER exclusion, stay in SQL. ⚠ createdSince/updatedSince are INCLUSIVE (`>=`) and take an ISO literal, so an exclusive `>` or a `now() - interval` bound stays SQL, and reading either timestamp back needs payloadTier:\"full\". No id filter (that is work_items:get), and source_plan_slug can be FILTERED but is projected on feature rows only, so selecting it, a kind IN-list, a payload-> predicate, an aggregate or a JOIN still wants SQL.",
   routing: {
     want: 'a filtered work-item / issue slice — text, state set, kind, assignee, plan of origin, or a created/updated window',
-    use: '`work_items:list { q, state, states, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes',
+    use: '`work_items:list { q, state, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes',
     // ⚠ Under 300 chars — routing-table.test.ts budgets this as a table cell.
     insteadOf:
       "`SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` spans title+summary (a superset). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL",

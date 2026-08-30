@@ -12,7 +12,7 @@ import { staticImportClosure } from "./related-tests.mjs";
 
 export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
-  "affected-passing-task-verdict-v4";
+  "affected-passing-task-verdict-v5";
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS = 32;
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -74,6 +74,9 @@ export const PC_HEAVY_VOLATILE_IDENTITY_ENV = Object.freeze([
   "PC_HEAVY_ADMISSION_ID",
   "PC_HEAVY_PSI_FINALIZATION_FILE",
   "PC_HEAVY_PREEMPT_START_FILE",
+  // WI-1024071 live Run C -> D: conditionally present for focused/preempt paths. Its value
+  // selects wrapper scheduling only; it never changes the admitted task's command or inputs.
+  "PC_HEAVY_PREEMPT_EXCLUSIVE",
 ]);
 
 export function passingTaskVerdictIdentityEnvironment(environment) {
