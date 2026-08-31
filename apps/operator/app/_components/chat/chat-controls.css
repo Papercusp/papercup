@@ -500,6 +500,84 @@
   overflow-wrap: anywhere;
 }
 
+/* ═══ ⓪ Name — the popup's TITLE, and the band's one editable fact ══════════ */
+/* hud-session-display-names-2026-08-31 P-008 / D-002. Everything else in this
+   band is read-only because it changes on its own; the name is the exception,
+   and it earns the seat by being what the band is ABOUT — the session's
+   identity, which a header names. Set at the band's leading edge and a step
+   above its neighbours in size/weight, so the row reads "WHAT this is, then how
+   it is doing". Deliberately unlike a button until hovered: at rest it is the
+   title, not a control. */
+.pc-ctl-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40ch;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.pc-ctl-name:not(:disabled) {
+  cursor: text;
+}
+
+button.pc-ctl-name:not(:disabled):hover,
+button.pc-ctl-name:not(:disabled):focus-visible {
+  border-color: var(--border);
+  background: color-mix(in oklab, transparent, white 6%);
+}
+
+/* An unnamed session shows only the invitation to name it — never its resolved
+   fallback headline, which is the intent/handle this band deliberately does not
+   repeat (see SessionNameField). So it is set as the quietest thing in the row:
+   an offer, not a title. */
+.pc-ctl-name[data-named='false'] {
+  font-weight: 500;
+  font-size: 10.5px;
+  color: var(--fg-mute);
+  font-style: italic;
+}
+
+.pc-ctl-name--editing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  max-width: none;
+  overflow: visible;
+}
+
+.pc-ctl-name__input {
+  min-width: 0;
+  width: 28ch;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.pc-ctl-name__error {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--bad, #f87171);
+  white-space: nowrap;
+}
+
 /* ═══ ① State — a fact. Read-only. Changes on its own. ═══════════════════════ */
 
 .pc-ctl-state {

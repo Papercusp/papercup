@@ -84,6 +84,10 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 // P-009: the SAME countdown formatter the dossier's Locks section uses, so an
 // expiry cannot read one way on the band and another way one pane over.
 import { formatTimeLeft } from '@papercusp/operator-core/lib/format/relative-time';
+/* D-003: the ONE resolver. This popup's title must be the string the HUD card
+   and the OS terminal title already show, so it calls the shared chain rather
+   than growing a third `manualName ?? objective ?? handle` expression. */
+import { sessionDisplayName } from '@papercusp/operator-core/lib/agent-tools/coordination/status-display';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the footer's liveness dot +
 // its "N locks / M unread" summary-chip counts. Imported from the standalone
 // use-agent-detail module (not AgentDossier.tsx, which SessionChatModal.test.tsx
@@ -446,11 +450,162 @@ function stateChipClass(b: HudBadge): string {
  * title bar. Fleet role/slug stay: the panel never showed them, so they are
  * not a duplicate to remove.
  */
+
+/**
+ * The popup's title — the session's NAME, edited in place
+ * (hud-session-display-names-2026-08-31 P-008, D-002: this is the ONLY rename
+ * affordance in the product; the HUD card stays read-only).
+ *
+ * WHY IT SITS IN THE STATUS BAND. D-002 named "the SessionChatModal header
+ * title", which at the time meant the `title` prop on Modal — but Radix renders
+ * that `Dialog.Title` at `display:none` unless `srOnlyTitle`, so it is the
+ * ACCESSIBLE name and has never been on screen. (The docblock above still points
+ * readers at "the modal title bar" for the same reason; it is describing
+ * something invisible.) The status band is what a reader actually sees at the
+ * top of the popup — the window controls sit on its row — so that is where the
+ * title goes. The a11y `title` is resolved from the same string, so the two
+ * cannot disagree.
+ *
+ * The band's own rule is "facts, not verbs", and this respects it: a name is a
+ * fact about the session, rendered as text. The edit is an affordance ON that
+ * fact, not a command performed on the session — which is the line that keeps
+ * it out of the Controls band, where every neighbour would make it read as
+ * something you DO to the agent rather than what the agent IS.
+ */
+function SessionNameField({
+  headline,
+  manualName,
+  onRename,
+}: {
+  /** The resolved display name — what every other surface shows. Never blank. */
+  headline: string;
+  /** The stored MANUAL name, or null when the headline came from the fallback. */
+  manualName: string | null;
+  onRename?: (name: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  // Mid-edit draft: `useState` on purpose. The repo's nuqs-by-default rule lists
+  // a draft as one of its explicit exceptions, and a rename half-typed into the
+  // URL would be shared/restored as if it had been committed.
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const open = () => {
+    // Seeded with the MANUAL name only — never the resolved headline. Seeding
+    // the fallback would turn "press Enter to keep what I see" into silently
+    // FREEZING the objective as a manual name, so the card would stop tracking
+    // what the session is doing and nobody would know why.
+    setDraft(manualName ?? '');
+    setError(null);
+    setEditing(true);
+  };
+
+  const commit = async () => {
+    if (!onRename || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRename(draft);
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  if (!editing) {
+    /* ⚠ THE UNNAMED CASE RENDERS NO TEXT FROM THE FALLBACK CHAIN, and that is
+       not a style choice. This band is governed by P-004/D-002, which REMOVED
+       every identity/reference field that the AgentDossier panel already shows
+       verbatim — the handle, the plan slug, the intent line — rather than keep
+       them in two places. The resolved headline of an unnamed session IS that
+       intent (or that handle), so printing it here would quietly reinstate the
+       duplicate; `SessionChatModal.test.tsx`'s band test asserts the intent is
+       absent, and it is right to.
+
+       A MANUAL name is different in kind: nothing else on this surface shows
+       it, so it is new information, not a repeat. Hence the split — a named
+       session gets its name as the title, an unnamed one gets only the
+       affordance to give it one. Either way the popup's accessible title still
+       carries the full resolved headline, where duplication costs nothing. */
+    return (
+      <button
+        type="button"
+        className="pc-ctl-name"
+        onClick={onRename ? open : undefined}
+        disabled={!onRename}
+        data-testid="session-chat-name"
+        data-named={manualName ? 'true' : 'false'}
+        aria-label={
+          manualName
+            ? `Session name: ${manualName}${onRename ? '. Click to rename.' : ''}`
+            : 'This session has no name. Click to name it.'
+        }
+      >
+        {manualName ?? 'Name this session'}
+      </button>
+    );
+  }
+
+  return (
+    <span className="pc-ctl-name pc-ctl-name--editing">
+      <input
+        ref={inputRef}
+        className="pc-ctl-name__input"
+        value={draft}
+        disabled={busy}
+        aria-label="Session name — leave blank to clear it and fall back to the objective"
+        // The fallback, shown rather than filled in, so an empty field reads as
+        // "unnamed, and this is what you get instead" rather than as data loss.
+        placeholder={headline}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            void commit();
+          } else if (e.key === 'Escape') {
+            // Stop here: the popup's own Escape handler would otherwise close
+            // the whole conversation on the keypress that meant "cancel this
+            // edit".
+            e.preventDefault();
+            e.stopPropagation();
+            setEditing(false);
+          }
+        }}
+        /* Blur DISCARDS rather than submits. A blank commit CLEARS the name
+           (R6), so a blur-submit would make clicking anywhere else a silent
+           destructive act on a field the user may have only meant to look at.
+           Enter is the one way to commit, including to commit a clear. */
+        onBlur={() => {
+          if (!busy) setEditing(false);
+        }}
+      />
+      {error ? (
+        <span className="pc-ctl-name__error" data-testid="session-chat-name-error">
+          {error}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function SessionStateHeader({
   entry,
   onOpenDetail,
+  onRename,
 }: {
   entry: HudRosterEntry;
+  /** Commit a new manual name (blank CLEARS — R6). Absent while the popup has
+   *  no owner-scoped action context, which is also when the rename could not
+   *  be routed anywhere. */
+  onRename?: (name: string) => Promise<void>;
   /** D-002's ONE deliberate duplicate: the "⚠ N locks / M unread" alert
    *  opens (if collapsed) and scrolls the dossier rail to the named
    *  section — "the glance stays in the reading path, the detail moves." */
@@ -553,6 +708,20 @@ function SessionStateHeader({
     return Number.isNaN(t) ? null : Math.max(0, Math.round((nowMs - t) / 1000));
   }, [entry.openAwait?.sinceIso, nowMs]);
   const awaitTimeLeft = formatTimeLeft(entry.openAwait?.expiresIso, nowMs);
+  /* The popup's title, resolved through the SHARED chain (D-003) and given the
+     BOARD's short-id form (D-004) — so the title of the popup is byte-identical
+     to the card that opened it, including in the unnamed fallback case where
+     the two shortenings would otherwise differ and read as two sessions. */
+  const display = sessionDisplayName({
+    manualName: entry.displayName,
+    objective: entry.objective ?? entry.intent,
+    ownerId: entry.ownerId,
+    shortHandle: shortHandle(entry.ownerId),
+  });
+  const headline = display.name;
+  // Only a MANUAL name seeds the edit field; an objective/handle headline must
+  // leave it empty, or committing unchanged would freeze the fallback as a name.
+  const manualName = display.source === 'manual' ? display.name : null;
   const sessionState = normalizeSessionState(entry.sessionState);
   const statusLabel = sessionState ?? entry.liveness;
   const activityAgeTitle = ageSec != null ? `; last activity: ${formatAge(ageSec)} ago` : '';
@@ -596,6 +765,11 @@ function SessionStateHeader({
           own row is where this lands. Nothing here is a verb — this zone is
           facts that change on their own, plus the window controls. */}
       <span className="pc-zone-cap">Status</span>
+      {/* The popup's TITLE (P-008) — see SessionNameField for why the name is
+          here rather than on the invisible Radix dialog title. It leads the
+          band because it says WHAT this session is; everything after it says
+          how it is doing. */}
+      <SessionNameField headline={headline} manualName={manualName} onRename={onRename} />
       <span
         className="pc-ctl-state"
         title={statusTitle}
@@ -1645,7 +1819,37 @@ export default function SessionChatModal({
   );
 
   const agentName = ownerLabel || sessionOwnerId || 'agent session';
-  const title = `Chat — ${agentName}`;
+  /* The ACCESSIBLE dialog name. Radix keeps `Dialog.Title` at display:none here,
+     so this is never on screen — the visible title is SessionNameField in the
+     status band — but a screen reader announces it on open, and announcing a raw
+     owner id is exactly the regression this plan set out to fix. Resolved
+     through the shared chain (D-003) so the two cannot disagree; falls back to
+     the old label while the roster row has not arrived. */
+  const headlineName = actionRosterEntry
+    ? sessionDisplayName({
+        manualName: actionRosterEntry.displayName,
+        objective: actionRosterEntry.objective ?? actionRosterEntry.intent,
+        ownerId: actionRosterEntry.ownerId,
+        shortHandle: shortHandle(actionRosterEntry.ownerId),
+      }).name
+    : agentName;
+  const title = `Chat — ${headlineName}`;
+
+  /* P-007's write path, wired here rather than in the band so the band stays a
+     presentation component: it is handed a committed-name callback, not a fetch.
+     Absent until an owner-scoped action context exists — which is also when
+     there is nothing to route a rename to. */
+  const handleRename = useCallback(
+    async (name: string) => {
+      if (!actionCtx) throw new Error('no session action context');
+      const { renameSession } = await import('@/lib/chat-actions/SessionActions');
+      await renameSession(actionCtx, name);
+      // No client-side invalidation: the route fires notifySyncInvalidate on the
+      // SERVER after the write commits, which is what reaches every open board —
+      // not just this one — over the SSE transport the desktop always runs.
+    },
+    [actionCtx],
+  );
 
   return (
     <Modal
@@ -1899,7 +2103,11 @@ export default function SessionChatModal({
             transcript means — a maximized conversation that no longer says
             whether the agent is alive has lost the more useful half. ── */}
         {actionRosterEntry ? (
-          <SessionStateHeader entry={actionRosterEntry} onOpenDetail={scrollToDossierSection} />
+          <SessionStateHeader
+            entry={actionRosterEntry}
+            onOpenDetail={scrollToDossierSection}
+            onRename={actionCtx ? handleRename : undefined}
+          />
         ) : null}
         {resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>

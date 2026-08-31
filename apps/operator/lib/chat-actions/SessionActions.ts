@@ -97,6 +97,37 @@ export async function focusWindow(ctx: SessionActionCtx): Promise<void> {
   }
 }
 
+/**
+ * Set — or CLEAR — this session's display name (P-007; D-002 puts the control
+ * in the conversation popup header and nowhere else).
+ *
+ * Keyed by ownerId, unlike `focusWindow` above: a name belongs to the AGENT,
+ * not to one launch row or X11 window (D-003), so this works for a headless
+ * session that has no window to focus at all.
+ *
+ * Returns the name the SERVER stored, not the string that was typed — the store
+ * trims, collapses whitespace and bounds it, and blank comes back as null
+ * because a blank submit CLEARS (R6). Rendering the typed string would show a
+ * name the next roster tick then contradicts.
+ */
+export async function renameSession(
+  // Deliberately narrower than its siblings: a name is keyed by ownerId ALONE
+  // (D-003), so this asks for nothing else — which is what lets the popup header
+  // call it with the plain ChatActionContext it already holds.
+  ctx: Pick<SessionActionCtx, 'sessionOwnerId'>,
+  name: string,
+): Promise<{ displayName: string | null; cleared: boolean }> {
+  if (!ctx.sessionOwnerId) throw new Error('no session owner id');
+  const res = await postText('/api/adv/sessions/rename', { ownerId: ctx.sessionOwnerId, name });
+  const data = (await res.json().catch(() => null)) as
+    | { status?: string; displayName?: string | null; cleared?: boolean; error?: string }
+    | null;
+  if (!res.ok || data?.status !== 'ok') {
+    throw new Error(`rename failed: ${data?.error ?? `HTTP ${res.status}`}`);
+  }
+  return { displayName: data.displayName ?? null, cleared: Boolean(data.cleared) };
+}
+
 /** Stop the attached owner through the audited fleet:kill primitive. The
  * desktop webview cannot attach an agent bearer, so this uses the same
  * loopback-only admin proxy as the rest of the HUD's owner-scoped writes. */

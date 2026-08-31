@@ -892,6 +892,9 @@ import './sessions/digest';
 // transcript-watcher pull path) self-registers via register-system-actions.ts.
 import './sessions/ingest-gate-event';
 import './sessions/list-pending-gates';
+// hud-session-display-names-2026-08-31 P-007: the agent half of the rename
+// write path (the human half is POST /api/adv/sessions/rename).
+import './sessions/rename';
 // sentinel-herald Phase 8 P-037 — pre-existing override mechanisms now self-register as
 // config-override concerns so config:list-overrides is the canonical audit surface. These
 // stores are already transitively imported by their tools; importing them here makes the
