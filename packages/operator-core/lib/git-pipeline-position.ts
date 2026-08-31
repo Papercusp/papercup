@@ -3,9 +3,14 @@
  * (git-sync-dx-hardening-2026-06-17 P-002 / EI-1164).
  *
  * Given a repo-relative PATH or a commit SHA, resolve its position along the
- * sync → green-checkpoint → release pipeline:
- *   committed locally → on `origin/staging` → in `origin/main` (passed the green
- *   gate) → reached the live `:3070` operator (the deployed sha).
+ * release pipeline plus its publication side leg:
+ *   delivery: committed locally → green-checkpoint → `main` → live `:3070`
+ *   publish:  committed locally → `origin/staging` (durability / peer visibility)
+ *
+ * `origin/staging` is a real health signal and a real data-loss boundary. For a
+ * commit-only/bridged member it is NOT an input to the local staging→main→:3070
+ * delivery path; keeping it visible while excluding it from `blockedOn` is the
+ * distinction this surface exists to make.
  *
  * The three audits all hit the same DX tax: answering this took 4+ forensic git
  * + PG + curl commands. This joins it. Reuses `devDeployState` (the integration
@@ -1464,8 +1469,11 @@ export interface PipelinePosition {
    */
   sweepExposure: SweepExposure;
   /**
-   * git-pipeline-agent-state-2026-07-26 P-001: per-stage POSITION x HEALTH,
-   * ordered source->live.
+   * git-pipeline-agent-state-2026-07-26 P-001: per-stage POSITION x HEALTH.
+   * Delivery stages are ordered source→live; the `pushed` stage is an explicitly
+   * labelled publish side leg for commit-only/bridged members (durability / peer
+   * visibility), not a delivery prerequisite. A normal pushing member keeps the
+   * historical delivery-plane semantics.
    *
    * `positions` above answers only "is my change past this stage?". A boolean
    * cannot distinguish "not yet, wait" from "this leg is dead, waiting is
@@ -1475,8 +1483,9 @@ export interface PipelinePosition {
    */
   stages: StageState[];
   /**
-   * P-005: the stage actually holding this change up — the first `pending` stage in
-   * source→live order — or `null` when nothing is pending (it is live).
+   * P-005: the DELIVERY stage actually holding this change up — the first pending
+   * `plane:'delivery'` stage in source→live order — or `null` when delivery is live.
+   * A pending/broken `plane:'publish'` stage remains serious, but never populates this field.
    */
   blockedOn: StageName | null;
   /**
@@ -2704,8 +2713,11 @@ export function evaluateSweepExposure(args: {
   };
 }
 
-/** A stage a change must clear to be live, ordered source->live. */
+/** A diagnostic stage. Delivery stages are ordered source->live; publish is a side leg. */
 export type StageName = 'committed' | 'pushed' | 'gate' | 'main' | 'deployed' | 'serving';
+
+/** Whether this stage can block :3070 delivery or only off-box publication/durability. */
+export type StagePlane = 'delivery' | 'publish';
 
 /** Where MY change sits relative to a stage. `na` = this stage is not on my change's activation route at all. */
 export type StagePosition = 'past' | 'pending' | 'na';
@@ -2719,6 +2731,8 @@ export type StageHealth = 'advancing' | 'stalled' | 'disabled' | 'broken' | 'unk
 
 export interface StageState {
   name: StageName;
+  /** `pushed` is publish-only; every other current stage is on the delivery plane. */
+  plane: StagePlane;
   position: StagePosition;
   health: StageHealth;
   /** Why it reads this way, and the concrete lever when it is not advancing. */
@@ -2938,6 +2952,7 @@ export function computeStages(
     : null;
   const off = (name: StageName): StageState => ({
     name,
+    plane: 'delivery',
     position: 'na',
     health: 'disabled',
     detail: naDetail,
@@ -2962,6 +2977,7 @@ export function computeStages(
   const multiFileSweep = sweep.dirtyPathCount !== null && sweep.dirtyPathCount > 1;
   stages.push({
     name: 'committed',
+    plane: 'delivery',
     position: p.positions.committedLocal && !p.dirtyUncommitted ? 'past' : 'pending',
     health: p.dirtyUncommitted ? 'stalled' : targetUnresolvedDetail ? 'stalled' : 'advancing',
     detail: p.dirtyUncommitted
@@ -3080,6 +3096,9 @@ export function computeStages(
     : null;
   stages.push({
     name: 'pushed',
+    // A bridged/commit-only member commits locally and relies on the p2p bridge
+    // for origin publication; that origin leg is durability-only for :3070.
+    plane: commitOnly ? 'publish' : 'delivery',
     position: p.positions.onStaging ? 'past' : 'pending',
     health: pushedHealth,
     detail: pushedDetail,
@@ -3316,6 +3335,7 @@ export function computeStages(
             : null;
     stages.push({
       name: 'gate',
+      plane: 'delivery',
       position: p.positions.inMain ? 'past' : 'pending',
       health: gateHealth,
       detail: gateDetail === null ? null : `${gateDetail}${livenessNote}`,
@@ -3426,6 +3446,7 @@ export function computeStages(
         : '?';
     stages.push({
       name: 'main',
+      plane: 'delivery',
       position: p.positions.inMain ? 'past' : 'pending',
       health: gateBlocked || mainStallReason !== null ? 'stalled' : 'advancing',
       detail: gateBlocked
@@ -3453,6 +3474,7 @@ export function computeStages(
     const ahead = p.verdictProvenance.deployOrigin === 'ahead-of-gate';
     stages.push({
       name: 'deployed',
+      plane: 'delivery',
       position: p.positions.deployed ? 'past' : 'pending',
       health: ahead ? 'broken' : 'advancing',
       detail: ahead
@@ -3521,6 +3543,7 @@ export function computeStages(
   })();
   stages.push({
     name: 'serving',
+    plane: 'delivery',
     position: codeReachedHost && sv.startedSinceCodeChange === true ? 'past' : 'pending',
     health: servingHealth,
     detail: servingDetail,
@@ -3547,9 +3570,11 @@ export function computeStages(
  * it". That task cost 11 tool calls and 4 hand-diffs on 2026-07-26 and still went wrong
  * twice, because deciding WHICH of six stages owns the next move was left to the reader.
  *
- * The first `pending` stage in source→live order is the blocker: stages are ordered, and
- * a later stage cannot advance until an earlier one has. `na` stages are skipped — they
- * are not on this change's route, so they can never block it.
+ * The first pending DELIVERY stage in source→live order is the blocker. The publish
+ * side leg is deliberately excluded: origin/staging is a real durability/peer-visibility
+ * signal, but the green-checkpoint resolves local `staging` and deploy resolves local
+ * `main`, so a publish freeze cannot honestly answer "what blocks :3070 delivery?".
+ * `na` stages are skipped because they are not on this change's activation route.
  *
  * THE THREE STATES ARE DISTINCT, and collapsing any two is the bug this must not have:
  *   blockedOn null, nextAction null  → nothing is pending; the change is live.
@@ -3565,11 +3590,13 @@ export function deriveBlocker(stages: StageState[]): {
   /** The stage `nextAction` belongs to — differs from `blockedOn` when a LATER stage is the actionable one. */
   actionOwner: StageName | null;
 } {
-  const pending = stages.filter((s) => s.position === 'pending');
+  // Missing `plane` is treated as delivery for compatibility with callers compiled
+  // against the pre-EI-193312 StageState shape. computeStages always emits it.
+  const pending = stages.filter((s) => s.position === 'pending' && s.plane !== 'publish');
   if (!pending.length) return { blockedOn: null, nextAction: null, actionOwner: null };
 
-  // `blockedOn` is where the change SITS: the first pending stage, since a later stage
-  // cannot advance until an earlier one has.
+  // `blockedOn` is where the change sits on the DELIVERY route. A later delivery stage
+  // cannot advance until an earlier one has; a publish side leg is independent.
   const blockedOn = pending[0].name;
 
   // But the ACTION may belong further down. Caught by a live run: a change sitting at a
@@ -4210,7 +4237,10 @@ function sweepClause(sweep: SweepExposure): string {
  * 2026-07-26.
  */
 function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
-  if (!p.blockedOn) return '';
+  if (!p.blockedOn) {
+    const publishPending = p.stages.some((stage) => stage.name === 'pushed' && stage.plane === 'publish' && stage.position === 'pending');
+    return publishPending ? 'DELIVERY LIVE — ' : '';
+  }
   // A clean tree with a target commit that is not reachable from HEAD is a
   // detached/remote candidate, not an uncommitted local change. Calling this
   // "AT COMMITTED" (or "WAITING AT COMMITTED") reads the false boolean as an
@@ -4379,9 +4409,18 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
       : markerPartial || markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
         ? ` ⚠ ${cicSum.detail}`
         : '';
-  return `${leadClause(p)}${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
-    p.positions.onStaging,
-  )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${servingNote(
+  const publishStage = p.stages.find((stage) => stage.name === 'pushed');
+  const publishSideLeg = publishStage?.plane === 'publish';
+  const publishState = publishSideLeg
+    ? p.positions.onStaging
+      ? `origin-publish ${tick(true)}`
+      : `origin-publish ${tick(false)} (${(publishStage?.health ?? 'unknown').toUpperCase()} ` +
+        `PUBLISH/DURABILITY side leg — peer visibility and off-box recovery are at risk; ` +
+        `local staging→main→:3070 delivery is unaffected${
+          publishStage?.lever ? `; publish remedy: ${publishStage.lever}` : ''
+        })`
+    : `staging ${tick(p.positions.onStaging)}`;
+  return `${leadClause(p)}${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · ${publishState} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${servingNote(
     p,
   )}${dirty}.${candidateNote}`;
 }
