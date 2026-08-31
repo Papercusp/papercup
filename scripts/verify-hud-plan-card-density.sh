@@ -250,7 +250,24 @@ say "2. installing probes"
 # HudEntityColumns.tsx / hud.css after it was taken, and the diff touches
 # .hud__cardtitle, the node that sets the card's line-1 height. This
 # re-measures the WHOLE population at the current tree rather than re-citing it.
-say "3. DENSITY at the current sha — whole population, natural width"
+say "3. the grid under measurement is the one holding the plan cards"
+# Guard against the wrong-subtree bug described on P.cols: assert the derived
+# container is REAL (laid out, nonzero width) and is the weighted plans grid.
+"$POLL" --require '.hud__cardtitle' --eval '
+  (() => { const c = window.__hudprobe.cols();
+    return !!c && c.clientWidth > 0 && c.classList.contains("hud__cols--weighted"); })()' \
+  || fatal "the container derived from the plan cards is missing, zero-width, or
+not the weighted plans grid. Measuring it would repeat the hidden-panel error."
+"$TAT" eval --pid "$PID" '
+JSON.stringify({ MEASURE: "grid-under-test",
+  cls: window.__hudprobe.cols().className,
+  clientWidth: window.__hudprobe.cols().clientWidth,
+  tracks: window.__hudprobe.tracks() }, null, 1)'
+
+say "3a. DENSITY AS SHIPPED at the current sha — whole population, ambient layout"
+# This is the density evidence proper: what a real user sees right now, at the
+# current sha, across every plan card on the board. It supersedes the withdrawn
+# 51px figure by RE-MEASURING rather than re-citing it.
 "$POLL" --require '.hud__cardtitle' --require-min 1 \
   --eval 'window.__hudprobe.cards().length >= 1' \
   || fatal "no plan cards to measure"
@@ -259,53 +276,71 @@ settle
 (() => {
   const P = window.__hudprobe, h = P.heights();
   const sorted = [...h].sort((a, b) => a - b);
-  // Captured HERE, at natural width, and compared against at the floor. Mode
-  // (i) returns -1 (never a pass) if this was never set, so a reordering of
-  // this script cannot silently turn the height mode into a vacuous green.
-  P.setBaseline();
   return JSON.stringify({
-    MEASURE: "density-natural-width",
-    baselineHeight: P._baseline,
+    MEASURE: "density-as-shipped",
     cards: h.length,
     minHeight: sorted[0],
     maxHeight: sorted[sorted.length - 1],
     medianHeight: sorted[Math.floor(sorted.length / 2)],
     distinctHeights: [...new Set(sorted)],
     titlesClamped: P.titlesClamped(),
+    hudWidth: P.cols().clientWidth,
     viewport: window.innerWidth + "x" + window.innerHeight,
   }, null, 1);
 })()'
 
-# ── 4. THE THREE UNMEASURED MODES, EACH BEHIND ITS OWN CONTROL ──────────────
-say "4. AT THE FLOOR ($FLOOR_COLS)"
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.floor(true)' \
-  || fatal "could not pin the grid to the floor"
+say "3b. BASELINE at a genuinely ROOMY layout (400/520/400)"
+# Not the ambient layout: see P.TPL. At ~550px the grid is already at its floor,
+# so an ambient baseline would compare the floor against itself.
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tpl("roomy")' >/dev/null
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tracksAre("roomy")' \
+  || fatal "the roomy template did not apply; the baseline would be meaningless."
 settle
 "$TAT" eval --pid "$PID" '
+(() => {
+  const P = window.__hudprobe;
+  // Mode (i) returns -1 (never a pass) if this was never set, so a reordering
+  // of this script cannot silently turn the height mode into a vacuous green.
+  P.setBaseline();
+  return JSON.stringify({ MEASURE: "roomy-baseline",
+    baselineHeight: P._baseline,
+    cardWidths: [...new Set(P.cards().map(c => Math.round(c.getBoundingClientRect().width)))],
+    titlesClamped: P.titlesClamped() }, null, 1);
+})()'
+
+# ── 4. THE THREE UNMEASURED MODES, EACH BEHIND ITS OWN CONTROL ──────────────
+say "4. AT THE FLOOR ($FLOOR_COLS)"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tpl("floor")' \
+  || fatal "could not pin the grid to the floor"
+settle
+
+# THE FLOOR MUST DEMONSTRABLY HAVE APPLIED, AND THE LAYOUT MUST HAVE MOVED.
+# Two separate guards, because the first one alone is what failed before:
+#  (a) resolved tracks are the floor — but a read of the WRONG element agrees
+#      with a write to that same wrong element, which is how the hidden-panel
+#      bug passed this check while the plans grid was untouched. P.cols() now
+#      makes the element the one the cards live in, so (a) is meaningful again.
+#  (b) card widths actually CHANGED from the roomy baseline. This is the
+#      contrast check: if the floor produced the same layout as the baseline,
+#      every comparison below has no contrast and is vacuous regardless of how
+#      well its control fires.
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tracksAre("floor")' \
+  || fatal "the floor did NOT apply — resolved grid tracks are not
+220/260/180/46/46. Every measurement below would have been taken at some other
+width while claiming to be at the floor. Refusing to emit a green."
+"$TAT" eval --pid "$PID" '
 JSON.stringify({ MEASURE: "floor-applied",
-  cols: window.__hudprobe.chain()[0],
-  resolved: getComputedStyle(document.querySelector(".hud__cols")).gridTemplateColumns,
+  tracks: window.__hudprobe.tracks(),
   cardWidths: [...new Set(window.__hudprobe.cards()
     .map(c => Math.round(c.getBoundingClientRect().width)))] }, null, 1)'
-
-# THE FLOOR MUST DEMONSTRABLY HAVE APPLIED. If the inline style is dropped or
-# out-ranked, every "at the floor" reading below is silently taken at natural
-# width — a green that measured the wrong thing, which is the exact defect class
-# this script exists to close. Assert the RESOLVED track sizes, not the string
-# we set: the browser resolves gridTemplateColumns to used pixel values, so this
-# is a measurement of what actually laid out. It also keeps FLOOR_COLS honest
-# against the JS literal in the probe, since a drift between them fails here.
 "$POLL" --require '.hud__cardtitle' --eval '
-  (() => {
-    const want = "220px 260px 180px 46px 46px".split(" ").map(parseFloat);
-    const got = getComputedStyle(document.querySelector(".hud__cols"))
-      .gridTemplateColumns.split(" ").map(parseFloat);
-    return got.length === want.length && want.every((w, i) => Math.abs(got[i] - w) <= 1);
-  })()' \
-  || fatal "the floor did NOT apply — resolved grid tracks are not
-220/260/180/46/46. Every measurement below would have been taken at natural
-width while claiming to be at the floor. Refusing to emit a green."
-echo "  floor confirmed applied: resolved tracks are 220/260/180/46/46"
+  (() => { const P = window.__hudprobe;
+    const w = [...new Set(P.cards().map(c => Math.round(c.getBoundingClientRect().width)))];
+    return w.every(x => x < 400); })()' \
+  || fatal "the floor produced card widths indistinguishable from the roomy
+baseline, so 'at the floor' is not a different condition from the baseline and
+every comparison below would be vacuous. Refusing to emit a green."
+echo "  floor confirmed applied AND distinct from the baseline"
 
 # ---- MODE (i): no height growth from wrapping -----------------------------
 # The control forces the ACTUAL MECHANISM the claim is about. Both card lines
@@ -382,14 +417,17 @@ echo "  mode (ii) no page-level horizontal scroll at the floor: GREEN (control-b
 
 # ---- MODE (iv): card content overflow (already had a control; re-run it) --
 say "4d. CONTROL — squeeze the grid to 40px columns; hclip MUST go red"
-"$POLL" --require '.hud__cardtitle' \
-  --eval '(() => { document.querySelector(".hud__cols").style.gridTemplateColumns = "repeat(5, 40px)"; return true; })()' >/dev/null
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tpl("squeeze")' >/dev/null
 if ! "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hclip() >= 1'; then
-  "$TAT" eval --pid "$PID" 'window.__hudprobe.floor(true)' >/dev/null || true
-  fatal "hclip control DID NOT FIRE at 40px columns."
+  "$TAT" eval --pid "$PID" 'window.__hudprobe.tpl("floor")' >/dev/null || true
+  fatal "hclip control DID NOT FIRE at 40px columns. (When this fired before, the
+cause was NOT the probe: the template was being written to the hidden sessions
+grid, so the plan cards never actually got squeezed.)"
 fi
 echo "  control fired: hclip reports red at 40px columns"
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.floor(true) === true' >/dev/null
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tpl("floor") === true' >/dev/null
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tracksAre("floor")' \
+  || fatal "could not restore the floor after the squeeze control."
 settle
 say "4d. MEASURE — hclip at the floor (same probe) MUST be 0"
 "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.hclip() === 0' \
@@ -412,7 +450,7 @@ say "5. DENSITY at the floor — whole population"
     titlesClamped: P.titlesClamped(),
   }, null, 1);
 })()'
-"$TAT" eval --pid "$PID" 'window.__hudprobe.floor(false)' >/dev/null || true
+"$TAT" eval --pid "$PID" 'window.__hudprobe.tpl(null)' >/dev/null || true
 
 # ── 6. SCOPED TO PLAN CARDS — the live half ────────────────────────────────
 # The unit half of this criterion is asserted at HudEntityColumns.test.tsx:918
