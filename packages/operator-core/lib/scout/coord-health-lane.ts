@@ -147,6 +147,49 @@ export interface CoordPremiseResolve {
 }
 
 /**
+ * coord-derived-fields-2026-08-31 P-008 / D-004 — the `youMayNotKnow.provenance`
+ * mechanism check, against the SAME invocation ledger `deriveBasedOn` queries.
+ *
+ * WHAT IS CHECKED, AND WHAT IS DELIBERATELY NOT. The REF stays authored and
+ * ungraded (unified-agent-state-plane D-090: theory-of-mind entries are valuable
+ * precisely because they can be wrong). What IS checkable is the MECHANISM claim
+ * `provenance:'computed'` — "this ref came out of a diff over tracked state" —
+ * which predicts the sender READ something yielding that ref shortly before the
+ * send. The probe asks exactly that: does the sender's `tool_invocations` window
+ * (READ_REF_MAPPERS grammar, BASED_ON_WINDOW_MS) contain an args-derivable read
+ * of the cited ref?
+ *
+ * ⚠ ONE-SIDED IN BOTH DIRECTIONS — the doc on `YouMayNotKnowEntry.provenance`
+ * binds here verbatim:
+ *   · `matched` is "not refuted", NEVER "verified" — nothing proves a diff ran.
+ *   · `unmatched` is NOT proof of mislabelling: READ_REF_MAPPERS deliberately
+ *     omits query-shaped reads (work_items:list, search:*, facts:list) because
+ *     no ref is derivable from their args — a genuine computed entry sourced
+ *     through one of those has NO ledger row BY DESIGN. `unmatched` means "no
+ *     args-derivable source found", a labelling-quality signal, not a catch.
+ *
+ * ⚠ NO SENDER DIMENSION, EVER (D-004, copying the couplingDivergence consumption
+ * contract; D-090 R3 / D-091 reasoning): `computed` is the only value that can be
+ * caught wrong, so any per-agent consequence — a warning, nag, score, or refusal —
+ * makes "label everything `authored`" the dominant strategy and erases the very
+ * distinction the field draws. Aggregate reads only; never a per-message marker.
+ */
+export interface CoordProvenanceCheck {
+  /** `provenance:'computed'` entries seen in the window (agent-authored senders only; capped). */
+  computedSeen: number;
+  /** claims the probe reached a verdict on — the rate's denominator. */
+  checked: number;
+  /** an args-derivable read of the cited ref existed in the sender's window — "not refuted". */
+  matched: number;
+  /** no args-derivable source found — weak evidence (see one-sidedness above). */
+  unmatched: number;
+  /** the probe itself failed — OUR failure, outside the rate. */
+  unknown: number;
+  /** representative UNMATCHED refs (ref only — never a sender). */
+  samples: readonly { ref: string }[];
+}
+
+/**
  * P-012 / D-106 — did moving clarification onto the LIVE path actually raise
  * P(answer)? The adoption reading for the `clarify` message field.
  *
@@ -281,6 +324,8 @@ export interface CoordHealthInput {
   premiseResolve?: CoordPremiseResolve;
   /** `clarify` adoption (P-012 / D-106). Absent ⇒ the signal is simply not emitted. */
   clarifyAdoption?: CoordClarifyAdoption;
+  /** `youMayNotKnow.provenance` mechanism check (coord-derived-fields P-008 / D-004). Absent ⇒ the signal is simply not emitted. */
+  provenanceCheck?: CoordProvenanceCheck;
   /** L1/L2/L3 authored-structure adoption (coordination-spec-adoption-2026-08-03 P-001). Absent ⇒ the signal is simply not emitted. */
   authoredAdoption?: CoordAuthoredAdoption;
   /** Enforcement-tier census (coordination-spec-adoption-2026-08-03 P-002 / the D-016/D-047 debt). Absent ⇒ the signal is simply not emitted. */
@@ -325,6 +370,8 @@ export interface CoordHealthOpts {
   minPremiseChecked?: number;
   /** min `clarify` asks before the answer-rate is worth reporting at all. */
   minClarifyAsks?: number;
+  /** min CHECKED `provenance:'computed'` claims before the mechanism-check is worth reporting — below it the rate is noise wearing a number's clothes. */
+  minComputedClaims?: number;
   /** min hand-authored messages in the window before the L1/L2/L3 adoption reading is worth reporting — below it the ratios are noise, and a 0/0 "adoption %" is exactly the kind of number this signal exists to stop publishing. */
   minAuthoredAdoptionMessages?: number;
   /** min UNDECLARED coordination behaviours before the tier-census signal is worth emitting — at zero the debt is closed and there is nothing to report. */
@@ -389,6 +436,7 @@ export function buildCoordHealthPatterns(
   const minClaim = opts.minClaimConflicts ?? 3;
   const minPremiseChecked = opts.minPremiseChecked ?? 5;
   const minClarifyAsks = opts.minClarifyAsks ?? 5;
+  const minComputedClaims = opts.minComputedClaims ?? 5;
   const minAuthoredAdoptionMessages = opts.minAuthoredAdoptionMessages ?? 20;
   const minTierDebt = opts.minTierDebt ?? 1;
   const limit = opts.limit ?? 10;

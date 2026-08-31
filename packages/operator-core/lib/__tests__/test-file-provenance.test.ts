@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
+  committedBlobProbes,
   diffProvenanceSnapshots,
   fileFingerprint,
   formatProvenanceBanner,
@@ -74,6 +75,107 @@ describe('provenance banner', () => {
     expect(banner).toContain('treat their state as UNKNOWN, not as clean');
     expect(banner).not.toContain('[clean]');
     expect(banner).toContain('head=unknown');
+  });
+});
+
+/**
+ * EI-19385411226259421 — the MIRROR of every containment trap CLAUDE.md documents.
+ *
+ * The documented ones all run one way: a check wrongly says your change is MISSING from the
+ * candidate. This one runs the other way — `test:file` executes the WORKING TREE, so on this shared
+ * checkout a peer's uncommitted fix is silently included, the named file passes, and the reader
+ * records "the verdict was stale". That is the direction that makes you STOP looking, and it is the
+ * direction with no instrument. Measured 2026-08-02: 7 files named by a red verdict, all 7 passed at
+ * tip, 6 genuinely stale and the 7th green only on an uncommitted peer fix.
+ */
+describe('stale-verdict trap', () => {
+  it('does NOT warn when every tested path is clean', () => {
+    // The negative control. Without it a banner that emitted the warning unconditionally — i.e. one
+    // that measured nothing at all — would pass every other assertion in this block.
+    const banner = formatProvenanceBanner({ head: 'abc', entries: [entry()] }, 'post-run');
+    expect(banner).not.toContain('STALE-VERDICT TRAP');
+    expect(banner).not.toContain('git show <candidate>:');
+  });
+
+  it('warns that a pass on an uncommitted path does not make a gate verdict stale', () => {
+    const banner = formatProvenanceBanner(
+      { head: 'abc', entries: [entry({ state: 'dirty', added: 12, deleted: 3 })] },
+      'post-run',
+    );
+    expect(banner).toContain('STALE-VERDICT TRAP');
+    expect(banner).toContain('COMMITTED blob the gate judged still fails');
+    expect(banner).toContain('git show <candidate>:a.test.ts');
+  });
+
+  it('warns on an UNTRACKED path too — not only a modified one', () => {
+    // Untracked is the strictly worse case (the file is not in git at all), so a warning scoped to
+    // `dirty` would exempt exactly the least reproducible state.
+    const banner = formatProvenanceBanner({ head: 'abc', entries: [entry({ state: 'untracked' })] }, 'post-run');
+    expect(banner).toContain('STALE-VERDICT TRAP');
+  });
+
+  it('gives a submodule path the `git -C <sub>` form and names the gitlink blindness', () => {
+    const banner = formatProvenanceBanner(
+      {
+        head: 'abc',
+        entries: [
+          entry({
+            path: 'papercusp-desktop/test/dev-operator-ifneeded-reaper.test.js',
+            state: 'dirty',
+            repoPath: 'papercusp-desktop',
+            repoRelativePath: 'test/dev-operator-ifneeded-reaper.test.js',
+          }),
+        ],
+      },
+      'post-run',
+    );
+    expect(banner).toContain(
+      'git -C papercusp-desktop show <candidate-pin-for-papercusp-desktop>:test/dev-operator-ifneeded-reaper.test.js',
+    );
+    expect(banner).toContain('answer about the gitlink, not this file');
+    // The superproject form would answer about the wrong object here, so it must not be offered.
+    expect(banner).not.toContain('git show <candidate>:papercusp-desktop/');
+  });
+
+  it('emits one probe per REPO, not per path, and covers both shapes in a mixed set', () => {
+    const probes = committedBlobProbes([
+      entry({ path: 'packages/operator-core/lib/a.test.ts', state: 'dirty' }),
+      entry({ path: 'packages/operator-core/lib/b.test.ts', state: 'dirty' }),
+      entry({
+        path: 'papercusp-desktop/test/c.test.js',
+        state: 'dirty',
+        repoPath: 'papercusp-desktop',
+        repoRelativePath: 'test/c.test.js',
+      }),
+      entry({
+        path: 'papercusp-desktop/test/d.test.js',
+        state: 'untracked',
+        repoPath: 'papercusp-desktop',
+        repoRelativePath: 'test/d.test.js',
+      }),
+    ]);
+    expect(probes).toHaveLength(2);
+    expect(probes[0]).toContain('git show <candidate>:packages/operator-core/lib/a.test.ts');
+    expect(probes[1]).toContain('git -C papercusp-desktop show');
+  });
+
+  it('treats an explicit `.` repoPath as the superproject', () => {
+    // `gitRepoDetails` writes `repoPath: '.'` for a superproject path; reading that as a submodule
+    // would print a `git -C .` form that is correct-looking and needlessly wrong.
+    expect(committedBlobProbes([entry({ state: 'dirty', repoPath: '.' })])).toEqual([
+      'git show <candidate>:a.test.ts',
+    ]);
+  });
+
+  it('never fabricates a candidate sha', () => {
+    // This process does not know which sha the gate is judging; a guessed one would re-create,
+    // inside the fix, the same confidently-wrong-object error the fix exists to prevent.
+    const banner = formatProvenanceBanner(
+      { head: 'a452179fbf', entries: [entry({ state: 'dirty' })] },
+      'post-run',
+    );
+    expect(banner).toContain('<candidate>');
+    expect(banner).not.toContain('show a452179fbf:');
   });
 });
 
