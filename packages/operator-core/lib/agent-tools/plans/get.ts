@@ -37,6 +37,7 @@ import { bulkContent, mergeIds, runBulk } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { shapePlansGet } from "./get-shape";
 import { decoratePlanNowBlock } from "./liveness-decoration";
+import { reconcileNowNext } from "./now-next-derivation";
 import { getAcceptanceRubricForPlan } from "../../rubrics";
 import { getLatestPlanAudit } from "../../plan-audits";
 import { splitPlanSections } from "./plan-sections";
@@ -910,6 +911,41 @@ export default defineTool({
             // su-X" claim self-discloses instead of silently outliving the
             // agent it names. Best-effort; never mutates the stored plan.
             const decoratedNow = await decoratePlanNowBlock(parsed.now);
+            // deterministic-plan-state-derivation-2026-08-31 P-002 / D-002:
+            // the `next:` pointer is a SECOND COPY of a fact the item graph
+            // already owns, and nothing recomputed it when an item flipped
+            // terminal — measured 2026-08-31, 208 papercusp plans (89 of them
+            // still live) whose stored pointer names ONLY done/dropped items.
+            // Derive it here instead of policing the stored copy on a schedule:
+            // a read-time derivation cannot drift and has no failure window.
+            //
+            // The overlay supersedes the author's line ONLY when every plan
+            // item it names is terminal — see now-next-derivation.ts for why
+            // that jurisdiction rule is narrow. `now.raw` still carries the
+            // stored bytes verbatim, and nothing here mutates the plan.
+            const nowNext = decoratedNow
+              ? reconcileNowNext(decoratedNow.next, parsed.items, row.planSlug)
+              : null;
+            const nowWithDerivedNext =
+              decoratedNow && nowNext
+                ? {
+                    ...decoratedNow,
+                    next: nowNext.next,
+                    nextDerivation: {
+                      disposition: nowNext.disposition,
+                      storedNext: nowNext.storedNext,
+                      staleStoredRefs: nowNext.staleStoredRefs,
+                      contradictions: nowNext.contradictions,
+                      itemId: nowNext.derived.itemId,
+                      effectiveStatus: nowNext.derived.effectiveStatus,
+                      reason: nowNext.derived.reason,
+                      candidates: nowNext.derived.candidates,
+                      candidatesTruncated: nowNext.derived.candidatesTruncated,
+                      blockedOn: nowNext.derived.blockedOn,
+                      counts: nowNext.derived.counts,
+                    },
+                  }
+                : decoratedNow;
             // plans-list-windowing-cardinality-fix-2026-08-30 P-001/P-002: same
             // title/status/startStatus triad as the legacy branch above — see that
             // comment for the full rationale. `status` here intentionally reads
@@ -932,7 +968,7 @@ export default defineTool({
               status,
               startStatus: reconcileStartStatus(row.opStatus, status),
               frontmatter: parsed.frontmatter,
-              now: decoratedNow,
+              now: nowWithDerivedNext,
               contentHash: hashPlanContent(parsed.raw),
               version: row.version,
               // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
