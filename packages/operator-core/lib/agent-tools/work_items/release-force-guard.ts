@@ -444,7 +444,7 @@ export function forceRefusalHint(holder: string): string {
   return (
     `${holder} holds a LIVE claim (fresh presence/progress, and the shared sessionState oracle also reads it live) ` +
     `and you have no authority over it — force refused (WI-4198). ` +
-    `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases) — OR the shared liveness oracle (the same one coord:wake trusts) independently reporting the session \`ended\`/\`suspect\` (EI-18907586326157984), holding system-authority as an Overwatch pane, or leading ${holder}'s OWN fleet. ` +
+    `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases) — OR the shared liveness oracle (the same one coord:wake trusts) independently reporting the session \`ended\`/\`suspect\` (EI-18907586326157984), holding system-authority as an Overwatch pane, queen authority, or leading ${holder}'s OWN fleet. ` +
     `An accepted session:end acknowledgement also authorizes a reclaim while the host is winding down. ` +
     `A terminal wake with no post-attempt activity may also authorize a reclaim, but a queued/pending wake is not a miss. ` +
     `Otherwise coordinate with the holder (coord:send) — or with their fleet leader — instead of forcing.`
