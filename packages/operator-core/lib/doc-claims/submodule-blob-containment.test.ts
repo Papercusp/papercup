@@ -27,6 +27,11 @@ const git = (args: readonly string[]): string => {
       cwd: ROOT,
       encoding: 'utf8',
       maxBuffer: 1 << 26,
+      // WI-41180: a sync spawn blocks the pure lane's shared worker event loop, so vitest
+      // cannot time it out — an unbounded `git grep` over this tree wedges ~2,740 files
+      // until the 45-minute batch watchdog fires.
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
   } catch (err) {
     // `git grep` exits 1 on "no matches", which is a real answer, not a failure.
