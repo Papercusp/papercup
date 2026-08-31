@@ -115,8 +115,15 @@ export function startPrimaryManagedTimersBroadcaster(opts: {
     }
   };
   void beat();
+  // D-004: 'must-sample' — the broadcast's data source (`listManaged()` /
+  // `defaultGetRegisteredSchedules()`) is an in-process registry that exposes NO
+  // change-event/subscribe API, and the workers it feeds live in different processes,
+  // so there is nothing to subscribe to across that boundary. Not a 'violation':
+  // the push here is primary→worker (vs workers polling the route); the timer is only
+  // the trigger for a snapshot that has no event source of its own.
   const timer = managedSetInterval('primary-managed-timers-broadcast', intervalMs, beat, {
     category: 'watchdog',
+    classification: 'must-sample',
   });
   return {
     stop() {

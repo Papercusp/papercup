@@ -1327,13 +1327,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/check-registry-census-drift.mjs: execFileSync(git grep -l --fixed-strings) is a bounded tracked-file search over *.test.ts/*.test.tsx for this CI lint script; a non-zero exit (no match) is caught as an empty result. Awaited, exits immediately, creates no independent resident queue.",
   },
   {
-    path: "scripts/tmp-p002-interrupt-control.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for scripts/tmp-p002-interrupt-control.ts: this is a self-documented TEMPORARY PROBE ('delete after use', EI-21908787009967815) — a human-run diagnostic for an open PTY-interrupt investigation, never invoked by any routine, endpoint, or automated pipeline. The one spawn('script', ...) child it starts is a bounded, manually-triggered experiment the script's own watch loop SIGKILLs before exit; it creates no independent resident queue. When the linked investigation closes, delete the file and this row together.",
-  },
-  {
     path: "scripts/check-deps-wiring-parity.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

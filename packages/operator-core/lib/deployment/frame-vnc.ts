@@ -244,9 +244,12 @@ function armHeartbeat(intervalMs: number, fn: () => void): ManagedHandle {
   const arm =
     depsOverride.armHeartbeat ??
     ((ms: number, tick: () => void) =>
+      // D-004: 'must-sample' — a viewer-liveness beat against an external VNC session;
+      // there is no event source to subscribe to for "the viewer is still there".
       managedSetInterval('frame-vnc-viewer-heartbeat', ms, tick, {
         category: 'lifecycle',
         instanced: true,
+        classification: 'must-sample',
       }));
   return arm(intervalMs, fn);
 }

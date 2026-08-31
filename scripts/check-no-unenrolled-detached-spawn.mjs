@@ -119,6 +119,14 @@ export const ALLOWLIST = new Map([
   // timeout can `process.kill(-child.pid)` the group (L9320-9337). Same shape, same reason
   // string, as the two entries above.
   ['apps/operator/lib/release/green-checkpoint.ts', 'detached ONLY to lead a process group so a timeout group-kills the leg; the child is awaited and dies with the call'],
+  // Same category-(2) shape, verified first-hand before adding (WI-7319):
+  // `runDependencyPrebuildCommand` returns a Promise that ALWAYS settles — `close` and
+  // `error` both call finish(), and an idle/hard timeout calls terminate() which
+  // SIGTERMs then SIGKILLs the group and finishes. `detached: true` exists solely so
+  // `terminateProcessGroup` can `process.kill(-pid)` the whole tree instead of
+  // orphaning grandchildren. Nothing outlives the call, so a ledger row would be born
+  // and closed inside one invocation.
+  ['packages/operator-core/lib/release/dependency-generation-prebuild.ts', 'detached ONLY to lead a process group so a timeout group-kills the prebuild; the child is awaited and dies with the call'],
 
   // ── one-shot host/dev plumbing, not fleet work ───────────────────────────
   // NOTE: this file serves TWO shapes and only ONE of them is exempt. The HEADLESS

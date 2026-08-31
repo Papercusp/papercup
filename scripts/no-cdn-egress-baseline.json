@@ -3,6 +3,30 @@
   "generated": "2026-08-02",
   "entries": [
     {
+      "file": "internal/docs/agent-insights/auditing-cdn-egress-in-this-repo.html",
+      "url": "https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs",
+      "status": "inert",
+      "reason": "Documentation example, not a loader call. Established inert by reading the SOURCE (apps/operator-docs/src/content/docs/agent-insights/auditing-cdn-egress-in-this-repo.mdx:45): the URL is a backticked inline-code span in a markdown TABLE CELL listing which libraries ship a CDN default. It renders as a <code> text node — not a script src, not a loader.config() path, not a fetch argument, not even an <a href>. This doc TEACHES CDN-egress auditing, so it necessarily quotes the exact URLs it warns about; that is why the bundle scan sees them. WI-7319."
+    },
+    {
+      "file": "internal/docs/agent-insights/auditing-cdn-egress-in-this-repo.html",
+      "url": "https://cdn.jsdelivr.net/npm/@emoji-mart/data@latest/",
+      "status": "inert",
+      "reason": "Same doc, same shape (…auditing-cdn-egress-in-this-repo.mdx:48): a backticked inline-code span in the markdown table cell for emoji-mart's CDN default. Renders as <code> text; no loader, src, or fetch reaches it. WI-7319."
+    },
+    {
+      "file": "internal/docs/agent-insights/auditing-cdn-egress-in-this-repo.html",
+      "url": "https://github.com/owner/repo/blob/master/thing.js",
+      "status": "inert",
+      "reason": "A deliberately FICTIONAL placeholder (owner/repo/thing.js) in a prose bullet (…auditing-cdn-egress-in-this-repo.mdx:152) whose own text explains that a /blob/ URL is an HTML page, not a fetchable asset — the doc's worked example of an inert hit. Backticked inline code; renders as <code> text. WI-7319."
+    },
+    {
+      "file": "internal/docs/agent-insights/auditing-cdn-egress-in-this-repo.html",
+      "url": "https://raw.githubusercontent.com/ajv-validator/ajv/.../data.json#",
+      "status": "inert",
+      "reason": "Elided, non-resolvable example URL — the literal '...' path segment and trailing '#' make it unfetchable by construction. Appears in the adjacent prose bullet (…auditing-cdn-egress-in-this-repo.mdx:154) as backticked inline code illustrating the same inert-hit class. WI-7319."
+    },
+    {
       "file": "assets/chunk-K2UTITRG-<hash>.js",
       "url": "https://embed.reddit.com/widgets.js",
       "status": "unresolved",
