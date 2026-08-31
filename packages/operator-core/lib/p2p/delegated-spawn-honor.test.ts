@@ -257,6 +257,7 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     setDisposition,
     spawnMembers,
     emitReceipt,
+    getBuildInfo: vi.fn(() => ({ sha: 'buildabc', version: '0.0.13' })),
     probeAgentRuntime,
     resolveHonorAccount,
     isTrustedUser,
@@ -354,6 +355,7 @@ describe('honorSpawnRequestFromProjection', () => {
     expect(emitted.refusal).toBeUndefined();
     expect(emitted.detail).toContain("account='auto'");
     expect(emitted.detail).toContain('opened 2/2');
+    expect(emitted.detail).toContain('[responder-build sha=buildabc version=0.0.13]');
   });
 
   it('honors with an auto→default downgrade ⇒ the receipt names the substitution', async () => {
@@ -570,6 +572,19 @@ describe('honorSpawnRequestFromProjection', () => {
         refusal: expect.objectContaining({ code: 'spawn_failed' }),
       }),
     );
+    const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
+    expect(emitted.detail).toContain('no display');
+    expect(emitted.detail).toContain('[responder-build sha=buildabc version=0.0.13]');
+  });
+
+  it('an identity-less responder emits explicit unknown build evidence on a real refusal path', async () => {
+    const { d, emitReceipt } = deps({
+      getBuildInfo: vi.fn(() => ({ sha: null, version: '0.0.13' })),
+      availabilityForFleet: vi.fn(async () => [{ ...SLOT, consumed: 3, available: 0 }]) as any,
+    });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'refused', code: 'seats_exhausted' });
+    const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
+    expect(emitted.detail).toContain('[responder-build sha=unknown version=0.0.13]');
   });
 
   it('a member that BOOTS and dies on auth ⇒ refused:account_unfulfillable, not spawn_failed (EI-19331694139523035)', async () => {

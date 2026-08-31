@@ -74,7 +74,7 @@ import {
   type WorkOfferStoreRecord,
 } from './offer-store-schema';
 import { seatOfferId } from './offer-store-publish';
-import { emitP2pReceipt } from './receipts';
+import { appendResponderBuildMarker, emitP2pReceipt } from './receipts';
 import {
   resolveHonorAccount as resolveHonorAccountCore,
   probeLocalClaudeLogin,
@@ -83,6 +83,7 @@ import {
 } from './honor-account-resolution';
 import type { OrgSql } from '../work-items';
 import type { FleetPresenceRow } from '../agent-tools/coordination/presence-fleet';
+import { getBuildInfo, type BuildInfo } from '../build-info';
 
 /** How long a spawn-request stays honorable after its publisher-clock stamp. */
 export const SPAWN_REQUEST_HONOR_WINDOW_MS = 60 * 60_000;
@@ -384,6 +385,8 @@ export interface DelegatedSpawnHonorDeps {
   setDisposition?: typeof setLocalOfferDispositionForOffer;
   spawnMembers?: (req: SpawnMembersRequest) => Promise<SpawnMembersResult>;
   emitReceipt?: typeof emitP2pReceipt;
+  /** Loaded responder identity sampled at each receipt emission (test seam). */
+  getBuildInfo?: () => BuildInfo;
   /**
    * WI-5306: preflight whether THIS host can actually RUN a delegated member for
    * the seat's agent CLI, BEFORE claiming/spawning. Default resolves the CLI
@@ -700,6 +703,7 @@ export async function honorSpawnRequestFromProjection(
   const setDisposition = deps.setDisposition ?? setLocalOfferDispositionForOffer;
   const spawnMembers = deps.spawnMembers ?? defaultSpawnMembers;
   const emitReceipt = deps.emitReceipt ?? emitP2pReceipt;
+  const readBuildInfo = deps.getBuildInfo ?? getBuildInfo;
   const probeAgentRuntime = deps.probeAgentRuntime ?? defaultProbeAgentRuntime;
   const resolveHonorAccount = deps.resolveHonorAccount ?? defaultResolveHonorAccount;
   const isTrustedUser = deps.isTrustedUser ?? defaultIsTrustedUser;
@@ -722,6 +726,25 @@ export async function honorSpawnRequestFromProjection(
   } catch (e) {
     return { outcome: 'skipped', reason: `device_key_unavailable: ${e instanceof Error ? e.message : String(e)}` };
   }
+
+  /**
+   * One chokepoint for every delegated-spawn receipt. The signed `detail`
+   * payload remains backward-compatible while current peers get a bounded
+   * loaded-build identity. Failure to resolve build identity degrades to an
+   * explicit unknown marker; it must never suppress the receipt itself.
+   */
+  const emitDelegatedSpawnReceipt = (receipt: Parameters<typeof emitP2pReceipt>[0]) => {
+    let build: BuildInfo;
+    try {
+      build = readBuildInfo();
+    } catch {
+      build = { sha: null, version: 'unknown' };
+    }
+    return emitReceipt({
+      ...receipt,
+      detail: appendResponderBuildMarker(receipt.detail ?? receipt.refusal?.detail ?? '', build),
+    });
+  };
 
   const allotments = await listAllotments(
     { workspaceId: args.workspaceId, fleetSlug: args.row.fleet_slug },
@@ -762,7 +785,7 @@ export async function honorSpawnRequestFromProjection(
       args.sql,
     );
     if (!claimed) return { outcome: 'already_claimed' };
-    await emitReceipt({
+    await emitDelegatedSpawnReceipt({
       workspaceId: args.workspaceId,
       potSlug: args.potHomeSlug,
       kind: 'refusal',
@@ -906,7 +929,7 @@ export async function honorSpawnRequestFromProjection(
       { expect: 'honoring' },
       args.sql,
     );
-    await emitReceipt({
+    await emitDelegatedSpawnReceipt({
       workspaceId: args.workspaceId,
       potSlug: args.potHomeSlug,
       kind: 'refusal',
@@ -956,7 +979,7 @@ export async function honorSpawnRequestFromProjection(
       { expect: 'honoring' },
       args.sql,
     );
-    await emitReceipt({
+    await emitDelegatedSpawnReceipt({
       workspaceId: args.workspaceId,
       potSlug: args.potHomeSlug,
       kind: 'refusal',
@@ -1000,7 +1023,7 @@ export async function honorSpawnRequestFromProjection(
   // and answering it currently requires shelling into the honoring host.
   const partial = spawn.failed > 0 ? `, ${spawn.failed} FAILED to open` : '';
   const bootNote = `. Local first-turn check CONFIRMED the agent ran (${bootVerify.detail}).`;
-  await emitReceipt({
+  await emitDelegatedSpawnReceipt({
     workspaceId: args.workspaceId,
     potSlug: args.potHomeSlug,
     kind: 'honored',
