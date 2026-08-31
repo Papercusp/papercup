@@ -164,7 +164,7 @@ export function createVoiceTurnRouter(deps: VoiceTurnRouterDependencies) {
     }
 
     let capabilities: VoiceCapabilityEnvelope;
-    if (isOwner) {
+    if (principal.kind === 'owner') {
       const tools = deps.resolveOwnerTools ? [...await deps.resolveOwnerTools(principal)] : [];
       const parsed = parseVoiceCapabilityEnvelope({
         read: OWNER_READ,
