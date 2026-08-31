@@ -135,6 +135,16 @@ export interface GetArgs {
   slugs: string[];
   /** Optional heading anchor id or visible heading text. Only honored when slugs.length === 1. */
   heading?: string;
+  /**
+   * Resume a clipped read at this character offset. Only honored when
+   * slugs.length === 1 — it addresses ONE document's byte stream, and a batch has
+   * no single stream to be at an offset into.
+   *
+   * The cap is what made a large doc unreadable through this tool at all
+   * (EI-21940075757786953): a caller that needed the WHOLE page had to leave the
+   * docs surface for raw SQL. Pair with the `nextOffset` a clipped entry returns.
+   */
+  offset?: number;
 }
 
 export type GetEntry =
@@ -145,6 +155,17 @@ export type GetEntry =
       bytes: number;
       truncated?: true;
       sliced?: true;
+      /**
+       * Where `content` starts in the page — present only on a paged read
+       * (`offset > 0`), so a plain read's shape is unchanged.
+       */
+      offset?: number;
+      /**
+       * The offset to pass back to read the NEXT window. Present exactly when
+       * bytes remain past this one, so its ABSENCE is the end-of-document signal
+       * rather than something the caller has to compute from `bytes`.
+       */
+      nextOffset?: number;
       /**
        * OKF trust verdict — present ONLY when it carries signal (stale, verified,
        * or an unparseable `stale_after`). Its ABSENCE means `unverified` and not

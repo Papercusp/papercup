@@ -25,7 +25,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { normalizeDocStatus, parseFrontmatterBlock } from '@papercusp/docs-engine';
+import { normalizeDocStatus, parseFrontmatterBlock, hasTruncationTail, MAX_PAYLOAD_BYTES } from '@papercusp/docs-engine';
 import { stringify as stringifyYaml } from 'yaml';
 import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
@@ -314,6 +314,107 @@ export function composeDoc(fm: FrontmatterInput, rawBody: string): string {
   return `${buildFrontmatter(fm)}\n\n${trimmed}\n`;
 }
 
+// ── Truncated-body guards (EI-21940075757786953) ────────────────────────────────
+//
+// `docs:get` is the sanctioned READER and this tool is the sanctioned WRITER, and
+// the projection banner on every authored doc says so. But `docs:get` clips a page
+// at MAX_PAYLOAD_BYTES while still returning `found:true`, and this tool takes a
+// FULL REPLACEMENT body — so composing the two, which is the documented way to edit
+// a doc, deletes everything past the cut. Measured 2026-08-31 on
+// `testing/agent-e2e`: docs:get returned 50,141 of 137,030 chars, so the obvious
+// read→edit→write pipeline would have destroyed 63% of the page.
+//
+// The guard lives on the WRITE side deliberately. Making the reader louder helps
+// only a caller who sourced the body from THAT reader; refusing an implausible
+// replacement catches every caller regardless of where the bytes came from — a
+// result-door clip, a chunked read that dropped a chunk, a hand-assembled paste.
+
+/** Below this fraction of the stored doc, a replacement is treated as a truncated read. */
+export const SHRINK_REFUSAL_RATIO = 0.5;
+/** …but only once at least this many characters would actually be lost. */
+export const SHRINK_REFUSAL_MIN_LOSS = 2_000;
+/**
+ * How far past MAX_PAYLOAD_BYTES a body may run and still look clipped-at-the-cap.
+ * A verbatim clipped read is exactly MAX_PAYLOAD_BYTES + the truncation tail
+ * (~200 chars); one whose tail was manually removed is exactly MAX_PAYLOAD_BYTES.
+ */
+export const READ_CAP_FINGERPRINT_SLACK = 400;
+
+export interface OverwriteGuardVerdict {
+  code: 'truncated_body' | 'implausible_shrink';
+  /** Whether `confirmShrink:true` can wave this through. */
+  overridable: boolean;
+  detail: string;
+}
+
+/**
+ * Is `body` provably a CLIPPED READ rather than a whole document?
+ *
+ * Two conditions, both required: it carries `docs:get`'s truncation marker in its
+ * final characters, AND it is at least as long as the cut that produces one. A doc
+ * that merely writes ABOUT this failure mode quotes the marker mid-prose and is
+ * nowhere near 50KB, so it passes. Needs no baseline, so it also guards a create.
+ */
+export function truncatedBodyVerdict(body: string): OverwriteGuardVerdict | null {
+  if (body.length < MAX_PAYLOAD_BYTES) return null;
+  if (!hasTruncationTail(body)) return null;
+  return {
+    code: 'truncated_body',
+    overridable: false,
+    detail:
+      `\`body\` ends with docs:get's truncation marker, so it is a CLIPPED READ (cut at ${MAX_PAYLOAD_BYTES} bytes), not the document. ` +
+      'Writing it would delete everything past the cut. There is no override — the marker means the body is provably incomplete; ' +
+      'deleting the marker would not make it whole. Read the WHOLE page first — docs:get returns `nextOffset` on a clipped entry, ' +
+      'so re-fetch the same slug with offset=<nextOffset> until none comes back, concatenate, and send that as `body`.',
+  };
+}
+
+/**
+ * Would this overwrite shrink the stored doc implausibly?
+ *
+ * Fires on either signature: a replacement under {@link SHRINK_REFUSAL_RATIO} of
+ * what is stored (the catastrophic case), or a body sitting right on the read cap
+ * while the stored doc is larger (the exact fingerprint of a clipped read whose
+ * tail was stripped, which the ratio test misses on a doc under ~100KB).
+ *
+ * Returns null when there is no baseline to compare against — an absence of
+ * evidence, never a verdict of "fine".
+ */
+export function overwriteShrinkVerdict(args: {
+  existingLength: number | null | undefined;
+  bodyLength: number;
+  contentLength: number;
+}): OverwriteGuardVerdict | null {
+  const existing = args.existingLength;
+  if (!existing || existing <= 0) return null;
+
+  const clippedAtReadCap =
+    existing > MAX_PAYLOAD_BYTES &&
+    args.bodyLength >= MAX_PAYLOAD_BYTES &&
+    args.bodyLength <= MAX_PAYLOAD_BYTES + READ_CAP_FINGERPRINT_SLACK;
+
+  const lost = existing - args.contentLength;
+  const implausiblyShort =
+    lost >= SHRINK_REFUSAL_MIN_LOSS && args.contentLength < existing * SHRINK_REFUSAL_RATIO;
+
+  if (!clippedAtReadCap && !implausiblyShort) return null;
+
+  const pct = Math.round((Math.max(lost, 0) / existing) * 100);
+  const why = clippedAtReadCap
+    ? `and \`body\` is ${args.bodyLength} chars — sitting exactly on docs:get's ${MAX_PAYLOAD_BYTES}-byte read cap, the fingerprint of a truncated read`
+    : `— ${pct}% of the stored page would be deleted`;
+  return {
+    code: 'implausible_shrink',
+    overridable: true,
+    detail:
+      `this overwrite would cut the doc from ${existing} to ${args.contentLength} chars ${why}. ` +
+      'docs:get TRUNCATES a large page while still returning found:true, so a body sourced from it silently deletes the rest. ' +
+      'Read the WHOLE page first — docs:get returns `nextOffset` on a clipped entry, so re-fetch the same slug with ' +
+      'offset=<nextOffset> until none comes back, concatenate, and send that as `body` — or pass confirmShrink:true if you ' +
+      'really do mean to delete that much.',
+  };
+}
+
 // ── Tool ──
 
 const argsSchema = z.object({
@@ -373,6 +474,12 @@ const argsSchema = z.object({
     .optional()
     .describe('Stamp the drift baseline to HEAD now (you assert the doc reflects current code). Default true.'),
   overwrite: z.boolean().optional().describe('Allow replacing an existing file at the target path. Default false (refuse to clobber).'),
+  confirmShrink: z
+    .boolean()
+    .optional()
+    .describe(
+      'Confirm an overwrite that deletes most of the stored doc. `body` is a FULL replacement, and docs:get truncates a large page while still returning found:true — so an overwrite that shrinks the doc past half, or whose body sits exactly on the read cap, is refused as a likely truncated read. Pass true only when the deletion is deliberate.',
+    ),
   harness: z
     .string()
     .optional()
@@ -511,6 +618,22 @@ export default defineTool({
       preservedFrontmatter: existingFrontmatter,
     };
     const content = composeDoc(fm, args.body);
+
+    // ── Truncated-body guards (EI-21940075757786953) ────────────────────────────
+    // `body` is a FULL replacement, so a body sourced from a clipped read deletes
+    // the rest of the page. Both checks run BEFORE the canonical write; the
+    // baseline is `existingContent`, which the frontmatter-inheritance step above
+    // has already loaded, so this costs no extra read.
+    const truncated = truncatedBodyVerdict(args.body);
+    if (truncated) return err(`${truncated.code} — ${truncated.detail}`);
+    if (args.overwrite && !args.confirmShrink) {
+      const shrink = overwriteShrinkVerdict({
+        existingLength: existingContent?.length,
+        bodyLength: args.body.length,
+        contentLength: content.length,
+      });
+      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail}`);
+    }
 
     // Validate the complete projected document before the canonical write. The downstream
     // Astro build compiles this exact frontmatter + body with MDX core; accepting malformed

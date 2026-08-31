@@ -11,6 +11,8 @@ import {
   levenshteinNearest,
   sliceByHeading,
   truncationTail,
+  hasTruncationTail,
+  TRUNCATION_TAIL_WINDOW,
   MAX_PAYLOAD_BYTES,
   type TocEntry,
 } from './shared';
@@ -171,5 +173,37 @@ describe('truncationTail', () => {
   it('explains there is nothing to slice on when there are no H2s', () => {
     const tail = truncationTail({ h2Count: 0 });
     expect(tail).toContain('no H2 headings');
+  });
+
+  it('warns against feeding the clipped body back into docs:author', () => {
+    for (const tail of [truncationTail({ firstH2Id: 'intro', h2Count: 5 }), truncationTail({ h2Count: 0 })]) {
+      expect(tail).toContain('docs:author');
+      expect(tail).toContain('INCOMPLETE');
+    }
+  });
+});
+
+describe('hasTruncationTail', () => {
+  // The anti-drift round trip. docs:author refuses a body carrying this marker; if
+  // the detector held its own copy of the wording, rewording the tail would disarm
+  // the guard with every test still green. Detect what the emitter actually emits.
+  it('detects every tail the emitter produces', () => {
+    expect(hasTruncationTail(`page body${truncationTail({ firstH2Id: 'intro', h2Count: 5 })}`)).toBe(true);
+    expect(hasTruncationTail(`page body${truncationTail({ h2Count: 0 })}`)).toBe(true);
+  });
+
+  it('ignores the marker when it appears in prose rather than at the end', () => {
+    // A doc ABOUT this failure mode quotes the tail mid-body. That is not a clipped read.
+    const doc = `## The trap\n\n${truncationTail({ h2Count: 0 })}\n\n${'x'.repeat(TRUNCATION_TAIL_WINDOW * 2)}`;
+    expect(hasTruncationTail(doc)).toBe(false);
+  });
+
+  it('is false for an ordinary body', () => {
+    expect(hasTruncationTail('# A doc\n\nnothing clipped here.\n')).toBe(false);
+    expect(hasTruncationTail('')).toBe(false);
+  });
+
+  it('reports the cap it was cut at, so the refusal can name it', () => {
+    expect(truncationTail({ h2Count: 0 })).toContain(String(MAX_PAYLOAD_BYTES));
   });
 });

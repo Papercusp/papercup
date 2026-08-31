@@ -160,9 +160,51 @@ export function sliceByHeading(md: string, headingRef: string, toc: TocEntry[]):
   return md.slice(start, end).trim();
 }
 
-export function truncationTail(args: { firstH2Id?: string; h2Count: number }): string {
+/**
+ * The stable literal every truncation tail opens with.
+ *
+ * ONE definition, TWO consumers: {@link truncationTail} EMITS it and
+ * {@link hasTruncationTail} DETECTS it. That is deliberate — the write-side
+ * guard in `docs:author` refuses a body carrying this marker, and if the
+ * detector held its own copy of the wording, rewording the tail would silently
+ * disarm the guard while every test still passed. `shared.test.ts` asserts the
+ * round trip, so the pair cannot drift apart.
+ */
+export const TRUNCATION_TAIL_MARKER = `…[truncated at ${MAX_PAYLOAD_BYTES} bytes;`;
+
+/** How far back from the end of a body {@link hasTruncationTail} looks for the marker. */
+export const TRUNCATION_TAIL_WINDOW = 400;
+
+/**
+ * The half of the tail that says what NOT to do with a clipped read, and how to
+ * get the rest. Both halves matter: the warning alone leaves a caller who needs
+ * the whole page with nowhere to go, which is what sent them to raw SQL.
+ */
+function truncationTailAdvice(nextOffset?: number): string {
+  const resume =
+    nextOffset === undefined ? '' : ` To read the REST, re-fetch the same slug with offset=${nextOffset}.`;
+  return `${resume} ⛔ This body is INCOMPLETE — do NOT pass it to docs:author { overwrite:true }: that would delete everything past the cut.`;
+}
+
+export function truncationTail(args: { firstH2Id?: string; h2Count: number; nextOffset?: number }): string {
+  const advice = truncationTailAdvice(args.nextOffset);
   if (args.firstH2Id) {
-    return `\n\n…[truncated at ${MAX_PAYLOAD_BYTES} bytes; this page has ${args.h2Count} H2 headings — re-fetch with heading="${args.firstH2Id}" (or another id from docs:outline) for a slice]\n`;
+    return `\n\n${TRUNCATION_TAIL_MARKER} this page has ${args.h2Count} H2 headings — re-fetch with heading="${args.firstH2Id}" (or another id from docs:outline) for a slice.${advice}]\n`;
   }
-  return `\n\n…[truncated at ${MAX_PAYLOAD_BYTES} bytes; page has no H2 headings to slice on]\n`;
+  return `\n\n${TRUNCATION_TAIL_MARKER} page has no H2 headings to slice on.${advice}]\n`;
+}
+
+/**
+ * Does this body END with `docs:get`'s truncation tail — i.e. is it a CLIPPED
+ * READ rather than a whole document?
+ *
+ * Scoped to the last {@link TRUNCATION_TAIL_WINDOW} characters on purpose: a doc
+ * that merely QUOTES the marker in its prose (this failure mode is worth writing
+ * about) carries it mid-body, while a pasted clipped read carries it at the very
+ * end. Callers pair this with a length floor — a real clipped read is always at
+ * least {@link MAX_PAYLOAD_BYTES} long — so the two conditions together leave no
+ * plausible false positive.
+ */
+export function hasTruncationTail(body: string): boolean {
+  return body.slice(-TRUNCATION_TAIL_WINDOW).includes(TRUNCATION_TAIL_MARKER);
 }

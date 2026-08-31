@@ -70,6 +70,9 @@ export {
   levenshteinNearest,
   sliceByHeading,
   truncationTail,
+  hasTruncationTail,
+  TRUNCATION_TAIL_MARKER,
+  TRUNCATION_TAIL_WINDOW,
   type TocEntry,
   type NearestOpts,
 } from './shared.js';

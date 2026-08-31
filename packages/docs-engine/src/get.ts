@@ -26,6 +26,10 @@ import { evaluateOkfTrust, okfTrustBanner, okfTrustIsNotable } from './okf';
 
 export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx = {}): Promise<GetResult> {
   const { slugs, heading } = args;
+  // Only meaningful for a single document — a batch has no one byte stream to be
+  // at an offset into. Same single-slug rule `heading` follows.
+  const offset =
+    slugs.length === 1 && Number.isFinite(args.offset) && (args.offset ?? 0) > 0 ? Math.trunc(args.offset as number) : 0;
   // ONE clock for the whole batch — two docs in the same call must never disagree
   // about whether "today" has crossed a stale_after boundary mid-response.
   const now = ctx.now ?? new Date();
@@ -78,13 +82,20 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
       if (banner) body = banner + body;
 
       const originalBytes = body.length;
+      // `offset` resumes a clipped read; `bytes` stays the WHOLE document's length
+      // so a caller can always see how much of it this window covers.
+      const start = Math.min(offset, originalBytes);
       let truncated = false;
+      let nextOffset: number | undefined;
+      if (start > 0) body = body.slice(start);
       if (body.length > MAX_PAYLOAD_BYTES) {
         const h2s = page.toc.filter((h) => h.depth === 2);
         const firstH2 = h2s[0];
+        nextOffset = start + MAX_PAYLOAD_BYTES;
         body = body.slice(0, MAX_PAYLOAD_BYTES) + truncationTail({
           ...(firstH2 ? { firstH2Id: firstH2.id } : {}),
           h2Count: h2s.length,
+          nextOffset,
         });
         truncated = true;
       }
@@ -95,6 +106,8 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
         content: body,
         bytes: originalBytes,
         ...(truncated ? { truncated: true as const } : {}),
+        ...(start > 0 ? { offset: start } : {}),
+        ...(nextOffset !== undefined ? { nextOffset } : {}),
         ...(onlyHeading ? { sliced: true as const } : {}),
         ...(okfTrustIsNotable(trust) ? { trust } : {}),
       };

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MAX_PAYLOAD_BYTES, truncationTail } from '@papercusp/docs-engine';
 import type { DocPageRefresh } from '../../search/doc-embed-sync';
 
 const h = vi.hoisted(() => {
@@ -170,5 +171,101 @@ description: "${legacyDescription}"
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('description_required');
     expect(h.anchorManualDoc).not.toHaveBeenCalled();
+  });
+});
+
+// ── EI-21940075757786953: the truncated-body guards, at the HANDLER seam ────────
+//
+// author.test.ts proves the two verdict helpers decide correctly. These prove the
+// handler is actually WIRED to them and refuses BEFORE anything is written —
+// which is the whole point: the canonical row write (anchorManualDoc) is what
+// would have destroyed the page.
+describe('docs:author truncated-body guards', () => {
+  /** The stored doc, at the size that produced the measured failure. */
+  const STORED_LENGTH = 137_030;
+  const storedDoc = (() => {
+    const fm = '---\ntitle: "Agent E2E"\ndescription: "The playbook."\n---\n\n';
+    return fm + 'y'.repeat(STORED_LENGTH - fm.length);
+  })();
+  const overwriteArgs = { ...baseArgs, slug: 'agent-e2e-overwrite', overwrite: true };
+
+  const expectNothingWritten = () => {
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.invalidateEngineeringAdapter).not.toHaveBeenCalled();
+  };
+
+  beforeEach(() => {
+    h.existsSync.mockReturnValue(true);
+    h.getAuthoredDocContent.mockResolvedValue(storedDoc);
+  });
+
+  it('refuses a body that is a verbatim clipped docs:get read', async () => {
+    const result = await callAuthor({
+      ...overwriteArgs,
+      body: 'x'.repeat(MAX_PAYLOAD_BYTES) + truncationTail({ firstH2Id: 'intro', h2Count: 9 }),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('truncated_body');
+    expectNothingWritten();
+  });
+
+  it('refuses a clipped read even with confirmShrink — the marker is not overridable', async () => {
+    const result = await callAuthor({
+      ...overwriteArgs,
+      confirmShrink: true,
+      body: 'x'.repeat(MAX_PAYLOAD_BYTES) + truncationTail({ h2Count: 0 }),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('truncated_body');
+    expectNothingWritten();
+  });
+
+  it('refuses an implausible shrink and names the doc + the override', async () => {
+    const result = await callAuthor({ ...overwriteArgs, body: 'x'.repeat(MAX_PAYLOAD_BYTES) });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; error?: string };
+
+    expect(result.isError).toBe(true);
+    expect(payload.error).toContain('implausible_shrink');
+    expect(payload.error).toContain('agent-insights/agent-e2e-overwrite.mdx');
+    expect(payload.error).toContain('confirmShrink:true');
+    expectNothingWritten();
+  });
+
+  it('writes the same shrink when confirmShrink:true says it is deliberate', async () => {
+    const result = await callAuthor({
+      ...overwriteArgs,
+      confirmShrink: true,
+      body: 'x'.repeat(MAX_PAYLOAD_BYTES),
+    });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean };
+
+    expect(result.isError).not.toBe(true);
+    expect(payload.ok).toBe(true);
+    expect(h.anchorManualDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fire on an ordinary edit that trims a section', async () => {
+    // Calibration — without this, a guard that refused every overwrite would pass
+    // all three refusal cases above and look correct.
+    const result = await callAuthor({ ...overwriteArgs, body: 'z'.repeat(130_000) });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean };
+
+    expect(result.isError).not.toBe(true);
+    expect(payload.ok).toBe(true);
+    expect(h.anchorManualDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fire on a create — there is no stored doc to shrink', async () => {
+    h.existsSync.mockReturnValue(false);
+    h.getAuthoredDocContent.mockResolvedValue(null);
+
+    const result = await callAuthor({ ...baseArgs, slug: 'brand-new-doc', body: 'x'.repeat(MAX_PAYLOAD_BYTES) });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean };
+
+    expect(result.isError).not.toBe(true);
+    expect(payload.ok).toBe(true);
   });
 });

@@ -21,8 +21,13 @@ import {
   descriptionLengthWarning,
   DESCRIPTION_RECOMMENDED_MAX,
   DESCRIPTION_HARD_MAX,
+  truncatedBodyVerdict,
+  overwriteShrinkVerdict,
+  SHRINK_REFUSAL_RATIO,
+  SHRINK_REFUSAL_MIN_LOSS,
   type FrontmatterInput,
 } from './author';
+import { MAX_PAYLOAD_BYTES, truncationTail } from '@papercusp/docs-engine';
 import { resolveHarnessScope } from '../_harness-scope';
 // The SAME parser the anchor system uses to read a doc's `documents:` frontmatter.
 // docs:author and harness_docs:anchor must agree on the format or the doc ships
@@ -418,5 +423,78 @@ describe('author ↔ anchor round-trip', () => {
     };
     const content = composeDoc(fm, 'body');
     expect(frontmatterDocuments(content)).toBeUndefined();
+  });
+});
+
+// ── EI-21940075757786953: the truncated-body guards ─────────────────────────────
+//
+// The measured failure: docs:get returned 50,141 of `testing/agent-e2e`'s 137,030
+// chars with found:true, and docs:author takes a FULL replacement body — so the
+// documented read→edit→write pipeline would have deleted 63% of the page.
+//
+// FALSIFIABILITY (repo rule: a guard that has never failed is a guard you have not
+// tested). Rather than mutating the shared tree, the guards are exercised against a
+// deliberately-wrong CONTROL kept permanently in this file: `naiveShrinkGuard`
+// flags any shrink at all. The cases below assert where the real guard and the
+// control DISAGREE, so a real guard that decayed into the naive one — or into one
+// that never fires — fails here instead of passing.
+const naiveShrinkGuard = (existing: number, next: number): boolean => next < existing;
+
+describe('truncatedBodyVerdict', () => {
+  const clipped = 'x'.repeat(MAX_PAYLOAD_BYTES) + truncationTail({ firstH2Id: 'intro', h2Count: 9 });
+
+  it('refuses a verbatim clipped docs:get read, with no override offered', () => {
+    const v = truncatedBodyVerdict(clipped);
+    expect(v?.code).toBe('truncated_body');
+    expect(v?.overridable).toBe(false);
+    expect(v?.detail).toContain(String(MAX_PAYLOAD_BYTES));
+  });
+
+  it('needs BOTH signals — a short doc that merely quotes the marker is fine', () => {
+    // Calibration: the marker alone must not condemn a doc written ABOUT this bug.
+    const aboutTheBug = `# The trap\n\n\`\`\`\n${truncationTail({ h2Count: 0 })}\n\`\`\`\n`;
+    expect(aboutTheBug).toContain('truncated at');
+    expect(truncatedBodyVerdict(aboutTheBug)).toBeNull();
+    // …and length alone must not condemn a genuinely long doc.
+    expect(truncatedBodyVerdict('y'.repeat(MAX_PAYLOAD_BYTES * 3))).toBeNull();
+  });
+});
+
+describe('overwriteShrinkVerdict', () => {
+  it('refuses the measured agent-e2e case (137,030 -> 50,141)', () => {
+    const v = overwriteShrinkVerdict({ existingLength: 137_030, bodyLength: 50_141, contentLength: 50_400 });
+    expect(v?.code).toBe('implausible_shrink');
+    expect(v?.overridable).toBe(true);
+    expect(v?.detail).toContain('confirmShrink');
+  });
+
+  it('catches a clipped read the RATIO test alone would miss', () => {
+    // A 70KB doc clipped at the 50KB cap keeps 71% — over the ratio floor, so a
+    // lone ratio check would wave it through. The read-cap fingerprint is what
+    // fires, and this case is what distinguishes the real guard from that.
+    expect(50_400 < 70_000 * SHRINK_REFUSAL_RATIO).toBe(false);
+    expect(
+      overwriteShrinkVerdict({ existingLength: 70_000, bodyLength: MAX_PAYLOAD_BYTES, contentLength: 50_400 })?.code,
+    ).toBe('implausible_shrink');
+  });
+
+  it('allows an ordinary edit that trims a section — where the naive control refuses', () => {
+    expect(overwriteShrinkVerdict({ existingLength: 137_030, bodyLength: 129_500, contentLength: 130_000 })).toBeNull();
+    expect(naiveShrinkGuard(137_030, 130_000)).toBe(true); // the control would have refused it
+  });
+
+  it('allows a small doc losing most of its bytes (under the absolute-loss floor)', () => {
+    expect(900 - 300).toBeLessThan(SHRINK_REFUSAL_MIN_LOSS);
+    expect(overwriteShrinkVerdict({ existingLength: 900, bodyLength: 100, contentLength: 300 })).toBeNull();
+    expect(naiveShrinkGuard(900, 300)).toBe(true); // the control would have refused it
+  });
+
+  it('allows growth', () => {
+    expect(overwriteShrinkVerdict({ existingLength: 137_030, bodyLength: 141_000, contentLength: 141_005 })).toBeNull();
+  });
+
+  it('returns null with no baseline — absence of evidence, not a verdict of fine', () => {
+    expect(overwriteShrinkVerdict({ existingLength: null, bodyLength: 10, contentLength: 20 })).toBeNull();
+    expect(overwriteShrinkVerdict({ existingLength: 0, bodyLength: 10, contentLength: 20 })).toBeNull();
   });
 });
