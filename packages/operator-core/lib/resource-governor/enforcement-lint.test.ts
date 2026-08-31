@@ -71,6 +71,35 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('does not count a caller-supplied callback named for a start verb as a start', () => {
+    // A pacing/retry wrapper takes the operation as a callback and starts nothing
+    // itself; the real child process is started by the caller it wraps, at a site
+    // this same scan covers. Counting it here reports one start twice and pins it
+    // on the file that does not make it.
+    expect(
+      inspectGovernorSource(
+        `export async function withAgentSpawnPacing<T>(spawn: () => Promise<T>): Promise<T> { return await spawn(); }`,
+      ),
+    ).not.toContain('resource-start-outside-admission');
+    expect(
+      inspectGovernorSource(`const runner = { execFile: (): Promise<void> => done() }; await runner.execFile();`),
+    ).not.toContain('resource-start-outside-admission');
+  });
+
+  it('still flags a real start in a file that also has a same-named callback parameter', () => {
+    // The anti-launder case: the callback narrowing must not become a way to hide a
+    // genuine child-process start behind a decoy parameter of the same name.
+    expect(
+      inspectGovernorSource(
+        `import { spawn } from 'node:child_process'; function paced(spawn: () => void) { spawn(); } spawn('agent-wrapper', [], { detached: true });`,
+      ),
+    ).toContain('resource-start-outside-admission');
+    // ...and a bare start with no local binding at all is untouched by the narrowing.
+    expect(inspectGovernorSource(`spawn('agent-wrapper', [], { detached: true });`)).toContain(
+      'resource-start-outside-admission',
+    );
+  });
+
   it('does not treat prose inside strings as executable resource-control code', () => {
     expect(inspectGovernorSource(`const guidance = 'waited for a semaphore slot';`)).toEqual([]);
     expect(inspectGovernorSource(`const guidance = 'call spawn(worker) next';`)).toEqual([]);
