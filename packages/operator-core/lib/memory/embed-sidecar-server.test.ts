@@ -862,6 +862,40 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       expect(malformed.ok).toBe(false);
       expect(malformed.ok === false && malformed.reason).toMatch(/malformed/);
     });
+
+    it('separates "the cache served you" from "the response cannot say" with a code, not prose (WI-1647443)', () => {
+      // A caller that must REPORT what happened — the service-health probe —
+      // has to distinguish a positive "the model did not run" from an
+      // undecidable "this response cannot tell me". Those want opposite
+      // reports, and the only thing separating them used to be the wording of
+      // `reason`, which a caller can only reach by regex.
+      const codeOf = (body: Record<string, unknown>, n: number): string | undefined => {
+        const v = embedResponseMeasuredModel(body, n);
+        return v.ok ? undefined : v.code;
+      };
+      expect(codeOf({ cache: { hits: 1, coalesced: 0, inferred: 0 } }, 1)).toBe('served-from-cache');
+      expect(codeOf({ cache: { hits: 0, coalesced: 1, inferred: 0 } }, 1)).toBe('served-from-cache');
+      expect(codeOf({ vectors: [[1]] }, 1)).toBe('no-accounting');
+      expect(codeOf({ cache: { hits: 1 } }, 1)).toBe('malformed');
+      expect(codeOf({ cache: { hits: 1, coalesced: 0, inferred: 1 } }, 4)).toBe('not-a-partition');
+      expect(codeOf({ cache: { hits: 0, coalesced: 0, inferred: 1 } }, 1)).toBeUndefined();
+
+      // CONTROL — the shortcut a caller reaches for instead of the code: treat
+      // any not-ok verdict as "the cache served it". It is DELIBERATELY WRONG
+      // and kept here permanently, because it reports the legacy no-accounting
+      // body — the one case where nothing is known — as a confident statement
+      // that the model was skipped, which is how an undecidable turns into a
+      // fabricated finding.
+      const naiveServedFromCache = (body: Record<string, unknown>, n: number): boolean =>
+        !embedResponseMeasuredModel(body, n).ok;
+      expect(naiveServedFromCache({ vectors: [[1]] }, 1)).toBe(true);
+      expect(codeOf({ vectors: [[1]] }, 1)).not.toBe('served-from-cache');
+      // CALIBRATION — on a body that really WAS served from the LRU, the real
+      // subject and the shortcut agree, so the disagreement above is about the
+      // undecidable case specifically and not about the subject refusing
+      // everything.
+      expect(naiveServedFromCache({ cache: { hits: 1, coalesced: 0, inferred: 0 } }, 1)).toBe(true);
+    });
   });
 
   it('does not cache failures: a failed embed retries on the next request', async () => {
