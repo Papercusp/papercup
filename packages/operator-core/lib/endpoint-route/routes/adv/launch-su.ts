@@ -811,9 +811,16 @@ const launchSu = defineTool({
       agent,
       ...(startingAdvSessionId != null ? { advSessionId: startingAdvSessionId } : {}),
       // WI-6363: the pre-pinned coord owner id this session will register as.
-      // The caller opens its chat with this — it is stable from launch onward,
-      // unlike the adv_sessions row, which does not exist yet on this path.
+      // The caller opens its chat with this — it is pinned before the spawn, so
+      // it is stable from launch onward and needs no database round-trip.
       // Absent on a resume (see the mint above).
+      //
+      // ⚠ NOT "unlike the adv_sessions row, which does not exist yet on this
+      // path" — that read TRUE before WI-6376 and is now false: the line above
+      // returns `advSessionId` from the STARTING row recorded at :615, which
+      // WI-37743 moved ABOVE the spawn. The two clauses sat one line apart and
+      // contradicted each other; the stale half caused a false regression report
+      // on 2026-08-30.
       ...(ownerId ? { ownerId } : {}),
       harnessSlug: harness,
       planSlug: plan,

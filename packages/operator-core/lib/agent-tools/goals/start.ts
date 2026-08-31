@@ -766,9 +766,16 @@ export default defineTool({
         tripwires: args.tripwires ?? null,
         workspace_id: workspaceId,
         install_slug: installSlug,
-        // The agent that owns it. This — not an adv_sessions row, which psu
-        // records asynchronously once it boots — is the handle to open its
-        // chat, poll coord:presence, or pair it on the Goals board.
+        // The agent that owns it, and the handle to open its chat, poll
+        // coord:presence, or pair it on the Goals board — it is pinned before
+        // the spawn, so it is stable from launch onward.
+        //
+        // ⚠ NOT because "psu records the adv_sessions row asynchronously once it
+        // boots" — that was the old rationale here and it is false since WI-6376:
+        // launch-su records a STARTING row for every launch carrying an ownerId,
+        // and WI-37743 moved that insert ABOVE the spawn. The reason to prefer the
+        // owner id is that it needs no database round-trip, not that the row is
+        // missing. See LaunchAgentResult.advSessionId in launch-agent.ts.
         agent_owner_id: ownerId,
         agent_terminal: spawned.terminal,
         agent_pid: spawned.pid ?? null,

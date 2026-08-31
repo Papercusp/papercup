@@ -1417,12 +1417,14 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // cannot see what the live operator DOES with the ask. This runs the same
       // call against the running operator and reads the consequence.
       //
-      // THE OBSERVABLE DIFFERENCE between the two paths, from launch-agent.ts's
-      // own contract: `advSessionId` is "the recorded adv_sessions row id when
-      // deferSpawn was set (else absent)" — "on the terminal path no
-      // adv_sessions row exists at launch (psu records one asynchronously once
-      // it boots)". So a bare launch that comes back carrying an adv row id has
-      // been rerouted onto the deferred/attach path, which is the regression.
+      // THE OBSERVABLE DIFFERENCE between the two paths is `display` — NOT the
+      // presence of `advSessionId`. Since WI-6376 an ordinary terminal launch
+      // ALSO comes back carrying an adv row id (WI-37743 moved that insert above
+      // the spawn), so "it returned an id ⇒ it was rerouted onto the deferred
+      // path" is a false discriminator. It is written up in full at the
+      // "IT IS STILL THE LIVE-SPAWN PATH" note below, including why the id-based
+      // and getAdvSession-based readings each produced a false regression report
+      // on 2026-08-30 — read that before changing what this case asserts.
       //
       // COST: one extra agent BOOT per backend and no turn, so no provider
       // tokens beyond session init. It is ended immediately below.
@@ -1600,10 +1602,14 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       // (owner ask 2026-07-25 — sessions must appear on the board "whether or not
       // they are launched with the new session button or if they are launched with
       // the psu utility") made launch-su record a STARTING row for every launch
-      // carrying an ownerId, and WI-37743 moved that insert ABOVE the spawn. The
-      // stale prose survives in TWO places (launch-agent.ts's LaunchAgentResult
-      // and launch-su.ts's own reply comment) and contradicts the line directly
-      // beside it, which returns the id.
+      // carrying an ownerId, and WI-37743 moved that insert ABOVE the spawn.
+      //
+      // That stale prose has since been CORRECTED at its sources
+      // (EI-21906395662385960, 2026-08-31) — LaunchAgentResult.advSessionId in
+      // launch-agent.ts, launch-su.ts's reply comment, goals/start.ts's
+      // agent_owner_id note, and this case's own preamble above. It is quoted
+      // here as the historical cause of the false report, NOT as live text to go
+      // and find. Do not "fix" the sources again on the strength of this quote.
       //
       // The field the CODE branches on is `display` — but DO NOT read it back
       // through getAdvSession. That produced this case's SECOND false regression

@@ -147,16 +147,32 @@ export interface LaunchAgentResult {
   error?: string;
   /** Suggested local command to repair the missing prerequisite. */
   installCmd?: string;
-  /** The recorded adv_sessions row id when `deferSpawn` was set (else absent). */
+  /**
+   * The recorded adv_sessions row id — present on the DEFERRED path and, since
+   * WI-6376, on the ORDINARY terminal path too.
+   *
+   * ⚠ Do NOT use its presence/absence to tell the two paths apart. That was true
+   * once and is not any more: WI-6376 (owner ask 2026-07-25 — sessions must appear
+   * on the board however they were launched) made launch-su record a STARTING row
+   * for every launch carrying an `ownerId`, and WI-37743 moved that insert ABOVE
+   * the spawn so an early `bootstrap-su` can adopt a row that already exists.
+   * Reading a returned id as "this was rerouted onto the deferred/attach path"
+   * produced a confident FALSE regression report on 2026-08-30; the field the code
+   * actually branches on is `display`. See the discriminator note in
+   * `su-session-real-backend-matrix.integration.test.ts` (§"IT IS STILL THE
+   * LIVE-SPAWN PATH"), which carries the full post-mortem.
+   *
+   * Absent when the launch carries no `ownerId` (e.g. a resume), or when the
+   * best-effort insert failed — it must never turn a good launch into a failure.
+   */
   advSessionId?: number;
   /**
    * WI-6363: the coord owner id launch-su PRE-PINNED for this session (`psu
    * --owner-id=`), present on BOTH the terminal and deferred paths.
    *
    * This — not `advSessionId` — is the handle a caller opens the session's chat
-   * with. On the terminal path no adv_sessions row exists at launch (psu records
-   * one asynchronously once it boots), so `advSessionId` is absent there; the
-   * pre-pinned owner id is stable from launch onward.
+   * with: it is pinned by the caller before the spawn, so it is stable from launch
+   * onward and needs no database round-trip to learn.
    */
   ownerId?: string;
   /**
