@@ -17045,7 +17045,7 @@
           "POST"
         ]
       },
-      "description": "Read an agent's current modes: { agent? (default you), contracts? }. Returns active modes with axis, reason, who set them, owner-sticky flag, and (contracts:true) the full binding contract text.",
+      "description": "Read an agent's registered modes and live session state: { agent? (default you), contracts? }. Returns tri-state live (true | false | null), sessionState, mode provenance, and optionally the full contracts.",
       "capabilities": [
         "coord:read"
       ],

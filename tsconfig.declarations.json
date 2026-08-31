@@ -276,6 +276,10 @@
     // directly by affected-tests-task-progress-line.test.ts, which would otherwise pay
     // a TS7016 absorbed into that file's permanent tsc baseline.
     "scripts/lib/task-progress-line.mjs",
+    // WI-1734042 — the retry-tree provenance classifier is imported directly by
+    // affected-tests-retry-tree-provenance.test.ts. Enroll it so that test receives
+    // an inferred declaration instead of paying an unenrolled TS7016.
+    "scripts/lib/retry-tree-provenance.mjs",
     // P-004 — plain-Node test CLIs import this bridge directly; generate its
     // declaration so TypeScript callers cannot silently fall back to TS7016.
     "scripts/lib/governed-test-process.mjs",
