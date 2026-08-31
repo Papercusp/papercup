@@ -668,7 +668,10 @@ describe('completionTreeStampForEvidence — multi-repository completions (EI-21
   const PAPERCUSP_SHA = '1'.repeat(40);
   const PHONE_SHA = '2'.repeat(40);
   const PORTAL_SHA = '3'.repeat(40);
-  const ARTIFACT = '/home/marsh-office/.papercusp/evidence/WI-1409555/phone-dialer.png';
+  // Redacted user (`<user>`): this only has to be an ABSOLUTE path outside every repo
+  // root, which is what the out-of-repo branch under test keys on — a real home path
+  // named one machine and tripped check-no-box-identity.mjs.
+  const ARTIFACT = '/home/<user>/.papercusp/evidence/WI-1409555/phone-dialer.png';
 
   const declared = [
     'infra/phone-app/deploy.sh',
