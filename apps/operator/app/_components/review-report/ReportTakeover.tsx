@@ -96,6 +96,16 @@ export interface ReportTakeoverParam {
   open: boolean;
   /** True only when this param owns the heavyweight report foreground. */
   foreground: boolean;
+  /**
+   * True only when the owner marker NAMES this param — i.e. someone called
+   * `show()`, rather than the run param merely being present as a strip deep
+   * link. The distinction is load-bearing for a LIVE run
+   * (bulk-review-report-legibility-and-lifecycle-2026-08-31 D-005): a settled
+   * run opens its report from any foreground claim, but a pending/running run
+   * takes over the pane only when the owner asked for it, so the progress strip
+   * keeps a bare `?opcln=`/`?opcbr=` deep link.
+   */
+  explicitOwner: boolean;
   /** Open the takeover with a value (a run ref, a phase, …). */
   show: (value: string) => Promise<URLSearchParams>;
   /** Clear the param — the routed page underneath resumes untouched. */
@@ -174,6 +184,7 @@ export function useReportTakeoverParam(
     value,
     open: value !== null,
     foreground: value !== null && owner === paramKey,
+    explicitOwner: value !== null && markedOwner === paramKey,
     show: (nextValue: string) =>
       setParams(
         paramKey === "opcln"

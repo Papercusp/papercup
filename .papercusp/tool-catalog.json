@@ -9116,7 +9116,7 @@
           "POST"
         ]
       },
-      "description": "What is listening on a TCP port and WHICH PROCESS owns it — the `ss -tlnp` / `lsof -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp` answer, structured. Filter by `port` (what owns this port) or by `pid` (which ports does this process listen on). Owner resolution is same-uid only: a socket owned by another user is reported as listening with ownerVisible:false, which is NOT the same as nothing being bound.",
+      "description": "What is listening on a TCP port, WHICH PROCESS owns it, and WHICH APP it serves — the `ss -tlnp` / `lsof -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp` answer, structured, joined to the workspace app registry. Filter by `port` (what owns this port), `pid` (which ports does this process listen on), or `app` (WHAT URL SERVES THIS APP — a registry slug like \"portal\"). Owner resolution is same-uid only: a socket owned by another user is reported as listening with ownerVisible:false, which is NOT the same as nothing being bound.",
       "capabilities": [
         "intel:read"
       ],
@@ -9128,7 +9128,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You need to know whether something is bound to a port and who owns it — diagnosing EADDRINUSE, finding the pid squatting a port, confirming a server you started actually bound, or checking which ports a pid opened. Works for ANY port, including ephemeral ones you just allocated.",
+        "when": "You need to know whether something is bound to a port and who owns it — diagnosing EADDRINUSE, finding the pid squatting a port, confirming a server you started actually bound, or checking which ports a pid opened. Works for ANY port, including ephemeral ones you just allocated. ALSO the one call for \"where do I view app X\" — `app:\"<slug>\"` returns its live `localUrl`; never port-scan or guess a port from package.json for that.",
         "notWhen": "NOT for \"is my service healthy\" — dev:service_health probes the known endpoints and is the right tool for a registered service. This reports only TCP sockets in LISTEN state: no UDP, no established connections, no traffic."
       }
     },
