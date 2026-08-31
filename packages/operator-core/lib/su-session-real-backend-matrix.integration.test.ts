@@ -55,6 +55,7 @@
  *   PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL=openai-codex/gpt-5.6-terra:xhigh \
  *   PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=auto \
  *   PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_ACCOUNT=auto \
+ *   PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_MODEL=opus:max \
  *   PAPERCUSP_TEST_FILE_TIMEOUT_MS=1800000 \
  *   npm run test:file -- packages/operator-core/lib/su-session-real-backend-matrix.integration.test.ts
  *
@@ -165,6 +166,7 @@ const CODEX_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT?.t
  * this remains a matrix-only input and does not alter the product default.
  */
 const CLAUDE_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_ACCOUNT?.trim() || 'default';
+const CLAUDE_MODEL = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_MODEL?.trim() || undefined;
 
 function accountForBackend(backend: MatrixBackend): string {
   if (backend === 'codex') return CODEX_ACCOUNT;
@@ -742,6 +744,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         // in ~/.omp today. Use the per-session gateway model the launcher
         // already materializes; callers can override it explicitly.
         ...(backend === 'omp' ? { model: OMP_MODEL } : {}),
+        ...(backend === 'claude' && CLAUDE_MODEL ? { model: CLAUDE_MODEL } : {}),
       });
 
       // A failure here is an infrastructure verdict, not a flake — say which.
@@ -1618,6 +1621,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         // when the acceptance host has no usable default provider account.
         account: accountForBackend(backend),
         ...(backend === 'omp' ? { model: OMP_MODEL } : {}),
+        ...(backend === 'claude' && CLAUDE_MODEL ? { model: CLAUDE_MODEL } : {}),
       });
 
       expect(bare.ok, `an ordinary ${backend} launch was refused: ${bare.error ?? ''}`).toBe(true);
