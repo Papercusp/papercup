@@ -810,6 +810,48 @@ describe('cascade advance (D-005/P-013)', () => {
     expect((await stateRow(id)).state).toBe('closed_answered');
   });
 
+  // WI-1700133: the VOID-consult exit. A responder who judges the QUESTION
+  // void (duplicate, inadmissible, already settled) must be able to end the
+  // consult WITHOUT spending the next selectee — every other responder verb
+  // advances (reply of any kind, decline, expiry), and for an acceptance
+  // grading cascade each advance PERMANENTLY disqualifies that grader under
+  // D-009 independence. The filed item asserted this exit was unreachable
+  // through the tool surface. It is not: close is non-advancing for the
+  // CURRENT responder, mid-menu, with no prior reply. This pins the property
+  // the guidance now routes to, so a later refactor cannot quietly make
+  // close advance and re-open the grader-burn.
+  it('the CURRENT responder may close a VOID consult mid-menu: terminal, cursor unmoved, NO next selectee woken, requester signalled (WI-1700133)', async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']) });
+    const { deps, reachCalls, emits } = makeDeps(); // reach IS bound — a wake would be recorded
+
+    const close = await consultCloseCore(
+      {
+        workspaceId: WS,
+        authorId: RESPONDER,
+        conversationId: id,
+        outcome: 'cant_help',
+        reason: 'the question is void — the subject rubric already carries a complete independent card',
+      },
+      deps,
+    );
+    if ('error' in close) throw new Error(close.error);
+    expect(close.state).toBe('closed_cant_help');
+
+    // The cascade did NOT advance: no selectee after this one was woken, and
+    // the cursor/responder never moved off the closer.
+    expect(reachCalls).toEqual([]);
+    const row = await stateRow(id);
+    expect(row.state).toBe('closed_cant_help');
+    expect(row.responder_id).toBe(RESPONDER);
+    expect(row.cascade_cursor).toBe(0);
+
+    // …and the requester IS woken, via the latched park key — the disposition
+    // reaches the one agent who can act on a void consult.
+    expect(emits).toHaveLength(1);
+    expect(emits[0].key).toBe(`consult:reply:${id}`);
+    expect(emits[0].to).toEqual([REQUESTER]);
+  });
+
   it('hard-blocked: the FIRST reply fires the park key while the chain continues behind it (D-007)', async () => {
     const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot([RESPONDER, 'resp-2']) });
     const { deps, emits } = makeDeps();

@@ -31,7 +31,7 @@ export default defineTool({
     when:
       'You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.',
     notWhen:
-      'Your context does not cover the question → consult:decline (cheap, honest). The thread is settled → consult:close. A non-consult conversation → conversations:post.',
+      "Your context does not cover it but another reviewer might → consult:decline (cheap, honest). Settled, or the QUESTION is void (duplicate, inadmissible, already settled) → consult:close { outcome:'cant_help', reason }: terminal and non-advancing, where EVERY reply kind advances and spends the next reviewer. A non-consult conversation → conversations:post.",
     chaining:
       'READ THE THREAD FIRST: conversations:get { id } — there is NO consult:read, and a wrong-door read returns EMPTY, which looks exactly like a thread with no replies (a reviewer answered without the requester\'s posts that way). → validate relevance (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }.',
   },

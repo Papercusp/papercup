@@ -5010,8 +5010,8 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or cap-hit while STILL deliberating: graduate it into shared live work.",
-        "notWhen": "Still exchanging → consult:reply. Never engaged / not your area → consult:decline (keeps the cascade menu alive for the requester)."
+        "when": "The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or the QUESTION is void (duplicate, inadmissible, already settled elsewhere): cant_help + reason is the TERMINAL, NON-ADVANCING exit, the only one that does not spend the next reviewer — or cap-hit while STILL deliberating: graduate it into shared live work.",
+        "notWhen": "Still exchanging → consult:reply. Not your area but another reviewer might cover it → consult:decline (that ADVANCES the cascade and wakes them)."
       }
     },
     {
@@ -5046,7 +5046,7 @@
       ],
       "guidance": {
         "when": "You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.",
-        "notWhen": "You can partially help → consult:reply (clarifying_question / new_fact). You engaged and it is settled → consult:close.",
+        "notWhen": "You can partially help → consult:reply (clarifying_question / new_fact). Settled, or the QUESTION is void (duplicate, inadmissible, already settled) → consult:close { outcome:'cant_help', reason }: terminal and non-advancing, where declining would spend the next reviewer.",
         "chaining": "conversations:get { id } reads the thread FIRST — there is NO consult:read, and a wrong-door read returns EMPTY, so \"no replies\" may mean you used the wrong door → decline only against what is actually there."
       }
     },
@@ -5118,7 +5118,7 @@
       ],
       "guidance": {
         "when": "You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.",
-        "notWhen": "Your context does not cover the question → consult:decline (cheap, honest). The thread is settled → consult:close. A non-consult conversation → conversations:post.",
+        "notWhen": "Your context does not cover it but another reviewer might → consult:decline (cheap, honest). Settled, or the QUESTION is void (duplicate, inadmissible, already settled) → consult:close { outcome:'cant_help', reason }: terminal and non-advancing, where EVERY reply kind advances and spends the next reviewer. A non-consult conversation → conversations:post.",
         "chaining": "READ THE THREAD FIRST: conversations:get { id } — there is NO consult:read, and a wrong-door read returns EMPTY, which looks exactly like a thread with no replies (a reviewer answered without the requester's posts that way). → validate relevance (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }."
       }
     },
@@ -28413,7 +28413,7 @@
           "POST"
         ]
       },
-      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); commit rollups default to `source:\"ci\"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
+      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); rollups default to `source:\"ci\"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
       "capabilities": [
         "operator:read"
       ],

@@ -357,3 +357,91 @@ describe('plan-item-reflect:release', () => {
     }
   });
 });
+
+/**
+ * SET_BLOCKER reflection (deterministic-plan-state-derivation-2026-08-31 P-001 / D-001).
+ *
+ * `set_blocker` parks and un-parks the work-item through the internal state function
+ * rather than the `work_items:set_state` TOOL, so no reaction attached to that tool ever
+ * fires — measured as 45 plan items reading `todo` over externally-blocked work. These
+ * rules close it off `work_items:set_blocker` itself.
+ *
+ * The pair is tested TOGETHER on purpose: shipping the park half alone is a regression,
+ * not a partial fix, because `onlyIfNotBlocked` makes parking one-way.
+ */
+describe('set_blocker → plan-item park / un-park', () => {
+  const blocked = (n: number, state = 'blocked', needsHuman = false) =>
+    evt(
+      'work_items:set_blocker',
+      stamped(state, { activeBlockers: Array.from({ length: n }, (_, i) => ({ ref: `b${i}` })) }, needsHuman),
+    );
+
+  it('parks the plan item while any external blocker is active', () => {
+    const rule = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-set');
+    const e = blocked(1);
+    expect(fires(rule, e)).toBe(true);
+    const args = renderArgs(rule, e);
+    expect(args.status).toBe('blocked');
+    expect(args.item).toBe('P-007');
+    // Parking must never un-finish shipped work.
+    expect(args.onlyIfNotTerminal).toBe(true);
+  });
+
+  it('writes the status word INTO the note, which is what makes the clear attributable', () => {
+    const rule = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-set');
+    const note = String(renderArgs(rule, blocked(2)).note);
+    expect(note).toContain('WI-9');
+    expect(note).toContain('blocked');
+    expect(note).toContain('2 external blockers');
+  });
+
+  it('routes a human-capability blocker to needs-human, via the issue-family alias', () => {
+    const rule = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-set');
+    expect(renderArgs(rule, blocked(1, 'blocked', true)).status).toBe('needs-human');
+    expect(renderArgs(rule, blocked(1, 'needs-human')).status).toBe('needs-human');
+  });
+
+  it('un-parks when the LAST blocker clears, opting into the attributed clear', () => {
+    const rule = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-cleared');
+    const e = blocked(0, 'open');
+    expect(fires(rule, e)).toBe(true);
+    const args = renderArgs(rule, e);
+    expect(args.status).toBe('todo');
+    // Deliberately overriding the inherited guard — lifting the block IS the intent.
+    expect(args.onlyIfNotBlocked).toBe(false);
+    // ...but narrowed to the one work-item allowed to lift it.
+    expect(args.onlyIfBlockAttributedTo).toBe('WI-9');
+    expect(args.onlyIfNotTerminal).toBe(true);
+  });
+
+  // The two rules share a trigger tool, so each must decline the other's event or a
+  // single set_blocker call would fire both and race itself.
+  it('the two directions are mutually exclusive on the same event', () => {
+    const set = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-set');
+    const cleared = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-cleared');
+    expect(fires(set, blocked(1)), 'set fires while blockers remain').toBe(true);
+    expect(fires(cleared, blocked(1)), 'clear declines while blockers remain').toBe(false);
+    expect(fires(set, blocked(0, 'open')), 'set declines once drained').toBe(false);
+    expect(fires(cleared, blocked(0, 'open')), 'clear fires once drained').toBe(true);
+  });
+
+  it('neither direction fires without a plan-item stamp', () => {
+    const unstamped = evt('work_items:set_blocker', { ok: true, workItem: { id: 'WI-9', state: 'blocked' }, activeBlockers: [{ ref: 'b' }] });
+    expect(fires(ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-set'), unstamped)).toBe(false);
+    expect(fires(ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-cleared'), unstamped)).toBe(false);
+  });
+
+  it('declines when the result carries no activeBlockers array at all', () => {
+    // A shape change in set_blocker must fail CLOSED — never park or un-park on a guess.
+    const shapeless = evt('work_items:set_blocker', stamped('blocked'));
+    expect(fires(ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-set'), shapeless)).toBe(false);
+    expect(fires(ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-cleared'), shapeless)).toBe(false);
+  });
+
+  it('does not return a FINISHED work-item to the pool when its blocker clears', () => {
+    const cleared = ruleById('work_items:set_blocker', 'plan-item-reflect:blocker-cleared');
+    for (const terminal of ['done', 'resolved', 'closed', 'dropped', 'deprecated', 'passed']) {
+      expect(fires(cleared, blocked(0, terminal)), `declines for ${terminal}`).toBe(false);
+    }
+  });
+});

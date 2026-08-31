@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { consultReadDoorLine, consultResponderVerbMenu } from './responder-verb-menu';
+import { consultReadDoorLine, consultResponderVerbMenu, consultVoidExitLine } from './responder-verb-menu';
 import { cascadeWakeBody } from './cascade-core';
 import { revivalBrief } from './get-feedback-core';
 
@@ -43,7 +43,100 @@ describe('the consult responder verb menu names the read door', () => {
   it('falls back to the default qualifiers when a branch does not override them', () => {
     const menu = consultResponderVerbMenu({ conversationId: 'conv-1' });
     expect(menu).toContain('consult:reply { kind } (answer requires evidence)');
-    expect(menu).toContain('consult:decline { reason } only if you genuinely cannot add value');
+    // WI-1700133: the default decline qualifier must NOT be the "cannot add value" phrasing —
+    // that is the exact reasoning a reviewer facing a VOID question follows into the one exit
+    // that spends the next reviewer. It states decline's precondition and its cost instead.
+    expect(menu).toContain('consult:decline { reason } only when another reviewer might still cover it');
+    expect(menu).not.toContain('only if you genuinely cannot add value');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-1700133 — the VOID EXIT. `consult:close` was always reachable by the current responder and
+// always non-advancing (pinned against real PG in consult-verbs-core.integration.test.ts); the
+// defect was that every routing surface conditioned it on "when settled" / "you engaged", so a
+// reviewer who judged the QUESTION void saw only exits that advance the cascade. On an acceptance
+// grading cascade each advance permanently disqualifies that grader (D-009), so the copy below is
+// what stands between a void consult and walking the entire independent-grader pool.
+// ---------------------------------------------------------------------------
+
+describe('the menu names the non-advancing void exit', () => {
+  it('names close as TERMINAL and NON-ADVANCING for a void question, addressed to this conversation', () => {
+    const line = consultVoidExitLine('conv-void');
+    // The verb, with the outcome that reaches it — a reviewer should not have to construct it.
+    expect(line).toContain("consult:close { outcome: 'cant_help', reason }");
+    expect(line).toContain('conv-void');
+    // The property that makes it the right exit. Without BOTH words a reviewer cannot tell this
+    // exit from decline, which is the confusion that filed the item.
+    expect(line).toMatch(/TERMINAL/);
+    expect(line).toMatch(/NON-ADVANCING/);
+    // The cost of getting it wrong, which is what makes the choice matter rather than be a style
+    // preference: the alternative exits spend a reviewer, and a spent grader is gone for good.
+    expect(line).toMatch(/spend the next reviewer/);
+    expect(line).toContain('D-009');
+    // The dichotomy itself — the cell the menu previously had no room for.
+    expect(line).toContain('Decline means "not me, try the next reviewer"');
+    expect(line).toContain('close means "nobody should answer this"');
+  });
+
+  it('the assembled menu carries it, not just the standalone line', () => {
+    const menu = consultResponderVerbMenu({ conversationId: 'conv-xyz' });
+    expect(menu).toContain("consult:close { outcome: 'cant_help', reason }");
+    expect(menu).toMatch(/NON-ADVANCING/);
+  });
+});
+
+describe('every real responder wake body carries the void exit', () => {
+  // Derived from the REAL builders for the same reason the read-door guards are: a wake that
+  // stops routing through the menu fails here even while the menu module stays perfect.
+  it('the cascade advance wake does — the wake most likely to be handed a void consult', () => {
+    const body = cascadeWakeBody({
+      question: 'grade the acceptance rubric for plan X',
+      conversationId: 'conv-cascade-void',
+      position: 2,
+      menuSize: 3,
+      next: { ownerId: 'su-peer', score: 0.41, similarity: 0.33, via: 'minimum', liveness: 'live' },
+      digest: [],
+    });
+    expect(body).toContain("consult:close { outcome: 'cant_help', reason }");
+    expect(body).toMatch(/NON-ADVANCING/);
+  });
+
+  it('the revival brief does — a revived grader is the most expensive one to spend', () => {
+    const body = revivalBrief({
+      requesterId: 'su-requester',
+      question: 'why did the cross-run cache always miss?',
+      conversationId: 'conv-revival-void',
+      candidate: {
+        score: 0.72,
+        signals: { similarity: 0.66 },
+        evidence: [{ session_id: 'sess-1', turn_idx: 4, sim: 0.66 }],
+      },
+    });
+    expect(body).toContain("consult:close { outcome: 'cant_help', reason }");
+    expect(body).toMatch(/NON-ADVANCING/);
+  });
+
+  // FALSIFIABILITY CONTROL, kept permanently rather than proven once by mutating the shared tree.
+  // Replays this describe-block's predicate against the PRE-FIX menu text — the exact string every
+  // wake carried before WI-1700133 — and asserts it is caught. Without this the guards above pass
+  // vacuously if the predicate stops describing anything real.
+  it('the same predicate catches the pre-fix menu, which offered no void cell (control)', () => {
+    const PRE_FIX_MENU =
+      "READ THE THREAD FIRST — conversations:get { id: 'conv-1' } returns every post oldest-first.\n" +
+      'Reply in conversation conv-1 with consult:reply { kind } (answer requires evidence); ' +
+      'consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. ' +
+      'Untyped conversations:post is refused.';
+    // It DID name close — which is precisely why the omission was invisible — but only as
+    // "when settled", with no outcome, no terminal/non-advancing property, and no void cell.
+    expect(PRE_FIX_MENU).toContain('consult:close { outcome }');
+    expect(PRE_FIX_MENU).not.toContain("consult:close { outcome: 'cant_help', reason }");
+    expect(PRE_FIX_MENU).not.toMatch(/NON-ADVANCING/);
+    // ...and the current menu clears the same bar the pre-fix one fails (positive control, so a
+    // predicate that matched nothing at all could not read as "the pre-fix text was fine").
+    const current = consultResponderVerbMenu({ conversationId: 'conv-1' });
+    expect(current).toContain("consult:close { outcome: 'cant_help', reason }");
+    expect(current).toMatch(/NON-ADVANCING/);
   });
 });
 

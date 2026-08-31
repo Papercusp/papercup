@@ -97,22 +97,28 @@ export function toShaPattern(sha: string): string {
 }
 
 /**
- * A commit rollup is documented as the commit's CI/gate verdict. Local rows
- * share the same commit SHA while representing an agent's potentially dirty
- * working tree, so they must not silently join that verdict. Callers can
- * still select a different writer explicitly with `source`.
+ * A rollup is documented as a CI/gate verdict — for a commit ("is this sha
+ * green") or for one suite execution ("what did this run judge"). Local rows
+ * share the same commit SHA and run group while representing an agent's
+ * potentially dirty working tree, so they must not silently join that verdict.
+ * Both rollups therefore default to CI; callers can still select a different
+ * writer explicitly with `source`.
+ *
+ * runGroup was previously left unscoped, which let every local row that has no
+ * run_group_id collapse into one meaningless `null`-keyed group — measured at
+ * 11,822 rows spanning three months, dwarfing the real runs beside it.
  */
 export function defaultRollupSource(
   rollup: 'commit' | 'runGroup' | undefined,
   source?: 'ci' | 'local' | 'admin-ui',
 ): 'ci' | 'local' | 'admin-ui' | null {
-  return source ?? (rollup === 'commit' ? 'ci' : null);
+  return source ?? (rollup ? 'ci' : null);
 }
 
 export default defineTool({
   name: 'testing:runs',
   description:
-    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); commit rollups default to `source:"ci"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
+    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); rollups default to `source:"ci"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
   capability: 'operator:read',
   guidance: {
     when: 'Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:"commit" answers "is this sha green" in one call.',
@@ -124,7 +130,7 @@ export default defineTool({
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
       'Rows: { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
-      'Rollup rows: { key, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; commit rollups default to source:"ci".',
+      'Rollup rows: { key, commitSha, commitShaCount, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. commitSha names the CANDIDATE the group judged — for rollup:"runGroup" it is the only way to tell which sha a run was about; commitShaCount>1 means the group spans several, so commitSha is one arbitrary member and is NOT "the sha this judged". By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; BOTH rollups default to source:"ci".',
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
@@ -234,6 +240,8 @@ export default defineTool({
       const rows = await sql<
         Array<{
           key: string | null;
+          commit_sha: string | null;
+          commit_shas: string;
           total: string;
           failed: string;
           failed_files: string;
@@ -252,6 +260,14 @@ export default defineTool({
           ${rollupRows}
         ), grouped AS (
           SELECT ${keyCol} AS key,
+                 -- WHICH CANDIDATE did this group judge. For a commit rollup
+                 -- this restates the key; for a runGroup rollup it is the only
+                 -- way to tell, and without it "recent gate runs" cannot be
+                 -- tied to the sha under test at all. A run group spans one
+                 -- candidate, so max() picks it; commit_shas exposes the
+                 -- anomaly rather than hiding it behind an arbitrary pick.
+                 max(commit_sha) AS commit_sha,
+                 count(DISTINCT commit_sha)::text AS commit_shas,
                  count(*)::text AS total,
                  count(*) FILTER (WHERE status = ANY(${RED_STATUSES as unknown as string[]}::text[]))::text AS failed,
                  count(DISTINCT file_path) FILTER (WHERE status = ANY(${RED_STATUSES as unknown as string[]}::text[]))::text AS failed_files,
@@ -278,6 +294,10 @@ export default defineTool({
           ...emptyResultMetadata(rows.length),
           groups: rows.map((r) => ({
             key: r.key,
+            commitSha: r.commit_sha,
+            // >1 means the group spans several candidates, so commitSha is one
+            // arbitrary member and must not be read as "the sha this judged".
+            commitShaCount: Number(r.commit_shas),
             total: Number(r.total),
             failed: Number(r.failed),
             failedFiles: Number(r.failed_files),

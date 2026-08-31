@@ -25,7 +25,7 @@ export default defineTool({
     when:
       'You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.',
     notWhen:
-      'You can partially help → consult:reply (clarifying_question / new_fact). You engaged and it is settled → consult:close.',
+      "You can partially help → consult:reply (clarifying_question / new_fact). Settled, or the QUESTION is void (duplicate, inadmissible, already settled) → consult:close { outcome:'cant_help', reason }: terminal and non-advancing, where declining would spend the next reviewer.",
     chaining:
       'conversations:get { id } reads the thread FIRST — there is NO consult:read, and a wrong-door read returns EMPTY, so "no replies" may mean you used the wrong door → decline only against what is actually there.',
   },

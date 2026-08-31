@@ -66,9 +66,24 @@ describe('defaultRollupSource', () => {
     expect(defaultRollupSource('commit', 'admin-ui')).toBe('admin-ui');
   });
 
-  it('leaves non-commit rollups unscoped when no source is named', () => {
-    expect(defaultRollupSource('runGroup')).toBeNull();
+  it('isolates runGroup rollups to CI rows by default, like commit rollups', () => {
+    // A runGroup rollup is a GATE-RUN list. Left unscoped it swept in every
+    // local row lacking a run_group_id and collapsed them into one `null`
+    // group — measured at 11,822 rows across three months, larger than every
+    // real run beside it. EI-19312054331303577.
+    expect(defaultRollupSource('runGroup')).toBe('ci');
+  });
+
+  it('honors an explicit source for runGroup rollups', () => {
+    expect(defaultRollupSource('runGroup', 'local')).toBe('local');
+    expect(defaultRollupSource('runGroup', 'admin-ui')).toBe('admin-ui');
+  });
+
+  it('leaves a NON-rollup row listing unscoped when no source is named', () => {
+    // The row-listing path is not a verdict about a sha, so it must keep
+    // showing an agent its own local runs.
     expect(defaultRollupSource(undefined)).toBeNull();
+    expect(defaultRollupSource(undefined, 'ci')).toBe('ci');
   });
 });
 
@@ -84,6 +99,8 @@ describe('testing:runs rollup source isolation', () => {
         return Promise.resolve([
           {
             key: 'abc123',
+            commit_sha: 'abc123def456',
+            commit_shas: '1',
             total: '1',
             failed: '0',
             failed_files: '0',
@@ -128,6 +145,38 @@ describe('testing:runs rollup source isolation', () => {
     expect(data).toMatchObject({ latestPerFile: true, groups: [{ failed: 0, failedFiles: 0 }] });
     expect(data).not.toHaveProperty('notRecorded');
     expect(data).not.toHaveProperty('reason');
+  });
+
+  it('passes source:ci into an omitted-source runGroup rollup and reports it', async () => {
+    const result = (await runsTool.handler({ rollup: 'runGroup' } as never, {} as never)) as {
+      data?: { source?: string };
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    const whereCall = sqlCalls.find((call) => call.strings.some((part) => part.includes('file_path')));
+
+    // Pre-fix this reported source:null and the WHERE carried no source
+    // predicate, so the "gate runs" list was contaminated by local rows.
+    expect(JSON.stringify(whereCall)).toContain('ci');
+    expect(data).toMatchObject({ source: 'ci' });
+  });
+
+  it('projects the candidate sha into rollup groups so a runGroup names what it judged', async () => {
+    const result = (await runsTool.handler({ rollup: 'runGroup' } as never, {} as never)) as {
+      data?: { groups?: Array<{ key: string | null; commitSha: string | null; commitShaCount: number }> };
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    const rollupCall = sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered')));
+    const queryText = rollupCall ? renderSqlFragment({ strings: rollupCall.strings, args: rollupCall.values }) : '';
+
+    // The aggregate groups BY run_group_id, so the sha is not the key and is
+    // otherwise unrecoverable — a caller could not tell which candidate a run
+    // judged. commit_shas is what keeps a multi-candidate group honest rather
+    // than silently presenting one arbitrary member as "the" sha.
+    expect(queryText).toContain('max(commit_sha)');
+    expect(queryText).toContain('commit_shas');
+    expect(data.groups?.[0]).toMatchObject({ commitSha: 'abc123def456', commitShaCount: 1 });
   });
 });
 

@@ -28,9 +28,9 @@ export default defineTool({
     "Close a consult with a structured outcome: 'answered' (requires answer; optional confidence 0..1 + evidence), 'cant_help' (requires reason), or 'graduate' (requires reason — the consult outgrew its bounds: mints a shared work item both participants follow, D-004). Terminal — after the close no further consult posts are accepted. Either participant may close; at the exchange cap this is the only way forward.",
   guidance: {
     when:
-      'The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or cap-hit while STILL deliberating: graduate it into shared live work.',
+      'The consult is settled (answered) — or engaged-but-stuck: you validated relevance yet cannot help (cant_help, with the reason) — or the QUESTION is void (duplicate, inadmissible, already settled elsewhere): cant_help + reason is the TERMINAL, NON-ADVANCING exit, the only one that does not spend the next reviewer — or cap-hit while STILL deliberating: graduate it into shared live work.',
     notWhen:
-      'Still exchanging → consult:reply. Never engaged / not your area → consult:decline (keeps the cascade menu alive for the requester).',
+      'Still exchanging → consult:reply. Not your area but another reviewer might cover it → consult:decline (that ADVANCES the cascade and wakes them).',
   },
   capability: 'coord:write',
   requirePrincipal: false,

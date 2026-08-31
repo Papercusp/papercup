@@ -29,8 +29,15 @@
 
 /** Default evidence qualifier — overridden where a branch admits first-principles reasoning. */
 const DEFAULT_EVIDENCE_NOTE = 'answer requires evidence';
-/** Default decline qualifier — overridden where a branch has a softer or narrower bar. */
-const DEFAULT_DECLINE_NOTE = 'only if you genuinely cannot add value';
+/**
+ * Default decline qualifier — overridden where a branch has a softer or narrower bar.
+ *
+ * WI-1700133: this used to read "only if you genuinely cannot add value", which is the
+ * misroute in miniature. A reviewer who judges the QUESTION void reasons "I genuinely cannot
+ * add value" and declines — the one exit that spends the next reviewer. The qualifier now
+ * states decline's actual precondition (someone else might still cover it) and its actual cost.
+ */
+const DEFAULT_DECLINE_NOTE = 'only when another reviewer might still cover it — decline ADVANCES';
 
 export interface ConsultResponderVerbMenuInput {
   /** The consult conversation the responder was routed into. */
@@ -55,7 +62,35 @@ export function consultReadDoorLine(conversationId: string): string {
   );
 }
 
-/** The full responder menu: read door first, then the write verbs. */
+/**
+ * The VOID EXIT (WI-1700133), stated because the verb menu otherwise offers no cell for it.
+ *
+ * Every other responder verb ADVANCES the cascade: reply of ANY kind (`answers` counts only
+ * kind='answer', so a new_fact leaves the min-answers floor unmet and WI-39861 extends the menu
+ * anyway), decline by design (D-005), and silence via the expiry sweep. So a reviewer who has
+ * correctly worked out that the consult SHOULD NOT EXIST could not act on that without spending
+ * the next reviewer — and on an acceptance-grading cascade every reviewer spent is permanently
+ * disqualified from grading that plan under D-009 independence. The worst case is walking the
+ * entire independent-grader pool, the scarcest and least replenishable role in the system.
+ *
+ * The exit was never missing — `consult:close` admits any participant including the current
+ * responder, and it is non-advancing (consult-verbs-core's close path never calls advanceCascade;
+ * pinned by the mid-menu void-close test). What was missing is any copy SAYING so: close was
+ * uniformly conditioned on "when settled" / "you engaged", neither of which describes a void
+ * question, so the only door a reviewer could see was the one that burns a grader.
+ */
+export function consultVoidExitLine(conversationId: string): string {
+  return (
+    `IF THE QUESTION ITSELF IS VOID — duplicate, inadmissible, or already settled elsewhere — do NOT decline. ` +
+    `Reply, decline and expiry ALL advance the cascade and spend the next reviewer; a spent acceptance-grader is ` +
+    `then permanently disqualified from grading that plan (D-009). ` +
+    `consult:close { outcome: 'cant_help', reason } on ${conversationId} is TERMINAL and NON-ADVANCING — it ends the ` +
+    `consult and wakes the requester while spending nobody. ` +
+    `Decline means "not me, try the next reviewer"; close means "nobody should answer this".`
+  );
+}
+
+/** The full responder menu: read door first, then the write verbs, then the void exit. */
 export function consultResponderVerbMenu(input: ConsultResponderVerbMenuInput): string {
   const evidenceNote = input.evidenceNote ?? DEFAULT_EVIDENCE_NOTE;
   const declineNote = input.declineNote ?? DEFAULT_DECLINE_NOTE;
@@ -63,6 +98,7 @@ export function consultResponderVerbMenu(input: ConsultResponderVerbMenuInput): 
     `${consultReadDoorLine(input.conversationId)}\n` +
     `Reply in conversation ${input.conversationId} with consult:reply { kind } (${evidenceNote}); ` +
     `consult:decline { reason } ${declineNote}; consult:close { outcome } when settled. ` +
-    `Untyped conversations:post is refused.`
+    `Untyped conversations:post is refused.\n` +
+    `${consultVoidExitLine(input.conversationId)}`
   );
 }
