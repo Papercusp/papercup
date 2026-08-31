@@ -2038,6 +2038,15 @@ export interface SpawnHeadlessOpts {
     sleep?: (ms: number) => Promise<void>;
     windowMs?: number;
   };
+  /**
+   * Opt into a parent-visible proof that the detached launch kickoff reached
+   * the backend's native transcript. The receipt env is carried through the
+   * shell/psu launcher boundary; ordinary headless launches do not create or
+   * poll one.
+   */
+  kickoffProof?: boolean;
+  /** Injectable seams for the opt-in detached kickoff-proof receipt poll. */
+  kickoffProofProbes?: KickoffProofProbes;
 }
 
 // EI-9748: headless members are a DETACHED + unref'd child of whichever operator
