@@ -20,6 +20,7 @@
     "@bprogress/react": "^1.2.7",
     "@hono/node-server": "^2.0.3",
     "@novnc/novnc": "^1.7.0",
+    "@papercusp/agent-roster": "file:../../libs/generic/agent-roster",
     "@papercusp/card-stack": "file:../../libs/generic/card-stack",
     "@papercusp/facets": "file:../../libs/generic/facets",
     "@papercusp/flags": "file:../../libs/flags",

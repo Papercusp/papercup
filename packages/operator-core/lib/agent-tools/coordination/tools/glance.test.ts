@@ -109,10 +109,17 @@ describe('coord:glance', () => {
       tool.guidance?.notWhen,
       JSON.stringify(tool.guidance?.seeAlso ?? []),
     ].join('\n');
-    expect(discoverability).toContain('accepts no `fleet` argument');
+    // The guard's INTENT: glance's discoverability text must (a) state it takes no
+    // fleet/workspace/harness argument, and (b) route named-fleet health to the fleet
+    // tools. It previously pinned two exact English sentences, which went stale when the
+    // source description was legitimately IMPROVED (ee2af0592f, 2026-08-30) to name all
+    // three rejected args instead of only `fleet`. Assert the constraint, not the prose:
+    // these substrings are strictly STRONGER than what they replace (three args covered
+    // rather than one, plus the positive arg allowlist), so this is not a weakened guard.
+    expect(discoverability).toContain('no `fleet`, `workspace`, or `harness` arg');
     expect(discoverability).toContain('fleet:assignments');
     expect(discoverability).toContain('fleet:leader-brief');
-    expect(discoverability).toContain('audience/state only to scope tips');
+    expect(discoverability).toContain('Takes ONLY audience/state');
   });
 
   it('quiet fleet → auto mode, zero counts, no tips', async () => {
