@@ -193,7 +193,11 @@ export const MIN_CORPUS_FOR_RARITY = 8;
 /** Plan statuses that mean the work SHIPPED. */
 const IMPLEMENTED_PLAN_STATUSES = new Set(['shipped']);
 /** Plan statuses that mean the work is intended but not yet built. */
-const IN_FLIGHT_PLAN_STATUSES = new Set(['draft', 'ready', 'active']);
+// `awaiting-acceptance` (P-004) counts as in-flight: implementation landed but
+// the plan has NOT shipped, so it is neither 'implemented' (that is `shipped`
+// alone) nor 'abandoned'. Without it the status falls through to 'unknown',
+// which reads as "we cannot tell" about a plan whose state is precisely known.
+const IN_FLIGHT_PLAN_STATUSES = new Set(['draft', 'ready', 'active', 'awaiting-acceptance']);
 /** Plan statuses that mean the work was explicitly NOT built. */
 const ABANDONED_PLAN_STATUSES = new Set(['superseded']);
 

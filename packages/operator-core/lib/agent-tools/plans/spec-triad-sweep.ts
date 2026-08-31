@@ -69,7 +69,13 @@ export const SPEC_TRIAD_MAX_FILINGS_PER_RUN = 25;
  * itself the intent that a draft lacks. So "the gate always has an exit" survives
  * for every plan actually cleared to be worked.
  */
-export const LIVE_PLAN_STATUSES = ['ready', 'active'];
+// `awaiting-acceptance` (P-004) is INCLUDED deliberately. "Live" here means
+// "still headed for a ship gate", not "still being implemented": a drained plan
+// has to satisfy the same spec-triad requirement before it can ship, so
+// dropping it from the sweep would let it escape enforcement in the window
+// between draining and shipping — and it would then meet that requirement for
+// the first time AT the gate, which is the worst possible moment to discover it.
+export const LIVE_PLAN_STATUSES = ['ready', 'active', 'awaiting-acceptance'];
 
 export interface SpecTriadSweepResult {
   skipped: boolean;
