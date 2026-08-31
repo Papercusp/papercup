@@ -50,8 +50,21 @@ beforeEach(() => {
 
 describe('dispatchCleanupFindingAction', () => {
   it.each([
-    ['flip-to-done', 'plans:set-status', { slug: 'plan-a', item: 'P-001', status: 'done', harness: 'papercusp' }],
-    ['cleared-blocker', 'plans:set-status', { slug: 'plan-a', item: 'P-001', status: 'todo', harness: 'papercusp' }],
+    // Both status flips carry `expectedStatus` — the compare-and-set precondition
+    // added by bulk-review-report-legibility-and-lifecycle-2026-08-31 P-011. Its
+    // value is the finding's own `from` (what the SCAN saw), which the fixture
+    // above sets to the literal 'from', so asserting it here proves the dispatcher
+    // FORWARDS the scanned status rather than inventing or dropping it.
+    [
+      'flip-to-done',
+      'plans:set-status',
+      { slug: 'plan-a', item: 'P-001', status: 'done', expectedStatus: 'from', harness: 'papercusp' },
+    ],
+    [
+      'cleared-blocker',
+      'plans:set-status',
+      { slug: 'plan-a', item: 'P-001', status: 'todo', expectedStatus: 'from', harness: 'papercusp' },
+    ],
     ['finish-plan', 'plans:set-plan-status', { slug: 'plan-a', status: 'shipped', harness: 'papercusp' }],
     ['archive-candidate', 'plans:set-archived', { slug: 'plan-a', archived: true, harness: 'papercusp' }],
   ])('routes %s through the canonical %s tool', async (kind, tool, args) => {

@@ -6557,7 +6557,7 @@
           "POST"
         ]
       },
-      "description": "Withdraw a coord message you are authorized over: marks it retracted (a durable retraction-notice row — the log is append-only) and delivers the notice to the ORIGINALLY-DELIVERED audience so every recipient sees \"disregard that\". Read surfaces (coord:inbox, the [coord+N] injection, coord:feed, coord:catch-up, orient folds) then SUPPRESS the retracted message; coord:thread deliberately keeps both (forensics). Invoker must be the original sender, THEIR fleet's current leader, the queen, or the owner. Idempotent — retracting an already-retracted message reports alreadyRetracted without a duplicate notice. Pass wake:true to also re-invoke sleeping concrete recipients so they see the retraction NOW (a broadcast audience cannot be woken). v1 records no who-retracted ledger.",
+      "description": "Withdraw a coord message you are authorized over: marks it retracted (a durable retraction-notice row — the log is append-only) and delivers the notice to the ORIGINALLY-DELIVERED audience so every recipient sees \"disregard that\". Read surfaces (coord:inbox, the [coord+N] injection, coord:feed, coord:catch-up, orient folds) then SUPPRESS the retracted message; coord:thread deliberately keeps both (forensics). Invoker must be the original sender, THEIR fleet's current leader, an Overwatch (system-authority) pane, or the owner. Idempotent — retracting an already-retracted message reports alreadyRetracted without a duplicate notice. Pass wake:true to also re-invoke sleeping concrete recipients so they see the retraction NOW (a broadcast audience cannot be woken). v1 records no who-retracted ledger.",
       "capabilities": [
         "coord:write"
       ],

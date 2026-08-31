@@ -64,6 +64,12 @@ const PLANS: PlanListRow[] = [
   plan('ready-a-2026-01-03', 'ready'),
   plan('ready-b-2026-01-04', 'active'), // legacy-approved → ready
   plan('running-a-2026-01-05', 'active', 'started'), // startStatus wins → running
+  // P-004: drained, and STILL startStatus 'started' — op_status is not cleared
+  // when a plan drains (clearStartedForTerminalPlan only fires on a TERMINAL
+  // lifecycle status). So this row pins the bucketOf ordering: awaiting-
+  // acceptance must be tested BEFORE startStatus, or every drained plan files
+  // under "Running" — the exact false reading P-004 exists to end.
+  plan('awaiting-a-2026-01-08', 'awaiting-acceptance', 'started'),
   plan('shipped-a-2026-01-06', 'shipped'),
   plan('rejected-a-2026-01-07', 'superseded'),
 ];
@@ -95,6 +101,7 @@ function expectedCounts(
     draft: 0,
     ready: 0,
     running: 0,
+    awaiting: 0,
     shipped: 0,
     rejected: 0,
   };
