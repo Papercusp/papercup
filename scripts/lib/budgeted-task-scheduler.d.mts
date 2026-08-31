@@ -263,6 +263,12 @@ export interface SharedAdmissionOptions {
 /** The whole-invocation queue budget shared across every shard of one run. */
 export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS: number;
 
+/**
+ * True when an error means "never admitted" rather than "a test failed". A caller that
+ * misclassifies it exits with no verdict, which the green-checkpoint records as a lost run.
+ */
+export function isSharedAdmissionTimeout(error: unknown): boolean;
+
 export function runBudgetedTasks<Task, Value>(
   tasks: Task[],
   options: TaskBudgetInput & SharedAdmissionOptions & {
