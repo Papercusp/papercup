@@ -55,6 +55,11 @@ function judge(name: string, source: string, extraArgs: string[] = []): { code: 
       cwd: ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      // WI-41180: this runs a real guard script synchronously in the pure lane, which
+      // shares one worker fork across ~2,740 files. Vitest cannot interrupt a sync spawn,
+      // so an unbounded call here wedges the entire lane until the batch watchdog fires.
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
     return { code: 0, out };
   } catch (e) {
