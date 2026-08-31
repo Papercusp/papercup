@@ -423,3 +423,125 @@ export function resolveGoalHolderWedge(input: {
 
   return { wedged, reason: reason === 'not-present' ? 'not-held' : reason };
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * IDLE STEWARDS — working, and placing nothing
+ * (goal-mode-drift-guards-2026-08-31 P-002)
+ *
+ * The wedge leg above stops one square short, and says so itself: it "only
+ * fires on holders that have NEVER produced an agent-origin call, so this is
+ * not 'idle for 15 minutes' — it is 'has never once worked'". A holder that
+ * reads, thinks and reports is `has-produced-work`, and therefore healthy by
+ * every predicate this file has offered until now.
+ *
+ * Measured 2026-08-31: a standing goal's steward held exactly that state for
+ * 4+ hours and $109. Liveness said `held`. The wedge leg said
+ * `has-produced-work`. The budget ceiling — a MONEY ceiling — was the first
+ * thing in the system to object, which is the whole complaint: money is meant
+ * to be the last line of defence, not the first.
+ *
+ * ── THE PREDICATE IS A DURATION, AND THAT IS WHY IT LIVES HERE ──────────────
+ *
+ * "Portfolio throughput sat at ZERO for N minutes" is a statement about a span
+ * of time, and `state:subscribe` compares a value at an instant — its whole
+ * vocabulary is `eq`/`gt`/`changed` against one poll's reading. Encoding the
+ * duration in the SUBSCRIPTION would need a comparator that does not exist,
+ * i.e. a second subscription mechanism, which P-004 of the state-plane plan
+ * forbids in as many words.
+ *
+ * So the duration is answered HERE, by the resolver, and the subscription stays
+ * an ordinary threshold on the answer. That is not a workaround; it is the
+ * registry's own stated precedent, recorded twice in `cell-registrations.ts` and
+ * again on `CellMateriality`: "when a declaration cannot state something
+ * honestly, the fix belongs in the RESOLVER, not the declaration". A registry
+ * computing `idleFor >= N` would be the registry deriving a verdict, which is
+ * exactly what axis 5 forbids one level up.
+ *
+ * ── WHY `not-held` IS NOT `idle` ────────────────────────────────────────────
+ *
+ * A goal nobody holds places nothing, trivially. Reporting that as idle would
+ * double-report a condition `holder.ts` already names `unheld`/`lost` and route
+ * it to the wrong repair: an unheld goal needs a HOLDER, an idle one needs a
+ * conversation about whether it should still be running. Every non-`held`
+ * liveness therefore exits early with its own reason.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * How long a live holder may place NOTHING before the goal counts as idle.
+ *
+ * Deliberately much SHORTER than the wedge grace, and the asymmetry is the
+ * point. The wedge asks "has this session ever worked", so it must be generous
+ * — a slow first turn is not a fault. This asks "has this steward placed
+ * anything recently", of a holder already known to be producing calls, so the
+ * evidence is continuous and waiting longer buys nothing but spend. Twenty
+ * minutes is roughly two engine-loop wakes at the default cadence: enough that
+ * one long deliberation cannot trip it, short enough that the answer arrives in
+ * minutes rather than in the four hours it actually took.
+ */
+export const GOAL_PORTFOLIO_IDLE_AFTER_MS = 20 * 60_000;
+
+/** Evidence that a goal's holders have actually PLACED something. */
+export interface GoalPortfolioThroughput {
+  /**
+   * Successful portfolio acts (see `portfolio-acts.ts`) by this goal's holders
+   * within the measurement window. Context for the verdict, never the verdict:
+   * the decision is made on `idleMs`, because "sat at zero for N minutes" is a
+   * question about the RECENT span, not about the window total.
+   */
+  actsInWindow: number;
+  /**
+   * Milliseconds since the last portfolio act — or, when there has never been
+   * one, since the goal was first held.
+   *
+   * Falling back to the hold start is what makes a never-placing steward
+   * measurable at all. Left null it would read `not-measured`, and a holder that
+   * has placed nothing since it started is the single clearest instance of the
+   * condition, not an absence of evidence about it.
+   */
+  idleMs: number | null;
+}
+
+export interface GoalPortfolioVerdict {
+  /** Held, past the threshold, and has placed nothing in that span. */
+  idle: boolean;
+  /**
+   * Why not, when `idle` is false — so a caller rendering "healthy" can say
+   * whether that was measured. As with the wedge leg, `not-measured` is the one
+   * that must never be read as a clean bill of health.
+   */
+  reason: 'idle' | 'not-held' | 'not-measured' | 'placing' | 'within-grace';
+}
+
+/**
+ * PURE: is this goal's holder working but placing nothing?
+ *
+ * Order matters, and differs from the wedge fold in one deliberate way: an
+ * UNRESOLVED liveness (`null`) is checked BEFORE the not-held exit. `not-held`
+ * is a measured claim about the goal, and an oracle that failed to answer has
+ * measured nothing — collapsing the two would let a degraded read present as a
+ * finding, which is the failure `holder.ts`'s conservative rule exists to
+ * prevent and that this module only ever adds reasons NOT to commit.
+ */
+export function resolveGoalPortfolioIdle(input: {
+  liveness: GoalHolderLiveness | null;
+  throughput?: GoalPortfolioThroughput | null;
+  idleAfterMs?: number;
+}): GoalPortfolioVerdict {
+  if (input.liveness == null) return { idle: false, reason: 'not-measured' };
+  if (input.liveness !== 'held') return { idle: false, reason: 'not-held' };
+
+  const throughput = input.throughput;
+  if (!throughput || throughput.idleMs == null || !Number.isFinite(throughput.idleMs)) {
+    return { idle: false, reason: 'not-measured' };
+  }
+
+  const idleAfterMs = input.idleAfterMs ?? GOAL_PORTFOLIO_IDLE_AFTER_MS;
+  if (throughput.idleMs < idleAfterMs) {
+    // Two very different healthy states share this branch, and the caller needs
+    // them apart: a steward that HAS placed work recently, versus one that is
+    // simply too young to have been expected to. Reporting both as "placing"
+    // would claim evidence that does not exist for the second.
+    return { idle: false, reason: throughput.actsInWindow > 0 ? 'placing' : 'within-grace' };
+  }
+  return { idle: true, reason: 'idle' };
+}
