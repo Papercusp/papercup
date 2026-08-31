@@ -199,6 +199,10 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(runLib(['snapshot', join(t, 'donor'), join(t, 'snap')]).code).toBe(0);
       const r = spawnSync('readlink', [join(t, 'snap', 'node_modules', '@papercusp', 'x')], {
         encoding: 'utf8',
+        // WI-41180: bounded like the helper call above — a sync spawn blocks the pure
+        // lane's shared worker, which vitest cannot time out.
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
       });
       expect(String(r.stdout).trim()).toBe('../../libs/generic/x');
     });
