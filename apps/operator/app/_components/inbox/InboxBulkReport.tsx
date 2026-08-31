@@ -23,6 +23,7 @@ import type { ReviewReportPresentation } from "../review-report/ReviewReportHost
 import { chunkFindingIds } from "../review-report/run-resume-chunks";
 import ReviewReportShell, {
   partitionReviewRows,
+  reviewRowControl,
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAction,
@@ -830,55 +831,43 @@ export default function InboxBulkReport({
     (
       runItem: BulkRunItem,
       item: AttentionItem | undefined,
+      // Every entry comes from the shared registry (REVIEW_ROW_CONTROLS), so
+      // this flow owns only its subject nouns, its availability rules and its
+      // handlers — never the wording. Plans' `recheck` is one line away here
+      // rather than a re-implementation.
     ): ReviewRowMenuAction[] => [
-      {
-        id: "apply-one",
-        label: "Apply just this one",
+      reviewRowControl("apply-one", {
         disabled: !item || runItem.outcome !== "recommended",
-        ...(item && runItem.outcome === "recommended"
-          ? {}
-          : {
-              disabledReason: !item
-                ? "This row has no persisted dispatch snapshot; resolve it from the live Inbox."
-                : "Only a live recommendation can be applied from here.",
-            }),
+        disabledReason: !item
+          ? "This row has no persisted dispatch snapshot; resolve it from the live Inbox."
+          : "Only a live recommendation can be applied from here.",
         run: () => {
           // The row's PERSISTED draft, not an override: the menu has no editor,
           // so applying from here must commit exactly what the report shows.
           if (item) void acceptSingle(item, runItem, runItem.draftAnswer);
         },
-      },
-      {
-        id: "open",
-        label: "Open the thread",
+      }),
+      reviewRowControl("open", {
+        subject: "the thread",
         disabled: !item || !onOpenThread,
-        ...(item && onOpenThread
-          ? {}
-          : {
-              disabledReason: !item
-                ? "This row has no persisted dispatch snapshot to open."
-                : "This report was opened without a thread target.",
-            }),
+        disabledReason: !item
+          ? "This row has no persisted dispatch snapshot to open."
+          : "This report was opened without a thread target.",
         run: () => {
           if (item) onOpenThread?.(item);
         },
-      },
-      {
-        id: "reconcile",
-        label: "Reconcile with the live Inbox",
+      }),
+      reviewRowControl("reconcile", {
+        subject: "Inbox",
         run: () => void reconcileOne(runItem),
-      },
-      {
-        id: "retry",
-        label: "Send back to the resolver",
+      }),
+      reviewRowControl("retry", {
         run: () => void retryItem(runItem),
-      },
-      {
-        id: "dismiss",
-        label: "Dismiss this item",
-        tone: "danger",
+      }),
+      reviewRowControl("dismiss", {
+        subject: "item",
         run: () => void dismissOne(runItem),
-      },
+      }),
     ],
     [acceptSingle, dismissOne, onOpenThread, reconcileOne, retryItem],
   );

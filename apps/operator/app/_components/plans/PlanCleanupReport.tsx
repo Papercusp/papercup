@@ -17,6 +17,7 @@ import {
 } from "@/app/admin/plans/plans-api";
 import ReviewReportShell, {
   partitionReviewRows,
+  reviewRowControl,
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAction,
@@ -925,52 +926,38 @@ export default function PlanCleanupReport({
     (finding: PlanCleanupFinding): ReviewRowMenuAction[] => {
       const applicable =
         finding.outcome === "recommended" && ACTIONABLE_KINDS.has(finding.kind);
+      // Every entry comes from the shared registry (REVIEW_ROW_CONTROLS), so
+      // this flow owns only its subject nouns, its availability rules and its
+      // handlers — never the wording. A control added to the registry for
+      // Inbox is offerable here by adding one line, not by re-implementing it.
       return [
-        {
-          id: "apply-one",
-          label: "Apply just this one",
+        reviewRowControl("apply-one", {
           disabled: !applicable,
-          ...(applicable
-            ? {}
-            : {
-                disabledReason:
-                  manualReason(finding) ??
-                  "This recommendation has no registered hand-edit action.",
-              }),
+          disabledReason:
+            manualReason(finding) ??
+            "This recommendation has no registered hand-edit action.",
           run: () => void onApply([finding.findingId]),
-        },
-        {
-          id: "open",
-          label: `Open ${finding.planSlug}`,
+        }),
+        reviewRowControl("open", {
+          subject: finding.planSlug,
           disabled: !onOpenFinding,
-          ...(onOpenFinding
-            ? {}
-            : { disabledReason: "This report was opened without a plan target." }),
+          disabledReason: "This report was opened without a plan target.",
           run: () => onOpenFinding?.(finding),
-        },
-        {
-          id: "recheck",
-          label: "Re-check against the live plan",
+        }),
+        reviewRowControl("recheck", {
+          subject: "plan",
           disabled: finding.kind === "semantic",
-          ...(finding.kind === "semantic"
-            ? {
-                disabledReason:
-                  "A semantic finding has no deterministic re-check; open the plan instead.",
-              }
-            : {}),
+          disabledReason:
+            "A semantic finding has no deterministic re-check; open the plan instead.",
           run: () => void onRecheckFinding(finding),
-        },
-        {
-          id: "retry",
-          label: "Send back to the resolver",
+        }),
+        reviewRowControl("retry", {
           run: () => void onRetryFinding(finding),
-        },
-        {
-          id: "dismiss",
-          label: "Dismiss this finding",
-          tone: "danger",
+        }),
+        reviewRowControl("dismiss", {
+          subject: "finding",
           run: () => void onDismissFinding(finding),
-        },
+        }),
       ];
     },
     [
