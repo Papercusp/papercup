@@ -9,6 +9,7 @@ import {
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperationsForHost,
 } from '../../../workspace-host/initialization-operations-resolver';
+import { createOperatorWorkspaceHostCredentialMaterialSource } from '../../../workspace-host/credential-material-source';
 import {
   runWorkspaceHostCanary,
   type WorkspaceHostCanaryRunInput,
