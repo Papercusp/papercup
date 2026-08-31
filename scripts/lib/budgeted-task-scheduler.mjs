@@ -35,6 +35,23 @@ const SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS = 60 * 1_000;
 // stops producing verdicts at all. Bound the SUM instead, well inside the gate's own
 // hourly cadence, so a starved run fails loudly and frees the lock for the next fire.
 export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS = 45 * 60 * 1_000;
+
+/**
+ * Does this error mean "we never got admitted", as opposed to a real test failure?
+ *
+ * Lives HERE, beside the acquisition that produces it, so the producer and the classifier
+ * cannot drift apart. A caller that misclassifies this exits with no verdict, which the
+ * green-checkpoint records as a LOST RUN — the failure WI-1490656 is about — so the
+ * coupling is pinned by a test that feeds this a REAL `withFsMutex` timeout rather than a
+ * hand-written lookalike string.
+ */
+export function isSharedAdmissionTimeout(error) {
+  const message = String(error?.message ?? error ?? "");
+  return (
+    /Timed out after \d+ms waiting for fs-mutex/.test(message) &&
+    message.includes(SHARED_TEST_PROCESS_ADMISSION_MUTEX)
+  );
+}
 // EI-21437241652128498 / EI-21437837415175286: one stateful test task first
 // reached 1,517 cgroup tasks, then exhausted a 2,048-task capability scope while
 // it was still progressing. A later operator-core pure lane reached 4,096 tasks

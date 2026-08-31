@@ -130,6 +130,48 @@ const MOCK_CALL = /\bvi\.(?:mock|doMock)\s*\(/g;
 const SPEC_HEAD = /^\s*(['"])([^'"]+)\1/;
 
 /**
+ * Memoized mask for the analyzers below, keyed by PATH.
+ *
+ * P-007 of gate-speed-round-2-2026-08-31. Masking is the whole cost of this guard — a
+ * TypeScript parse plus an AST walk per file (D-005 of that plan: the WALK, not the parse, is
+ * the 2.3x) — and the corpus gets masked 3-4 times per run, because the violation scan, the
+ * exposure census, the adv-sessions census and the org-pg scan each walk overlapping slices
+ * independently. Deriving them from ONE mask per file is pure throughput with no behavioural
+ * surface: stripCommentsAndStrings is a pure function of exactly these two arguments.
+ * Measured on this tree (3,987 distinct files masked at least once): the in-process scan work
+ * fell from 30,668ms to 14,011ms (2.19x), and `main()`'s own run from 18,960ms to 13,656ms.
+ *
+ * ⚠ THE KEY MUST BE CHEAP, AND THE OBVIOUS KEY IS NOT. Keying on `fileName + text` measured
+ * SLOWER than no cache at all on the first pass (checkFile 9,801ms -> 19,410ms): building that
+ * key allocates and then hashes a copy of all 42MB of candidate source on every lookup, so the
+ * key costs strictly more than the parse it was meant to skip. Key on the PATH — short, and
+ * already unique per file — and keep the source out of the hash entirely; `hit.text === text`
+ * then confirms identity, which is a pointer compare because every pass reads the same string
+ * object out of readAllFiles().
+ *
+ * fileName still participates, because it picks the ScriptKind (.ts vs .tsx) and so can
+ * genuinely change the parse. Measured 2026-08-31 that no file in the current 3,059-file
+ * candidate corpus masks differently with it than without — but that is a property of today's
+ * corpus, not of the function, so a call with NO fileName is not cached at all rather than
+ * being filed under a key that would collide across every such caller.
+ *
+ * Bounded so a long-lived importer cannot grow it without limit; the cap sits well above the
+ * ~4k-file working set, so a single run never evicts.
+ */
+const MASK_CACHE = new Map();
+const MASK_CACHE_MAX = 12000;
+
+function maskedSource(text, fileName) {
+  if (!fileName) return stripCommentsAndStrings(text, fileName);
+  const hit = MASK_CACHE.get(fileName);
+  if (hit !== undefined && hit.text === text) return hit.scan;
+  const scan = stripCommentsAndStrings(text, fileName);
+  if (MASK_CACHE.size >= MASK_CACHE_MAX) MASK_CACHE.clear();
+  MASK_CACHE.set(fileName, { text, scan });
+  return scan;
+}
+
+/**
  * Classify every vi.mock/vi.doMock call in one source file.
  * Returns [{ spec, form, line }] where form is:
  *   'automock'       — no factory: vitest synthesises the WHOLE surface, cannot strand
@@ -159,7 +201,7 @@ const SPEC_HEAD = /^\s*(['"])([^'"]+)\1/;
  */
 export function analyzeMockCalls(text, fileName) {
   const out = [];
-  const scan = stripCommentsAndStrings(text, fileName);
+  const scan = maskedSource(text, fileName);
   MOCK_CALL.lastIndex = 0;
   let m;
   while ((m = MOCK_CALL.exec(scan))) {
