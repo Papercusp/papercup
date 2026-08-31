@@ -60,15 +60,48 @@ diag() {
   "$TAT" eval --pid "$PID" '
     (() => {
       const q = s => document.querySelector(s);
+      const conv = q("[data-testid=session-chat-conversation]");
+      // SCOPED to the popup transcript. A document-wide count also picks up the
+      // operator chat SIDEBAR, which renders the same [data-message-index] —
+      // so an unscoped number can report a populated transcript while the
+      // popup is empty, which is the opposite of the truth and points straight
+      // at the wrong subsystem. (Same unscoped-query family as the
+      // SessionChatModal getByText this feature already had to fix.)
+      const msgs = conv ? [...conv.querySelectorAll("[data-message-index]")] : [];
+      // Roles come from the rendered class (`oracle-msg-${role}`,
+      // ChatConversation.tsx:638). deriveSessionTurns opens a turn ONLY on a
+      // role==="user" message, so a transcript of pure assistant output has
+      // ZERO turns CORRECTLY — the rail is right and its empty state is honest.
+      const roles = {};
+      for (const m of msgs) {
+        const r = [...m.classList].find(c => c.startsWith("oracle-msg-") && c !== "oracle-msg-avatar")
+          ?.replace("oracle-msg-", "") ?? "unknown";
+        roles[r] = (roles[r] || 0) + 1;
+      }
       return JSON.stringify({
         href: location.href,
-        modal: !!q("[data-testid=session-chat-conversation]"),
+        modal: !!conv,
         railZone: !!q("[data-testid=session-chat-turn-rail]"),
         density: q("[data-testid=turn-rail]")?.getAttribute("data-density") ?? null,
         rows: document.querySelectorAll("[data-testid=turn-rail-row]").length,
         emptyState: !!q("[data-testid=turn-rail-empty]"),
-        messages: document.querySelectorAll("[data-message-index]").length,
+        messagesInPopup: msgs.length,
+        rolesInPopup: roles,
+        messagesAnywhere: document.querySelectorAll("[data-message-index]").length,
         innerWidth: window.innerWidth,
+        // WHY it is empty, in the popup'"'"'s own words. "unknown session",
+        // "starting up", a stream error and "no questions yet" are four very
+        // different diagnoses that all present as zero rows, and guessing
+        // between them costs a ~3-minute boot each.
+        popupText: conv ? (conv.innerText || "").replace(/\s+/g, " ").slice(0, 240) : null,
+        // Owner ids the app itself is offering in this scope — so the next
+        // candidate can be a session this instance actually knows about
+        // instead of one pinned from outside it.
+        offeredSessions: [...new Set(
+          [...document.querySelectorAll("[data-owner-id],[data-ownerid]")]
+            .map(e => e.getAttribute("data-owner-id") || e.getAttribute("data-ownerid"))
+            .filter(Boolean)
+        )].slice(0, 8),
       });
     })()' 2>/dev/null || true
 }
