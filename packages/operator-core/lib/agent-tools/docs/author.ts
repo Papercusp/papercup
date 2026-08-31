@@ -604,8 +604,10 @@ export default defineTool({
     // truncation guards below use the RAW body (the preamble sits inside the
     // clipped window, so removing it first would move the body off the read-cap
     // fingerprint); only the authored content is composed.
+    // (composeDoc strips leading frontmatter itself, so passing the already-stripped
+    // body through is equivalent for the untouched case and simpler to read.)
     const preambleCheck = stripReadPreamble(stripCheck.body);
-    const authoredBody = preambleCheck.stripped ? preambleCheck.body : args.body;
+    const authoredBody = preambleCheck.body;
     if (preambleCheck.stripped) {
       warnings.push(
         "a docs:get read preamble (`# <title>` + `URL: …`) was stripped from `body` — that header is added by the READ surface, not part of the doc. " +
