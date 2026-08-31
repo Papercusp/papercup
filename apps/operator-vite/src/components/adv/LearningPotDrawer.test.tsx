@@ -21,15 +21,35 @@ import type {
   AutomationLaneArm,
 } from '@papercusp/operator-core/lib/automation/catalog';
 
-const H = vi.hoisted(() => ({ arming: null as AutomationArming | null }));
+const H = vi.hoisted(() => ({
+  arming: null as AutomationArming | null,
+  /** Rows the `hive.overrides` query returns — the pot's settings config (P-013). */
+  overrides: [] as { kind: string; name: string; value: unknown }[],
+}));
 
+const setOverride = vi.fn(async (_args: unknown) => ({ ok: true }));
+
+/**
+ * ⚠ THIS FACTORY IS HAND-LISTED, WHICH MAKES IT A WHOLE-FILE FUSE. Vitest
+ * replaces the module with EXACTLY these keys, so the first time the component
+ * reaches an export missing here, every test in the file fails at import with
+ * `No "<name>" export is defined` — not on the assertion that needed it. P-013
+ * adding the config write is what proved it: 25 passing tests went red at once
+ * for a missing `useSyncMutate`. Add the export here when you add the call.
+ */
 vi.mock('@papercusp/sync', () => ({
   // Not decoration — useLexicon reaches flag-hooks, which subscribes to the
   // sync bus during render; omitting it throws mid-render and reports as a
   // failed FILE while individual assertions still say they passed.
   onSyncBusEvent: () => () => {},
+  // The pot-config write (P-013 / D-011). Returns the mutate fn the component
+  // calls; the REST fallback is never exercised under a mocked transport.
+  useSyncMutate: () => (args: unknown) => setOverride(args),
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     const invalidate = vi.fn();
+    if (queryName === 'hive.overrides') {
+      return { data: H.overrides, loading: false, invalidate };
+    }
     if (queryName !== 'automation.catalog' || !H.arming) {
       return { data: [], loading: false, invalidate };
     }
@@ -87,10 +107,30 @@ function open(slug: string) {
   );
 }
 
+/**
+ * The Save/Reset/Clear button INSIDE one field row.
+ *
+ * A bare `getByRole('button', { name: 'Save' })` was unambiguous only while the
+ * drawer had at most one editable budget on screen. P-013 gives every pot three
+ * always-present config fields, so the global lookup now matches several — and
+ * scoping is the stronger assertion anyway: it pins that the button belongs to
+ * the row under test rather than to whichever one happened to render first.
+ */
+function saveIn(dataKey: string): HTMLButtonElement {
+  const row = document.querySelector(`.pc-potdraw__field[data-key="${dataKey}"]`);
+  if (!row) throw new Error(`no field row ${dataKey}`);
+  const btn = row.querySelector('.pc-potdraw__save');
+  if (!btn) throw new Error(`field row ${dataKey} has no save button`);
+  return btn as HTMLButtonElement;
+}
+
 beforeEach(() => {
   H.arming = arming();
+  H.overrides = [];
   runAgentTool.mockClear();
   runAgentTool.mockImplementation(async () => {});
+  setOverride.mockClear();
+  setOverride.mockImplementation(async () => ({ ok: true }));
 });
 afterEach(cleanup);
 
@@ -305,7 +345,7 @@ describe('arming and budgeting are two separate writes', () => {
       });
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      fireEvent.click(saveIn('lane/red-queen'));
     });
     expect(runAgentTool).toHaveBeenCalledWith('governor:arm', {
       loopId: 'red-queen',
@@ -321,8 +361,8 @@ describe('arming and budgeting are two separate writes', () => {
     // whole surface exists to avoid.
     H.arming = arming({ lanes: [lane('red-queen', 'p', { budgetUsd: null })] });
     open('p');
-    expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull();
-    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(saveIn('lane/red-queen').textContent).toBe('Save');
+    expect(saveIn('lane/red-queen').disabled).toBe(true);
   });
 
   it('treats an emptied box as an explicit CLEAR and says so on the button', async () => {
@@ -333,8 +373,9 @@ describe('arming and budgeting are two separate writes', () => {
         target: { value: '' },
       });
     });
+    expect(saveIn('lane/red-queen').textContent).toBe('Clear');
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      fireEvent.click(saveIn('lane/red-queen'));
     });
     expect(runAgentTool).toHaveBeenCalledWith('governor:arm', {
       loopId: 'red-queen',
@@ -351,7 +392,7 @@ describe('arming and budgeting are two separate writes', () => {
       });
     });
     expect(screen.getByRole('alert').textContent).toMatch(/between 0 and 100000/);
-    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(saveIn('lane/red-queen').disabled).toBe(true);
   });
 
   it('surfaces a refusal instead of rendering the old state as if it landed', async () => {
@@ -394,5 +435,121 @@ describe('the partition survives the render', () => {
     open('p');
     expect(screen.getByText('Replay harness')).toBeTruthy();
     expect(screen.getByText('frontier:replay-harness')).toBeTruthy();
+  });
+});
+
+/** The three scout-cycle budget inputs, by their spelled-out labels. */
+const COST = 'Cost cap in USD per cycle';
+const IDEATORS = 'Ideators in ideators per cycle';
+
+describe('the scout cycle budget is edited HERE, and the lane row is read-only (D-011)', () => {
+  it('renders a field per budget key, with its own unit — not all of them money', () => {
+    open('p');
+    expect((screen.getByLabelText(COST) as HTMLInputElement).tagName).toBe('INPUT');
+    expect(screen.getByLabelText(IDEATORS)).toBeTruthy();
+    expect(screen.getByLabelText('Critics per idea in critics per idea')).toBeTruthy();
+  });
+
+  it('shows the ENGINE DEFAULT in an unset box, so empty never reads as zero', () => {
+    open('p');
+    const cost = screen.getByLabelText(COST) as HTMLInputElement;
+    expect(cost.value).toBe('');
+    expect(cost.placeholder).toBe('1'); // DEFAULT_SCOUT_BUDGET.maxCostUsd
+    expect(screen.getByText(/Unset — the engine default of 1 USD per cycle applies/)).toBeTruthy();
+  });
+
+  it('renders a stored 0 as a REAL value, not as an unset box', () => {
+    // The distinction D-011 turns on, at the surface: `maxCostUsd: 0` is "no
+    // spend this cycle", and rendering it as empty would report a hard stop as
+    // a default.
+    H.overrides = [{ kind: 'config', name: 'budget', value: { maxCostUsd: 0 } }];
+    open('p');
+    const cost = screen.getByLabelText(COST) as HTMLInputElement;
+    expect(cost.value).toBe('0');
+    expect(
+      (document.querySelector('.pc-potdraw__field[data-key="budget/maxCostUsd"]') as HTMLElement)
+        .dataset.set,
+    ).toBe('1');
+  });
+
+  it('writes the WHOLE budget object, preserving the keys it did not edit', async () => {
+    // The endpoint stores one json value per (pot, section), so a write that
+    // posted only the edited key would silently clear the other two.
+    H.overrides = [
+      { kind: 'config', name: 'budget', value: { maxCostUsd: 0.25, maxCriticsPerIdea: 4 } },
+    ];
+    open('p');
+    fireEvent.change(screen.getByLabelText(IDEATORS), { target: { value: '3' } });
+    await act(async () => {
+      fireEvent.click(saveIn('budget/maxIdeators'));
+    });
+    expect(setOverride).toHaveBeenCalledWith({
+      potSlug: 'p',
+      kind: 'config',
+      name: 'budget',
+      value: { maxCostUsd: 0.25, maxCriticsPerIdea: 4, maxIdeators: 3 },
+    });
+  });
+
+  it('emptying a box DELETES the key rather than storing a null', async () => {
+    // An absent key is what the engine reads as "use the default"; a null would
+    // make unset and zero indistinguishable to anything reading the raw config.
+    H.overrides = [{ kind: 'config', name: 'budget', value: { maxCostUsd: 5, maxIdeators: 3 } }];
+    open('p');
+    fireEvent.change(screen.getByLabelText(COST), { target: { value: '' } });
+    expect(saveIn('budget/maxCostUsd').textContent).toBe('Reset');
+    await act(async () => {
+      fireEvent.click(saveIn('budget/maxCostUsd'));
+    });
+    expect(setOverride).toHaveBeenCalledWith({
+      potSlug: 'p',
+      kind: 'config',
+      name: 'budget',
+      value: { maxIdeators: 3 },
+    });
+  });
+
+  it('does NOT write while a value is merely being typed', () => {
+    open('p');
+    fireEvent.change(screen.getByLabelText(COST), { target: { value: '2' } });
+    expect(setOverride).not.toHaveBeenCalled();
+  });
+
+  it('refuses 0 on a COUNT — the engine discards it — while allowing 0 on the cap', () => {
+    open('p');
+    fireEvent.change(screen.getByLabelText(IDEATORS), { target: { value: '0' } });
+    expect(saveIn('budget/maxIdeators').disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(COST), { target: { value: '0' } });
+    expect(saveIn('budget/maxCostUsd').disabled).toBe(false);
+  });
+
+  it('gives the blender LANE row no controls, and says the config is the real one', () => {
+    H.arming = arming({ lanes: [lane('blender:p', 'p')] });
+    open('p');
+    const row = document.querySelector(
+      '.pc-potdraw__field[data-key="lane/blender:p"]',
+    ) as HTMLElement;
+    expect(row.querySelector('button')).toBeNull();
+    expect(row.textContent).toMatch(/rewrites this row/i);
+  });
+
+  it('offers the budget for a pot with NO blender lane, and still says it has none', () => {
+    open('p');
+    const blender = screen.getByRole('region', { name: 'Blender' });
+    expect(blender.textContent).toMatch(/no blender: lane/i);
+    expect(blender.querySelectorAll('.pc-potdraw__cfg input')).toHaveLength(3);
+  });
+
+  it('surfaces a refused write instead of rendering as if it landed', async () => {
+    setOverride.mockImplementation(async () => {
+      throw new Error('pot not found');
+    });
+    open('p');
+    fireEvent.change(screen.getByLabelText(COST), { target: { value: '2' } });
+    await act(async () => {
+      fireEvent.click(saveIn('budget/maxCostUsd'));
+    });
+    expect(screen.getByRole('alert').textContent).toContain('pot not found');
   });
 });

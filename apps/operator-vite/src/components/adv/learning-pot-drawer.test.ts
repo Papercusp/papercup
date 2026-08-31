@@ -478,3 +478,35 @@ describe('the blender lane row is a MIRROR, so it is read-only (D-011)', () => {
     }
   });
 });
+
+describe('CONTROL — the unset-vs-zero assertions can actually fail', () => {
+  /**
+   * A deliberately-wrong reader, kept PERMANENTLY here rather than mutated into
+   * the real module (the shared tree is swept into commits, so an in-tree mutant
+   * can be committed even when nothing goes wrong). It does what the obvious
+   * implementation does — a truthiness test — so a stored `0` collapses into
+   * "unset". The unset/zero property is the one D-011 turns on, and a property
+   * test that has never failed is not yet a test.
+   */
+  function collapsingRead(config: unknown): number | null {
+    const delta = (config ?? {}) as Record<string, unknown>;
+    const raw = delta.maxCostUsd;
+    return typeof raw === 'number' && raw ? raw : null; // ← the bug: 0 is falsy
+  }
+
+  it('the control is CAUGHT on a stored 0, where the real model is not', () => {
+    expect(collapsingRead({ maxCostUsd: 0 })).toBeNull(); // wrong: reads as unset
+    expect(cfg(drawerScoutBudget('p', { maxCostUsd: 0 }), 'maxCostUsd').value).toBe(0);
+  });
+
+  it('CALIBRATION: the control agrees with the model on every OTHER input', () => {
+    // Without this the control could be passing because it is broken for all
+    // inputs, which would make the discrimination above meaningless.
+    for (const v of [0.25, 1, 100]) {
+      expect(collapsingRead({ maxCostUsd: v })).toBe(
+        cfg(drawerScoutBudget('p', { maxCostUsd: v }), 'maxCostUsd').value,
+      );
+    }
+    expect(collapsingRead({})).toBe(cfg(drawerScoutBudget('p', {}), 'maxCostUsd').value);
+  });
+});
