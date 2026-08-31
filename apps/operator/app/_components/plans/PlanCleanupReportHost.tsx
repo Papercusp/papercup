@@ -1,16 +1,23 @@
 "use client";
 
-/** URL-owned app-pane host for the P-007 grouped plan clean-up report. */
-import { Suspense, useCallback } from "react";
+/**
+ * URL-owned app-pane host for the grouped plan clean-up report.
+ *
+ * The phase gate itself lives in the SHARED
+ * `review-report/ReviewReportHost` (bulk-review-report-legibility-and-lifecycle
+ * -2026-08-31 P-005): this file keeps only what is genuinely Plans' — its flag,
+ * its run query, and how a finding opens its plan.
+ */
+import { useCallback } from "react";
 import { parseAsString, useQueryState } from "nuqs";
 import { FLAGS } from "@papercusp/flags";
 import { lazyWithRetry as lazy } from "@papercusp/operator-core/lib/lazy-with-retry";
 import { useFlag } from "@/lib/flag-hooks";
+import { useReportTakeoverParam } from "../review-report/ReportTakeover";
 import {
-  ReportTakeoverLayer,
-  useReleaseMissingReportTakeover,
-  useReportTakeoverParam,
-} from "../review-report/ReportTakeover";
+  ReviewReportSurface,
+  useReviewReportHost,
+} from "../review-report/ReviewReportHost";
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
@@ -24,14 +31,15 @@ const PlanCleanupReport = lazy(() => import("./PlanCleanupReport"));
 
 export default function PlanCleanupReportHost() {
   const enabled = useFlag(FLAGS.PLAN_CLEANUP);
-  const report = useReportTakeoverParam(PLAN_CLEANUP_RUN_PARAM);
+  const report = useReportTakeoverParamForCleanup(enabled);
   const cleanup = usePlanCleanupRun(report.value, {
     enabled: enabled && report.foreground,
   });
-  useReleaseMissingReportTakeover(report, {
+  const host = useReviewReportHost(PLAN_CLEANUP_RUN_PARAM, {
     enabled,
     loading: cleanup.loading,
     available: cleanup.run !== null,
+    phase: cleanup.run?.phase,
   });
   const [, setDashboardPlan] = useQueryState(
     PLAN_DASHBOARD_PARAM,
@@ -40,47 +48,32 @@ export default function PlanCleanupReportHost() {
   const openFinding = useCallback(
     (finding: PlanCleanupFinding) => {
       void (async () => {
-        await report.close();
+        await host.report.close();
         await setDashboardPlan(
           encodeScopedRef(finding.harnessSlug, finding.planSlug),
         );
       })();
     },
-    [report, setDashboardPlan],
+    [host.report, setDashboardPlan],
   );
 
-  // `?opcln=` is also the running-run deep link. It becomes a takeover only
-  // once the persisted phase reaches review; pending/running stays in the strip.
-  if (
-    !enabled ||
-    !report.foreground ||
-    !report.value ||
-    cleanup.run?.phase !== "review"
-  ) {
-    return null;
-  }
+  if (!host.presentation || !cleanup.run) return null;
 
   return (
-    <ReportTakeoverLayer testId="plan-cleanup-report-takeover">
-      <Suspense
-        fallback={
-          <div
-            className="plan-cleanup-report__loading"
-            role="status"
-            aria-live="polite"
-          >
-            Loading clean-up report…
-          </div>
-        }
-      >
-        <PlanCleanupReport
-          key={cleanup.run.runId}
-          run={cleanup.run}
-          findings={cleanup.findings}
-          onOpenFinding={openFinding}
-          onClose={report.close}
-        />
-      </Suspense>
-    </ReportTakeoverLayer>
+    <ReviewReportSurface
+      testId="plan-cleanup-report-takeover"
+      presentation={host.presentation}
+      loadingLabel="Loading clean-up report…"
+    >
+      <PlanCleanupReport
+        key={cleanup.run.runId}
+        run={cleanup.run}
+        findings={cleanup.findings}
+        presentation={host.presentation}
+        readOnly={host.readOnly}
+        onOpenFinding={openFinding}
+        onClose={host.report.close}
+      />
+    </ReviewReportSurface>
   );
 }
