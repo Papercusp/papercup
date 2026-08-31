@@ -40,6 +40,7 @@ import {
   type WorkspaceHostAgentProbeRunner,
 } from './workspace-host-agent-authentication';
 import {
+  WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
   WorkspaceHostCredentialResolver,
   workspaceHostCredentialReferenceDigest,
   type WorkspaceHostCredentialBindingDescriptor,
@@ -554,9 +555,11 @@ function materialPathFor(
   family: WorkspaceHostCredentialFamily,
 ): (binding: WorkspaceHostCredentialBindingDescriptor) => string | null {
   return (binding) => {
-    // `cloud-workload-identity` is answered by the instance metadata server — there is no file to
-    // check, and inventing one would make bind() pass against a path we created ourselves.
-    if (family === 'cloud-workload-identity') return null;
+    // Derived from the family spec, never from a hard-coded family name (D-215): a family that is
+    // answered ambiently by the environment has no file to check, and inventing one would make
+    // bind() pass against a path we created ourselves. Keying on the spec means a fifth family
+    // has to declare which it is instead of silently inheriting the wrong branch.
+    if (!WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial) return null;
     return join(root, family, `${binding.generation}`, 'material');
   };
 }

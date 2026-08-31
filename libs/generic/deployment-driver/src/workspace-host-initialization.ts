@@ -54,6 +54,53 @@ export interface WorkspaceHostCredentialDeliverySet {
   agent?: WorkspaceHostCredentialDelivery;
 }
 
+/**
+ * The provider transport declaration the credential channels depend on (D-215 point 6).
+ *
+ * Deliberately structural and minimal: `WorkspaceHostTransportFeatureSet` is assignable to it, so
+ * a caller passes its provider's REAL transport profile features straight through
+ * (`profile.transportProfile.features`) instead of transcribing a boolean into a second place.
+ * The contract reads only the one feature it actually depends on.
+ */
+export interface WorkspaceHostDeliveryCapabilities {
+  readonly fileTransfer: boolean;
+}
+
+/**
+ * Channels whose credential material must be WRITTEN to the host before `bind()` can succeed.
+ *
+ * DERIVED, NOT DECIDED HERE. The source is `requiresDeliveredMaterial` on each family spec in
+ * `workspace-host-credential-namespace`, which imports this module — so it cannot be imported back
+ * without a cycle, and this is a deliberate literal copy pinned by a guard test
+ * (`workspace-host-credential-namespace.test.ts`) that fails if the derived set ever differs.
+ * That is rung 2 of the derived-truth ladder with its reason stated, not a hand-maintained list.
+ */
+export const WORKSPACE_HOST_CHANNELS_REQUIRING_FILE_DELIVERY: readonly WorkspaceHostCredentialChannel[] =
+  Object.freeze(["agent", "git"] as WorkspaceHostCredentialChannel[]);
+
+/**
+ * A provider was asked to carry a channel its declared transport cannot deliver.
+ *
+ * Distinct from the contract's generic validation error on purpose: an API edge must be able to
+ * tell "this provider structurally cannot do this" from "your request is malformed". The first is
+ * not fixed by retrying with a corrected body — it needs a different provider or transport — and
+ * inferring that from an error message's shape is exactly the kind of guess that rots.
+ */
+export class WorkspaceHostCredentialDeliveryCapabilityError extends Error {
+  readonly channel: WorkspaceHostCredentialChannel;
+  readonly capability = "fileTransfer" as const;
+
+  constructor(channel: WorkspaceHostCredentialChannel) {
+    super(
+      `The ${channel} credential channel requires delivered material on the host, but this ` +
+        `provider's transport declares fileTransfer: false. Refused at plan time: a running host ` +
+        `would fail at bind with no way to distinguish a missing capability from a lost delivery.`,
+    );
+    this.name = "WorkspaceHostCredentialDeliveryCapabilityError";
+    this.channel = channel;
+  }
+}
+
 export interface WorkspaceHostPairingReference {
   readonly kind: "pairing";
   readonly ref: string;
@@ -92,6 +139,8 @@ export interface WorkspaceHostInitializationRequest {
   source: WorkspaceHostInitializationSource;
   credentialRefs: WorkspaceHostCredentialRefs;
   credentialDelivery: WorkspaceHostCredentialDeliverySet;
+  /** The executing provider's declared transport features; gates the delivery-bearing channels. */
+  deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
   /** Persistable labels only. */
   publicMetadata?: Readonly<Record<string, unknown>>;
 }
@@ -470,10 +519,49 @@ const ALLOWED_DELIVERY: Readonly<
   agent: ["forwarded-agent", "short-lived-delegation", "encrypted-reference"],
 };
 
+/**
+ * Refuse, at PLAN time, any channel whose material must be written to a host the provider cannot
+ * write to (D-215 point 6).
+ *
+ * This is what makes the `fileTransfer` capability load-bearing rather than decorative. Without it
+ * the refusal happens on a RUNNING host inside `bind()`, as
+ * `delivered material for family 'X' is not present on the host` — a message that cannot
+ * distinguish "this provider was never able to deliver" from "delivery was attempted and lost",
+ * and which has already cost a provisioned VM by the time anyone reads it.
+ *
+ * Applied uniformly to every lifecycle action, revocation included: if the provider could never
+ * place the file, there is no artifact for a revoke to remove, and planning one would assert a
+ * cleanup that never had anything to clean.
+ */
+function requireDeliveryCapability(
+  bindings: readonly CredentialBinding[],
+  capabilities: WorkspaceHostDeliveryCapabilities,
+): void {
+  requireCondition(
+    typeof capabilities?.fileTransfer === "boolean",
+    "deliveryCapabilities.fileTransfer must be declared",
+  );
+  if (capabilities.fileTransfer) return;
+  for (const binding of bindings) {
+    if (
+      WORKSPACE_HOST_CHANNELS_REQUIRING_FILE_DELIVERY.includes(binding.channel)
+    ) {
+      throw new WorkspaceHostCredentialDeliveryCapabilityError(binding.channel);
+    }
+  }
+}
+
+/**
+ * @param capabilities the executing provider's declared transport, or `null` for a METADATA-ONLY
+ *   validation that plans no host work (a backup manifest, a request body that a planner will
+ *   gate later). The parameter is required rather than optional so every call site has to say
+ *   which of the two it is — an omittable capability check is the decorative boolean again.
+ */
 function validateCredentialSet(
   refs: WorkspaceHostCredentialRefs,
   delivery: WorkspaceHostCredentialDeliverySet,
   requestedAt: string,
+  capabilities: WorkspaceHostDeliveryCapabilities | null,
 ): CredentialBinding[] {
   requireCondition(
     refs.cloudCredentialRef?.kind === "cloud",
@@ -550,6 +638,7 @@ function validateCredentialSet(
       );
     }
   }
+  if (capabilities) requireDeliveryCapability(resolved, capabilities);
   assertWorkspaceHostSecretIsolation(
     { refs, delivery },
     "workspaceHost.credentialBindings",
@@ -626,6 +715,7 @@ export function planWorkspaceHostInitialization(
     request.credentialRefs,
     request.credentialDelivery,
     request.requestedAt,
+    request.deliveryCapabilities,
   );
   assertWorkspaceHostSecretIsolation(
     request.publicMetadata ?? {},
@@ -770,7 +860,9 @@ export function buildWorkspaceHostBackupCredentialManifest(
   delivery: WorkspaceHostCredentialDeliverySet,
 ): WorkspaceHostBackupCredentialManifest {
   requireId(workspaceId, "workspaceId");
-  const current = validateCredentialSet(refs, delivery, capturedAt);
+  // Metadata-only: recording WHICH channels a restore must rebind plans no host work, and a
+  // provider that cannot deliver must still be able to back up the record of what was bound.
+  const current = validateCredentialSet(refs, delivery, capturedAt, null);
   const manifest: WorkspaceHostBackupCredentialManifest = {
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
     workspaceId,
@@ -799,6 +891,8 @@ interface WorkspaceHostCredentialLifecycleBase {
   workspaceId: string;
   hostId: string;
   requestedAt: string;
+  /** The executing provider's declared transport features; gates the delivery-bearing channels. */
+  deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
 }
 
 /** Route-ready restore body; controller-owned ids and timestamps are added by the runner. */
@@ -992,10 +1086,13 @@ export function buildWorkspaceHostBackupRestoreCredentialRebindRequest(
   requestedAt: string,
 ): WorkspaceHostBackupRestoreCredentialRebindRequest {
   validateBackupCredentialManifest(backup, backup.workspaceId);
+  // Metadata-only: this builds a request BODY. `planWorkspaceHostCredentialLifecycle` applies the
+  // capability gate when that body is actually planned, which is where D-215 puts the refusal.
   const next = validateCredentialSet(
     nextCredentialRefs,
     nextDelivery,
     requestedAt,
+    null,
   );
   requireCredentialReplacements("Restore", backup.bindingState, next);
   return {
@@ -1023,11 +1120,13 @@ export function planWorkspaceHostCredentialLifecycle(
       request.currentCredentialRefs,
       request.currentDelivery,
       request.requestedAt,
+      request.deliveryCapabilities,
     );
     const next = validateCredentialSet(
       request.nextCredentialRefs,
       request.nextDelivery,
       request.requestedAt,
+      request.deliveryCapabilities,
     );
     requireCredentialReplacements(
       "Rotation",
@@ -1067,6 +1166,7 @@ export function planWorkspaceHostCredentialLifecycle(
       request.currentCredentialRefs,
       request.currentDelivery,
       request.requestedAt,
+      request.deliveryCapabilities,
     );
     requireCondition(
       request.channels.length > 0 &&
@@ -1093,7 +1193,12 @@ export function planWorkspaceHostCredentialLifecycle(
       request.action === "restore-rebind"
         ? request.nextDelivery
         : request.currentDelivery;
-    const current = validateCredentialSet(refs, delivery, request.requestedAt);
+    const current = validateCredentialSet(
+      refs,
+      delivery,
+      request.requestedAt,
+      request.deliveryCapabilities,
+    );
     if (request.action === "restore-rebind") {
       validateBackupCredentialManifest(request.backup, request.workspaceId);
       requireCredentialReplacements(

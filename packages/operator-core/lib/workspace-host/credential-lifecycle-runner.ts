@@ -26,6 +26,7 @@ import type {
   WorkspaceHostCredentialLifecycleReceipt,
   WorkspaceHostCredentialLifecycleRequest,
   WorkspaceHostCredentialLifecycleStep,
+  WorkspaceHostDeliveryCapabilities,
   WorkspaceHostInitializationHostOperationResult,
   WorkspaceHostInitializationStep,
 } from '@papercusp/deployment-driver';
@@ -61,6 +62,12 @@ interface WorkspaceHostCredentialLifecycleRunBase {
   operationId?: string;
   requestedAt?: string;
   operations: WorkspaceHostCredentialLifecycleHostOperations;
+  /**
+   * The executing provider's declared transport features — pass the provider's real profile
+   * (`profile.transportProfile.features`). A provider declaring `fileTransfer: false` cannot
+   * carry the git/agent channels and is refused at plan time.
+   */
+  deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
   leaseOwner?: string;
   leaseTtlMs?: number;
   onPlanned?: (plan: WorkspaceHostCredentialLifecyclePlan) => void;
@@ -83,6 +90,7 @@ function buildRequest(
 ): WorkspaceHostCredentialLifecycleRequest {
   const base = {
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+    deliveryCapabilities: input.deliveryCapabilities,
     operationId,
     workspaceId: input.workspaceId,
     hostId: input.hostId,

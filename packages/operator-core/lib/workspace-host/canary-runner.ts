@@ -23,6 +23,7 @@ import {
   type WorkspaceHostCredentialDeliverySet,
   type WorkspaceHostCredentialRefs,
   type WorkspaceHostCredentialTeardownObservation,
+  type WorkspaceHostDeliveryCapabilities,
   type WorkspaceHostDestroyCanaryEvidenceContract,
   type WorkspaceHostDestroyOperationObservation,
   type WorkspaceHostInitializationHostOperations,
@@ -77,6 +78,12 @@ export interface WorkspaceHostCanaryRunInput {
     readonly restored: WorkspaceHostCanaryCredentialGeneration;
   };
   readonly operations: WorkspaceHostInitializationHostOperations;
+  /**
+   * The executing provider's declared transport features — pass the provider's real profile
+   * (`profile.transportProfile.features`). The canary binds git and agent channels, so a provider
+   * declaring `fileTransfer: false` is refused in preflight rather than after a VM is provisioned.
+   */
+  readonly deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
   /**
    * Omit on the first pass. After the existing destroy controller returns provider reads and a
    * clean census, repeat the same run with this field; every host phase replays durably and the
@@ -288,6 +295,7 @@ function preflight(
     workspaceId: input.workspaceId,
     hostId: input.hostId,
     requestedAt: input.requestedAt,
+    deliveryCapabilities: input.deliveryCapabilities,
     source: input.source,
     credentialRefs: input.credentials.initial.credentialRefs,
     credentialDelivery: input.credentials.initial.delivery,
@@ -298,6 +306,7 @@ function preflight(
     workspaceId: input.workspaceId,
     hostId: input.hostId,
     requestedAt: input.requestedAt,
+    deliveryCapabilities: input.deliveryCapabilities,
     action: 'rotate',
     currentCredentialRefs: input.credentials.initial.credentialRefs,
     currentDelivery: input.credentials.initial.delivery,
@@ -310,6 +319,7 @@ function preflight(
     workspaceId: input.workspaceId,
     hostId: input.hostId,
     requestedAt: input.requestedAt,
+    deliveryCapabilities: input.deliveryCapabilities,
     action: 'revoke',
     currentCredentialRefs: input.credentials.rotated.credentialRefs,
     currentDelivery: input.credentials.rotated.delivery,
@@ -321,6 +331,7 @@ function preflight(
     workspaceId: input.workspaceId,
     hostId: input.hostId,
     requestedAt: input.requestedAt,
+    deliveryCapabilities: input.deliveryCapabilities,
     action: 'reconnect',
     currentCredentialRefs: input.credentials.rotated.credentialRefs,
     currentDelivery: input.credentials.rotated.delivery,
@@ -344,6 +355,7 @@ function preflight(
     workspaceId: input.workspaceId,
     hostId: input.hostId,
     requestedAt: input.requestedAt,
+    deliveryCapabilities: input.deliveryCapabilities,
     ...restoreRebindRequest,
   });
   return { backupManifest, restoreRebindRequest };
@@ -361,6 +373,7 @@ export async function runWorkspaceHostCanary(
     hostId: input.hostId,
     operations: input.operations,
     requestedAt: input.requestedAt,
+    deliveryCapabilities: input.deliveryCapabilities,
     ...(input.leaseOwner ? { leaseOwner: input.leaseOwner } : {}),
     ...(input.leaseTtlMs !== undefined ? { leaseTtlMs: input.leaseTtlMs } : {}),
     now: dependencies.now,
@@ -393,6 +406,7 @@ export async function runWorkspaceHostCanary(
         hostId: input.hostId,
         operationId: operationIds[phase],
         requestedAt: input.requestedAt,
+        deliveryCapabilities: input.deliveryCapabilities,
         operations: lifecycleOperations,
         ...(input.leaseOwner ? { leaseOwner: `${input.leaseOwner}:${phase}` } : {}),
         ...(input.leaseTtlMs !== undefined ? { leaseTtlMs: input.leaseTtlMs } : {}),

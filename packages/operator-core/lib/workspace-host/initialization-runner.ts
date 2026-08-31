@@ -36,6 +36,7 @@ import {
 import type {
   WorkspaceHostCredentialDeliverySet,
   WorkspaceHostCredentialRefs,
+  WorkspaceHostDeliveryCapabilities,
   WorkspaceHostInitializationExecutor,
   WorkspaceHostInitializationHostOperations,
   WorkspaceHostInitializationPlan,
@@ -60,6 +61,12 @@ export interface WorkspaceHostInitializationRunInput {
   source: WorkspaceHostInitializationSource;
   credentialRefs: WorkspaceHostCredentialRefs;
   credentialDelivery: WorkspaceHostCredentialDeliverySet;
+  /**
+   * The executing provider's declared transport features — pass the provider's real profile
+   * (`profile.transportProfile.features`) rather than a transcribed boolean. A provider declaring
+   * `fileTransfer: false` is refused here, at plan time, instead of failing on a running host.
+   */
+  deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
   /** Persistable labels only; secret-isolation asserted by the planner. */
   publicMetadata?: Readonly<Record<string, unknown>>;
   /** The concrete capability-declaring host adapter (e.g. GcpIapWorkspaceHostInitializationOperations). */
@@ -109,6 +116,7 @@ export async function runWorkspaceHostInitialization(
     source: input.source,
     credentialRefs: input.credentialRefs,
     credentialDelivery: input.credentialDelivery,
+    deliveryCapabilities: input.deliveryCapabilities,
     ...(input.publicMetadata ? { publicMetadata: input.publicMetadata } : {}),
   };
 

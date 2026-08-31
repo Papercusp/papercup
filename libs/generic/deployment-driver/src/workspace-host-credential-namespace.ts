@@ -91,6 +91,17 @@ export interface WorkspaceHostCredentialFamilySpec {
   readonly segments: readonly string[];
   /** Whether a binding in this family must carry an expiry. */
   readonly requiresExpiry: boolean;
+  /**
+   * Whether binding this family requires authorization material to have been WRITTEN to the host
+   * filesystem first, as opposed to being answered ambiently by the environment.
+   *
+   * This is the single source for that fact (D-215). `materialPathFor` in the remote initializer
+   * host reads it to decide whether a family has an on-host artifact at all, and the plan-time
+   * capability gate reads it to decide whether a provider that cannot transfer files may carry the
+   * family's channel. Both used to hard-code `family === 'cloud-workload-identity'`, which is the
+   * kind of restated fact that silently stops matching when a fifth family is added.
+   */
+  readonly requiresDeliveredMaterial: boolean;
 }
 
 /**
@@ -116,6 +127,9 @@ export const WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS: Readonly<
     deliveryKinds: ['provider-identity', 'encrypted-reference'],
     segments: ['provider', 'scopeId', 'workloadId'],
     requiresExpiry: false,
+    // Ambient: the instance metadata server answers, and nothing is placed on disk. Inventing a
+    // file for it would make bind() pass against a path we created ourselves.
+    requiresDeliveredMaterial: false,
   },
   'git-short-lived-delegation': {
     family: 'git-short-lived-delegation',
@@ -125,6 +139,7 @@ export const WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS: Readonly<
     deliveryKinds: ['short-lived-delegation', 'encrypted-reference'],
     segments: ['forge', 'owner', 'repository'],
     requiresExpiry: true,
+    requiresDeliveredMaterial: true,
   },
   'agent-forwarded-reference': {
     family: 'agent-forwarded-reference',
@@ -134,6 +149,7 @@ export const WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS: Readonly<
     deliveryKinds: ['forwarded-agent'],
     segments: ['hostId', 'agentSet'],
     requiresExpiry: false,
+    requiresDeliveredMaterial: true,
   },
   'agent-encrypted-reference': {
     family: 'agent-encrypted-reference',
@@ -143,8 +159,30 @@ export const WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS: Readonly<
     deliveryKinds: ['encrypted-reference'],
     segments: ['hostId', 'agentSet'],
     requiresExpiry: false,
+    requiresDeliveredMaterial: true,
   },
 };
+
+/**
+ * The credential CHANNELS that cannot be carried without on-host file delivery, derived from the
+ * family specs above rather than restated (D-215 point 6).
+ *
+ * A channel needs delivery if ANY family on it does: a provider that cannot transfer files cannot
+ * carry a channel whose families require a written artifact. The initialization contract holds a
+ * literal copy of this set because `workspace-host-credential-namespace` imports the contract and
+ * cannot be imported back without a cycle; `workspace-host-credential-namespace.test.ts` pins the
+ * two together so the copy cannot drift.
+ */
+export const WORKSPACE_HOST_CHANNELS_REQUIRING_FILE_DELIVERY: readonly WorkspaceHostCredentialChannel[] =
+  Object.freeze(
+    Array.from(
+      new Set(
+        Object.values(WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS)
+          .filter((spec) => spec.requiresDeliveredMaterial)
+          .map((spec) => spec.channel),
+      ),
+    ).sort(),
+  );
 
 export class WorkspaceHostCredentialReferenceError extends Error {
   readonly reference: string;

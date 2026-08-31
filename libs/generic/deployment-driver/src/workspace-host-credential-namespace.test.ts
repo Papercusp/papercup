@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  WORKSPACE_HOST_CHANNELS_REQUIRING_FILE_DELIVERY as DERIVED_CHANNELS_REQUIRING_FILE_DELIVERY,
   WORKSPACE_HOST_CREDENTIAL_FAMILIES,
   WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
   WorkspaceHostCredentialReferenceError,
@@ -22,6 +23,7 @@ import {
   buildWorkspaceHostBackupRestoreCredentialRebindRequest,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
+  WORKSPACE_HOST_CHANNELS_REQUIRING_FILE_DELIVERY,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   type WorkspaceHostCredentialDeliverySet,
 } from './workspace-host-initialization';
@@ -703,5 +705,39 @@ describe('agent-encrypted-reference (the sealed agent family)', () => {
       (m) => m.family === 'agent-encrypted-reference',
     );
     expect(sealedMaterializer?.calls).toEqual(['bind:agent:g2']);
+  });
+});
+
+/**
+ * D-215 point 6 pins a DERIVED fact across a module boundary it cannot cross directly.
+ *
+ * `workspace-host-credential-namespace` imports the initialization contract, so the contract
+ * cannot import it back to read `requiresDeliveredMaterial` off the family specs. It therefore
+ * holds a literal copy of the channel set, and this suite is the pin that keeps the copy honest:
+ * a fifth family, or a flipped flag, fails here rather than silently widening what a provider
+ * without file transfer is allowed to plan.
+ */
+describe('channels requiring file delivery are derived, not restated', () => {
+  it('matches the set derived from the family specs', () => {
+    expect([...WORKSPACE_HOST_CHANNELS_REQUIRING_FILE_DELIVERY]).toEqual([
+      ...DERIVED_CHANNELS_REQUIRING_FILE_DELIVERY,
+    ]);
+  });
+
+  it('derives that set from every family, with the ambient family excluded', () => {
+    // Exhaustive: a new family cannot be added without declaring which side it is on.
+    for (const family of WORKSPACE_HOST_CREDENTIAL_FAMILIES) {
+      expect(typeof WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial).toBe(
+        'boolean',
+      );
+    }
+    // Calibration: the set must be a PROPER, non-empty subset of the channels. Without this a
+    // spec table with every flag flipped one way still satisfies the equality test above, and
+    // the guard would pass while asserting nothing about the distinction it exists to protect.
+    expect(DERIVED_CHANNELS_REQUIRING_FILE_DELIVERY.length).toBeGreaterThan(0);
+    expect(DERIVED_CHANNELS_REQUIRING_FILE_DELIVERY).not.toContain('cloud');
+    expect(
+      WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS['cloud-workload-identity'].requiresDeliveredMaterial,
+    ).toBe(false);
   });
 });
