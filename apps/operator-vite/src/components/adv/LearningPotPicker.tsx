@@ -267,7 +267,7 @@ export default function LearningPotPicker() {
         .pc-potpick__search {
           width: 100%; padding: 6px 9px; font-size: 12.5px;
           border-radius: 8px; border: 1px solid var(--border);
-          background: var(--bg-0); color: var(--fg);
+          background: var(--bg); color: var(--fg);
         }
         .pc-potpick__count {
           display: flex; align-items: center; gap: 8px;
