@@ -371,15 +371,33 @@ export interface LedgerStalenessSweepResult {
  * trains readers to ignore the page, which is how the original all-clear kept its
  * credibility. Equally, it is never reported as `healthy`.
  */
+// Throttled for the same reason the sibling watchdog throttles its git shell-outs: this
+// runs on the 30s routinesTick, and its two ledger reads are index range scans over a
+// 15-minute window of a table taking ~800K inserts/day. Host code cannot change without a
+// restart, so re-asking 120×/hour buys nothing. Process-local, so a missed tick is never a
+// missed alarm — only a later one.
+const LEDGER_SWEEP_MIN_INTERVAL_MS = 5 * 60_000;
+let lastLedgerSweepAtMs = 0;
+
+export function _resetLedgerSweepThrottleForTests(): void {
+  lastLedgerSweepAtMs = 0;
+}
+
 export async function hostCodeStalenessFromLedgerSweep(opts: {
   now?: number;
   workspaceId?: string;
   installSlug?: string;
+  /** Bypass the tick throttle (probes, tests, an explicit on-demand read). */
+  force?: boolean;
 }): Promise<LedgerStalenessSweepResult> {
   const maxAgeSec = ledgerStaleCodeMaxAgeSec();
   if (maxAgeSec <= 0) return { outcome: 'skipped', reason: 'kill switch' };
 
   const now = opts.now ?? Date.now();
+  if (!opts.force && now - lastLedgerSweepAtMs < LEDGER_SWEEP_MIN_INTERVAL_MS) {
+    return { outcome: 'skipped', reason: 'throttled' };
+  }
+  lastLedgerSweepAtMs = now;
   const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
   const installSlug = opts.installSlug ?? operatorHomeHarnessSlug();
 

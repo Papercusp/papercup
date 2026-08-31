@@ -7,9 +7,12 @@
  * healthy verdict and the vacuous one are the same shape, the same `stale: []`, and
  * differ only in whether anything was measured. So they get controls of their own.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateLedgerHostStaleness,
+  hostCodeStalenessFromLedgerSweep,
+  ledgerHostWindowSec,
+  ledgerStaleCodeMaxAgeSec,
   type LedgerHostObservation,
 } from './host-code-staleness-from-ledger';
 
@@ -29,6 +32,44 @@ const obs = (over: Partial<LedgerHostObservation> = {}): LedgerHostObservation =
 
 const never = () => null;
 const at = (map: Record<string, number>) => (sha: string) => map[sha] ?? null;
+
+describe('tunables and the kill switch', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it('defaults to a 3-day code-age ceiling and a 15-minute window', () => {
+    delete process.env.PAPERCUSP_LEDGER_HOST_STALE_CODE_MAX_AGE_SEC;
+    delete process.env.PAPERCUSP_LEDGER_HOST_WINDOW_SEC;
+    expect(ledgerStaleCodeMaxAgeSec()).toBe(259_200);
+    expect(ledgerHostWindowSec()).toBe(900);
+  });
+
+  it('falls back to the defaults on unparseable overrides rather than to 0 or NaN', () => {
+    process.env.PAPERCUSP_LEDGER_HOST_STALE_CODE_MAX_AGE_SEC = 'not-a-number';
+    process.env.PAPERCUSP_LEDGER_HOST_WINDOW_SEC = 'not-a-number';
+    // A NaN ceiling would make every comparison false and silently disable detection;
+    // a 0 window would measure an empty population and report it as health.
+    expect(ledgerStaleCodeMaxAgeSec()).toBe(259_200);
+    expect(ledgerHostWindowSec()).toBe(900);
+  });
+
+  /** The kill switch must short-circuit BEFORE any ledger read, so this is also the
+   *  assertion that it needs no database. */
+  it('the kill switch skips without touching Postgres', async () => {
+    process.env.PAPERCUSP_LEDGER_HOST_STALE_CODE_MAX_AGE_SEC = '0';
+    const r = await hostCodeStalenessFromLedgerSweep({});
+    expect(r).toEqual({ outcome: 'skipped', reason: 'kill switch' });
+  });
+
+  it('a skipped sweep is never reported as healthy', async () => {
+    process.env.PAPERCUSP_LEDGER_HOST_STALE_CODE_MAX_AGE_SEC = '0';
+    const r = await hostCodeStalenessFromLedgerSweep({});
+    expect(r.outcome).not.toBe('healthy');
+    expect(r.verdict).toBeUndefined();
+  });
+});
 
 describe('the population rule — a zero is unutterable from an empty population', () => {
   it('an empty window is INCONCLUSIVE, not healthy', () => {
