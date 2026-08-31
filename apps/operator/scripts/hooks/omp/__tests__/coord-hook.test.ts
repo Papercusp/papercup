@@ -544,6 +544,18 @@ describe('read-only listings are exempt from the lockout (EI-20419484186942049)'
     'sudo crontab -l',
     'at -l', // `atq` spelled differently
     'true\ncrontab -l',
+    // EI-21934170410740770: a REDIRECTION is decoration, not an argument. The
+    // allowlist regex is $-anchored, so every one of these used to deny — while
+    // the refusal text promised listings pass, and re-running "the listing form
+    // on its own" (its advertised remedy) denied a second time.
+    'crontab -l 2>&1 | head -20', // the reported shape
+    'crontab -l 2>/dev/null',
+    'crontab -l > /tmp/out.txt',
+    'crontab -l >> /tmp/out.txt',
+    'crontab -l 1>/tmp/a 2>/tmp/b',
+    'sudo crontab -l 2>&1 | head -5',
+    'crontab -u root -l 2>/dev/null',
+    'git status; crontab -l 2>&1 | wc -l',
   ];
 
   // The exemption is an ALLOWLIST. These are the shapes that LOOK adjacent to a
@@ -559,6 +571,15 @@ describe('read-only listings are exempt from the lockout (EI-20419484186942049)'
     'crontab -l && crontab -e',
     'crontab -l; crontab -r',
     'crontab -l | crontab -', // listing piped INTO an install
+    // EI-21934170410740770: stripping redirections must stay fail-CLOSED. These
+    // are the two shapes where a redirection genuinely CREATES a schedule, so
+    // they must keep denying even though a read flag sits beside them.
+    'crontab < jobs.txt', // stdin redirect IS the install vector
+    'crontab -u bob < jobs.txt',
+    'crontab -l > /var/spool/cron/crontabs/bob', // writes bob's crontab directly
+    'crontab -l > /etc/cron.d/evil',
+    'crontab -l >> /etc/crontab',
+    'crontab -l 2>&1 | crontab -', // redirect on the read does not launder the install
   ];
 
   it('classifies a bare listing invocation as read-only', () => {
@@ -569,6 +590,22 @@ describe('read-only listings are exempt from the lockout (EI-20419484186942049)'
       expect(isReadOnlySchedulerInvocation(seg)).toBe(true);
     }
     for (const seg of ['crontab', 'crontab -', 'crontab -e', 'crontab -r', 'crontab -u bob', 'crontab jobs.txt', 'at midnight']) {
+      expect(isReadOnlySchedulerInvocation(seg)).toBe(false);
+    }
+  });
+
+  // EI-21934170410740770 — the classifier never sees `crontab -l 2>&1`. The
+  // guard splits compounds on [;&|\n], and the `&` inside `2>&1` is one of
+  // those, so the segment handed to the classifier is the TRUNCATED
+  // `crontab -l 2>` — a dangling operator with no target. Pinned explicitly
+  // because a fix that only handled well-formed redirections would pass every
+  // other test here and still deny the exact reported command.
+  it('classifies a segment truncated mid-redirection as read-only', () => {
+    for (const seg of ['crontab -l 2>', 'crontab -l 1>', 'crontab -l >', 'sudo crontab -l 2>']) {
+      expect(isReadOnlySchedulerInvocation(seg)).toBe(true);
+    }
+    // Fail-closed: a truncated segment with no read flag is still an install.
+    for (const seg of ['crontab 2>', 'crontab -u bob 2>']) {
       expect(isReadOnlySchedulerInvocation(seg)).toBe(false);
     }
   });
