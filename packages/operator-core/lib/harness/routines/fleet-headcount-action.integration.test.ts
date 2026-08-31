@@ -19,8 +19,14 @@ const mocks = vi.hoisted(() => ({
   resolveGoalContext: vi.fn(),
   capacity: vi.fn(),
   emitEvent: vi.fn(),
+  setHeadcountTarget: vi.fn(),
+  orgSql: vi.fn(),
   events: [] as string[],
   headcountEvents: [] as Record<string, unknown>[],
+}));
+
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: (...args: unknown[]) => mocks.orgSql(...args) }),
 }));
 
 vi.mock('@papercusp/flags/server', () => ({
@@ -37,6 +43,7 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => ({
   listFleetHeadcountTargets: (...args: unknown[]) => mocks.listTargets(...args),
   recordFleetHeadcountAttempt: (...args: unknown[]) => mocks.recordAttempt(...args),
   releaseFleetLaunchSlot: (...args: unknown[]) => mocks.releaseSlot(...args),
+  setFleetHeadcountTarget: (...args: unknown[]) => mocks.setHeadcountTarget(...args),
   setFleetLaunchTransaction: (...args: unknown[]) => mocks.setTransaction(...args),
 }));
 vi.mock('../../console-launcher', () => ({
@@ -178,6 +185,90 @@ beforeEach(() => {
   }));
   mocks.emitEvent.mockImplementation(async (args: { payload?: Record<string, unknown> }) => {
     mocks.headcountEvents.push(args.payload ?? {});
+  });
+  mocks.setHeadcountTarget.mockResolvedValue(undefined);
+  mocks.orgSql.mockResolvedValue([]);
+});
+
+// WI-1457060. The governor reasoned only about member headcount and readiness, never
+// about whether the WORK still existed, so a fleet whose plan had SHIPPED kept having
+// replacements opened forever — `pui-remediation-ship-2026-08-28` at target 4 with
+// headless:false meant four desktop windows reopening in perpetuity. Sibling of
+// WI-1454201, which closed the case where a fleet was explicitly wound down; this is the
+// case where nobody ever said "stop" because the work simply ran out.
+describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)', () => {
+  const targetWithPlan = [{
+    workspaceId: 'ws',
+    fleetSlug: 'fleet-a',
+    target: 1,
+    config: baseConfig,
+    nextAttemptAt: null,
+    backoffMs: 0,
+    lastError: null,
+  }];
+  const run = () => runFleetHeadcountGovernor({
+    installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+  });
+
+  it.each(['shipped', 'superseded'])('disarms instead of topping up when the plan is %s', async (status) => {
+    mocks.listTargets.mockResolvedValue(targetWithPlan);
+    mocks.orgSql.mockResolvedValue([{ status }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await run();
+
+    expect(mocks.setHeadcountTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws', fleetSlug: 'fleet-a', target: null }),
+    );
+    // The whole point: no replacement member is opened.
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.claimAttempt).not.toHaveBeenCalled();
+    // A silent disarm is indistinguishable from a deleted fleet, so the reason is
+    // part of the contract, not decoration.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`disarmed fleet-a: plan plan-a is ${status}`),
+    );
+    warn.mockRestore();
+  });
+
+  // CALIBRATION. Without this, every assertion above would also pass if the guard simply
+  // disarmed everything unconditionally.
+  it('still tops up a fleet whose plan is active', async () => {
+    mocks.listTargets.mockResolvedValue(targetWithPlan);
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+
+    await run();
+
+    expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
+    expect(mocks.claimAttempt).toHaveBeenCalled();
+  });
+
+  // FAIL OPEN. A fleet doing real work must never be disarmed because a status lookup
+  // broke. Only a POSITIVE terminal reading may disarm.
+  it.each([
+    ['the plan row is missing', async () => [] as unknown[]],
+    ['the status query throws', async () => { throw new Error('pg down'); }],
+  ])('keeps topping up when %s', async (_label, sqlImpl) => {
+    mocks.listTargets.mockResolvedValue(targetWithPlan);
+    mocks.orgSql.mockImplementation(sqlImpl as () => Promise<unknown[]>);
+
+    await run();
+
+    expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
+    expect(mocks.claimAttempt).toHaveBeenCalled();
+  });
+
+  it('does not consult plan status at all when the config names no plan', async () => {
+    // The pre-existing target shape, which carries no config. Must behave exactly as before.
+    mocks.listTargets.mockResolvedValue([{ workspaceId: 'ws', fleetSlug: 'fleet-a' }]);
+    mocks.orgSql.mockResolvedValue([{ status: 'shipped' }]);
+
+    await run();
+
+    expect(mocks.orgSql).not.toHaveBeenCalled();
+    expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
+    expect(mocks.claimAttempt).toHaveBeenCalled();
   });
 });
 

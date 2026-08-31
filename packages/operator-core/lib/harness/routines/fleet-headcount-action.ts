@@ -13,6 +13,7 @@ import {
   mergeFleetLaunchWorkerAttestations,
   recordFleetHeadcountAttempt,
   releaseFleetLaunchSlot,
+  setFleetHeadcountTarget,
   setFleetLaunchTransaction,
   type FleetHeadcountConfig,
   type FleetLaunchCapacitySnapshot,
@@ -1457,12 +1458,76 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
   }
 }
 
+/**
+ * A plan in one of these states has no claimable work BY DEFINITION, so replacing a
+ * dead member can only produce another member that boots, finds nothing, and dies.
+ */
+const TERMINAL_PLAN_STATUSES = new Set(['shipped', 'superseded']);
+
+/**
+ * WI-1457060: is this fleet's configured plan finished?
+ *
+ * The governor reasoned only about member headcount and readiness — never about whether
+ * the WORK still existed — so a fleet whose plan had shipped kept having replacements
+ * opened forever. Measured 2026-08-31: `pui-remediation-ship-2026-08-28` sat at target 4
+ * with `headless:false` against a shipped plan, i.e. four desktop windows reopening in
+ * perpetuity, and `capless-inference-gateway-ship-2026-08-28` had opened 20 members in 23h.
+ *
+ * WI-1454201 closed the sibling path (a fleet explicitly wound down). This closes the one
+ * where nobody ever said "stop" because the work simply ran out.
+ *
+ * FAILS OPEN, deliberately. A missing config field, an unmatched plan row, or a database
+ * error returns null and the fleet is topped up as before: a fleet doing real work must
+ * never be disarmed because a status lookup failed. Only a POSITIVE terminal reading disarms.
+ */
+async function terminalPlanStatusForFleet(
+  workspaceId: string,
+  config: FleetHeadcountConfig | undefined,
+): Promise<string | null> {
+  const planSlug = typeof config?.plan === 'string' ? config.plan : null;
+  const harnessSlug = typeof config?.harness === 'string' ? config.harness : null;
+  if (!planSlug || !harnessSlug) return null;
+  try {
+    const rows = await getOrgPg().sql<{ status: string | null }[]>`
+      SELECT status
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${planSlug}
+       LIMIT 1
+    `;
+    const status = rows[0]?.status ?? null;
+    return status && TERMINAL_PLAN_STATUSES.has(status) ? status : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<void> {
   if (!(await getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false))) return;
   const targets = await listFleetHeadcountTargets(ctx.workspaceId);
   // Bounded one-wave-per-tick: the durable per-fleet lease prevents duplicate
   // opens, while this cap prevents a large fleet registry from creating a burst.
   for (const target of targets.slice(0, 4)) {
+    // DISARM rather than skip. Skipping would re-evaluate this fleet every single tick,
+    // forever, and leave the armed row looking identical to one still doing work. Clearing
+    // the target is a one-shot state transition that is visible in the registry and
+    // self-heals the fleets already stuck in this state. The launch RECIPE is preserved
+    // (setFleetHeadcountTarget(null) keeps headcount_config), so an explicit re-arm still
+    // has the boot-baked model/account/headless/carry contract.
+    const terminalStatus = await terminalPlanStatusForFleet(ctx.workspaceId, target.config);
+    if (terminalStatus) {
+      await setFleetHeadcountTarget({
+        workspaceId: ctx.workspaceId,
+        fleetSlug: target.fleetSlug,
+        target: null,
+      });
+      console.warn(
+        `[${FLEET_HEADCOUNT_EVENT_PREFIX}] disarmed ${target.fleetSlug}: plan `
+        + `${target.config?.plan ?? '(unknown)'} is ${terminalStatus}; launch recipe preserved`,
+      );
+      continue;
+    }
     await topUpOneFleet(ctx.workspaceId, target.fleetSlug);
   }
 }
