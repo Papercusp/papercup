@@ -1462,6 +1462,7 @@ export default defineTool({
         // coord:inbox-wake keepalive (liveness, not a deliberate wake for this
         // work). Best-effort; unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
+        let activeInboxWakeAwait: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
         let activeLoopIntervalSec: number | null = null;
         let activeLoopGoal: string | null = null;
@@ -1478,6 +1479,7 @@ export default defineTool({
           activeLoopGoal = loop?.active ? loop.goal : null;
           const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
           const loopRewakeGuaranteed = loopGuaranteesNextWake(loop);
+          activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
@@ -1523,6 +1525,7 @@ export default defineTool({
           compactionLimit: derivedLimit,
           unreadInbox,
           rewakeGuaranteed,
+          activeInboxWakeAwait,
           nextWakeFresh,
           selfCompactionAvailable,
           fleetWindDownLoopEndAuthorized,

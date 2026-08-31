@@ -1154,6 +1154,31 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     });
     expect(b.continuation.guidance).toContain('NO guaranteed re-wake');
   });
+
+  it('runtime wiring: reports the standing inbox wake separately from a qualifying deliberate await', async () => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue(null);
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    getPresence.mockResolvedValue({ contextTokens: 80, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(80);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
+    readInbox.mockResolvedValue([]);
+    listActiveAwaits.mockResolvedValue([{ eventKey: 'coord:inbox-wake:su-caller' }]);
+
+    const b = body(await call({ next: 'checkpoint with standing wake' }));
+
+    expect(b.continuation).toMatchObject({
+      rewakeGuaranteed: false,
+      activeInboxWakeAwait: true,
+    });
+    expect(b.continuation.guidance).toContain('no qualifying deliberate await');
+    expect(b.continuation.guidance).toContain('active standing coord:inbox-wake await present');
+    expect(b.continuation.guidance).not.toContain('no registered await');
+  });
 });
 
 describe('WI-7124: verify-read — the write must read back via the SAME path a cold wake uses', () => {

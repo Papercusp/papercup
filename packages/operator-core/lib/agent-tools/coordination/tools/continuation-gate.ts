@@ -247,6 +247,12 @@ export interface ContinuationGateInputs {
    *  null/undefined ⇒ unknown → guidance unchanged (non-breaking for callers
    *  that don't supply it; an interactive session's owner is the guaranteed wake). */
   rewakeGuaranteed?: boolean | null;
+  /**
+   * Whether the standing `coord:inbox-wake:<owner>` await is active. This is
+   * reported separately because it is a liveness keepalive, not a qualifying
+   * deliberate re-wake for the current work.
+   */
+  activeInboxWakeAwait?: boolean | null;
   /** Does the guaranteed next wake actually start on FRESH context? An armed
    *  warm loop guarantees another turn but preserves this transcript, so it
    *  must not satisfy the context-pressure remedy. false steers the caller to
@@ -281,6 +287,8 @@ export interface ContinuationVerdict {
   unreadInbox: number | null;
   /** The re-wake-guarantee input echoed back (null ⇒ unknown/not supplied). */
   rewakeGuaranteed: boolean | null;
+  /** Whether the standing inbox-wake keepalive was active (null ⇒ unknown). */
+  activeInboxWakeAwait: boolean | null;
   /** Whether the next wake sheds the current transcript (null ⇒ unknown). */
   nextWakeFresh: boolean | null;
   /** The self-compaction availability input echoed back (null ⇒ unknown/not supplied). */
@@ -326,6 +334,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
 
   const shouldContinue = reasons.length === 0;
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
+  const activeInboxWakeAwait = inputs.activeInboxWakeAwait ?? null;
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
   const fleetWindDownLoopEndAuthorized = inputs.fleetWindDownLoopEndAuthorized ?? null;
@@ -379,9 +388,13 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     ) &&
     rewakeGuaranteed === false
   ) {
+    const reWakeGap =
+      activeInboxWakeAwait === true
+        ? 'no armed loop, no qualifying deliberate await, active standing coord:inbox-wake await present (liveness keepalive only), no owner present'
+        : 'no armed loop, no registered await, no owner present';
     const opening =
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
-      `⚠ NO guaranteed re-wake (autonomous mode; no armed loop, no registered await, no owner present): ` +
+      `⚠ NO guaranteed re-wake (autonomous mode; ${reWakeGap}): ` +
       `ending the turn now would SILENTLY HALT the session. Do NOT just end it — `;
     const remedy =
       selfCompactionAvailable === false
@@ -431,6 +444,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     contextHeadroom,
     unreadInbox,
     rewakeGuaranteed,
+    activeInboxWakeAwait,
     nextWakeFresh,
     selfCompactionAvailable,
     fleetWindDownLoopEndAuthorized,
@@ -448,6 +462,7 @@ export function continuationGateFromReads(args: {
   unreadInbox: number | null | undefined;
   ceilingPct?: number;
   rewakeGuaranteed?: boolean | null;
+  activeInboxWakeAwait?: boolean | null;
   nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
   fleetWindDownLoopEndAuthorized?: boolean | null;
@@ -459,6 +474,7 @@ export function continuationGateFromReads(args: {
     unreadInbox: args.unreadInbox,
     ceilingPct: args.ceilingPct,
     rewakeGuaranteed: args.rewakeGuaranteed,
+    activeInboxWakeAwait: args.activeInboxWakeAwait,
     nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,
     fleetWindDownLoopEndAuthorized: args.fleetWindDownLoopEndAuthorized,

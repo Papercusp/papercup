@@ -138,6 +138,20 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
   });
 
+  it('reports an active standing inbox wake without calling it a qualifying await', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeInboxWakeAwait: true,
+    });
+    expect(v.shouldContinue).toBe(false);
+    expect(v.activeInboxWakeAwait).toBe(true);
+    expect(v.guidance).toContain('no qualifying deliberate await');
+    expect(v.guidance).toContain('active standing coord:inbox-wake await present');
+    expect(v.guidance).not.toContain('no registered await');
+  });
+
   it('a CLOSED gate WITH a guarantee keeps the base settle guidance', () => {
     const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: true });
     expect(v.shouldContinue).toBe(false);
@@ -274,6 +288,18 @@ describe('remedy selection by self-compaction availability', () => {
     expect(continuationGateFromReads(base).selfCompactionAvailable).toBeNull();
     // and the pass-through actually reaches the guidance, not just the field
     expect(continuationGateFromReads({ ...base, selfCompactionAvailable: false }).guidance).toMatch(/NOT available to this session/);
+  });
+
+  it('continuationGateFromReads preserves the standing inbox-wake signal', () => {
+    const v = continuationGateFromReads({
+      contextTokens: 80,
+      compactionLimit: 100,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeInboxWakeAwait: true,
+    });
+    expect(v.activeInboxWakeAwait).toBe(true);
+    expect(v.guidance).toContain('active standing coord:inbox-wake await present');
   });
 });
 
