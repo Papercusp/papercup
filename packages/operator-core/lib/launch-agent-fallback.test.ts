@@ -34,15 +34,32 @@ function res(opts: { ok?: boolean; status?: number; body: unknown }): Response {
 let fetchMock: ReturnType<typeof vi.fn>;
 const originalWindow = (globalThis as { window?: unknown }).window;
 
+/**
+ * Both operator-selection env vars are cleared per test. Without this the
+ * ORDER assertions below silently depend on the runner's environment — and a
+ * vitest launched from inside an operator really does carry
+ * `PAPERCUSP_HONO_PORT`, which is the whole point of the fallback under test.
+ */
+const ENV_KEYS = ['PAPERCUSP_OPERATOR_BASE', 'PAPERCUSP_HONO_PORT'] as const;
+const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
+  for (const k of ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
   else (globalThis as { window?: unknown }).window = originalWindow;
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   vi.clearAllMocks();
 });
 
@@ -179,5 +196,105 @@ describe('launchAgent — psu_not_installed short-circuits the remaining endpoin
     expect(r.code).toBe('omp_not_installed');
     expect(r.installCmd).toBe('bash apps/operator/scripts/install-standalone-mcp.sh');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+const ep = (port: number) => `http://localhost:${port}/api/adv/sessions/launch-su`;
+
+describe('launchAgent — a Node caller inside an operator targets THAT operator', () => {
+  it('probes its own PAPERCUSP_HONO_PORT host BEFORE the bare :3070 release fallback', async () => {
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    fetchMock
+      .mockRejectedValueOnce(new Error(':3170 down'))
+      .mockRejectedValueOnce(new Error(':3070 down'))
+      .mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(r.ok).toBe(true);
+    expect(urlsCalled()).toEqual([ep(3170), EP_3070, EP_3055]);
+  });
+
+  it('stops at its own operator on success — never reaching the release checkout', async () => {
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    fetchMock.mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'omp', slug: 'papercup' });
+
+    expect(urlsCalled()).toEqual([ep(3170)]);
+  });
+
+  it('CALIBRATION: with neither env var set the order is unchanged (:3070 → :3055)', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(urlsCalled()).toEqual([EP_3070, EP_3055]);
+  });
+
+  it('skips PAPERCUSP_HONO_PORT=0 — "bind any free port" is not a dialable address', async () => {
+    process.env.PAPERCUSP_HONO_PORT = '0';
+    fetchMock
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(urlsCalled()).toEqual([EP_3070, EP_3055]);
+  });
+
+  it('skips a non-numeric PAPERCUSP_HONO_PORT rather than building an unusable URL', async () => {
+    process.env.PAPERCUSP_HONO_PORT = 'not-a-port';
+    fetchMock
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(urlsCalled()).toEqual([EP_3070, EP_3055]);
+  });
+
+  it('does not probe :3070 twice when PAPERCUSP_HONO_PORT IS 3070', async () => {
+    process.env.PAPERCUSP_HONO_PORT = '3070';
+    fetchMock
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(urlsCalled()).toEqual([EP_3070, EP_3055]);
+  });
+
+  it('keeps the EXPLICIT pin ahead of the host port it is overriding', async () => {
+    process.env.PAPERCUSP_OPERATOR_BASE = 'http://127.0.0.1:3271/';
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    fetchMock
+      .mockRejectedValueOnce(new Error('pin down'))
+      .mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    // Trailing slash stripped; pin first, own-operator second.
+    expect(urlsCalled()).toEqual(['http://127.0.0.1:3271/api/adv/sessions/launch-su', ep(3170)]);
+  });
+
+  it('stays SILENT on the bare release fallback — no console output from the library', async () => {
+    // `vitest-fail-on-console` is repo policy: a library-level warn here would
+    // red-light every unpinned-launch test in the tree, including files this
+    // change never touched. Asserted rather than assumed, so a future attempt
+    // to add loudness fails HERE instead of in someone else's suite.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(res({ body: { status: 'ok' } }));
+
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(urlsCalled()).toEqual([EP_3070]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    warn.mockRestore();
+    error.mockRestore();
   });
 });

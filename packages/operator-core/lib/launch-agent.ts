@@ -243,16 +243,42 @@ function launchSuEndpoints(): string[] {
   // uses (see agents-list.ts `operatorBase()`), and no running operator sets it,
   // so honouring it here changes nothing until a caller deliberately opts in.
   // This file is isomorphic, hence the guarded `process` access for the webview.
-  const pinned =
-    typeof process !== 'undefined' ? process.env?.PAPERCUSP_OPERATOR_BASE?.trim() : undefined;
+  const env = typeof process !== 'undefined' ? process.env : undefined;
+  const pinned = env?.PAPERCUSP_OPERATOR_BASE?.trim();
   if (pinned) out.push(`${pinned.replace(/\/+$/, '')}/api/adv/sessions/launch-su`);
   if (typeof window !== 'undefined') {
     const p = window.location.protocol;
     if (p === 'http:' || p === 'https:') out.push('/api/adv/sessions/launch-su');
   }
+  // A Node caller running INSIDE an operator already knows which operator it is:
+  // the Hono host stamps `PAPERCUSP_HONO_PORT` on its own process, which is the
+  // same signal `operator-api-base.ts operatorApiBase()` derives from. Without
+  // this, such a caller falls through to the bare :3070 below and launches on a
+  // DIFFERENT operator than the one it is running in — the release checkout,
+  // serving green `main`. That is not hypothetical: measured 2026-08-31, the
+  // live host owning :3170 carries PAPERCUSP_HONO_PORT=3170 (others 3270/3271),
+  // so the goal-holder-launch routine and the three su-session adapters were all
+  // reaching the wrong operator in practice.
+  //
+  // Port 0 means "bind any free port" and cannot be dialled, so it is skipped.
+  // With nothing set this resolves to :3070 — byte-identical to the old order.
+  const honoPort = Number(env?.PAPERCUSP_HONO_PORT?.trim());
+  if (Number.isInteger(honoPort) && honoPort > 0) {
+    out.push(`http://localhost:${honoPort}/api/adv/sessions/launch-su`);
+  }
+  // A non-browser caller with NEITHER a pin NOR a host port still lands here,
+  // on the release operator. No warning is emitted for it: `vitest-fail-on-console`
+  // makes a library-level console.warn fail every test that launches unpinned
+  // (measured — it red-lit launch-agent.test.ts, a file this change never
+  // touched), and after the host-port branch above that residual population is
+  // just "a Node process outside any operator", for which :3070 is the only
+  // sensible guess. Loudness for those callers belongs at the CALL SITE — the
+  // blob-containment refusal in su-session-real-backend-matrix is the pattern.
   out.push('http://localhost:3070/api/adv/sessions/launch-su');
   out.push('http://localhost:3055/api/adv/sessions/launch-su');
-  return out;
+  // Dedupe: PAPERCUSP_HONO_PORT=3070 (or a pin naming a fallback) would
+  // otherwise probe the same endpoint twice on the failure path.
+  return [...new Set(out)];
 }
 
 /**
