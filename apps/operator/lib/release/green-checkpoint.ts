@@ -10085,6 +10085,49 @@ async function runGreenCheckpointInner(
     // git error here just skips the note, never blocks the red path.
     let alreadyFixedNote = "";
     let lineageNote = "";
+    let residueNote = "";
+    // EI-19381970048172232 fix #1: enumerate the FAILING SET itself. Before this the tail
+    // stated the outcome and then printed two "modified since candidate" lists, and NEITHER
+    // was the failing set — both are filtered by commit recency, which on this tree biases
+    // them toward the already-fixed portion, so the genuinely-broken files were the ones NOT
+    // listed. Failures were otherwise reported only at TASK granularity
+    // (`@papercusp/operator-core :: test`), recoverable only by grepping the run log.
+    //
+    // Granularity and completeness are STATED, never assumed. `failingFiles` is
+    // workspace-mapped and file-granular but OPTIONAL (absent ⇒ no re-triage, e.g. a
+    // gate-only red). `failingTests` is the fallback and its own contract calls it a
+    // heterogeneous FLOOR — "test files / workspaces", sometimes entirely gate ids, with
+    // post-suite legs deferred on a red — so it is rendered as a "≥" SIGNATURE, never as a
+    // file census. Labelling it "FAILING FILES (N)" would add a third precisely-worded list
+    // answering a different question, which is the exact defect this fixes.
+    const failingSetNote = ((): string => {
+      try {
+        if (failingFiles?.length) {
+          const rendered = failingFiles
+            .map((f) => {
+              const cases = failingCasesByFile?.get(f.file);
+              const count = cases?.length
+                ? ` (${cases.length} failing case${cases.length === 1 ? "" : "s"})`
+                : "";
+              return `${f.workspace} :: ${f.file}${count}`;
+            })
+            .join("\n  - ");
+          return `\n\nFAILING FILES (${failingFiles.length}):\n  - ${rendered}`;
+        }
+        const signature = failingTests ?? [];
+        if (signature.length) {
+          return (
+            `\n\nFAILING SIGNATURE (≥${signature.length}) — test files / workspaces, a FLOOR and NOT a file census ` +
+            `(post-suite legs are deferred on a red): ${signature.join(", ")}`
+          );
+        }
+        return "";
+      } catch {
+        // Fail-soft, exactly like the lineage note above: a formatting fault must never
+        // block the red path or swallow the verdict it is annotating.
+        return "";
+      }
+    })();
     const lineage = await computeGateLineage(
       cfg.integrationRoot,
       cfg.integrationBranch,
@@ -10103,7 +10146,27 @@ async function runGreenCheckpointInner(
             : ""),
       );
       if (lineage.failingFilesChangedInRange.length) {
-        alreadyFixedNote = `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(", ")}`;
+        // EI-19381970048172232 fix #2: name this list by the QUESTION IT ANSWERS. It is a
+        // SUBSET of the failing set printed above, filtered by commit recency — not the
+        // failing set itself. Read as the population it produced the confident, wrong
+        // conclusion "these all pass now, nobody needs to act", because on this tree the
+        // modified-since subset is systematically the ALREADY-FIXED portion.
+        alreadyFixedNote = `\n\n⚠ OF THE FAILING SET ABOVE, these were MODIFIED SINCE candidate ${candidate.slice(0, 8)} — a SUBSET, filtered by commit recency, NOT the failing set (presumptively stale / fixed-since downstream; verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(", ")}`;
+      }
+      // EI-19381970048172232 fix #3: state the residue directly — the number a reader
+      // actually wants, which no line supplied. UNIVERSE DISCIPLINE: computeGateLineage is
+      // called with `failingTests` above, so `failingFilesChangedInRange` is a subset of
+      // THAT list. Subtracting it from `failingFiles.length` would mix two populations and
+      // yield a confidently wrong residue, so both terms below come from `failingTests`.
+      const signatureCount = (failingTests ?? []).length;
+      const staleCount = lineage.failingFilesChangedInRange.length;
+      if (signatureCount && staleCount) {
+        const notStale = Math.max(signatureCount - staleCount, 0);
+        residueNote =
+          `\n\n${signatureCount} failing, ${staleCount} modified-since (presumptively stale), ` +
+          (notStale > 0
+            ? `${notStale} NOT modified since — investigate those ${notStale === 1 ? "first" : "first"}.`
+            : `0 NOT modified since — every failing entry was touched after the candidate, so the whole red may be stale.`);
       }
     }
     // WI-37490: build THIS pass's own not-green CheckpointResult — shared by (a) the
@@ -10242,7 +10305,9 @@ async function runGreenCheckpointInner(
               heldByNoteForLog +
               splitPairNote +
               lineageNote +
+              failingSetNote +
               alreadyFixedNote +
+              residueNote +
               historicalFlakeNote +
               "\n",
           ),
@@ -10260,7 +10325,9 @@ async function runGreenCheckpointInner(
         verdictSummary +
           heldByNote +
           lineageNote +
+          failingSetNote +
           alreadyFixedNote +
+          residueNote +
           historicalFlakeNote,
       )
       .catch(() => {});
@@ -10291,7 +10358,12 @@ async function runGreenCheckpointInner(
         pipeline,
         candidateSource,
         summary:
-          verdictSummary + lineageNote + alreadyFixedNote + historicalFlakeNote,
+          verdictSummary +
+            lineageNote +
+            failingSetNote +
+            alreadyFixedNote +
+            residueNote +
+            historicalFlakeNote,
         failingTests: failingTests ?? [],
         splitSourceTestPairs,
         logPath: logPath ?? null,
@@ -10333,7 +10405,7 @@ async function runGreenCheckpointInner(
     await deps
       .escalate?.(
         `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
-        `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${verdictSummary}${lineageNote}${alreadyFixedNote}${historicalFlakeNote}`,
+        `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${verdictSummary}${lineageNote}${failingSetNote}${alreadyFixedNote}${residueNote}${historicalFlakeNote}`,
       )
       .catch(() => {});
     // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
