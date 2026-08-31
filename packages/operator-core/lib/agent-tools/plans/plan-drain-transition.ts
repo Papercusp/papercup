@@ -31,6 +31,19 @@
  * serialises same-plan writers, so doing the read, the derivation and the flip
  * inside its mutator makes the transition atomic for free.
  *
+ * # Why it flips the frontmatter directly instead of calling plans:set-plan-status
+ *
+ * Two reasons, both deliberate. (1) That tool runs the conversation-activation
+ * gate on a plan ENTERING `ready` (`entersActivationPlanStatus`), which would
+ * demand a fresh `plans:audit` every time an item reopened — but the reverse
+ * transition RESTORES a plan that was already activated; it is not a new
+ * activation, and forcing an audit there would make reopening an item
+ * arbitrarily expensive. (2) `applyPlanStatusBody` additionally stamps the
+ * `## Now` block (terminal stamp for shipped/superseded, greenlit stamp for
+ * `ready`), and stamping "greenlit" onto a plan greenlit months ago would write
+ * a false claim into prose that P-002 derives. The plain status-line flip is
+ * exactly the mutation warranted here and nothing more.
+ *
  * # Why no acceptance / freshness lookup
  *
  * `derivePlanStatusTransition` needs one bit — is any item non-terminal — which
