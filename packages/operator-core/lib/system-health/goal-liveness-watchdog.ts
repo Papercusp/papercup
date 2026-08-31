@@ -101,6 +101,7 @@ import {
 } from '../modes/store';
 import { notifyGoalHolderHandoff } from '../goals/holder-handoff';
 import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
+import { appendGoalWriteAudit } from '../goals/write-audit';
 import {
   confirmFlapRestart,
   decideFlapDamping,
@@ -1211,7 +1212,23 @@ export async function reserveGoalHolderRespawnRateSlot(
   `;
   if (!row) return { kind: 'ineligible', attemptsInWindow: 0 };
   const attemptsInWindow = Number(row.attempts_in_window);
-  return row.allowed ? { kind: 'reserved', attemptsInWindow } : { kind: 'capped', attemptsInWindow };
+  const decision: GoalHolderRespawnRateDecision = row.allowed
+    ? { kind: 'reserved', attemptsInWindow }
+    : { kind: 'capped', attemptsInWindow };
+  await appendGoalWriteAudit(sql, {
+    workspaceId: goal.workspaceId,
+    goalId: goal.goalId,
+    author: HOLDER_RESPAWNER_IDENTITY.ownerId,
+    writeKind: 'holder-respawn-reserve',
+    actorClass: 'holder-agent-respawner',
+    detail: `${decision.kind}; attemptsInWindow=${attemptsInWindow}`,
+    atMs: nowMs,
+  }).catch((error) => {
+    console.warn(
+      `[goal-liveness-watchdog] goal:write reserve audit failed for ${goal.goalId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+  return decision;
 }
 
 /**
@@ -1263,6 +1280,20 @@ export async function pauseGoalForHolderRespawnRateCap(
     RETURNING id
   `;
   if (!changed) return;
+
+  await appendGoalWriteAudit(sql, {
+    workspaceId: goal.workspaceId,
+    goalId: goal.goalId,
+    author: HOLDER_RESPAWNER_IDENTITY.ownerId,
+    writeKind: 'holder-respawn-pause',
+    actorClass: 'holder-agent-respawner',
+    detail: `needs-human pause after ${attemptsInWindow} attempts`,
+    atMs: nowMs,
+  }).catch((error) => {
+    console.warn(
+      `[goal-liveness-watchdog] goal:write pause audit failed for ${goal.goalId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 
   const executor = getGoalTransitionExecutor();
   if (!executor) {

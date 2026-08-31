@@ -3,6 +3,7 @@ import type { GoalSqlTag } from './_core';
 import {
   GOAL_AMENDMENT_ACTION,
   GOAL_EVIDENCE_ACTION,
+  GOAL_WRITE_ACTION,
   addGoalFieldChange,
   appendGoalHistory,
   readGoalHistory,
@@ -142,5 +143,34 @@ describe('goal history — append-only audit store', () => {
     expect(calls[0]!.params).toContain('papercusp-workspace');
     expect(calls[0]!.params).toContain('goal-1');
     expect(calls[0]!.params).toContain(3);
+  });
+
+  it('records and projects a system goal:write with actor class', async () => {
+    const entry = await appendGoalHistory(makeSql(), {
+      id: 'goal-write-1',
+      atMs: 1_755_000_000_100,
+      workspaceId: 'papercusp-workspace',
+      goalId: 'goal-1',
+      author: 'goal-holder-respawner',
+      detail: { kind: 'write', writeKind: 'holder-respawn-reserve', actorClass: 'holder-agent-respawner' },
+    });
+    expect(entry).toMatchObject({
+      id: 'goal-write-1',
+      kind: 'write',
+      author: 'goal-holder-respawner',
+      writeKind: 'holder-respawn-reserve',
+      actorClass: 'holder-agent-respawner',
+    });
+    expect(calls[0]!.params[3]).toBe(GOAL_WRITE_ACTION);
+  });
+
+  it('includes goal:write rows in the bounded history read', async () => {
+    selectedRows = [{
+      id: 'w1', ts: 4000, actor: 'goal-holder-respawner', action: GOAL_WRITE_ACTION,
+      details: { kind: 'write', writeKind: 'holder-respawn-pause', actorClass: 'holder-agent-respawner' },
+    }];
+    const history = await readGoalHistory(makeSql(), { workspaceId: 'ws', goalId: 'goal-1' });
+    expect(history.entries[0]).toMatchObject({ kind: 'write', writeKind: 'holder-respawn-pause', actorClass: 'holder-agent-respawner' });
+    expect(calls[0]!.params[2]).toContain(GOAL_WRITE_ACTION);
   });
 });

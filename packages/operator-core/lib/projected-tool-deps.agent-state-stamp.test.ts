@@ -113,6 +113,11 @@ describe('P-009 declaration stamp on tool_invocations', () => {
     expect(insert.sql).toContain('intent_event_id');
     expect(insert.sql).toContain('assumption_set_id');
     expect(insert.sql).toContain('goal_ref');
+    expect(insert.sql).toContain('goal_id');
+    expect(insert.sql).toContain('goal_actor_class');
+    expect(insert.sql).toContain('harness_shared.agent_modes');
+    expect(insert.sql).toContain('harness_shared.session_briefs');
+    expect(insert.sql).toContain('harness_shared.fleet_membership_events');
     // Adding params without adding placeholders (or vice versa) breaks ALL
     // telemetry silently, because the flush swallows the insert error.
     const placeholders = new Set(insert.sql.match(/\$\d+/g)).size;

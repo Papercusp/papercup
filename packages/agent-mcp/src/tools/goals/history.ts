@@ -10,6 +10,8 @@ import type { GoalSqlTag } from './_core';
 
 export const GOAL_EVIDENCE_ACTION = 'goal:evidence';
 export const GOAL_AMENDMENT_ACTION = 'goal:amendment';
+/** Durable provenance for goal mutations performed outside a dispatched goal session. */
+export const GOAL_WRITE_ACTION = 'goal:write';
 export const GOAL_HISTORY_LIMIT = 100;
 
 export interface GoalFieldChange {
@@ -25,13 +27,22 @@ export interface GoalEvidenceDetail {
   refs?: string[];
 }
 
+export interface GoalWriteDetail {
+  kind: 'write';
+  writeKind: string;
+  actorClass: string;
+  detail?: string;
+  refs?: string[];
+}
+
 export type GoalHistoryDetail =
   | { kind: 'amendment'; reason: string; reasonSource: 'caller' | 'generated'; changes: GoalFieldChange[] }
-  | GoalEvidenceDetail;
+  | GoalEvidenceDetail
+  | GoalWriteDetail;
 
 export interface GoalHistoryEntry {
   id: string;
-  kind: 'amendment' | 'evidence' | 'finding';
+  kind: 'amendment' | 'evidence' | 'finding' | 'write';
   author: string;
   at: string;
   reason?: string;
@@ -40,6 +51,8 @@ export interface GoalHistoryEntry {
   summary?: string;
   detail?: string;
   refs?: string[];
+  writeKind?: string;
+  actorClass?: string;
 }
 
 /** Add one field only when its persisted semantic value really moved. */
@@ -69,7 +82,12 @@ export async function appendGoalHistory(
 ): Promise<GoalHistoryEntry> {
   const atMs = input.atMs ?? Date.now();
   const id = input.id ?? `goal-${randomUUID()}`;
-  const action = input.detail.kind === 'amendment' ? GOAL_AMENDMENT_ACTION : GOAL_EVIDENCE_ACTION;
+  const action =
+    input.detail.kind === 'amendment'
+      ? GOAL_AMENDMENT_ACTION
+      : input.detail.kind === 'write'
+        ? GOAL_WRITE_ACTION
+        : GOAL_EVIDENCE_ACTION;
   await sql`
     INSERT INTO harness_shared.audit_log
       (id, ts, actor, action, subject, details, workspace_id)
@@ -117,6 +135,18 @@ function historyEntry(row: GoalHistoryRow): GoalHistoryEntry {
       changes: Array.isArray(d.changes) ? (d.changes as GoalFieldChange[]) : [],
     };
   }
+  if (row.action === GOAL_WRITE_ACTION) {
+    return {
+      id: row.id,
+      kind: 'write',
+      author: row.actor,
+      at,
+      writeKind: typeof d.writeKind === 'string' ? d.writeKind : 'unknown',
+      actorClass: typeof d.actorClass === 'string' ? d.actorClass : 'unknown',
+      ...(typeof d.detail === 'string' ? { detail: d.detail } : {}),
+      ...(Array.isArray(d.refs) ? { refs: d.refs.filter((r): r is string => typeof r === 'string') } : {}),
+    };
+  }
   const kind = d.kind === 'finding' ? 'finding' : 'evidence';
   return {
     id: row.id,
@@ -139,7 +169,7 @@ export async function readGoalHistory(
       FROM harness_shared.audit_log
      WHERE workspace_id = ${input.workspaceId}
        AND subject = ${input.goalId}
-       AND action = ANY(${[GOAL_AMENDMENT_ACTION, GOAL_EVIDENCE_ACTION]}::text[])
+       AND action = ANY(${[GOAL_AMENDMENT_ACTION, GOAL_EVIDENCE_ACTION, GOAL_WRITE_ACTION]}::text[])
      ORDER BY ts DESC, id DESC
      LIMIT ${limit + 1}
   `;

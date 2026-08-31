@@ -282,7 +282,48 @@ export function isUnresolvedTelemetryScopePlaceholder(value: unknown): boolean {
  * made batch-mates look like duplicate inserts (EI-7040's "2 identical rows"
  * were the statusline double-call sharing a flush). $26 carries the real
  * dispatch-settle time captured in buildTelemetryRow. */
-const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
+const TELEMETRY_INSERT_SQL = `WITH caller AS (
+  SELECT $1::text AS workspace_id, $25::text AS coord_owner_id
+), resolved AS (
+  SELECT c.*,
+    (SELECT m.subject
+       FROM harness_shared.agent_modes m
+      WHERE m.workspace_id = c.workspace_id
+        AND m.owner_id = c.coord_owner_id
+        AND m.mode = 'goal' AND m.subject IS NOT NULL
+      ORDER BY m.goal_lease_epoch DESC NULLS LAST, m.set_at DESC, m.owner_id DESC
+      LIMIT 1) AS mode_goal_id,
+    (SELECT b.goal_id
+       FROM harness_shared.session_briefs b
+      WHERE b.workspace_id = c.workspace_id
+        AND b.owner_id = c.coord_owner_id
+        AND b.goal_id IS NOT NULL
+      ORDER BY b.updated_at DESC
+      LIMIT 1) AS inherited_goal_id
+  FROM caller c
+), classified AS (
+  SELECT r.*,
+    COALESCE(r.mode_goal_id, r.inherited_goal_id) AS goal_id,
+    r.coord_owner_id = (
+      SELECT m.owner_id
+        FROM harness_shared.agent_modes m
+       WHERE m.workspace_id = r.workspace_id
+         AND m.mode = 'goal'
+         AND m.subject = r.mode_goal_id
+       ORDER BY m.goal_lease_epoch DESC NULLS LAST, m.set_at DESC, m.owner_id DESC
+       LIMIT 1
+    ) AS is_sovereign_holder,
+    COALESCE((
+      SELECT e.fleet_slug IS NOT NULL
+        FROM harness_shared.fleet_membership_events e
+       WHERE e.workspace_id = r.workspace_id
+         AND e.owner_id = r.coord_owner_id
+       ORDER BY e.id DESC
+       LIMIT 1
+    ), false) AS in_drain_fleet
+  FROM resolved r
+)
+INSERT INTO harness_shared.tool_invocations
    (workspace_id, harness_slug, plugin_name, tool_name, role,
     feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
     window_key, duration_ms, status, output_ref, output_size,
@@ -291,10 +332,19 @@ const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
     coord_owner_id, invoked_at,
     intent_event_id, assumption_set_id, goal_ref,
     call_origin, call_origin_source,
-    serving_host, serving_process_id, serving_build_sha)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz,
-         $27,$28,$29,$30,$31,$32,$33,$34)`;
+    serving_host, serving_process_id, serving_build_sha,
+    goal_id, goal_actor_class)
+ SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+        $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz,
+        $27,$28,$29,$30,$31,$32,$33,$34,
+        c.goal_id,
+        CASE
+          WHEN c.goal_id IS NULL THEN NULL
+          WHEN c.mode_goal_id IS NOT NULL AND c.is_sovereign_holder THEN 'holder-agent'
+          WHEN c.in_drain_fleet THEN 'drain-fleet-member'
+          ELSE 'goal-descendant-agent'
+        END
+   FROM classified c`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
