@@ -35,7 +35,7 @@
  */
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
-import { lstat, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
+import { lstat, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
@@ -2670,10 +2670,25 @@ export async function findOversizedDirtyFiles(
  *
  * So: measure the aggregate HERE, where the response is still cheap and
  * correct — exclude the files from the commit and leave them dirty, exactly as
- * the oversized/content guards already do ("quarantine, don't stall"). Largest
- * -first, because a bulk accident is dominated by a few big artifacts while
- * genuine source edits are small: the offending tree is peeled off and the
- * fleet's real work still commits this tick.
+ * the oversized/content guards already do ("quarantine, don't stall"): the
+ * offending tree is peeled off and the fleet's real work still commits this tick.
+ *
+ * ORDERING (EI-21906459740652039). This used to peel purely largest-first, on the
+ * stated premise that "a bulk accident is dominated by a few big artifacts while
+ * genuine source edits are small". That premise is right about ACCIDENTS and wrong
+ * about this repo: the largest dirty-file class here is not an accident, it is the
+ * legitimate generated docs mirror. Measured 2026-08-30, 81 of 95 dirty files —
+ * and all 20 of the largest — were `apps/operator/public/internal/docs/**`, so
+ * largest-first peeled essentially the whole mirror EVERY time the cap tripped, by
+ * construction. A `npm run docs:rebuild` therefore sat uncommitted for 13h while
+ * git-sync reported success, and the served docs went stale under every agent that
+ * read them.
+ *
+ * The premise is repaired, not abandoned: rank by "is this an UNEXPECTED artifact"
+ * rather than by raw size. Declared regenerable projections are peeled LAST — only
+ * once peeling every unexpected artifact still leaves the set over the cap — so the
+ * guard's real purpose (a stray 90MB blob, a 2,261MB extracted AppImage) is intact
+ * while a declared generated output is never starved by it.
  *
  * Deliberately NOT a hard failure: a legitimately large commit is possible, and
  * refusing to commit at all would just relocate the wedge upstream.
@@ -2699,15 +2714,103 @@ export async function findBulkDirtyExcess(
     }
   }
   if (total <= maxTotalBytes) return [];
-  // Peel the largest until the remainder fits.
+  // Peel the largest until the remainder fits — but a DECLARED regenerable
+  // projection is only eligible once every unexpected artifact has been peeled and
+  // the set is still over the cap (EI-21906459740652039; see the header).
   sized.sort((a, b) => b.sizeBytes - a.sizeBytes);
   const excluded: OversizedFile[] = [];
+  const deferredProjections: OversizedFile[] = [];
+  const probe = { spent: 0 };
   for (const f of sized) {
+    if (total <= maxTotalBytes) break;
+    if (await isRegenerableProjection(repoPath, f.path, probe)) {
+      deferredProjections.push(f);
+      continue;
+    }
+    excluded.push({ ...f, exclusionReason: 'cumulative-limit' });
+    total -= f.sizeBytes;
+  }
+  for (const f of deferredProjections) {
     if (total <= maxTotalBytes) break;
     excluded.push({ ...f, exclusionReason: 'cumulative-limit' });
     total -= f.sizeBytes;
   }
   return excluded;
+}
+
+/**
+ * EI-21906459740652039 — the ONE tracked tree that is a build MIRROR rather than a
+ * source of truth. Its canonical source is `apps/operator-docs/src/content/docs` (or
+ * the docs datastore via `docs:author`), and `npm run docs:rebuild` regenerates it
+ * wholesale. It needs a declared prefix rather than the self-declaring banner below
+ * for exactly the reason the PreToolUse generated-file guard has to special-case the
+ * same tree: most of its artifacts predate the banner convention, and many (pagefind
+ * fragments, images) are binary and can never carry one.
+ */
+const INTERNAL_DOCS_MIRROR_PREFIX = 'apps/operator/public/internal/docs/';
+
+/** Head bytes / lines / line-length of the self-declaring generated-artifact banner —
+ *  the same measured predicate the PreToolUse generated-file guard keys on, so a file
+ *  that opts IN there is automatically protected here too, with no second list to
+ *  maintain. The 300-char line cap is load-bearing: without it a minified `.js.map`
+ *  matches on a banner embedded inside its `sourcesContent` blob. */
+const GENERATED_BANNER_SCAN_BYTES = 4096;
+const GENERATED_BANNER_SCAN_LINES = 10;
+const GENERATED_BANNER_MAX_LINE_CHARS = 300;
+/** Cap on how many files one peel may OPEN to ask the banner question. Beyond it the
+ *  answer degrades to the prefix rules alone (i.e. back to today's largest-first
+ *  behaviour), so a pathological dirty set of hundreds of thousands of small files can
+ *  never turn a size guard into an I/O storm. */
+const GENERATED_BANNER_PROBE_BUDGET = 500;
+
+/** PURE: does this header DECLARE the file a generated artifact? Both tokens must sit
+ *  on ONE line — "do not edit" alone matches prose about something else, "generated"
+ *  alone matches any file that discusses generation. */
+export function declaresGeneratedBanner(head: string): boolean {
+  const lines = head.split('\n', GENERATED_BANNER_SCAN_LINES);
+  for (const raw of lines) {
+    if (raw.length > GENERATED_BANNER_MAX_LINE_CHARS) continue;
+    const l = raw.toLowerCase();
+    if (!l.includes('generated')) continue;
+    if (l.includes('do not edit') || l.includes("don't edit") || l.includes('do-not-edit')) return true;
+  }
+  return false;
+}
+
+/**
+ * Is this dirty path a DECLARED, regenerable projection — something whose absence from
+ * a commit costs a `npm run <generator>` rather than lost work? Used only to ORDER the
+ * cumulative peel (above); it never excludes anything by itself, so a false positive
+ * costs at most that one file being peeled later than a stray artifact would be.
+ *
+ * Every arm is a truth this module ALREADY declares, not a new hand-maintained list:
+ * the tool-catalog artifact git-sync regenerates itself before each commit, the
+ * `.d.mts` half of a generated declaration pair, the internal-docs build mirror, and —
+ * self-arming, so a NEW generated artifact is covered for free — a file whose own
+ * header says it is generated.
+ */
+export async function isRegenerableProjection(
+  repoPath: string,
+  path: string,
+  probe: { spent: number } = { spent: 0 },
+): Promise<boolean> {
+  if (path === TOOL_CATALOG_ARTIFACT_PATH) return true;
+  if (path.startsWith(INTERNAL_DOCS_MIRROR_PREFIX)) return true;
+  if (path.endsWith('.d.mts') && generatedDeclarationPair(path) !== null) return true;
+  if (probe.spent >= GENERATED_BANNER_PROBE_BUDGET) return false;
+  probe.spent += 1;
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    fh = await open(join(repoPath, path), 'r');
+    const buf = Buffer.alloc(GENERATED_BANNER_SCAN_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, GENERATED_BANNER_SCAN_BYTES, 0);
+    return declaresGeneratedBanner(buf.subarray(0, bytesRead).toString('utf8'));
+  } catch {
+    /* vanished mid-pass / unreadable — treat as an ordinary artifact */
+    return false;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
 }
 
 /** Enumerate every dirty path (modified/added/deleted/untracked), repo-relative, in the
