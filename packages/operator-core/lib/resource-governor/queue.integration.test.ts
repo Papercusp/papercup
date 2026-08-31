@@ -282,12 +282,123 @@ describe('PgWorkItemAdmissionQueueStore', () => {
     await expect(first.store.reconcileExpiredAll(clock.now)).resolves.toEqual({
       requeued: 1,
       expired: 0,
+      abandoned: 0,
       total: 1,
     });
     await expect(first.governor.status('idle-expired-running')).resolves.toMatchObject({ state: 'queued' });
     const rows = await db.sql<Array<{ taken_by: string | null }>>`
       SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${admitted.receipt.receiptId}`;
     expect(rows[0]).toEqual({ taken_by: null });
+  });
+
+  it('drives an orphaned deadline-less receipt terminal once the dwell passes (WI-1741497)', async () => {
+    // Against real Postgres, because the abandonment predicate IS SQL: the jsonb_typeof
+    // COALESCE guard and the `updatedAtMs` dwell cannot be proven by a TypeScript mirror.
+    const clock = { now: 40_000 };
+    const dwellMs = 60_000;
+    const store = new PgWorkItemAdmissionQueueStore({
+      sql: db.sql,
+      workspaceId: 'ws-governor',
+      abandonAfterMs: dwellMs,
+    });
+    const first = instance('abandon', () => clock.now);
+
+    // An `agent` admission — a class that never sets deadlineAtMs, so the payload key
+    // is written as JSON null. This is the shape of the 1,509 immortal live rows.
+    const admitted = await first.governor.admit({
+      idempotencyKey: 'orphaned-agent-spawn',
+      admissionClass: 'agent',
+    });
+    if (admitted.kind !== 'queued') throw new Error('expected queued receipt');
+    const claim = await first.driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'spawner-that-dies',
+      ttlMs: 100,
+    });
+    if (!claim) throw new Error('expected targeted lease');
+    await first.driver.markRunning(claim.receiptId, claim.lease.leaseId);
+
+    // The spawning process dies: nothing ever calls release(). The lease lapses and
+    // reconciliation requeues it — correctly, and into the state that used to be a dead end.
+    clock.now += 101;
+    await expect(store.reconcileExpiredAll(clock.now)).resolves.toEqual({
+      requeued: 1,
+      expired: 0,
+      abandoned: 0,
+      total: 1,
+    });
+    const requeued = await db.sql<Array<{ state: string; status: string; reason: string; hold: string | null }>>`
+      SELECT payload->'resource_governor'->>'state' AS state,
+             status,
+             payload->'resource_governor'->'decision'->>'reason' AS reason,
+             payload->>'_claimHold' AS hold
+        FROM harness_shared.work_items WHERE feature_id = ${admitted.receipt.receiptId}`;
+    expect(requeued[0]).toEqual({ state: 'queued', status: 'open', reason: 'lease-expired', hold: 'true' });
+
+    // Inside the dwell, nothing happens — the requeue reset the clock.
+    clock.now += dwellMs - 1;
+    await expect(store.reconcileExpiredAll(clock.now)).resolves.toMatchObject({ abandoned: 0 });
+
+    // Past it, the floor fires: terminal state, terminal status, and the claim-hold keys
+    // stripped so the row stops being parked. Only now is it eligible for receipt-gc,
+    // whose "an ACTIVE receipt is never aged out" control stays true throughout.
+    clock.now += 2;
+    await expect(store.reconcileExpiredAll(clock.now)).resolves.toEqual({
+      requeued: 0,
+      expired: 0,
+      abandoned: 1,
+      total: 1,
+    });
+    const swept = await db.sql<Array<{ state: string; status: string; reason: string; hold: string | null }>>`
+      SELECT payload->'resource_governor'->>'state' AS state,
+             status,
+             payload->'resource_governor'->'decision'->>'reason' AS reason,
+             payload->>'_claimHold' AS hold
+        FROM harness_shared.work_items WHERE feature_id = ${admitted.receipt.receiptId}`;
+    expect(swept[0]).toEqual({
+      state: 'expired',
+      status: 'dropped',
+      reason: 'abandoned-without-deadline',
+      hold: null,
+    });
+  });
+
+  it('CONTROL: a deadline-bearing receipt is never touched by the abandonment floor (WI-1741497)', async () => {
+    // The live `inference` class, which DOES set deadlineAtMs — the healthy control that
+    // appeared inside the measured population. Its terminal exit is the deadline branch,
+    // and the abandonment floor must leave it alone until that deadline actually passes.
+    const clock = { now: 40_000 };
+    const dwellMs = 60_000;
+    const store = new PgWorkItemAdmissionQueueStore({
+      sql: db.sql,
+      workspaceId: 'ws-governor',
+      abandonAfterMs: dwellMs,
+    });
+    const first = instance('deadline-control', () => clock.now);
+    const admitted = await first.governor.admit({
+      idempotencyKey: 'inference-with-deadline',
+      admissionClass: 'inference',
+      deadlineAtMs: clock.now + dwellMs * 10,
+    });
+    if (admitted.kind !== 'queued') throw new Error('expected queued receipt');
+
+    clock.now += dwellMs * 2;
+    await expect(store.reconcileExpiredAll(clock.now)).resolves.toEqual({
+      requeued: 0,
+      expired: 0,
+      abandoned: 0,
+      total: 0,
+    });
+    await expect(first.governor.status('inference-with-deadline')).resolves.toMatchObject({ state: 'queued' });
+
+    // Once its own deadline passes it terminates through the DEADLINE branch, not this one.
+    clock.now += dwellMs * 10;
+    await expect(store.reconcileExpiredAll(clock.now)).resolves.toEqual({
+      requeued: 0,
+      expired: 1,
+      abandoned: 0,
+      total: 1,
+    });
   });
 
   it('persists nested receipt lineage and exact actual-cost release across restart', async () => {

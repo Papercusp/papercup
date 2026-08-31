@@ -14,6 +14,7 @@ import {
   type QueueReconciliationResult,
   type StoredAdmissionRecord,
 } from './queue';
+import { MemoryAdmissionQueueStore } from './memory-admission-queue-store';
 
 class MemoryQueueStore implements DurableAdmissionQueueStore {
   private seq = 0;
@@ -293,6 +294,7 @@ describe('WorkItemAdmissionQueueDriver', () => {
     await expect(store.reconcileExpired('test', 1_000)).resolves.toEqual({
       requeued: 0,
       expired: 0,
+      abandoned: 0,
       total: 0,
     });
 
@@ -589,22 +591,22 @@ describe('WorkItemAdmissionQueueDriver', () => {
       const second = driver.reconcileExpired();
       expect(store.calls).toBe(1);
 
-      store.settleNext({ requeued: 1, expired: 2, total: 3 });
-      await expect(first).resolves.toEqual({ requeued: 1, expired: 2, total: 3 });
-      await expect(second).resolves.toEqual({ requeued: 1, expired: 2, total: 3 });
+      store.settleNext({ requeued: 1, expired: 2, abandoned: 0, total: 3 });
+      await expect(first).resolves.toEqual({ requeued: 1, expired: 2, abandoned: 0, total: 3 });
+      await expect(second).resolves.toEqual({ requeued: 1, expired: 2, abandoned: 0, total: 3 });
 
       // Still inside the coalesce window after settlement: a later caller reuses the same
       // settled result rather than issuing a fresh round-trip.
       clock.now += 500;
-      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 1, expired: 2, total: 3 });
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 1, expired: 2, abandoned: 0, total: 3 });
       expect(store.calls).toBe(1);
 
       // Outside the window: the next call issues a genuinely fresh store round-trip.
       clock.now += 10_000;
       const fresh = driver.reconcileExpired();
       expect(store.calls).toBe(2);
-      store.settleNext({ requeued: 0, expired: 0, total: 0 });
-      await expect(fresh).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
+      store.settleNext({ requeued: 0, expired: 0, abandoned: 0, total: 0 });
+      await expect(fresh).resolves.toEqual({ requeued: 0, expired: 0, abandoned: 0, total: 0 });
     });
 
     it('never caches a rejection — the very next call retries against the store fresh', async () => {
@@ -614,7 +616,7 @@ describe('WorkItemAdmissionQueueDriver', () => {
         async reconcileExpired(): Promise<QueueReconciliationResult> {
           calls += 1;
           if (calls === 1) throw new Error('transient contention');
-          return { requeued: 0, expired: 0, total: 0 };
+          return { requeued: 0, expired: 0, abandoned: 0, total: 0 };
         }
       }
       const driver = new WorkItemAdmissionQueueDriver(new FailOnceStore(), {
@@ -625,15 +627,182 @@ describe('WorkItemAdmissionQueueDriver', () => {
       await expect(driver.reconcileExpired()).rejects.toThrow('transient contention');
       // Immediately after, still well inside what would be the coalesce window — the failed
       // attempt must not be cached against later callers.
-      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, abandoned: 0, total: 0 });
       expect(calls).toBe(2);
     });
 
     it('a store with no reconcileExpired() keeps returning the zero result with no coalescing state', async () => {
       const store = new MemoryQueueStore();
       const driver = new WorkItemAdmissionQueueDriver(store, { namespace: 'test', now: () => 1_000 });
-      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
-      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, total: 0 });
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, abandoned: 0, total: 0 });
+      await expect(driver.reconcileExpired()).resolves.toEqual({ requeued: 0, expired: 0, abandoned: 0, total: 0 });
     });
+  });
+});
+
+/**
+ * WI-1741497 — the no-deadline abandonment floor.
+ *
+ * THE DEFECT THIS CLOSES. Two individually-correct mechanisms composed into a leak.
+ * Reconciliation requeues a receipt whose LEASE died (`leased`/`running` -> `queued`),
+ * and receipt-gc deletes only TERMINAL receipts, deliberately never an active one. The
+ * single exit from `queued` to terminal was the deadline branch, gated on a NUMERIC
+ * `deadlineAtMs` — which only the inference gateway ever sets. So an `agent`/`process`/
+ * `embedding`/`transfer` receipt whose owner died was requeued into `queued` and became
+ * immortal: exempt from GC by design, exempt from expiry by predicate.
+ *
+ * MEASURED 2026-08-31 against live PG: 1,509 such rows, 1,271 stamped
+ * `reason: 'lease-expired'` (proof the reconciler had run and requeued them correctly),
+ * oldest 91.8h, accumulating ~14/hour and never draining. The four `inference` rows —
+ * the one class that sets a deadline — were the healthy control in the same population.
+ */
+describe('no-deadline abandonment floor (WI-1741497)', () => {
+  const DWELL_MS = 60_000;
+  const LEASE_TTL_MS = 100;
+
+  /** Drive a receipt to `queued`-with-no-lease the way production does: lease it, run it, let the lease die. */
+  async function orphanedReceipt(clock: { now: number }, store: MemoryAdmissionQueueStore, klass: string) {
+    const { driver, governor: gov } = governor(store, () => clock.now);
+    const admitted = await gov.admit({ idempotencyKey: `orphan-${klass}`, admissionClass: klass });
+    if (admitted.kind !== 'queued') throw new Error('expected a queued receipt');
+    const claim = await driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'worker-that-dies',
+      ttlMs: LEASE_TTL_MS,
+    });
+    if (!claim) throw new Error('expected a targeted lease');
+    await driver.markRunning(claim.receiptId, claim.lease.leaseId);
+    // The owning process dies here — nothing ever calls release()/complete().
+    clock.now += LEASE_TTL_MS + 1;
+    await expect(store.reconcileExpired('test', clock.now)).resolves.toMatchObject({ requeued: 1, abandoned: 0 });
+    return admitted.receipt.receiptId;
+  }
+
+  it('CALIBRATION: an orphaned deadline-less receipt reaches a terminal state once the dwell passes', async () => {
+    const clock = { now: 1_000 };
+    const store = new MemoryAdmissionQueueStore().withAbandonAfterMs(DWELL_MS);
+    await orphanedReceipt(clock, store, 'agent');
+
+    // Requeued but still inside the dwell: untouched, because the dwell clock restarts
+    // on every write (including the requeue itself).
+    clock.now += DWELL_MS - 1;
+    await expect(store.reconcileExpired('test', clock.now)).resolves.toMatchObject({ abandoned: 0 });
+    await expect(store.find('test', 'orphan-agent')).resolves.toMatchObject({ record: { state: 'queued' } });
+
+    // Past the dwell: terminal, with its own reason so a future reader can tell WHICH
+    // branch acted — the same legibility that let `lease-expired` prove the requeue ran.
+    clock.now += 2;
+    await expect(store.reconcileExpired('test', clock.now)).resolves.toMatchObject({ abandoned: 1 });
+    await expect(store.find('test', 'orphan-agent')).resolves.toMatchObject({
+      record: { state: 'expired', decision: { reason: 'abandoned-without-deadline' } },
+    });
+  });
+
+  it('REGRESSION WITNESS: with the floor disabled the receipt is immortal — the exact pre-fix behaviour', async () => {
+    // Falsifiability without mutating the shared tree (the repo's mutation-probe rule).
+    // Same store, same clock, same orphaning sequence as the CALIBRATION case above —
+    // the ONLY difference is a dwell no elapsed time can reach, which disables the floor.
+    // The receipt then survives forever in `queued`, reproducing the measured live defect.
+    // If this test ever starts abandoning the row, the calibration above has stopped
+    // depending on the floor and is passing for some other reason.
+    const clock = { now: 1_000 };
+    const store = new MemoryAdmissionQueueStore().withAbandonAfterMs(Number.MAX_SAFE_INTEGER);
+    await orphanedReceipt(clock, store, 'agent');
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      clock.now += DWELL_MS * 1_000;
+      await expect(store.reconcileExpired('test', clock.now)).resolves.toMatchObject({ abandoned: 0 });
+    }
+    // Still active, still holding its receipt — and receipt-gc never sweeps an active state,
+    // which is precisely how 1,509 of these accumulated in production.
+    await expect(store.find('test', 'orphan-agent')).resolves.toMatchObject({
+      record: { state: 'queued', decision: { reason: 'lease-expired' } },
+    });
+  });
+
+  it('CONTROL: a receipt WITH a numeric deadline is never abandoned — the deadline branch owns it', async () => {
+    const clock = { now: 1_000 };
+    const store = new MemoryAdmissionQueueStore().withAbandonAfterMs(DWELL_MS);
+    const { governor: gov } = governor(store, () => clock.now);
+    // The live `inference` shape: the one admission class that sets a deadline.
+    const admitted = await gov.admit({
+      idempotencyKey: 'has-deadline',
+      admissionClass: 'inference',
+      deadlineAtMs: clock.now + 10 * DWELL_MS,
+    });
+    if (admitted.kind !== 'queued') throw new Error('expected a queued receipt');
+
+    clock.now += DWELL_MS * 2;
+    await expect(store.reconcileExpired('test', clock.now)).resolves.toMatchObject({ abandoned: 0 });
+    await expect(store.find('test', 'has-deadline')).resolves.toMatchObject({ record: { state: 'queued' } });
+  });
+
+  it('CONTROL: a live leased/running receipt is never abandoned, however long it runs', async () => {
+    const clock = { now: 1_000 };
+    const store = new MemoryAdmissionQueueStore().withAbandonAfterMs(DWELL_MS);
+    const { driver, governor: gov } = governor(store, () => clock.now);
+    const admitted = await gov.admit({ idempotencyKey: 'long-runner', admissionClass: 'agent' });
+    if (admitted.kind !== 'queued') throw new Error('expected a queued receipt');
+    const claim = await driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'worker',
+      ttlMs: 100 * DWELL_MS,
+    });
+    if (!claim) throw new Error('expected a targeted lease');
+    await driver.markRunning(claim.receiptId, claim.lease.leaseId);
+
+    clock.now += DWELL_MS * 10;
+    await expect(store.reconcileExpired('test', clock.now)).resolves.toMatchObject({ requeued: 0, abandoned: 0 });
+    await expect(store.find('test', 'long-runner')).resolves.toMatchObject({ record: { state: 'running' } });
+  });
+
+  /**
+   * FALSIFIABILITY CONTROLS — permanently-wrong predicates kept in the test file, per the
+   * repo's mutation-probe discipline (never mutate the shared tree to prove a guard works).
+   *
+   * The three cases above are the instrument. These two deliberately-wrong abandonment
+   * predicates prove the instrument has POWER: each disagrees with the real store's
+   * observed behaviour on at least one case. If a future refactor made both agree, the
+   * cases would have stopped discriminating and this test says so.
+   */
+  it('CONTROLS: two wrong abandonment predicates each disagree with observed behaviour', () => {
+    type Case = { readonly hasLease: boolean; readonly deadlineAtMs: number | null; readonly dwellMs: number };
+    // Exactly the three situations exercised above, with their OBSERVED outcomes.
+    const observed: ReadonlyArray<readonly [Case, boolean]> = [
+      [{ hasLease: false, deadlineAtMs: null, dwellMs: DWELL_MS + 1 }, true], // orphaned, past dwell
+      [{ hasLease: false, deadlineAtMs: null, dwellMs: DWELL_MS - 1 }, false], // orphaned, inside dwell
+      [{ hasLease: false, deadlineAtMs: 999_999, dwellMs: DWELL_MS * 2 }, false], // has a deadline
+      [{ hasLease: true, deadlineAtMs: null, dwellMs: DWELL_MS * 10 }, false], // still leased
+    ];
+
+    const wrongIgnoresDeadline = (c: Case) => !c.hasLease && c.dwellMs > DWELL_MS;
+    const wrongIgnoresDwell = (c: Case) => !c.hasLease && c.deadlineAtMs === null;
+
+    const disagreements = (predicate: (c: Case) => boolean) =>
+      observed.filter(([c, expected]) => predicate(c) !== expected).length;
+
+    // Dropping the deadline guard resurrects the bug in the other direction: it would
+    // reap the `inference` receipts that the deadline branch legitimately owns.
+    expect(disagreements(wrongIgnoresDeadline)).toBeGreaterThan(0);
+    // Dropping the dwell guard would reap a receipt the instant it is requeued.
+    expect(disagreements(wrongIgnoresDwell)).toBeGreaterThan(0);
+  });
+
+  it('the PG predicate COALESCEs jsonb_typeof, so an ABSENT deadline key still matches', async () => {
+    const { client, queries } = recordingSqlClient();
+    const store = new PgWorkItemAdmissionQueueStore({ sql: client, workspaceId: 'workspace-test' });
+    await store.reconcileExpired('test', 5_000);
+
+    const abandon = queries.find((q) => q.text.includes('abandoned-without-deadline'));
+    expect(abandon, 'reconciliation must emit the abandonment branch').toBeDefined();
+
+    // THE POINT OF THIS ASSERTION. jsonb_typeof returns SQL NULL when the KEY IS ABSENT
+    // (vs the string 'null' when present holding JSON null), and `NULL <> 'number'` is
+    // NULL — not true. A bare `<> 'number'` therefore silently matches NOTHING for
+    // exactly the rows whose deadline was never written, while still reporting a clean
+    // zero. That is the same failure shape this whole work-item is about, so the guard
+    // is pinned here rather than left to review.
+    expect(abandon?.text).toContain("COALESCE(jsonb_typeof(payload->'resource_governor'->'deadlineAtMs'), 'null')");
+    expect(abandon?.text).toMatch(/state'\s*IN\s*\('queued',\s*'eligible'\)/);
   });
 });
