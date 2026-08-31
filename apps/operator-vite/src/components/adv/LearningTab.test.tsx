@@ -1817,7 +1817,13 @@ describe("LearningTab — Gym view", () => {
     expect(screen.getByText("No gym activity for alpha-hive yet")).toBeTruthy();
     // P-009 teaching empty: body copy + the arming action ride the same state.
     expect(screen.getByText(/A\/B-refine their blueprints/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Arm the Gym" })).toBeTruthy();
+    // P-009: was "Arm the Gym". The action opens the pot SCOPE picker, which is
+    // a GATE and cannot arm the gym lane (D-007), so the label names where it
+    // actually goes rather than promising an action its destination cannot do.
+    expect(
+      screen.getByRole("button", { name: "Check learning scope" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Arm the Gym" })).toBeNull();
   });
 
   // WI-5809 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK. This used to
@@ -2795,12 +2801,15 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // The banner renders its own "Open Arming" — scope to the empty state, or
     // this asserts the wrong button (they share a hook, not a call site).
     fireEvent.click(within(empty).getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
-    expect(nuqsState.tab).toBe("workflows");
-    // The Workflows tab reads wfKind now; the retired wfView/wfFilter would land this link
-    // on a default tab and silently drop the intent (workflows-tab-one-frame-2026-08-28).
-    expect(nuqsState.wfKind).toBe(ARMING_WORKFLOWS_KIND);
-    expect(nuqsState.wfKind).toBe("routine");
+    // P-009: this opens the every-pot SCOPE PICKER. It used to deep-link to
+    // `tab=workflows&wfKind=routine` — the routine SCHEDULE list, which answers
+    // "when does this run" and carries no control for "is this pot learning at
+    // all", which is what the reader clicked for.
+    expect(nuqsState.lpick).toBe(true);
+    // ...and it must NOT still route to Workflows. Asserted against the exported
+    // constants so a silent revert reds here instead of shipping.
+    expect(nuqsState.tab).not.toBe(ARMING_WORKFLOWS_TAB);
+    expect(nuqsState.wfKind).not.toBe(ARMING_WORKFLOWS_KIND);
     expect(nuqsState.wfView).toBeNull();
     expect(nuqsState.wfFilter).toBeNull();
   });
@@ -3635,15 +3644,13 @@ describe("LearningTab — P-009 first-run orientation", () => {
     expect(screen.queryByText(/learns as you work/)).toBeNull();
   });
 
-  it("the banner's Open Arming deep-links to the full-width Workflows AI catalog", () => {
+  it("the banner's Open Arming opens the every-pot scope picker (P-009)", () => {
     render(<LearningTab />);
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
-    expect(nuqsState.tab).toBe("workflows");
-    // The Workflows tab reads wfKind now; the retired wfView/wfFilter would land this link
-    // on a default tab and silently drop the intent (workflows-tab-one-frame-2026-08-28).
-    expect(nuqsState.wfKind).toBe(ARMING_WORKFLOWS_KIND);
-    expect(nuqsState.wfKind).toBe("routine");
+    expect(nuqsState.lpick).toBe(true);
+    // The old destination was the routine SCHEDULE list, not an arming surface.
+    expect(nuqsState.tab).not.toBe(ARMING_WORKFLOWS_TAB);
+    expect(nuqsState.wfKind).not.toBe(ARMING_WORKFLOWS_KIND);
     expect(nuqsState.wfView).toBeNull();
     expect(nuqsState.wfFilter).toBeNull();
   });
