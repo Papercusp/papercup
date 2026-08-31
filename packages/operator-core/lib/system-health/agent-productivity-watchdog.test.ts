@@ -12,11 +12,18 @@ import type { Sql } from 'postgres';
 
 import {
   runAgentProductivitySweepOnce,
+  makeReadAgentProductivity,
+  makeReadHeldClaims,
   type AgentPresenceCandidate,
   type AgentCallCensus,
   type AgentWedgeWave,
   type AgentIdeateSilenceWave,
   type AgentProductivitySweepDeps,
+  type DegenerateWakeWave,
+  DEGENERATE_WAKE_MIN_CALLS,
+  DEGENERATE_WAKE_TELEMETRY_RATIO,
+  DEGENERATE_WAKE_MAX_WORK_CALLS,
+  resolveDegenerateWake,
   IDEATE_PASS_GRACE_MS,
 } from './agent-productivity-watchdog';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
@@ -55,6 +62,7 @@ function aliveVerdict(ownerId: string): LivenessVerdict {
 function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
   const escalated: AgentWedgeWave[] = [];
   const ideateEscalated: AgentIdeateSilenceWave[] = [];
+  const degenerateEscalated: DegenerateWakeWave[] = [];
   const deps: Partial<AgentProductivitySweepDeps> = {
     flagEnabled: async () => true,
     now: () => NOW,
@@ -72,9 +80,13 @@ function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
     escalateIdeateWave: async (w) => {
       ideateEscalated.push(w);
     },
+    readHeldClaims: async () => new Map(),
+    escalateDegenerateWakeWave: async (w) => {
+      degenerateEscalated.push(w);
+    },
     ...over,
   };
-  return { deps, escalated, ideateEscalated };
+  return { deps, escalated, ideateEscalated, degenerateEscalated };
 }
 
 describe('runAgentProductivitySweepOnce', () => {
@@ -226,6 +238,8 @@ describe('runAgentProductivitySweepOnce', () => {
       ideateSilent: 0,
       ideateSuppressedAsWedged: 0,
       ideateWavesEscalated: 0,
+      degenerateWake: 0,
+      degenerateWakeWavesEscalated: 0,
     });
     expect(escalated).toHaveLength(0);
   });
@@ -249,6 +263,7 @@ describe('runAgentProductivitySweepOnce', () => {
           ['nb', { agentOriginCalls: 0, anyOriginCalls: 0 }],
           ['bnw', { agentOriginCalls: 0, anyOriginCalls: 5 }],
         ]),
+      readHeldClaims: async () => new Map(),
       escalateWave: async (w) => {
         if (w.phase === 'never-booted') throw new Error('escalation surface down');
         escalated.push(w);
@@ -256,6 +271,7 @@ describe('runAgentProductivitySweepOnce', () => {
       readIdeateRegistrations: async () => new Map(),
       readIdeatePasses: async () => new Map(),
       escalateIdeateWave: async () => {},
+      escalateDegenerateWakeWave: async () => {},
     };
 
     // The swallow is deliberate, so assert it rather than tolerate it: a silent
@@ -299,6 +315,169 @@ describe('runAgentProductivitySweepOnce', () => {
       anyOriginCalls: 0,
     });
     expect(escalated[0].victims[0].presentForMs).toBeGreaterThan(17 * 3_600_000);
+  });
+});
+
+describe('resolveDegenerateWake — WI-7129', () => {
+  const healthyBase = {
+    agentOriginCalls: 12,
+    anyOriginCalls: 120,
+    recentCalls: DEGENERATE_WAKE_MIN_CALLS,
+    recentTelemetryCalls: 0,
+    recentWorkCalls: 1,
+  };
+
+  it('flags a mature telemetry-only window', () => {
+    const out = resolveDegenerateWake({
+      ...healthyBase,
+      recentTelemetryCalls: Math.ceil(DEGENERATE_WAKE_MIN_CALLS * (DEGENERATE_WAKE_TELEMETRY_RATIO + 0.05)),
+    });
+    expect(out).toMatchObject({ degenerate: true, reason: 'degenerate' });
+    expect(out.telemetryRatio).toBeGreaterThan(DEGENERATE_WAKE_TELEMETRY_RATIO);
+  });
+
+  it('requires the call floor and does not alarm low-volume telemetry', () => {
+    const out = resolveDegenerateWake({
+      ...healthyBase,
+      recentCalls: DEGENERATE_WAKE_MIN_CALLS - 1,
+      recentTelemetryCalls: DEGENERATE_WAKE_MIN_CALLS - 1,
+    });
+    expect(out).toMatchObject({ degenerate: false, reason: 'below-call-floor' });
+  });
+
+  it('does not alarm when real work exceeds the maximum', () => {
+    const out = resolveDegenerateWake({
+      ...healthyBase,
+      recentTelemetryCalls: DEGENERATE_WAKE_MIN_CALLS,
+      recentWorkCalls: DEGENERATE_WAKE_MAX_WORK_CALLS + 1,
+    });
+    expect(out).toMatchObject({ degenerate: false, reason: 'work-present' });
+  });
+
+  it('leaves zero-agent-origin wedges to the wedge leg', () => {
+    const out = resolveDegenerateWake({
+      ...healthyBase,
+      agentOriginCalls: 0,
+      recentTelemetryCalls: DEGENERATE_WAKE_MIN_CALLS,
+    });
+    expect(out).toMatchObject({ degenerate: false, reason: 'wedge-owned' });
+  });
+
+  it('treats missing trailing measurements as unknown', () => {
+    expect(resolveDegenerateWake({ agentOriginCalls: 10, anyOriginCalls: 10 })).toMatchObject({
+      degenerate: false,
+      reason: 'not-measured',
+      telemetryRatio: null,
+    });
+  });
+});
+
+describe('degenerate-wake SQL readers', () => {
+  it('reads the trailing counters from one per-owner tagged query', async () => {
+    let statement = '';
+    const sql = (async (strings: TemplateStringsArray) => {
+      statement = strings.join('?');
+      return [
+        {
+          owner_id: 'owner',
+          agent_calls: '12',
+          any_calls: '14',
+          recent_calls: '100',
+          recent_telemetry_calls: '81',
+          recent_work_calls: '2',
+        },
+      ];
+    }) as unknown as Sql;
+
+    const out = await makeReadAgentProductivity(sql)([candidate({ ownerId: 'owner' })]);
+
+    expect(out.get('owner')).toEqual({
+      agentOriginCalls: 12,
+      anyOriginCalls: 14,
+      recentCalls: 100,
+      recentTelemetryCalls: 81,
+      recentWorkCalls: 2,
+    });
+    expect(statement).toContain('recent_telemetry_calls');
+    expect(statement).toContain('work_items:%');
+    expect(statement).toContain('make_interval');
+  });
+
+  it('reads non-terminal held claims and excludes observation-lane rows', async () => {
+    let statement = '';
+    const sql = (async (strings: TemplateStringsArray) => {
+      statement = strings.join('?');
+      return [
+        { owner_id: 'owner', feature_id: 'WI-1' },
+        { owner_id: 'owner', feature_id: 'WI-2' },
+      ];
+    }) as unknown as Sql;
+
+    const out = await makeReadHeldClaims(sql)([candidate({ ownerId: 'owner' })]);
+
+    expect(out.get('owner')).toEqual(['WI-1', 'WI-2']);
+    expect(statement).toContain("payload->>'lane'");
+    expect(statement).toContain("IS DISTINCT FROM 'observation'");
+    expect(statement).toContain('status NOT IN');
+  });
+});
+
+describe('runAgentProductivitySweepOnce — degenerate-wake leg', () => {
+  const degenerateCensus = {
+    agentOriginCalls: 40,
+    anyOriginCalls: 44,
+    recentCalls: 100,
+    recentTelemetryCalls: 81,
+    recentWorkCalls: 2,
+  };
+
+  it('emits one workspace wave with fleet and held-claim evidence', async () => {
+    const { deps, degenerateEscalated, escalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'burning', fleetSlug: 'fleet-a' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () => new Map([['burning', degenerateCensus]]),
+      readHeldClaims: async () => new Map([['burning', ['WI-123', 'WI-456']]]),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.degenerateWake).toBe(1);
+    expect(out.degenerateWakeWavesEscalated).toBe(1);
+    expect(degenerateEscalated).toHaveLength(1);
+    expect(degenerateEscalated[0]).toMatchObject({
+      workspaceId: 'papercusp-workspace',
+      victims: [
+        {
+          ownerId: 'burning',
+          fleetSlug: 'fleet-a',
+          totalCalls: 100,
+          telemetryCalls: 81,
+          workCalls: 2,
+          heldClaims: ['WI-123', 'WI-456'],
+        },
+      ],
+    });
+    expect(escalated).toHaveLength(0);
+  });
+
+  it('collapses multiple victims into one workspace wave and suppresses wedges', async () => {
+    const candidates = [candidate({ ownerId: 'burning-a' }), candidate({ ownerId: 'burning-b' })];
+    const { deps, degenerateEscalated, escalated } = harness({
+      readCandidates: async () => candidates,
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([
+          ['burning-a', degenerateCensus],
+          ['burning-b', { ...degenerateCensus, agentOriginCalls: 0 }],
+        ]),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.degenerateWake).toBe(1);
+    expect(out.degenerateWakeWavesEscalated).toBe(1);
+    expect(degenerateEscalated[0].victims).toHaveLength(1);
+    expect(escalated).toHaveLength(1);
   });
 });
 

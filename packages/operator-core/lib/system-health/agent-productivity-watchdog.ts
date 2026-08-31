@@ -22,22 +22,25 @@
  * The cost is paid by whoever dispatches to them. Waking a wedged session
  * succeeds — the wake lands, `woken: 1` comes back — and nothing happens.
  *
- * ── TWO LEGS, ONE SWEEP ─────────────────────────────────────────────────────
+ * ── THREE LEGS, ONE SWEEP ───────────────────────────────────────────────────
  *
- * The module runs a second predicate over the SAME population, deliberately not
- * a second watchdog (WI-42436):
+ * The module runs two more predicates over the SAME population, deliberately
+ * not separate watchdogs (WI-42436 / WI-7129):
  *
- *   wedge leg     "is this agent producing ANY work?"
- *   cadence leg   "is this agent producing the work its MODE obliges?"
+ *   wedge leg       "is this agent producing ANY work?"
+ *   cadence leg     "is this agent producing the work its MODE obliges?"
+ *   degenerate leg  "did this agent's wakes collapse into telemetry?"
  *
  * Same candidate read, same oracle call, same wave-shaped escalation — because
- * two sweeps over one table with one grace and two thresholds is exactly the
- * drift that extracting `agent-wedge.ts` just removed. The cadence leg's
+ * parallel sweeps over one table with related thresholds are exactly the drift
+ * that extracting `agent-wedge.ts` removed. The cadence leg's
  * subject is the agent that is unmistakably BUSY and still never does the one
  * thing its mode exists for: measured 2026-08-27, a goal holder made 251
  * agent-origin calls across 52 tools in 80 minutes with zero ideation, and
  * every count-based surface read healthy because none of them asks whether the
- * mode's own obligation ever fired.
+ * mode's own obligation ever fired. The degenerate leg reads a trailing
+ * 30-minute invocation mix so a heartbeat-fresh telemetry loop no longer reads
+ * as healthy merely because it keeps making calls.
  *
  * ── WHY ONE CORRELATED WAVE, NOT N ALARMS ───────────────────────────────────
  *
@@ -109,6 +112,25 @@ import {
 export const AGENT_PRODUCTIVITY_SWEEP_INTERVAL_MS = 10 * 60_000;
 
 /**
+ * Degenerate-wake detector calibration (WI-7129).  A session must have a
+ * meaningful sample before a ratio can say anything: the measured incident
+ * used a 30-minute trailing window and a 40-call floor.  The detector is
+ * intentionally conservative — it reports only a very telemetry-heavy window
+ * with almost no work calls, never a merely idle or low-volume session.
+ */
+export const DEGENERATE_WAKE_WINDOW_MS = 30 * 60_000;
+export const DEGENERATE_WAKE_MIN_CALLS = 40;
+export const DEGENERATE_WAKE_TELEMETRY_RATIO = 0.75;
+export const DEGENERATE_WAKE_MAX_WORK_CALLS = 5;
+
+const TELEMETRY_TOOL_NAMES = [
+  'coord:glance',
+  'activity:report',
+  'flags:get',
+  'journal:record-turn',
+] as const;
+
+/**
  * How stale a heartbeat may be for a row to remain a CANDIDATE.
  *
  * Deliberately generous, and not a liveness judgement — the oracle makes that.
@@ -147,6 +169,12 @@ export interface AgentCallCensus {
   agentOriginCalls: number;
   /** Every origin, hook included — the phase discriminator. */
   anyOriginCalls: number;
+  /** Agent-origin calls in the trailing degenerate-wake window. */
+  recentCalls?: number;
+  /** Telemetry calls in that trailing window. */
+  recentTelemetryCalls?: number;
+  /** Work calls in that trailing window. */
+  recentWorkCalls?: number;
 }
 
 /** One wedged agent, as reported inside a wave. */
@@ -219,6 +247,77 @@ export interface AgentIdeateSilenceWave {
   suppressedAsWedged: number;
 }
 
+/** One agent caught in a telemetry-only wake loop. */
+export interface DegenerateWakeVictim {
+  ownerId: string;
+  ownerLabel: string;
+  fleetSlug: string | null;
+  agentRole: string | null;
+  totalCalls: number;
+  telemetryCalls: number;
+  workCalls: number;
+  telemetryRatio: number;
+  /** null means the claim read degraded; never render that as "no claim". */
+  heldClaims: string[] | null;
+}
+
+/** Correlated degenerate-wake victims in one workspace. */
+export interface DegenerateWakeWave {
+  workspaceId: string;
+  victims: DegenerateWakeVictim[];
+}
+
+export type DegenerateWakeReason =
+  | 'degenerate'
+  | 'not-measured'
+  | 'wedge-owned'
+  | 'below-call-floor'
+  | 'work-present'
+  | 'telemetry-below-threshold';
+
+export interface DegenerateWakeVerdict {
+  degenerate: boolean;
+  reason: DegenerateWakeReason;
+  telemetryRatio: number | null;
+}
+
+/**
+ * PURE: decide whether one trailing call window is a degenerate telemetry loop.
+ *
+ * The wedge leg owns a session with zero agent-origin calls.  This leg starts
+ * only after the agent has done real work, then asks whether its CURRENT wakes
+ * have collapsed into telemetry.  Missing trailing fields are NOT MEASURED,
+ * never a clean verdict — older callers/tests may supply only lifetime counts.
+ */
+export function resolveDegenerateWake(
+  census: AgentCallCensus | null | undefined,
+): DegenerateWakeVerdict {
+  if (
+    !census ||
+    census.recentCalls == null ||
+    census.recentTelemetryCalls == null ||
+    census.recentWorkCalls == null
+  ) {
+    return { degenerate: false, reason: 'not-measured', telemetryRatio: null };
+  }
+  if (census.agentOriginCalls === 0) {
+    return { degenerate: false, reason: 'wedge-owned', telemetryRatio: null };
+  }
+
+  const total = census.recentCalls;
+  const ratio = total > 0 ? census.recentTelemetryCalls / total : 0;
+  if (total < DEGENERATE_WAKE_MIN_CALLS) {
+    return { degenerate: false, reason: 'below-call-floor', telemetryRatio: ratio };
+  }
+  if (census.recentWorkCalls > DEGENERATE_WAKE_MAX_WORK_CALLS) {
+    return { degenerate: false, reason: 'work-present', telemetryRatio: ratio };
+  }
+  if (ratio <= DEGENERATE_WAKE_TELEMETRY_RATIO) {
+    return { degenerate: false, reason: 'telemetry-below-threshold', telemetryRatio: ratio };
+  }
+  return { degenerate: true, reason: 'degenerate', telemetryRatio: ratio };
+}
+
 export interface AgentProductivitySweepDeps {
   /** Presence rows old enough to judge, with a heartbeat recent enough to bother. */
   readCandidates: (graceMs: number) => Promise<AgentPresenceCandidate[]>;
@@ -237,6 +336,10 @@ export interface AgentProductivitySweepDeps {
   readProductivity: (
     candidates: readonly AgentPresenceCandidate[],
   ) => Promise<Map<string, AgentCallCensus>>;
+  /** Current non-terminal work-item claims, keyed by ownerId. */
+  readHeldClaims: (
+    candidates: readonly AgentPresenceCandidate[],
+  ) => Promise<Map<string, string[]>>;
   escalateWave: (wave: AgentWedgeWave) => Promise<void>;
   /**
    * `overlay:ideate` registrations for those candidates, keyed by ownerId. A
@@ -255,6 +358,7 @@ export interface AgentProductivitySweepDeps {
     candidates: readonly AgentPresenceCandidate[],
   ) => Promise<Map<string, number>>;
   escalateIdeateWave: (wave: AgentIdeateSilenceWave) => Promise<void>;
+  escalateDegenerateWakeWave: (wave: DegenerateWakeWave) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
   graceMs: number;
@@ -331,7 +435,14 @@ export function makeReadAgentProductivity(
     const workspaceIds = candidates.map((c) => c.workspaceId);
     const sinceIso = candidates.map((c) => new Date(c.startedAtMs).toISOString());
 
-    const rows = await sql<{ owner_id: string; agent_calls: string; any_calls: string }[]>`
+    const rows = await sql<{
+      owner_id: string;
+      agent_calls: string;
+      any_calls: string;
+      recent_calls: string;
+      recent_telemetry_calls: string;
+      recent_work_calls: string;
+    }[]>`
       WITH subjects AS (
         SELECT * FROM unnest(
           ${ownerIds}::text[],
@@ -343,7 +454,21 @@ export function makeReadAgentProductivity(
              count(ti.id) FILTER (
                WHERE ti.call_origin IS DISTINCT FROM 'hook'
              ) AS agent_calls,
-             count(ti.id) AS any_calls
+             count(ti.id) AS any_calls,
+            count(ti.id) FILTER (
+               WHERE ti.call_origin IS DISTINCT FROM 'hook'
+                 AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+             ) AS recent_calls,
+            count(ti.id) FILTER (
+               WHERE ti.call_origin IS DISTINCT FROM 'hook'
+                 AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                 AND lower(ti.tool_name) = ANY(${[...TELEMETRY_TOOL_NAMES]}::text[])
+             ) AS recent_telemetry_calls,
+            count(ti.id) FILTER (
+               WHERE ti.call_origin IS DISTINCT FROM 'hook'
+                 AND ti.invoked_at >= GREATEST(s.since, now() - make_interval(secs => ${DEGENERATE_WAKE_WINDOW_MS / 1000}))
+                 AND (lower(ti.tool_name) LIKE 'work_items:%' OR lower(ti.tool_name) LIKE 'scheduler:%')
+             ) AS recent_work_calls
         FROM subjects s
         LEFT JOIN harness_shared.tool_invocations ti
                ON ti.coord_owner_id = s.owner_id
@@ -355,7 +480,48 @@ export function makeReadAgentProductivity(
       out.set(r.owner_id, {
         agentOriginCalls: Number(r.agent_calls),
         anyOriginCalls: Number(r.any_calls),
+        recentCalls: Number(r.recent_calls),
+        recentTelemetryCalls: Number(r.recent_telemetry_calls),
+        recentWorkCalls: Number(r.recent_work_calls),
       });
+    }
+    return out;
+  };
+}
+
+/** Read current non-terminal claims for the candidates in one bounded query. */
+export function makeReadHeldClaims(
+  sql: Sql,
+): AgentProductivitySweepDeps['readHeldClaims'] {
+  return async (candidates) => {
+    const out = new Map<string, string[]>();
+    if (candidates.length === 0) return out;
+    const ownerIds = candidates.map((c) => c.ownerId);
+    const workspaceIds = candidates.map((c) => c.workspaceId);
+    const rows = await sql<{ owner_id: string; feature_id: string }[]>`
+      WITH subjects AS (
+        SELECT * FROM unnest(
+          ${ownerIds}::text[],
+          ${workspaceIds}::text[]
+        ) AS t(owner_id, workspace_id)
+      )
+      SELECT w.taken_by AS owner_id, w.feature_id
+        FROM harness_shared.work_items w
+        JOIN subjects s
+          ON s.owner_id = w.taken_by
+         AND s.workspace_id = w.workspace_id
+       WHERE w.taken_by IS NOT NULL
+         AND w.taken_by <> ''
+         AND w.payload->>'lane' IS DISTINCT FROM 'observation'
+         AND (
+           w.status IS NULL
+           OR w.status NOT IN ('done', 'closed', 'deprecated', 'dropped', 'passed', 'resolved')
+         )
+       ORDER BY w.taken_by, w.feature_id`;
+    for (const row of rows) {
+      const claims = out.get(row.owner_id);
+      if (claims) claims.push(row.feature_id);
+      else out.set(row.owner_id, [row.feature_id]);
     }
     return out;
   };
@@ -610,6 +776,61 @@ async function defaultEscalateIdeateWave(wave: AgentIdeateSilenceWave): Promise<
   });
 }
 
+/** Report one correlated workspace wave, with the per-agent evidence needed to act. */
+async function defaultEscalateDegenerateWakeWave(wave: DegenerateWakeWave): Promise<void> {
+  const n = wave.victims.length;
+  const victimLines = [...wave.victims]
+    .sort((a, b) => b.telemetryRatio - a.telemetryRatio)
+    .map((v) => {
+      const claims =
+        v.heldClaims === null
+          ? 'CLAIM STATE UNKNOWN'
+          : v.heldClaims.length > 0
+            ? v.heldClaims.join(', ')
+            : 'NO CLAIM';
+      return (
+        `  • ${v.ownerLabel} (${v.ownerId}) — ${(v.telemetryRatio * 100).toFixed(1)}% telemetry ` +
+        `(${v.telemetryCalls}/${v.totalCalls}), ${v.workCalls} work call(s), ` +
+        `fleet ${v.fleetSlug ?? '(none)'}, held ${claims}`
+      );
+    });
+
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `${n} agent session(s) have degenerated into telemetry-only wake loops ` +
+      `in workspace ${wave.workspaceId}`,
+    body:
+      `${n} present session(s) crossed the calibrated degenerate-wake threshold: ` +
+      `more than ${(DEGENERATE_WAKE_TELEMETRY_RATIO * 100).toFixed(0)}% telemetry over ` +
+      `at least ${DEGENERATE_WAKE_MIN_CALLS} calls in the trailing ` +
+      `${DEGENERATE_WAKE_WINDOW_MS / 60_000} minutes, while producing no more than ` +
+      `${DEGENERATE_WAKE_MAX_WORK_CALLS} work calls. They remain heartbeat-fresh and ` +
+      `look live on count-based surfaces while spending wakes without advancing work.\n\n` +
+      `${victimLines.join('\n')}\n\n` +
+      `A victim holding NO CLAIM is the sharpest case: it is burning wakes with no ` +
+      `registered unit to advance. A victim holding a claim may be silently blocking a ` +
+      `lane and should be checked first.\n\n` +
+      `ONE workspace report, not ${n}: degenerate wakes commonly share a launcher, ` +
+      `prompt, or coordination-loop cause. This detector reports the correlated wave ` +
+      `and does not auto-respawn; first identify the shared cause, then recover the victims.\n\n` +
+      `The signal deliberately does not use ended_at or session-end clustering. ` +
+      `ended_at is written by the reaper and clusters by construction; this signal is ` +
+      `derived from the actual trailing invocation mix instead.`,
+    meta: {
+      dedupKind: 'agent-productivity-degenerate-wake',
+      subjectSignature: `${wave.workspaceId}:degenerate-wake`,
+      workspaceId: wave.workspaceId,
+      victimCount: n,
+      windowMs: DEGENERATE_WAKE_WINDOW_MS,
+      minCalls: DEGENERATE_WAKE_MIN_CALLS,
+      telemetryRatioThreshold: DEGENERATE_WAKE_TELEMETRY_RATIO,
+      maxWorkCalls: DEGENERATE_WAKE_MAX_WORK_CALLS,
+      victims: wave.victims.slice(0, 40),
+    },
+  });
+}
+
 export function agentProductivitySweepDeps(
   sql: Sql,
   overrides: Partial<AgentProductivitySweepDeps> = {},
@@ -618,10 +839,12 @@ export function agentProductivitySweepDeps(
     readCandidates: makeReadCandidates(sql),
     resolveLiveness: defaultResolveLiveness(),
     readProductivity: makeReadAgentProductivity(sql),
+    readHeldClaims: makeReadHeldClaims(sql),
     escalateWave: defaultEscalateWave,
     readIdeateRegistrations: makeReadIdeateRegistrations(sql),
     readIdeatePasses: makeReadIdeatePasses(sql),
     escalateIdeateWave: defaultEscalateIdeateWave,
+    escalateDegenerateWakeWave: defaultEscalateDegenerateWakeWave,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
     graceMs: AGENT_PRODUCTIVITY_GRACE_MS,
@@ -649,6 +872,10 @@ export interface AgentProductivitySweepResult {
   /** Of those, the ones whose silence the wedge already explains. */
   ideateSuppressedAsWedged: number;
   ideateWavesEscalated: number;
+  /** Present sessions whose trailing call mix is degenerate. */
+  degenerateWake: number;
+  /** Correlated workspace waves emitted for the degenerate-wake leg. */
+  degenerateWakeWavesEscalated: number;
 }
 
 function emptySweepResult(): AgentProductivitySweepResult {
@@ -661,6 +888,8 @@ function emptySweepResult(): AgentProductivitySweepResult {
     ideateSilent: 0,
     ideateSuppressedAsWedged: 0,
     ideateWavesEscalated: 0,
+    degenerateWake: 0,
+    degenerateWakeWavesEscalated: 0,
   };
 }
 
@@ -686,9 +915,15 @@ export async function runAgentProductivitySweepOnce(
     return emptySweepResult();
   }
 
-  const [verdicts, census, ideateRegs, ideatePasses] = await Promise.all([
+  const [verdicts, census, heldClaims, ideateRegs, ideatePasses] = await Promise.all([
     deps.resolveLiveness(candidates),
     deps.readProductivity(candidates),
+    deps.readHeldClaims(candidates).catch((e) => {
+      console.warn(
+        `[agent-productivity-watchdog] held-claim read failed (non-fatal enrichment): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return null;
+    }),
     deps.readIdeateRegistrations(candidates),
     deps.readIdeatePasses(candidates),
   ]);
@@ -696,11 +931,13 @@ export async function runAgentProductivitySweepOnce(
   const now = deps.now();
   const waves = new Map<string, AgentWedgeWave>();
   const ideateWaves = new Map<string, AgentIdeateSilenceWave>();
+  const degenerateWaves = new Map<string, DegenerateWakeWave>();
   let present = 0;
   let wedged = 0;
   let unmeasured = 0;
   let ideateSilent = 0;
   let ideateSuppressedAsWedged = 0;
+  let degenerateWake = 0;
 
   for (const c of candidates) {
     const verdict = verdicts.get(c.ownerId);
@@ -723,6 +960,30 @@ export async function runAgentProductivitySweepOnce(
     });
 
     if (v.reason === 'not-measured') unmeasured += 1;
+
+    // ── Degenerate-wake leg ──────────────────────────────────────────────
+    // This is deliberately separate from the zero-work wedge: these sessions
+    // have made real calls, but their current wake mix has collapsed into
+    // telemetry.  Missing trailing measurements are unknown, never healthy.
+    const d = resolveDegenerateWake(measured);
+    if (d.degenerate && measured && d.telemetryRatio !== null) {
+      degenerateWake += 1;
+      const wave =
+        degenerateWaves.get(c.workspaceId) ??
+        ({ workspaceId: c.workspaceId, victims: [] } as DegenerateWakeWave);
+      wave.victims.push({
+        ownerId: c.ownerId,
+        ownerLabel: c.ownerLabel,
+        fleetSlug: c.fleetSlug,
+        agentRole: c.agentRole,
+        totalCalls: measured.recentCalls!,
+        telemetryCalls: measured.recentTelemetryCalls!,
+        workCalls: measured.recentWorkCalls!,
+        telemetryRatio: d.telemetryRatio,
+        heldClaims: heldClaims === null ? null : (heldClaims.get(c.ownerId) ?? []),
+      });
+      degenerateWaves.set(c.workspaceId, wave);
+    }
 
     // ── The cadence leg ───────────────────────────────────────────────────
     // Runs for every PRESENT candidate, wedged or not — which is why it sits
@@ -769,7 +1030,8 @@ export async function runAgentProductivitySweepOnce(
 
     const key = `${c.workspaceId}:${v.phase}`;
     const wave =
-      waves.get(key) ?? ({ workspaceId: c.workspaceId, phase: v.phase, victims: [] } as AgentWedgeWave);
+      waves.get(key) ??
+      ({ workspaceId: c.workspaceId, phase: v.phase, victims: [] } as AgentWedgeWave);
     wave.victims.push({
       ownerId: c.ownerId,
       ownerLabel: c.ownerLabel,
@@ -814,6 +1076,19 @@ export async function runAgentProductivitySweepOnce(
     }
   }
 
+  let degenerateWakeWavesEscalated = 0;
+  for (const wave of degenerateWaves.values()) {
+    try {
+      await deps.escalateDegenerateWakeWave(wave);
+      degenerateWakeWavesEscalated += 1;
+    } catch (e) {
+      console.warn(
+        `[agent-productivity-watchdog] degenerate-wake escalate failed for ${wave.workspaceId} ` +
+          `(non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   return {
     scanned: candidates.length,
     present,
@@ -823,6 +1098,8 @@ export async function runAgentProductivitySweepOnce(
     ideateSilent,
     ideateSuppressedAsWedged,
     ideateWavesEscalated,
+    degenerateWake,
+    degenerateWakeWavesEscalated,
   };
 }
 
