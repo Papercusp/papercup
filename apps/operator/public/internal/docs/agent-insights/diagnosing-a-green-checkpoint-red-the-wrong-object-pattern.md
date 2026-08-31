@@ -190,6 +190,80 @@ Do not conclude a run is out of budget from the refire count alone, and do not f
 `release:checkpoint-run` to "help" — killing a run inside its re-triage window discards a
 live rescue and costs a full suite.
 
+### The opposite direction — the red IS phantom, and fixing it at tip does not clear it
+
+The table at the top carries a row for concluding *phantom* when the candidate is genuinely
+red (the guard was clean **in the working tree**, which had already been fixed). Under
+freeze-and-converge the mirror-image error is the expensive one: the red really **is**
+phantom — already fixed above the frozen candidate — the agent fixes it correctly, at
+**tip**, and the next run reports the same red, because tip was never the object being
+judged.
+
+The mechanism is deliberate, not a bug. On the first real code red the gate opens ONE frozen
+repair queue, and every later run RESUMES that exact candidate rather than a newer tip. The
+queue's `candidate` is **immutable**; only `repairHead` moves. A commit that lands on staging
+tip is therefore not on the judged lineage at all, and re-testing the same sha reproduces the
+same failure indefinitely.
+
+Measured — `EI-21036544613774607`, 2026-08-21: 12 consecutive reds, `main` frozen \~7.6 h.
+(That streak is the *cost* of this specific mechanism, traced below to a named cause — it is
+not evidence that the gate cannot converge. See the closing note under **See also**.)
+
+```
+candidate fc7262658c92   subject: "Repair frozen candidate 7e7d01745e6c"
+  POST_SUITE_LEG lint:tsc:scripts regressed:
+    packages/agent-mcp/src/tools/features/get.ts(36,23)  TS2589  (baseline 0)
+    packages/agent-mcp/src/tools/tasks/get.ts(19,23)     TS2589  (baseline 0)
+
+the fix on staging: d6ee5ee635 — replaced the drizzle-zod round-trip at exactly line 36 col 23
+git merge-base --is-ancestor d6ee5ee635 fc7262658c92   ->  NO
+```
+
+The repair branched **11 minutes before its own fix landed**, so it could never inherit it.
+Later in the same incident a dispatch was phantom outright: frozen candidate `a916cfe712fa`
+already carried the fix — its `packages/agent-mcp/src` tree hash
+`987ef94cc2bdd7c3476fc56ee3b1306be2c52e48` was byte-identical to staging HEAD, verified with
+a working positive control. There was nothing to repair; the dispatch was for a stale red.
+
+Name the object, exactly as everywhere else on this page: *"the fix is landed"* is true about
+the **working tree and the staging tip**. The gate's question is about the **judged sha**.
+
+**What to do instead.** The ruling (D-002 on
+`frozen-candidate-compliance-enforcement-2026-08-30`) is that a phantom red is absorbed by
+advancing `repairHead`; cutting a fresh candidate is never sanctioned. One verb does it:
+
+```
+release:repair-queue { op: 'converge', paths: ['<your changed path>', ...] }
+```
+
+It fast-forwards the movable `repairHead` to the staging tip while that is still safe, never
+touches the immutable `candidate`, and reports per-path `containment` — whether the judged
+sha carries your fix. It is a dry run unless `confirm: true`. Its verdicts are worth reading
+in full: `already-converged` means your fix is on the judged sha; `diverged-merge-required`
+means a repair fixer has committed and a fast-forward would discard their work;
+`ancestry-unverifiable` means the git probe failed and it fails closed rather than guessing.
+
+It always cuts a FRESH candidate at the current tip and exposes no candidate argument, which
+restarts the re-cut-at-tip treadmill D-007 diagnosed: on a tree where \~100 agents commit
+continuously, each new cut re-admits the whole sweep and imports breakage faster than fixes
+land. Killing a run inside its re-triage window also discards a live auto-refire rescue.
+
+Containment is a **content** question, never a date one. Per path:
+
+```bash
+git rev-parse --verify --quiet "<candidate>:<path>" || echo ABSENT
+git rev-parse --verify --quiet "staging:<path>"     || echo ABSENT
+# equal blobs => the judged sha carries your fix
+```
+
+or, in one call, `state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your path>' }`,
+whose falsifier is that same blob-containment check.
+
+⚠ Equal blobs prove that **path** is current — not that the candidate is. When the failing
+test's runtime subject lives in a submodule, the test blob is identical in both refs while
+the gitlink moved underneath it, so containment answers "not stale" on a red that is pure
+staleness. Diff the gitlinks too: `git diff --raw <sha> staging | grep '^:160000'`.
+
 ## Never await a gate key with a globbed pipeline segment
 
 ```js
@@ -278,3 +352,9 @@ this doc's author. Three habits made that cheap rather than adversarial:
   continuously-committed tree makes every candidate stale on arrival). Note the retracted
   headline on `EI-19343787099658433`: the gate **does** converge; never restate a long red
   streak as proof that it cannot.
+* `EI-21036544613774607` — the frozen-candidate repair worktree that never rebases onto
+  staging, plus the phantom dispatch later in the same incident; the source of the
+  measurements quoted above.
+* Plan `frozen-candidate-compliance-enforcement-2026-08-30` — D-002 (a phantom red is
+  absorbed by advancing `repairHead`; a fresh candidate is never sanctioned) and the single
+  `op: 'converge'` verb that lands a fix on the judged lineage.

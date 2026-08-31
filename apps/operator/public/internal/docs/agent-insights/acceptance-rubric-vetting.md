@@ -1,18 +1,18 @@
 # Acceptance-rubric vetting — the meta-rubric method
 URL: /internal/docs/agent-insights/acceptance-rubric-vetting
 
-The long-form method behind the acceptance-rubric ship gate's vetting step: how an acceptance-rubric author vets their rubric against meta-acceptance-rubric (get_feedback min:1/max:3 critique consult → improve → scorecards:emit meta-scorecard with vettingConsult), how each of the six meta-criteria is judged, revision currency (D-010), the gate's refusal/disable/flag mechanics (D-009), and the three traps that make a correct vetting read as a failure — or a wrong binding read as a pass.
+The long-form method behind the acceptance-rubric ship gate's vetting step: how an author vets their rubric against meta-acceptance-rubric (a get_feedback critique consult opened with policy:'rubric-vetting' → improve → scorecards:emit meta-scorecard with vettingConsult), how the six meta-criteria are judged, revision currency (D-010), the gate's refusal/disable/flag mechanics (D-009), and three traps that make a correct vetting read as a failure — or a wrong binding read as a pass.
 
 ## What this is
 
 Every plan ships with a graded acceptance rubric (CLAUDE.md § "Every plan ships with a graded acceptance rubric"). Before that rubric may satisfy the ship gate, its AUTHOR vets it against the meta-rubric `meta-acceptance-rubric` (the rubric-rubric). This runbook is the long-form method that rubric's `methodRef` points at: how to run the vetting step, how to judge each meta-criterion, and how the gate decides "vetted".
 
-Plan of record: `consult-min-max-and-rubric-vetting-2026-08-17` (D-001, D-006, D-009, D-010, D-011).
+Plan of record: `consult-min-max-and-rubric-vetting-2026-08-17` (D-001, D-006, D-009, D-010, D-011). Responder bounds moved to a shared registry in `unified-responder-selection-critique-and-grading-2026-08-30` (D-001, D-004).
 
 ## The flow (author-side)
 
 1. **Author the acceptance rubric post-implementation** — `rubrics:propose { kind:'acceptance', subjectPlan, classRef, criteria }` (never at plan-creation time).
-2. **Open the critique consult** — `get_feedback` with the rubric's criteria + the plan goal in the question; pass `max_agents:3` (the minimum defaults to 1 — D-003 guarantees at least one best-available LIVE reviewer even when nobody clears the relevance floor; a `responder_via:'minimum'` reply is a first-principles review, weigh it as such).
+2. **Open the critique consult** — `get_feedback` with the rubric's criteria + the plan goal in the question; pass **`policy:'rubric-vetting'` and NO responder count**. That key resolves min/max from `packages/operator-core/lib/consult/selection-policies.ts`, the only place the bound is written, so this runbook cannot instruct a menu wider than the selector enforces — which is exactly what the hand-typed cap it replaces ended up doing after the bound moved. The policy's minimum still guarantees at least one best-available LIVE reviewer even when nobody clears the relevance floor (D-003); a `responder_via:'minimum'` reply is a first-principles review, weigh it as such.
 3. **Improve the rubric from the critique** — `rubrics:get` → edit → `rubrics:propose` (whole-document re-propose; the rubric's version bumps).
 4. **Attest (the meta-scorecard)** — grade YOUR OWN rubric against the meta-rubric:
 
@@ -45,7 +45,7 @@ The attestation pins the rubric plan row's `version` at emit time. ANY later `ru
 
 ## Gate mechanics (D-009)
 
-* **Refusal**: `acceptance_rubric_unvetted` from the ship gate (`plans:set-plan-status → 'shipped'`/`'done'`), whose teaching error names the exact `scorecards:emit` call to run.
+* **Refusal**: `acceptance_rubric_unvetted` from the ship gate (`plans:set-plan-status → 'shipped'`/`'done'`), whose teaching error names the exact `scorecards:emit` call to run — and renders the consult step from the policy registry, so the refusal cannot instruct a bound the selector does not enforce.
 * **Prerequisite**: the meta-rubric must be REGISTERED — any status; `'proposed'` suffices (ratification governs CONTENT authority, never gate mechanics; demanding `'active'` would deadlock every plan ship on the owner's ratification wall). No meta-rubric registered in the workspace at all ⇒ the vetting check DISABLES (a gate demanding a flow the workspace cannot run is a deadlock, not a guard).
 * **Flags**: its own flag `ACCEPTANCE_RUBRIC_VETTING_GATE` (default ON), NOT waivable by `force`; it nests inside the `ACCEPTANCE_RUBRIC_COMPLETION_GATE` family — family OFF ⇒ no rubric demanded ⇒ nothing to vet.
 * **Exemptions**: empty-criteria (investigation-only) acceptance rubrics, and the meta-rubric itself. One level deep BY CONSTRUCTION: there is no meta-meta-rubric — the meta-rubric's content is owner-ratified instead.
