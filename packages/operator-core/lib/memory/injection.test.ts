@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
