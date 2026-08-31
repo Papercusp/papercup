@@ -1291,6 +1291,171 @@ describe('unresolved_workspace_pkgs pin-awareness (EI-13127)', () => {
 });
 
 /**
+ * WI-212675: a THIRD class the EI-13127 discriminator missed. That one asks
+ * "does the package's SOURCE exist at TARGET_SHA?" — but a package whose
+ * DIRECTORY landed before the pin while its root-`workspaces` entry landed
+ * AFTER it answers "yes", and so was misreported as a genuine extraction break.
+ * npm at TARGET_SHA creates no node_modules/<scope>/<pkg> link for such a
+ * package, so no pinned code can import it: it is post-pin in every sense that
+ * matters, exactly like a source that post-dates the pin.
+ *
+ * Measured live 2026-08-31: `@papercusp/agent-roster` — directory present at
+ * FROZEN candidate 6da5cd4d, `workspaces` entry committed afterwards — crashed
+ * green-checkpoint inside setup-release BEFORE a single test ran. Because the
+ * candidate was frozen (freeze-and-converge), every subsequent run crashed
+ * identically and the repair queue could never reach green.
+ *
+ * The discriminator is the PINNED LOCKFILE: authoritative for what the pinned
+ * install actually contains, and a plain grep, which keeps this function pure
+ * shell ("no Node — keeps this script standalone by design"). It applies ONLY
+ * when that lockfile is readable; an unreadable/absent one keeps the original
+ * strict behavior, so an undeterminable package is still REPORTED rather than
+ * silently swallowed.
+ */
+describe('unresolved_workspace_pkgs lockfile membership (WI-212675)', () => {
+  let integrationRoot: string;
+  let releaseRoot: string;
+  let targetSha: string;
+
+  function runGate(env: Record<string, string> = {}): string {
+    const wrapper = [
+      'set -uo pipefail',
+      'source <(sed -n "/^unresolved_workspace_pkgs()/,/^}/p" "$SETUP_SCRIPT")',
+      'unresolved_workspace_pkgs',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot,
+        RELEASE_ROOT: releaseRoot,
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) throw new Error(`unresolved_workspace_pkgs exited ${r.status}: ${r.stderr}`);
+    return r.stdout.trim();
+  }
+
+  function runPrune(env: Record<string, string> = {}): void {
+    const wrapper = [
+      'set -uo pipefail',
+      'log() { :; }',
+      'source <(sed -n "/^prune_post_pin_workspace_pkgs()/,/^}/p" "$SETUP_SCRIPT")',
+      'prune_post_pin_workspace_pkgs',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot,
+        RELEASE_ROOT: releaseRoot,
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) {
+      throw new Error(`prune_post_pin_workspace_pkgs exited ${r.status}: ${r.stderr || r.stdout}`);
+    }
+  }
+
+  const git3 = (...args: string[]) => {
+    const r = spawnSync(
+      'git',
+      ['-C', integrationRoot, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8' },
+    );
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  function addSrc3(pkg: string): void {
+    const dir = join(integrationRoot, 'libs', 'generic', pkg);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: `@papercusp/${pkg}` }));
+  }
+  function link3(pkg: string): void {
+    const scopeDir = join(integrationRoot, 'node_modules', '@papercusp');
+    mkdirSync(scopeDir, { recursive: true });
+    symlinkSync(join('..', '..', 'libs', 'generic', pkg), join(scopeDir, pkg));
+  }
+  /** A lockfile that links ONLY the named packages, npm lockfileVersion-3 shaped. */
+  function writeLock(linked: string[]): void {
+    const packages: Record<string, unknown> = { '': { name: 'root' } };
+    for (const p of linked) {
+      packages[`libs/generic/${p}`] = { name: `@papercusp/${p}` };
+      packages[`node_modules/@papercusp/${p}`] = { resolved: `libs/generic/${p}`, link: true };
+    }
+    writeFileSync(
+      join(integrationRoot, 'package-lock.json'),
+      JSON.stringify({ name: 'root', lockfileVersion: 3, packages }, null, 2),
+    );
+  }
+
+  beforeEach(() => {
+    integrationRoot = realpathSync(mkdtempSync(join(tmpdir(), 'lockws-int-')));
+    releaseRoot = realpathSync(mkdtempSync(join(tmpdir(), 'lockws-rel-')));
+    git3('init', '-q');
+    // BOTH sources exist at the pin. Only `linked-pkg` is a workspace there.
+    addSrc3('linked-pkg');
+    addSrc3('unlinked-pkg');
+  });
+
+  afterEach(() => {
+    rmSync(integrationRoot, { recursive: true, force: true });
+    rmSync(releaseRoot, { recursive: true, force: true });
+  });
+
+  it('skips a package whose source is in the pin but which the pinned lockfile never links', () => {
+    writeLock(['linked-pkg']);
+    git3('add', '-A');
+    git3('commit', '-q', '-m', 'pin');
+    targetSha = git3('rev-parse', 'HEAD');
+    link3('linked-pkg');
+    link3('unlinked-pkg');
+
+    const out = runGate({ TARGET_SHA: targetSha });
+    // The genuine in-pin extraction break is still fatal…
+    expect(out).toContain('@papercusp/linked-pkg');
+    // …but the one the pin never linked is not this deploy's problem.
+    expect(out).not.toContain('unlinked-pkg');
+  });
+
+  it('keeps strict behavior when the pinned ref carries NO lockfile (undeterminable ⇒ reported)', () => {
+    git3('add', '-A');
+    git3('commit', '-q', '-m', 'pin-without-lockfile');
+    targetSha = git3('rev-parse', 'HEAD');
+    link3('linked-pkg');
+    link3('unlinked-pkg');
+
+    const out = runGate({ TARGET_SHA: targetSha });
+    expect(out).toContain('@papercusp/linked-pkg');
+    expect(out).toContain('@papercusp/unlinked-pkg');
+  });
+
+  it('prune removes the dangling release entry for a lockfile-unlinked package, and spares the linked one', () => {
+    writeLock(['linked-pkg']);
+    git3('add', '-A');
+    git3('commit', '-q', '-m', 'pin');
+    targetSha = git3('rev-parse', 'HEAD');
+    link3('linked-pkg');
+    link3('unlinked-pkg');
+
+    // Release tree carries DANGLING symlinks for both (sources never extracted).
+    const relScope = join(releaseRoot, 'node_modules', '@papercusp');
+    mkdirSync(relScope, { recursive: true });
+    symlinkSync(join('..', '..', 'libs', 'generic', 'linked-pkg'), join(relScope, 'linked-pkg'));
+    symlinkSync(join('..', '..', 'libs', 'generic', 'unlinked-pkg'), join(relScope, 'unlinked-pkg'));
+
+    runPrune({ TARGET_SHA: targetSha });
+
+    // The lockfile-unlinked one is pruned; the in-pin one is left for the fatal gate.
+    expect(existsSync(join(relScope, 'unlinked-pkg'))).toBe(false);
+    expect(lstatSync(join(relScope, 'linked-pkg')).isSymbolicLink()).toBe(true);
+  });
+});
+
+/**
  * WI-5110: green-checkpoint's stale-candidate re-triage twice reported a false
  * "failures REPRODUCE at tip <sha>" verdict (2026-07-17) — tests that demonstrably
  * PASSED when re-run by hand at the named tip. The re-triage trusts a zero exit
