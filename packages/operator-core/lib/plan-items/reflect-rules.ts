@@ -217,6 +217,99 @@ registerReactionRule({
  * `skipped:'terminal_guard'`. A human deliberately reopening an item is unaffected —
  * they call plans:set-status without the flag.
  */
+/**
+ * SET_BLOCKER → park / un-park the plan item
+ * (deterministic-plan-state-derivation-2026-08-31 P-001, D-001).
+ *
+ * WHY THIS RULE HAS TO EXIST AT ALL. `work_items/set_blocker.ts` already transitions the
+ * work-item itself — `:266` parks it via `setWorkItemStateWithAliasInfo(id, 'blocked'|
+ * 'needs-human')` and `:275` un-parks via the same function with `'open'`. But those are
+ * calls to the internal FUNCTION, not invocations of the `work_items:set_state` TOOL, and
+ * the reaction engine matches tool-invocation events. So the work-item's state moves and
+ * every reaction attached to that tool is bypassed. The state change lands; the plan item
+ * is never told. This is exactly the hazard `lane-sync-rule.ts`'s header describes from
+ * the other side — a reaction must hang off the trigger tool, never a hardcoded internal
+ * call — and it is why the fix is a rule on `set_blocker` rather than a call added inside it.
+ *
+ * MEASURED (papercusp, active/ready plans, 2026-08-31): 65 blocked work-items linked to a
+ * plan item, 64 carrying a real external blocker, but only 17 plan items reading `blocked`.
+ * 45 read `todo` — advertising pickable work that nothing can actually pick up. That is the
+ * dangerous direction, the same one `readiness-drift-monitor-action.ts` names: a stale
+ * not-blocked signal HANDS OUT BLOCKED WORK, where the inverse merely starves it.
+ *
+ * PURE MATCHER, NO I/O: `set_blocker` returns `{ ok, id, changed, workItem, activeBlockers }`
+ * post-transition (EI-13301 made `workItem` the POST-write snapshot specifically so callers
+ * cannot read pre-write state). So `activeBlockers.length` gives the direction and
+ * `workItem.payload.plan_item` the stamp, both straight off the event — no lookup needed,
+ * which is what keeps this legal in a sync `when`/`args` (see the module header).
+ */
+function activeBlockerCountOf(e: ToolInvocationEvent): number | null {
+  const blockers = (e.result?.data as { activeBlockers?: unknown } | undefined)?.activeBlockers;
+  return Array.isArray(blockers) ? blockers.length : null;
+}
+
+registerReactionRule({
+  id: 'plan-item-reflect:blocker-set',
+  on: 'work_items:set_blocker',
+  when: (e) => stampOf(e) !== null && (activeBlockerCountOf(e) ?? 0) > 0,
+  fire: 'plans:set-status',
+  args: (e) => {
+    const wi = workItemOf(e);
+    const status = reflectedStatus(wi.state, wi.payload?.needsHuman === true) ?? 'blocked';
+    const n = activeBlockerCountOf(e) ?? 0;
+    // The status word is deliberately IN the note: it is what makes the clear direction
+    // below attributable (`noteAttributesBlockTo` scans the live note for this work-item
+    // id plus a block word), so the two halves stay coupled by construction.
+    return {
+      ...setStatusArgs(e, status, `${status} (${n} external blocker${n === 1 ? '' : 's'})`),
+      // Parking is never allowed to un-finish shipped work — same rationale as the
+      // release rule below, where an automated flip silently de-completed a `done` item.
+      onlyIfNotTerminal: true,
+    };
+  },
+  onlyOnSuccess: true,
+  source: 'plan-item-reflect',
+});
+
+/**
+ * The CLEAR half — load-bearing, not symmetry for its own sake (D-001).
+ *
+ * `setStatusArgs` sets `onlyIfNotBlocked: true`, and set-status SKIPS an already-blocked
+ * item under that flag. So the park half ALONE would be one-way: an item parked by a
+ * blocker could never be un-parked by that blocker clearing, and shipping it alone would
+ * have parked the 45 measured items above with no automatic route back to `todo`.
+ *
+ * It therefore overrides `onlyIfNotBlocked` and opts into the ATTRIBUTED clear instead,
+ * which is narrower than simply turning the guard off: set-status lifts the block only if
+ * the item's live note attributes it to THIS work-item, and no OTHER linked work-item is
+ * still blocked. A gate set for any other reason, and anything in `needs-human`, is left
+ * standing. (Unconditional clearing was considered and rejected in D-001: an automated
+ * cascade must not be able to wipe a deliberately-set plan gate.)
+ */
+registerReactionRule({
+  id: 'plan-item-reflect:blocker-cleared',
+  on: 'work_items:set_blocker',
+  when: (e) => {
+    if (stampOf(e) === null) return false;
+    if (activeBlockerCountOf(e) !== 0) return false;
+    const wi = workItemOf(e);
+    // Attribution is by work-item id; without one there is nothing to attribute to.
+    if (typeof wi.id !== 'string' || wi.id.length === 0) return false;
+    // Clearing a blocker on an item that has since finished is not a return to the pool.
+    return !wi.state || !TERMINAL_STATES.has(wi.state);
+  },
+  fire: 'plans:set-status',
+  args: (e) => ({
+    ...setStatusArgs(e, 'todo', 'blocker cleared'),
+    // Deliberately overriding the inherited guard: lifting the block IS the intent here.
+    onlyIfNotBlocked: false,
+    onlyIfNotTerminal: true,
+    onlyIfBlockAttributedTo: workItemOf(e).id,
+  }),
+  onlyOnSuccess: true,
+  source: 'plan-item-reflect',
+});
+
 registerReactionRule({
   id: 'plan-item-reflect:release',
   on: 'work_items:release',

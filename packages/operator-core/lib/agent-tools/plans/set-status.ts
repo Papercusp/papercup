@@ -87,6 +87,7 @@ const itemSpec = z.object({
   onlyIfNoOtherOpenCoverage: z.boolean().optional(),
   onlyIfNoOtherInFlightCoverage: z.boolean().optional(),
   onlyIfNotCompleted: z.boolean().optional(),
+  onlyIfBlockAttributedTo: z.string().min(1).optional(),
 });
 
 const argsSchema = z
@@ -144,6 +145,13 @@ const argsSchema = z
       .describe(
         'Non-destructive DROP: SKIP a `done` → `dropped` flip (reported `skipped:"completed_guard"`, ok:true) instead of downgrading finished work. Complements `onlyIfNotTerminal`, which by design permits terminal→terminal, and `onlyIfNoOtherOpenCoverage`, which only counts NON-terminal siblings and so cannot see the DONE work-item that actually completed the item (EI-20129670928216719). No effect on any status other than `dropped`. For AUTOMATED reflections; a human deliberately reclassifying finished work as abandoned just omits it.',
       ),
+    onlyIfBlockAttributedTo: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'ATTRIBUTED CLEAR: the work-item id permitted to LIFT this item\'s block. Use on the →todo flip that mirrors a blocker CLEARING, INSTEAD of `onlyIfNotBlocked` (which would skip every such flip, the item being blocked by construction). Narrower than `onlyIfNotBlocked:false`: the flip proceeds only if the item\'s live injected note attributes the block to THIS work-item (reported `skipped:"block_attribution_guard"`, ok:true otherwise) AND no OTHER linked work-item is still blocked/needs-human (reported `skipped:"blocked_coverage_guard"`). `needs-human` is never cleared by this path at all. So a gate set for any other reason is left standing, and a 1:N lane is not un-blocked by one of its blockers clearing.',
+      ),
   })
   .refine(
     (a) =>
@@ -177,6 +185,24 @@ interface StatusItem {
   /** Skip (don't flip) a `done` →`dropped` flip — an automated cascade must never
    *  downgrade finished work. See `completedGuardTrips`. */
   onlyIfNotCompleted?: boolean;
+  /** ATTRIBUTED CLEAR (deterministic-plan-state-derivation-2026-08-31 D-001). The
+   *  work-item id whose reflection is allowed to lift this item's block. Set on the
+   *  →todo flip that mirrors a blocker being CLEARED, in place of `onlyIfNotBlocked`
+   *  (which would skip every such flip, since the item is blocked by construction).
+   *
+   *  Two independent conditions, both required, deliberately NOT collapsible into
+   *  `onlyIfNotBlocked:false`:
+   *    1. ATTRIBUTION (in-lock, `blockAttributionTrips`) — the item's current injected
+   *       note must name THIS work-item as the blocker. Notes replace rather than stack
+   *       (EI-384), so the live note is the live attribution: a block recorded for any
+   *       other reason (a deliberate gate, another work-item) is left alone.
+   *    2. NO OTHER BLOCKING COVERAGE (pre-lock, alongside the other coverage guards) —
+   *       no OTHER linked work-item may still be blocked/needs-human, so clearing one
+   *       blocker on a 1:N lane cannot un-block an item the rest still gate.
+   *
+   *  `needs-human` is never auto-cleared by this path regardless: that is the human
+   *  band, and only a human takes an item out of it. */
+  onlyIfBlockAttributedTo?: string;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -208,7 +234,12 @@ type SetStatusValue =
   | { ok: false; code: 'blocked_guard'; currentStatus: string | null }
   /** `onlyIfNotCompleted` tripped: the item is `done` and an automated cascade tried to
    *  drop it. Not an error — see the `completed_guard` branch below. */
-  | { ok: false; code: 'completed_guard'; currentStatus: string | null };
+  | { ok: false; code: 'completed_guard'; currentStatus: string | null }
+  /** `onlyIfBlockAttributedTo` tripped: the item is blocked, but its live note does not
+   *  attribute that block to the work-item whose blocker just cleared — so the block was
+   *  set for some other reason and is left standing. Not an error — see the
+   *  `block_attribution_guard` branch below. */
+  | { ok: false; code: 'block_attribution_guard'; currentStatus: string | null };
 
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,
@@ -642,6 +673,57 @@ export async function releaseTodoClaim(opts: {
  *  single source of truth; this file must never redefine its own copy. */
 export const NOTE_MARKER_RE = NOTE_SUFFIX_RE;
 
+/**
+ * Does the item's LIVE injected note attribute its current block to `workItemId`?
+ *
+ * The attribution half of the attributed clear (deterministic-plan-state-derivation-
+ * 2026-08-31 D-001). This is sound only because a note REPLACES the previous one rather
+ * than stacking (EI-384, see `flipStatusInBody` below): the single note present is the
+ * most recent reflection, so it is the live attribution rather than one entry in a
+ * history. If notes ever start accumulating, this predicate silently weakens — hence
+ * the property test in the sibling spec pinning replace-not-append.
+ *
+ * Deliberately reuses `NOTE_MARKER_RE` (the parser's single source of truth) instead of
+ * re-deriving the " — note: " literal, and searches WITHIN the matched suffix: the
+ * marker text contains neither a work-item id nor a status word, so scanning the whole
+ * matched span cannot false-positive on the marker itself.
+ */
+export function noteAttributesBlockTo(itemText: string | undefined, workItemId: string): boolean {
+  if (!itemText || !workItemId) return false;
+  const matched = itemText.match(NOTE_MARKER_RE);
+  if (!matched) return false;
+  const note = matched[0].toLowerCase();
+  if (!note.includes(workItemId.toLowerCase())) return false;
+  return note.includes('blocked') || note.includes('needs-human');
+}
+
+/**
+ * Should an attributed clear be SKIPPED because the block is not this work-item's to lift?
+ *
+ * Returns true (skip) when the item is blocked but the block is NOT attributable to
+ * `onlyIfBlockAttributedTo`. Governs ONLY the blocked→unblocked edge; every other
+ * transition is another guard's business and falls through untouched.
+ *
+ * `needs-human` always skips regardless of attribution: that band means a human owes a
+ * decision, and no automated cascade takes an item out of it. (A work-item blocker whose
+ * capability is human reflects INTO `needs-human`, so this is the deliberate one-way
+ * door — it goes in automatically and only ever comes out by hand.)
+ */
+export function blockAttributionTrips(opts: {
+  onlyIfBlockAttributedTo: string | undefined;
+  currentStatus: string | null;
+  nextStatus: string;
+  currentItemText: string | undefined;
+}): boolean {
+  if (!opts.onlyIfBlockAttributedTo) return false;
+  if (opts.currentStatus === null) return false;
+  // Only ever governs LIFTING a block.
+  if (!PLAN_BLOCKED_STATUSES.has(opts.currentStatus)) return false;
+  if (PLAN_BLOCKED_STATUSES.has(opts.nextStatus)) return false;
+  if (opts.currentStatus === 'needs-human') return true;
+  return !noteAttributesBlockTo(opts.currentItemText, opts.onlyIfBlockAttributedTo);
+}
+
 export function flipStatusInBody(
   body: string,
   itemId: string,
@@ -952,6 +1034,43 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   }
 
+  // ATTRIBUTED CLEAR, coverage half (D-001). The in-lock `blockAttributionTrips` asks
+  // "is this block MINE to lift?"; this asks the independent question "is anyone ELSE
+  // still blocking?". Both must pass, because they fail in different directions: a 1:N
+  // lane can hold the clearing work-item's own attribution note while OTHER stamped
+  // siblings remain blocked, and lifting on attribution alone would then re-queue an
+  // item the rest still gate — the same 1:N hazard WI-38908 fixed for terminal flips.
+  //
+  // Pre-lock and best-effort, matching the two coverage guards above: a linked-row
+  // lookup hiccup must never turn a legitimate clear into a hard error.
+  if (it.onlyIfBlockAttributedTo && it.status === 'todo') {
+    try {
+      const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
+      const stillBlocking = linked.filter(
+        (wi) => wi.id !== it.onlyIfBlockAttributedTo && PLAN_BLOCKED_STATUSES.has(wi.state),
+      );
+      if (stillBlocking.length > 0) {
+        return {
+          ok: true,
+          slug: it.slug,
+          itemId: it.itemId,
+          skipped: 'blocked_coverage_guard',
+          coveredBy: stillBlocking.map((wi) => wi.id),
+          reason:
+            `left blocked — ${stillBlocking.length} other linked work-item(s) ` +
+            `(${stillBlocking.map((wi) => wi.id).join(', ')}) are still blocked; ` +
+            `clearing ${it.onlyIfBlockAttributedTo}'s blocker must not un-block a plan item ` +
+            'the others still gate',
+        };
+      }
+    } catch (e) {
+      console.warn(
+        `[plans:set-status] blocked coverage guard ${it.slug}#${it.itemId} failed:`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+
   // EI-21817168412278643: D-019 permits a dropped operational plan item only
   // when its unperformed obligation remains owned by a NON-TERMINAL follow-up.
   // The existing terminal reconciler correctly closes a dropped item's linked
@@ -1061,6 +1180,29 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       ) {
         return { newBody: null, value: { ok: false, code: 'blocked_guard', currentStatus: oldStatus } };
       }
+      // ATTRIBUTED CLEAR (D-001). The mirror of the guard above: `onlyIfNotBlocked`
+      // protects a block from being weakened, this one permits exactly ONE reflection to
+      // lift the block it is responsible for. Read INSIDE the lock, from `current` (the
+      // PRE-flip body) — the note is what we are attributing on, and the flip about to be
+      // written would overwrite it.
+      //
+      // Without an attributed clear the blocker reflection is one-way: `setStatusArgs`
+      // sets `onlyIfNotBlocked` on every reflection, so a plan item parked by a blocker
+      // could never be un-parked by that blocker clearing. Shipping the park half alone
+      // would have parked ~45 measured plan items with no automatic route back to `todo`.
+      if (
+        blockAttributionTrips({
+          onlyIfBlockAttributedTo: it.onlyIfBlockAttributedTo,
+          currentStatus: oldStatus,
+          nextStatus: it.status,
+          currentItemText: parsePlan(current).items.find((pi) => pi.id === it.itemId)?.text,
+        })
+      ) {
+        return {
+          newBody: null,
+          value: { ok: false, code: 'block_attribution_guard', currentStatus: oldStatus },
+        };
+      }
       // EI-20129670928216719: an automated cascade must never downgrade FINISHED work.
       // Checked here, inside the lock, because it reads the PLAN ITEM's current status —
       // the coverage guard's pre-lock read would race a concurrent flip. See
@@ -1149,6 +1291,24 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         reason:
           `left at \`${result.value.currentStatus}\` — this explicit gate was preserved; ` +
           `the automated flip (\`${it.status}\`) would have weakened it`,
+      };
+    }
+    // Attributed clear declined (D-001): the item IS blocked, but not by the work-item
+    // asking to lift it. Same ok:true posture as every other guard — a deliberate no-op,
+    // reported so it is visible rather than silent.
+    if (result.value.code === 'block_attribution_guard') {
+      return {
+        ok: true,
+        slug: it.slug,
+        itemId: it.itemId,
+        skipped: 'block_attribution_guard',
+        currentStatus: result.value.currentStatus,
+        reason:
+          `left at \`${result.value.currentStatus}\` — the live note does not attribute this ` +
+          `block to ${it.onlyIfBlockAttributedTo}` +
+          (result.value.currentStatus === 'needs-human'
+            ? ', and `needs-human` is never cleared automatically'
+            : ', so it was set for another reason and only that reason should lift it'),
       };
     }
     // Same posture as the terminal guard: a deliberate NO-OP, reported ok:true with
