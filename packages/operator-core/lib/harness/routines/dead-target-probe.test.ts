@@ -43,6 +43,10 @@ function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, {
     cwd,
     stdio: 'pipe',
+    // WI-41180: bound every sync spawn in the pure lane — it blocks the shared worker's
+    // event loop, so vitest cannot time it out and one hang wedges the whole lane.
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
     env: {
       ...process.env,
       GIT_AUTHOR_NAME: 'probe-test', GIT_AUTHOR_EMAIL: 'probe@test.invalid',
