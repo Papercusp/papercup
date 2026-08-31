@@ -1278,6 +1278,51 @@ async function readLoopDeliverySupersession(
   }
 }
 
+type DeliveryCarryNoteMeta = Awaited<ReturnType<typeof defaultGetLoopCarryNoteWithMeta>>;
+
+type CarryNoteSnapshotIdentity = {
+  bodyHash: string | null;
+  updatedAtMs: number | null;
+  readFailed: boolean;
+};
+
+/**
+ * Reduce a carry-note read to the identity the delivery consumers can verify.
+ * Compare the body hash rather than the body itself: the body is intentionally
+ * clipped for the injection budget, while the hash still identifies the full
+ * checkpoint that was read. `readFailed` is normalized because older injected
+ * readers omit it and therefore mean a successful read by compatibility.
+ */
+function carryNoteSnapshotIdentity(meta: DeliveryCarryNoteMeta | null | undefined): CarryNoteSnapshotIdentity {
+  const readFailed = meta?.readFailed === true;
+  const body = !readFailed && typeof meta?.note === 'string' && meta.note.length > 0 ? meta.note : null;
+  const updatedAtMs =
+    typeof meta?.updatedAtMs === 'number' && Number.isFinite(meta.updatedAtMs) ? meta.updatedAtMs : null;
+  return {
+    bodyHash: body === null ? null : shortCarryHash(body),
+    updatedAtMs,
+    readFailed,
+  };
+}
+
+function carryNoteSnapshotMismatch(
+  refreshed: DeliveryCarryNoteMeta | null | undefined,
+  cached: DeliveryCarryNoteMeta | null | undefined,
+): { refreshed: CarryNoteSnapshotIdentity; cached: CarryNoteSnapshotIdentity; fields: string[] } | null {
+  const refreshedIdentity = carryNoteSnapshotIdentity(refreshed);
+  const cachedIdentity = carryNoteSnapshotIdentity(cached);
+  const fields: string[] = [];
+  if (refreshedIdentity.bodyHash !== cachedIdentity.bodyHash) fields.push('bodyHash');
+  if (refreshedIdentity.updatedAtMs !== cachedIdentity.updatedAtMs) fields.push('updatedAtMs');
+  if (refreshedIdentity.readFailed !== cachedIdentity.readFailed) fields.push('readFailed');
+  return fields.length === 0 ? null : { refreshed: refreshedIdentity, cached: cachedIdentity, fields };
+}
+
+function formatCarryNoteSnapshotIdentity(identity: CarryNoteSnapshotIdentity): string {
+  return `bodyHash=${identity.bodyHash ?? 'null'}, updatedAtMs=${identity.updatedAtMs ?? 'null'}, ` +
+    `readStatus=${identity.readFailed ? 'failed' : 'ok'}`;
+}
+
 export async function rehydrateLoopWakeText(
   d: DeliveryWork,
   baseText: string,
@@ -1290,6 +1335,8 @@ export async function rehydrateLoopWakeText(
      * one additional authoritative read and must return the newest valid snapshot.
      */
     refreshLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+    /** Capture the exact delivery-time snapshot used to compose the live block. */
+    captureLoopCarryNoteMeta?: (meta: DeliveryCarryNoteMeta) => void;
     getLoopStatusFn?: typeof getLoopStatus;
   } = {},
 ): Promise<string> {
@@ -1323,12 +1370,16 @@ export async function rehydrateLoopWakeText(
     // same-owner row.
     const lineageMismatch = deliverySupersession?.kind === 'lineage-mismatch' ? deliverySupersession : null;
     const meta = lineageMismatch
-      ? { note: null, updatedAtMs: null }
+      ? { note: null, updatedAtMs: null, readFailed: false }
       : await getNoteMeta({
           harness: marker.harness,
           ownerId: d.subscriberId,
           workspaceId: d.workspaceId,
         });
+    // Keep the exact meta read alongside the rendered text so a later cold
+    // injector can prove it is using the same snapshot, not merely a note that
+    // happens to look similar after a second read.
+    deps.captureLoopCarryNoteMeta?.(meta);
     // EI-21969383091076581: WHEN this read ran, stated on every branch below.
     //
     // Filed as "the delivery-time lookup false-negatives — the header says NO checkpoint
