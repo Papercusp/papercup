@@ -61,7 +61,15 @@ import { join } from 'node:path';
 // and a path EQUAL to a gitlink is deliberately not "inside" it. Reused rather than re-derived
 // so the ownership test and the gate agree on what "inside a submodule" means.
 import { containingSubmodulePath } from '../../candidate-contains';
-import { listIssues, setIssueState, commentIssue, type EngineerIssue } from '../../issues-engineer';
+import {
+  listIssues,
+  setIssueState,
+  commentIssue,
+  findIssuesByWatchdogKeys,
+  updateIssue,
+  type EngineerIssue,
+} from '../../issues-engineer';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   decideTscRedCleared,
   tscRedPathOf,
@@ -71,7 +79,7 @@ import {
 /** One dwelled red, as the sweep resolved it. */
 export interface TscRedSweepResult {
   file: string;
-  outcome: 'filed' | 'debounced' | 'capped' | 'error' | 'resolved' | 'skipped';
+  outcome: 'filed' | 'escalated' | 'debounced' | 'capped' | 'error' | 'resolved' | 'skipped';
   /** How long the red was observed to persist, first sighting to last. */
   spanSec: number;
   sightings: number;
@@ -105,6 +113,187 @@ export interface DwelledRed {
  *  `claimWatchdogFire` matches its scope key with `reason LIKE '%key%'`. */
 export function debounceKeyFor(file: string): string {
   return `tsc-new-file-red::${file}`;
+}
+
+/**
+ * A repeat observation is a DIFFERENT side effect from the first filing, so it needs its
+ * own single-flight identity. Keeping the path in the key preserves per-file isolation;
+ * keeping this distinct from {@link debounceKeyFor} prevents the original filing fire from
+ * suppressing the escalation fire forever.
+ */
+export function repeatEscalationKeyFor(file: string): string {
+  return `tsc-new-file-red-owner-escalation::${file}`;
+}
+
+/** Base retry window for the repeat escalation (the shared watchdog backoff still applies). */
+export const REPEAT_ESCALATION_HOURS = 1;
+
+/** Synthetic principal for the owner fallback when issue priority is unavailable. */
+const TSC_RED_ESCALATION_IDENTITY: AgentIdentity = {
+  ownerId: 'system:tsc-red-sweep',
+  ownerLabel: 'system · tsc-red-sweep',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Only the fields the repeat-escalation decision reads. */
+export type RepeatedUnownedTscRedIssue = Pick<
+  EngineerIssue,
+  'id' | 'title' | 'state' | 'assignee' | 'severity' | 'featureOrder' | 'updatedAt'
+>;
+
+export interface RepeatedUnownedTscRedResult {
+  escalated: boolean;
+  surfacedBy: 'priority' | 'owner-escalation' | null;
+  reason: string;
+}
+
+export interface RepeatedUnownedTscRedDeps {
+  updateIssueFn?: (id: string) => Promise<unknown>;
+  bumpPriorityFn?: (
+    id: string,
+    position: 'top',
+  ) => Promise<{ applicable: boolean; priority: number | null; proposed?: boolean } | null>;
+  commentIssueFn?: (id: string, body: string) => Promise<unknown>;
+  openEscalationFn?: (input: {
+    severity: 'blocker';
+    summary: string;
+    body: string;
+    meta: { subjectSignature: string };
+  }) => Promise<unknown>;
+}
+
+/**
+ * Make a repeatedly-observed, still-unowned standing red immediately actionable.
+ *
+ * Reuses the existing issue and the shared issue-claim ordering; it never creates a second
+ * work-item and never auto-claims work nobody has begun. Critical severity makes the fleet-
+ * wide gate impact explicit, while `bumpWorkItemPriority(..., 'top')` moves the item ahead of
+ * ordinary unprioritized issue work. If issue priority is disabled/unavailable, the existing
+ * coord escalation channel is the fallback — keyed stably per file so repeats coalesce.
+ *
+ * The caller re-reads the exact watchdog-key match after winning its single-flight claim.
+ * This helper checks ownership again as a final cheap guard against acting on an assigned row.
+ */
+export async function escalateRepeatedUnownedTscRed(
+  issue: RepeatedUnownedTscRedIssue,
+  file: string,
+  deps: RepeatedUnownedTscRedDeps = {},
+): Promise<RepeatedUnownedTscRedResult> {
+  if (issue.state !== 'open') {
+    return { escalated: false, surfacedBy: null, reason: `${issue.id} is no longer open` };
+  }
+  if (issue.assignee) {
+    return {
+      escalated: false,
+      surfacedBy: null,
+      reason: `${issue.id} is owned by ${issue.assignee}`,
+    };
+  }
+  if (issue.severity === 'critical' && issue.featureOrder != null) {
+    return {
+      escalated: false,
+      surfacedBy: null,
+      reason: `${issue.id} is already critical and prioritized`,
+    };
+  }
+
+  const updateIssueFn =
+    deps.updateIssueFn ??
+    ((id: string) => updateIssue(id, { severity: 'critical', by: 'system:tsc-red-sweep' }));
+  const bumpPriorityFn =
+    deps.bumpPriorityFn ??
+    (async (id: string, position: 'top') => {
+      const { bumpWorkItemPriority } = await import('../../work-items');
+      return bumpWorkItemPriority(id, position);
+    });
+  const commentIssueFn =
+    deps.commentIssueFn ??
+    ((id: string, body: string) => commentIssue(id, body, 'system:tsc-red-sweep'));
+  const openEscalationFn =
+    deps.openEscalationFn ??
+    (async (input) => {
+      const { openEscalation } = await import('../../agent-tools/coordination/escalations');
+      return openEscalation(TSC_RED_ESCALATION_IDENTITY, input);
+    });
+
+  if (issue.severity !== 'critical') await updateIssueFn(issue.id);
+
+  let priority:
+    | { applicable: boolean; priority: number | null; proposed?: boolean }
+    | null = null;
+  let priorityError: string | null = null;
+  try {
+    priority = await bumpPriorityFn(issue.id, 'top');
+  } catch (e) {
+    priorityError = e instanceof Error ? e.message : String(e);
+  }
+  const prioritySurfaced = Boolean(
+    priority?.applicable && priority.priority != null && !priority.proposed,
+  );
+
+  let surfacedBy: RepeatedUnownedTscRedResult['surfacedBy'] = 'priority';
+  if (!prioritySurfaced) {
+    surfacedBy = 'owner-escalation';
+    await openEscalationFn({
+      severity: 'blocker',
+      summary: `Standing tsc red remains unowned: ${file} (${issue.id})`,
+      body:
+        `The standing-red sweep observed \`${file}\` again after filing ${issue.id}, and the ` +
+        `issue is still OPEN and UNASSIGNED. Its severity was raised to critical. ` +
+        `The shared issue-priority path could not surface it at the head of the claim queue` +
+        `${priorityError ? ` (${priorityError})` : ''}, so this owner escalation is the ` +
+        `fallback. Claim and fix ${issue.id}; this committed new-file red blocks the shared ` +
+        `green-checkpoint promotion path.`,
+      meta: { subjectSignature: repeatEscalationKeyFor(file) },
+    });
+  }
+
+  await commentIssueFn(
+    issue.id,
+    `Repeated standing-red observation for \`${file}\`: severity raised to critical; ` +
+      (surfacedBy === 'priority'
+        ? 'moved to the head of the shared issue claim queue.'
+        : 'shared issue priority was unavailable, so a coalesced blocker escalation was opened.'),
+  );
+  return {
+    escalated: true,
+    surfacedBy,
+    reason:
+      surfacedBy === 'priority'
+        ? `${issue.id} raised to critical and moved to top issue priority`
+        : `${issue.id} raised to critical and escalated to the owner`,
+  };
+}
+
+interface RepeatedIssueSelection {
+  issue: EngineerIssue | null;
+  reason: string;
+}
+
+/**
+ * Select the newest open unassigned exact-key match, unless ANY open duplicate is assigned.
+ * An assigned duplicate means the underlying condition is owned; escalating a second unassigned
+ * duplicate would lie about that premise. `findIssuesByWatchdogKeys` is already newest-first,
+ * but the explicit timestamp sort keeps the injectable seam honest in tests and future callers.
+ */
+function selectRepeatedUnownedIssue(issues: readonly EngineerIssue[]): RepeatedIssueSelection {
+  const open = issues.filter((issue) => issue.state === 'open');
+  const owned = open.find((issue) => issue.assignee);
+  if (owned) {
+    return { issue: null, reason: `${owned.id} is owned by ${owned.assignee}` };
+  }
+  const issue = [...open]
+    .filter((candidate) => !candidate.assignee)
+    .sort((a, b) => {
+      const aMs = Date.parse(a.updatedAt);
+      const bMs = Date.parse(b.updatedAt);
+      return (Number.isFinite(bMs) ? bMs : 0) - (Number.isFinite(aMs) ? aMs : 0);
+    })[0];
+  return issue
+    ? { issue, reason: `${issue.id} is the newest open unassigned exact-key match` }
+    : { issue: null, reason: 'no open exact-key issue remains' };
 }
 
 /**
