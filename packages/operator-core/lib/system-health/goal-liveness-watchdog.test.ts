@@ -772,6 +772,8 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     neutralize: async () => {},
     notifyHandoff: async () => {},
     refreshControlAnchor: vi.fn().mockResolvedValue(null),
+    reserveRateSlot: async () => ({ kind: 'reserved', attemptsInWindow: 1 }),
+    pauseNeedsHuman: async () => {},
     escalateGiveUp: async () => {},
     now: () => NOW,
     states: new Map(),
@@ -1101,6 +1103,28 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
     expect(attach).toHaveBeenCalledTimes(6);
     expect(escalateGiveUp).toHaveBeenCalledOnce();
     expect(escalateGiveUp).toHaveBeenCalledWith(expect.anything(), 6);
+  });
+
+  it('halts at the durable hourly cap even after process-local damping state is lost', async () => {
+    const launch = vi.fn(async () => ({ ownerId: 'must-not-launch', warnings: [] }));
+    const escalateGiveUp = vi.fn(async () => {});
+    const pauseNeedsHuman = vi.fn(async () => {});
+
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        states: new Map(),
+        launch,
+        reserveRateSlot: async () => ({ kind: 'capped', attemptsInWindow: 6 }),
+        escalateGiveUp,
+        pauseNeedsHuman,
+      }),
+    );
+
+    expect(result).toMatchObject({ attempted: 0, respawned: 0, gaveUp: 1 });
+    expect(launch).not.toHaveBeenCalled();
+    expect(escalateGiveUp).toHaveBeenCalledWith(expect.anything(), 6);
+    expect(pauseNeedsHuman).toHaveBeenCalledWith(expect.anything(), 6, NOW);
   });
 
   it('retries a failed give-up escalation instead of silently keeping its latch', async () => {
