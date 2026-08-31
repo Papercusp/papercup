@@ -119,6 +119,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts', scope: 'hive-canary' },
   { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
+  { name: 'plan-drain-sweep', seedScript: 'seed-plan-drain-sweep-routine.ts' },
   { name: 'plan-item-orphan-reconcile', seedScript: 'seed-plan-item-orphan-reconcile-routine.ts' },
   {
     name: 'plan-item-reflect-orphan-reconcile',
