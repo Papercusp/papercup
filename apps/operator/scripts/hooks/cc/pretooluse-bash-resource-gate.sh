@@ -41,7 +41,97 @@ fi
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
-python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
+# ── BYTECODE CACHE (EI-20226903620041425, owner-approved 2026-08-31) ─────────────
+# The ~291KB body below arrives on STDIN, and CPython never writes a __pycache__
+# entry for a program read from stdin -- so before this, every single bash call by
+# every agent re-tokenized and re-compiled all of it. Measured on this box:
+# compile() alone = 38-49ms (load-dependent), against 0.7ms to unmarshal the same
+# code object from a .pyc. It is CPU-bound, so it degraded worst exactly under
+# fleet load, when everything is already slow.
+#
+# The fix is delivery-only: the heredoc stays the single source of truth (the
+# single-file install is load-bearing -- install-standalone-mcp.sh:258 copies this
+# one file, papercusp-files.ts:874 manifests it, worker-plugin/hooks/hooks.json:12
+# names it by absolute path), and the bootstrap below materializes it ONCE to a
+# content-addressed module that python can then import with a warm .pyc.
+#
+# WHY IT IS SHAPED LIKE THIS -- each line is load-bearing, do not "simplify":
+#
+#   * `python3 -c` NOT `python3 script.py`: CPython only writes __pycache__ for an
+#     IMPORTED module, never for __main__. The import is the whole point.
+#   * KEYED ON CONTENT HASH, not size+mtime: the key changes when the hook changes,
+#     so a stale body is unreachable by construction rather than by expiry. Costs
+#     ~0.3ms in-process (vs a 3.7ms `sha256sum` spawn if this were done in bash),
+#     and it closes the one new risk this introduces -- that the gate now executes
+#     a file from a cache dir rather than the installed .sh.
+#   * THE CACHED FILE IS RE-HASHED BEFORE IMPORT, not merely size-checked. A
+#     content-addressed NAME only proves what the file was called, not what it
+#     contains; without this, a same-length rewrite of the correctly-named file
+#     would be imported as the gate. This is cheap (~0.5ms of a ~46ms saving) and
+#     it also catches the realistic accident -- a half-written file from a crashed
+#     or ENOSPC'd peer. Note it is not a privilege boundary: anything that can
+#     write this cache dir can equally rewrite the installed hook or edit
+#     settings.json, so treat it as corruption defence, not as a sandbox.
+#   * FALLBACK IS THE OLD PATH, NOT `exit 0`. This wrapper fails OPEN (see the
+#     `|| exit 0` below), so a cache bug must never be able to skip the gate. The
+#     try/except covers ONLY cache PREPARATION -- it decides which way to run the
+#     body BEFORE any of it executes. A prepared-cache import is then NOT wrapped:
+#     if the gate itself throws, that propagates to the same fail-open it always
+#     had. Consequence: the worst case here is "as slow as it used to be", never
+#     "the gate silently stopped running", and the body can never double-execute.
+#   * `except Exception`, NEVER a bare `except:`. allow()/deny() both raise
+#     SystemExit; a bare except would swallow the gate's own verdict and re-run
+#     the body through the fallback -- duplicating its HTTP call and journal write.
+#   * sys.path.APPEND, not insert(0): the cache dir must not shadow stdlib.
+#
+# Not a correctness risk, but worth knowing: if the cache dir is unwritable or
+# PYTHONDONTWRITEBYTECODE is set, no .pyc materializes and we simply pay the old
+# compile every call. That degrades silently -- by design, since the alternative
+# in a fail-open safety gate is worse.
+#
+# DEFERRED, deliberately: `python3 -S` is a further ~25ms, and is NOT taken. On a
+# host whose python needs site.py the interpreter would fail to start, the
+# `|| exit 0` would fire, and that host's gate would be off forever with no
+# signal. It only becomes safe once this wrapper can tell "the hook could not
+# start" from "the hook ran and allowed". Do not add it without fixing that first.
+GATE_BOOTSTRAP='
+import sys, os, time, hashlib
+_src = sys.stdin.read()
+_raw = _src.encode("utf-8")
+_mod = None
+try:
+    _key = "pcgate_" + hashlib.sha256(_raw).hexdigest()[:16]
+    _dir = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "papercusp-hooks")
+    _py = os.path.join(_dir, _key + ".py")
+    if not os.path.exists(_py):
+        os.makedirs(_dir, exist_ok=True)
+        _tmp = "%s.%d.tmp" % (_py, os.getpid())
+        with open(_tmp, "wb") as _fh:
+            _fh.write(_raw)
+        os.replace(_tmp, _py)
+        _cut = time.time() - 1209600
+        for _old in os.listdir(_dir):
+            if _old.startswith("pcgate_") and _old != _key + ".py":
+                try:
+                    _op = os.path.join(_dir, _old)
+                    if os.path.getmtime(_op) < _cut:
+                        os.remove(_op)
+                except OSError:
+                    pass
+    with open(_py, "rb") as _fh:
+        _have = _fh.read()
+    if len(_have) == len(_raw) and hashlib.sha256(_have).hexdigest()[:16] == _key[7:]:
+        sys.path.append(_dir)
+        _mod = _key
+except Exception:
+    _mod = None
+if _mod:
+    __import__(_mod)
+else:
+    exec(compile(_src, "<resource-gate>", "exec"), {"__name__": "__main__"})
+'
+
+python3 -c "$GATE_BOOTSTRAP" "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
 import hashlib, json, os, re, sys, tempfile, time
 
 # ── urllib is imported LAZILY: it is ~34ms of a ~140ms invocation, on a path most
