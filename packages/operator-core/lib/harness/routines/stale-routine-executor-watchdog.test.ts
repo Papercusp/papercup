@@ -619,6 +619,21 @@ describe('routineDriftSentence — the page names what is stale, not just how mu
     expect(s).not.toContain(`handler-${ROUTINE_DRIFT_NAME_CAP}.ts`);
   });
 
+  it('agrees in NUMBER in both severities — caught only by reading a real page, not a fixture', () => {
+    // The first live run against real commits printed "so any routine they define ARE
+    // NOT RUNNING here". Every synthetic assertion still passed, because they all
+    // checked for substrings rather than reading the sentence. Page text is read by
+    // humans under pressure; broken agreement is a credibility tax on an alarm whose
+    // whole problem was already that people did not act on it.
+    const many = routineDriftSentence({ changed: [], addedSinceBoot: ['a/x.ts', 'a/y.ts'] });
+    expect(many).toContain('the routines they define are NOT RUNNING here');
+    expect(many).not.toMatch(/any routine they define are/);
+
+    const one = routineDriftSentence({ changed: [], addedSinceBoot: ['a/x.ts'] });
+    expect(one).toContain('the routine it defines is NOT RUNNING here');
+    expect(one).not.toMatch(/routines? it defines are/);
+  });
+
   it('singularises a lone file in both severities', () => {
     expect(routineDriftSentence({ changed: [], addedSinceBoot: [SEEDS[0]] })).toContain(
       '1 routine source file',
