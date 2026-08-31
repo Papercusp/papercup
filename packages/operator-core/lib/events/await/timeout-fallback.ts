@@ -27,7 +27,11 @@ export const TIMEOUT_WAKE_SUMMARY =
 
 /** The structured guidance carried in a timeout wake's `payload.guidance`. */
 export const TIMEOUT_WAKE_GUIDANCE =
-  'Your await timed out — the event never fired within the window. This is a FALLBACK wake, not the event. Re-orient with coord:orient, reconcile whether the awaited state already changed (a missed / never-emitted event, a dead emitter, or a mistyped key), and if your work is still blocked on it, RE-ARM the await (or take another path). Do not give up silently.';
+  'Your await timed out — the event never fired within the window. This is a FALLBACK wake, not the event. Re-orient with coord:orient, reconcile whether the awaited state already changed (a missed / never-emitted event, a dead emitter, or a mistyped key), and if your work is still blocked on it, RE-ARM the await (or take another path). Do not give up silently. ' +
+  // EI-21925527092611786: a stale/delayed delivery of an EARLIER, already-retired timeout on the
+  // SAME key can surface here even though a re-armed registration on that key is still live and
+  // not yet expired. Guard the re-arm behind a mechanical check rather than trusting this wake.
+  'BEFORE re-arming, check events:status for this event key: if it appears in active_awaits with a future expires_ts, THIS wake is stale — do NOT re-arm (that would RETIRE the live registration and silently reset its deadline). Re-arm only when the key is genuinely absent from active_awaits.';
 
 /** Whether a (possibly coalesced) delivery payload carries a timeout fire.
  *  A plain timeout fire is `{ timeout: true }` (the engine sweeper). A COALESCED
