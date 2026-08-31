@@ -173,7 +173,11 @@ describe('wiring in affected-tests.mjs', () => {
 
   it('emits the phase block from the shared helper', () => {
     expect(AFFECTED_TESTS_SRC).toContain("from './lib/serial-phase.mjs'");
-    expect(AFFECTED_TESTS_SRC).toContain('formatSerialPhaseSummary(taskLegs)');
+    // P-005 widened the call to pass the measured phase wall, so this pins the CALL and its leg
+    // argument rather than an exact argument list — the previous literal
+    // `formatSerialPhaseSummary(taskLegs)` broke on that addition while nothing was actually
+    // wrong, which is a guard failing for a change it was never meant to police.
+    expect(AFFECTED_TESTS_SRC).toMatch(/formatSerialPhaseSummary\(\s*taskLegs\b/);
   });
 
   /**
@@ -190,5 +194,87 @@ describe('wiring in affected-tests.mjs', () => {
     for (const field of ['serialMs', 'longestMs', 'ceilingX', 'legs=']) {
       expect(resultLine).not.toContain(field);
     }
+  });
+});
+
+/**
+ * P-005: `ceilingX` is a BOUND — what perfect overlap COULD buy. It cannot say what the scheduler
+ * ACTUALLY got, and the gap between the two is the whole question when deciding whether a gate run
+ * is short of concurrency or short of nothing. D-032 forbids raising the fork cap; the honest way
+ * to keep that ruling off inference is to MEASURE achieved overlap rather than reconstruct it.
+ *
+ * It cannot be reconstructed after the fact. AFFECTED_TASK_PROGRESS lines carry no timestamps; the
+ * gate log is not written in chronological order (per-leg captured output is flushed when a leg
+ * ends, so the phase summary can appear ABOVE the first leg's start line); and
+ * harness_shared.test_runs stamps commit_sha on only a fraction of gate rows — the 2026-08-30
+ * 04:44Z run attributed 221 file-runs that way, against 127 legs and 5309s of task work. So the
+ * phase measures its own wall or the number does not exist.
+ *
+ * Paired assertions, the same discipline as the ceiling above: every test proving the measurement
+ * is REPORTED is paired with one proving an ABSENT measurement stays absent. A missing wall
+ * rendering as `wallMs=0 achievedX=0.00` would be a non-measurement dressed as a real one, and
+ * indistinguishable from a phase that genuinely took no time.
+ */
+describe('achieved overlap (P-005)', () => {
+  // 150s of work whose longest single leg is 120s: ceiling 1.25x. Every wall below is >= 120s,
+  // because a phase cannot finish faster than its longest leg — a smaller wall would be
+  // physically impossible input, and asserting on it would pin nonsense.
+  const legs = [
+    { name: '@papercusp/web :: test', ms: 120_000 },
+    { name: '@papercusp/operator-core :: test', ms: 30_000 },
+  ];
+
+  it('reports wall and achieved overlap on the marker when the phase measured them', () => {
+    const marker = formatSerialPhaseMarker(summarizeSerialPhase(legs, { wallMs: 130_000 })!);
+    expect(marker).toContain('wallMs=130000');
+    // 150s of work in 130s of wall = 1.15x achieved, under the 1.25x ceiling.
+    expect(marker).toContain('achievedX=1.15');
+    expect(marker).toContain('ceilingX=1.25');
+    expect(marker.split('\n')).toHaveLength(1);
+  });
+
+  it('leaves the marker byte-identical to its pre-P-005 shape when the wall is unmeasured', () => {
+    expect(formatSerialPhaseMarker(summarizeSerialPhase(legs)!)).toBe(
+      'AFFECTED_TESTS_PHASE legs=2 serialMs=150000 longestMs=120000 ceilingX=1.25',
+    );
+  });
+
+  it('treats a zero, negative, NaN, Infinite or non-numeric wall as UNMEASURED, never 0.00x', () => {
+    const badWalls: unknown[] = [0, -1, NaN, Infinity, '130000', null, undefined];
+    for (const wallMs of badWalls) {
+      const summary = summarizeSerialPhase(legs, { wallMs } as { wallMs?: number })!;
+      expect(summary.wallMs).toBeUndefined();
+      expect(summary.achievedX).toBeUndefined();
+      const marker = formatSerialPhaseMarker(summary);
+      expect(marker).not.toContain('wallMs=');
+      expect(marker).not.toContain('achievedX=');
+    }
+  });
+
+  it('states achieved overlap and the remaining headroom in the human block', () => {
+    const text = formatSerialPhaseSummary(legs, { wallMs: 150_000 }).join('\n');
+    // 150s of work in 150s of wall: no overlap achieved at all.
+    expect(text).toContain('achievedX=1.00');
+    expect(text).toContain('MEASURED overlap');
+    expect(text).toContain('phase wall');
+    // 150s wall against a 120s longest leg = 30.0s perfect overlap could still remove.
+    expect(text).toContain('30.0s of wall beyond the longest leg');
+  });
+
+  it('reports ZERO headroom when the phase is already bounded by its longest leg', () => {
+    const text = formatSerialPhaseSummary(legs, { wallMs: 120_000 }).join('\n');
+    expect(text).toContain('0.0s of wall beyond the longest leg');
+    // Achieved then EQUALS the ceiling: nothing is left for more concurrency to buy, which is the
+    // measured form of D-032's ruling rather than the reconciled one.
+    const summary = summarizeSerialPhase(legs, { wallMs: 120_000 })!;
+    expect(summary.achievedX).toBeCloseTo(summary.ceilingX, 10);
+  });
+
+  it('derives the phase wall in affected-tests.mjs from the legs, not a dispatch timestamp', () => {
+    // Derived from the legs themselves (a leg's end is now, its start is now minus its measured
+    // duration), so no dispatch-boundary timestamp has to be found and kept correct.
+    expect(AFFECTED_TESTS_SRC).toContain('phaseFirstStartMs');
+    expect(AFFECTED_TESTS_SRC).toContain('phaseLastEndMs');
+    expect(AFFECTED_TESTS_SRC).toMatch(/wallMs:\s*\n?\s*phaseFirstStartMs/);
   });
 });

@@ -4486,7 +4486,18 @@ const transformCulpritPaths = [];
 // recorded as an ADDITIONAL leg for the same task rather than folded into it, so flake-absorption
 // cost stays separable from first-run cost.
 const taskLegs = [];
+// P-005: the phase's own WALL, derived from the legs rather than from a dispatch-boundary
+// timestamp — a leg's end is now and its start is now minus its measured duration, so the
+// earliest start and latest end ARE the phase envelope. This is the only place the number can be
+// obtained: AFFECTED_TASK_PROGRESS lines carry no timestamps, and the log is not written in
+// chronological order, so nothing downstream can reconstruct it from the transcript.
+let phaseFirstStartMs = null;
+let phaseLastEndMs = null;
 const recordLeg = (task, ms) => {
+  const end = Date.now();
+  const start = end - (Number.isFinite(ms) && ms >= 0 ? ms : 0);
+  if (phaseFirstStartMs === null || start < phaseFirstStartMs) phaseFirstStartMs = start;
+  if (phaseLastEndMs === null || end > phaseLastEndMs) phaseLastEndMs = end;
   taskLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
 };
 const taskContexts = tasks.map((t) => ({
@@ -5692,7 +5703,13 @@ for (const scheduled of initialPool.results) {
 // re-measure should never be quoted from memory. `--print-affected` runs zero tasks, so this
 // emits nothing there and the tests pinning that path's marker-less output stay satisfied by
 // construction rather than by an explicit exemption. Arithmetic + wording live in the helper.
-for (const line of formatSerialPhaseSummary(taskLegs)) outSync(line);
+for (const line of formatSerialPhaseSummary(taskLegs, {
+  wallMs:
+    phaseFirstStartMs !== null && phaseLastEndMs !== null
+      ? phaseLastEndMs - phaseFirstStartMs
+      : undefined,
+}))
+  outSync(line);
 
 // ── P-009: Wire related cargo tests into the affected cadence ────────────────
 // Run the Rust/cargo native suite reporter after all related Vitest tasks complete.
