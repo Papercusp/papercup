@@ -18,13 +18,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import {
   tscRedSweep,
+  escalateRepeatedUnownedTscRed,
   buildRedCapture,
   ownershipTestLines,
   readDeclaredSubmodulePaths,
   debounceKeyFor,
+  repeatEscalationKeyFor,
   MAX_FILES_PER_TICK,
   DEBOUNCE_HOURS,
+  REPEAT_ESCALATION_HOURS,
   type DwelledRed,
+  type RepeatedUnownedTscRedIssue,
   type TscRedSweepDeps,
 } from './tsc-red-sweep';
 
@@ -46,6 +50,21 @@ function red(over: Partial<DwelledRed> = {}): DwelledRed {
   };
 }
 
+function repeatIssue(
+  over: Partial<RepeatedUnownedTscRedIssue> = {},
+): RepeatedUnownedTscRedIssue {
+  return {
+    id: 'EI-standing-red',
+    title: 'Standing tsc red with no owner',
+    state: 'open',
+    assignee: null,
+    severity: 'major',
+    featureOrder: null,
+    updatedAt: new Date(NOW - 60_000).toISOString(),
+    ...over,
+  };
+}
+
 /**
  * All seams stubbed to the "would file" configuration; each test flips exactly one.
  *
@@ -61,6 +80,12 @@ function deps(over: Partial<TscRedSweepDeps> = {}) {
     captureFn: vi.fn(async (_input: unknown) => ({ id: 'EI-1' })),
     claimFireFn: vi.fn(async (_opts: unknown) => true),
     recentFiresFn: vi.fn(async (_ws: string, _slug: string, _h?: number, _s?: unknown) => 0),
+    findIssuesByWatchdogKeysFn: vi.fn(async (_keys: string[]) => []),
+    escalateRepeatedUnownedTscRedFn: vi.fn(async (_issue: RepeatedUnownedTscRedIssue, _file: string) => ({
+      escalated: true,
+      surfacedBy: 'priority' as const,
+      reason: 'raised and prioritized',
+    })),
     pruneObservationsFn: vi.fn(() => ({ ok: true, kept: 0 })),
     readObservationsFn: vi.fn(() => [{ ts: nowSec - 60, file: 'x', count: 1, project: '' }]),
     selectDwelledRedsFn: vi.fn((): DwelledRed[] => [red()]),
