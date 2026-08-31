@@ -65,6 +65,32 @@ export const ACTIVE_RETIRED_GUIDANCE_ROOTS = [
   // so they belong in this corpus; leaving them out is why "Mug reviews this
   // proposal" survived the Mug's retirement and stranded a draft for 1d 13h.
   "packages/operator-core/lib/scout",
+  // WI-1756049 — the tool CATALOG is agent-facing guidance by the same WI-1713506
+  // reasoning: a tool's `description` + `guidance.{when,notWhen,chaining}` are
+  // injected into the MCP catalog of every agent that carries it, so they are read
+  // exactly like a prompt file. These two directories are the autonomy gate and its
+  // decision ledger.
+  //
+  // Until 2026-08-31 all 8 of their tools attributed themselves to the RETIRED Mug
+  // ("Log the Mug's disposition…", `when: "You are the Mug and you've DECIDED…"`),
+  // while the live callers are operator/su — measured, not assumed:
+  //   autonomy:record_disposition | operator | 29 calls | last 2026-08-29
+  //   decision_ledger:list        | operator |  3 calls | last 2026-08-30
+  //   (zero calls by role 'mug'; neither dir carries a MUG_KETTLE_SYSTEM gate)
+  // So the subsystem OUTLIVED the tier — D-060 says rewrite, not retire — and the
+  // su playbook meanwhile directs su to autonomy:record_disposition, i.e. the
+  // persona said "record it here" while the tool said "you are not the caller".
+  //
+  // ⚠ `autonomy/decide.ts` still names `kettle`, and that is CORRECT: OVERWATCH_ROLE
+  // === "kettle" (lib/overwatch/liveness.ts:42) is LIVE Overwatch's wire identifier,
+  // not tier residue. It reads clean here because the prose says so explicitly.
+  // Do not "fix" that comparison to "overwatch" — see the header note in decide.ts.
+  //
+  // ⚠ Admitted ONLY after measuring both at zero AND calibrating the detector against
+  // a known-bad positive control in these same files (0 clean / >0 with a mutant
+  // injected). A zero from an uncalibrated instrument is not evidence.
+  "packages/operator-core/lib/agent-tools/autonomy",
+  "packages/operator-core/lib/agent-tools/decision_ledger",
 ];
 
 export const ACTIVE_RETIRED_GUIDANCE_FILES = [
