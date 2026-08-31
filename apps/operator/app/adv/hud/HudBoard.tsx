@@ -205,10 +205,34 @@ function SessionCard({
   const statChips = session.badges.filter((b) => b.kind !== 'mode');
   const chips = [...modeChips, ...statChips.slice(0, MAX_CHIPS)];
   const overflow = statChips.length - Math.min(statChips.length, MAX_CHIPS);
+  // D-001: the headline is the RESOLVED display name — a human-set name, else
+  // the session's objective, else the short id — never blank, because the chain
+  // bottoms out at `handle`. The id is NOT dropped from the card by this: it
+  // moves to the dim ref row below, since it is how a human correlates a card
+  // with logs, `--resume` lines and work-item bodies.
+  const headline = session.displayName;
+  // R3. For a WORKING card `reason` is the session's declared intent, and the
+  // objective the headline falls back to is that SAME intent whenever the
+  // session holds no wip work-item — so without this a large fraction of live
+  // cards would print one string twice, one line apart. Byte-identical only:
+  // a reason that merely starts the same is still telling you something.
+  const reason = session.reason === headline ? null : session.reason;
+  // Same dedupe one level down: when the chain bottomed out at the id, the
+  // headline already IS the id, so the ref row does not repeat it. Both forms
+  // come from the board's own `shortHandle` (D-004), so this compares equal.
+  const idRefs = [
+    session.displayNameSource === 'handle' ? null : session.handle,
+    session.objectiveWorkItemRef,
+    session.planSlug,
+  ].filter((r): r is string => Boolean(r));
   const cardProps = {
     className: `hud__card hud__card--${session.column}${session.chatSupported ? '' : ' hud__card--chat-unavailable'}`,
     style: session.fleetColor ? ({ '--hud-fleet': session.fleetColor } as React.CSSProperties) : undefined,
-    'aria-label': `${session.handle} — ${session.reason}`,
+    // The accessible name leads with the headline for the same reason the card
+    // does — announcing the bare id first is what this plan set out to fix. The
+    // id still follows it, because a screen-reader user needs the same
+    // correlation handle the sighted ref row gives.
+    'aria-label': [headline, session.handle, reason].filter(Boolean).join(' — '),
     'data-chat-supported': session.chatSupported ? 'true' : 'false',
   };
   const contents = (
@@ -220,16 +244,33 @@ function SessionCard({
         <span className="hud__card-b">
           <span className="hud__card-h">
             <span className={`hud__dot hud__dot--${session.column}`} aria-hidden="true" />
-            <span className="hud__handle">{session.handle}</span>
+            <span
+              className={`hud__name${session.displayNameSource === 'handle' ? ' hud__name--id' : ''}`}
+            >
+              {headline}
+            </span>
             {session.isLeader ? <FleetRoleGlyph role="leader" className="hud__role" /> : null}
             <span className="hud__age">{formatAge(session.sinceSec)}</span>
           </span>
 
           {/* The reason IS the content — for Blocked/Stalled it is the finding,
-              not a label. Intent is the reason for a working session. */}
-          <span className="hud__reason">{session.reason}</span>
+              not a label. Intent is the reason for a working session. Absent
+              when it would only restate the headline (R3). */}
+          {reason ? <span className="hud__reason">{reason}</span> : null}
 
-          {session.planSlug ? <span className="hud__plan">{session.planSlug}</span> : null}
+          {/* D-001's ref row: short id, the in-flight work-item, the plan slug —
+              the three handles a human uses to find this session somewhere that
+              is not this board. It replaces the standalone .hud__plan line the
+              card used to carry (that class is still the entity board's). */}
+          {idRefs.length > 0 ? (
+            <span className="hud__idrow">
+              {idRefs.map((r) => (
+                <span key={r} className="hud__idref">
+                  {r}
+                </span>
+              ))}
+            </span>
+          ) : null}
 
           {/* WHY this card is in the result set (owner ask 2026-08-02: "when
               searching a transcript it doesn't show the relevant part of the

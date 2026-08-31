@@ -784,11 +784,109 @@
   color: var(--fg-dim);
 }
 
+/* ── the compact PLAN card ─────────────────────────────────────────────────
+   hud-plan-card-density-2026-08-31, D-001 variant B. Two rows instead of six:
+   the title takes line 1 and the activity rail floats to its right, the "now"
+   item is line 2, and .hud__track below is the only remaining statement of
+   progress. Measured 155px -> 52px, which is 8 plans per column instead of 3.
+
+   These three selectors are used ONLY by PlanCardCompact. Session, goal and
+   work-item cards are untouched (D-004), which is why nothing here overrides an
+   existing rule — .hud__cardtitle REPLACES .hud__reason on plan cards rather
+   than restyling it, so the session card's two-line clamp is unaffected. */
+
+/* The card's NAME, promoted onto line 1. A plan card used to spend line 1 on
+   the slug and render the title beneath it in muted 10.5px; the slug is the
+   title in kebab-case plus a date, so the card was printing its own name twice.
+   Full --fg and 600 are what let the slug row go without the card losing its
+   identity. ONE line, ellipsized: the full title is on the `title` attribute
+   and the slug is in the card's aria-label. */
+.hud__cardtitle {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.35;
+  /* min-width:0 is load-bearing, not defensive: without it a flex item refuses
+     to shrink below its content and the long title pushes the rail off the
+     card instead of ellipsizing. */
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The right-hand rail on line 1. `flex: 0 0 auto` beside the title's
+   `flex: 1 1 auto` is the whole layout: the rail takes exactly what it needs
+   and the title ellipsizes into whatever is left.
+
+   The rail is deliberately SHORT. Rendered with real data at a 244px card the
+   full former meta strip — pips + ✎ + ⚒ + four avatars + the live pill —
+   measures 128px and leaves the title 69px, about eight characters; at the
+   `repeat(5, minmax(190px, 1fr))` grid floor the text box is only 146px. So the
+   rail carries one signal (⚒ + the live pill, 62px) plus the exception pips,
+   and ✎ and the avatar stack are not rendered on a plan card at all. */
+.hud__cardright {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* .hud__liven carries its own margin-left for .hud__cardmeta, where it trails
+   the avatar stack directly. In the rail the flex `gap` already spaces it, and
+   the inherited margin would just widen the rail at the title's expense. */
+.hud__cardright .hud__liven {
+  margin-left: 0;
+}
+
+/* An exception COUNT, reduced from a chip to a dot plus a number. `2 blocked`
+   as a bordered pill costs ~58px; this costs ~15px, which is what makes it
+   affordable on a line that has to leave room for the title. The dot is a
+   pseudo-element in `currentColor`, so tone is set once on the modifier.
+
+   Form as well as colour, per this board's rule: the pip's POSITION (always
+   leading the rail) and its bare-number shape distinguish it from the ⚒ age
+   beside it even in greyscale. */
+.hud__pip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.hud__pip::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.hud__pip--warn { color: var(--warn); }
+.hud__pip--bad { color: var(--bad); }
+
 /* ── P-007: plan-card meta row, avatar stack, live pill, progress track ────
    Per the HudH2 mockup (plan-visibility-revamp-2026-08-23). Every selector
    targets a <span> — this subtree lives inside .hud__card, which is a
    <button> whenever the board wires a destination, so flex goes on the spans
    (the same WebKitGTK rule .hud__card-row documents). */
+/* ⚠ NOT RENDERED SINCE hud-plan-card-density-2026-08-31 (D-001/D-006).
+   .hud__cardmeta and the avatar-stack rules below (.hud__avs, .hud__av*) were
+   the plan card's bottom meta row. The compact card does not draw them: its
+   rail carries ⚒ + the live pill only, and ✎, `n/m items` and the stack are
+   gone. They are KEPT, not deleted, because the stack is exactly what variant C
+   put back — it was on the table when the owner picked B — and because
+   .hud__av--c0..c7 is documented as being in lockstep with
+   HUD_AVATAR_COLOR_COUNT in hud-entity-board.ts, which still computes
+   HudPlanCardMeta.avatars for the plan detail surfaces. Restoring the stack is
+   a render change, not a rebuild. .hud__mt, .hud__liven and .hud__dotg below
+   ARE still live — the compact rail reuses them. */
 .hud__cardmeta {
   display: flex;
   align-items: center;
@@ -1109,10 +1207,55 @@
   gap: 6px;
 }
 
+/* Still the entity board's handle (HudEntityColumns). The SESSION card's line-1
+   text is .hud__name below — it stopped being an id in
+   hud-session-display-names-2026-08-31 D-001. */
 .hud__handle {
   font-size: 11.5px;
   font-weight: 600;
   font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The session card's headline (D-001): a human-set name, else the objective,
+   else the short id. It is PROSE in the first two cases — which is the common
+   case — so it is set in the UI face at the same size/weight the id used to
+   have, and only the last-resort id form goes back to mono via --id. Same
+   nowrap+ellipsis clamp: line 1 must stay one line. */
+.hud__name {
+  font-size: 11.5px;
+  font-weight: 600;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud__name--id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* D-001's ref row — short id, in-flight work-item, plan slug. Deliberately the
+   quietest thing on the card: these are correlation handles for logs, --resume
+   lines and work-item bodies, not card copy, and D-001 keeps them visible
+   precisely so the headline never has to be an id. Mono + muted, one line, each
+   ref clipping independently (the plan slug is the longest, so flex-shrink
+   takes it first). */
+.hud__idrow {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  min-width: 0;
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--fg-mute);
+  opacity: 0.85;
+}
+
+.hud__idref {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

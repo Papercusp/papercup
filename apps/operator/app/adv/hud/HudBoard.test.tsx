@@ -838,3 +838,107 @@ describe('header layout (owner asks 2026-07-27)', () => {
     }
   });
 });
+
+/**
+ * The session card's headline (hud-session-display-names-2026-08-31 P-006).
+ *
+ * The chain itself is covered in status-display.test.ts and hud-board-model
+ * .test.ts; these pin the things only a DOM can prove — WHICH string lands on
+ * line 1, that D-001's id row survived the promotion, and that the card does
+ * not print the same sentence twice.
+ */
+describe('HudBoard — session card headline (D-001)', () => {
+  const HANDLE = 'su-aaaaaaaa'; // shortHandle of entry()'s ownerId
+
+  const card = (container: Element) => container.querySelector('.hud__card')!;
+
+  it('puts the display name on line 1 and keeps the id on the ref row', () => {
+    const { container } = renderBoard([
+      entry({ displayName: 'gate greening', objectiveWorkItemRef: 'WI-1234', currentPlanSlug: 'some-plan-2026' }),
+    ]);
+    expect(container.querySelector('.hud__name')!.textContent).toBe('gate greening');
+    // D-001 explicitly REJECTED removing the id: it is how a human correlates a
+    // card with logs and --resume lines. It moved; it did not go away.
+    const refs = [...container.querySelectorAll('.hud__idref')].map((n) => n.textContent);
+    expect(refs).toEqual([HANDLE, 'WI-1234', 'some-plan-2026']);
+  });
+
+  // The regression this replaces: line 1 used to be the id, so a screen reader
+  // announced a hex handle where the card now shows a name.
+  it('leads the accessible name with the headline, then the id', () => {
+    const { container } = renderBoard([entry({ displayName: 'gate greening' })]);
+    const label = card(container).getAttribute('aria-label')!;
+    expect(label.startsWith('gate greening')).toBe(true);
+    expect(label).toContain(HANDLE);
+  });
+
+  // R3, and the single most visible bug this item could have shipped: for a
+  // WORKING card `reason` IS the intent, and the objective the headline falls
+  // back to is that same intent whenever there is no wip work-item.
+  it('suppresses the reason line when it only restates the headline', () => {
+    const { container } = renderBoard([entry({ intent: 'greening the release gate' })]);
+    expect(container.querySelector('.hud__name')!.textContent).toBe('greening the release gate');
+    expect(container.querySelector('.hud__reason')).toBeNull();
+  });
+
+  it('keeps the reason when it says something the headline does not', () => {
+    const { container } = renderBoard([
+      entry({ displayName: 'gate greening', intent: 'greening the release gate' }),
+    ]);
+    expect(container.querySelector('.hud__reason')!.textContent).toBe('greening the release gate');
+  });
+
+  // Byte-identical only — a reason that merely starts the same still carries
+  // information, so suppressing it would lose it.
+  it('does not suppress a reason that merely shares a prefix with the headline', () => {
+    const { container } = renderBoard([
+      entry({ displayName: 'greening the release', intent: 'greening the release gate' }),
+    ]);
+    expect(container.querySelector('.hud__reason')!.textContent).toBe('greening the release gate');
+  });
+
+  // When the chain bottoms out at the id the headline already IS the id, so the
+  // ref row repeating it would read as two different sessions on one card.
+  it('does not repeat the id on the ref row when the headline is the id', () => {
+    const { container } = renderBoard([entry({ displayName: null, intent: '' })]);
+    const name = container.querySelector('.hud__name')!;
+    expect(name.textContent).toBe(HANDLE);
+    // The last resort is the only case that stays monospaced; a name or an
+    // objective is prose and is set in the UI face.
+    expect(name.className).toContain('hud__name--id');
+    expect([...container.querySelectorAll('.hud__idref')].map((n) => n.textContent)).not.toContain(
+      HANDLE,
+    );
+  });
+
+  it('is not monospaced when the headline is a name or an objective', () => {
+    const { container } = renderBoard([entry({ displayName: 'gate greening' })]);
+    expect(container.querySelector('.hud__name')!.className).not.toContain('hud__name--id');
+  });
+
+  // The plan slug folded INTO the ref row; the standalone line it used to have
+  // is gone from session cards (.hud__plan is still the entity board's).
+  it('renders the plan slug in the ref row, not as its own line', () => {
+    const { container } = renderBoard([entry({ currentPlanSlug: 'some-plan-2026' })]);
+    expect(container.querySelector('.hud__card .hud__plan')).toBeNull();
+    expect([...container.querySelectorAll('.hud__idref')].map((n) => n.textContent)).toContain(
+      'some-plan-2026',
+    );
+  });
+
+  it('omits the ref row entirely when there is nothing left to correlate on', () => {
+    const { container } = renderBoard([entry({ displayName: null, intent: '' })]);
+    expect(container.querySelector('.hud__idrow')).toBeNull();
+  });
+
+  // jsdom computes no stylesheet, so this is source-backed like the launch-row
+  // guard above: the live Tauri drive (P-009) supplies the rendered evidence.
+  it('clamps the headline and the ref row to one line each', () => {
+    for (const selector of ['.hud__name', '.hud__idref']) {
+      const declarations = cssDeclarations(selector);
+      expect(declarations, `${selector} must have a CSS rule`).toMatch(/text-overflow:\s*ellipsis/);
+      expect(declarations).toMatch(/white-space:\s*nowrap/);
+    }
+    expect(cssDeclarations('.hud__name--id')).toMatch(/font-family:/);
+  });
+});
