@@ -185,21 +185,52 @@ export interface GraderEscalation {
 }
 
 /**
- * coord:send is role-gated by COORD_ROLES. A router candidate without a
- * durable role (or with a role intentionally outside that allowlist, such as
- * judge) cannot receive the blocking grading request, so selection must fail
- * closed rather than parking the gate on an unreadable principal.
+ * Roles that must never be handed an acceptance-grading request. A `judge` is a
+ * purpose-built grading principal; routing an acceptance grading to one is the
+ * conflict this policy exists to prevent.
  */
-function isCoordCapableRole(role: string | null | undefined): boolean {
-  if (!role) return false;
-  return COORD_ROLES.includes(canonicalCoordRole(role) as (typeof COORD_ROLES)[number]);
+const GRADER_INELIGIBLE_ROLES: ReadonlySet<string> = new Set(['judge']);
+
+/**
+ * Grader-eligibility by role. This is a DENYLIST, and the direction is
+ * load-bearing (plan D-003).
+ *
+ * It used to be an ALLOWLIST over COORD_ROLES, on the premise that "coord:send
+ * is role-gated by COORD_ROLES, so a candidate without a durable role cannot
+ * receive the blocking grading request". Both halves of that premise are false:
+ *
+ *  - The grading request is NOT delivered by coord:send. `prodOpenGradingCascade`
+ *    uses conversations.openConversation({ direct_to }) + notifyAgents — the same
+ *    pair get-feedback-core binds in prod, and neither is role-gated. So role
+ *    membership never predicted deliverability in the first place.
+ *  - The role is read from harness_shared.coord_presence, which migration
+ *    949-coord-presence-state-only-contract.sql defines as "a live, TTL-reaped
+ *    projection" whose missing row "is not evidence that the owner was absent".
+ *    A durable property cannot be read from it.
+ *
+ * Measured consequence of the allowlist: it rejected 100% of real candidates.
+ * Across the WHOLE database coord_presence carries only agent_role='su' (38 rows,
+ * absent from COORD_ROLES) and NULL (3) — so every candidate failed, every
+ * discovery returned no_eligible_non_excluded, and the grading cascade never
+ * opened once in 349 consults.
+ *
+ * Fail-OPEN is deliberate here. Because the source is TTL-reaped, neither
+ * direction is reliable; the choice is between occasionally asking a judge to
+ * grade (recoverable, and the party/implementer exclusions still apply) and
+ * permanently disabling acceptance grading (what the allowlist actually did).
+ * Reachability is enforced where it is actually knowable — the liveness gate in
+ * `selectRanked` below.
+ */
+function isGraderEligibleRole(role: string | null | undefined): boolean {
+  if (!role) return true;
+  return !GRADER_INELIGIBLE_ROLES.has(canonicalCoordRole(role));
 }
 
-export function filterCoordCapableCandidates(
+export function filterGraderEligibleCandidates(
   candidates: RoutingCandidate[],
   roles: ReadonlyMap<string, string | null>,
 ): RoutingCandidate[] {
-  return candidates.filter((candidate) => isCoordCapableRole(roles.get(candidate.ownerId)));
+  return candidates.filter((candidate) => isGraderEligibleRole(roles.get(candidate.ownerId)));
 }
 
 /**
@@ -253,8 +284,12 @@ export function buildGraderQuery(planSlug: string, rubricText: string, planConte
 
 /**
  * The D-009 exclusion set, computed mechanically:
- *  - IMPLEMENTERS: terminal_owner / assignee / taken_by of any work-item sourced
- *    from the plan (the fan-out population);
+ *  - IMPLEMENTERS: terminal_owner / taken_by of any work-item sourced from the
+ *    plan (the fan-out population). `taken_by` IS the assignee: the
+ *    harness_shared.engineer_issues VIEW exposes it as `taken_by AS assignee`,
+ *    and the base table has no `assignee` column — querying one here threw
+ *    `column "assignee" does not exist` on EVERY call, which is what kept the
+ *    grading cascade from ever opening (plan D-001/D-002);
  *  - HEAVY CONSULT PARTICIPANTS on the plan's threads: every requester (they
  *    asked from inside the work), and responders whose thread actually carried
  *    content (active / closed_answered / graduated — a decline or no-show does
@@ -271,25 +306,24 @@ export async function computeGraderExclusions(
   const rows = (await sql`
     SELECT DISTINCT x.owner FROM (
       SELECT terminal_owner AS owner FROM harness_shared.work_items
-       WHERE source_plan_slug = ${planSlug} AND terminal_owner IS NOT NULL
-      UNION
-      SELECT assignee FROM harness_shared.work_items
-       WHERE source_plan_slug = ${planSlug} AND assignee IS NOT NULL
+       WHERE workspace_id = ${workspaceId} AND source_plan_slug = ${planSlug} AND terminal_owner IS NOT NULL
       UNION
       SELECT taken_by FROM harness_shared.work_items
-       WHERE source_plan_slug = ${planSlug} AND taken_by IS NOT NULL
+       WHERE workspace_id = ${workspaceId} AND source_plan_slug = ${planSlug} AND taken_by IS NOT NULL
       UNION
       SELECT cs.requester_id FROM harness_shared.consult_state cs
        WHERE cs.workspace_id = ${workspaceId}
          AND (cs.origin_task_ref = ${planSlug}
-           OR cs.origin_task_ref IN (SELECT feature_id FROM harness_shared.work_items WHERE source_plan_slug = ${planSlug}))
+           OR cs.origin_task_ref IN (SELECT feature_id FROM harness_shared.work_items
+                                      WHERE workspace_id = ${workspaceId} AND source_plan_slug = ${planSlug}))
       UNION
       SELECT cs.responder_id FROM harness_shared.consult_state cs
        WHERE cs.workspace_id = ${workspaceId}
          AND cs.responder_id IS NOT NULL
          AND cs.state IN ('active', 'closed_answered', 'graduated')
          AND (cs.origin_task_ref = ${planSlug}
-           OR cs.origin_task_ref IN (SELECT feature_id FROM harness_shared.work_items WHERE source_plan_slug = ${planSlug}))
+           OR cs.origin_task_ref IN (SELECT feature_id FROM harness_shared.work_items
+                                      WHERE workspace_id = ${workspaceId} AND source_plan_slug = ${planSlug}))
     ) x
     WHERE x.owner IS NOT NULL
   `) as unknown as Array<{ owner: string }>;
@@ -334,8 +368,8 @@ export async function selectAcceptanceGrader(
   // snapshot, but keeping the filtering explicit prevents a future router
   // change from allowing an incompatible candidate through the assignment
   // path while eligibility still counts the safe pool.
-  const coordCapableEligible = filterCoordCapableCandidates(route.snapshot.candidates, candidateRoles);
-  const coordCapableQualified = filterCoordCapableCandidates(route.qualified, candidateRoles);
+  const coordCapableEligible = filterGraderEligibleCandidates(route.snapshot.candidates, candidateRoles);
+  const coordCapableQualified = filterGraderEligibleCandidates(route.qualified, candidateRoles);
 
   // D-008: distinct ownerIds are not distinct PARTIES. Collapse before anything
   // downstream counts, selects from, or persists these pools, so the menu, the
