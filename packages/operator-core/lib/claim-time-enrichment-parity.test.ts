@@ -51,6 +51,7 @@ const LEG_IMPLEMENTATION: Record<ClaimTimeEnrichmentLeg, string> = {
   behaviorContract: 'getClaimTimeBehaviorContract',
   pathHints: 'getClaimTimeStalePathHints',
   planItemLanded: 'getClaimTimePlanItemLanded',
+  siblingPathOverlap: 'getClaimTimeSiblingPathOverlap',
 };
 
 /** Every surface that hands an agent a claimed item and is therefore obliged to warn it. */

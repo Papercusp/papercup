@@ -72,6 +72,12 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   // EI-18713141708830049: the plan item is still OPEN while a settled sibling already
   // implements it — "the tree says done", the mirror of `planContradiction` above.
   'planItemLanded',
+  // EI-19329513980117751: another work-item shares this one's stored payload paths and
+  // has already landed (or a peer holds it now). The three legs above all reach the
+  // sibling through the PLAN; this one needs no plan at all, which is the point — every
+  // measured instance of the duplicate-filing class was plan-less, so the plan-linked
+  // legs are structurally silent for exactly the population that suffers it.
+  'siblingPathOverlap',
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
@@ -134,6 +140,15 @@ export interface ClaimTimeEnrichment {
    */
   planItemLanded?: unknown;
   planItemLandedWarning?: string;
+  /**
+   * EI-19329513980117751: another work-item shares this one's stored `payload.paths`
+   * and has already landed (or is held by a peer now). Deliberately a PATH check and
+   * not a similarity score — the measured duplicate pairs diverge in prose and agree
+   * only on paths, and the cosine edge for one of them does not exist at all. See the
+   * port's module note for that measurement.
+   */
+  siblingPathOverlap?: unknown;
+  siblingPathOverlapWarning?: string;
   /**
    * P-013 — what this claim's context actually contained, and what it did not.
    *
@@ -296,6 +311,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     behaviorContract,
     pathHintsEntry,
     planItemLandedEntry,
+    siblingPathOverlapEntry,
   ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
@@ -436,6 +452,25 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
         const warning = m.planItemLandedWarning(hint, workItemId);
         return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
       }),
+
+      // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths and
+      // has already landed. The three legs above all reach their sibling through the
+      // PLAN; this one needs no plan, which is the whole point — every measured instance
+      // of the duplicate-filing class was plan-less (one root cause filed 3x in minutes
+      // by different agents), so the plan-linked legs are structurally silent for exactly
+      // the population that suffers it. Needs an identified work-item AND a payload:
+      // the paths ARE the signal, so without them there is nothing to compare.
+      runLeg('siblingPathOverlap', workItemId && wi?.payload ? workItemId : '', async (workItemId) => {
+        const m = await import('./sibling-path-overlap-claim-port');
+        const hint = await m.getClaimTimeSiblingPathOverlap({
+          workItemId,
+          payload: wi?.payload,
+          harness: wi?.harness,
+          workspaceId,
+        });
+        const warning = m.siblingPathOverlapWarning(hint, workItemId);
+        return hint && warning ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning } : null;
+      }),
     ]);
 
   const context = {
@@ -448,6 +483,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(behaviorContract ?? {}),
     ...(pathHintsEntry ?? {}),
     ...(planItemLandedEntry ?? {}),
+    ...(siblingPathOverlapEntry ?? {}),
   };
 
   return { ...context, enrichmentDelivery: summarizeDelivery(outcomes, context) };
