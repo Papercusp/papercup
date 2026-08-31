@@ -19,7 +19,7 @@ import type { RouteContext } from '../define-route';
 const setAgentDisplayNameMock = vi.fn();
 const resolveOwnerWorkspaceIdMock = vi.fn();
 const activeWorkspaceIdMock = vi.fn();
-const notifySyncInvalidateMock = vi.fn(async (..._args: unknown[]) => {});
+const notifySyncInvalidateMock = vi.fn(async (_name: string) => {});
 
 vi.mock('../../display-names/store', () => ({
   setAgentDisplayName: (...a: unknown[]) => setAgentDisplayNameMock(...a),
@@ -30,7 +30,7 @@ vi.mock('../../workspace-registry', async (importActual) => ({
   activeWorkspaceId: (...a: unknown[]) => activeWorkspaceIdMock(...a),
 }));
 vi.mock('../../sync-sse', () => ({
-  notifySyncInvalidate: (...a: unknown[]) => notifySyncInvalidateMock(...a),
+  notifySyncInvalidate: (name: string) => notifySyncInvalidateMock(name),
 }));
 // Imported by sibling routes in the same module; the rename handler never calls
 // them, so stub them rather than load the heavy real modules.
@@ -155,12 +155,15 @@ describe('POST /adv/sessions/rename', () => {
     [{ ownerId: '   ', name: 'n' }, 'a blank ownerId'],
     ['not json at all', 'an unparseable body'],
   ];
-  it.each(invalidRenameInputs)('refuses %j (%s) with a 400 instead of guessing a target', async (body) => {
-    const res = await callRename(body);
-    expect(res.status).toBe(400);
-    await expect(res.json()).resolves.toMatchObject({ status: 'error' });
-    expect(setAgentDisplayNameMock).not.toHaveBeenCalled();
-  });
+  it.each(invalidRenameInputs)(
+    'refuses %j (%s) with a 400 instead of guessing a target',
+    async (body, _description) => {
+      const res = await callRename(body);
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ status: 'error' });
+      expect(setAgentDisplayNameMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('reports a store failure as a 500 rather than a silent ok', async () => {
     setAgentDisplayNameMock.mockRejectedValue(new Error('constraint violated'));

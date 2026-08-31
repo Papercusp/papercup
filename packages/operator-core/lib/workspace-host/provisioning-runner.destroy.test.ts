@@ -452,7 +452,8 @@ describe('runWorkspaceHostDestroy', () => {
     const failure = updateOperation.mock.calls
       .map(([entry]) => entry)
       .find((entry) => entry.status === 'failed');
-    const reason = String(failure?.error?.reason ?? '');
+    const failureError = failure?.error as { reason?: unknown } | undefined;
+    const reason = String(failureError?.reason ?? '');
     // The old message named neither which census failed nor what it saw.
     expect(reason).toMatch(/census is not clean after 1 read\(s\)/);
     expect(reason).toMatch(/(provider|orphan)\.\w+=\[/);
