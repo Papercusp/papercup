@@ -39,6 +39,10 @@
  *                   do with the code under test — but a caller that retries
  *                   anything should retry this one.
  *
+ * THE ONE EXCEPTION, stated so it cannot be discovered the hard way: under
+ * `--dry`, 0 means "routing resolved and nothing was run BY DESIGN", not
+ * "measured and green". Every other 0 is a measured pass.
+ *
  * That fourth code is why this module is worth its own file rather than a
  * comment. Writing the contract down surfaced it: a first draft of this file
  * documented 0/1/2 only, because the three `return 2` sites are the ones an

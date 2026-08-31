@@ -55,6 +55,7 @@ import {
   TEST_FILE_EXIT_FAILED,
   TEST_FILE_EXIT_NOT_MEASURED,
   TEST_FILE_EXIT_PASSED,
+  TEST_FILE_EXIT_TEMPFAIL,
 } from './lib/test-file-exit-codes.mjs';
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
@@ -2132,7 +2133,7 @@ export async function main(
   const { dry, requireRan, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
-    return 2;
+    return TEST_FILE_EXIT_NOT_MEASURED;
   }
 
   const unsupportedFiles = files.filter((file) => !isTestFilePath(file));
@@ -2146,7 +2147,7 @@ export async function main(
           'pass a *.test.* or *.spec.* file',
       ),
     );
-    return 2;
+    return TEST_FILE_EXIT_NOT_MEASURED;
   }
 
   let routes;
@@ -2154,7 +2155,7 @@ export async function main(
     routes = testFiles.map((file) => discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
   } catch (error) {
     console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
-    return 2;
+    return TEST_FILE_EXIT_NOT_MEASURED;
   }
 
   const groups = groupRoutes(routes);
@@ -2186,7 +2187,7 @@ export async function main(
       const exact = group.routes.map((route) => route.requested);
       console.log(`ROUTE cwd=${cwdLabel} runner=node:test`);
       for (const file of exact) console.log(`  requested ${file}`);
-      if (!dry && !ensurePreemptReady()) return 75;
+      if (!dry && !ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
       const nodeDemand = buildGovernedProcessDemand({
         fileCount: exact.length,
         diskBytes: 256 * 1024 * 1024,
@@ -2366,7 +2367,7 @@ export async function main(
     // below; forwarded verbatim on completion so nothing is lost for a live TTY. The ASYNC seam
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
-    if (!ensurePreemptReady()) return 75;
+    if (!ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
     const result = await runCapturedTestProcessImpl(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
@@ -2522,7 +2523,7 @@ export async function main(
   }
 
   const summary = aggregateGroupResults(groupResults);
-  if (summary.launchError) return 2;
+  if (summary.launchError) return TEST_FILE_EXIT_NOT_MEASURED;
   if (summary.anyUnmatched) {
     console.error(formatRouteError(
       `requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
@@ -2533,7 +2534,10 @@ export async function main(
     // evidence) still leaves the misleading routing claim as the terminal line, which is the
     // entire defect.
     for (const marker of attributionMarkers) console.error(marker);
-    return 1;
+    // EI-21884126680256710: a zero/partial-match refusal measured NOTHING, so it must not use the
+    // measured-red code. It returned 1 — identical to "your tests failed" — which is how a routing
+    // miss gets triaged as a defect in the file named on the line.
+    return TEST_FILE_EXIT_NOT_MEASURED;
   }
 
   // EI-19376339983058011 — THE MARKER'S PRESENCE MUST IMPLY THAT TESTS RAN.
@@ -2549,7 +2553,10 @@ export async function main(
       `TEST_FILE_DRYRUN requested=${summary.requested} executed=0 matched=${summary.matched} status=dry-run ` +
         `${provenanceResultFields(provenanceBefore, null)}`,
     );
-    return 0;
+    // `--dry` is the one place 0 does NOT mean "measured and green": it means routing resolved and
+    // no tests were run BY DESIGN. Called out because the exit-code contract otherwise reserves 0
+    // for a measured pass, and an undocumented exception is how a contract stops being one.
+    return TEST_FILE_EXIT_PASSED;
   }
 
   // EI-18681435059177620: re-measure AFTER the run. This is the half that would have caught the
@@ -2570,7 +2577,9 @@ export async function main(
       `requested=${summary.requested} matched=${summary.matched} executed=0; ` +
         `refusing to report a verdict for a run that executed no tests`,
     ));
-    return 1;
+    // EI-21884126680256710: executed=0 is the definition of NOT MEASURED. Returning the
+    // genuine-red code here contradicted the refusal printed one line above it.
+    return TEST_FILE_EXIT_NOT_MEASURED;
   }
 
   // EI-19425177453558152 — a name filter that matched ZERO tests measured NOTHING.
@@ -2596,7 +2605,9 @@ export async function main(
           `pattern=${JSON.stringify(nameFilter.pattern)}; refusing to report a verdict for a run that ` +
           `executed no tests${strayNote}`,
       );
-      return 1;
+      // EI-21884126680256710: `status=failed` in the marker above names the REFUSAL, not a test
+      // verdict — nothing ran. The exit code follows the refusal, not the word.
+      return TEST_FILE_EXIT_NOT_MEASURED;
     }
     if (summary.testsExecuted === null || summary.testsUnmeasuredGroups > 0) {
       // Fail OPEN — never fabricate a red from an unreadable count (a JSON reporter writes no
@@ -2662,7 +2673,11 @@ export async function main(
           'Refusing to report this run as evidence for that assertion; the TEST_FILE_RESULT verdict ' +
           'line is withheld on purpose, so this run reads as UNMEASURED rather than green.',
       );
-      return 1;
+      // EI-21884126680256710: this returned a bare `1` — the GENUINE-RED code — while its own
+      // message two lines up says the run "reads as UNMEASURED". A caller branching on the exit
+      // code was therefore told the named file failed, which is precisely the misattribution the
+      // withheld TEST_FILE_RESULT line exists to prevent. The prose and the exit code now agree.
+      return TEST_FILE_EXIT_NOT_MEASURED;
     }
     console.log(
       `TEST_FILE_REQUIRE_RAN pattern=${JSON.stringify(requireRan)} status=ran matches=${verdict.matches.length}`,
@@ -2683,7 +2698,7 @@ export async function main(
         'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same command. Refusing to report ' +
         'a TEST_FILE_RESULT verdict for a run that was not measured.',
     );
-    return 2;
+    return TEST_FILE_EXIT_NOT_MEASURED;
   }
   const status = summary.anyFailed ? 'failed' : 'passed';
   const skippedField =
@@ -2694,7 +2709,7 @@ export async function main(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
       `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)} skippedTests=${skippedField}`,
   );
-  return summary.anyFailed ? 1 : 0;
+  return summary.anyFailed ? TEST_FILE_EXIT_FAILED : TEST_FILE_EXIT_PASSED;
   } finally {
     cleanupPreemptMarkers();
     cleanupInjectedReports();
@@ -2711,7 +2726,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     },
     (error) => {
       console.error(error);
-      process.exitCode = 2;
+      // A rejection here means the router itself threw: nothing was measured, so this is the
+      // NOT-MEASURED code and never the genuine-red one.
+      process.exitCode = TEST_FILE_EXIT_NOT_MEASURED;
     },
   );
 }

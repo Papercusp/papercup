@@ -735,7 +735,9 @@ export const AUTHORED = {
       'documented above (`tsc -p .`, `test:affected`), and it fires in the most expensive direction: the canonical ' +
       'reason to pass `-t` is to confirm a **pre-fix RED**, and a false green there reads as "the defect isn\'t ' +
       'real", so the natural next move is to stop — having verified nothing. The router now refuses it ' +
-      '(`TEST_FILE_NAME_FILTER_NO_MATCH`, exit 1, and deliberately NO `TEST_FILE_RESULT` line, since its presence is ' +
+      '(`TEST_FILE_NAME_FILTER_NO_MATCH`, exit 2 = NOT MEASURED per the `scripts/lib/test-file-exit-codes.mjs` ' +
+      'contract — it was exit 1, the genuine-red code, until EI-21884126680256710 — and deliberately NO ' +
+      '`TEST_FILE_RESULT` line, since its presence is ' +
       'what callers grep to mean "tests ran"), and `testing:run` refuses the same via ' +
       '`error: \'name_filter_no_match\'`.',
     evidence:
