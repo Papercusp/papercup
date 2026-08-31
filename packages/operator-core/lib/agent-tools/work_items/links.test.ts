@@ -25,6 +25,7 @@ vi.mock('@papercusp/coordination/capabilities', async (importOriginal) => {
   return { ...actual, PgLinkStore: fakes.PgLinkStore };
 });
 vi.mock('../coordination/log', () => ({ coordScopeWorkspace: vi.fn(() => 'workspace-live') }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'workspace-live') }));
 vi.mock('../../work-item-blocking', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../work-item-blocking')>();
   return {
@@ -147,7 +148,11 @@ describe('work_items:links handler', () => {
 
 describe('work_items:links wiring', () => {
   it('builds the issue reader with the hybrid canonical merge seam', () => {
-    expect(fakes.state.storeOpts.some((candidate) => typeof (candidate as { getWorkspaceId?: unknown }).getWorkspaceId === 'function')).toBe(true);
+    const scopedStores = fakes.state.storeOpts.filter(
+      (candidate) => typeof (candidate as { getWorkspaceId?: unknown }).getWorkspaceId === 'function',
+    ) as Array<{ getWorkspaceId: () => string }>;
+    expect(scopedStores).toHaveLength(2);
+    expect(scopedStores.map((store) => store.getWorkspaceId())).toEqual(['workspace-live', 'workspace-live']);
     expect(fakes.state.readerStores).toHaveLength(1);
   });
 });

@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
 import { getWorkItemDepBlockers, workItemDepEdgeReader, type WorkItemBlockerRequirement } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
+import { activeWorkspaceId } from './workspace-registry';
 
 /** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed).
  *  work-item-status-full-unify (2026-07-19): + the unified terminals (`done`/`dropped`) as a
@@ -119,7 +120,11 @@ export interface BlockingEdgeReader {
 const edgeLinkStore = new PgLinkStore({
   getSql: () => getOrgPg().sql,
   ensureSchema: async () => {},
+  // Feature-family work items write their coord links in the active workspace.
+  // Keep this resolver on the long-lived reader so work_items:links does not
+  // silently query the legacy DEFAULT_COORD_WORKSPACE partition.
   workspaceId: DEFAULT_COORD_WORKSPACE,
+  getWorkspaceId: () => activeWorkspaceId(),
 });
 
 const WORK_ITEM_KINDS = new Set(['issue', 'feature']);
