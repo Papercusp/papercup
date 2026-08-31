@@ -1215,7 +1215,7 @@ export async function reserveGoalHolderRespawnRateSlot(
   const decision: GoalHolderRespawnRateDecision = row.allowed
     ? { kind: 'reserved', attemptsInWindow }
     : { kind: 'capped', attemptsInWindow };
-  await appendGoalWriteAudit(sql, {
+  await appendGoalWriteAudit(sql as unknown as GoalSqlTag, {
     workspaceId: goal.workspaceId,
     goalId: goal.goalId,
     author: HOLDER_RESPAWNER_IDENTITY.ownerId,
@@ -1281,7 +1281,7 @@ export async function pauseGoalForHolderRespawnRateCap(
   `;
   if (!changed) return;
 
-  await appendGoalWriteAudit(sql, {
+  await appendGoalWriteAudit(sql as unknown as GoalSqlTag, {
     workspaceId: goal.workspaceId,
     goalId: goal.goalId,
     author: HOLDER_RESPAWNER_IDENTITY.ownerId,
