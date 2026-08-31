@@ -64,6 +64,7 @@
     "lint:no-unreachable-tier-mock": "node ../../scripts/check-unreachable-tier-mock.mjs",
     "lint:green-checkpoint-tag": "node ../../scripts/check-green-checkpoint-tag.mjs",
     "lint:explicit-presence": "node ../../scripts/check-explicit-presence.mjs --ratchet",
+    "lint:docs-mirror": "node ../../scripts/check-docs-mirror.mjs",
     "gen:authored-docs:check": "tsx ../../scripts/project-authored-docs.mts --check",
     "gen:client-docs:check": "node ../../scripts/project-doc-parts.mjs",
     "gen:compaction:check": "tsx ../../scripts/gen-compaction.ts --check",
