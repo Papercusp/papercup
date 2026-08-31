@@ -302,9 +302,44 @@ describe('endedByForObservedExit — the write-side rule (EI-21908787009967815)'
   });
 
   it('does NOT infer a kill from a 128+N exit code — that attribution is unobserved', () => {
-    // 143 is SIGTERM by convention, but a process may exit 143 deliberately. The rule
-    // takes no exitCode at all; this pins that as intent rather than an oversight.
-    expect(endedByForObservedExit(null, { killedByUs: false }).endedBy).toBe('self');
-    expect(endedByForObservedExit.length).toBe(2); // (observedSignal, opts) — no exitCode
+    // 143 is SIGTERM by convention, but a process may exit 143 deliberately, so the
+    // number is not evidence of a kill. The rule takes no exitCode at all: the verdict
+    // is a function of the observed signal and nothing else. Pinned behaviourally —
+    // every 128+N shape a caller might be tempted to read still resolves to 'self'.
+    for (const conventionallySignalLooking of [128 + 1, 128 + 9, 128 + 15]) {
+      expect(conventionallySignalLooking).toBeGreaterThan(128); // the shape under test
+      expect(endedByForObservedExit(null, { killedByUs: false }).endedBy).toBe('self');
+    }
+    // ...and the ONLY thing that flips it is a signal someone actually observed.
+    expect(endedByForObservedExit('SIGTERM', { killedByUs: false }).endedBy).toBe('signal');
+  });
+
+  /**
+   * The rule above can only be right if the signal REACHES it. Both WI-38054 and
+   * EI-21908787009967815 were the same physical mistake — `on('close', (code) => …)`,
+   * dropping the second argument Node has always passed — and no test could see it,
+   * because a dropped argument is not a wrong value, it is an absent one. This is the
+   * detector that was missing.
+   */
+  it('the invoke runner READS the signal off close — the argument both bugs dropped', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./dbos/orchestrator-runner.ts', import.meta.url), 'utf8');
+
+    // Positive control FIRST: if this pattern stops matching, the assertion below has
+    // become vacuous (the file moved or the handler was rewritten) and the test must
+    // fail loudly rather than silently guard nothing.
+    const closeHandlers = [...src.matchAll(/child\.on\(\s*'close'\s*,\s*\(([^)]*)\)/g)];
+    expect(closeHandlers.length).toBeGreaterThan(0);
+
+    for (const [, params] of closeHandlers) {
+      const arity = params.split(',').filter((p) => p.trim().length > 0).length;
+      expect(
+        arity,
+        `child.on('close', (${params})) reads ${arity} argument(s). Node passes ` +
+          `(code, signal), and the signal is the ONLY evidence the child was KILLED — ` +
+          `code is null in exactly that case. Dropping it records a reaped agent as ` +
+          `ended_by='self' (WI-38054, EI-21908787009967815).`,
+      ).toBe(2);
+    }
   });
 });
