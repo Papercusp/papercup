@@ -992,9 +992,10 @@ describe('work_items:complete (keyed-array)', () => {
         summary: 'shipped',
         tests: 'pnpm vitest complete.test.ts --run',
         testResult: '1/1 green',
-        // Keep the authority pass-through fixture independent of the shared tree's
-        // intentionally dirty implementation files: committed-content identity must
-        // match HEAD for this test to exercise a committed result.
+        // EI-21973530107303854: a REAL path on purpose — `addedTests: true` requires one,
+        // or the close is refused for `added-tests-without-path` and never reaches the
+        // content-identity gate at all. Which real path does not matter: see the authority
+        // assertion below for why this test no longer depends on its git state.
         filesChanged: ['packages/operator-core/package.json'],
         verifiedHow: 'unit',
         addedTests: true,
