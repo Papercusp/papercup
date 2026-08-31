@@ -27,13 +27,26 @@ import {
 } from "./ReportTakeover";
 import "./review-report.css";
 
-/** The phase vocabulary both run shapes already share. */
-export type ReviewRunPhase =
-  | "pending"
-  | "running"
-  | "review"
-  | "complete"
-  | "failed";
+/**
+ * The phase vocabulary both run shapes already share, as RUNTIME members.
+ *
+ * The member list is the definition and the type is derived from it, not the
+ * other way round. That is deliberate: the acceptance criterion for this
+ * surface requires enumerating the phases from the type's own members rather
+ * than from a literal list copied into a test, so that a phase added later
+ * fails the presentation drill by construction instead of waiting for someone
+ * to remember to extend a fixture. A bare `type` union has no runtime members
+ * and cannot be iterated, which makes that guarantee impossible to write.
+ */
+export const REVIEW_RUN_PHASES = [
+  "pending",
+  "running",
+  "review",
+  "complete",
+  "failed",
+] as const;
+
+export type ReviewRunPhase = (typeof REVIEW_RUN_PHASES)[number];
 
 /**
  * Which presentation a mounted report gets. `null` means "do not mount".
