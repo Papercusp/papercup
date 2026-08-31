@@ -205,6 +205,67 @@ describe('red-queen is the arms-race term, not the retired role', () => {
   });
 });
 
+/**
+ * WI-1726926 — a MODULE SPECIFIER is a file path, not a claim about who does the
+ * work, and here the guard was flagging the very import that PROVES a tool is
+ * retired.
+ *
+ * `stripCommentsOnly` keeps code, so a contiguous import block is ONE segment,
+ * and that block supplies both halves of the offence from two unrelated paths:
+ * `'../_mug-kettle-gate'` matches ROLE_RE via `-kettle-` (hyphen = word boundary,
+ * exactly as in `red-queen`), and a sibling `'../../pot/wake'` matches
+ * EXECUTION_RE via `wake`. Measured 2026-08-31: 6 of the 27 remaining
+ * pot/fleet/deploy offenders were import blocks, and FIVE of the six imported
+ * `refuseIfMugKettleRetired` / `MUG_KETTLE_RETIRED_ERROR` — the gate was red
+ * because those tools correctly REFUSE while the tier is retired. No prose exists
+ * to repair at those sites; the only edit that greens them is renaming a live
+ * module, which is a booby trap rather than a fix.
+ */
+describe('module specifiers are paths, not guidance', () => {
+  const offenders = (file: string, source: string) =>
+    findRetiredGuidanceOffenders(file, guidanceTextFor(file, source));
+
+  it('does not flag an import block that names the retirement gate it calls', () => {
+    // The exact measured shape: role word and execution verb from two different paths.
+    expect(
+      offenders(
+        't.ts',
+        `import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';\nimport { resolvePotHomeSlug } from '../../pot/wake';\n`,
+      ),
+    ).toEqual([]);
+    expect(
+      offenders('t.ts', `import { mugWakeEfficiency } from '../../pot/mug-wake-efficiency';\n`),
+    ).toEqual([]);
+    expect(offenders('t.ts', `const g = require('../_mug-kettle-gate');\nconst w = require('../pot/wake');\n`)).toEqual(
+      [],
+    );
+  });
+
+  it('STILL flags a real prescription that merely mentions a path', () => {
+    // The pass must not become a prose escape hatch: only the quoted specifier is blanked.
+    expect(
+      offenders('t.ts', `const s = 'the Mug dispatches work, see ../_mug-kettle-gate';`).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('does not reach a quoted string containing whitespace (prose, and SQL FROM)', () => {
+    // A specifier has no spaces; that is what keeps ordinary sentences out of reach.
+    expect(offenders('t.ts', `const q = 'SELECT x FROM the Mug that dispatches work';`).length).toBeGreaterThan(0);
+  });
+
+  it('calibration — the detector still fires on ordinary prose (proves the above are not vacuous)', () => {
+    expect(offenders('t.ts', `const d = 'The Mug dispatches work to a bee.';`).length).toBeGreaterThan(0);
+  });
+
+  it('is length-preserving, so reported line numbers stay exact', () => {
+    const source = `import { a } from '../_mug-kettle-gate';\nconst d = 'The Mug dispatches work.';\n`;
+    const out = guidanceTextFor('t.ts', source);
+    expect(out).toHaveLength(source.length);
+    // The surviving offender is still reported on line 2, not line 1.
+    expect(offenders('t.ts', source).map((o) => o.line)).toEqual([2]);
+  });
+});
+
 describe('retired-tier current-guidance live verdict', () => {
   it('scans every canonical active root and the canonical su prompt with zero exemptions-by-baseline', () => {
     const result = collectActiveRetiredGuidance(REPO_ROOT);

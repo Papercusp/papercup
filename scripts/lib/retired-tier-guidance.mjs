@@ -53,7 +53,9 @@ export function guidanceTextFor(relativeFile, source) {
     // clean bill for text it never inspected.
     text = source;
   }
-  return blankDomainTermCollisions(blankRoleAllowlistArrays(text));
+  return blankDomainTermCollisions(
+    blankImportSpecifiers(blankRoleAllowlistArrays(text)),
+  );
 }
 
 /**
@@ -142,6 +144,49 @@ function blankRoleAllowlistArrays(text) {
       for (let i = start; i < start + role[0].length; i += 1) chars[i] = " ";
     }
     OPENER_RE.lastIndex = close;
+  }
+  return chars.join("");
+}
+
+/**
+ * A MODULE SPECIFIER is a file path, not a sentence about who does the work —
+ * and here the guard was flagging the very import that PROVES a tool is retired.
+ *
+ * `stripCommentsOnly` keeps code, so a contiguous import block is one segment
+ * (segments are blank-line delimited). That block routinely supplies both halves
+ * of the offence from two unrelated paths: `'../_mug-kettle-gate'` matches
+ * ROLE_RE via `-kettle-` (the hyphen is a word boundary, exactly as in
+ * `red-queen` above), and a sibling `'../../pot/wake'` matches EXECUTION_RE via
+ * `wake`. Neither line makes a claim about anything.
+ *
+ * The result is the guard at its most self-defeating: measured 2026-08-31, 6 of
+ * the 27 remaining `pot`/`fleet`/`deploy` offenders were import blocks, and FIVE
+ * of the six were importing `refuseIfMugKettleRetired` / `MUG_KETTLE_RETIRED_ERROR`
+ * — i.e. the gate was red because a tool correctly refuses while the tier is
+ * retired. There is no prose to repair at those sites; the only edit that would
+ * green them is renaming a live module, which is a booby trap, not a fix.
+ *
+ * Blanking only the ROLE token is sufficient because `findRetiredGuidanceOffenders`
+ * gates on ROLE_RE first — no role, no offence — and is the narrowest change that
+ * works. Scope: a quoted specifier immediately after `from`/`import`/`require`,
+ * containing NO whitespace, which is what keeps ordinary prose (and a SQL
+ * `FROM 'some table'`) out of reach. Length-preserving, so line numbers stay exact
+ * and a role word one character outside the quotes is still flagged.
+ */
+function blankImportSpecifiers(text) {
+  const SPEC_RE = /\b(?:from|import|require)\s*\(?\s*(['"])([^'"\n\s]*)\1/g;
+  // split(""), NOT [...text]: same UTF-16-vs-code-point hazard as the pass above.
+  const chars = text.split("");
+  let match;
+  SPEC_RE.lastIndex = 0;
+  while ((match = SPEC_RE.exec(text)) !== null) {
+    const specifier = match[2];
+    const specStart = match.index + match[0].length - specifier.length - 1;
+    ROLE_RE_GLOBAL.lastIndex = 0;
+    for (const role of specifier.matchAll(ROLE_RE_GLOBAL)) {
+      const start = specStart + (role.index ?? 0);
+      for (let i = start; i < start + role[0].length; i += 1) chars[i] = " ";
+    }
   }
   return chars.join("");
 }
@@ -506,7 +551,7 @@ export function findRetiredGuidanceOffenders(file, source) {
  *      (EI-21972876172423322).
  */
 export const ACTIVE_RETIRED_GUIDANCE_PENDING = [
-  { path: "packages/operator-core/lib/agent-tools/pot", offenders: 20 },
+  { path: "packages/operator-core/lib/agent-tools/pot", offenders: 14 },
   { path: "packages/operator-core/lib/agent-tools/fleet", offenders: 5 },
   { path: "packages/operator-core/lib/agent-tools/deploy", offenders: 2 },
 ];
