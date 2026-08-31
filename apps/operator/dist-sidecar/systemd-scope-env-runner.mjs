@@ -1,5 +1,6 @@
 import { createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { constants } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -16,6 +17,52 @@ export const SYSTEMD_RUNNER_JOB_END_PREFIX = '[capability:bash] JOB END';
 function usage(message) {
   process.stderr.write(`[systemd-scope-env-runner] ${message}\n`);
   process.exitCode = 2;
+}
+
+/**
+ * WI-1064487 — this runner is the transient unit's MAIN process, so systemd delivers the
+ * deadline's SIGTERM to IT, and its death closes the payload's stdout/stderr pipes.
+ *
+ * With no handler installed, node dies immediately. A payload whose TERM trap is deferred
+ * behind a foreground child (`sleep 30`, overwhelmingly the common shape) then dies on the
+ * broken pipe before its trap ever dispatches — so WI-6677's SIGTERM-before-SIGKILL
+ * guarantee silently did not hold for the most common payload there is.
+ *
+ * Measured on the REAL startBackground path (/tmp/wi1064487-probe/real-path.mts), and the
+ * third arm is the control that implicates the PIPE specifically rather than the signal:
+ *   `sleep 30`                (foreground child)          14/55 then 2/13 failures
+ *   `sleep 30 & wait $!`      (interruptible)             0/54, 0/14
+ *   `exec 2>>file; sleep 30`  (stderr off the pipe)       0/20, 0/13
+ *
+ * Forwarding the signal and STAYING ALIVE until the child closes keeps those pipes open for
+ * exactly as long as the payload owes cleanup.
+ *
+ * ⚠ BEHAVIOUR CHANGE, fleet-wide: a payload that IGNORES SIGTERM now keeps its unit alive
+ * until systemd's SIGKILL at TimeoutStopSec=10s, where previously the runner died at once and
+ * the cgroup was torn down immediately. That grace is what WI-6677 promises; it is not a
+ * regression, but it is a real change for every confined job.
+ */
+function forwardTerminationSignalsTo(child) {
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+    process.on(signal, () => {
+      try {
+        child.kill(signal);
+      } catch {
+        // The child is already gone; its close handler owns the exit code.
+      }
+    });
+  }
+}
+
+/**
+ * WI-1064487 — a signal death used to collapse to exit 1, which made "the payload was
+ * terminated" indistinguishable from "the payload failed". Report the shell convention
+ * (128 + signal number) so 143 (SIGTERM) and 137 (SIGKILL) stay distinguishable — that
+ * distinction is what bash-jobs.test.ts's legend is meant to read.
+ */
+function exitCodeFor(code, signal) {
+  if (!signal) return code ?? 1;
+  return 128 + (constants.signals[signal] ?? constants.signals.SIGTERM);
 }
 
 function readEnvironment(sourcePath) {
@@ -179,6 +226,9 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   };
 
   const child = spawn(command, args, { env: environment, stdio: ['inherit', 'pipe', 'pipe'] });
+  // WI-1064487: this process owns the payload's stdout/stderr pipes, so it must outlive the
+  // deadline signal — otherwise the payload's own TERM trap dies on a broken pipe.
+  forwardTerminationSignalsTo(child);
   child.stdout?.on('data', (chunk) => emit(stdoutDecoder.write(chunk), mirrorOut));
   child.stderr?.on('data', (chunk) => emit(stderrDecoder.write(chunk), mirrorErr));
   child.once('error', (error) => {
@@ -187,7 +237,7 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   // `close`, not `exit`: all stdout/stderr bytes have drained before the final
   // redactor suffix and JOB END marker are committed.
   child.once('close', (code, signal) => {
-    finish(signal ? 1 : (code ?? 1));
+    finish(exitCodeFor(code, signal));
   });
 }
 
@@ -218,12 +268,16 @@ export function main(argv = process.argv) {
       runDurablePayload(command, args, environment, logPath, redactions);
     } else {
       const child = spawn(command, args, { env: environment, stdio: 'inherit' });
+      // WI-1064487: same grace as the durable branch. stdio is inherited here so there are no
+      // pipes of ours to break, but a runner that dies instantly still tears the cgroup down
+      // before the payload's trap can run, and the exit code must not collapse to 1.
+      forwardTerminationSignalsTo(child);
       child.once('error', (error) => {
         process.stderr.write(`[systemd-scope-env-runner] payload spawn failed: ${error.message}\n`);
         process.exitCode = 1;
       });
       child.once('exit', (code, signal) => {
-        process.exitCode = signal ? 1 : (code ?? 1);
+        process.exitCode = exitCodeFor(code, signal);
       });
     }
   } catch (error) {
