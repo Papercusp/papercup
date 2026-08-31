@@ -64,16 +64,14 @@ describe('buildKey', () => {
       'ext:gmail:message.received',
     );
     expect(buildKey('consult-reply', { conversationId: 'conv-123' })).toBe('consult:reply:conv-123');
-    expect(buildKey('plan-event', { slug: 'release-plan', gate: 'sidecar-released' })).toBe(
-      'plan:release-plan:sidecar-released',
-    );
   });
 
   it('throws when a required param is missing', () => {
     expect(() => buildKey('work-item', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('work-item-settled', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('service-up', {})).toThrow(/requires param 'name'/);
-    expect(() => buildKey('plan-event', { slug: 'release-plan' })).toThrow(/requires param 'gate'/);
+    // a two-required-param family still names the SECOND missing param, not just the first
+    expect(() => buildKey('plan-item', { slug: 'release-plan' })).toThrow(/requires param 'id'/);
   });
 
   it('collapses an omitted OPTIONAL param to the global key (matches the real global emit)', () => {
@@ -154,7 +152,8 @@ describe('renderCatalog', () => {
     expect(byFamily['fleet-member-stalled'].key).toBe('fleet:member-stalled:<slug>');
     expect(byFamily['fleet-admission-blocked'].awaitable_now).toBe(true);
     expect(byFamily['fleet-admission-blocked'].key).toBe('fleet:admission-blocked:<slug>');
-    expect(byFamily['plan-event'].awaitable_now).toBe(true);
+    // WI-1632193: still RENDERED (that is what makes the shape discoverable), even
+    // though keyMatchesCatalog no longer matches it — see the announcedShape tests.
     expect(byFamily['plan-event'].key).toBe('plan:<slug>:<gate>');
   });
 
@@ -210,20 +209,40 @@ describe('familyKeyPrefix (EI-9000 — the live-awaiter-count join key)', () => 
   });
 });
 
-describe('plan-scoped announced gates — catalog recurrence (EI-216663)', () => {
-  it('recognizes the key shape produced by buildAnnouncedKey without claiming this exact gate fired', () => {
+describe('scoped announced gates are NOT catalog families (WI-1632193)', () => {
+  // The `(EI-216663)` this block used to cite is a DANGLING reference: that id
+  // exists on no work-item and nowhere else in the tree, so it could not be used
+  // to check what behaviour was originally being protected. What IS checkable is
+  // the contract below, and it is asserted for all three scopes rather than for
+  // the one that happened to have a family.
+  it('mints the documented key shape while staying outside the static catalog', () => {
     const key = buildAnnouncedKey('p508-current-head-desktop-sidecar-released', {
       kind: 'plan',
       ref: 'p2p-public-release-remaining-lanes-2026-07-16',
     });
+    // The KEY SHAPE is unchanged by WI-1632193 — removing the family migrated no
+    // await and rewrote no key. This assertion is what proves that.
     expect(key).toBe('plan:p2p-public-release-remaining-lanes-2026-07-16:p508-current-head-desktop-sidecar-released');
-    expect(keyMatchesCatalog(key)).toBe(true);
 
-    const row = renderCatalog().find((candidate) => candidate.family === 'plan-event');
-    expect(row).toMatchObject({
+    // …but an announced key is minted at RUNTIME from the announcer's scope, so no
+    // static family can or should claim it. All three scopes answer alike; a `true`
+    // for any of them means a placeholder-first family was re-added, which reopens
+    // the `plan:draft-redy:x` hole.
+    expect(keyMatchesCatalog(key)).toBe(false);
+    expect(keyMatchesCatalog(buildAnnouncedKey('phase3-open', { kind: 'fleet', ref: 'p2p-git' }))).toBe(false);
+    expect(keyMatchesCatalog(buildAnnouncedKey('some-gate', { kind: 'harness', ref: 'papercusp' }))).toBe(false);
+
+    // …while remaining fully DISCOVERABLE. This is the pair EI-21666331086562886 and
+    // WI-1632193 each own one half of: the row is rendered so a late agent can find
+    // the shape, and it matches nothing so a typo of it cannot pass as catalogued.
+    expect(renderCatalog().find((candidate) => candidate.family === 'plan-event')).toMatchObject({
       key: 'plan:<slug>:<gate>',
-      awaitable_now: true,
     });
+  });
+
+  it('a GLOBAL announced gate is still just its own bare key', () => {
+    // Unscoped announcements are not prefixed at all, so nothing here constrains them.
+    expect(buildAnnouncedKey('release-window-open', { kind: 'global', ref: null })).toBe('release-window-open');
   });
 });
 
@@ -316,11 +335,26 @@ describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
   });
 
   it('every family in the live catalog matches its own concrete key (no family can self-report as an orphan)', () => {
+    let exempted = 0;
     for (const e of EVENT_CATALOG) {
       const params: Record<string, string> = {};
       for (const p of e.params) params[p.name] = 'x';
+      // WI-1632193: an `announcedShape` row documents a RUNTIME-minted key, so it is
+      // supposed to match nothing — including itself. That is not a family reporting
+      // as an orphan; it is a row that never answers membership at all, because its
+      // free first placeholder cannot separate a real slug from a typo of a sibling
+      // family. The dual contract (rendered, never matched) is asserted directly in
+      // subject-scope.test.ts.
+      if (e.announcedShape) {
+        expect(keyMatchesCatalog(buildKey(e.family, params)), `${e.family} must NOT match`).toBe(false);
+        exempted += 1;
+        continue;
+      }
       expect(keyMatchesCatalog(buildKey(e.family, params)), `${e.family} must match itself`).toBe(true);
     }
+    // Pin the exemption's size so a future announcedShape row is a deliberate act:
+    // silently widening this is how the orphan guard would go dark a second time.
+    expect(exempted).toBe(1);
   });
 });
 

@@ -28,6 +28,7 @@ import {
   deriveSubjectScope,
   subjectScopeOf,
   familyKeyArity,
+  familyAdmitsKey,
   keyMatchesCatalog,
   findRequiredParamPrefixMatch,
   findZeroParamSuffixMismatch,
@@ -174,35 +175,58 @@ describe('WI-1611805 — the derived ARITY bound on keyMatchesCatalog', () => {
   });
 
   it('the BARE namespace stays delegated to EI-13089, which words it better', () => {
-    // `plan` / `ext` are exactly a family prefix, so familyAdmitsKey keeps matching
-    // them on purpose: findRequiredParamPrefixMatch then names the dropped param
-    // instead of the vaguer "nothing emits this key". Asserting the delegation, not
-    // just the `true`, is what stops a future "tighten this too" from going silent.
-    for (const key of ['plan', 'ext']) {
-      expect(keyMatchesCatalog(key), key).toBe(true);
-      expect(findRequiredParamPrefixMatch(key), key).toBeTruthy();
-    }
+    // `ext` is exactly a family prefix, so familyAdmitsKey keeps matching it on
+    // purpose: findRequiredParamPrefixMatch then names the dropped param instead of
+    // the vaguer "nothing emits this key". Asserting the delegation, not just the
+    // `true`, is what stops a future "tighten this too" from going silent.
+    expect(keyMatchesCatalog('ext')).toBe(true);
+    expect(findRequiredParamPrefixMatch('ext')).toBeTruthy();
+    // `plan` left this set with the `plan-event` family (WI-1632193). No family
+    // has the bare prefix `plan` any more, so the bare key is simply unknown — the
+    // orphan guard's own message is now the correct one to get.
+    expect(keyMatchesCatalog('plan')).toBe(false);
   });
 
-  it('still admits every real key those families produce — measured against live awaits', () => {
-    // 2026-08-31, harness_shared.event_awaits: 811 `plan:` awaits at 3 segments,
-    // 1 at 5 (a plan slug that itself contains colons), 1 `ext:` at 3. ZERO below
-    // the bound, which is why this tightening strands no live await.
-    expect(keyMatchesCatalog('plan:byoc-cloud-workspaces-gcp-aws-azure-2026-08-22:p026-ownership-repaired')).toBe(true);
-    expect(
-      keyMatchesCatalog('plan:coord-hook-fold-load-repair-2026-08-30:fleet:non-p2p-feature-drain-2026-08-29:wi36147'),
-    ).toBe(true);
+  it('still admits every real key a free-first-placeholder family produces', () => {
+    // 2026-08-31, harness_shared.event_awaits: 1 `ext:` await at 3 segments, ZERO
+    // below the bound — which is why the arity tightening stranded no live await.
     expect(keyMatchesCatalog('ext:gmail:message-received')).toBe(true);
   });
 
-  it('IRREDUCIBLE RESIDUE — a same-arity typo is still admitted, and that is not a bug in this fix', () => {
-    // `<slug>` and `<gate>` are free, so `plan:draft-redy:x` IS a well-formed
-    // instance of `plan:<slug>:<gate>`; no catalog knows that no plan is named
-    // `draft-redy`. Pinned deliberately so nobody reads the arity bound as "typos
-    // are caught now" — removing this needs a re-template + await migration, which
-    // is why findFamilyPrefixShadowing still reports the pair below.
-    expect(keyMatchesCatalog('plan:draft-redy:x')).toBe(true);
-    expect(keyMatchesCatalog('plan:total:garbage')).toBe(true);
+  it('WI-1632193 — announced PLAN gates are outside the catalog now, and that strands nothing', () => {
+    // These are real live announced-gate keys (816 `plan:` awaits, 15 in flight at
+    // 2026-08-31T16:29Z). They stopped matching the catalog when `plan-event` was
+    // removed, and NOTHING regressed: an announced gate never reached the EI-10870
+    // orphan guard in the first place — await.ts gates it on `!announcedGate` — and
+    // is surfaced by the ANNOUNCED section of events:catalog instead.
+    //
+    // The load-bearing proof that this is the right shape is `fleet:`, which mints
+    // the same `<kind>:<ref>:<gate>` keys from buildAnnouncedKey, carries EIGHT
+    // literal-prefix families plus thousands of live announced awaits, and has
+    // never had a family for the announced shape.
+    for (const key of [
+      'plan:byoc-cloud-workspaces-gcp-aws-azure-2026-08-22:p026-ownership-repaired',
+      'plan:coord-hook-fold-load-repair-2026-08-30:fleet:non-p2p-feature-drain-2026-08-29:wi36147',
+    ]) {
+      expect(keyMatchesCatalog(key), key).toBe(false);
+    }
+    // POSITIVE CONTROL — the sibling fleet/harness announced shapes answer the same
+    // way, so the `false` above is the uniform rule and not a plan-only quirk.
+    expect(keyMatchesCatalog('fleet:my-fleet:phase3-open')).toBe(false);
+    expect(keyMatchesCatalog('harness:papercusp:some-gate')).toBe(false);
+  });
+
+  it('WI-1632193 — the same-arity typo that used to be IRREDUCIBLE residue is now REJECTED', () => {
+    // While `plan-event` (`plan:<slug>:<gate>`) existed, `<slug>` was free, so
+    // `plan:draft-redy:x` was a well-formed instance of it and keyMatchesCatalog
+    // answered TRUE — silently disarming the orphan guard for a typo of the sibling
+    // family `plan-draft-ready`. No arity bound could fix that (no catalog knows
+    // that no plan is named `draft-redy`); removing the family is what fixed it.
+    expect(keyMatchesCatalog('plan:draft-redy:x')).toBe(false);
+    expect(keyMatchesCatalog('plan:total:garbage')).toBe(false);
+    // CALIBRATION — the correctly-spelled sibling still matches, so the rejections
+    // above are the typo being caught, not the whole namespace going dark.
+    expect(keyMatchesCatalog('plan:draft-ready:my-slug')).toBe(true);
   });
 
   it('leaves both DELEGATED cases permissive, so their better-worded guards still own them', () => {
@@ -242,8 +266,28 @@ describe('WI-1611805 — the derived ARITY bound on keyMatchesCatalog', () => {
 
   it('every builtin family still matches its own fully-interpolated key', () => {
     for (const e of EVENT_CATALOG) {
+      // An `announcedShape` row documents a runtime-minted key and deliberately
+      // matches nothing (WI-1632193) — asserted in its own test below rather than
+      // silently skipped, so the exemption cannot hide a real family going dark.
+      if (e.announcedShape) continue;
       const params = Object.fromEntries(e.params.map((p) => [p.name, 'x']));
       expect(keyMatchesCatalog(buildKey(e.family, params)), e.family).toBe(true);
+    }
+  });
+
+  it('WI-1632193 — an announcedShape row is DISCOVERABLE but never MATCHES', () => {
+    // The two halves are independent, and both are load-bearing: dropping the first
+    // re-opens EI-21666331086562886 (a declared gate nobody could find in the
+    // catalog); dropping the second re-opens the `plan:draft-redy:x` typo hole.
+    const shapes = EVENT_CATALOG.filter((e) => e.announcedShape);
+    expect(shapes.length).toBeGreaterThan(0); // the exemption above is not vacuous
+    for (const e of shapes) {
+      // DISCOVERABLE: it is a real catalog row with a real buildable key…
+      const params = Object.fromEntries(e.params.map((p) => [p.name, 'x']));
+      expect(buildKey(e.family, params), e.family).toContain('x');
+      // …but NEVER a membership answer, for its own key or any other under it.
+      expect(familyAdmitsKey(e, buildKey(e.family, params)), e.family).toBe(false);
+      expect(keyMatchesCatalog(buildKey(e.family, params)), e.family).toBe(false);
     }
   });
 });
@@ -255,15 +299,15 @@ describe('findFamilyPrefixShadowing', () => {
    * `keyMatchesCatalog` then answers true for every key under it — including typos —
    * silently disarming the EI-10870 orphan guard for that whole namespace.
    *
-   * ⚠ This is the KNOWN-LIVE set, not an aspiration. `plan-event`
-   * (`plan:<slug>:<gate>`) shadows `plan-draft-ready` today. Pinning it means a NEW
-   * shadowing family fails the build while this one stays visible rather than being
-   * quietly normalised into the background.
+   * ⚠ The builtin set is EMPTY, and that is a fixed state rather than an untested
+   * one. `plan-event` (`plan:<slug>:<gate>`) shadowed `plan-draft-ready` until
+   * WI-1632193 removed it; the negative control below is SYNTHETIC and permanent,
+   * so this detector still fails the build on a newly-added shadowing family even
+   * though it now has nothing real to report. Read an empty result here as "the
+   * defect is fixed", never as "the detector was switched off".
    */
-  it('reports exactly the known shadowing pair in the builtin catalog', () => {
-    expect(findFamilyPrefixShadowing(EVENT_CATALOG)).toEqual([
-      { shadower: 'plan-event', shadowerPrefix: 'plan', shadowed: 'plan-draft-ready', shadowedPrefix: 'plan:draft-ready' },
-    ]);
+  it('reports NO shadowing pair in the builtin catalog — the plan-event pair is gone', () => {
+    expect(findFamilyPrefixShadowing(EVENT_CATALOG)).toEqual([]);
   });
 
   it('NEGATIVE CONTROL — a newly-added placeholder-first family that swallows a sibling IS caught', () => {

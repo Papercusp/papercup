@@ -189,6 +189,26 @@ export interface EventCatalogEntry {
    * redundant second copy is exactly the drift this field exists to avoid.
    */
   subjectScope?: SubjectScope;
+  /**
+   * WI-1632193 — this row DOCUMENTS a key shape that is minted at RUNTIME
+   * (`buildAnnouncedKey`: `fleet:`/`plan:`/`harness:` + ref + gate), not a family any
+   * emitter fires statically. It is rendered by {@link renderCatalog} so agents can
+   * discover the shape (EI-21666331086562886: a declared P-508 release latch was
+   * undiscoverable through the canonical catalog), but {@link familyAdmitsKey}
+   * refuses to MATCH it, and therefore so do {@link keyMatchesCatalog} and
+   * {@link findFamilyPrefixShadowing}.
+   *
+   * Both halves are load-bearing, and separating them is the whole point. Such a
+   * template's first placeholder is free, so matching on it would truncate the
+   * prefix to the bare namespace and admit EVERY key under it — which is how
+   * `plan-event` silently disarmed the EI-10870 orphan guard for `plan:draft-redy:x`,
+   * a typo of the sibling family `plan-draft-ready`. No catalog can tell that typo
+   * from a real slug, so an announced shape must never answer a membership question:
+   * whether a runtime-minted key is legitimate is owned by the ANNOUNCEMENT
+   * registry (see the declared-announcement check in agent-tools/events/await.ts),
+   * which knows the difference because a typo was never declared.
+   */
+  announcedShape?: boolean;
 }
 
 /** The effective scope for an entry: an explicit override, else the derivation. */
@@ -850,19 +870,40 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'plans:get re-polling for a draft to appear',
   },
   {
-    // Plan-scoped announced gates use the same `plan:<slug>:<gate>` key shape
+    // ── WI-1632193 — DOCUMENTATION-ONLY (`announcedShape`), and it must stay that
+    // way. Plan-scoped announced gates use the `plan:<slug>:<gate>` key shape
     // whether the caller supplied `announceScope:'plan'` or passed an already
-    // prefixed gate to the global announcement path. Keep this family separate
-    // from the plan-event history surface (`coord:plan-events`): this is the
-    // awaitable event key emitted when the declared gate eventually fires.
+    // prefixed gate to the global announcement path. Keep this row separate from
+    // the plan-event history surface (`coord:plan-events`): this is the awaitable
+    // event key emitted when the declared gate eventually fires.
+    //
+    // It EXISTS because EI-21666331086562886 measured what its absence costs: a
+    // declared P-508 release latch was undiscoverable through the canonical
+    // catalog, so late agents had to inherit the exact key out-of-band.
+    //
+    // It does NOT MATCH because WI-1632193 measured what matching costs: the first
+    // placeholder is free, so `familyKeyPrefix` collapses to the bare namespace
+    // `plan` and `keyMatchesCatalog` answered true for EVERY 3-segment key under it
+    // — including `plan:draft-redy:x`, a typo of the sibling family
+    // `plan-draft-ready`, which then registered an await that could only TIME OUT.
+    //
+    // Keeping BOTH halves is the point: discovery and membership are different
+    // questions, and this row is only allowed to answer the first. Do not drop
+    // `announcedShape` to silence a false uncatalogued-key warning — that trades a
+    // loud dead await for a silent one. Whether a runtime-minted key is legitimate
+    // is owned by the ANNOUNCEMENT REGISTRY, which the declared-gate check in
+    // agent-tools/events/await.ts consults, and which knows a typo was never
+    // declared. `fleet:`/`harness:` mint the same shape and can be documented here
+    // the same way if they ever need discovery.
     family: 'plan-event',
     keyTemplate: 'plan:<slug>:<gate>',
+    announcedShape: true,
     params: [
       { name: 'slug', required: true, describe: 'the plan slug in the announced key' },
       { name: 'gate', required: true, describe: 'the stable gate name' },
     ],
     describe:
-      'A plan-qualified announced gate FIRED; declaration visibility and latch generation remain in the announcement row, while this key is the awaitable completion signal.',
+      'A plan-qualified announced gate FIRED; declaration visibility and latch generation remain in the announcement row, while this key is the awaitable completion signal. DISCOVERY-ONLY: the key is minted at runtime by events:emit, so this shape is documented but never matched — read the ANNOUNCED section of events:catalog for live gates.',
     emitter:
       'events:emit announcement + fire path (packages/operator-core/lib/agent-tools/events/emit.ts → packages/operator-core/lib/events/await/announce-key.ts)',
     exists: true,
@@ -1024,7 +1065,8 @@ export function familyKeyArity(entry: EventCatalogEntry): {
  * live-awaiter count join (`countActiveAwaitsByKeyShapes` in ./store).
  *
  * The count carried the same defect as the orphan guard, from the same source: it
- * LIKE-matched `familyKeyPrefix(e) || '%'`, which for `plan-event` is `plan%` — not
+ * LIKE-matched `familyKeyPrefix(e) || '%'`, which for `plan-event` (now a
+ * documentation-only `announcedShape` row, WI-1632193) was `plan%` — not
  * even `:`-bounded, so it swept in whole unrelated families. Measured 2026-08-31 on
  * live rows: `plan-event` reported 5 live awaiters over a true population of 4, the
  * extra being a `plan-item:` await. `%` spans `:` so `P:%:%` is exactly the arity
@@ -1055,6 +1097,10 @@ export function familyKeyLikePattern(entry: EventCatalogEntry): string {
 export function familyAdmitsKey(entry: EventCatalogEntry, key: string): boolean {
   const k = String(key ?? '').trim();
   if (!k) return false;
+  // WI-1632193: an announced SHAPE documents a runtime-minted key; it never answers
+  // a membership question. See the field's own doc on EventCatalogEntry for why
+  // matching one re-opens the `plan:draft-redy:x` hole.
+  if (entry.announcedShape) return false;
   const { prefix, requiredTailSegments, decidable } = familyKeyArity(entry);
   if (prefix.length === 0) return false;
   if (k === prefix) return true;
@@ -1084,11 +1130,16 @@ export function familyAdmitsKey(entry: EventCatalogEntry, key: string): boolean 
  * entire namespace (WI-1611805).
  *
  * ⚠ WHAT THIS STILL CANNOT DECIDE, by construction: a free placeholder cannot tell a
- * typo from a real value. `plan:<slug>:<gate>` legitimately admits `plan:draft-redy:x`
- * — three segments is a well-formed instance, and no catalog knows that no plan is
- * named `draft-redy`. The arity bound closes the NAMESPACE-WIDTH hole (`plan:typo`,
- * `ext:whatever`); the same-arity residue is irreducible here and is pinned as such
- * in subject-scope.test.ts so this fix is never read as "typos are caught now".
+ * typo from a real value. A `plan:<slug>:<gate>` family would legitimately admit
+ * `plan:draft-redy:x` — three segments is a well-formed instance, and no catalog
+ * knows that no plan is named `draft-redy`. The arity bound closes the
+ * NAMESPACE-WIDTH hole (`plan:typo`, `ext:whatever`) but NOT that same-arity
+ * residue, which is why WI-1632193 marked `plan-event` {@link EventCatalogEntry.announcedShape}
+ * — documented, never matched — rather than trying to bound it: no arity can separate
+ * a typo from a real slug in a free FIRST placeholder, so such a template must not
+ * answer membership at all. `ext:<source>:<event>` keeps its
+ * free first placeholder and is correct to — it shadows no sibling family, so the
+ * arity bound is sufficient there. See {@link findFamilyPrefixShadowing}.
  *
  * Pass the MERGED catalog (builtin + installed `provides.events`) so a key emitted
  * by an installed pack is never misreported as an orphan.
@@ -1205,10 +1256,15 @@ export function findZeroParamSuffixMismatch(
  * {@link keyMatchesCatalog} then answers `true` for EVERY key under it — including
  * typos — silently disarming the EI-10870 orphan guard for the whole namespace.
  *
- * ⚠ NOT HYPOTHETICAL — measured 2026-08-31, this returns exactly ONE pair today:
- *   · `plan-event` `plan:<slug>:<gate>` → prefix `plan`, which shadows
- *     `plan-draft-ready` (`plan:draft-ready`) and makes {@link keyMatchesCatalog}
+ * ⚠ NOT HYPOTHETICAL — it returned exactly one pair until WI-1632193 (2026-08-31):
+ *   · `plan-event` `plan:<slug>:<gate>` → prefix `plan`, which shadowed
+ *     `plan-draft-ready` (`plan:draft-ready`) and made {@link keyMatchesCatalog}
  *     answer true for `plan:draft-redy:x` and `plan:total:garbage`.
+ * That row is now `announcedShape` (documentation-only), so {@link familyAdmitsKey}
+ * refuses it and this returns NOTHING for the builtin catalog. An EMPTY result is
+ * the guarded state, not an untested one: the falsifying control is synthetic and
+ * permanent in subject-scope.test.ts, so a newly-added shadowing family still fails
+ * the build.
  *
  * ⚠ WI-1611805 NARROWED THIS, AND THE NARROWING IS THE POINT. Shadowing is now
  * measured through {@link familyAdmitsKey} — "does `a` admit the keys `b` actually

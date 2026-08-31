@@ -222,20 +222,23 @@ describe('events:catalog — live_awaiters', () => {
 
   /**
    * WI-1611805. The old join matched `familyKeyPrefix(e) || '%'`, which is not even
-   * `:`-bounded: `plan-event`'s derived prefix is the bare namespace `plan`, so its
-   * count swept in `plan-item:` and `plan-run:` awaits (measured live 2026-08-31: 5
-   * reported over a true 4). The tool must hand the store the family's SHAPE — the
-   * arity-bounded LIKE pattern — so the count and the orphan guard can never
-   * disagree about which awaits belong to a family.
+   * `:`-bounded: a placeholder-FIRST template's derived prefix is its bare namespace,
+   * so the count swept in every sibling family under it (measured live 2026-08-31 on
+   * the since-removed `plan-event`: 5 reported over a true 4). The tool must hand the
+   * store the family's SHAPE — the arity-bounded LIKE pattern — so the count and the
+   * orphan guard can never disagree about which awaits belong to a family.
+   *
+   * WI-1632193 removed `plan-event`, so this asserts on `external-trigger`, the
+   * remaining placeholder-first family — the shape that actually exercises the bug.
    */
   it('WI-1611805 — passes the arity-bounded SHAPE, not a bare `prefix%`', async () => {
     countMock.mockImplementation(async (shapes: Array<{ family: string }>) => new Map(shapes.map((s) => [s.family, 0])));
-    await call({ family: 'plan-event' });
+    await call({ family: 'external-trigger' });
     expect(countMock).toHaveBeenCalledWith([
-      // `plan:%:%` requires two `:`-separated tail segments; `plan-item:done:x` and
-      // `plan-run:finished:x` cannot match it, and neither can the bare `plan%`-era
+      // `ext:%:%` requires two `:`-separated tail segments, so a sibling family under
+      // the same namespace cannot match it, and neither can the bare `ext%`-era
       // over-count. `exact` keeps the bare-prefix await counted, as familyAdmitsKey does.
-      { family: 'plan-event', exact: 'plan', like: 'plan:%:%' },
+      { family: 'external-trigger', exact: 'ext', like: 'ext:%:%' },
     ]);
     // The unbounded prefix reader must not be reached from this path at all.
     expect(prefixCountMock).not.toHaveBeenCalled();

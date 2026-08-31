@@ -609,6 +609,41 @@ export default defineTool({
       }
     }
 
+    // ── WI-1632193: a key minted by buildAnnouncedKey (`fleet:`/`plan:`/`harness:`
+    // + ref + gate) belongs to NO static family, by design — the catalog cannot know
+    // a key that is minted at RUNTIME from the announcer's scope. EI-21666331086562886
+    // is what it costs to pretend otherwise: a genuinely declared P-508 release latch
+    // came back `uncatalogued_event_key:true`, so late agents could not trust the
+    // critical-path gate they were waiting on and had to inherit the key out-of-band.
+    //
+    // Ask the surface that actually OWNS the answer instead. A key with a declaration
+    // is legitimate whether or not it has ever fired, and whether or not THIS caller
+    // can see it: the `announcedGate` flag above is scope-resolved off the caller's
+    // presence, so it answers the narrower "is this MY gate", and a reader outside the
+    // announcing fleet/plan gets `false` for a gate that is perfectly real.
+    //
+    // This is also what keeps the orphan guard SHARP rather than merely quiet. A typo
+    // has no declaration, so `plan:draft-redy:x` still warns — which is precisely why
+    // the wildcard `plan-event` family was removed from the catalog rather than
+    // re-templated: any static family under `plan:` had to answer for the typo and for
+    // the real gate identically, and no catalog can tell those apart.
+    let declaredAnnouncement: { generations: number; everFired: boolean } | null = null;
+    if (unknownEventKey) {
+      const declared = await withBoundedTimeout(
+        findAnnouncementsForKey(eventKey, { includeSuperseded: true }),
+        { fallback: null, timeoutMs: 1_000, label: 'events-await:declaredAnnouncementCheck' },
+      );
+      // Fail-soft, like every probe here: an unavailable read leaves the warning
+      // exactly as it was rather than inventing a reassurance we cannot support.
+      if (declared.value && declared.value.length > 0) {
+        declaredAnnouncement = {
+          generations: declared.value.length,
+          everFired: declared.value.some((a) => a.firedAt && a.firedReason === 'event'),
+        };
+        unknownEventKey = false;
+      }
+    }
+
     // ── EI-18701276960172209 (the "green-gate-verdict" incident): a SELF- (or
     // peer-) DECLARED gate is exempted from the orphan-await guard above (an
     // announced-but-unfired gate is normally legitimate — a hand-minted pair-emit
@@ -1354,6 +1389,17 @@ export default defineTool({
                   uncatalogued_event_key: true,
                   uncatalogued_event_key_advice: `"${eventKey}" matches no family in events:catalog, BUT it has demonstrably fired before — ${emitterEvidence.exact ? 'this exact key has fired' : `${emitterEvidence.distinctKeys} key(s) in its family "${emitterEvidence.prefix}" have fired`}, ${emitterEvidence.fires} time(s) total, most recently ${emitterEvidence.lastFiredAt ?? 'unknown'}. So an emitter EXISTS and this await is fine — do NOT cancel it. The gap is in the catalog, not your await: the family is unregistered, which is a bug worth filing (it also means events:catalog cannot surface this key to anyone else).`,
                   emitter_evidence: emitterEvidence,
+                }
+              : {}),
+            // WI-1632193 / EI-21666331086562886: matches no static family because
+            // announced gates never do — but it is DECLARED, so the await is sound.
+            // Distinct from `uncatalogued_event_key` above (that one means "it fired
+            // but the family is unregistered — file a catalog bug"); here there is no
+            // catalog bug to file, because a runtime-minted key has no family to add.
+            ...(declaredAnnouncement
+              ? {
+                  declared_announced_gate: true,
+                  declared_announced_gate_advice: `"${eventKey}" matches no family in events:catalog — an ANNOUNCED gate never does, because its key is minted at runtime from the announcer's scope — but it HAS been declared (${declaredAnnouncement.generations} declaration generation(s)${declaredAnnouncement.everFired ? ', and a previous generation has already fired' : ''}). This await is sound: do NOT cancel it, and do not file a catalog gap for it. To discover gates like this one, read the ANNOUNCED section of events:catalog rather than its family list — the family list deliberately describes only statically-emitted keys.`,
                 }
               : {}),
             ...(requiredParamPrefixMismatch
