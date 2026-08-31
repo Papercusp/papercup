@@ -34,6 +34,7 @@ const SPAWN_DOOR_FILES = [
   [`${B}fleet/spawn-relaunch.ts`, 'caller, recovery path (P-009)'],
   [`${B}fleet/supervision.ts`, 'caller, recovery path (P-010)'],
   [`${B}events/await/wake-executor-fresh-context.ts`, 'caller, recovery path (P-011)'],
+  [`${B}iq-battery/bee-instance.ts`, 'caller, the EIGHTH door (D-012 census, P-040)'],
   [`${B}console-spawn.ts`, 'child-start primitive, adopted by P-001'],
   [`${B}dbos/orchestrator-runner.ts`, 'child-start primitive, adopted by P-001'],
 ] as const satisfies ReadonlyArray<readonly [string, string]>;
@@ -53,9 +54,18 @@ const SPAWN_DOOR_FILES = [
  * force a bypass row whose only honest reason is "not migrated yet" — the weak
  * ground D-006 rejected. Coverage lands WITH the P-007 migration; that item's
  * acceptance includes deleting this entry.
+ *
+ * `bee-instance.ts` is the EIGHTH door. Until D-012 it was named by NO plan item
+ * and by NO entry here, so it was invisible to this guard entirely — and an
+ * invisible door is strictly worse than a declared gap, because the exact-set
+ * assertion below can only ever police doors it NAMES. Measured 2026-08-31:
+ * `lanesCovering()` returns [] for it and no inventory row carries any prefix
+ * containing `iq-battery`. Its coverage lands WITH the P-040 migration, on the
+ * same terms as P-007 above; that item's acceptance includes deleting this entry.
  */
 const EXPECTED_COVERAGE_GAPS: readonly string[] = [
   `${B}papercup/papercup-deep-delegate-deps.ts`,
+  `${B}iq-battery/bee-instance.ts`,
 ];
 
 // Row shapes are INFERRED from scripts/check-resource-governor-enforcement.d.mts
