@@ -896,6 +896,24 @@ export async function resolveAcceptanceGrader(
     const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug) : null;
     if (rubric) discoveryRubricId = String((rubric as unknown as { rubricId: string }).rubricId);
     if (plan && rubric) {
+      // ── ALREADY-DECIDED GRADINGS ARE NOT RE-ROUTED (WI-1699998) ──
+      // This runs BEFORE discovery, not merely before the cascade open, because
+      // selection is the expensive half: it walks the eligible pool and, when it
+      // opens a cascade, WAKES a fresh independent grader who is thereafter a
+      // party to the plan. D-009 independence makes that pool non-replenishable,
+      // so every redundant dispatch permanently shrinks it.
+      //
+      // The other guard in this file (`prodOpenGradingCascade`'s `closed_at IS
+      // NULL` dedup) cannot cover this: it asks whether a cascade is OPEN, and a
+      // grading that already COMPLETED has no open row — its evidence lives in
+      // scorecards. Two different questions; both guards are needed.
+      settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(discoveryRubricId).catch(
+        // Fail OPEN: a settlement read that throws must not suppress a grading.
+        () => undefined,
+      );
+      if (settlement?.settled) {
+        return { state: 'settled', idempotencyKey: '', label: '', settlement };
+      }
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
         const rubricId = String((rubric as unknown as { rubricId: string }).rubricId);
@@ -928,6 +946,7 @@ export async function resolveAcceptanceGrader(
           eligibility: selection.eligibility,
           ...(selection.escalation ? { escalation: selection.escalation } : {}),
           notified: { woke: opened?.woke ?? 0 },
+          ...(settlement ? { settlement } : {}),
         };
       }
       discovery = {
@@ -948,7 +967,7 @@ export async function resolveAcceptanceGrader(
     discovery = { excluded: [], freshReason: 'discovery_error', discoveryError: msg };
   }
   const launched = await launchAcceptanceGrader(planSlug, ctx, deps);
-  return { ...launched, ...(discovery ?? {}) };
+  return { ...launched, ...(discovery ?? {}), ...(settlement ? { settlement } : {}) };
 }
 
 export async function launchAcceptanceGrader(
