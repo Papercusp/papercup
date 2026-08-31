@@ -62,6 +62,10 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     launch: launch as never,
     listTasks: vi.fn(async () => []),
     killTask: vi.fn(async () => ({ ok: true })) as never,
+    // WI-1699998: resolveAcceptanceGrader now reads settlement before discovery.
+    // Default the shared harness to NOT-settled so every pre-existing case keeps
+    // exercising the dispatch path deterministically, without reaching a database.
+    readSettlement: vi.fn(async () => ({ settled: false, reason: 'no_author_acceptance' as const, rubricRevision: 7 })),
   };
 }
 
@@ -500,6 +504,89 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       }),
       ctx,
     );
+  });
+
+  // ── WI-1699998: an already-decided grading is never re-routed ──
+  // These are the wiring tests for the settled-grading guard. Deleting the guard
+  // from resolveAcceptanceGrader makes the first one fail on all four assertions —
+  // which is the point: the predicate having its own unit tests in
+  // acceptance-grading-authority.test.ts proves the RULE, and only these prove it
+  // is actually CONSULTED. A guard nothing calls is the failure mode this whole
+  // plan lineage exists to prevent.
+  it('SETTLED grading → dispatches NOTHING: no discovery, no cascade, no fresh judge (WI-1699998)', async () => {
+    const launch = freshLaunch();
+    const discover = vi.fn();
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-must-not-open', woke: 1 }));
+    const settlement = {
+      settled: true,
+      reason: 'settled' as const,
+      rubricRevision: 7,
+      independentCardId: 'EI-independent',
+      acceptanceCardId: 'EI-author-call',
+    };
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      readSettlement: vi.fn(async () => settlement),
+      discover: discover as never,
+      openCascade: openCascade as never,
+    });
+
+    expect(result.state).toBe('settled');
+    expect(result.settlement).toEqual(settlement);
+    // Each of these is a distinct cost a re-route would have paid. The middle two
+    // are the expensive ones: opening the cascade WAKES a fresh independent grader,
+    // and D-009 independence makes that pool non-replenishable.
+    expect(discover).not.toHaveBeenCalled();
+    expect(openCascade).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('NOT-settled grading → dispatches exactly as before, and records the reading it acted on', async () => {
+    const launch = freshLaunch();
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 }));
+    const notSettled = { settled: false, reason: 'no_author_acceptance' as const, rubricRevision: 7 };
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      readSettlement: vi.fn(async () => notSettled),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      })),
+      openCascade: openCascade as never,
+    });
+
+    expect(result.state).toBe('assigned');
+    expect(openCascade).toHaveBeenCalledTimes(1);
+    // Recorded on the DISPATCH path too, so a read that failed open is visible
+    // rather than looking identical to a genuine "nothing was graded yet".
+    expect(result.settlement).toEqual(notSettled);
+  });
+
+  it('a settlement read that THROWS fails OPEN — the grading is dispatched, never suppressed', async () => {
+    const launch = freshLaunch();
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 }));
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      readSettlement: vi.fn(async () => {
+        throw new Error('pg down');
+      }) as never,
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      })),
+      openCascade: openCascade as never,
+    });
+
+    expect(result.state).toBe('assigned');
+    expect(openCascade).toHaveBeenCalledTimes(1);
+    expect(result.settlement).toBeUndefined();
   });
 
   it('discovery says fresh → falls through to the frozen judge launch, carrying the reason', async () => {

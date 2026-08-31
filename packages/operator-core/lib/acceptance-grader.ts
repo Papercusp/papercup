@@ -894,8 +894,11 @@ export async function resolveAcceptanceGrader(
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
     });
     const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug) : null;
-    if (rubric) discoveryRubricId = String((rubric as unknown as { rubricId: string }).rubricId);
-    if (plan && rubric) {
+    const rubricId = rubric ? String((rubric as unknown as { rubricId: string }).rubricId) : null;
+    if (rubricId != null) discoveryRubricId = rubricId;
+    // `rubric` truthy ⟺ `rubricId != null`, so this is the same condition as before
+    // — the extra conjunct only narrows the id for the settlement read below.
+    if (plan && rubric && rubricId != null) {
       // ── ALREADY-DECIDED GRADINGS ARE NOT RE-ROUTED (WI-1699998) ──
       // This runs BEFORE discovery, not merely before the cascade open, because
       // selection is the expensive half: it walks the eligible pool and, when it
@@ -907,7 +910,7 @@ export async function resolveAcceptanceGrader(
       // NULL` dedup) cannot cover this: it asks whether a cascade is OPEN, and a
       // grading that already COMPLETED has no open row — its evidence lives in
       // scorecards. Two different questions; both guards are needed.
-      settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(discoveryRubricId).catch(
+      settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(rubricId).catch(
         // Fail OPEN: a settlement read that throws must not suppress a grading.
         () => undefined,
       );

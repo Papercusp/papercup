@@ -17,8 +17,10 @@ import {
   gradingViaOf,
   pickAuthoritativeGrading,
   readGraderSelectionVia,
+  readAcceptanceGradingSettlement,
   GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS,
   type RankableGrading,
+  type SettlementCard,
 } from './acceptance-grading-authority';
 
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -208,5 +210,138 @@ describe('readGraderSelectionVia — the durable read', () => {
     const sql = (() => Promise.reject(new Error('timeout'))) as unknown as ReturnType<typeof getOrgPg>['sql'];
     mockPg.mockReturnValue({ sql } as ReturnType<typeof getOrgPg>);
     await expect(readGraderSelectionVia('ws', 'ar-plan')).resolves.toEqual(new Map());
+  });
+});
+
+/**
+ * WI-1699998 — the settled-grading predicate.
+ *
+ * The bug this guards: the grading cascade re-routed an ALREADY-DECIDED grading
+ * to a fresh independent grader, permanently consuming them from a pool D-009
+ * makes non-replenishable. The predicate's whole value is that it says "settled"
+ * in the one case the ship gate cannot (a standing author REJECT), and refuses
+ * to say it in every case where dispatching is still the safe answer.
+ */
+describe('readAcceptanceGradingSettlement (WI-1699998)', () => {
+  const card = (over: Partial<SettlementCard> & { issueId: string }): SettlementCard => ({
+    rubricResolved: true,
+    missingKeys: [],
+    synthesized: false,
+    rubricRevision: 7,
+    ...over,
+  });
+  const revisionOk = (async () => ({ ok: true, revision: 7 })) as never;
+  const settlementDeps = (cards: SettlementCard[]) => ({
+    readRubricPlanRevision: revisionOk,
+    listScorecards: async () => cards,
+  });
+
+  const independent = card({ issueId: 'EI-independent' });
+  const authorAccept = card({ issueId: 'EI-author', acceptance: { verdict: 'accept', reasoning: 'ok' } });
+  const authorReject = card({ issueId: 'EI-author', acceptance: { verdict: 'reject', reasoning: 'no' } });
+
+  it('SETTLED when a complete independent card and an author acceptance call both stand at the revision', async () => {
+    await expect(
+      readAcceptanceGradingSettlement('ar-plan', settlementDeps([independent, authorAccept])),
+    ).resolves.toEqual({
+      settled: true,
+      reason: 'settled',
+      rubricRevision: 7,
+      independentCardId: 'EI-independent',
+      acceptanceCardId: 'EI-author',
+    });
+  });
+
+  // THE REGRESSION CASE. This is the exact shape that produced WI-1699998, and the
+  // reason the ship gate is the wrong predicate: a standing REJECT leaves the gate
+  // unsatisfied indefinitely while the grading is completely decided. A
+  // verdict-sensitive predicate re-routes here; this one must not.
+  it('SETTLED on a standing author REJECT — the verdict is decided, not missing', async () => {
+    const verdict = await readAcceptanceGradingSettlement('ar-plan', settlementDeps([independent, authorReject]));
+    expect(verdict.settled).toBe(true);
+    expect(verdict.acceptanceCardId).toBe('EI-author');
+  });
+
+  it('NOT settled with an independent card but no author call — the grading is still open', async () => {
+    await expect(readAcceptanceGradingSettlement('ar-plan', settlementDeps([independent]))).resolves.toEqual({
+      settled: false,
+      reason: 'no_author_acceptance',
+      rubricRevision: 7,
+    });
+  });
+
+  it('NOT settled when the only standing cards are pinned to a SUPERSEDED revision', async () => {
+    const stale = [
+      card({ issueId: 'EI-old', rubricRevision: 6 }),
+      card({ issueId: 'EI-old-author', rubricRevision: 6, acceptance: { verdict: 'accept' } }),
+    ];
+    await expect(readAcceptanceGradingSettlement('ar-plan', settlementDeps(stale))).resolves.toEqual({
+      settled: false,
+      reason: 'no_independent_card',
+      rubricRevision: 7,
+    });
+  });
+
+  // A historical card carries no rubricRevision at all. It must never equal a live
+  // revision, or a rubric could suppress its own grading on pre-P-004 evidence.
+  it('NOT settled on historical cards that carry no rubricRevision', async () => {
+    const historical = [
+      card({ issueId: 'EI-hist', rubricRevision: undefined }),
+      card({ issueId: 'EI-hist-author', rubricRevision: undefined, acceptance: { verdict: 'accept' } }),
+    ];
+    const verdict = await readAcceptanceGradingSettlement('ar-plan', settlementDeps(historical));
+    expect(verdict.settled).toBe(false);
+  });
+
+  it.each([
+    ['incomplete (missingKeys)', card({ issueId: 'EI-x', missingKeys: ['outcome'] })],
+    ['an unresolvable rubric', card({ issueId: 'EI-x', rubricResolved: false })],
+    ['a synthesized backstop floor', card({ issueId: 'EI-x', synthesized: true })],
+    ['a superseded card', card({ issueId: 'EI-x', supersededBy: 'EI-newer' })],
+  ])('does not count %s as the independent half', async (_label, disqualified) => {
+    await expect(
+      readAcceptanceGradingSettlement('ar-plan', settlementDeps([disqualified as SettlementCard, authorAccept])),
+    ).resolves.toEqual({ settled: false, reason: 'no_independent_card', rubricRevision: 7 });
+  });
+
+  // Both reads FAIL OPEN, and each names which one failed. Suppressing a needed
+  // grading strands a plan; a redundant dispatch costs one wake.
+  it('fails OPEN when the revision read reports ok:false', async () => {
+    await expect(
+      readAcceptanceGradingSettlement('ar-plan', {
+        readRubricPlanRevision: (async () => ({ ok: false, revision: null })) as never,
+        listScorecards: async () => [independent, authorAccept],
+      }),
+    ).resolves.toEqual({ settled: false, reason: 'revision_unreadable' });
+  });
+
+  it('fails OPEN when the revision read THROWS', async () => {
+    const verdict = await readAcceptanceGradingSettlement('ar-plan', {
+      readRubricPlanRevision: (async () => {
+        throw new Error('pg down');
+      }) as never,
+      listScorecards: async () => [independent, authorAccept],
+    });
+    expect(verdict).toEqual({ settled: false, reason: 'revision_unreadable' });
+  });
+
+  it('fails OPEN when the scorecard read THROWS, and says so distinctly', async () => {
+    await expect(
+      readAcceptanceGradingSettlement('ar-plan', {
+        readRubricPlanRevision: revisionOk,
+        listScorecards: async () => {
+          throw new Error('pg down');
+        },
+      }),
+    ).resolves.toEqual({ settled: false, reason: 'scorecards_unreadable', rubricRevision: 7 });
+  });
+
+  it('an unversioned rubric (ok:true, revision:null) is not settleable either', async () => {
+    await expect(
+      readAcceptanceGradingSettlement('ar-plan', {
+        readRubricPlanRevision: (async () => ({ ok: true, revision: null })) as never,
+        listScorecards: async () => [independent, authorAccept],
+      }),
+    ).resolves.toEqual({ settled: false, reason: 'revision_unreadable' });
   });
 });
