@@ -16,10 +16,15 @@
  * `consult/selection-policies.ts:29` is deliberately NOT a subject here: it
  * is the registry's own JSDoc, a decision changelog ("was exactly 1, now
  * min 1 / max 2") describing history at the definition site — pinning it to
- * the live value would make a legitimate changelog line un-writable. The
- * three subjects below are pure explanatory comments in CONSUMERS of the
- * registry, which is exactly the population that drifted in the original
- * incident.
+ * the live value would make a legitimate changelog line un-writable. The two
+ * subjects below are pure explanatory comments in CONSUMERS of the registry
+ * (three sites across them), which is exactly the population that drifted in
+ * the original incident.
+ *
+ * Those two are still a HAND-MAINTAINED list, which is the very defect
+ * EI-21929043331389136 aggregates — so `the derived census` below closes the
+ * loop: it judges every tracked text file, so a third consumer added tomorrow
+ * cannot escape by simply not being listed here.
  *
  * Same fixture-control discipline as the sibling file (CLAUDE.md's
  * mutation-probe rule, the "module you import" tier): every rule keeps a
@@ -30,7 +35,14 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from './corpus-subject';
-import { judgeSelectionPolicyProse, formatViolations, type ProseSubject } from './selection-policy-prose';
+import {
+  judgeSelectionPolicyProse,
+  formatViolations,
+  censusHandTypedBoundSites,
+  formatBoundSites,
+  type ProseSubject,
+} from './selection-policy-prose';
+import { trackedTextFiles, readTrackedText } from './tracked-text-files';
 
 const GRADER_RELPATH = 'packages/operator-core/lib/acceptance-grader.ts';
 const SELECT_RELPATH = 'packages/operator-core/lib/consult/acceptance-grader-select.ts';
@@ -131,6 +143,78 @@ describe('acceptance-grading prose stays derived (WI-1409611)', () => {
       expect(formatViolations(verdict.violations)).toBe('');
       expect(verdict.ok).toBe(true);
       expect(verdict.measured).toBe(2);
+    });
+  });
+
+  /**
+   * The DERIVED half (EI-21929043331389136). Everything above is a pin; this
+   * asks the repo which files actually carry a hand-typed bound, so a NEW
+   * offender fails without anyone remembering to add it as a subject.
+   *
+   * Each exclusion below is a site whose bound is legitimately hand-written,
+   * with the reason it cannot simply be rewritten. Adding to this list is a
+   * deliberate act with an argument attached — which is the whole difference
+   * between this and the pinned list it backstops.
+   */
+  describe('the derived census — every tracked file, not a pinned list', () => {
+    const EXCLUDED = new Map<string, string>([
+      [
+        'packages/operator-core/lib/consult/selection-policies.ts',
+        'the registry\'s own decision changelog at the definition site ("was exactly 1, now min 1 / max 2") — pinning it would make recording a bound CHANGE impossible',
+      ],
+      [
+        'packages/operator-core/lib/doc-claims/selection-policy-prose.ts',
+        'this guard\'s own pattern catalogue: it must contain the literal strings it detects, or it could not detect them',
+      ],
+    ]);
+
+    const census = () =>
+      censusHandTypedBoundSites({
+        files: trackedTextFiles({ root: ROOT }),
+        read: (relpath) => readTrackedText(ROOT, relpath),
+        stillOnTopic: gradingOptions.stillOnTopic,
+      });
+
+    it('scans a real, non-empty population (the vacuity floor a derived guard needs most)', () => {
+      const result = census();
+      // If this ever collapses toward zero the guard has stopped measuring the
+      // repo, and every assertion below would pass for the wrong reason.
+      expect(result.scanned).toBeGreaterThan(1000);
+    });
+
+    it('FIXTURE CONTROL — the census reports an offender that is not on the exclusion list', () => {
+      const result = censusHandTypedBoundSites({
+        files: ['fixture/new-consumer.ts'],
+        read: () => '// the acceptance-grading menu is min 1 / max 2, see selection-policies.ts',
+        stillOnTopic: gradingOptions.stillOnTopic,
+      });
+      expect(result.sites.map((s) => s.path)).toEqual(['fixture/new-consumer.ts']);
+      expect(formatBoundSites(result.sites)).toMatch(/hand-typed min\/max responder bound/);
+    });
+
+    it('FIXTURE CONTROL — an off-topic file carrying the same bound is NOT an offender', () => {
+      const result = censusHandTypedBoundSites({
+        files: ['fixture/unrelated.ts'],
+        read: () => '// retries are min 1 / max 2 per attempt',
+        stillOnTopic: gradingOptions.stillOnTopic,
+      });
+      expect(result.sites).toEqual([]);
+      expect(result.scanned).toBe(1);
+    });
+
+    it('no tracked file spells the acceptance-grading bound by hand, except the reasoned exclusions', () => {
+      const unexcused = census().sites.filter((s) => !EXCLUDED.has(s.path));
+      expect(formatBoundSites(unexcused)).toBe('');
+    });
+
+    it('every exclusion is still a real offender — a stale excuse is deleted, not carried', () => {
+      const found = new Set(census().sites.map((s) => s.path));
+      for (const [path, reason] of EXCLUDED) {
+        expect(
+          found.has(path),
+          `${path} no longer carries a hand-typed bound — drop this exclusion (${reason})`,
+        ).toBe(true);
+      }
     });
   });
 });

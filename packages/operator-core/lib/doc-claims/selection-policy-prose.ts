@@ -224,6 +224,96 @@ export function judgeSelectionPolicyProse(
   return { ok: violations.length === 0, violations, measured: subjects.length };
 }
 
+/**
+ * ── The DERIVED half of this guard (EI-21929043331389136 / WI-1409611) ───────
+ *
+ * Everything above judges a HAND-MAINTAINED subject list. That is rung 2 (PIN)
+ * of the derived-truth ladder, and its structural blind spot is the one the
+ * shared-root-cause item names: a pinned list cannot see a subject nobody
+ * thought to pin. It was not a hypothetical — the rubric-vetting guard pinned
+ * the runbook's `.mdx` SOURCE and passed for ten days while the SERVED twin at
+ * `apps/operator/public/internal/docs/agent-insights/acceptance-rubric-vetting.md`
+ * still told agents to `pass max_agents:3`, the exact pre-P-006 instruction the
+ * fix existed to delete. A guard measuring five files reported five greens.
+ *
+ * So this census derives the population instead of declaring it: hand the whole
+ * tracked file list in, and every file carrying a hand-typed bound WHILE still
+ * describing the flow comes back. A caller then asserts that set is empty apart
+ * from sites it has explicitly excluded WITH a reason — which makes a brand-new
+ * offender, in a file that did not exist when the guard was written, fail.
+ *
+ * It shares BOUND_PATTERNS with the pinned half deliberately: two detectors
+ * with two pattern lists would be the same defect one level up.
+ */
+export interface BoundSite {
+  /** Repo-relative path of the offending file. */
+  path: string;
+  /** 1-indexed line of the hand-typed bound. */
+  line: number;
+  excerpt: string;
+  reason: string;
+}
+
+export interface BoundSiteCensus {
+  /** Files actually read — the non-vacuity denominator. */
+  scanned: number;
+  /** Files skipped because `read` returned null (binary/unreadable). */
+  unreadable: string[];
+  sites: BoundSite[];
+}
+
+export interface CensusOptions {
+  /** The candidate population — normally every tracked text file. */
+  files: readonly string[];
+  /** Reads a file; return null when it cannot be read as text. */
+  read: (path: string) => string | null;
+  /** Only files still describing this flow are offenders (same floor as the pinned half). */
+  stillOnTopic?: (text: string) => boolean;
+}
+
+/**
+ * Find every file in `files` that spells a responder bound by hand while still
+ * describing the guarded flow. Returns the DERIVED population; the caller owns
+ * the policy of which sites are legitimately excluded.
+ */
+export function censusHandTypedBoundSites(options: CensusOptions): BoundSiteCensus {
+  const stillOnTopic = options.stillOnTopic ?? mentionsVettingFlow;
+  const sites: BoundSite[] = [];
+  const unreadable: string[] = [];
+  let scanned = 0;
+
+  for (const path of options.files) {
+    const text = options.read(path);
+    if (text === null) {
+      unreadable.push(path);
+      continue;
+    }
+    scanned += 1;
+    if (!stillOnTopic(text)) continue;
+
+    for (const { re, reason } of BOUND_PATTERNS) {
+      re.lastIndex = 0;
+      let match: RegExpExecArray | null = re.exec(text);
+      while (match !== null) {
+        sites.push({
+          path,
+          line: lineOf(text, match.index),
+          excerpt: excerptAt(text, match.index),
+          reason,
+        });
+        match = re.exec(text);
+      }
+    }
+  }
+
+  return { scanned, unreadable, sites };
+}
+
+/** Render census sites for an assertion message that points at each offending line. */
+export function formatBoundSites(sites: readonly BoundSite[]): string {
+  return sites.map((s) => `${s.path}:${s.line} — ${s.reason}\n    ${s.excerpt}`).join('\n');
+}
+
 /** Render violations for an assertion message that points at the offending line. */
 export function formatViolations(violations: readonly SelectionPolicyViolation[]): string {
   return violations

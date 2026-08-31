@@ -15,11 +15,14 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT, SUBJECT_LABEL, readCorpus } from './corpus-subject';
+import { trackedTextFiles, readTrackedText } from './tracked-text-files';
 import {
   judgeSelectionPolicyProse,
   formatViolations,
   REQUIRED_POLICY_KEY,
   REQUIRED_RENDERER,
+  censusHandTypedBoundSites,
+  formatBoundSites,
   type ProseSubject,
 } from './selection-policy-prose';
 
@@ -188,6 +191,88 @@ describe('selection-policy prose stays derived (P-006)', () => {
       expect(formatViolations(verdict.violations)).toBe('');
       expect(verdict.ok).toBe(true);
       expect(verdict.measured).toBe(5);
+    });
+  });
+
+  /**
+   * The DERIVED census (EI-21929043331389136 / WI-1409611).
+   *
+   * The five pinned subjects above are the SOURCE surfaces. That list passed
+   * for ten days while `apps/operator/public/internal/docs/agent-insights/
+   * acceptance-rubric-vetting.md` — the twin agents actually read at
+   * /internal/docs — still instructed them to `pass max_agents:3`, because
+   * P-006 fixed the `.mdx` and nobody rebuilt the mirror. Five greens, one live
+   * regression, no contradiction: a pinned guard cannot report a subject it was
+   * never given.
+   *
+   * `check-docs-mirror.mjs` did not catch it either — it is a path-based
+   * COMPLETENESS check ("does every source page have a twin"), deliberately
+   * pure so it never reads the mirror's content. Existence was never the
+   * failure mode.
+   *
+   * So this asks the repo for its own population instead. The served mirror is
+   * IN scope here on purpose: build output that agents read is a real subject.
+   */
+  describe('the derived census — every tracked file, not a pinned list', () => {
+    const EXCLUDED = new Map<string, string>([
+      [
+        'packages/operator-core/lib/consult/selection-policies.ts',
+        'the registry\'s own decision changelog at the definition site — pinning it would make recording a bound CHANGE impossible',
+      ],
+      [
+        'packages/operator-core/lib/doc-claims/selection-policy-prose.ts',
+        'this guard\'s own pattern catalogue: it must contain the literal strings it detects',
+      ],
+    ]);
+
+    const census = () =>
+      censusHandTypedBoundSites({
+        files: trackedTextFiles({ root: ROOT }),
+        read: (relpath) => readTrackedText(ROOT, relpath),
+      });
+
+    it('scans a real, non-empty population (the vacuity floor a derived guard needs most)', () => {
+      expect(census().scanned).toBeGreaterThan(1000);
+    });
+
+    it('FIXTURE CONTROL — the census reports the exact regression that escaped the pinned list', () => {
+      // Verbatim shape of the stale served twin, which no pinned subject covered.
+      const result = censusHandTypedBoundSites({
+        files: ['fixture/served-mirror/acceptance-rubric-vetting.md'],
+        read: () =>
+          '2. **Open the critique consult** — `get_feedback` with the rubric-vetting flow; pass `max_agents:3`.',
+      });
+      expect(result.sites.map((s) => s.path)).toEqual(['fixture/served-mirror/acceptance-rubric-vetting.md']);
+      expect(formatBoundSites(result.sites)).toMatch(/instructs a hand-typed responder count/);
+    });
+
+    it('FIXTURE CONTROL — an off-topic file carrying the same bound is NOT an offender', () => {
+      const result = censusHandTypedBoundSites({
+        files: ['fixture/unrelated.ts'],
+        read: () => '// batch sizing is min 1 / max 3 per sweep',
+      });
+      expect(result.sites).toEqual([]);
+      expect(result.scanned).toBe(1);
+    });
+
+    it('the served docs mirror is INSIDE the scanned population, not filtered out', () => {
+      const files = trackedTextFiles({ root: ROOT });
+      expect(files).toContain('apps/operator/public/internal/docs/agent-insights/acceptance-rubric-vetting.md');
+    });
+
+    it('no tracked file spells the responder bound by hand, except the reasoned exclusions', () => {
+      const unexcused = census().sites.filter((s) => !EXCLUDED.has(s.path));
+      expect(formatBoundSites(unexcused)).toBe('');
+    });
+
+    it('every exclusion is still a real offender — a stale excuse is deleted, not carried', () => {
+      const found = new Set(census().sites.map((s) => s.path));
+      for (const [path, reason] of EXCLUDED) {
+        expect(
+          found.has(path),
+          `${path} no longer carries a hand-typed bound — drop this exclusion (${reason})`,
+        ).toBe(true);
+      }
     });
   });
 });
