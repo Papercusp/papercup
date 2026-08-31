@@ -145,10 +145,40 @@ export function formatDivergenceAlert(d: Divergence): { summary: string; body: s
   };
 }
 
-/** Debounce key — per (owner, tool), so two genuinely different flails page
- *  independently rather than one masking the other. */
+/**
+ * Debounce key — per (owner, CONDITION), so two genuinely different flails page
+ * independently rather than one masking the other.
+ *
+ * ⚠ THE KEY MUST BE STABLE ACROSS REPEATED OBSERVATIONS OF UNCHANGED STATE, and
+ * that requirement — not brevity — is why this is not the obvious expression.
+ *
+ * The intent leg previously keyed on `intent-${d.intentEventId}`. But
+ * `intentEventId` identifies the DECLARATION EVENT, not the condition: every
+ * `coord:orient` / `coord:declare-intent` writes a new one, and it "repopulates
+ * within minutes" for any active agent (WI-6595, WI-6637). So an agent that kept
+ * spanning the SAME two goals minted a FRESH debounce key every few minutes.
+ * `reason LIKE '%scopeKey%'` then never matched a prior fire, which disabled
+ * three things at once and silently:
+ *   • the 6h debounce (every fire won an empty slot),
+ *   • `computeWatchdogBackoff`'s geometric widening (`repeat_count` pinned at 1),
+ *   • the leader-escalation backstop (`isRepeat` structurally always false).
+ *
+ * Measured before this fix (12h, papercusp-workspace): ONE owner took 112 fires
+ * under 112 DISTINCT keys, max `repeat_count` 1 — ~22 identical messages/hour
+ * against a debounce that is supposed to allow one per 6h. This is the same
+ * dead-lookup failure as EI-18824142520274965, reached through the other door:
+ * that fix made the reason CONTAIN the key, and the key itself was still unstable.
+ *
+ * So key on WHAT DIVERGED, never on which declaration it was noticed under: the
+ * goal pair for an intent drift, the tool for a retry loop. The pair is sorted so
+ * (a,b) and (b,a) are one condition rather than two, and a genuinely different
+ * divergence still pages independently — which is exactly the state-change
+ * semantics the debounce needs in order to mean anything.
+ */
 export function divergenceFireKey(d: Divergence): string {
-  return `${d.ownerId}:${d.kind === 'unconverged-retry-loop' ? d.a.toolName : `intent-${d.intentEventId}`}`;
+  if (d.kind === 'unconverged-retry-loop') return `${d.ownerId}:${d.a.toolName}`;
+  const goals = [d.a.goalRef ?? 'none', d.b.goalRef ?? 'none'].sort().join('|');
+  return `${d.ownerId}:goals-${goals}`;
 }
 
 /**

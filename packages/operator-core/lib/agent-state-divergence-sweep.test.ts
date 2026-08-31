@@ -265,6 +265,46 @@ describe('divergenceFireKey', () => {
     expect(k1).not.toBe(k2);
     expect(k1).toContain('su-a');
   });
+
+  // ── the intent leg: keyed on the CONDITION, never on the declaration ───────
+  //
+  // Regression for the debounce that never engaged. `intentEventId` is rewritten
+  // by every coord:orient / coord:declare-intent, so keying on it minted a fresh
+  // debounce slot every few minutes for an UNCHANGED divergence — measured at 112
+  // fires under 112 distinct keys for one owner in 12h.
+  const drift = (intentEventId: number | null, goalA: string | null, goalB: string | null) => ({
+    kind: 'goal-drift-within-intent' as const,
+    ownerId: 'su-a',
+    intentEventId,
+    detail: '',
+    a: { callId: 1, toolName: 't', status: null, invokedAt: '', goalRef: goalA },
+    b: { callId: 2, toolName: 't', status: null, invokedAt: '', goalRef: goalB },
+  });
+
+  it('is STABLE across re-declarations while the divergence is unchanged', () => {
+    // Same owner, same two goals, different declaration events. One condition.
+    expect(divergenceFireKey(drift(1001, 'WI-1', 'WI-2'))).toBe(
+      divergenceFireKey(drift(2002, 'WI-1', 'WI-2')),
+    );
+  });
+
+  it('does NOT embed the declaration event id', () => {
+    // Guards the specific dead-lookup shape rather than only its consequence.
+    expect(divergenceFireKey(drift(1001, 'WI-1', 'WI-2'))).not.toContain('1001');
+  });
+
+  it('still pages independently when the goals genuinely change', () => {
+    // State-change suppression must suppress UNCHANGED state only.
+    expect(divergenceFireKey(drift(1001, 'WI-1', 'WI-2'))).not.toBe(
+      divergenceFireKey(drift(1001, 'WI-1', 'WI-3')),
+    );
+  });
+
+  it('treats (a,b) and (b,a) as one condition, not two', () => {
+    expect(divergenceFireKey(drift(1001, 'WI-1', 'WI-2'))).toBe(
+      divergenceFireKey(drift(1001, 'WI-2', 'WI-1')),
+    );
+  });
 });
 
 describe('divergenceSweep — the delivery orderings', () => {
