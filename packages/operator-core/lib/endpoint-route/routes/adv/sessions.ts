@@ -4,6 +4,7 @@
  *
  *   GET /api/adv/sessions                 → list rows
  *   POST /api/adv/sessions/focus           → bring a window to front
+ *   POST /api/adv/sessions/rename          → set/clear a session's display name
  *   GET /api/adv/sessions/alive?pid=N      → is the pid still alive?
  *
  * Public endpoints — operator binds loopback-only. Mirrors the
@@ -34,6 +35,7 @@ import {
   setAdvSessionWindowId,
   updateAdvSessionPortStatus,
 } from '../../../adv-sessions';
+import { notifySyncInvalidate } from '../../../sync-sse';
 import {
   mergeRosterWithAssignments,
   resolveThinkingForEntries,
@@ -541,14 +543,25 @@ async function resolveSessionWindowId(
   return wid;
 }
 
+/** A JSON object body, or {} for an empty/invalid/non-object one. */
+async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
+  try {
+    const text = await req.text();
+    if (text.trim()) {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    }
+  } catch { /* ignore — an unusable body is handled by each route's own validation */ }
+  return {};
+}
+
 async function parseControlBody(
   req: Request,
 ): Promise<{ id?: number; pid?: number; windowId?: string | null }> {
-  try {
-    const text = await req.text();
-    if (text.trim()) return JSON.parse(text);
-  } catch { /* ignore — empty/invalid body handled by the resolver returning null */ }
-  return {};
+  // Empty/invalid bodies land as {} and are handled by the resolver returning null.
+  return (await parseJsonBody(req)) as { id?: number; pid?: number; windowId?: string | null };
 }
 
 const focus = defineTool({
@@ -608,6 +621,64 @@ const closeWindow = defineTool({
       JSON.stringify({ status: ok ? 'ok' : 'error', windowId: wid }),
       { status: ok ? 200 : 500, headers: JSON_HEADERS },
     );
+  },
+});
+
+// Set (or clear) a session's manual display name — the write half of plan
+// hud-session-display-names-2026-08-31, ruled by D-002 (the control lives only
+// in the conversation popup header) and D-003 (the name is OWNER-keyed).
+//
+// Deliberately NOT shaped like focus/close-window above: those resolve a WINDOW
+// (id → pid → title fragment) because they act on an X11 client. A name is an
+// attribute of the AGENT, so this route is keyed by ownerId and works for a
+// headless session that has no window at all.
+const rename = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/rename',
+  auth: 'loopback',
+  async handler(req) {
+    const body = await parseJsonBody(req);
+    const ownerId = typeof body.ownerId === 'string' ? body.ownerId.trim() : '';
+    if (!ownerId) {
+      return new Response(
+        JSON.stringify({ status: 'error', error: 'ownerId is required' }),
+        { status: 400, headers: JSON_HEADERS },
+      );
+    }
+    const [{ setAgentDisplayName, resolveOwnerWorkspaceId }, { activeWorkspaceId }] = await Promise.all([
+      import('../../../display-names/store'),
+      import('../../../workspace-registry'),
+    ]);
+    // The owner's OWN presence workspace first, because that is the key both
+    // readers use; the operator's ambient workspace is only the last resort, and
+    // picking it when they differ would store the name where nothing reads it.
+    const explicit = typeof body.workspace === 'string' && body.workspace.trim() ? body.workspace.trim() : null;
+    const workspaceId =
+      explicit ?? (await resolveOwnerWorkspaceId(ownerId).catch(() => null)) ?? activeWorkspaceId();
+    try {
+      const result = await setAgentDisplayName({
+        workspaceId,
+        ownerId,
+        // Whitespace-only (or absent) CLEARS — R6. The store owns that rule so
+        // this route and the sessions:rename tool cannot disagree about it.
+        name: typeof body.name === 'string' ? body.name : null,
+        // A human at the popup. An agent naming ITSELF goes through the
+        // sessions:rename agent tool, which stamps its own coord ownerId.
+        setBy: 'owner',
+      });
+      // The card must show the new name without a reload; the roster query is
+      // the one every session card reads through.
+      void notifySyncInvalidate('roster').catch(() => {});
+      return new Response(
+        JSON.stringify({ status: 'ok', workspaceId, ...result }),
+        { status: 200, headers: JSON_HEADERS },
+      );
+    } catch (e) {
+      return new Response(
+        JSON.stringify({ status: 'error', error: e instanceof Error ? e.message : String(e) }),
+        { status: 500, headers: JSON_HEADERS },
+      );
+    }
   },
 });
 
@@ -1969,4 +2040,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];

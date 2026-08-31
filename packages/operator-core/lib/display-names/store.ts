@@ -42,6 +42,12 @@ function pg(sql?: Sql): Sql {
  */
 export const AGENT_DISPLAY_NAME_MAX = 120;
 
+/** C0 controls (tab and newline included) and DEL. */
+function isPrintable(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp >= 32 && cp !== 127;
+}
+
 /**
  * The one canonical form of a submitted name, or null for "no name".
  *
@@ -64,7 +70,7 @@ export const AGENT_DISPLAY_NAME_MAX = 120;
 export function normalizeDisplayNameInput(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const cleaned = [...raw]
-    .filter((c) => (c.codePointAt(0) ?? 0) >= 32 && c !== '')
+    .filter(isPrintable)
     .join('')
     .replace(/\s+/g, ' ')
     .trim();
@@ -72,6 +78,81 @@ export function normalizeDisplayNameInput(raw: unknown): string | null {
   return cleaned.length > AGENT_DISPLAY_NAME_MAX
     ? cleaned.slice(0, AGENT_DISPLAY_NAME_MAX).trimEnd()
     : cleaned;
+}
+
+export interface AgentDisplayNameRow {
+  ownerId: string;
+  /** Always trimmed and non-empty — the table's CHECK makes anything else unrepresentable. */
+  displayName: string;
+  /** A coord ownerId when an agent named itself, or 'owner' when a human did. Null on legacy rows. */
+  setBy: string | null;
+  setAt: string | null;
+}
+
+function toRow(r: Record<string, unknown>): AgentDisplayNameRow {
+  return {
+    ownerId: String(r.owner_id ?? ''),
+    displayName: String(r.display_name ?? ''),
+    setBy: r.set_by == null ? null : String(r.set_by),
+    setAt: r.set_at == null ? null : new Date(r.set_at as string).toISOString(),
+  };
+}
+
+/**
+ * The manual name for ONE owner, or null when the owner has none.
+ *
+ * Returns the bare string because that is what the resolver consumes; use
+ * `getAgentDisplayNameRow` when you also need who set it and when.
+ */
+export async function getAgentDisplayName(
+  workspaceId: string,
+  ownerId: string,
+  sql?: Sql,
+): Promise<string | null> {
+  return (await getAgentDisplayNameRow(workspaceId, ownerId, sql))?.displayName ?? null;
+}
+
+/** The full row for ONE owner (name + provenance), or null when unnamed. */
+export async function getAgentDisplayNameRow(
+  workspaceId: string,
+  ownerId: string,
+  sql?: Sql,
+): Promise<AgentDisplayNameRow | null> {
+  if (!workspaceId || !ownerId) return null;
+  const rows = await pg(sql)<Array<Record<string, unknown>>>`
+    SELECT owner_id, display_name, set_by, set_at
+      FROM harness_shared.agent_display_names
+     WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId}
+     LIMIT 1`;
+  return rows[0] ? toRow(rows[0]) : null;
+}
+
+/**
+ * Names for a WHOLE owner set in ONE query — the roster's read (R10).
+ *
+ * Owners with no manual name are simply absent from the map, matching the
+ * table's "absence means unnamed" encoding, so a caller can hand
+ * `map.get(ownerId)` straight to the resolver's `manualName`.
+ */
+export async function getAgentDisplayNames(
+  workspaceId: string,
+  ownerIds: readonly string[],
+  sql?: Sql,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!workspaceId) return out;
+  const ids = [...new Set(ownerIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  if (ids.length === 0) return out;
+  const db = pg(sql);
+  const rows = await db<Array<Record<string, unknown>>>`
+    SELECT owner_id, display_name, set_by, set_at
+      FROM harness_shared.agent_display_names
+     WHERE workspace_id = ${workspaceId} AND owner_id IN ${db(ids)}`;
+  for (const r of rows) {
+    const row = toRow(r);
+    if (row.ownerId && row.displayName) out.set(row.ownerId, row.displayName);
+  }
+  return out;
 }
 
 export interface SetAgentDisplayNameResult {
@@ -154,79 +235,4 @@ export async function resolveOwnerWorkspaceId(ownerId: string, sql?: Sql): Promi
      LIMIT 1`;
   const ws = rows[0]?.workspace_id;
   return typeof ws === 'string' && ws.trim() ? ws.trim() : null;
-}
-
-export interface AgentDisplayNameRow {
-  ownerId: string;
-  /** Always trimmed and non-empty — the table's CHECK makes anything else unrepresentable. */
-  displayName: string;
-  /** A coord ownerId when an agent named itself, or 'owner' when a human did. Null on legacy rows. */
-  setBy: string | null;
-  setAt: string | null;
-}
-
-function toRow(r: Record<string, unknown>): AgentDisplayNameRow {
-  return {
-    ownerId: String(r.owner_id ?? ''),
-    displayName: String(r.display_name ?? ''),
-    setBy: r.set_by == null ? null : String(r.set_by),
-    setAt: r.set_at == null ? null : new Date(r.set_at as string).toISOString(),
-  };
-}
-
-/**
- * The manual name for ONE owner, or null when the owner has none.
- *
- * Returns the bare string because that is what the resolver consumes; use
- * `getAgentDisplayNameRow` when you also need who set it and when.
- */
-export async function getAgentDisplayName(
-  workspaceId: string,
-  ownerId: string,
-  sql?: Sql,
-): Promise<string | null> {
-  return (await getAgentDisplayNameRow(workspaceId, ownerId, sql))?.displayName ?? null;
-}
-
-/** The full row for ONE owner (name + provenance), or null when unnamed. */
-export async function getAgentDisplayNameRow(
-  workspaceId: string,
-  ownerId: string,
-  sql?: Sql,
-): Promise<AgentDisplayNameRow | null> {
-  if (!workspaceId || !ownerId) return null;
-  const rows = await pg(sql)<Array<Record<string, unknown>>>`
-    SELECT owner_id, display_name, set_by, set_at
-      FROM harness_shared.agent_display_names
-     WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId}
-     LIMIT 1`;
-  return rows[0] ? toRow(rows[0]) : null;
-}
-
-/**
- * Names for a WHOLE owner set in ONE query — the roster's read (R10).
- *
- * Owners with no manual name are simply absent from the map, matching the
- * table's "absence means unnamed" encoding, so a caller can hand
- * `map.get(ownerId)` straight to the resolver's `manualName`.
- */
-export async function getAgentDisplayNames(
-  workspaceId: string,
-  ownerIds: readonly string[],
-  sql?: Sql,
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (!workspaceId) return out;
-  const ids = [...new Set(ownerIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
-  if (ids.length === 0) return out;
-  const db = pg(sql);
-  const rows = await db<Array<Record<string, unknown>>>`
-    SELECT owner_id, display_name, set_by, set_at
-      FROM harness_shared.agent_display_names
-     WHERE workspace_id = ${workspaceId} AND owner_id IN ${db(ids)}`;
-  for (const r of rows) {
-    const row = toRow(r);
-    if (row.ownerId && row.displayName) out.set(row.ownerId, row.displayName);
-  }
-  return out;
 }
