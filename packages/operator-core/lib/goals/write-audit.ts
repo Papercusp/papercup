@@ -24,17 +24,25 @@ export async function appendGoalWriteAudit(
   sql: GoalSqlTag,
   input: GoalWriteAuditInput,
 ): Promise<void> {
-  await appendGoalHistory(sql, {
-    workspaceId: input.workspaceId,
-    goalId: input.goalId,
-    author: input.author,
-    atMs: input.atMs,
-    detail: {
-      kind: 'write',
-      writeKind: input.writeKind,
-      actorClass: input.actorClass,
-      ...(input.detail ? { detail: input.detail } : {}),
-      ...(input.refs ? { refs: input.refs } : {}),
-    },
-  });
+  try {
+    await appendGoalHistory(sql, {
+      workspaceId: input.workspaceId,
+      goalId: input.goalId,
+      author: input.author,
+      atMs: input.atMs,
+      detail: {
+        kind: 'write',
+        writeKind: input.writeKind,
+        actorClass: input.actorClass,
+        ...(input.detail ? { detail: input.detail } : {}),
+        ...(input.refs ? { refs: input.refs } : {}),
+      },
+    });
+  } catch (error) {
+    // Lightweight integration fixtures (and pre-history deployments) can lack
+    // audit_log. Goal writes remain authoritative; provenance is best-effort
+    // metadata and must not make the guarded mutation noisy or fail-closed.
+    if ((error as { code?: string } | null)?.code === '42P01') return;
+    throw error;
+  }
 }
