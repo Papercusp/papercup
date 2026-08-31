@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { SpawnChildExit, SpawnConsoleResult } from '../console-spawn';
 import type { AdmissionContext, AdmissionMetadataValue, ResourceDemand } from './admission';
 import { beginGovernedExecution, governedExecutionRuntime, type GovernedExecution } from './execution';
+import { withAgentSpawnPacing } from './spawn-pacing';
 
 export interface GovernedProcessSpawnInput {
   readonly workspaceId: string;
@@ -38,6 +39,20 @@ function settleOnExit(execution: GovernedExecution, exit: Promise<SpawnChildExit
  * the lifetime of the spawned terminal process. A spawn failure cancels the
  * visible receipt; a process exit exact-releases it. Callers receive the
  * context so nested fan-out can pass it back as `parent`.
+ *
+ * TWO DIFFERENT CEILINGS APPLY HERE, and only one of them is the governor's.
+ * The durable lease above rations STEADY-STATE agent capacity and is held until the
+ * process exits — a fleet is supposed to run twenty agents at once, so that lease
+ * cannot also bound how many agents may be BOOTING at once. Boot is the scarcer
+ * resource: a starting agent boots a CLI, restores its transcript and completes an MCP
+ * handshake, and its kickoff brief survives only if that finishes inside psu-pty-host's
+ * fixed submit-verify budget. `withAgentSpawnPacing` supplies the missing ceiling
+ * (EI-21935016329074048 — a 21-way simultaneous burst blew that budget and dropped two
+ * briefs while every launch reported success).
+ *
+ * The pacing wraps ONLY the spawn call, never admission: the durable receipt must be
+ * taken first so a queued launch is still visible to the governor as intended work
+ * rather than disappearing into an unaccounted local wait.
  */
 export async function spawnGovernedAgentProcess(
   input: GovernedProcessSpawnInput,
@@ -58,7 +73,7 @@ export async function spawnGovernedAgentProcess(
 
   let result: SpawnConsoleResult;
   try {
-    result = await spawnProcess(execution.context);
+    result = await withAgentSpawnPacing(() => spawnProcess(execution.context));
   } catch (error) {
     await execution.cancel(`spawn threw: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
