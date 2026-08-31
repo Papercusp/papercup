@@ -50,9 +50,7 @@ function red(over: Partial<DwelledRed> = {}): DwelledRed {
   };
 }
 
-function repeatIssue(
-  over: Partial<RepeatedUnownedTscRedIssue> = {},
-): RepeatedUnownedTscRedIssue {
+function repeatIssue(over: Partial<RepeatedUnownedTscRedIssue> = {}): RepeatedUnownedTscRedIssue {
   return {
     id: 'EI-standing-red',
     title: 'Standing tsc red with no owner',
@@ -167,27 +165,17 @@ describe('buildRedCapture — ownership test is spelled for the owning repo', ()
   const SUBS = ['libs/generic/tooldef', 'libs/papercusp', 'libs/generic/sync'];
 
   it('asks the SUBMODULE, not the superproject, for a file inside one', () => {
-    const body = buildRedCapture(
-      red({ file: 'libs/generic/tooldef/src/standard-schema.ts' }),
-      SUBS,
-    ).body;
+    const body = buildRedCapture(red({ file: 'libs/generic/tooldef/src/standard-schema.ts' }), SUBS).body;
     expect(body).toContain('git -C libs/generic/tooldef status --porcelain src/standard-schema.ts');
-    expect(body).toContain(
-      'git -C libs/generic/tooldef log -1 --format=%cI -- src/standard-schema.ts',
-    );
+    expect(body).toContain('git -C libs/generic/tooldef log -1 --format=%cI -- src/standard-schema.ts');
     // The false-empty superproject spelling must be GONE, not merely supplemented — leaving it
     // beside the correct one still invites the empty answer that reads as reassurance.
-    expect(body).not.toContain(
-      'git status --porcelain | grep libs/generic/tooldef/src/standard-schema.ts',
-    );
-    expect(body).not.toContain(
-      'git log -1 --format=%cI -- libs/generic/tooldef/src/standard-schema.ts',
-    );
+    expect(body).not.toContain('git status --porcelain | grep libs/generic/tooldef/src/standard-schema.ts');
+    expect(body).not.toContain('git log -1 --format=%cI -- libs/generic/tooldef/src/standard-schema.ts');
   });
 
   it('says WHY, so a reader who runs the old command does not trust its empty output', () => {
-    const body = buildRedCapture(red({ file: 'libs/papercusp/packages/orchestrator/src/x.ts' }), SUBS)
-      .body;
+    const body = buildRedCapture(red({ file: 'libs/papercusp/packages/orchestrator/src/x.ts' }), SUBS).body;
     expect(body).toContain("inside submodule 'libs/papercusp'");
     expect(body).toMatch(/return EMPTY/);
   });
@@ -210,10 +198,7 @@ describe('buildRedCapture — ownership test is spelled for the owning repo', ()
     // Measured live 2026-08-31: `lint:tsc --files=libs/generic/tooldef/src/standard-schema.ts`
     // returns status=routed exit=0 (routed to the owning workspace's sibling gate), NOT a
     // refusal. Rewriting it would break a command that already works.
-    const body = buildRedCapture(
-      red({ file: 'libs/generic/tooldef/src/standard-schema.ts' }),
-      SUBS,
-    ).body;
+    const body = buildRedCapture(red({ file: 'libs/generic/tooldef/src/standard-schema.ts' }), SUBS).body;
     expect(body).toContain('npm run lint:tsc -- --files=libs/generic/tooldef/src/standard-schema.ts');
   });
 
@@ -227,9 +212,7 @@ describe('buildRedCapture — ownership test is spelled for the owning repo', ()
   it('treats a path EQUAL to a gitlink as not inside it', () => {
     // Such a path already resolves in the superproject (it IS the gitlink entry), so it needs
     // no attribution — rewriting it would point at a repo where the path does not exist.
-    expect(ownershipTestLines('libs/generic/tooldef', ['libs/generic/tooldef']).join('\n')).not.toContain(
-      'git -C',
-    );
+    expect(ownershipTestLines('libs/generic/tooldef', ['libs/generic/tooldef']).join('\n')).not.toContain('git -C');
   });
 });
 
@@ -338,11 +321,184 @@ describe('tscRedSweep — debounce', () => {
   });
 });
 
+describe('escalateRepeatedUnownedTscRed', () => {
+  it('promotes an unowned major issue to critical and moves it to top priority', async () => {
+    const updateIssueFn = vi.fn(async () => undefined);
+    const bumpPriorityFn = vi.fn(async () => ({ applicable: true, priority: -1 }));
+    const commentIssueFn = vi.fn(async () => undefined);
+    const out = await escalateRepeatedUnownedTscRed(repeatIssue(), 'lib/new.ts', {
+      updateIssueFn,
+      bumpPriorityFn,
+      commentIssueFn,
+    });
+    expect(out).toMatchObject({ escalated: true, surfacedBy: 'priority' });
+    expect(updateIssueFn).toHaveBeenCalledWith('EI-standing-red');
+    expect(bumpPriorityFn).toHaveBeenCalledWith('EI-standing-red', 'top');
+    expect(commentIssueFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an assigned issue untouched', async () => {
+    const updateIssueFn = vi.fn(async () => undefined);
+    const bumpPriorityFn = vi.fn(async () => ({ applicable: true, priority: 0 }));
+    const commentIssueFn = vi.fn(async () => undefined);
+    const openEscalationFn = vi.fn(
+      async (_input: { severity: 'blocker'; summary: string; body: string; meta: { subjectSignature: string } }) =>
+        undefined,
+    );
+    const out = await escalateRepeatedUnownedTscRed(repeatIssue({ assignee: 'su-peer' }), 'lib/new.ts', {
+      updateIssueFn,
+      bumpPriorityFn,
+      commentIssueFn,
+      openEscalationFn,
+    });
+    expect(out.escalated).toBe(false);
+    expect(updateIssueFn).not.toHaveBeenCalled();
+    expect(bumpPriorityFn).not.toHaveBeenCalled();
+    expect(commentIssueFn).not.toHaveBeenCalled();
+    expect(openEscalationFn).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent when the issue is already critical and prioritized', async () => {
+    const updateIssueFn = vi.fn(async () => undefined);
+    const bumpPriorityFn = vi.fn(async () => ({ applicable: true, priority: 0 }));
+    const commentIssueFn = vi.fn(async () => undefined);
+    const out = await escalateRepeatedUnownedTscRed(
+      repeatIssue({ severity: 'critical', featureOrder: 0 }),
+      'lib/new.ts',
+      { updateIssueFn, bumpPriorityFn, commentIssueFn },
+    );
+    expect(out.escalated).toBe(false);
+    expect(updateIssueFn).not.toHaveBeenCalled();
+    expect(bumpPriorityFn).not.toHaveBeenCalled();
+    expect(commentIssueFn).not.toHaveBeenCalled();
+  });
+
+  it('opens a stable owner escalation when issue priority is unavailable', async () => {
+    const updateIssueFn = vi.fn(async () => undefined);
+    const bumpPriorityFn = vi.fn(async () => ({ applicable: false, priority: null }));
+    const commentIssueFn = vi.fn(async () => undefined);
+    const openEscalationFn = vi.fn(
+      async (_input: { severity: 'blocker'; summary: string; body: string; meta: { subjectSignature: string } }) =>
+        undefined,
+    );
+    const out = await escalateRepeatedUnownedTscRed(repeatIssue(), 'lib/new.ts', {
+      updateIssueFn,
+      bumpPriorityFn,
+      commentIssueFn,
+      openEscalationFn,
+    });
+    expect(out).toMatchObject({ escalated: true, surfacedBy: 'owner-escalation' });
+    expect(openEscalationFn).toHaveBeenCalledTimes(1);
+    const calls = openEscalationFn.mock.calls as unknown as Array<
+      [{ severity: 'blocker'; summary: string; body: string; meta: { subjectSignature: string } }]
+    >;
+    const input = calls[0]![0];
+    expect(input.severity).toBe('blocker');
+    expect(input.meta.subjectSignature).toBe(repeatEscalationKeyFor('lib/new.ts'));
+    expect(commentIssueFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tscRedSweep — repeated unowned standing red', () => {
+  it('looks up the exact issue, claims a distinct hourly slot, escalates, and never recaptures', async () => {
+    const issue = repeatIssue();
+    const findIssuesByWatchdogKeysFn = vi.fn(async () => [issue]);
+    const claimFireFn = vi.fn(async (_opts: Record<string, unknown>) => true);
+    const escalateRepeatedUnownedTscRedFn = vi.fn(async () => ({
+      escalated: true,
+      surfacedBy: 'priority' as const,
+      reason: 'raised and prioritized',
+    }));
+    const d = deps({
+      recentFiresFn: vi.fn(async () => 1),
+      findIssuesByWatchdogKeysFn,
+      claimFireFn,
+      escalateRepeatedUnownedTscRedFn,
+    });
+    const out = await tscRedSweep(d);
+    expect(d.captureFn).not.toHaveBeenCalled();
+    expect(findIssuesByWatchdogKeysFn).toHaveBeenCalledTimes(2);
+    expect(findIssuesByWatchdogKeysFn).toHaveBeenNthCalledWith(1, [debounceKeyFor(red().file)]);
+    expect(claimFireFn).toHaveBeenCalledTimes(1);
+    const claim = (claimFireFn.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0];
+    expect(claim.installSlug).toBe(debounceKeyFor(red().file));
+    expect(claim.source).toBe('tsc-new-file-red');
+    expect(claim.scopeKey).toBe(repeatEscalationKeyFor(red().file));
+    expect(claim.windowHours).toBe(REPEAT_ESCALATION_HOURS);
+    expect(String(claim.reason)).toContain(repeatEscalationKeyFor(red().file));
+    expect(escalateRepeatedUnownedTscRedFn).toHaveBeenCalledWith(issue, red().file);
+    expect(out[0].outcome).toBe('escalated');
+  });
+
+  it('chooses the newest open unassigned exact-key match', async () => {
+    const older = repeatIssue({ id: 'EI-older', updatedAt: new Date(NOW - 120_000).toISOString() });
+    const newer = repeatIssue({ id: 'EI-newer', updatedAt: new Date(NOW - 30_000).toISOString() });
+    const escalateRepeatedUnownedTscRedFn = vi.fn(async () => ({
+      escalated: true,
+      surfacedBy: 'priority' as const,
+      reason: 'raised and prioritized',
+    }));
+    const d = deps({
+      recentFiresFn: vi.fn(async () => 1),
+      // Deliberately oldest-first: selection must use updatedAt, not trust input order.
+      findIssuesByWatchdogKeysFn: vi.fn(async () => [older, newer]),
+      escalateRepeatedUnownedTscRedFn,
+    });
+    await tscRedSweep(d);
+    expect(escalateRepeatedUnownedTscRedFn).toHaveBeenCalledWith(newer, red().file);
+  });
+
+  it('skips when the exact match is assigned, including an assignment lost in the post-claim race', async () => {
+    const issue = repeatIssue();
+    const assigned = repeatIssue({ assignee: 'su-peer' });
+    const findIssuesByWatchdogKeysFn = vi.fn(async (_keys: string[]): Promise<RepeatedUnownedTscRedIssue[]> => [issue]);
+    findIssuesByWatchdogKeysFn.mockResolvedValueOnce([issue]).mockResolvedValueOnce([assigned]);
+    const claimFireFn = vi.fn(async () => true);
+    const escalateRepeatedUnownedTscRedFn = vi.fn(async () => ({
+      escalated: true,
+      surfacedBy: 'priority' as const,
+      reason: 'should not run',
+    }));
+    const d = deps({
+      recentFiresFn: vi.fn(async () => 1),
+      findIssuesByWatchdogKeysFn,
+      claimFireFn,
+      escalateRepeatedUnownedTscRedFn,
+    });
+    const out = await tscRedSweep(d);
+    expect(claimFireFn).toHaveBeenCalledTimes(1);
+    expect(escalateRepeatedUnownedTscRedFn).not.toHaveBeenCalled();
+    expect(out[0].outcome).toBe('debounced');
+    expect(out[0].reason).toContain('owned by su-peer');
+  });
+
+  it('keeps processing later files when one repeat escalation fails', async () => {
+    const first = repeatIssue({ id: 'EI-first' });
+    const second = repeatIssue({ id: 'EI-second' });
+    const files = ['a/one.ts', 'b/two.ts'];
+    const findIssuesByWatchdogKeysFn = vi.fn(async (keys: string[]) => [
+      keys[0] === debounceKeyFor(files[0]) ? first : second,
+    ]);
+    const escalateRepeatedUnownedTscRedFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('owner channel down'))
+      .mockResolvedValueOnce({ escalated: true, surfacedBy: 'priority' as const, reason: 'ok' });
+    const d = deps({
+      selectDwelledRedsFn: () => [red({ file: files[0] }), red({ file: files[1] })],
+      recentFiresFn: vi.fn(async () => 1),
+      findIssuesByWatchdogKeysFn,
+      escalateRepeatedUnownedTscRedFn,
+    });
+    const out = await tscRedSweep(d);
+    expect(out.map((r) => r.outcome)).toEqual(['error', 'escalated']);
+    expect(escalateRepeatedUnownedTscRedFn).toHaveBeenCalledTimes(2);
+    expect(d.captureFn).not.toHaveBeenCalled();
+  });
+});
+
 describe('tscRedSweep — blast radius', () => {
   it('caps how many it files in one tick, taking the longest-standing first', async () => {
-    const many = Array.from({ length: 7 }, (_, i) =>
-      red({ file: `f${i}.ts`, spanSec: 7000 - i * 100 }),
-    );
+    const many = Array.from({ length: 7 }, (_, i) => red({ file: `f${i}.ts`, spanSec: 7000 - i * 100 }));
     const d = deps({ selectDwelledRedsFn: () => many, maxFiles: 2 });
     const out = await tscRedSweep(d);
     expect(d.captureFn).toHaveBeenCalledTimes(2);
@@ -385,10 +541,7 @@ describe('tscRedSweep — fail-soft', () => {
   it('records a per-file error and keeps going rather than abandoning the tick', async () => {
     // One unfileable red must not blind the sweep to the others — that would make the
     // sweep's coverage depend on alphabetical luck.
-    const captureFn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('db down'))
-      .mockResolvedValueOnce({ id: 'EI-2' });
+    const captureFn = vi.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValueOnce({ id: 'EI-2' });
     const d = deps({
       selectDwelledRedsFn: () => [red({ file: 'a/one.ts' }), red({ file: 'b/two.ts' })],
       captureFn,

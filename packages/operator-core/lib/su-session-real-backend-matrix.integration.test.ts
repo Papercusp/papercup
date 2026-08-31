@@ -54,6 +54,7 @@
  *   PAPERCUSP_REAL_BACKEND_MATRIX_OMP_ACCOUNT=auto \
  *   PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL=openai-codex/gpt-5.6-terra:xhigh \
  *   PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=auto \
+ *   PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_ACCOUNT=auto \
  *   PAPERCUSP_TEST_FILE_TIMEOUT_MS=1800000 \
  *   npm run test:file -- packages/operator-core/lib/su-session-real-backend-matrix.integration.test.ts
  *
@@ -158,10 +159,17 @@ const OMP_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_OMP_ACCOUNT?.trim(
  */
 const CODEX_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT?.trim() || 'default';
 
+/**
+ * Claude's historical system account may be locally configured but upstream-
+ * walled. An acceptance host can select a healthy routed pool explicitly;
+ * this remains a matrix-only input and does not alter the product default.
+ */
+const CLAUDE_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CLAUDE_ACCOUNT?.trim() || 'default';
+
 function accountForBackend(backend: MatrixBackend): string {
   if (backend === 'codex') return CODEX_ACCOUNT;
   if (backend === 'omp') return OMP_ACCOUNT;
-  return 'default';
+  return CLAUDE_ACCOUNT;
 }
 
 /** A real agent boot is not fast: psu resolves an account, the CLI starts, and

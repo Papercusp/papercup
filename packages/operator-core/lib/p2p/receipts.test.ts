@@ -16,13 +16,113 @@
  * counter-write failure stays diagnosable instead of silently disappearing.
  */
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { bumpRefusedOpCounter } from './receipts';
+import {
+  RESPONDER_BUILD_MARKER_VALUE_MAX_CHARS,
+  appendResponderBuildMarker,
+  bumpRefusedOpCounter,
+  compareResponderBuild,
+  formatResponderBuildMarker,
+  parseResponderBuildMarker,
+} from './receipts';
 import type { OrgSql } from '../work-items';
 
 const sqlCalls = (fn: (...args: unknown[]) => unknown): OrgSql => fn as unknown as OrgSql;
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('delegated-spawn responder-build receipt marker', () => {
+  it('formats a bounded safe marker from the sampled build info', () => {
+    const marker = formatResponderBuildMarker({
+      sha: `abc/${'x'.repeat(120)}`,
+      version: ' 1.2.3 beta+rig ',
+    });
+    expect(marker).toBe(
+      `[responder-build sha=${`abc_${'x'.repeat(120)}`.slice(0, RESPONDER_BUILD_MARKER_VALUE_MAX_CHARS)} version=1.2.3_beta+rig]`,
+    );
+    expect(marker.length).toBeLessThanOrEqual(2 * RESPONDER_BUILD_MARKER_VALUE_MAX_CHARS + 40);
+  });
+
+  it('parses a current marker and preserves the original detail verbatim', () => {
+    const detail = appendResponderBuildMarker('honored: opened 1/1', {
+      sha: 'deadbee',
+      version: '0.0.13',
+    });
+    expect(parseResponderBuildMarker(detail)).toEqual({
+      state: 'current',
+      sha: 'deadbee',
+      version: '0.0.13',
+      marker: '[responder-build sha=deadbee version=0.0.13]',
+      detail,
+    });
+  });
+
+  it('classifies a marker-less legacy receipt without pretending it is current', () => {
+    const detail = 'honored: opened 1/1 (legacy peer)';
+    expect(parseResponderBuildMarker(detail)).toEqual({
+      state: 'legacy',
+      sha: null,
+      version: null,
+      marker: null,
+      detail,
+    });
+  });
+
+  it.each([
+    ['an identity-less current artifact', '[responder-build sha=unknown version=0.0.13]', '0.0.13'],
+    ['an explicitly unknown build', '[responder-build sha=unknown version=unknown]', null],
+    ['a malformed marker', '[responder-build sha=unterminated', null],
+  ])('keeps %s explicit as unknown evidence', (_label, marker, version) => {
+    const detail = `refused: no runtime ${marker}`;
+    expect(parseResponderBuildMarker(detail)).toEqual({
+      state: 'unknown',
+      sha: null,
+      version,
+      marker: marker.endsWith(']') ? marker : null,
+      detail,
+    });
+  });
+
+  it('compares exact and full-vs-short Git identities as the same loaded build', () => {
+    const evidence = parseResponderBuildMarker('[responder-build sha=deadbeefcafebabe version=0.0.13]');
+    expect(compareResponderBuild(evidence, { sha: 'deadbee', version: '0.0.13' })).toMatchObject({
+      comparison: 'same',
+      responderSha: 'deadbeefcafebabe',
+      tracingSha: 'deadbee',
+    });
+  });
+
+  it('calls different SHAs skew without inventing ancestry or chronology', () => {
+    const evidence = parseResponderBuildMarker('[responder-build sha=deadbee version=0.0.13]');
+    const comparison = compareResponderBuild(evidence, { sha: 'cafebabe', version: '0.0.13' });
+    expect(comparison).toMatchObject({
+      comparison: 'skew',
+      responderSha: 'deadbee',
+      tracingSha: 'cafebabe',
+    });
+    expect(comparison.detail).toContain('skew only');
+    expect(comparison.detail).toContain('chronology were not measured');
+    expect(comparison.detail).not.toMatch(/older|newer|stale/i);
+  });
+
+  it.each([
+    ['legacy responder evidence', 'legacy receipt', { sha: 'cafebabe', version: '0.0.13' }],
+    [
+      'unknown responder evidence',
+      '[responder-build sha=unknown version=0.0.13]',
+      { sha: 'cafebabe', version: '0.0.13' },
+    ],
+    [
+      'an identity-less tracing build',
+      '[responder-build sha=deadbee version=0.0.13]',
+      { sha: null, version: '0.0.13' },
+    ],
+  ])('keeps %s comparison explicitly unknown', (_label, detail, tracingBuild) => {
+    expect(compareResponderBuild(parseResponderBuildMarker(detail), tracingBuild)).toMatchObject({
+      comparison: 'unknown',
+    });
+  });
 });
 
 describe('bumpRefusedOpCounter (M15 trust-layer evidence counter)', () => {
@@ -32,7 +132,10 @@ describe('bumpRefusedOpCounter (M15 trust-layer evidence counter)', () => {
       calls.push(args);
       return Promise.resolve([]);
     });
-    await bumpRefusedOpCounter({ workspaceId: 'ws-1', potSlug: 'hive-a', reason: 'receipt-apply:responder_mismatch' }, okSql);
+    await bumpRefusedOpCounter(
+      { workspaceId: 'ws-1', potSlug: 'hive-a', reason: 'receipt-apply:responder_mismatch' },
+      okSql,
+    );
     expect(calls).toHaveLength(1);
     // Tagged-template call: (strings, ...values) — the values array carries
     // our three args in source order.
@@ -46,7 +149,10 @@ describe('bumpRefusedOpCounter (M15 trust-layer evidence counter)', () => {
       throw new Error('connection terminated unexpectedly');
     });
     await expect(
-      bumpRefusedOpCounter({ workspaceId: 'ws-1', potSlug: 'hive-a', reason: 'receipt-apply:identity_unresolved' }, boomSql),
+      bumpRefusedOpCounter(
+        { workspaceId: 'ws-1', potSlug: 'hive-a', reason: 'receipt-apply:identity_unresolved' },
+        boomSql,
+      ),
     ).resolves.toBeUndefined();
   });
 
@@ -55,7 +161,10 @@ describe('bumpRefusedOpCounter (M15 trust-layer evidence counter)', () => {
     const boomSql = sqlCalls(() => {
       throw new Error('relation "p2p_refused_op_counters" does not exist');
     });
-    await bumpRefusedOpCounter({ workspaceId: 'ws-9', potSlug: 'hive-z', reason: 'grant-apply:no_author_device' }, boomSql);
+    await bumpRefusedOpCounter(
+      { workspaceId: 'ws-9', potSlug: 'hive-z', reason: 'grant-apply:no_author_device' },
+      boomSql,
+    );
     expect(errSpy).toHaveBeenCalledTimes(1);
     const [msg, err] = errSpy.mock.calls[0]!;
     expect(String(msg)).toContain('ws-9');

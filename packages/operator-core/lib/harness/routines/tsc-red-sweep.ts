@@ -70,11 +70,7 @@ import {
   type EngineerIssue,
 } from '../../issues-engineer';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import {
-  decideTscRedCleared,
-  tscRedPathOf,
-  type TscRedClearedDecision,
-} from '../improvements/tsc-red-cleared-resolve';
+import { decideTscRedCleared, tscRedPathOf, type TscRedClearedDecision } from '../improvements/tsc-red-cleared-resolve';
 
 /** One dwelled red, as the sweep resolved it. */
 export interface TscRedSweepResult {
@@ -200,8 +196,7 @@ export async function escalateRepeatedUnownedTscRed(
   }
 
   const updateIssueFn =
-    deps.updateIssueFn ??
-    ((id: string) => updateIssue(id, { severity: 'critical', by: 'system:tsc-red-sweep' }));
+    deps.updateIssueFn ?? ((id: string) => updateIssue(id, { severity: 'critical', by: 'system:tsc-red-sweep' }));
   const bumpPriorityFn =
     deps.bumpPriorityFn ??
     (async (id: string, position: 'top') => {
@@ -209,8 +204,7 @@ export async function escalateRepeatedUnownedTscRed(
       return bumpWorkItemPriority(id, position);
     });
   const commentIssueFn =
-    deps.commentIssueFn ??
-    ((id: string, body: string) => commentIssue(id, body, 'system:tsc-red-sweep'));
+    deps.commentIssueFn ?? ((id: string, body: string) => commentIssue(id, body, 'system:tsc-red-sweep'));
   const openEscalationFn =
     deps.openEscalationFn ??
     (async (input) => {
@@ -220,18 +214,14 @@ export async function escalateRepeatedUnownedTscRed(
 
   if (issue.severity !== 'critical') await updateIssueFn(issue.id);
 
-  let priority:
-    | { applicable: boolean; priority: number | null; proposed?: boolean }
-    | null = null;
+  let priority: { applicable: boolean; priority: number | null; proposed?: boolean } | null = null;
   let priorityError: string | null = null;
   try {
     priority = await bumpPriorityFn(issue.id, 'top');
   } catch (e) {
     priorityError = e instanceof Error ? e.message : String(e);
   }
-  const prioritySurfaced = Boolean(
-    priority?.applicable && priority.priority != null && !priority.proposed,
-  );
+  const prioritySurfaced = Boolean(priority?.applicable && priority.priority != null && !priority.proposed);
 
   let surfacedBy: RepeatedUnownedTscRedResult['surfacedBy'] = 'priority';
   if (!prioritySurfaced) {
@@ -268,7 +258,7 @@ export async function escalateRepeatedUnownedTscRed(
 }
 
 interface RepeatedIssueSelection {
-  issue: EngineerIssue | null;
+  issue: RepeatedUnownedTscRedIssue | null;
   reason: string;
 }
 
@@ -278,7 +268,7 @@ interface RepeatedIssueSelection {
  * duplicate would lie about that premise. `findIssuesByWatchdogKeys` is already newest-first,
  * but the explicit timestamp sort keeps the injectable seam honest in tests and future callers.
  */
-function selectRepeatedUnownedIssue(issues: readonly EngineerIssue[]): RepeatedIssueSelection {
+function selectRepeatedUnownedIssue(issues: readonly RepeatedUnownedTscRedIssue[]): RepeatedIssueSelection {
   const open = issues.filter((issue) => issue.state === 'open');
   const owned = open.find((issue) => issue.assignee);
   if (owned) {
@@ -397,7 +387,7 @@ export interface TscRedSweepDeps {
   recentFiresFn?: typeof recentWatchdogFires;
   claimFireFn?: typeof claimWatchdogFire;
   /** Exact lookup of the issue created by the first filing. */
-  findIssuesByWatchdogKeysFn?: (keys: string[]) => Promise<EngineerIssue[]>;
+  findIssuesByWatchdogKeysFn?: (keys: string[]) => Promise<RepeatedUnownedTscRedIssue[]>;
   /** Execute the repeat-red escalation (injectable for a no-PG unit test). */
   escalateRepeatedUnownedTscRedFn?: (
     issue: RepeatedUnownedTscRedIssue,
@@ -639,7 +629,7 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
           // A repeat is no longer a no-op: the original issue already exists, so use the
           // exact indexed key to find it and make that SAME row actionable. A lookup failure
           // remains fail-soft — never mint a second capture merely because the index was down.
-          let matches: EngineerIssue[];
+          let matches: RepeatedUnownedTscRedIssue[];
           try {
             matches = await findIssuesByWatchdogKeysFn([debounceKeyFor(red.file)]);
           } catch (e) {
@@ -701,7 +691,7 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
           // The exact issue can be claimed or resolved between the cheap read and the
           // single-flight write. Re-read AFTER winning, then let the helper check ownership
           // once more; a lost race must fail toward doing nothing, never escalating owned work.
-          let freshMatches: EngineerIssue[];
+          let freshMatches: RepeatedUnownedTscRedIssue[];
           try {
             freshMatches = await findIssuesByWatchdogKeysFn([debounceKeyFor(red.file)]);
           } catch (e) {

@@ -89,10 +89,7 @@ export interface ResolveDelegatedSpawnOutcomeDeps {
   /** This machine's device pubkey for a github user id (null = unknowable). */
   selfDevicePubkey?: (githubUserId: number) => Promise<string | null>;
   /** Fleet members as the classifier consumes them, or null when unavailable. */
-  loadMembers?: (
-    workspaceId: string,
-    fleetSlug: string,
-  ) => Promise<DelegatedSpawnMemberFacts[] | null>;
+  loadMembers?: (workspaceId: string, fleetSlug: string) => Promise<DelegatedSpawnMemberFacts[] | null>;
   nowMs?: () => number;
 }
 
@@ -131,10 +128,7 @@ async function defaultSelfDevicePubkey(githubUserId: number): Promise<string | n
  * neutral loss here: it can flip `honored-live` into `no-response`, which is
  * precisely the confident-false-verdict class this feature exists to remove.
  */
-async function defaultLoadMembers(
-  workspaceId: string,
-  fleetSlug: string,
-): Promise<DelegatedSpawnMemberFacts[] | null> {
+async function defaultLoadMembers(workspaceId: string, fleetSlug: string): Promise<DelegatedSpawnMemberFacts[] | null> {
   const [{ listFleetPresence }, { resolveSessionStates }] = await Promise.all([
     import('../agent-tools/coordination/presence-fleet'),
     import('../agent-tools/coordination/liveness-oracle'),
@@ -176,10 +170,7 @@ async function defaultLoadMembers(
  * observation. Both may be absent (a request nobody has answered and a seat row
  * that has not federated here yet), and absent is reported as `null`.
  */
-function honoringDevicePubkeyFrom(
-  receipts: P2pReceipt[],
-  seat: StoredWorkOffer | null,
-): string | null {
+function honoringDevicePubkeyFrom(receipts: P2pReceipt[], seat: StoredWorkOffer | null): string | null {
   const answered = receipts
     .filter((r) => r.responderDevicePubkey && (r.kind === 'honored' || r.kind === 'refusal'))
     .sort((a, b) => a.receiptTs - b.receiptTs)[0];
@@ -238,12 +229,7 @@ export async function resolveDelegatedSpawnOutcome(
   }
   if (!self) return null;
 
-  const seat = await getOffer(
-    args.workspaceId,
-    args.potSlug,
-    self.targetPublisherGithubUserId,
-    self.targetOfferId,
-  );
+  const seat = await getOffer(args.workspaceId, args.potSlug, self.targetPublisherGithubUserId, self.targetOfferId);
   const receipts = await listReceipts({
     workspaceId: args.workspaceId,
     potSlug: args.potSlug,

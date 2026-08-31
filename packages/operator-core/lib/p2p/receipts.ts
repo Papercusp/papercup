@@ -29,6 +29,139 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from '../work-items';
 import { resolveP2pGrantWorkspace } from './grant-store';
 import type { P2pCapability, P2pGranteeKind } from './capabilities';
+import type { BuildInfo } from '../build-info';
+
+/**
+ * Mixed-version responder identity carried inside the existing signed receipt
+ * `detail` field. This deliberately does NOT widen the receipt wire/DB schema:
+ * old peers retain the prose, while current peers can parse the bounded tail.
+ *
+ * `current` means "a current-format marker with a provable loaded SHA", not
+ * "the same build as the reader". That comparison belongs at the read surface
+ * because a different SHA proves skew, but not ancestry or which side is older.
+ */
+export type ResponderBuildMarkerEvidence =
+  | { state: 'current'; sha: string; version: string | null; marker: string; detail: string }
+  | { state: 'legacy'; sha: null; version: null; marker: null; detail: string }
+  | { state: 'unknown'; sha: null; version: string | null; marker: string | null; detail: string };
+
+/**
+ * Comparison made by the READER between its loaded build and the responder's
+ * receipt marker. `skew` means only "different loaded Git identities". It says
+ * nothing about ancestry, ordering, or which host is stale.
+ */
+export interface ResponderBuildComparison {
+  comparison: 'same' | 'skew' | 'unknown';
+  responderSha: string | null;
+  tracingSha: string | null;
+  detail: string;
+}
+
+/** Keep each token small enough that a marker cannot turn receipt prose into an unbounded payload. */
+export const RESPONDER_BUILD_MARKER_VALUE_MAX_CHARS = 80;
+
+const RESPONDER_BUILD_MARKER_RE = /\[responder-build sha=([A-Za-z0-9._+\-]{1,80}) version=([A-Za-z0-9._+\-]{1,80})\]/;
+const RESPONDER_BUILD_MARKER_PREFIX_RE = /\[responder-build\b/;
+
+function safeResponderBuildValue(value: string | null | undefined): string {
+  const safe = String(value ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9._+\-]/g, '_')
+    .slice(0, RESPONDER_BUILD_MARKER_VALUE_MAX_CHARS);
+  return safe || 'unknown';
+}
+
+/** Pure formatter: callers pass the build identity sampled at receipt-emission time. */
+export function formatResponderBuildMarker(build: Pick<BuildInfo, 'sha' | 'version'>): string {
+  return `[responder-build sha=${safeResponderBuildValue(build.sha)} version=${safeResponderBuildValue(build.version)}]`;
+}
+
+/** Append one machine-readable marker without changing the receipt schema or the original prose. */
+export function appendResponderBuildMarker(detail: string, build: Pick<BuildInfo, 'sha' | 'version'>): string {
+  const marker = formatResponderBuildMarker(build);
+  return detail ? `${detail.trimEnd()} ${marker}` : marker;
+}
+
+/**
+ * Parse current, legacy, and explicit/malformed unknown evidence while
+ * preserving the original detail verbatim for human diagnosis.
+ */
+export function parseResponderBuildMarker(detail: string): ResponderBuildMarkerEvidence {
+  const match = RESPONDER_BUILD_MARKER_RE.exec(detail);
+  if (!match) {
+    return RESPONDER_BUILD_MARKER_PREFIX_RE.test(detail)
+      ? { state: 'unknown', sha: null, version: null, marker: null, detail }
+      : { state: 'legacy', sha: null, version: null, marker: null, detail };
+  }
+  const marker = match[0];
+  const sha = match[1]!;
+  const versionToken = match[2]!;
+  const version = versionToken.toLowerCase() === 'unknown' ? null : versionToken;
+  if (sha.toLowerCase() === 'unknown') {
+    return { state: 'unknown', sha: null, version, marker, detail };
+  }
+  return { state: 'current', sha, version, marker, detail };
+}
+
+function sameGitObjectIdentity(left: string, right: string): boolean {
+  if (left === right) return true;
+  // Deployed envs may carry a full SHA while a dev checkout reports the short
+  // form. A valid Git prefix is the same object identity, not build skew.
+  const gitHex = /^[0-9a-f]{7,64}$/i;
+  return gitHex.test(left) && gitHex.test(right) && (left.startsWith(right) || right.startsWith(left));
+}
+
+/**
+ * Compare responder evidence with the tracing operator's loaded build.
+ * Versions are deliberately diagnostic-only: equal package versions can still
+ * contain different commits, and different SHAs do not establish chronology.
+ */
+export function compareResponderBuild(
+  responder: ResponderBuildMarkerEvidence,
+  tracingBuild: Pick<BuildInfo, 'sha' | 'version'>,
+): ResponderBuildComparison {
+  const tracingSha = tracingBuild.sha?.trim() || null;
+  if (responder.state === 'legacy') {
+    return {
+      comparison: 'unknown',
+      responderSha: null,
+      tracingSha,
+      detail: 'legacy responder receipt has no build marker, so build equality is unknown.',
+    };
+  }
+  if (responder.state === 'unknown') {
+    return {
+      comparison: 'unknown',
+      responderSha: null,
+      tracingSha,
+      detail: 'responder receipt has a missing, malformed, or identity-less build marker.',
+    };
+  }
+  if (!tracingSha) {
+    return {
+      comparison: 'unknown',
+      responderSha: responder.sha,
+      tracingSha: null,
+      detail: 'the tracing operator cannot prove its loaded Git SHA, so build equality is unknown.',
+    };
+  }
+  if (sameGitObjectIdentity(responder.sha, tracingSha)) {
+    return {
+      comparison: 'same',
+      responderSha: responder.sha,
+      tracingSha,
+      detail: 'responder and tracing operator identify the same loaded Git object.',
+    };
+  }
+  return {
+    comparison: 'skew',
+    responderSha: responder.sha,
+    tracingSha,
+    detail:
+      'responder and tracing operator report different loaded Git SHAs; this proves build skew only. ' +
+      'Commit ancestry and chronology were not measured.',
+  };
+}
 
 /**
  * X8 receipt taxonomy.
@@ -168,10 +301,7 @@ export type EmitP2pReceiptResult =
  * audit/counter are best-effort and never fail the emit). One log line, M21
  * offer-id threaded.
  */
-export async function emitP2pReceipt(
-  args: EmitP2pReceiptArgs,
-  sqlOverride?: OrgSql,
-): Promise<EmitP2pReceiptResult> {
+export async function emitP2pReceipt(args: EmitP2pReceiptArgs, sqlOverride?: OrgSql): Promise<EmitP2pReceiptResult> {
   const ws = resolveP2pGrantWorkspace(args.workspaceId);
   if (!ws) {
     return {
@@ -184,12 +314,28 @@ export async function emitP2pReceipt(
     };
   }
   const hive = args.potSlug?.trim();
-  if (!hive) return { ok: false, refusal: { code: 'hive_required', detail: 'receipts are hive-scoped; pass the hive HOME slug.' } };
+  if (!hive)
+    return {
+      ok: false,
+      refusal: { code: 'hive_required', detail: 'receipts are hive-scoped; pass the hive HOME slug.' },
+    };
   if (!Number.isInteger(args.responderGithubUserId) || args.responderGithubUserId <= 0) {
-    return { ok: false, refusal: { code: 'invalid_responder', detail: 'responderGithubUserId must be a positive numeric GitHub user-id (X9).' } };
+    return {
+      ok: false,
+      refusal: {
+        code: 'invalid_responder',
+        detail: 'responderGithubUserId must be a positive numeric GitHub user-id (X9).',
+      },
+    };
   }
   if (args.kind === 'refusal' && !args.refusal) {
-    return { ok: false, refusal: { code: 'refusal_required', detail: "kind='refusal' requires the structured refusal {code, missing?, detail}." } };
+    return {
+      ok: false,
+      refusal: {
+        code: 'refusal_required',
+        detail: "kind='refusal' requires the structured refusal {code, missing?, detail}.",
+      },
+    };
   }
   // The mirror of the check above: a SUCCESS receipt carrying a refusal code is
   // incoherent, and would surface in p2p:trace as a refusal on the very path

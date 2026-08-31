@@ -150,10 +150,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
 
   it('a REMOTE honor never consults member evidence at all', async () => {
     const d = deps();
-    const r = await resolveDelegatedSpawnOutcome(
-      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
-      d,
-    );
+    const r = await resolveDelegatedSpawnOutcome({ workspaceId: WS, potSlug: POT, offerId: REQ_ID }, d);
     expect(r!.memberEvidenceAvailable).toBe(false);
     expect(r!.honoringDevicePubkey).toBe(RIG_DEVICE_PK);
     // Structural, not incidental: rows already known to prove nothing are never
@@ -188,8 +185,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
         listReceipts: vi.fn(async () => [
           receipt({
             detail:
-              "honored: opened 1/1 member(s) for fleet 'fed-drill' " +
-              '[responder-build sha=rigbuild1 version=0.0.13]',
+              "honored: opened 1/1 member(s) for fleet 'fed-drill' " + '[responder-build sha=rigbuild1 version=0.0.13]',
           }),
         ]),
       }),
@@ -199,9 +195,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
       sha: 'rigbuild1',
       version: '0.0.13',
       marker: '[responder-build sha=rigbuild1 version=0.0.13]',
-      detail:
-        "honored: opened 1/1 member(s) for fleet 'fed-drill' " +
-        '[responder-build sha=rigbuild1 version=0.0.13]',
+      detail: "honored: opened 1/1 member(s) for fleet 'fed-drill' " + '[responder-build sha=rigbuild1 version=0.0.13]',
     });
   });
 
@@ -252,9 +246,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
     const r = await resolveDelegatedSpawnOutcome(
       { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
       deps({
-        listReceipts: vi.fn(async () => [
-          receipt({ kind: 'refusal', refusalCode: 'seat_budget_exhausted' }),
-        ]),
+        listReceipts: vi.fn(async () => [receipt({ kind: 'refusal', refusalCode: 'seat_budget_exhausted' })]),
       }),
     );
     expect(r!.outcome.verdict).toBe('refused');
@@ -284,10 +276,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
         },
       ]),
     });
-    const r = await resolveDelegatedSpawnOutcome(
-      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
-      d,
-    );
+    const r = await resolveDelegatedSpawnOutcome({ workspaceId: WS, potSlug: POT, offerId: REQ_ID }, d);
     expect(r!.memberEvidenceAvailable).toBe(true);
     expect(d.loadMembers).toHaveBeenCalledWith(WS, FLEET);
     expect(r!.outcome.verdict).toBe('honored-live');
@@ -322,10 +311,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
   it('the shared GitHub account never makes a remote honor look local', async () => {
     // Publisher and target are BOTH SHARED_UID in the live data; only the device
     // pubkeys differ. This pins that the composition reads the device.
-    const r = await resolveDelegatedSpawnOutcome(
-      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
-      deps(),
-    );
+    const r = await resolveDelegatedSpawnOutcome({ workspaceId: WS, potSlug: POT, offerId: REQ_ID }, deps());
     expect(r!.request.fleetSlug).toBe(FLEET);
     expect(r!.memberEvidenceAvailable).toBe(false);
   });
