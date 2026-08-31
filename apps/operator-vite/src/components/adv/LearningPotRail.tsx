@@ -446,6 +446,34 @@ export default function LearningPotRail() {
   const many = dormant.length !== 1;
   const potWord = t("pot", { plural: many, lower: true });
 
+  // ⚠ P-052 CHANGED WHO IS IN THIS BUCKET, SO THE COPY HAD TO CHANGE WITH IT.
+  // It used to hold only configured-but-unarmed pots, and said so: "They are
+  // not switched off; nothing is running for them." Making switched-OFF pots
+  // dormant put the exact population that sentence denies into it — and after
+  // the owner's 28-pot pause that is EVERY pot, so the one affordance
+  // accounting for them would have described all 26 as merely idle and called
+  // the deliberate decision incidental. A summary that miscounts is recoverable;
+  // one that renames a decision is not. So the wording is derived from the real
+  // composition rather than assumed.
+  const offCount = dormant.filter((c) => c.learning === "off").length;
+  const idleCount = dormant.length - offCount;
+  const dormantWord =
+    offCount === 0 ? "idle" : idleCount === 0 ? "off" : "quiet";
+  const dormantParts: string[] = [];
+  if (offCount > 0) dormantParts.push(`${offCount} switched off deliberately`);
+  if (idleCount > 0) {
+    dormantParts.push(
+      `${idleCount} with a learning setup — a gym autoloop or governor lanes — and nothing armed`,
+    );
+  }
+  // This rides on `aria-label` as well as the tooltip because the tooltip is a
+  // Radix portal that exists only on hover: without it the accessible name of
+  // the one control accounting for the entire hidden tail is the bare "+26
+  // off". A pointer user gets the composition and a screen-reader user gets a
+  // number — and it is the screen-reader user who cannot see the rail to infer
+  // the rest.
+  const dormantSummary = `${dormant.length} ${potWord} not learning right now: ${dormantParts.join(", and ")}. Nothing is running for ${many ? "them" : "it"}. Open the scope picker to see every ${t("pot", { lower: true })} — each row opens its own fields.`;
+
   return (
     <ul
       className="pc-potrail"
@@ -467,7 +495,7 @@ export default function LearningPotRail() {
       {dormant.length > 0 ? (
         <li className="pc-potrail__chip pc-potrail__chip--dormant">
           <Tooltip
-            label={`${dormant.length} ${potWord} ${many ? "have" : "has"} a learning setup — a gym autoloop or governor lanes — with nothing armed right now. ${many ? "They are" : "It is"} not switched off; nothing is running for ${many ? "them" : "it"}. Open the scope picker to see every ${t("pot", { lower: true })}.`}
+            label={dormantSummary}
           >
             {/* P-008 made this live. D-005 designated this chip as the picker's
                 trigger and left it deliberately inert until the picker existed
@@ -476,9 +504,10 @@ export default function LearningPotRail() {
             <button
               type="button"
               className="pc-potrail__dormant"
+              aria-label={dormantSummary}
               onClick={openPicker}
             >
-              {`+${dormant.length} idle`}
+              {`+${dormant.length} ${dormantWord}`}
             </button>
           </Tooltip>
         </li>
@@ -495,9 +524,10 @@ export default function LearningPotRail() {
           background: var(--bg-1); color: var(--fg-dim);
           font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap;
         }
-        /* A pot switched off stays on the rail — it is the surface that switches
-           it back on (P-007) — but reads as dormant, the same dashed + faded
-           vocabulary the paused stepper uses. */
+        /* A switched-off pot keeps its chip ONLY while something is still armed
+           under it (P-052 made the fully-idle ones dormant) — that pot is still
+           spending, so it reads as off with the same dashed + faded vocabulary
+           the paused stepper uses, rather than disappearing. */
         .pc-potrail__chip[data-learning="off"] { opacity: .62; border-style: dashed; }
         .pc-potrail__chip[data-learning="unknown"] { border-color: var(--warn-border); }
         .pc-potrail__name {

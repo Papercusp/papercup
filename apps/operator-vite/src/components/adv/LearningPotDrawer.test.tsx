@@ -240,6 +240,41 @@ describe('arming and budgeting are two separate writes', () => {
     });
   });
 
+  /**
+   * ⚠ THIS TEST IS THE REASON P-052 IS SAFE — it did not start here.
+   *
+   * It was `LearningPotRail.test.tsx`'s 'KEEPS lane switches operable while the
+   * pot is off', where it twice falsified attempts to make switched-off pots
+   * dormant: a fully-idle off pot still owns live per-lane switches (arming one
+   * pre-stages what switching the pot back on restores), and D-007 keeps
+   * per-lane control off the picker, so the chip's popover was their only home.
+   * P-052 makes exactly that pot dormant — no chip, no popover — so the rail
+   * can no longer carry this. The drawer is what made that trade legal, and
+   * this test is the proof, moved to the surface that now owns it.
+   *
+   * If this test is ever deleted rather than moved again, `isPotChipDormant`
+   * must stop treating 'off' as eligible, or these switches strand silently.
+   */
+  it('arms a lane on a switched-off idle pot — the case the rail no longer carries', async () => {
+    H.arming = arming({
+      gymPots: [gym('p', { enabled: false })],
+      lanes: [lane('red-queen', 'p', { enabled: false })],
+      potScope: { disabledPots: ['p'], rows: [] },
+    });
+    open('p');
+    const btn = screen.getByRole('button', { name: 'Arm red-queen' }) as HTMLButtonElement;
+    // Operable, not merely present: a disabled switch would strand it just as
+    // completely as no switch at all.
+    expect(btn.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(runAgentTool).toHaveBeenCalledWith('governor:arm', {
+      loopId: 'red-queen',
+      enabled: true,
+    });
+  });
+
   it('arms the gym by HARNESS slug, which is what gym:arm takes', async () => {
     H.arming = arming({ gymPots: [gym('p', { enabled: true })] });
     open('p');

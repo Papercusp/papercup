@@ -231,6 +231,50 @@ describe('LearningPotRail', () => {
     expect(container.querySelector('.pc-potrail__dormant')?.textContent).toBe('+3 idle');
   });
 
+  /**
+   * P-052 REGRESSION GUARD — the summary must not rename a decision.
+   *
+   * Before P-052 this bucket held only configured-but-unarmed pots, and the
+   * tooltip said so in as many words: "They are not switched off." Making
+   * switched-off pots dormant put exactly the denied population into it, and
+   * the owner's real 28-pot pause makes that population EVERYTHING — so the one
+   * affordance accounting for the whole rail would have described 26
+   * deliberately paused pots as incidentally idle. Nothing throws; the count
+   * stays right; only the meaning is wrong, which is why it needs a test.
+   */
+  it('calls a switched-off tail OFF, not idle — the summary must not relabel a decision', () => {
+    const slugs = ['a', 'b', 'c'];
+    const { container } = renderRail(
+      arming({
+        gymPots: slugs.map((s) => gym(s, { enabled: false })),
+        potScope: scope(slugs),
+      }),
+    );
+    const btn = container.querySelector('.pc-potrail__dormant');
+    expect(btn?.textContent).toBe('+3 off');
+    // The tooltip is a Radix portal that only exists on hover, so the summary
+    // also has to reach a screen reader as the button's accessible name —
+    // otherwise the only control accounting for the hidden tail announces "+3
+    // off" and nothing else.
+    const said = btn?.getAttribute('aria-label') ?? '';
+    expect(said).toContain('3 switched off deliberately');
+    expect(said).not.toContain('not switched off');
+  });
+
+  it('distinguishes a MIXED tail — switched-off and merely-unarmed are different facts', () => {
+    const { container } = renderRail(
+      arming({
+        gymPots: [gym('off1', { enabled: false }), gym('idle1', { enabled: false })],
+        potScope: scope(['off1']),
+      }),
+    );
+    const btn = container.querySelector('.pc-potrail__dormant');
+    expect(btn?.textContent).toBe('+2 quiet');
+    const said = btn?.getAttribute('aria-label') ?? '';
+    expect(said).toContain('1 switched off deliberately');
+    expect(said).toContain('1 with a learning setup');
+  });
+
   it('renders no dormant summary when every pot is actually learning', () => {
     const { container } = renderRail(
       arming({ gymPots: [gym('armed')], potScope: scope([]) }),
@@ -379,10 +423,23 @@ describe('the per-pot popover', () => {
   it('KEEPS lane switches operable while the pot is off — a lane owns its own arming', async () => {
     // Rule 3: switching the pot back on must restore exactly what was armed, so
     // arming a lane on a switched-off pot is meaningful, not a no-op to disable.
+    //
+    // ⚠ P-052 CHANGED THIS FIXTURE, NOT THE RULE. A switched-off pot with
+    // NOTHING armed is now dormant, so it has no chip and no popover — this
+    // test cannot reach the switches that way any more. The requirement did not
+    // go away, it MOVED: that case is asserted in LearningPotDrawer.test.tsx
+    // ('arms a lane on a switched-off idle pot — the case the rail no longer
+    // carries'). What the RAIL still owns is the case where the chip survives:
+    // an off pot with a lane already armed. So `l2` is armed here purely to
+    // keep the chip on the rail; `l1` is the disarmed lane under test, and the
+    // assertion below is the original one, unweakened.
     const { container } = renderRail(
       arming({
         gymPots: [gym('alpha', { enabled: false })],
-        lanes: [lane('alpha', { loopId: 'l1', displayName: 'lane one', enabled: false })],
+        lanes: [
+          lane('alpha', { loopId: 'l1', displayName: 'lane one', enabled: false }),
+          lane('alpha', { loopId: 'l2', displayName: 'lane two', enabled: true }),
+        ],
         potScope: scope(['alpha']),
       }),
     );
