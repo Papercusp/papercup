@@ -18,7 +18,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { validateClaimSpec } from './claim-spec';
 import {
+  fencePreservingWidenFilter,
   fleetScopeClassRefusalNote,
   fleetScopeLeaderRemedy,
   type FleetScopeAdmission,
@@ -61,6 +63,136 @@ function refusal(
     ...(reporter === undefined ? {} : { reporter }),
   };
 }
+
+/**
+ * EI-21906739799895413 — the refusal must NAME the fence-preserving widen, not describe it.
+ *
+ * Measured cost of describing it: a leader whose lane was plan-scoped needed to admit one
+ * ad-hoc row, read "…whose view.filter admits this work", invented `{ op:'any', of:[...] }`,
+ * was refused "unknown filter op 'any'", and concluded from that one refusal that the DSL
+ * has NO boolean composition — then filed a bug asking for a disjunction that had shipped
+ * long before. Four blocked calls, two agents idled mid-turn. The missing thing was never
+ * the feature; it was the SHAPE, which no amount of prose conveys.
+ */
+describe('fleetScopeLeaderRemedy — the fence-preserving widen is rendered, not described', () => {
+  const planFilter = { field: 'plan' as const, op: '=' as const, value: 'mail-retirement' };
+
+  function planScopedRefusal(): Extract<FleetScopeAdmission, { allowed: false }> {
+    const base = refusal();
+    return {
+      ...base,
+      scope: {
+        ...base.scope,
+        record: {
+          ...base.scope.record,
+          spec: { ...base.scope.record.spec, view: { filter: planFilter } },
+        },
+      },
+    };
+  }
+
+  it('renders an EXECUTABLE widen that keeps the existing fence', () => {
+    const body = fleetScopeLeaderRemedy(planScopedRefusal(), true, null, null, 'WI-1338822');
+    // The combinator shape, with BOTH disjuncts — the fence survives, the row is admitted.
+    expect(body).toContain('"any"');
+    expect(body).toContain('"field":"plan"');
+    expect(body).toContain('WI-1338822');
+    // Name the thing the author got wrong, at the moment they would get it wrong again.
+    expect(body).toContain('COMBINATOR');
+    // A plan fence can never match an ad-hoc row, so say so rather than leaving them to
+    // rediscover it — and steer them off the stamp, which silently makes blockers vanish.
+    expect(body).toContain('PLAN-scoped');
+    expect(body).toContain('auto-resolves this row as residue');
+  });
+
+  it('THE POINT: the filter it recommends actually validates', () => {
+    // This is the assertion the whole item reduces to. The old advice was refused by the
+    // validator when a reader tried to act on it; advice that cannot survive the validator
+    // is worse than none, because it reads as a missing feature.
+    const widened = fencePreservingWidenFilter(planFilter, 'WI-1338822');
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'omp-research-lane',
+      revision: 7,
+      view: { filter: widened },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.errors ?? []).toEqual([]);
+  });
+
+  it('CONTROL: the syntax the reporter actually guessed is still refused', () => {
+    // Pins WHY the rendered shape is load-bearing. If this ever starts validating, the
+    // remedy text above is no longer rescuing anyone and this guard should be revisited.
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'omp-research-lane',
+      revision: 7,
+      view: { filter: { op: 'any', of: [planFilter, { field: 'id', op: '=', value: 'WI-1' }] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('WITHHELD on a class refusal — it must not license the per-row patching the class note forbids', () => {
+    // The class note leads by telling the leader NOT to patch per-row; printing a concrete
+    // one-row widen underneath would license exactly what that warning exists to stop
+    // (measured: rev 1→6 over 42h, still refusing 4 of 6 rows).
+    //
+    // A NON-plan filter is required to exercise this: a plan-scoped lane suppresses the
+    // class note outright, because a deliberate fence is SUPPOSED to match few rows.
+    const base = refusal();
+    const kindScoped: Extract<FleetScopeAdmission, { allowed: false }> = {
+      ...base,
+      scope: {
+        ...base.scope,
+        record: {
+          ...base.scope.record,
+          spec: {
+            ...base.scope.record.spec,
+            view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+          },
+        },
+      },
+    };
+    const body = fleetScopeLeaderRemedy(kindScoped, true, reading(1, 29883), null, 'WI-1338822');
+    expect(body).toContain('POSSIBLE CLASS REFUSAL');
+    expect(body).not.toContain('"any"');
+    expect(body).toContain('whose view.filter admits this work');
+    // Same for a spec that admits nothing at all.
+    const empty = fleetScopeLeaderRemedy(kindScoped, true, reading(0, 42), null, 'WI-1338822');
+    expect(empty).toContain('CLASS REFUSAL');
+    expect(empty).not.toContain('"any"');
+  });
+
+  it('a PLAN-scoped lane still gets the widen, because its class note is suppressed anyway', () => {
+    // The coupling that matters: withhold the widen exactly when the class note is PRINTED,
+    // never merely when a low ratio was measured. Keying off the raw reading would strand
+    // the plan-scoped refusal — this item's actual case — with prose AND no class warning.
+    const body = fleetScopeLeaderRemedy(planScopedRefusal(), true, reading(1, 29883), null, 'WI-1338822');
+    expect(body).not.toContain('CLASS REFUSAL');
+    expect(body).toContain('"any"');
+    expect(body).toContain('WI-1338822');
+  });
+
+  it('degrades to the prose wording when the caller cannot supply an id', () => {
+    // work_items:create refuses BEFORE the row is persisted, so some callers genuinely have
+    // no id. That path must be unchanged, never a half-rendered filter.
+    const withId = fleetScopeLeaderRemedy(planScopedRefusal(), true, null, null, 'WI-1');
+    const withoutId = fleetScopeLeaderRemedy(planScopedRefusal(), true, null);
+    expect(withoutId).toContain('whose view.filter admits this work');
+    expect(withoutId).not.toContain('"any"');
+    expect(withId).not.toBe(withoutId);
+  });
+
+  it('a lane with NO existing fence widens to a bare id leaf, not a pointless disjunction', () => {
+    expect(fencePreservingWidenFilter(undefined, 'WI-7')).toEqual({
+      field: 'id',
+      op: '=',
+      value: 'WI-7',
+    });
+  });
+});
 
 describe('fleetScopeClassRefusalNote — the decision boundary', () => {
   it('a spec matching ZERO of the pool says so, and says a per-row widen cannot help', () => {

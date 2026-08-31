@@ -373,7 +373,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       // to notice the notification.
       hint:
         `${admission.reason}. The claim was refused before mutation. ` +
-        `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}` +
+        // EI-21906739799895413: pass the refused id so the remedy renders an EXECUTABLE
+        // fence-preserving widen rather than describing one.
+        `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, it.id)}` +
         (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     };
   }

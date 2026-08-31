@@ -469,7 +469,11 @@ export default defineTool({
                 `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
                 `${admission.reason}. No out-of-scope claim was created. You are recorded as the ` +
                 `reporter, so the finding is durable and attributable while it waits for an owner. ` +
-                `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}`,
+                // EI-21906739799895413: the row is not persisted yet, so there is no id to
+                // render — pass a placeholder so the notice still shows the fence-preserving
+                // COMBINATOR shape (the part nobody can guess) with an obvious fill-in,
+                // rather than degrading to prose that sends the reader inventing syntax.
+                `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, '<the filed work-item id>')}`,
             };
           }
         }

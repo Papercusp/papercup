@@ -152,6 +152,36 @@ export interface FleetDependencyEscape {
   ];
 }
 
+/**
+ * PURE: the FENCE-PRESERVING widen — admit one more id WITHOUT tearing down the filter
+ * that is already there.
+ *
+ * WHY THIS IS A NAMED, SHARED HELPER (EI-21906739799895413): this composition is the ONE
+ * answer to "my lane is plan-scoped but this ad-hoc row has to go somewhere", and it
+ * existed here for a while as an inline expression reachable only from the verified
+ * dependency-edge path. The generic refusal — the seam an author actually hits — offered
+ * prose instead ("…whose view.filter admits this work"), so the author had to invent the
+ * syntax. Measured: a leader guessed `{ op:'any', of:[...] }`, was refused "unknown filter
+ * op 'any'", and concluded from that single refusal that the DSL has NO boolean
+ * composition at all — filing this bug asking for a disjunction that has always existed.
+ * Four blocked calls and two idled agents came out of a shape nobody could name.
+ *
+ * Two properties make it the right default, and both are why prose could not substitute:
+ *  - it KEEPS the existing fence (`{ any: [ <current>, <id leaf> ] }`), so a leader is not
+ *    forced to choose between admitting one row and holding the whole plan scope; and
+ *  - a bare `id` leaf when there is no current filter, so the no-fence case stays trivial.
+ *
+ * NOT a licence to widen per-row: see the class-refusal guard at the call site, which
+ * withholds this when the spec is refusing a CLASS rather than a row.
+ */
+export function fencePreservingWidenFilter(
+  currentFilter: ClaimSpec['view']['filter'],
+  subjectId: string,
+): ClaimSpec['view']['filter'] {
+  const idLeaf = { field: 'id' as const, op: '=' as const, value: subjectId };
+  return currentFilter ? { any: [currentFilter, idLeaf] } : idLeaf;
+}
+
 /** PURE: turn a verified dependency edge into the three executable recovery routes. */
 export function buildFleetDependencyEscape(args: {
   admission: Extract<FleetScopeAdmission, { allowed: false }>;
@@ -160,7 +190,6 @@ export function buildFleetDependencyEscape(args: {
 }): FleetDependencyEscape {
   const { admission, context } = args;
   const current = admission.scope.record.spec;
-  const idLeaf = { field: 'id' as const, op: '=' as const, value: context.dependencyId };
   const currentFilter = current.view.filter;
   const proposed: ClaimSpec = {
     ...current,
@@ -170,7 +199,7 @@ export function buildFleetDependencyEscape(args: {
     revision: current.revision + 1,
     view: {
       ...current.view,
-      filter: currentFilter ? { any: [currentFilter, idLeaf] } : idLeaf,
+      filter: fencePreservingWidenFilter(currentFilter, context.dependencyId),
     },
   };
   const scopedHarness = args.harness?.trim() || undefined;
@@ -995,6 +1024,10 @@ export function fleetScopeLeaderRemedy(
   liveRouteTarget?: boolean | null,
   classRefusal?: FleetScopeClassRefusal | null,
   retiredPlans?: FleetScopeRetiredPlan[] | null,
+  /** The refused work-item id, when the caller knows it (claim/create do). Lets the notice
+   *  render an EXECUTABLE fence-preserving widen instead of describing one — see
+   *  {@link fencePreservingWidenFilter}. Omitted: the wording degrades to the prose form. */
+  subjectId?: string | null,
 ): string {
   const fleetSlug = admission.scope.fleetSlug;
   if (admission.code === 'fleet_winding_down') {
@@ -1040,13 +1073,47 @@ export function fleetScopeLeaderRemedy(
         );
       })()
     : '';
+  // EI-21906739799895413: "…whose view.filter admits this work" describes a repair without
+  // naming it, and the shape it omits is exactly the one authors cannot guess — a leader who
+  // needs to keep a plan fence AND admit one ad-hoc row invented `{ op:'any', of:[...] }`,
+  // read the resulting "unknown filter op 'any'" as proof the DSL has no disjunction, and
+  // filed a bug asking for a feature that already shipped. Render the executable filter when
+  // we know the id, so the notice ENDS the guessing instead of starting it.
+  //
+  // WITHHELD on a class refusal on purpose: `fleetScopeClassRefusalNote` leads the notice
+  // telling the leader NOT to patch per-row (measured: rev 1→6 over 42h, still refusing),
+  // and a concrete one-row widen printed underneath would license precisely what that
+  // warning exists to stop. A class problem needs the filter's SHAPE fixed, not one more id.
+  // Gate on the note this notice ACTUALLY emits, never on the raw reading: a plan-scoped
+  // lane suppresses the class note entirely (a deliberate fence is SUPPOSED to match few
+  // rows, so a low ratio is not evidence of a malformed filter there). Keying off the
+  // reading instead would withhold the widen on precisely the plan-scoped refusal this
+  // change exists to fix, while no class warning was printed either — prose and silence,
+  // the worst of both. Computed once and reused below so the two can never drift apart.
+  const classNote = planScoped ? '' : fleetScopeClassRefusalNote(classRefusal);
+  const concreteWiden =
+    subjectId && spec && !classNote
+      ? JSON.stringify(fencePreservingWidenFilter(spec.view?.filter, subjectId))
+      : null;
   const laneAction = retiredPlans?.length
     ? `RE-STEER the fleet lane in ONE call: ` +
       `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
       `whose view.filter points at a live plan (or another positive filter) and admits this work } }`
-    : `WIDEN the fleet lane in ONE call: ` +
-      `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
-      `whose view.filter admits this work } }`;
+    : concreteWiden
+      ? `WIDEN the fleet lane in ONE call, KEEPING the fence you already have — ` +
+        `\`any\` is a top-level COMBINATOR key, not a leaf op, so this admits the row without ` +
+        `abandoning the existing filter: scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: ` +
+        `{ … a revision bump of ${specRef} with view.filter = ${concreteWiden} } } ` +
+        `(preview it first with scheduler:preview_spec_delta).` +
+        (planScoped
+          ? ` Your lane is PLAN-scoped, and an ad-hoc row carries no plan — so it can never match ` +
+            `that fence on its own. Do NOT reach for plan_item stamping to force a match: the stamp ` +
+            `creates a coverage edge, so closing the plan item later auto-resolves this row as residue ` +
+            `even if its own work was never done.`
+          : '')
+      : `WIDEN the fleet lane in ONE call: ` +
+        `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
+        `whose view.filter admits this work } }`;
   const routeElsewhereNote =
     liveRouteTarget === false
       ? `Do NOT rely on "route the work elsewhere" — no other live agent (leader or member) was found in fleet ` +
@@ -1071,7 +1138,7 @@ export function fleetScopeLeaderRemedy(
     // Plan-scoped lanes are intentionally narrow: their exclusion ratio is not evidence of
     // a malformed class filter — but see EI-21884167889601047 below for why the plan-item
     // stamp itself is demoted to LAST rather than treated as the safe row-local remedy.
-    `${retiredPlanNote}${planScoped ? '' : fleetScopeClassRefusalNote(classRefusal)}` +
+    `${retiredPlanNote}${classNote}` +
     `To let this member self-claim it, ${laneAction} — the member picks it up on its next scheduler:get_next, ` +
     `no re-dispatch. ${routeElsewhereNote}${trackerNote ? ` ${trackerNote}` : ''}${planStampNote}`
   );
