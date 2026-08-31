@@ -1296,6 +1296,31 @@ interface ArmedCheck {
 }
 
 let armed: ArmedCheck[] | null = null;
+/**
+ * The checks this process is ELIGIBLE to run (post cluster-scope filter), retained across the
+ * process lifetime so the arm-state reconciler can re-start one it previously stopped. Without
+ * this, a disarm would be one-way until the next host boot — a switch you can only turn off is
+ * not a switch (EI-19294826146331487).
+ */
+let eligibleChecks: PeriodicCheck[] | null = null;
+let armDeps: RunCheckDeps | undefined;
+
+/** Arm ONE check on the shared registry. The single place the registration options are built. */
+function armOneCheck(check: PeriodicCheck): ArmedCheck {
+  return {
+    name: check.name,
+    // Return the tick's PROMISE to the registry — `() => void runPeriodicCheck(...)` discarded it, which
+    // made every tick look SYNCHRONOUS to managedSetInterval, so its re-entrancy guard released before the
+    // async tick finished and a slow tick could fire concurrently (the re-entrancy-guard test caught this;
+    // gate-red 2026-07-01). runPeriodicCheck never rejects (it catches internally).
+    handle: managedSetInterval(check.name, check.intervalMs, () => runPeriodicCheck(check, armDeps).then(() => undefined), {
+      category: 'global-sweep',
+      shed: check.shed,
+      fireOnArm: check.fireOnArm,
+      classification: check.classification,
+    }),
+  };
+}
 
 /**
  * Arm the in-process periodic checks. Idempotent (a second call is a no-op).
@@ -1326,19 +1351,13 @@ export function armInProcessPeriodicChecks(
   const isPrimary = opts.isPrimary ?? nodeCluster.isPrimary;
   const checks = all.filter((c) => checkRunsInThisProcess(c, isPrimary));
   const skipped = all.length - checks.length;
-  armed = checks.map((check) => ({
-    name: check.name,
-    // Return the tick's PROMISE to the registry — `() => void runPeriodicCheck(...)` discarded it, which
-    // made every tick look SYNCHRONOUS to managedSetInterval, so its re-entrancy guard released before the
-    // async tick finished and a slow tick could fire concurrently (the re-entrancy-guard test caught this;
-    // gate-red 2026-07-01). runPeriodicCheck never rejects (it catches internally).
-    handle: managedSetInterval(check.name, check.intervalMs, () => runPeriodicCheck(check, opts.deps).then(() => undefined), {
-      category: 'global-sweep',
-      shed: check.shed,
-      fireOnArm: check.fireOnArm,
-      classification: check.classification,
-    }),
-  }));
+  // EI-19294826146331487: arm EVERYTHING first, unconditionally and with no database read on the
+  // boot path, exactly as before. The durable arm state is applied afterwards by the reconciler
+  // (`applyInProcessSweepArmState`), so a slow or wedged database can never delay host boot, and
+  // the worst case is one reconcile interval of an already-running sweep.
+  eligibleChecks = checks;
+  armDeps = opts.deps;
+  armed = checks.map(armOneCheck);
   console.log(
     `[in-process-periodic] armed ${checks.length} in-process check(s)` +
       `${isPrimary ? '' : ` (cluster WORKER — ${skipped} host-scoped check(s) left to the primary, P-018)`}` +
@@ -1352,9 +1371,59 @@ export function disarmInProcessPeriodicChecks(): void {
   if (!armed) return;
   for (const a of armed) a.handle.stop();
   armed = null;
+  eligibleChecks = null;
+  armDeps = undefined;
 }
 
 /** Whether the in-process checks are currently armed (tests). */
 export function inProcessPeriodicChecksArmed(): boolean {
   return armed !== null;
+}
+
+/**
+ * The checks this process is eligible to run, with their cadence — the arm-state layer's view of
+ * the declared population (EI-19294826146331487). Empty until the suite has been armed once,
+ * because eligibility depends on the cluster-scope filter applied at arm time.
+ */
+export function inProcessPeriodicEligibleChecks(): Array<{ name: string; intervalMs: number }> {
+  return (eligibleChecks ?? []).map((c) => ({ name: c.name, intervalMs: c.intervalMs }));
+}
+
+/** The check names armed in THIS process right now. */
+export function inProcessPeriodicArmedNames(): string[] {
+  return armed ? armed.map((a) => a.name) : [];
+}
+
+/**
+ * Apply a reconcile plan from the durable arm state: stop the sweeps an operator turned off,
+ * re-start the ones they turned back on. Returns what it ACTUALLY changed, which is not
+ * necessarily what was asked — a name that is not eligible in this process, or that is already
+ * in the requested state, is silently skipped rather than trusted.
+ *
+ * A no-op (and an empty result) whenever the suite is not armed here: a process that never armed
+ * the sweeps has nothing to reconcile, and starting one from a reconcile would arm a sweep on a
+ * host that the boot gate deliberately excluded.
+ */
+export function applyInProcessSweepArmState(plan: {
+  toStop: readonly string[];
+  toStart: readonly string[];
+}): { toStop: string[]; toStart: string[] } {
+  const stopped: string[] = [];
+  const started: string[] = [];
+  if (!armed || !eligibleChecks) return { toStop: stopped, toStart: started };
+  for (const name of plan.toStop) {
+    const idx = armed.findIndex((a) => a.name === name);
+    if (idx < 0) continue;
+    armed[idx]!.handle.stop();
+    armed.splice(idx, 1);
+    stopped.push(name);
+  }
+  for (const name of plan.toStart) {
+    if (armed.some((a) => a.name === name)) continue;
+    const check = eligibleChecks.find((c) => c.name === name);
+    if (!check) continue;
+    armed.push(armOneCheck(check));
+    started.push(name);
+  }
+  return { toStop: stopped, toStart: started };
 }
