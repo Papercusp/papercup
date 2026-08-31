@@ -208,3 +208,169 @@ describe('THE GAP: the state every existing predicate calls healthy', () => {
     expect(resolveGoalPortfolioIdle(portfolioInput).idle).toBe(true);
   });
 });
+
+/**
+ * ── FALSIFIABILITY CONTROL ─────────────────────────────────────────────────────
+ *
+ * A guard test that has never failed is a guard nobody has tested. Every
+ * assertion above passes against the real fold — but that alone does not show
+ * the assertions DISCRIMINATE; a table of weak expectations passes against a
+ * broken implementation too.
+ *
+ * The repo's rule for a subject you `import` (rather than a file artifact read
+ * by path) is to keep deliberately-wrong implementations here PERMANENTLY as
+ * controls, instead of mutating the shared tree. Mutating it would be unsafe
+ * for reasons unrelated to care: git-sync sweeps the whole working tree on a
+ * timer, so a probe that holds a file mutated for the length of a suite can
+ * have that mutant committed even when nothing goes wrong and no handler fails.
+ *
+ * So: one contract table, four mutants, and the calibration case that keeps the
+ * whole thing honest. Each mutant is a REAL mistake available at this seam, not
+ * a strawman — three of the four are the specific errors the fold's own comments
+ * warn against.
+ */
+type FoldInput = Parameters<typeof resolveGoalPortfolioIdle>[0];
+type FoldOutput = ReturnType<typeof resolveGoalPortfolioIdle>;
+type PortfolioFold = (input: FoldInput) => FoldOutput;
+
+const CONTRACT: ReadonlyArray<{ name: string; input: FoldInput; want: FoldOutput }> = [
+  {
+    name: 'idle-past-threshold',
+    input: { liveness: 'held', throughput: { actsInWindow: 0, idleMs: 45 * MIN } },
+    want: { idle: true, reason: 'idle' },
+  },
+  {
+    name: 'placing-inside-threshold',
+    input: { liveness: 'held', throughput: { actsInWindow: 3, idleMs: 4 * MIN } },
+    want: { idle: false, reason: 'placing' },
+  },
+  {
+    name: 'within-grace-is-not-placing',
+    input: { liveness: 'held', throughput: { actsInWindow: 0, idleMs: 2 * MIN } },
+    want: { idle: false, reason: 'within-grace' },
+  },
+  {
+    name: 'boundary-inclusive',
+    input: {
+      liveness: 'held',
+      throughput: { actsInWindow: 0, idleMs: GOAL_PORTFOLIO_IDLE_AFTER_MS },
+    },
+    want: { idle: true, reason: 'idle' },
+  },
+  {
+    name: 'recency-not-window-total',
+    input: { liveness: 'held', throughput: { actsInWindow: 2, idleMs: 50 * MIN } },
+    want: { idle: true, reason: 'idle' },
+  },
+  {
+    name: 'unresolved-liveness-is-not-measured',
+    input: { liveness: null, throughput: { actsInWindow: 0, idleMs: 99 * MIN } },
+    want: { idle: false, reason: 'not-measured' },
+  },
+];
+
+/** Names of the contract cases a candidate fold gets WRONG. */
+function violations(fold: PortfolioFold): string[] {
+  return CONTRACT.filter((c) => {
+    const got = fold(c.input);
+    return got.idle !== c.want.idle || got.reason !== c.want.reason;
+  }).map((c) => c.name);
+}
+
+/** MUTANT 1 — the no-op guard: structurally present, never actually fires. */
+const neverIdle: PortfolioFold = () => ({ idle: false, reason: 'placing' });
+
+/**
+ * MUTANT 2 — decides on the WINDOW TOTAL instead of recency. The fold's own
+ * comment warns about this one: it would let a single burst of activity buy an
+ * hour of silence.
+ */
+const windowTotalNotRecency: PortfolioFold = (input) => {
+  if (input.liveness == null) return { idle: false, reason: 'not-measured' };
+  if (input.liveness !== 'held') return { idle: false, reason: 'not-held' };
+  const t = input.throughput;
+  if (!t || t.idleMs == null || !Number.isFinite(t.idleMs)) {
+    return { idle: false, reason: 'not-measured' };
+  }
+  if (t.actsInWindow > 0) return { idle: false, reason: 'placing' };
+  const after = input.idleAfterMs ?? GOAL_PORTFOLIO_IDLE_AFTER_MS;
+  return t.idleMs >= after ? { idle: true, reason: 'idle' } : { idle: false, reason: 'within-grace' };
+};
+
+/** MUTANT 3 — off-by-one: fires only STRICTLY past the threshold. */
+const exclusiveBoundary: PortfolioFold = (input) => {
+  if (input.liveness == null) return { idle: false, reason: 'not-measured' };
+  if (input.liveness !== 'held') return { idle: false, reason: 'not-held' };
+  const t = input.throughput;
+  if (!t || t.idleMs == null || !Number.isFinite(t.idleMs)) {
+    return { idle: false, reason: 'not-measured' };
+  }
+  const after = input.idleAfterMs ?? GOAL_PORTFOLIO_IDLE_AFTER_MS;
+  if (t.idleMs <= after) {
+    return { idle: false, reason: t.actsInWindow > 0 ? 'placing' : 'within-grace' };
+  }
+  return { idle: true, reason: 'idle' };
+};
+
+/**
+ * MUTANT 4 — collapses an UNMEASURED read into a measured healthy one, letting
+ * an apparatus failure present as a clean bill of health. This is the defect the
+ * whole `not-measured` vocabulary exists to prevent.
+ */
+const unmeasuredReadsHealthy: PortfolioFold = (input) => {
+  if (input.liveness !== 'held') return { idle: false, reason: 'not-held' };
+  const t = input.throughput;
+  if (!t || t.idleMs == null || !Number.isFinite(t.idleMs)) {
+    return { idle: false, reason: 'placing' };
+  }
+  const after = input.idleAfterMs ?? GOAL_PORTFOLIO_IDLE_AFTER_MS;
+  if (t.idleMs < after) {
+    return { idle: false, reason: t.actsInWindow > 0 ? 'placing' : 'within-grace' };
+  }
+  return { idle: true, reason: 'idle' };
+};
+
+describe('FALSIFIABILITY: the contract table rejects a wrong fold', () => {
+  /**
+   * CALIBRATION. If this fails, every mutant assertion below is meaningless —
+   * they would be "caught" by an instrument that rejects everything. This case
+   * is what makes the other five worth reading.
+   */
+  it('CALIBRATION: the real fold satisfies every contract case', () => {
+    expect(violations(resolveGoalPortfolioIdle)).toEqual([]);
+  });
+
+  it('catches a guard that never fires', () => {
+    expect(violations(neverIdle)).toContain('idle-past-threshold');
+  });
+
+  it('catches deciding on the window total instead of recency', () => {
+    expect(violations(windowTotalNotRecency)).toEqual(['recency-not-window-total']);
+  });
+
+  it('catches an exclusive threshold boundary', () => {
+    expect(violations(exclusiveBoundary)).toEqual(['boundary-inclusive']);
+  });
+
+  it('catches an unmeasured read reported as healthy', () => {
+    expect(violations(unmeasuredReadsHealthy)).toContain('unresolved-liveness-is-not-measured');
+  });
+
+  /**
+   * The property that makes the table a table rather than six independent
+   * assertions: no mutant slips through entirely. Stated separately so that
+   * adding a mutant without adding the case that catches it fails HERE, loudly,
+   * rather than quietly widening the blind spot the suite was built to close.
+   */
+  it('every mutant is caught by at least one case', () => {
+    const mutants: ReadonlyArray<[string, PortfolioFold]> = [
+      ['neverIdle', neverIdle],
+      ['windowTotalNotRecency', windowTotalNotRecency],
+      ['exclusiveBoundary', exclusiveBoundary],
+      ['unmeasuredReadsHealthy', unmeasuredReadsHealthy],
+    ];
+    for (const [name, fold] of mutants) {
+      expect(violations(fold), `${name} slipped through the contract table`).not.toEqual([]);
+    }
+  });
+});
