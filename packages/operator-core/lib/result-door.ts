@@ -1146,6 +1146,17 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                 : '') +
               buildProjectionHint(textItems, opts.toolName),
           };
+    // plans:get's item text is the semantic payload of the detail read, not an
+    // optional identity field. Promote it through the generic fallback so a
+    // deep/key-bounded result keeps the instruction the caller came to read.
+    // The projector still applies its normal string/transport budgets, whose
+    // in-band markers make a clipped value honest; this only prevents the field
+    // from disappearing as an identity-only omission. Merge caller-selected
+    // paths rather than replacing them (projection.pick remains additive).
+    const preservePaths = [
+      ...(opts.toolName === 'plans:get' ? ['results[].items[].text'] : []),
+      ...(opts.preservePaths ?? []),
+    ];
     const projected = projectBoundedPayload(parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }, {
       toolName: opts.toolName,
       tier: 'trimmed',
@@ -1168,7 +1179,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
           : {}),
-      ...(opts.preservePaths && opts.preservePaths.length > 0 ? { preservePaths: opts.preservePaths } : {}),
+      ...(preservePaths.length > 0 ? { preservePaths } : {}),
     });
     const structuralText = JSON.stringify(projected);
     let inserted = false;
