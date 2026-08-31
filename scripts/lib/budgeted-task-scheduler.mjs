@@ -52,6 +52,72 @@ export function isSharedAdmissionTimeout(error) {
     message.includes(SHARED_TEST_PROCESS_ADMISSION_MUTEX)
   );
 }
+
+// WI-1639265: the caller's WALL CLOCK, published by the launcher as absolute epoch ms.
+//
+// Everything above this line is an INTERNAL budget: the queue budget is a fixed constant,
+// the per-acquisition timeout is a fixed constant, and neither has ever known how long the
+// caller is actually allowed to live. The launcher does know — it sets `RuntimeMaxSec` on
+// the unit — but systemd enforces that property against the manager, not against us, so the
+// first this process hears of its own deadline is SIGKILL. A run killed that way exits with
+// no `AFFECTED_TESTS_RESULT` line at all, which the green-checkpoint records as a LOST RUN
+// and every liveness probe reads as a hang.
+//
+// Keep the name byte-identical to `TASK_DEADLINE_EPOCH_MS_ENV` in
+// `packages/operator-core/lib/systemd-scope.ts` (the producer). The pairing is pinned by
+// `affected-tests-deadline-admission.test.ts`, which reads BOTH sources, so a rename on
+// either side fails there rather than silently reverting this to the pre-fix behaviour —
+// an absent variable is indistinguishable from "no deadline was set" by design.
+export const TASK_DEADLINE_EPOCH_MS_ENV = "PAPERCUSP_TASK_DEADLINE_EPOCH_MS";
+
+/**
+ * Read the launcher-published deadline, or null when there is none.
+ *
+ * Null means UNKNOWN, never "unbounded and fine": every check below is skipped on null, so
+ * an unlaunched/unconfined run behaves exactly as it did before this existed.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {number | null} absolute epoch ms
+ */
+export function readTaskDeadlineEpochMs(env = process.env) {
+  const raw = Number(env?.[TASK_DEADLINE_EPOCH_MS_ENV]);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : null;
+}
+
+export const TASK_DEADLINE_REFUSAL_MARKER = "TASK_DEADLINE_REFUSAL";
+
+/**
+ * Format the pre-flight refusal.
+ *
+ * `knownEstimateMs` is a LOWER BOUND over the tasks whose duration history exists — never a
+ * total. `unknownTasks` is reported beside it precisely so the number is not read as one:
+ * unknowns can only make the run longer, which is what makes a refusal keyed on the lower
+ * bound sound. A run refused here has measured nothing; the marker says so.
+ */
+export function formatTaskDeadlineRefusal({
+  remainingMs,
+  knownEstimateMs,
+  knownTasks,
+  unknownTasks,
+}) {
+  return (
+    `${TASK_DEADLINE_REFUSAL_MARKER} remainingMs=${Math.round(remainingMs)} ` +
+    `knownEstimateMs=${Math.round(knownEstimateMs)} knownTasks=${knownTasks} ` +
+    `unknownTasks=${unknownTasks} remedy=raise-caller-timeout — the work already KNOWN to be ` +
+    `queued exceeds the wall clock this run was launched with, so it would be SIGKILLed ` +
+    `part-way through with no verdict. Refusing before anything runs instead.`
+  );
+}
+
+/**
+ * Does this error mean "we were never going to fit inside our own deadline"?
+ *
+ * Lives beside the throw for the same reason `isSharedAdmissionTimeout` does: a caller that
+ * misclassifies it exits with no verdict, which is the exact failure being fixed.
+ */
+export function isTaskDeadlineRefusal(error) {
+  return String(error?.message ?? error ?? "").includes(TASK_DEADLINE_REFUSAL_MARKER);
+}
 // EI-21437241652128498 / EI-21437837415175286: one stateful test task first
 // reached 1,517 cgroup tasks, then exhausted a 2,048-task capability scope while
 // it was still progressing. A later operator-core pure lane reached 4,096 tasks
@@ -907,8 +973,82 @@ export async function runBudgetedTaskShards(plan, options) {
     Number(options?.admissionRunBudgetMs) > 0
       ? Number(options.admissionRunBudgetMs)
       : SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS;
+
+  // WI-1639265: admission can now see the caller's wall clock.
+  //
+  // `runBudgetMs` above bounds QUEUE time only, and it is a fixed internal constant. Nothing
+  // compared it against how long this process is actually allowed to live, so a run launched
+  // with a short `RuntimeMaxSec` could spend its entire life queued — perfectly within budget
+  // — and be SIGKILLed the moment it finally got to work. The inversion worth naming: the
+  // dangerous caller is the CONSERVATIVE-looking one. A generous timeout sits well above the
+  // queue budget and is never squeezed; it is the caller who passes a modest timeout, trying
+  // to be tidy, who buys a run that cannot fit.
+  //
+  // `options.deadlineEpochMs === undefined` reads the launcher's env; an explicit `null`
+  // disables the check (tests, and any caller that genuinely has no deadline).
+  const deadlineEpochMs =
+    options?.deadlineEpochMs === undefined
+      ? readTaskDeadlineEpochMs()
+      : options.deadlineEpochMs;
+  const deadlineNotify =
+    options?.onAdmissionNotice ?? ((line) => console.error(line));
+  const estimateFor =
+    typeof options?.estimateMs === "function" ? options.estimateMs : () => null;
+  /** Sum only the KNOWN estimates — a lower bound, reported as one. */
+  const knownWork = (tasks) => {
+    let knownEstimateMs = 0;
+    let knownTasks = 0;
+    let unknownTasks = 0;
+    tasks.forEach((task, index) => {
+      const estimate = finiteEstimate(estimateFor(task, index));
+      if (estimate == null) unknownTasks += 1;
+      else {
+        knownEstimateMs += estimate;
+        knownTasks += 1;
+      }
+    });
+    return { knownEstimateMs, knownTasks, unknownTasks };
+  };
+
+  if (deadlineEpochMs != null) {
+    const remainingMs = deadlineEpochMs - Date.now();
+    if (remainingMs <= runBudgetMs) {
+      deadlineNotify(
+        `AFFECTED_TESTS_DEADLINE_TIGHT remainingMs=${Math.round(remainingMs)} ` +
+          `queueBudgetMs=${runBudgetMs} — the shared-admission QUEUE budget alone can consume ` +
+          `this run's entire wall clock, so a fully-queued run would be killed before it ran a ` +
+          `single test. Raise the launching timeout above ` +
+          `${Math.ceil(runBudgetMs / 60_000)}min, or lower admissionRunBudgetMs to match it.`,
+        { kind: "deadline-tight", remainingMs, budgetMs: runBudgetMs },
+      );
+    }
+    // PRE-FLIGHT ONLY, over the whole plan. Refusing here costs nothing — nothing has run —
+    // and turns "killed with no verdict" into an attributable refusal. Deliberately NOT
+    // re-raised between shards: by then earlier shards hold real results, and throwing them
+    // away to report a deadline would trade a measured verdict for a predicted one.
+    const preflight = knownWork(plan.shards.flatMap((shard) => shard.tasks));
+    if (remainingMs <= 0 || preflight.knownEstimateMs > remainingMs) {
+      throw new Error(formatTaskDeadlineRefusal({ remainingMs, ...preflight }));
+    }
+  }
+
   let queuedSoFarMs = 0;
   for (const shard of plan.shards) {
+    if (deadlineEpochMs != null) {
+      const remainingMs = deadlineEpochMs - Date.now();
+      const upcoming = knownWork(shard.tasks);
+      if (upcoming.knownEstimateMs > remainingMs) {
+        deadlineNotify(
+          `AFFECTED_TESTS_DEADLINE_SHORTFALL shard=${shard.index} ` +
+            `remainingMs=${Math.round(remainingMs)} ` +
+            `knownEstimateMs=${Math.round(upcoming.knownEstimateMs)} ` +
+            `knownTasks=${upcoming.knownTasks} unknownTasks=${upcoming.unknownTasks} — this ` +
+            `shard is expected to outlive the run's deadline, so a kill part-way through it is ` +
+            `likely. Results already settled by earlier shards remain valid.`,
+          { kind: "deadline-shortfall", shard: shard.index, remainingMs },
+        );
+      }
+    }
     const run = await runBudgetedTasks(shard.tasks, {
       ...options,
       admissionTimeoutMs: Math.max(1, runBudgetMs - queuedSoFarMs),

@@ -1016,7 +1016,13 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, vi } from 'vitest';
-import { probeEmbedSidecar, probeSubstrateSidecar } from './service-health';
+import {
+  EMBED_SIDECAR_EXERCISE_INTERVAL_MS,
+  __resetEmbedSidecarExerciseClockForTests,
+  embedSidecarProbeShouldExercise,
+  probeEmbedSidecar,
+  probeSubstrateSidecar,
+} from './service-health';
 import { closeSubstrateIpcClient } from './sync/hyperbee/substrate-ipc-client';
 import { SUBSTRATE_SOCKET_ENV } from './sync/hyperbee/substrate-socket-path';
 
@@ -1280,6 +1286,7 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
   const sockets = new Set<net.Socket>();
 
   beforeEach(async () => {
+    __resetEmbedSidecarExerciseClockForTests();
     server = http.createServer();
     server.on('connection', (socket) => {
       sockets.add(socket);
@@ -1304,8 +1311,12 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
     }
   });
 
-  it('requires a usable one-vector POST response even when the listener is reachable', async () => {
-    let requestBody: unknown;
+  /**
+   * Reply to every POST /embed with `payload`, recording each request body so a
+   * case can assert what the probe actually asked the sidecar for.
+   */
+  const serveEmbed = (payload: unknown): unknown[] => {
+    const bodies: unknown[] = [];
     server!.on('request', (req, res) => {
       if (req.method !== 'POST' || req.url !== '/embed') {
         res.writeHead(404).end();
@@ -1315,13 +1326,27 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
       req.setEncoding('utf8');
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
-        requestBody = JSON.parse(body);
+        bodies.push(JSON.parse(body));
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ vectors: [[0.25, -0.5]], dims: 2, runtime: 'test', modelRev: 'test' }));
+        res.end(JSON.stringify(payload));
       });
     });
+    return bodies;
+  };
 
-    const result = await probeEmbedSidecar(500);
+  /** A response that proves the model ran for its one probe text. */
+  const inferredOnce = {
+    vectors: [[0.25, -0.5]],
+    dims: 2,
+    runtime: 'test',
+    modelRev: 'test',
+    cache: { hits: 0, coalesced: 0, inferred: 1 },
+  };
+
+  it('requires a usable one-vector POST response even when the listener is reachable', async () => {
+    const bodies = serveEmbed(inferredOnce);
+
+    const result = await probeEmbedSidecar(500, { exercise: false });
     expect(result).toMatchObject({
       name: 'embed-sidecar',
       up: true,
@@ -1329,7 +1354,9 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
       url: expect.stringMatching(/\/embed$/),
     });
     expect(result.note).toMatch(/functional POST \/embed OK/);
-    expect(requestBody).toEqual({ model: 'gemma', kind: 'query', texts: ['health probe'] });
+    // A probe that is NOT exercising sends exactly the historical body — the
+    // duty cycle must not put an extra field on every tick.
+    expect(bodies).toEqual([{ model: 'gemma', kind: 'query', texts: ['health probe'] }]);
   });
 
   it('reports malformed functional output as down instead of trusting HTTP 200', async () => {

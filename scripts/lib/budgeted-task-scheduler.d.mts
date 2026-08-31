@@ -260,6 +260,37 @@ export interface SharedAdmissionOptions {
   onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number }) => void;
 }
 
+/**
+ * WI-1639265 — the launcher-published wall-clock deadline, absolute epoch ms.
+ *
+ * Must stay byte-identical to `TASK_DEADLINE_EPOCH_MS_ENV` in
+ * `packages/operator-core/lib/systemd-scope.ts` (the producer); an ABSENT variable
+ * legitimately means "no deadline was set", so a rename on either side would silently
+ * restore the pre-fix behaviour. Pinned by `affected-tests-deadline-admission.test.ts`.
+ */
+export const TASK_DEADLINE_EPOCH_MS_ENV: 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+
+/** The deadline, or null for UNKNOWN — never "unbounded and fine". */
+export function readTaskDeadlineEpochMs(
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): number | null;
+
+export const TASK_DEADLINE_REFUSAL_MARKER: 'TASK_DEADLINE_REFUSAL';
+
+/**
+ * `knownEstimateMs`/`knownTasks` are a LOWER BOUND over tasks with duration history;
+ * `unknownTasks` is reported beside them so the sum is never read as a total.
+ */
+export function formatTaskDeadlineRefusal(input: {
+  remainingMs: number;
+  knownEstimateMs: number;
+  knownTasks: number;
+  unknownTasks: number;
+}): string;
+
+/** Does this error mean "we were never going to fit inside our own deadline"? */
+export function isTaskDeadlineRefusal(error: unknown): boolean;
+
 /** The whole-invocation queue budget shared across every shard of one run. */
 export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS: number;
 
@@ -303,6 +334,12 @@ export function runBudgetedTaskShards<Task, Value>(
      * N-shard run's real admission bound is N × the per-acquisition timeout.
      */
     admissionRunBudgetMs?: number;
+    /**
+     * WI-1639265: the caller's absolute wall-clock deadline, epoch ms. OMITTED reads it from
+     * `TASK_DEADLINE_EPOCH_MS_ENV`; an explicit `null` means "this caller has no deadline"
+     * and skips every deadline check, which is the pre-fix behaviour exactly.
+     */
+    deadlineEpochMs?: number | null;
     estimateMs?: (task: Task, index: number) => number | null | undefined;
     readMemAvailableMb?: () => number | null | undefined;
     runTask: (
