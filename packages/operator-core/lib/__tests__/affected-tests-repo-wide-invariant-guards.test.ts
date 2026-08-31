@@ -43,11 +43,12 @@
  * It does NOT assert that the guard itself is correct; that is
  * child-output-guard.test.ts's job.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, dirname, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // The REAL exports of the lint, so the roots below cannot drift from the roots it scans.
 import {
@@ -113,12 +114,15 @@ const DOCS_CONFIG_PATH = '.papercusp/docs.json';
  * standalone-packages guard uses — asserting on behavior keeps this test honest if
  * the mechanism is ever reimplemented differently.
  */
-function dryTasks(changedPaths: string, base?: string): string {
+function dryTasks(changedPaths: string, base?: string, probeEnv?: NodeJS.ProcessEnv): string {
   const baseArgs = base ? ['--base', base] : [];
   const res = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', changedPaths, ...baseArgs, '--dry'], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 120_000,
+    // `probeEnv` exists ONLY so the abort path above can be exercised by its own guard
+    // without breaking a tracked file. Every production call leaves it undefined.
+    ...(probeEnv ? { env: probeEnv } : {}),
   });
   // Fail loudly rather than letting a crashed probe read as "guard absent" — a
   // non-zero exit with empty stdout would otherwise satisfy every `not.toContain`.
@@ -199,6 +203,93 @@ function printAffected(changedPaths: string): string {
   expect(res.status, `print-only probe failed:\n${res.stderr ?? ''}`).toBe(0);
   return `${res.stdout ?? ''}${res.stderr ?? ''}`;
 }
+
+/**
+ * EI-21943909516081455 — the probe must distinguish "the runner ABORTED" from "the runner
+ * ran and routed wrongly".
+ *
+ * `dryTasks` spawns the runner out of the LIVE working tree, which on this shared checkout
+ * is mutated continuously by other agents. When a peer's in-flight edit leaves a syntax
+ * error anywhere in the runner's import graph, the spawn SUCCEEDS, the process exits
+ * non-zero, and stderr carries a stack — so `res.error` is undefined and the output is
+ * non-empty, and both pre-existing checks pass. The failure then landed on the marker
+ * assertion and read as `expected 'file:///…' to contain 'AFFECTED_TESTS_RESULT'`: it named
+ * the routing contract rather than the crash, and truncated to the stack's first line so the
+ * actual error never appeared. Measured live on 2026-08-30T15:07:31Z.
+ *
+ * The crash is injected via NODE_OPTIONS into a throwaway module, never by mutating a
+ * tracked file — a probe that edits the shared tree can be committed by the git-sync sweep
+ * even when nothing goes wrong (see CLAUDE.md, "Proving a guard is falsifiable").
+ */
+describe('affected-tests: probe abort attribution (EI-21943909516081455)', () => {
+  let crashDir = '';
+  let crashModule = '';
+
+  beforeAll(() => {
+    crashDir = mkdtempSync(resolve(tmpdir(), 'affected-tests-abort-'));
+    crashModule = resolve(crashDir, 'boom.mjs');
+    writeFileSync(crashModule, "throw new ReferenceError('constEMPTY_MARKER_DEBRIS_MS is not defined');\n");
+  });
+
+  afterAll(() => {
+    if (crashDir) rmSync(crashDir, { recursive: true, force: true });
+  });
+
+  function crashEnv(): NodeJS.ProcessEnv {
+    return { ...process.env, NODE_OPTIONS: `--import ${pathToFileURL(crashModule).href}` };
+  }
+
+  function abortedProbe(): { status: number | null; out: string } {
+    const res = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', OUTSIDE_TS_PATH, '--dry'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 120_000,
+      env: crashEnv(),
+    });
+    return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+  }
+
+  it('an import-graph crash produces exactly the shape both pre-existing checks let through', () => {
+    const { status, out } = abortedProbe();
+    // The precondition that made the misattribution possible: not a spawn error, not empty
+    // output — so only the exit status can tell an abort from a routing answer.
+    expect(status, 'expected the injected crash to abort the runner').not.toBe(0);
+    expect(out, 'a crashed runner still writes its stack, so the empty-output check cannot catch this').not.toBe(
+      '',
+    );
+    expect(out).not.toContain(RESULT_MARKER);
+  });
+
+  it('reports the abort as the subject, and surfaces the underlying error instead of hiding it', () => {
+    // The REAL helper, on the REAL abort path — not a re-derivation of it. Removing the
+    // status check makes this throw the marker assertion instead, and every match below fails.
+    let message = '';
+    try {
+      dryTasks(OUTSIDE_TS_PATH, undefined, crashEnv());
+      expect.unreachable('the probe aborted, so dryTasks must not return a task list');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+
+    expect(message).toContain('ABORTED');
+    expect(message).toContain('NOT a routing regression');
+    // The cause has to reach the reader; the assertion this replaces truncated it away.
+    expect(message).toContain('ReferenceError');
+    expect(message).toContain('constEMPTY_MARKER_DEBRIS_MS');
+    // And it must NOT read as the routing-contract failure it used to be mistaken for.
+    expect(message).not.toMatch(/expected .* to contain/);
+  });
+
+  it('a healthy run still exits 0 with a verdict, so the status check cannot red a clean tree', () => {
+    const res = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', OUTSIDE_TS_PATH, '--dry'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    expect(res.status).toBe(0);
+    expect(`${res.stdout ?? ''}${res.stderr ?? ''}`).toContain(RESULT_MARKER);
+  });
+});
 
 describe('affected-tests: dependency-integrity preflight (EI-20863794002653922)', () => {
   it('attaches for an ordinary change outside the host workspace', () => {
