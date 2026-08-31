@@ -321,6 +321,11 @@ mixed `EI-`/`WI-`/`F-` citation set must be checked there (or with
 `workspace_id` and `harness_slug` predicates when using the base-table query:
 
 ```sql
+-- sql-snippet-justified: the RELATION CHOICE is the lesson here — engineer_issues is an
+-- issue-family view that omits feature-family WI-/F- rows, so only the canonical work_items
+-- base table can answer a mixed citation set. work_items:get is already named as the tool
+-- alternative in the prose above; this block exists to show the base relation and the tenant
+-- predicates it requires, which a tool call cannot demonstrate.
 SELECT feature_id, item_kind, status, workspace_id, harness_slug
   FROM harness_shared.work_items
  WHERE workspace_id = '<workspace-id>'
@@ -638,6 +643,10 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
 ⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable to you, the ONLY query that answers it is scoped to one population — and the blob check is half the answer, not a footnote:**
 
 ```sql
+-- sql-snippet-justified: the documented fallback for when the gate.greenCheckpoint.candidateFailures
+-- cell is unavailable. testing:runs cannot express this three-population scoping
+-- (source='ci' AND worktree_dirty=false AND one frozen candidate sha), and the inline
+-- 'failed'/'passed' never-match comment below is itself the teaching point.
 SELECT file_path, status FROM harness_shared.test_runs
  WHERE source='ci' AND worktree_dirty=false AND commit_sha='<the frozen candidate sha>'
    AND status IN ('fail','error');   -- 'failed'/'passed' can NEVER match
