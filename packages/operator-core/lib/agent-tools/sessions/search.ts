@@ -30,7 +30,15 @@ import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 import { FILE_BACKED_SOURCE_KINDS } from '../../search/session-ingest';
 
-const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
+// `release-fixer` is on this allowlist because its runbook's attribution procedure
+// mandates it: git blame always returns the owner's name here (git-sync commits under one
+// identity — WI-5111), so the persona directs the fixer to attribute a regression via
+// "`sessions:search` correlated to the commit time" when the work-item/plan route does not
+// resolve. The `release-fix` blueprint declares `sessions:search` in its
+// `dependencies.tools` for the same reason. Read-only (capability: search:read, granted to
+// the role in role-principal-caps.ts). Derived + enforced by
+// ../../release/release-fixer-tool-contract.test.ts.
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle', 'release-fixer'] as const;
 
 /**
  * Keep the serialized body below the baked result door (1500 tokens ≈ 6000
