@@ -164,7 +164,9 @@ export function buildGoalWindDownReport(input: GoalWindDownReportInput): {
  * Record the disposition on the goals row. `achieved`/`killed` flip
  * `status` (both are in GOAL_STATUSES); `handoff` leaves the goal ACTIVE —
  * someone else continues pursuing it. All three stamp
- * `metadata.{disposition,dispositionBy,dispositionAt[,handoffTo]}`.
+ * `metadata.{disposition,dispositionBy,dispositionAt[,handoffTo]}` and bump
+ * `updated_at`: even a handoff is a real lifecycle transition that recency-
+ * ordered goal reads must surface.
  * Id+workspace scoped like `deleteGoalRow`: the table is multi-tenant and this
  * write must never reach another tenant's row.
  */
@@ -198,6 +200,7 @@ export async function applyGoalDisposition(opts: {
     UPDATE harness_shared.goals
        SET status = COALESCE(${nextStatus}::text, status),
            outputs = COALESCE(${outputs}::jsonb, outputs),
+           updated_at = now(),
            metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(stamp)}::jsonb
      WHERE id = ${opts.goalId} AND workspace_id = ${opts.workspaceId}
   `;

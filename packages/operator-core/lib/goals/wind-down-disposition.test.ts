@@ -181,6 +181,7 @@ describe('applyGoalDisposition — disposition → goals.status mapping', () => 
     expect(stamp.disposition).toBe(disposition);
     expect(stamp.dispositionBy).toBe('su-abc');
     expect(typeof stamp.dispositionAt).toBe('string');
+    expect(calls[0].text).toContain('updated_at = now()');
     // Multi-tenant scoping: id AND workspace ride the WHERE.
     expect(calls[0].values).toContain('g-1');
     expect(calls[0].values).toContain('ws-1');
@@ -200,6 +201,9 @@ describe('applyGoalDisposition — disposition → goals.status mapping', () => 
     const stamp = JSON.parse(String(calls[0].values[2])) as Record<string, unknown>;
     expect(stamp.disposition).toBe('handoff');
     expect(stamp.handoffTo).toBe('su-next');
+    // A handoff keeps status active but is still a lifecycle transition: goal
+    // recency must reflect when stewardship actually changed.
+    expect(calls[0].text).toContain('updated_at = now()');
   });
 
   it('records validated outputs as the second param (P-021) — JSON when supplied', async () => {
