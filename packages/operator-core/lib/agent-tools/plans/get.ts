@@ -38,6 +38,11 @@ import { cachedRead, type CachedReadCtx } from "../../cache";
 import { shapePlansGet } from "./get-shape";
 import { decoratePlanNowBlock } from "./liveness-decoration";
 import { reconcileNowNext } from "./now-next-derivation";
+import {
+  derivePlanLifecycleForRead,
+  normalizeActivityTimestamp,
+} from "./plan-lifecycle-derivation";
+import type { PlanLifecycleReconciliation } from "@papercusp/plan-parser";
 import { getAcceptanceRubricForPlan } from "../../rubrics";
 import { getLatestPlanAudit } from "../../plan-audits";
 import { splitPlanSections } from "./plan-sections";
@@ -851,6 +856,19 @@ export default defineTool({
                 },
               );
               for (const row of rows) {
+                // P-003 freshness: newest linked work-item write. Taken over
+                // ALL linked rows, including ones whose plan-item provenance
+                // does not resolve to a P-NNN below — a linked work-item that
+                // moved is evidence of activity on this plan whether or not it
+                // can be attributed to a specific item.
+                const at = normalizeActivityTimestamp(row.updated_ts);
+                if (
+                  at &&
+                  (linkedWorkItemUpdatedAt === null ||
+                    Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))
+                ) {
+                  linkedWorkItemUpdatedAt = at;
+                }
                 // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
                 // (1 row workspace-wide vs 1,239 carrying the `payload.plan_item` stamp),
                 // so the old `WHERE source_plan_item_ids IS NOT NULL` predicate matched
@@ -960,6 +978,38 @@ export default defineTool({
             // projection plans:list already reads from, so the two response shapes
             // can never disagree on what "the plan's status" means.
             const status = row.status ?? "draft";
+            // deterministic-plan-state-derivation-2026-08-31 P-003 / D-004:
+            // `status` above is a HAND-ASSERTED label that nothing recomputes
+            // when the plan's items go terminal — the same second-copy defect
+            // P-002 removed from the next-pointer, one level up. Derive the
+            // lifecycle verdict from the item graph beside it so a reader can
+            // see what the evidence says, not only what the label claims.
+            //
+            // `parsed.items` is deliberate: `resolved.items` may be NARROWED by
+            // the caller's `items: [...]` selection, and censusing a narrowed
+            // list would report a one-item plan as drained — a confidently
+            // wrong verdict rather than a missing one.
+            //
+            // Best-effort and read-only: a failed signal lookup degrades to an
+            // `unmeasured` axis (never to a fabricated value), and nothing here
+            // writes to the plan.
+            let lifecycle: PlanLifecycleReconciliation | null = null;
+            try {
+              lifecycle = await derivePlanLifecycleForRead({
+                items: parsed.items,
+                storedStatus: status,
+                signals: {
+                  workspaceId: DEFAULT_WORKSPACE_ID,
+                  planSlug: row.planSlug,
+                  planUpdatedAt: row.updatedAt,
+                  linkedWorkItemUpdatedAt,
+                },
+              });
+            } catch {
+              // Advisory overlay on an unrelated payload — it must never fail
+              // the plan read. Absent means "not derived", which the schema
+              // documents as distinct from any verdict.
+            }
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
@@ -974,6 +1024,27 @@ export default defineTool({
               title: row.title,
               status,
               startStatus: reconcileStartStatus(row.opStatus, status),
+              // P-003: the DERIVED counterpart to `status` above. Never
+              // replaces it — a reader gets the label and the evidence side by
+              // side, and `lifecycle.disposition` says whether they agree.
+              ...(lifecycle
+                ? {
+                    lifecycle: {
+                      verdict: lifecycle.derived.verdict,
+                      disposition: lifecycle.disposition,
+                      contradiction: lifecycle.contradiction,
+                      text: lifecycle.derived.text,
+                      counts: lifecycle.derived.counts,
+                      liveItems: lifecycle.derived.liveItems,
+                      liveItemsTruncated: lifecycle.derived.liveItemsTruncated,
+                      idleDays: lifecycle.derived.idleDays,
+                      stalledAfterDays: lifecycle.derived.stalledAfterDays,
+                      unmeasured: lifecycle.derived.unmeasured,
+                      acceptance: lifecycle.derived.acceptance,
+                      freshness: lifecycle.derived.freshness,
+                    },
+                  }
+                : {}),
               frontmatter: parsed.frontmatter,
               now: nowWithDerivedNext,
               contentHash: hashPlanContent(parsed.raw),
