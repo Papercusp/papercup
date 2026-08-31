@@ -27,7 +27,7 @@ export default defineTool({
   description:
     "Initiate a cross-Pot ASK to a peer Pot (by pubkey): a question the peer Pot owns the answer to. The envelope is signed, sent store-and-forward, and recorded in this Pot's ask ledger; the peer's answer arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
   guidance: {
-    when: 'The Mug/owner needs an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.',
+    when: 'You or the owner need an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.',
     notWhen:
       'Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:ask / conversations). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).',
     chaining:

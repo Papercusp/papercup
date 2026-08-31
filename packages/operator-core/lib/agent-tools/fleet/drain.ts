@@ -35,7 +35,7 @@ export default defineTool({
   description:
     'Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don\'t count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
   guidance: {
-    when: 'You (the Mug) want to reclaim cup slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
+    when: 'You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
       'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the Hive Mug ≠ drain your fleet-leader peers).',
     chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member).',
@@ -89,7 +89,7 @@ export default defineTool({
       `1. Checkpoint your state (commit any pending edits, save work-in-progress notes).\n` +
       `2. Release all locks (any files you have claimed via \`locks:acquire\`).\n` +
       `3. Unclaim your work-items (any items you are currently assigned to — return them to the pool via \`work_items:release\`).\n` +
-      `4. End your turn cleanly (print \`DONE\` or \`IDLE\`; the Mug will let you sleep).\n\n` +
+      `4. End your turn cleanly (print \`DONE\` or \`IDLE\`; the fleet leader will let you sleep).\n\n` +
       `**Timeline:** The Mug will wait ~${args.timeout_sec} seconds for you to complete. If you need more time or can't comply (e.g., you're at a critical checkpoint), escalate with a brief message.\n\n` +
       (args.reason ? `**Reason:** ${args.reason}\n\n` : '') +
       `**Propose/dispose:** You own your timing. If you're in the middle of something checkpoint-safe, you may defer — reply with your status and the Mug will decide whether to wait or escalate.`;

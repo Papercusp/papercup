@@ -44,7 +44,7 @@ export default defineTool({
   timeoutSec: 900,
   profile: 'engineer',
   description:
-    "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
+    "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the pot operator. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
   guidance: {
     when: 'Standing up a NEW local pot (its home harness + Mug) in one call. Operator/user only.',
     notWhen:

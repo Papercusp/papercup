@@ -28,7 +28,7 @@ export default defineTool({
   name: 'pot:cross_grant',
   profile: 'engineer',
   description:
-    "Owner-managed cross-Pot grants: grant/revoke/list which peer-Pot pubkeys may exchange which kinds (ask | work-request) with this Pot. DIRECTED: 'in' admits a peer's traffic INTO this Pot; 'out' lets THIS Pot send to a peer (required before the Mug can ask another Pot). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Pot's Swarms.",
+    "Owner-managed cross-Pot grants: grant/revoke/list which peer-Pot pubkeys may exchange which kinds (ask | work-request) with this Pot. DIRECTED: 'in' admits a peer's traffic INTO this Pot; 'out' lets THIS Pot send to a peer (required before this Pot can ask another). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Pot's Swarms.",
   guidance: {
     when: "Setting this Pot's cross-Pot policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Mug's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
     notWhen:
