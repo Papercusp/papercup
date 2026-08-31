@@ -39,10 +39,70 @@ URL="/adv?tab=hud&hudtab=sessions&hudsession=${SESSION}&chatTurns=true"
 
 say() { printf '\n=== %s ===\n' "$1"; }
 
-say "navigating to the HUD sessions popup"
-"$TAT" eval --pid "$PID" "window.location.href = '${URL}'" >/dev/null || true
-# Settle guard, not evidence — every real assertion follows it (§1.4).
-"$TAT" wait --pid "$PID" --selector '[data-testid="turn-rail-row"]' --timeout 60000
+# ── FINDING A TRANSCRIPT, AND SAYING WHICH ONE ──────────────────────────────
+# A boot costs ~3 minutes and one of this box's scarce verifier slots, so the
+# script must not burn one per guess. It walks candidate scopes in ONE boot and
+# reports which produced a transcript.
+#
+# ⚠ The verifier boots into whatever pot is default (observed: oddsmith-ops),
+# which is NOT necessarily the pot the target session belongs to. A cross-pot
+# session yields an EMPTY transcript, and an empty transcript yields zero turns
+# — at which point the rail correctly renders its empty state and a naive
+# `wait --selector turn-rail-row` times out. That timeout looks exactly like a
+# broken rail and is not one. Hence: measure the transcript, then decide.
+diag() {
+  # `data-message-index` is the attribute ChatConversation actually writes
+  # (ChatConversation.tsx:635) — and it is the attribute its own top-index
+  # probe reads at :993. An earlier revision of this script queried
+  # `data-msg-index`, which matches NOTHING, so it reported msgs:0 for a
+  # perfectly populated transcript: a wrong selector is indistinguishable from
+  # an empty one, and the natural next move is to go debug the wrong subsystem.
+  "$TAT" eval --pid "$PID" '
+    (() => {
+      const q = s => document.querySelector(s);
+      return JSON.stringify({
+        href: location.href,
+        modal: !!q("[data-testid=session-chat-conversation]"),
+        railZone: !!q("[data-testid=session-chat-turn-rail]"),
+        density: q("[data-testid=turn-rail]")?.getAttribute("data-density") ?? null,
+        rows: document.querySelectorAll("[data-testid=turn-rail-row]").length,
+        emptyState: !!q("[data-testid=turn-rail-empty]"),
+        messages: document.querySelectorAll("[data-message-index]").length,
+        innerWidth: window.innerWidth,
+      });
+    })()' 2>/dev/null || true
+}
+
+try_url() {
+  say "trying $1"
+  "$TAT" eval --pid "$PID" "window.location.href = '$1'" >/dev/null 2>&1 || true
+  "$TAT" wait --pid "$PID" --selector '[data-testid="session-chat-conversation"]' --timeout 45000 \
+    >/dev/null 2>&1 || echo "DIAG: conversation region never appeared"
+  # Rows, not messages: turns are what this feature is about, and a transcript
+  # of pure agent chatter (a loop-fired wake) legitimately has zero questions.
+  if "$TAT" wait --pid "$PID" --selector '[data-testid="turn-rail-row"]' --timeout 45000 >/dev/null 2>&1; then
+    say "found a transcript with turns"; diag; return 0
+  fi
+  echo "DIAG: no turn rows here —"; diag; return 1
+}
+
+FOUND=0
+for candidate in \
+  "${URL}&slug=papercusp&ws=papercusp-workspace" \
+  "${URL}" \
+  "/adv?tab=hud&hudtab=sessions&chatTurns=true&slug=papercusp&ws=papercusp-workspace"
+do
+  if try_url "$candidate"; then FOUND=1; break; fi
+done
+
+if [ "$FOUND" -eq 0 ]; then
+  echo
+  echo "FATAL: no candidate scope produced a transcript with turns."
+  echo "Read the DIAG lines above: 'messages' > 0 with 'rows' == 0 is a REAL turn-rail"
+  echo "bug (a populated transcript that produced no turns). 'messages' == 0 is a DATA"
+  echo "or POT-SCOPE problem in the verifier, and says nothing about the rail."
+  exit 1
+fi
 
 say "1. the rail mounts as a SIBLING of the conversation region (D-002 / the P-015 invariant)"
 # If the rail ever moves INSIDE the conversation element it inherits the
