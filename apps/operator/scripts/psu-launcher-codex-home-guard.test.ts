@@ -23,12 +23,14 @@
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-codex-home-guard.test.ts
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   codexGatewayConfigPatch,
   codexRolloutModelProvider,
+  codexAuthJsonReady,
+  codexFreshDefaultAuthPreflight,
   isCodexHomeLaunchReady,
 } from './psu-launcher.mjs';
 
@@ -38,6 +40,88 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe('codexFreshDefaultAuthPreflight — headless default launches need local auth', () => {
+  it('accepts a usable ChatGPT access token without exposing its contents', () => {
+    // Keep the fixture below the git-sync credential detector's entropy threshold.
+    // The test only needs a non-empty token; it must never resemble a real secret.
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    expect(codexAuthJsonReady(JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: { access_token: NEVER_EMIT_MARKER, refresh_token: NEVER_EMIT_MARKER },
+    }))).toBe(true);
+
+    const result = codexFreshDefaultAuthPreflight({
+      agent: 'codex',
+      headless: true,
+      account: 'system',
+      codexHome: dir,
+      readFile: () => JSON.stringify({ tokens: { access_token: NEVER_EMIT_MARKER } }),
+    });
+    expect(result).toEqual({ checked: true, ready: true, reason: 'ready' });
+    expect(JSON.stringify(result)).not.toContain(NEVER_EMIT_MARKER);
+  });
+
+  it.each([
+    ['missing home', null, 'missing-codex-home', null],
+    ['missing auth.json', 'temp-dir', 'missing-auth-json', 'throw'],
+    ['malformed auth.json', 'temp-dir', 'unusable-auth-json', '{'],
+    ['missing access token', 'temp-dir', 'unusable-auth-json', JSON.stringify({ tokens: {} })],
+    ['blank access token', 'temp-dir', 'unusable-auth-json', JSON.stringify({ tokens: { access_token: '  ' } })],
+  ])('%s fails closed with a secret-free reason', (_label, home, reason, contents) => {
+    const readFile = (_path: string, _encoding: string) => {
+      if (contents === 'throw') throw new Error('ENOENT');
+      return contents ?? '';
+    };
+    const result = codexFreshDefaultAuthPreflight({
+      agent: 'codex',
+      headless: true,
+      account: 'default',
+      codexHome: home === 'temp-dir' ? dir : null,
+      readFile,
+    });
+    expect(result).toEqual({ checked: true, ready: false, reason });
+  });
+
+  it('skips local auth checks for interactive, gateway-routed, and non-Codex launches', () => {
+    const readFile = () => {
+      throw new Error('must not read local auth');
+    };
+    for (const input of [
+      { agent: 'codex', headless: false, account: 'system' },
+      { agent: 'codex', headless: true, account: 'auto' },
+      { agent: 'codex', headless: true, account: 'codex-pool' },
+      { agent: 'claude', headless: true, account: 'system' },
+    ]) {
+      expect(codexFreshDefaultAuthPreflight({ ...input, codexHome: dir, readFile })).toEqual({
+        checked: false,
+        ready: true,
+        reason: 'not-required',
+      });
+    }
+  });
+});
+
+describe('launchFreshSu — preflights the exact fresh Codex home before spawning', () => {
+  it('runs the default-account headless auth preflight before runWrapper', () => {
+    const source = readFileSync(
+      join(__dirname, '..', 'scripts', 'psu-launcher.mjs'),
+      'utf8',
+    );
+    const body = source.slice(source.indexOf('async function launchFreshSu('));
+    const bootstrap = body.indexOf('const res = await api("/api/agent-mcp/console/bootstrap-su"');
+    const preflight = body.indexOf('codexFreshDefaultAuthPreflight({', bootstrap);
+    const spawn = body.indexOf('runWrapper({', preflight);
+
+    expect(bootstrap).toBeGreaterThan(-1);
+    expect(preflight).toBeGreaterThan(bootstrap);
+    expect(body.slice(preflight, spawn)).toContain('headless: args.headless');
+    expect(body.slice(preflight, spawn)).toContain('account: args.account');
+    expect(body.slice(preflight, spawn)).toContain('codexHome: res.codexHome');
+    expect(body.slice(preflight, spawn)).toContain('process.exit(1);');
+    expect(spawn).toBeGreaterThan(preflight);
+  });
 });
 
 /** What psu writes into a managed home (shape only — the markers are what matter). */
