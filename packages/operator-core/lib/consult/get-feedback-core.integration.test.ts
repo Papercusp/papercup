@@ -704,6 +704,31 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(row.wakes_used).toBe(0);
     expect(row.outcome).toMatchObject({ source: 'archive', source_conversation_id: 'arch-src-1' });
     expect(row.has_query_embedding).toBe(true);
+
+    // WI-1713046 — the row must not misreport ITSELF, independently of whether
+    // the answer it served was the right one.
+    //
+    // NO RESPONDER. `wakes_used: 0` above is the other half of this assertion:
+    // together they say nobody was woken AND nobody is named, which is the only
+    // self-consistent pair. Copying the source consult's responder here (what
+    // this used to do) asserted that 'resp-arch' answered THIS consult when
+    // they were never woken and never saw the question — and it is the
+    // top-level column that is indexed (consult_state_responder_idx) and that
+    // queries read.
+    expect(row.responder_id).toBeNull();
+    // The provenance is not lost — it lives one field away, correctly labelled
+    // as the SOURCE consult's responder rather than this row's.
+    expect(row.outcome).toMatchObject({ source_responder_id: 'resp-arch' });
+    // …and the caller was already being told the truth; only the column lied.
+    expect(r.responder).toBeNull();
+
+    // NOT CLOSED BEFORE IT OPENED. `closed_at` used to come from a JS clock
+    // read before the embed + route + vector search (~1.9s), while created_at
+    // takes the column default at INSERT — so every archive row was stamped
+    // closed before it existed. Same clock now, so this cannot invert.
+    expect(new Date(row.closed_at as string).getTime()).toBeGreaterThanOrEqual(
+      new Date(row.created_at as string).getTime(),
+    );
   });
 
   it('does not archive-serve a rubric critique answered by an owner who already graded that rubric', async () => {

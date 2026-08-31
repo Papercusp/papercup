@@ -909,6 +909,52 @@ async function runBudgetedTasksWithoutSharedAdmission(tasks, options) {
  * turns a silent multi-hour queue wait into one attributable stderr line the
  * moment it starts waiting.
  */
+/**
+ * Render a holder's owner record as ONE decision-shaped line.
+ *
+ * EI-21917992245424964: the notice previously interpolated the raw owner file, so every
+ * re-announcement emitted eight lines of pretty-printed JSON whose four fields were all
+ * about IDENTITY (pid/host/startedAt/name) and none about whether waiting was worth it.
+ * Repeated on a 60s cadence for as long as the queue lasts, that is a lot of bytes saying
+ * nothing a waiter can act on.
+ *
+ * `intent=undeclared` is emitted deliberately rather than omitted: a waiter must be able to
+ * tell "the holder did not say" from "the holder said it is cheap". Silently dropping the
+ * field makes those two read identically, which is the failure this whole change exists to
+ * remove — one more confident-looking absence.
+ *
+ * Fails open to the raw text on any parse problem. This is a diagnostic printed while
+ * something is already blocked; it must never be the thing that throws.
+ */
+export function formatAdmissionHolder(ownerText, now = Date.now()) {
+  const raw = String(ownerText ?? "").trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return raw;
+
+  const bits = [];
+  if (parsed.pid != null) bits.push(`pid=${parsed.pid}`);
+  const acquiredAtMs = parsed.acquiredAt ? Date.parse(parsed.acquiredAt) : NaN;
+  if (Number.isFinite(acquiredAtMs)) {
+    const heldMs = now - acquiredAtMs;
+    if (heldMs >= 0) bits.push(`held=${Math.round(heldMs / 1000)}s`);
+  }
+  const intent =
+    parsed.intent && typeof parsed.intent === "object" && !Array.isArray(parsed.intent)
+      ? parsed.intent
+      : null;
+  if (intent) {
+    for (const [key, value] of Object.entries(intent)) bits.push(`${key}=${value}`);
+  } else {
+    bits.push("intent=undeclared");
+  }
+  return bits.length > 0 ? bits.join(" ") : raw;
+}
+
 export async function runBudgetedTasks(tasks, options) {
   // WI-1490656: `console.error` cannot reach the affected-tests RUN LOG — that file is
   // written by the runner's own `logLine`/`errSync`, so the queued notice landed only on
@@ -928,12 +974,16 @@ export async function runBudgetedTasks(tasks, options) {
       staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
       waitingNoticeIntervalMs: SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS,
+      // EI-21917992245424964: what this run IS, carried in the owner record so a blocked
+      // peer can judge it without waking anyone. The caller owns the content because the
+      // caller is the only layer that knows its own scope; this layer only forwards it.
+      intent: options?.admissionIntent,
       onWaiting: ({ owner, elapsedMs }) => {
         notify(
           `AFFECTED_TESTS_ADMISSION_QUEUED waiting on the shared test-process ` +
             `admission mutex (${Math.round(elapsedMs / 1000)}s so far, budget ` +
             `${Math.round(timeoutMs / 1000)}s) — this is normal serialization under ` +
-            `fleet load, not a hang; holder: ${String(owner).trim()}`,
+            `fleet load, not a hang; holder: ${formatAdmissionHolder(owner)}`,
           { kind: "queued", elapsedMs, budgetMs: timeoutMs },
         );
       },
