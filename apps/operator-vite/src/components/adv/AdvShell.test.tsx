@@ -53,6 +53,8 @@ const nuqsState: Record<string, unknown> = {
   scope: 'expanded',
   create: false,
   share: false,
+  // Tab fullscreen level (owner ask 2026-08-31): off | window | screen.
+  max: 'off',
 };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock('nuqs', () => ({
