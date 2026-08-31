@@ -451,7 +451,12 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // EI-21924434989535557: an acceptance-rubric grader launches as `judge` and this
+  // is the read-only routine/gate-health surface a "RE-MEASURE, never quote"
+  // criterion calls to check a routine's live state (e.g. is it active, when did
+  // it last fire, is the gate health degraded). Same rationale as the sibling
+  // dev:pg_query widening — a read-only measurement tool, not a write-capable one.
+  agentRoles: [...SU_ROLES, 'judge'],
   rolesQuota: { operator: { perRun: 60 } },
   args: z.object({
     installSlug: z.string().max(120).optional().describe('Filter to one install slug.'),

@@ -1051,6 +1051,18 @@ describe('routines:list', () => {
     expect(live.routines[0]).toHaveProperty('lastFiredAt');
   });
 
+  // EI-21924434989535557: an acceptance-rubric grader launches as role `judge` and
+  // needs this read-only routine/gate-health surface to RE-MEASURE a criterion (e.g.
+  // "is the target routine active and its gate health non-degraded") instead of
+  // quoting the implementer's recorded figures. Before the fix, `judge` was absent
+  // from the allowlist and the grader's call returned `role_not_allowed`, forcing
+  // that criterion to `unknown` — indistinguishable on the card from "genuinely
+  // unestablished". Regression guard: nothing here re-narrows the allowlist and
+  // silently reopens the gap.
+  it('EI-21924434989535557: grants role `judge` read access, so acceptance graders can RE-MEASURE routine/gate health', () => {
+    expect(listTool.agentRoles).toContain('judge');
+  });
+
   // EI-7242: `q` was previously not a recognized arg at all — zod silently
   // stripped it and the query ran unfiltered (the whole catalog came back).
   it('accepts a `q` free-text filter and passes it through as an ILIKE pattern (EI-7242)', async () => {
