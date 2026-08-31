@@ -16,8 +16,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ReviewReportShell, {
   partitionReviewRows,
+  REVIEW_ACTION_VOCABULARY,
   REVIEW_PARTITION_TILES,
   REVIEW_ROW_ACCOUNTING,
+  REVIEW_ROW_CONTROLS,
+  reviewCommitLabel,
+  reviewRowControl,
+  reviewRowVerb,
+  type ReviewActionKey,
+  type ReviewRowControlId,
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAccounting,
@@ -429,6 +436,148 @@ describe("rendering", () => {
           .getAttribute("aria-pressed"),
       ).toBe("false");
       expect(screen.queryByTestId(`review-row-${target}`)).not.toBeNull();
+    }
+  });
+
+  /**
+   * The acceptance drill for "every row states its own consequence".
+   *
+   * The weak version of this test — assert both the verb and the button are
+   * non-empty strings — passes happily on a row reading "Zap" under a button
+   * reading "Apply 12 selected". The criterion explicitly rejects that. What
+   * follows asserts the DISCRIMINATOR instead: both sides resolve from
+   * REVIEW_ACTION_VOCABULARY, so their wording cannot be edited apart.
+   */
+  const ACTION_KEYS = Object.keys(
+    REVIEW_ACTION_VOCABULARY,
+  ) as ReviewActionKey[];
+
+  it("resolves every declared verb from the shared vocabulary, never a literal", () => {
+    expect(ACTION_KEYS.length).toBeGreaterThan(0);
+
+    for (const key of ACTION_KEYS) {
+      const entry = REVIEW_ACTION_VOCABULARY[key];
+      // The row's words ARE the map's words. A hardcoded verb anywhere in the
+      // render path would break this for that key.
+      expect(reviewRowVerb({ key })).toBe(entry.verb);
+      expect(reviewRowVerb({ key }).length).toBeGreaterThan(0);
+
+      // …and so are the button's, for anything committable. Both sides are
+      // expressed against the SAME entry, so the assertion cannot be satisfied
+      // by two independently-maintained strings that happen to agree today.
+      if ("commit" in entry) {
+        expect(reviewCommitLabel([{ key }, { key }, { key }], "Apply")).toBe(
+          entry.commit(3),
+        );
+      }
+    }
+  });
+
+  it("refuses to name a single consequence for a mixed or custom selection", () => {
+    // Mixed verbs: there is no one thing Apply will do, so it must not claim
+    // one. This is the honest fallback, not a missing feature.
+    expect(
+      reviewCommitLabel(
+        [{ key: "mark-done" }, { key: "archive-plan" }],
+        "Apply selected",
+      ),
+    ).toBe("Apply selected (2)");
+
+    // A data-driven verb never claims shared wording either.
+    expect(
+      reviewCommitLabel(
+        [{ key: "custom", label: "Zap" }],
+        "Apply selected",
+      ),
+    ).toBe("Apply selected (1)");
+
+    // A terminal verb has no commit phrasing to borrow.
+    expect(reviewCommitLabel([{ key: "skipped" }], "Apply selected")).toBe(
+      "Apply selected (1)",
+    );
+  });
+
+  it("renders the row verb and the commit button in the same words", () => {
+    const rows: ReviewReportRow[] = ["a", "b"].map((id) => ({
+      id,
+      title: `row ${id}`,
+      evidence: [],
+      confidence: "high" as const,
+      accounting: "ready" as const,
+      status: "pending" as const,
+      selectable: true,
+      action: { key: "mark-done" as const },
+    }));
+    renderShell({
+      groups: [{ id: "g", title: "G", rows }],
+      applyLabel: "Apply selected",
+    });
+
+    for (const id of ["a", "b"]) {
+      const verb = screen.getByTestId(`review-row-verb-${id}`);
+      expect(verb.textContent).toContain(
+        REVIEW_ACTION_VOCABULARY["mark-done"].verb,
+      );
+      expect(verb.getAttribute("data-verb-tone")).toBeTruthy();
+    }
+    // The button commits those two rows in their own verb — "Mark 2 done" —
+    // rather than the neutral label the consumer passed.
+    expect(applyBtn().textContent).toContain(
+      REVIEW_ACTION_VOCABULARY["mark-done"].commit(2),
+    );
+  });
+
+  /**
+   * The acceptance drill for "one shared surface, two flows" — the row-control
+   * half. The registry must be the ONLY place a control is defined, so the two
+   * flows cannot drift into two vocabularies for the same recovery, and a
+   * control added for one is immediately offerable by the other.
+   */
+  const CONTROL_IDS = Object.keys(
+    REVIEW_ROW_CONTROLS,
+  ) as ReviewRowControlId[];
+
+  it("builds every row control from the registry, wording and tone included", () => {
+    expect(CONTROL_IDS.length).toBeGreaterThan(0);
+
+    for (const id of CONTROL_IDS) {
+      const entry = REVIEW_ROW_CONTROLS[id];
+      const built = reviewRowControl(id, { subject: "widget", run: () => {} });
+      expect(built.id).toBe(id);
+      expect(built.label).toBe(entry.label("widget"));
+      expect(built.label.length).toBeGreaterThan(0);
+      expect(built.tone).toBe("tone" in entry ? entry.tone : undefined);
+
+      // A greyed control still owes an explanation — enforced where controls
+      // are BUILT, so no call site can forget it.
+      const disabled = reviewRowControl(id, { disabled: true, run: () => {} });
+      expect(disabled.disabled).toBe(true);
+      expect(disabled.disabledReason).toBeTruthy();
+    }
+  });
+
+  it("keeps the registry the ONLY definition site — neither consumer rebuilds the set", () => {
+    // A source-level check because that is what "only definition site" means:
+    // a runtime assertion can only see the set a consumer chose to return, not
+    // whether it was constructed a second time. The shell already reads its
+    // own CSS from disk in this suite, so reading source here is in keeping.
+    for (const relative of [
+      "app/_components/plans/PlanCleanupReport.tsx",
+      "app/_components/inbox/InboxBulkReport.tsx",
+    ]) {
+      const source = readFileSync(resolve(operatorRoot, relative), "utf8");
+
+      // It resolves controls through the shared builder…
+      expect(source).toContain("reviewRowControl");
+
+      // …and does NOT hand-construct a control object. An inline `id: "open"`
+      // beside a `run:` is exactly the second definition site this forbids.
+      for (const id of CONTROL_IDS) {
+        expect(
+          source.includes(`id: "${id}"`),
+          `${relative} constructs the "${id}" control inline instead of via reviewRowControl`,
+        ).toBe(false);
+      }
     }
   });
 
