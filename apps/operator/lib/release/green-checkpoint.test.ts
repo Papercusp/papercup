@@ -4358,11 +4358,20 @@ describe("runGreenCheckpoint", () => {
       noPush: true,
     });
     expect(r.reason).toBe("not-green");
+    // EI-19381970048172232 re-worded this note. It previously read "already
+    // changed since candidate", which reads as THE FAILING SET; it is in fact a
+    // SUBSET of it, filtered by commit recency. The qualifier is the fix, so it
+    // is asserted here rather than only the file name.
     expect(
       messages.some(
         (m) =>
-          m.includes("already changed since candidate") &&
+          m.includes("MODIFIED SINCE candidate") &&
           m.includes("src/failing.test.ts"),
+      ),
+    ).toBe(true);
+    expect(
+      messages.some(
+        (m) => m.includes("a SUBSET") && m.includes("NOT the failing set"),
       ),
     ).toBe(true);
   });
@@ -4386,8 +4395,14 @@ describe("runGreenCheckpoint", () => {
       noPush: true,
     });
     expect(r.reason).toBe("not-green");
+    // Tracks the EI-19381970048172232 re-word. This is a NEGATIVE assertion, so
+    // it passed VACUOUSLY against the stale literal once the wording changed —
+    // green while guarding nothing. The positive control below keeps it honest:
+    // a verdict WAS produced, so the absence below is a real absence and not an
+    // empty message list.
+    expect(messages.length).toBeGreaterThan(0);
     expect(
-      messages.some((m) => m.includes("already changed since candidate")),
+      messages.some((m) => m.includes("MODIFIED SINCE candidate")),
     ).toBe(false);
   });
 
