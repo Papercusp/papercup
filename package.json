@@ -95,7 +95,8 @@
     "libs/generic/release-profile",
     "libs/generic/image-blankness",
     "libs/generic/overlap-clusters",
-    "libs/generic/sequence-patterns"
+    "libs/generic/sequence-patterns",
+    "libs/generic/agent-roster"
   ],
   "scripts": {
     "preinstall": "node scripts/guard-shared-tree-install.mjs && npx --yes only-allow npm",
