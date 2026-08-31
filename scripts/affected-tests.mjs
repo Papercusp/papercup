@@ -5865,10 +5865,30 @@ if (RUN_CARGO_SUITE) {
     if (cargoRun.status !== 0) {
       const cargoOutput = `${cargoRun.stdout ?? ""}${cargoRun.stderr ?? ""}`;
       const termination = detectCargoTermination(cargoOutput);
+      // EI-21950408988436927: exit 75 is EX_TEMPFAIL — report-cargo-tests refused to
+      // SPAWN cargo, so the suite did not run at all (today's cause: low-disk
+      // admission, emitted there as `low-disk-admission-refused`; see
+      // scripts/lib/cargo-result.mjs "the suite did not run and becomes valid after
+      // space is reclaimed"). That is the same property as a signal kill — not a
+      // compiler diagnostic — so it must never read as "a Rust test failed" and send
+      // a triager into papercusp-desktop source. Left counted as failed on purpose: a
+      // suite that never ran must not let the gate go green. Only the LABELLING is
+      // fixed, so it is separable from a real red.
+      const admissionRefused = cargoRun.status === 75;
       if (termination) {
         errSync(
           `>>> cargo test suite was killed by ${termination.signalName} (signal ${termination.signal}); ` +
             "this is an external process termination, not a compiler diagnostic — re-run before source triage.",
+        );
+      } else if (admissionRefused) {
+        errSync(
+          ">>> cargo test suite DID NOT RUN: the runner refused to spawn cargo " +
+            "(exit 75 EX_TEMPFAIL — typically low-disk admission). This is an INFRASTRUCTURE " +
+            "REFUSAL, not a test failure and not a compiler diagnostic: no Rust test was " +
+            "executed, so there is nothing to triage in papercusp-desktop. Reclaim space and " +
+            "re-run. Check admission with assessCargoDiskAdmission() in scripts/lib/cargo-result.mjs " +
+            "— it refuses only when freePct < freePctMin AND freeBytes < percentFloorBypassBytes, " +
+            "so a low percentage alone is not the cause.",
         );
       } else {
         errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
@@ -5883,6 +5903,10 @@ if (RUN_CARGO_SUITE) {
         };
         if (termination)
           cargoFailure.reason = `killed-by-signal:${termination.signalName}`;
+        // EI-21950408988436927: same channel the signal case uses — the task NAME stays
+        // stable (downstream repair-queue/GATE_HELD_BY consumers match on it), and the
+        // distinction rides in the structured reason.
+        else if (admissionRefused) cargoFailure.reason = "disk-admission-refused";
         unattributedTasks.push(cargoFailure);
       }
     }
