@@ -46,6 +46,8 @@ import {
   diagnosticLinesForFiles,
   formatRegressedFileDiagnostics,
   REGRESSION_DIAGNOSTIC_MAX_PER_FILE,
+  ALL_ERRORS_FLAG,
+  diagnosticCapFromArgv,
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
@@ -2277,6 +2279,34 @@ describe('formatRegressedFileDiagnostics — quote the lines, never overclaim wh
   });
 });
 
+describe('diagnosticCapFromArgv — the per-file quote cap and its escape hatch (EI-19343733961745670)', () => {
+  it('returns the caller default when the flag is absent', () => {
+    expect(diagnosticCapFromArgv(['--files=lib/a.ts'], REGRESSION_DIAGNOSTIC_MAX_PER_FILE)).toBe(
+      REGRESSION_DIAGNOSTIC_MAX_PER_FILE,
+    );
+    expect(diagnosticCapFromArgv([], 3)).toBe(3);
+  });
+
+  it('returns Infinity under --all-errors, whatever the default was', () => {
+    expect(diagnosticCapFromArgv([ALL_ERRORS_FLAG], 3)).toBe(Number.POSITIVE_INFINITY);
+    expect(
+      diagnosticCapFromArgv(['--files=lib/a.ts', ALL_ERRORS_FLAG], REGRESSION_DIAGNOSTIC_MAX_PER_FILE),
+    ).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  // A missing argv must not silently become "uncapped" — the gate passes it straight through from
+  // its caller, and an undefined there is a wiring mistake, not a request for every error.
+  it('falls back to the default rather than throwing when argv is not an array', () => {
+    expect(diagnosticCapFromArgv(undefined, 7)).toBe(7);
+  });
+
+  // The flag name is asserted rather than inlined: it appears in the CLI usage text and in the
+  // gate's report, so a rename that misses one of those should fail here.
+  it('is spelled --all-errors', () => {
+    expect(ALL_ERRORS_FLAG).toBe('--all-errors');
+  });
+});
+
 describe('the gate REPORT actually prints the diagnostics (wiring, EI-19454211066351073)', () => {
   // WHY A SUBPROCESS. The formatter above is pure and well-covered, but a pure formatter nobody
   // CALLS prints nothing — and "the helper exists" was already true before this fix: the gate had
@@ -2446,6 +2476,62 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).toContain(TS1XXX_HARD_FAIL_TSC_LINES);
     expect(out).toContain('hard-failing TS1xxx diagnostics');
     expect(out).not.toContain('parse errors');
+  });
+
+  // EI-19343733961745670 — the cap and its escape hatch, proved on ONE fixture run twice. The
+  // pure `diagnosticCapFromArgv` tests below can only show the number changes; they cannot show
+  // the gate THREADS it, and a flag that is parsed but never reaches `diagnosticLinesForFiles`
+  // fails in the direction that misleads — `--all-errors` returning a capped block reads as "that
+  // is all of them" and nothing in the output contradicts it. So the default run is the negative
+  // control: it must still truncate, or an always-uncapped gate would pass the positive case too.
+  const TWELVE_ERROR_LINES = Array.from(
+    { length: 12 },
+    (_, i) => `lib/a.ts(${i + 1},3): error TS2322: distinct message number ${i + 1}.`,
+  );
+
+  /** Run the real gate over a 12-error fixture, with whatever extra argv the case needs. */
+  function runGateWithTwelveErrors(extraArgv: string[]): string {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-cap-'));
+    try {
+      writeFileSync(join(root, 'tsc-output.txt'), `${TWELVE_ERROR_LINES.join('\n')}\n`);
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'lib/a.ts': 0 } }));
+      const argv = JSON.stringify(['--files=lib/a.ts', ...extraArgv]);
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+          `  label: 'test',\n` +
+          `  argv: ${argv},\n` +
+          `});\n`,
+      );
+      try {
+        return execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (e: any) {
+        return `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('caps a many-error file by default and SAYS how many it withheld', () => {
+    const out = runGateWithTwelveErrors([]);
+    expect(out).toContain('distinct message number 10.');
+    expect(out).not.toContain('distinct message number 11.');
+    expect(out).not.toContain('distinct message number 12.');
+    // The footer is what keeps the cap honest — silence here would read as "that is all of them".
+    expect(out).toContain('+2 more error(s) in this file not shown');
+  });
+
+  it('--all-errors lifts the cap and drops the withheld-count footer', () => {
+    const out = runGateWithTwelveErrors(['--all-errors']);
+    for (const line of TWELVE_ERROR_LINES) {
+      expect(out).toContain(line.slice(line.indexOf('error TS')));
+    }
+    expect(out).not.toContain('more error(s) in this file not shown');
   });
 
   it('forwards pc-heavy stderr while preserving captured compiler output', () => {
