@@ -428,6 +428,56 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  // EI-21957852799485985 / EI-21957833809596344: two hand-written
+  // linked-work-item queries 20s apart from ONE session, both 42703. The
+  // sql-derived advisories — the routing one above all — were computed BELOW
+  // pgReadQuery, so a caller whose query threw reached none of them. The
+  // errored caller is exactly the one who should be told a tool covers the
+  // read: they are about to retry, and a bare column list makes retrying with
+  // SQL look like the right move. `buildToolRoutingAdvisory` is the real
+  // implementation here (only pgReadQuery and the describe helpers are mocked),
+  // so this fails if the advisory stops reaching the error payload for any
+  // reason — a regressed hoist, or the builder ceasing to fire on this shape.
+  it('a failed query still carries the sql-derived routing advisory, not just the column list', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column w.id does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      { table: 'harness_shared.work_items', columns: ['feature_id: text', 'title: text'] },
+    ]);
+    const res = await pgQueryTool.handler(
+      { sql: "SELECT w.id, w.title FROM harness_shared.work_items w WHERE w.workspace_id = 'ws'" } as never,
+      {} as never,
+    );
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      advisory: expect.stringContaining('work_items:list'),
+    });
+  });
+
+  // The placement half of the fix above, and a real failure mode rather than a
+  // style point: knownColumns runs to ~79 entries (~2.4KB) for
+  // harness_shared.work_items. An advisory serialised AFTER that wall is one
+  // the reader reaches last, behind the most voluminous-looking part of the
+  // payload — so the fix would be present and still not land.
+  it('orders the advisory BEFORE the bulk knownColumns dump it would otherwise be buried under', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column w.id does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      { table: 'harness_shared.work_items', columns: ['feature_id: text', 'title: text'] },
+    ]);
+    const res = await pgQueryTool.handler(
+      { sql: "SELECT w.id FROM harness_shared.work_items w WHERE w.workspace_id = 'ws'" } as never,
+      {} as never,
+    );
+    const keys = Object.keys(payloadOf(res as never));
+    expect(keys).toContain('advisory');
+    expect(keys).toContain('knownColumns');
+    expect(keys.indexOf('advisory')).toBeLessThan(keys.indexOf('knownColumns'));
+  });
+
   it('adds an actionable routines schema redirect alongside knownColumns', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('column "harness_slug" does not exist'), { code: '42703' }),

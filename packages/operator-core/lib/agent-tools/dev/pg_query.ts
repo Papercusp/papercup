@@ -282,18 +282,100 @@ export default defineTool({
       return jsonError('missing_args', 'Pass `sql` (a read-only SELECT/WITH or EXPLAIN over SELECT/WITH) or `describe` (a relation to inspect).');
     }
     const sql = args.sql;
-    let sessionTurnPartsJsonAdvisory: string | null = null;
+    // EI-21163893229122924 hoisted ONE advisory above execution, and gave a
+    // reason that was general all along: compute it before the query runs so
+    // the same fix is available on both the successful and the failed payload.
+    // Every other advisory stayed BELOW pgReadQuery, so a caller whose query
+    // THREW reached none of them — and the errored caller is the one who most
+    // needs them. EI-21957852799485985 / EI-21957833809596344 are what that
+    // cost: two hand-written linked-work-item queries 20s apart from one
+    // session, both 42703. `buildToolRoutingAdvisory` fires on exactly that
+    // shape ("work_items:list / work_items:get already answer this read"), but
+    // only ever reached a caller whose query SUCCEEDED — so the retry after a
+    // typo was a second hand-written query instead of a tool call, and the
+    // column list the error DID carry made that retry look like the right move.
+    // Every builder below is a pure function of the SQL TEXT, so each is just
+    // as true of a query that failed to run as of one that ran.
+    const advisoryOf = (build: () => string | null): string | null => {
+      try {
+        return build();
+      } catch {
+        return null;
+      }
+    };
+    // EI-20261119579595975: an epoch-seconds literal divided by 1000 before
+    // to_timestamp() moves an invoked_at cutoff to 1970 and can make
+    // historical tool calls look like post-wake evidence.
+    const epochUnitAdvisory = advisoryOf(() => buildEpochUnitAdvisory(sql));
+    // WI-6674: an accessor that is always-NULL on the relation queried. Not
+    // folded into the tenant advisory because it is a different failure —
+    // that one warns the answer may be from the wrong TENANT, this one warns
+    // the answer is wrong for EVERY row and looks like a clean "none".
+    const nullPathAdvisory = advisoryOf(() => buildSilentNullPathAdvisory(sql));
+    const jsonbTypeofAdvisory = advisoryOf(() => buildJsonbTypeofNegationAdvisory(sql));
+    // A read that answers the WRONG QUESTION correctly: status='open' (or the
+    // candidate view) treated as "what can be claimed". Distinct again from
+    // both above — the row set is right for the question asked, and wrong for
+    // the question meant, so nothing about the result looks suspicious.
+    const claimabilityAdvisory = advisoryOf(() => buildClaimabilityAdvisory(sql));
+    // The FLOW sibling of the claimability advisory above. That one warns a row set is bigger than it
+    // looks; this one warns an AGGREGATE is measuring a different population than the reader intends —
+    // the observation lane counted as filed work, an evidence-quality column used as a "closed" filter,
+    // or a hand-rolled window that work_items:burn_down already computes with the caveats attached.
+    // Measured together on 2026-08-17: the three inverted the sign of a backlog trend reported to the owner.
+    const backlogFlowAdvisory = advisoryOf(() => buildBacklogFlowAdvisory(sql));
+    // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
+    // real answer. Kept as their own builders, like the three above, because each is a
+    // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
+    // these warn there will be no rows AT ALL, from a query that looks perfectly scoped.
+    // They also compose — the tool_invocations zero sends you to the transcript store, where
+    // the tenant-predicate habit produces a second zero that looks like corroboration — so
+    // both can legitimately fire for one investigation.
+    const corpusNamespaceAdvisory = advisoryOf(() => buildCorpusNamespaceAdvisory(sql));
+    const nativeToolAdvisory = advisoryOf(() => buildNativeToolAttributionAdvisory(sql));
+    // EI-21847759967934033: the SIBLING of the advisory above, and it exists because that one
+    // is silent on the read that actually caused harm. That one fires when the query ASKS FOR a
+    // native tool by name; this one fires on the single-agent "is this peer working?" read that
+    // never mentions native tools at all, whose truthful MCP-only answer is then read as the
+    // agent's whole activity. Both can fire for one investigation and say different things.
+    const agentActivityAdvisory = advisoryOf(() => buildAgentActivityLedgerAdvisory(sql));
+    // WI-38056: reading ONE of the two completion-evidence surfaces. Its own
+    // builder for the usual reason — this one does not warn about the wrong
+    // tenant or an empty table, but about a POPULATED table answering
+    // "no evidence" for every row closed through the other route.
+    const splitEvidenceAdvisory = advisoryOf(() => buildSplitCompletionEvidenceAdvisory(sql));
+    // EI-21163893229122924: session_turn_parts.text is heterogeneous
+    // faithful-render text, so an unguarded JSON cast can fail before a
+    // result exists.
+    const sessionTurnPartsJsonAdvisory = advisoryOf(() => buildSessionTurnPartsJsonAdvisory(sql));
+    // P-001 (sql-escape-tool-routing-2026-08-12): "a tool already answers
+    // this read". Distinct from every builder above — those warn the ANSWER
+    // may be wrong (wrong tenant, always-NULL path, wrong question, empty by
+    // construction); this one fires on a read whose answer is perfectly
+    // correct and simply did not need SQL. It is deliberately LAST in every
+    // composition: a correctness warning must never be pushed down the line
+    // by a routing hint.
+    const toolRoutingAdvisory = advisoryOf(() => buildToolRoutingAdvisory(sql));
+    // The sql-derived advisories in their established precedence order, shared
+    // VERBATIM by the success payload and the error payload so the two can
+    // never drift into telling the same caller different things about the same
+    // query. The async/result-derived ones (tenant scope, positive control)
+    // are not here: they need a round trip or a row count that a failed query
+    // never produced.
+    const sqlShapeAdvisories: (string | null)[] = [
+      epochUnitAdvisory,
+      claimabilityAdvisory,
+      backlogFlowAdvisory,
+      nullPathAdvisory,
+      jsonbTypeofAdvisory,
+      splitEvidenceAdvisory,
+      nativeToolAdvisory,
+      agentActivityAdvisory,
+      sessionTurnPartsJsonAdvisory,
+      corpusNamespaceAdvisory,
+    ];
 
     try {
-      // EI-21163893229122924: session_turn_parts.text is heterogeneous
-      // faithful-render text, so an unguarded JSON cast can fail before a
-      // result exists. Compute this before execution so the same fix is
-      // available on both successful and failed query payloads.
-      try {
-        sessionTurnPartsJsonAdvisory = buildSessionTurnPartsJsonAdvisory(sql);
-      } catch {
-        sessionTurnPartsJsonAdvisory = null;
-      }
       // EI-20200627264509977: scope-check BEFORE executing. The old advisory was
       // attached after pgReadQuery had already returned the potentially
       // cross-tenant rows, so it diagnosed the unsafe read without preventing
@@ -352,117 +434,9 @@ export default defineTool({
             ? '⚠ absence unverified: positiveControlSql also returned 0 rows, so the instrument/scope has not been shown capable of finding a known-positive row.'
             : '⚠ absence unverified: rowCount is 0 and no positiveControlSql was run. Re-run with a known-positive SELECT through the same table/scope/instrument before treating this as evidence of absence.'
           : null;
-      // EI-20261119579595975: an epoch-seconds literal divided by 1000 before
-      // to_timestamp() moves an invoked_at cutoff to 1970 and can make
-      // historical tool calls look like post-wake evidence.
-      let epochUnitAdvisory: string | null = null;
-      try {
-        epochUnitAdvisory = buildEpochUnitAdvisory(sql);
-      } catch {
-        epochUnitAdvisory = null;
-      }
-      // WI-6674: an accessor that is always-NULL on the relation queried. Not
-      // folded into the tenant advisory because it is a different failure —
-      // that one warns the answer may be from the wrong TENANT, this one warns
-      // the answer is wrong for EVERY row and looks like a clean "none".
-      let nullPathAdvisory: string | null = null;
-      try {
-        nullPathAdvisory = buildSilentNullPathAdvisory(sql);
-      } catch {
-        nullPathAdvisory = null;
-      }
-      let jsonbTypeofAdvisory: string | null = null;
-      try {
-        jsonbTypeofAdvisory = buildJsonbTypeofNegationAdvisory(sql);
-      } catch {
-        jsonbTypeofAdvisory = null;
-      }
-      // A read that answers the WRONG QUESTION correctly: status='open' (or the
-      // candidate view) treated as "what can be claimed". Distinct again from
-      // both above — the row set is right for the question asked, and wrong for
-      // the question meant, so nothing about the result looks suspicious.
-      let claimabilityAdvisory: string | null = null;
-      try {
-        claimabilityAdvisory = buildClaimabilityAdvisory(sql);
-      } catch {
-        claimabilityAdvisory = null;
-      }
-      // The FLOW sibling of the claimability advisory above. That one warns a row set is bigger than it
-      // looks; this one warns an AGGREGATE is measuring a different population than the reader intends —
-      // the observation lane counted as filed work, an evidence-quality column used as a "closed" filter,
-      // or a hand-rolled window that work_items:burn_down already computes with the caveats attached.
-      // Measured together on 2026-08-17: the three inverted the sign of a backlog trend reported to the owner.
-      let backlogFlowAdvisory: string | null = null;
-      try {
-        backlogFlowAdvisory = buildBacklogFlowAdvisory(sql);
-      } catch {
-        backlogFlowAdvisory = null;
-      }
-      // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
-      // real answer. Kept as their own builders, like the three above, because each is a
-      // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
-      // these warn there will be no rows AT ALL, from a query that looks perfectly scoped.
-      // They also compose — the tool_invocations zero sends you to the transcript store, where
-      // the tenant-predicate habit produces a second zero that looks like corroboration — so
-      // both can legitimately fire for one investigation.
-      let corpusNamespaceAdvisory: string | null = null;
-      try {
-        corpusNamespaceAdvisory = buildCorpusNamespaceAdvisory(sql);
-      } catch {
-        corpusNamespaceAdvisory = null;
-      }
-      let nativeToolAdvisory: string | null = null;
-      try {
-        nativeToolAdvisory = buildNativeToolAttributionAdvisory(sql);
-      } catch {
-        nativeToolAdvisory = null;
-      }
-      // EI-21847759967934033: the SIBLING of the advisory above, and it exists because that one
-      // is silent on the read that actually caused harm. That one fires when the query ASKS FOR a
-      // native tool by name; this one fires on the single-agent "is this peer working?" read that
-      // never mentions native tools at all, whose truthful MCP-only answer is then read as the
-      // agent's whole activity. Both can fire for one investigation and say different things.
-      let agentActivityAdvisory: string | null = null;
-      try {
-        agentActivityAdvisory = buildAgentActivityLedgerAdvisory(sql);
-      } catch {
-        agentActivityAdvisory = null;
-      }
-      // WI-38056: reading ONE of the two completion-evidence surfaces. Its own
-      // builder for the usual reason — this one does not warn about the wrong
-      // tenant or an empty table, but about a POPULATED table answering
-      // "no evidence" for every row closed through the other route.
-      let splitEvidenceAdvisory: string | null = null;
-      try {
-        splitEvidenceAdvisory = buildSplitCompletionEvidenceAdvisory(sql);
-      } catch {
-        splitEvidenceAdvisory = null;
-      }
-      // P-001 (sql-escape-tool-routing-2026-08-12): "a tool already answers
-      // this read". Distinct from every builder above — those warn the ANSWER
-      // may be wrong (wrong tenant, always-NULL path, wrong question, empty by
-      // construction); this one fires on a read whose answer is perfectly
-      // correct and simply did not need SQL. It is deliberately LAST in the
-      // composition: a correctness warning must never be pushed down the line
-      // by a routing hint.
-      let toolRoutingAdvisory: string | null = null;
-      try {
-        toolRoutingAdvisory = buildToolRoutingAdvisory(sql);
-      } catch {
-        toolRoutingAdvisory = null;
-      }
       const advisory =
         [
-          epochUnitAdvisory,
-          claimabilityAdvisory,
-          backlogFlowAdvisory,
-          nullPathAdvisory,
-          jsonbTypeofAdvisory,
-          splitEvidenceAdvisory,
-          nativeToolAdvisory,
-          agentActivityAdvisory,
-          sessionTurnPartsJsonAdvisory,
-          corpusNamespaceAdvisory,
+          ...sqlShapeAdvisories,
           tenantAdvisory,
           positiveControlTenantAdvisory,
           positiveControlAdvisory,
@@ -507,7 +481,6 @@ export default defineTool({
       // guessing non-obvious column names (EI-8301).
       const info = extractPgErrorInfo(err);
       const payload: Record<string, unknown> = { error: info.message };
-      if (sessionTurnPartsJsonAdvisory) payload.advisory = sessionTurnPartsJsonAdvisory;
       if (info.hint) payload.hint = info.hint;
       if (info.detail) payload.detail = info.detail;
       if (info.code) payload.code = info.code;
@@ -516,6 +489,17 @@ export default defineTool({
       if (regprocedureHint && !payload.hint) payload.hint = regprocedureHint;
       const regexRepetitionHint = postgresRegexRepetitionHint(sql, info);
       if (regexRepetitionHint && !payload.hint) payload.hint = regexRepetitionHint;
+      // The SAME sql-derived advisories the success payload composes, in the
+      // same order — a query's SHAPE is no less true for having failed to run.
+      // Placed AFTER the precise correction (PG's own hint names the column)
+      // and BEFORE the 42703 bulk column list, which runs to ~2.4KB for
+      // harness_shared.work_items: an advisory emitted after that wall is one
+      // the reader has already scrolled past, and burying the fix under the
+      // most voluminous-looking part of the payload is the failure this whole
+      // error path exists to avoid.
+      const errorAdvisory =
+        [...sqlShapeAdvisories, toolRoutingAdvisory].filter(Boolean).join(' ') || null;
+      if (errorAdvisory) payload.advisory = errorAdvisory;
       // P-005(a): a 42703 (undefined_column) carries the referenced tables'
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).
