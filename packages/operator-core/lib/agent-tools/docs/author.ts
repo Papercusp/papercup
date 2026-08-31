@@ -546,7 +546,7 @@ export default defineTool({
     chaining:
       'docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }.',
     seeAlso: [
-      'docs:get (read the current page before rewriting it)',
+      'docs:get (read a page — NOT an overwrite source: rendered + clipped)',
       'docs:outline (find where the page belongs)',
       'harness_docs:list (per-harness PROJECT docs live in a different surface)',
     ],
