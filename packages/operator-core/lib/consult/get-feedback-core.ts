@@ -823,6 +823,30 @@ export async function getFeedbackCore(
       sim: archiveHit.sim,
       answer: archiveHit.outcome,
     };
+    // WI-1713046 — an archive-served row must not misreport ITSELF. Two columns
+    // used to lie about this row, independently of whether the answer served
+    // was the right one:
+    //
+    //   responder_id — used to copy `archiveHit.responder_id`, so the ledger
+    //     asserted that agent X answered THIS consult while `wakes_used` was
+    //     literally 0: X was never woken and never saw the question. It is
+    //     NULL because the row genuinely has no responder — which is already
+    //     what this very function returns to the caller (`responder: null`
+    //     below); only the column disagreed. The honest provenance lives in
+    //     `outcome.source_responder_id` above, which records it correctly as
+    //     the SOURCE consult's responder. That distinction — "answered this"
+    //     vs "once answered something similar" — is exactly what the
+    //     top-level column erased, and the top-level column is the indexed one
+    //     (`consult_state_responder_idx`) that queries read.
+    //
+    //   closed_at — used to bind a JS `now` captured BEFORE the embed + route
+    //     + vector-search work (~1.9s earlier), while `created_at` takes the
+    //     column default `now()` AT INSERT. Every such row was therefore
+    //     stamped closed ~1.9s before it was created (measured: 34/34, e.g.
+    //     conv-mth51nyx, lifetime -00:00:01.867), corrupting any duration
+    //     analytic and leaving the row un-orderable against its own siblings.
+    //     Both timestamps now come from the SAME clock, so the row cannot
+    //     close before it opens.
     await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
@@ -830,9 +854,9 @@ export async function getFeedbackCore(
          depth, parent_consult_id, query_embedding)
       VALUES
         (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId},
-         ${archiveHit.responder_id}, 'closed_answered', ${req.question}, ${latency},
+         NULL, 'closed_answered', ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)},
-         ${sql.json(outcome as never)}, ${now.toISOString()}::timestamptz, 0,
+         ${sql.json(outcome as never)}, now(), 0,
          ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector)
     `;
     return {
