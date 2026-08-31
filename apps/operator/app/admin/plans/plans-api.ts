@@ -46,12 +46,22 @@ export type PlanStatus =
  * the operational start-state, not a frontmatter status, and legacy
  * plans (no frontmatter status, defaulted to `draft`) fold into `draft`.
  */
-export type PlanBucket = "draft" | "ready" | "running" | "shipped" | "rejected";
+export type PlanBucket =
+  | "draft"
+  | "ready"
+  | "running"
+  | "awaiting"
+  | "shipped"
+  | "rejected";
 
 export const PLAN_BUCKETS: ReadonlyArray<{ id: PlanBucket; label: string }> = [
   { id: "draft", label: "Draft" },
   { id: "ready", label: "Ready" },
   { id: "running", label: "Running" },
+  // P-004: implementation landed, acceptance not concluded. Distinct from
+  // "Shipped" because nothing here has passed a gate, and distinct from
+  // "Running" because there is no work left to pick up.
+  { id: "awaiting", label: "Awaiting acceptance" },
   { id: "shipped", label: "Shipped" },
   // The only way a plan lands in the 'rejected' bucket is status:superseded
   // (reject = supersede), so the chip reads "Superseded".
@@ -65,15 +75,23 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  * exactly one bucket:
  *   1. superseded            → rejected   (terminal off-ramp)
  *   2. shipped               → shipped    (terminal success)
- *   3. startStatus 'started' → running    (operationally running)
- *   4. ready | active        → ready      (approved, not started; `active` is legacy-approved)
- *   5. otherwise             → draft      (draft, blocked, anything else)
+ *   3. awaiting-acceptance   → awaiting   (drained; implementation done, not graded)
+ *   4. startStatus 'started' → running    (operationally running)
+ *   5. ready | active        → ready      (approved, not started; `active` is legacy-approved)
+ *   6. otherwise             → draft      (draft, blocked, anything else)
+ *
+ * ⚠ (3) MUST stay above (4). `op_status` is not cleared when a plan drains —
+ * `clearStartedForTerminalPlan` only fires on a TERMINAL lifecycle status, and
+ * `awaiting-acceptance` is deliberately not terminal — so a drained plan is
+ * still `startStatus: 'started'`. Testing that first would file every drained
+ * plan under "Running", which is the exact false reading P-004 exists to end.
  */
 export function bucketOf(
   plan: Pick<PlanListRow, "status" | "startStatus">,
 ): PlanBucket {
   if (plan.status === "superseded") return "rejected";
   if (plan.status === "shipped") return "shipped";
+  if (plan.status === "awaiting-acceptance") return "awaiting";
   if (plan.startStatus === "started") return "running";
   if (plan.status === "ready" || plan.status === "active") return "ready";
   return "draft";
