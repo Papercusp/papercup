@@ -17,6 +17,7 @@ import { formatIdleAge } from '../../format/relative-time';
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
 import { parseInFlightCandidate } from '../../release/in-flight-candidate';
+import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
 
 const GIT_SYNC_FRESHNESS_INTERVALS = 3;
@@ -143,8 +144,46 @@ export function attestGateHealth(value: unknown, nowMs: number = Date.now()): un
       ? !sameCandidate(observedCandidate, inFlightCandidate)
       : null;
 
+  // WI-1752145: the abort record's OWN vintage. `readAttestation.snapshotAgeMs` below is
+  // derived from the top-level `observedAt`, which an aborting tick does NOT advance (it
+  // writes `inconclusive` through a scoped jsonb_set on purpose), so that age describes the
+  // VERDICT and never the abort sitting beside it — measured drift between the two on live
+  // rows: +4s to +5.7 DAYS. `inconclusive.status` is the field a reader acts on, and until
+  // now the only vintage for it was a raw epoch-ms buried in the same block.
+  const inconclusiveBlock =
+    gateHealth.inconclusive && typeof gateHealth.inconclusive === 'object' && !Array.isArray(gateHealth.inconclusive)
+      ? (gateHealth.inconclusive as Record<string, unknown>)
+      : null;
+  const inconclusiveStatus =
+    inconclusiveBlock && typeof inconclusiveBlock.status === 'string' ? inconclusiveBlock.status : null;
+  const inconclusiveAttestation =
+    inconclusiveStatus === null
+      ? null
+      : {
+          status: inconclusiveStatus,
+          ...(() => {
+            const v = gateAbortVintage({
+              status: inconclusiveStatus,
+              observedAtMs: epochMs(inconclusiveBlock?.observedAtMs),
+              nowMs,
+            });
+            return {
+              observedAt: isoAt(v.observedAtMs),
+              ageMs: v.ageMs,
+              age: v.age === null ? null : `${v.age} ago`,
+              stale: v.stale,
+              warning: v.warning,
+            };
+          })(),
+        };
+
   return {
     ...gateHealth,
+    // WI-1752145: candidate-bound provenance's sibling for the ABORT record — same shape, same
+    // reason. Null when there is no abort to describe; a FRESH abort keeps `warning: null` so a
+    // disclosure that fires on every read never trains a reader to skip it, and `stale: null`
+    // (blob predating the stamp) is reported as unknown rather than as a clean `false`.
+    inconclusiveAttestation,
     // EI-21546055972045422: `failingTests` belongs to the last TERMINAL verdict, while
     // `inFlightCandidate` names the run executing RIGHT NOW. Returning the array without this
     // candidate-bound sibling made a prior verdict read as the active run's failures whenever
