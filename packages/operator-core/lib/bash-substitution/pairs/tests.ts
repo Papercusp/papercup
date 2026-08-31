@@ -376,7 +376,9 @@ export const routerTestFiles: BashSubstitutionPair = {
   routing: {
     want: 'to run specific test files and see which tests failed',
     use: '`testing:run { files: [...] }` — spawns the router directly, so it never waits for a pc-heavy admission ticket',
-    insteadOf: '`npm run test:file -- <paths> 2>&1 | tail -60` — pc-heavy-wrapped, so under fleet load it queues behind every other heavy job (measured: 14+ min without starting, and a sibling attempt killed SIGTERM/143 with ZERO output, against 1471ms through the tool). A run redirected to a log file is not this either — the tool writes no artifact',
+    // ⚠ 300-char table-cell cap (routing-table.test.ts). This cell is 286; the
+    // measurement narrative belongs in `advisoryText` and the header comment.
+    insteadOf: '`npm run test:file -- <paths> 2>&1 | tail -60` — pc-heavy-wrapped, so under load it queues behind every heavy job (measured: 14+ min without starting, one attempt killed SIGTERM/143 with ZERO output, vs 1471ms via the tool). A log-file redirect is not this — the tool writes no artifact',
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
