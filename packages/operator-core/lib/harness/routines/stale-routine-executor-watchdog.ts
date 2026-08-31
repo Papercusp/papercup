@@ -180,6 +180,12 @@ export interface ExecutorAlarmContext {
  * operations. A reader who does not know that refusal is expected and transient
  * will abandon a remediation that was one retry loop away, which is how a page
  * stays open for two and a half hours with nothing actually wrong.
+ *
+ * AMENDED once that root cause was FIXED (EI-21930094737784126): the honest advice is
+ * no longer "retry in a loop" but `git_sync_drain_sec`, which demotes the cgroup check
+ * to advisory and lets the authoritative `git-sync` barrier arbitrate. A page that
+ * names a lever owes its reader the ARGUMENTS that make it fire — not a hand-rolled
+ * loop around a refusal the tool can now wait out itself.
  */
 export const RESTART_SAFETY_NOTE =
   'Do NOT hand-derive whether restarting is safe right now — the lever answers it. Run the same call WITHOUT ' +
@@ -192,7 +198,11 @@ export const RESTART_SAFETY_NOTE =
   'git-sync sweeps 38 submodules plus several pots from inside this host\'s own cgroup, so its operations are in ' +
   'flight nearly continuously (measured 2026-08-31: 20 consecutive attempts over 40s, never fewer than 4 in ' +
   'flight). That refusal is EXPECTED, TRANSIENT, and side-effect-free — "NOTHING was done: no cooldown claimed, ' +
-  'no drain, no signal" — so retry it in a loop until a window opens rather than abandoning the remediation. ' +
+  'no drain, no signal". The supported way through is `git_sync_drain_sec` (seconds, up to 45) on the same call: ' +
+  'with a drain budget the cgroup check is only ADVISORY and the workspace-wide `git-sync` barrier arbitrates ' +
+  'instead — fires hold that barrier just ~5-10s, and it measured FREE in 20 of 40 sampled seconds. Pass the same ' +
+  'value to the dry run, so the preview answers for the call you are actually about to make. A `drain_timeout` is ' +
+  'equally side-effect-free, so retry once rather than abandoning the remediation. ' +
   'Do NOT reach for `override_git_sync_collision` to force past it: that SIGKILLs a commit after lock acquisition ' +
   'and strands a peer\'s uncommitted work. It is reserved for a host that is genuinely wedged, which a merely ' +
   'busy one is not.';
