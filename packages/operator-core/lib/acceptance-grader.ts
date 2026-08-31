@@ -37,6 +37,24 @@ export type AcceptanceGraderLifecycle = {
   launch?: unknown;
   error?: string;
   /**
+   * EI-21923986145923904: passthrough of `capability:launch-agent`'s own
+   * three-state fresh-launch verdict (see `FreshLaunchVerdict.agentStarted`) —
+   * `true` = observed a real turn, `false` = observed silence (booted then
+   * never started), `null` = window expired with no session row ever observed
+   * (the honest "unconfirmed" case, NOT proof of death). Only set for state
+   * 'launched' launches that went through the fresh-launch verification path
+   * (the assigned-existing-grader path never launches, so this stays absent
+   * there). Previously computed by the launch tool and silently discarded
+   * here, so a `plans:set-plan-status` caller reading a 'launched' result had
+   * no way to tell a verified launch from one the tool itself could not
+   * confirm — the "reports Launched, but the agent never actually starts"
+   * failure read as success all the way up to the plan-ship gate. Read this
+   * field, not `state === 'launched'` alone, before treating a grader launch
+   * as settled; `agentStarted === null` means re-check in ~1 min rather than
+   * waiting on it indefinitely.
+   */
+  agentStarted?: boolean | null;
+  /**
    * Discovery outcome (state 'assigned'): the ordered grader MENU, head first.
    * A MENU rather than one grader since
    * unified-responder-selection-critique-and-grading-2026-08-30 D-001/D-003
@@ -1042,6 +1060,10 @@ export async function launchAcceptanceGrader(
       const launchData = result.data?.launch as
         | {
             tasks?: Array<{ taskId?: unknown; logPath?: unknown }>;
+            // EI-21923986145923904: present only when the fresh-launch verification
+            // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
+            // 'assigned' launch, which never spawns.
+            agentStarted?: boolean | null;
           }
         | undefined;
       const launchedTask = launchData?.tasks?.[0];
@@ -1129,6 +1151,9 @@ export async function launchAcceptanceGrader(
           idempotencyKey: currentIdempotencyKey,
           label,
           launch: result.data?.launch,
+          ...(launchData && 'agentStarted' in launchData
+            ? { agentStarted: launchData.agentStarted }
+            : {}),
           ...recoveryFields(attempt + 1),
         };
       }

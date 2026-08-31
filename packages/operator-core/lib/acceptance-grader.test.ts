@@ -105,6 +105,32 @@ describe('launchAcceptanceGrader', () => {
     expect(brief.length).toBeLessThan(8_000);
   });
 
+  it('EI-21923986145923904: passes through launch-agent\'s agentStarted verdict on a fresh launch, including the honest null case', async () => {
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: {
+        deduped: false,
+        launch: { agentStarted: null, tasks: [{ taskId: 'task-unconfirmed', logPath: '/tmp/judge.log' }] },
+      },
+    }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, deps(launch));
+    expect(result.state).toBe('launched');
+    // Must be present with the LITERAL value null (an honest "unconfirmed"),
+    // not merely absent — `'agentStarted' in result` is the whole point of
+    // this test: silently dropping this field is the regression.
+    expect(result).toHaveProperty('agentStarted', null);
+  });
+
+  it('EI-21923986145923904: does not fabricate agentStarted when launch-agent never reported it', async () => {
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-1', logPath: '/tmp/judge.log' }] } },
+    }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, deps(launch));
+    expect(result.state).toBe('launched');
+    expect(result).not.toHaveProperty('agentStarted');
+  });
+
   it('surfaces launch-ledger dedupe as a deduped lifecycle with the original task identity', async () => {
     const launch = vi.fn(async () => ({
       content: [{ type: 'text', text: 'already launched' }],
