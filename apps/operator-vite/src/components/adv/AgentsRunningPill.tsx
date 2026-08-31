@@ -227,7 +227,8 @@ export default function AgentsRunningPill() {
   const [focusOwnerRaw, setFocusOwner] = useQueryState('agentsFocus');
   const focusOwner = typeof focusOwnerRaw === 'string' && focusOwnerRaw ? focusOwnerRaw : null;
   // Portal parity deep-link: the hosted portal frames this same operator
-  // surface with agentsRoster=1&agentsInspect=<ownerId>. The roster resolves
+  // surface with agentsRoster=true&agentsInspect=<ownerId>. The literal boolean
+  // matches nuqs parseAsBoolean; `1` parses as the default false. The roster resolves
   // the owner against its full-fidelity rows and opens the exact
   // AgentInspectorModal used by a native row click.
   const [inspectOwnerRaw, setInspectOwner] = useQueryState('agentsInspect');
