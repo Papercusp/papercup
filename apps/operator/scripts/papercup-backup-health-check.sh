@@ -559,10 +559,24 @@ These are partial, non-restorable transactions, not backup artifacts. They consu
 # Alarm only when the writer's own companion log proves a NEWER attempt degraded.
 # This preserves the EI-20109034777197353 detector without imposing the host's
 # hourly RPO on every optional workspace policy.
+#
+# The outcome match is PREFIX-shaped ('hook done (') on purpose: it must select the
+# genuinely LATEST outcome, not the latest member of a hand-typed subset. It used to
+# enumerate `(ok|degraded)`, which could not see the hook's third terminal outcome,
+# `hook done (skipped: host-covered)` — emitted since the host-coverage stand-down
+# (EI-21874492117996483). Under that policy the workspace dump is deliberately frozen
+# forever, so `tail -1` of the enumerated set kept returning a `degraded` line from
+# BEFORE the stand-down while the mtime gate below was satisfied by the very skip
+# lines the enumeration was blind to. The two halves conspired into a permanent
+# critical false alarm: WI-1547678 re-filed the byte-identical 2580223915B artifact
+# that WI-1288840 had already closed 13h earlier, and seven agents each burned a
+# claim on it. Match the outcome SHAPE the emitter guarantees; classify on the
+# result. New outcome tokens are pinned by the vocabulary test in
+# apps/operator/scripts/__tests__/papercup-backup-health-check.test.ts.
 optional_artifact_latest_hook_degraded() { # <artifact>
   local art="$1" hook="${1%/*}/hook.log" latest=""
   [ -f "$hook" ] || return 1
-  latest="$(grep -aE 'hook done \((ok|degraded)\)' "$hook" 2>/dev/null | tail -n 1)"
+  latest="$(grep -aE 'hook done \(' "$hook" 2>/dev/null | tail -n 1)"
   [[ "$latest" == *'hook done (degraded)'* ]] || return 1
   [ "$(mtime_s "$hook")" -gt "$(mtime_s "$art")" ] 2>/dev/null
 }
@@ -683,6 +697,24 @@ if [ "${1:-}" = "--self-test" ]; then
       stale-no-attempt)
         : > "$opt"; touch -d '26 hours ago' "$opt"; rm -f "$t/ws/hook.log"
         ;;
+      # WI-1547678: the host-coverage stand-down supersedes the older degraded run.
+      # The artifact is then frozen BY DESIGN and can never advance again, so reading
+      # the stale `degraded` as "the latest outcome" mints one critical false alarm
+      # per re-file window, forever. The newest outcome is the only one that judges.
+      stale-skipped-after-degraded)
+        : > "$opt"; touch -d '26 hours ago' "$opt"
+        { printf '[%s] hook done (degraded)\n' "$(date -Iseconds)"
+          printf '[%s] hook done (skipped: host-covered)\n' "$(date -Iseconds)"
+        } >"$t/ws/hook.log"
+        ;;
+      # The other direction, so the fix cannot over-correct into silence: a degraded
+      # attempt AFTER a stand-down is a real, newer failure and must still alarm.
+      stale-degraded-after-skipped)
+        : > "$opt"; touch -d '26 hours ago' "$opt"
+        { printf '[%s] hook done (skipped: host-covered)\n' "$(date -Iseconds)"
+          printf '[%s] hook done (degraded)\n' "$(date -Iseconds)"
+        } >"$t/ws/hook.log"
+        ;;
     esac
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_DB_DATA_DIR="$t/no-db-data" \
@@ -706,6 +738,13 @@ if [ "${1:-}" = "--self-test" ]; then
         stale-ok no
   check_optional "optional artifact stale + no newer attempt: event-only idle is silent" \
         stale-no-attempt no
+  # 7b. WI-1547678: a NEWER stand-down supersedes an older degraded run. Judging on a
+  # hand-typed (ok|degraded) subset made this the live permanent-false-alarm case.
+  check_optional "optional artifact stale + latest hook SKIPPED after degraded: silent" \
+        stale-skipped-after-degraded no
+  # ...and the over-correction guard: a degraded run AFTER a stand-down still alarms.
+  check_optional "optional artifact stale + latest hook DEGRADED after skip: marker set" \
+        stale-degraded-after-skipped yes
   # 8. NOT gated on existence — a box that never ran a workspace backup is silent.
   check_optional "optional artifact ABSENT: silent (never-backed-up workspace is not a fault)" \
         absent no
