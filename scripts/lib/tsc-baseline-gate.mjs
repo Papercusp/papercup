@@ -920,10 +920,49 @@ function formatRow(r) {
  * the site invalid, so asserting "standing red" while any other path is dirty can send a caller
  * straight into a live peer's lane. Preserve the strong warning only when the working tree gives
  * us no uncommitted alternative cause.
+ *
+ * THREE readings, strongest evidence first (EI-19340874432965755):
+ *   1. `commitAgeSec` says THIS FILE has not moved in longer than the landing-race window — then
+ *      the cause is provably not this file's own content. Most actionable, and about the file
+ *      itself rather than the tree, so it wins.
+ *   2. `dirtyPathCount > 0` — some other path could be the cause, but we cannot say which.
+ *   3. Neither — nothing else is in flight, so the strong standing-red warning is earned.
+ *
+ * WHY IT MATTERS, measured: the flat "COMMITTED: a standing red that WILL red the fleet" wording
+ * produced THREE work-items from three agents on 2026-08-02 and TWO were not reproducible against
+ * the file named (WI-6928, EI-19332542096444388). In WI-6928 the file was unchanged since 01:21
+ * with no commits since the report, so its content never varied — a peer's edit elsewhere induced
+ * the error and fixing that file cleared it. Reading 1 is exactly that case, named.
  */
-export function formatStandingRedRow(r, { dirtyPathCount = 0 } = {}) {
-  const status =
-    dirtyPathCount > 0
+/**
+ * Is this file's own commit age old enough that its NEW diagnostic cannot be its own doing?
+ *
+ * Exported and shared so the ROW wording and the caller's `unchangedCount` (which drives the
+ * footer) can never disagree about which rows are unchanged — a divergence that would print the
+ * per-file explanation with the wrong count, or omit it while rows are marked UNCHANGED.
+ *
+ * `null` (unknown) is deliberately NOT unchanged: `lastCommitTimes` fails soft to `null`, and a
+ * path inside a submodule also reads `null` from the superproject, so treating unknown as
+ * "unchanged" would manufacture an exoneration out of an absence of evidence.
+ *
+ * @param {number | null} commitAgeSec
+ * @returns {boolean}
+ */
+export function isUnchangedForAttribution(commitAgeSec) {
+  return typeof commitAgeSec === 'number' && commitAgeSec > LANDING_RACE_WINDOW_SEC;
+}
+
+export function formatStandingRedRow(r, { dirtyPathCount = 0, commitAgeSec = null } = {}) {
+  // EI-19340874432965755 — the file's OWN commit age is the strongest signal available here, and
+  // it is about THIS file rather than about the tree, so it outranks the dirtyPathCount caveat
+  // below. A file whose content has not moved for longer than the landing-race window, but whose
+  // error count just went 0 → N, cannot have caused that change itself: something in its import
+  // graph did. `null` is UNKNOWN and never earns the exoneration (lastCommitTimes fails soft to
+  // `null`, and a path inside a submodule reads `null` from the superproject) — the same "unknown
+  // is never an exoneration" rule this file applies everywhere else.
+  const status = isUnchangedForAttribution(commitAgeSec)
+    ? `UNCHANGED ${Math.floor(commitAgeSec / 60)}min; error SURFACES here, so the cause is a change ELSEWHERE`
+    : dirtyPathCount > 0
       ? `CLEAN ERROR SITE; causal origin unresolved while ${dirtyPathCount} other path(s) are uncommitted`
       : 'COMMITTED: a standing red that WILL red the fleet';
   return `${formatRow(r)}  ← ${status}`;
@@ -1006,6 +1045,15 @@ export function formatNewFileGuidance({ explicit, liveEditCount = 0, standingCou
         `   They are OUTSIDE the --files set you named and reported anyway BECAUSE they are new:`,
         `   scoping only exonerates a file the baseline already knows, and these have no baseline at all.`,
         `   So this is not a bad invocation — naming them would not clear them either. If one is yours, fix it.`,
+        // EI-19340874432965755 — "new" here means ABSENT FROM THE BASELINE, which is not the same
+        // as RECENTLY WRITTEN, and readers conflate the two. In WI-6928 the named file had been
+        // unchanged since 01:21 with no commits since the report; it was "new" only to the
+        // baseline. Without this line the block above reads as "this file is broken and needs an
+        // owner", which sent two of three agents into a file that never varied.
+        `   ⚠ "New" means ABSENT FROM THE BASELINE, not recently written — a file here may not have`,
+        `   changed in hours. A tsc error is reported where it SURFACES, not where it ORIGINATES, so`,
+        `   check whether the file actually changed (git log -1 -- <path>) before investigating it;`,
+        `   if it did not, look at its IMPORT GRAPH — start with: npm run lint:required-field-strands`,
         TELL_THE_AUTHOR,
       );
     }
@@ -1037,13 +1085,28 @@ export function formatNewFileGuidance({ explicit, liveEditCount = 0, standingCou
  * The dwell is read from DWELL_SEC rather than written out, so this text cannot drift from the
  * policy it describes.
  */
-export function formatStandingRedFooter({ dwellSec = DWELL_SEC } = {}) {
-  return [
+export function formatStandingRedFooter({ dwellSec = DWELL_SEC, unchangedCount = 0 } = {}) {
+  const lines = [
     `    Not YOUR gate failure (you did not name them), so this run stays green.`,
     `    ALREADY RECORDED — do NOT hand-file a work-item. tsc-red-sweep files only the ones still`,
     `    standing after ${Math.round(dwellSec / 60)}min; most self-heal first (measured: 4 of 5 gone in 15min), so`,
     `    filing on sight just makes duplicates (WI-7149/WI-7150, 75s apart). If one is YOURS, fix it.`,
   ];
+  // EI-19340874432965755 — printed ONLY when at least one row is provably unchanged, because that
+  // is the case where investigating the NAMED file is the wrong move and a reader needs to be told
+  // where to look instead. Naming the existing tool matters: adding a required field to a shared
+  // interface is the dominant cause of this shape, `lint:required-field-strands` was built for
+  // exactly it, and the gate has never mentioned it — so every reader re-derived the search by hand.
+  if (unchangedCount > 0) {
+    lines.push(
+      `    ⚠ ${unchangedCount} of the above has/have NOT been committed in a long time (marked UNCHANGED).`,
+      `    A tsc error is reported where it SURFACES, not where it ORIGINATES: a required field added to`,
+      `    a shared interface, a changed export type, or a resolution change strands sites in files`,
+      `    nobody touched. Investigating an UNCHANGED file directly is the wrong move — look at what`,
+      `    changed in its IMPORT GRAPH. For the dominant cause: npm run lint:required-field-strands`,
+    );
+  }
+  return lines;
 }
 
 /**
@@ -3155,10 +3218,29 @@ export async function runTscBaselineGate({
             `none of them in the set you named:`,
         );
         for (const r of liveEdits) console.log(`${formatRow(r)}  ← uncommitted, a peer is likely mid-edit`);
+        // EI-19340874432965755 — HOISTED. This map was already being computed a few lines below for
+        // the landing-race caveat, but only AFTER the rows had been printed, so the rows themselves
+        // could not see the one piece of evidence that exonerates a file: its own commit age. One
+        // `git log -1` per committed file now serves BOTH, so this attribution costs no extra
+        // subprocess (it previously cost the same map, discarded for row-wording purposes).
+        const nowSec = Math.floor(Date.now() / 1000);
+        const standingCommitTimes = lastCommitTimes(
+          root,
+          standing.map((r) => r.file),
+        );
+        /** @param {string} file @returns {number | null} */
+        const commitAgeOf = (file) => {
+          const t = standingCommitTimes.get(file);
+          return typeof t === 'number' ? nowSec - t : null;
+        };
+        let unchangedCount = 0;
         for (const r of standing) {
+          const commitAgeSec = commitAgeOf(r.file);
+          if (isUnchangedForAttribution(commitAgeSec)) unchangedCount += 1;
           console.log(
             formatStandingRedRow(r, {
               dirtyPathCount: dirtyFiles?.size ?? 0,
+              commitAgeSec,
             }),
           );
         }
@@ -3166,7 +3248,7 @@ export async function runTscBaselineGate({
         // unit-testable; inline console.log in a process.exit branch was untestable, which is why
         // the contradiction with recordStandingReds() below survived unnoticed.
         if (standing.length > 0) {
-          for (const line of formatStandingRedFooter()) console.log(line);
+          for (const line of formatStandingRedFooter({ unchangedCount })) console.log(line);
         }
         // EI-19340930095511759 — this branch is the `ok-peer-drift` twin of `fail-new-file`, and
         // until now it was missing the LANDING-RACE caveat that branch already has (WI-6767). A
