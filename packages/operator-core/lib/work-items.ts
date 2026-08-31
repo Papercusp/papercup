@@ -28,6 +28,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
 import type { TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -1545,6 +1546,15 @@ export async function getWorkItem(id: string, harness?: string): Promise<WorkIte
  * `undefined` at precisely the call sites it exists to protect.
  */
 export { harnessScopeMismatch, type HarnessScopeMismatch } from './work-items-harness-scope';
+// EI-21919769900781478: kept in a LEAF module (the write verbs mock this file wholesale
+// in their unit tests), re-exported here so it stays discoverable beside
+// `selfHealAuthorOriginIfStranded`, which handles the sibling stranding.
+export {
+  decideOrphanAuthorClose,
+  lookupRemoteAuthorEndedAt,
+  healOrphanedRemoteOriginIfAuthorEnded,
+  type OrphanAuthorCloseReason,
+} from './work-items-orphan-author';
 import { trackDetached } from './detached-imports';
 
 /**
@@ -3596,6 +3606,21 @@ export async function setWorkItemState(
     if (wi.origin === 'remote' && opts.by && wi.createdBy && opts.by === wi.createdBy) {
       const healed = await selfHealAuthorOriginIfStranded(id, opts.by);
       if (healed) wi.origin = 'local';
+    }
+    // EI-21919769900781478: the OTHER stranding — the recorded author is a different
+    // peer whose session has permanently ENDED, so the refusal below names an authority
+    // that no longer exists and the row can never reach a terminal state (while still
+    // being served as claimable work). Scoped to TERMINAL closes only via
+    // `isCompletingTransition`, so this is not a general remote-mutation bypass, and
+    // fail-closed: anything short of a positively observed `ended_at` leaves the refusal
+    // standing. Heals the base-table origin (the view trigger noted above) + stamps the
+    // close as an orphan-close in the same statement.
+    if (wi.origin === 'remote' && isCompletingTransition) {
+      const orphan = await healOrphanedRemoteOriginIfAuthorEnded(id, {
+        isCompletingTransition,
+        by: opts.by ?? null,
+      });
+      if (orphan.healed) wi.origin = 'local';
     }
     if (wi.origin === 'remote') {
       throw new Error(

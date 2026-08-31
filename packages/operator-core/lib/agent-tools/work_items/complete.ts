@@ -49,6 +49,10 @@ import { objectSelector } from '../coordination/audience';
 // Imported from the LEAF module, not from '../../work-items': this file's unit tests
 // mock that module wholesale, which would make the guard `undefined` exactly here.
 import { harnessScopeMismatch } from '../../work-items-harness-scope';
+// Same LEAF-module rule as the line above (EI-21919769900781478): imported from the
+// standalone module, not from '../../work-items', which this file's unit tests mock
+// wholesale — the guard would be `undefined` exactly here.
+import { lookupRemoteAuthorEndedAt } from '../../work-items-orphan-author';
 import {
   getWorkItem,
   setWorkItemStateWithAliasInfo,
@@ -1955,13 +1959,25 @@ async function completeOne(
   // function calls further down when `it.state` is set.
   const callerIsAuthor = !!existing.createdBy && existing.createdBy === ident.ownerId;
   if (it.state && existing.family === 'issue' && existing.origin === 'remote' && !callerIsAuthor) {
-    return {
-      ok: false,
-      id: it.id,
-      error:
-        `work_item '${it.id}' is remote-authored and cannot be completed locally; ` +
-        `its authoring peer must claim/resolve it, and this node will receive the terminal state through federation.`,
-    };
+    // EI-21919769900781478: this fast-fail must not refuse a row the real write path
+    // would legitimately heal. When the recorded authoring peer's session has provably
+    // ENDED, the remedy this error names ("its authoring peer must claim/resolve it")
+    // points at an authority that no longer exists, and the item is undrainable
+    // forever. Defer those to setWorkItemStateWithAliasInfo → setWorkItemState, which
+    // owns the origin self-heal + audit stamp and independently re-checks that the
+    // transition is TERMINAL — so deferring here cannot widen the bypass beyond a
+    // terminal close. Fail-closed: a live author, an unrecorded author, or a lookup
+    // outage all return null here and the refusal below stands unchanged.
+    const orphanedAuthorEndedAt = await lookupRemoteAuthorEndedAt(existing.createdBy);
+    if (!orphanedAuthorEndedAt) {
+      return {
+        ok: false,
+        id: it.id,
+        error:
+          `work_item '${it.id}' is remote-authored and cannot be completed locally; ` +
+          `its authoring peer must claim/resolve it, and this node will receive the terminal state through federation.`,
+      };
+    }
   }
 
   // EI-7264: a fast multi-wake self-sustaining loop creates+completes its own tracking
