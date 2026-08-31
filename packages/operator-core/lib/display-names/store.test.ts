@@ -181,7 +181,7 @@ describe('setAgentDisplayName', () => {
     ['   ', 'whitespace'],
     [null, 'null'],
     [undefined, 'undefined'],
-  ])('DELETEs the row when the submitted name is %j (%s)', async (name) => {
+  ])('DELETEs the row when the submitted name is %j (%s)', async (name, _description) => {
     const { sql, statements } = fakeWriteSql();
     await expect(
       setAgentDisplayName({ workspaceId: 'ws', ownerId: 'su-a', name, setBy: 'owner', sql }),
