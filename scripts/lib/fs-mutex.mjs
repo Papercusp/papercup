@@ -159,6 +159,52 @@ function ticketId(startedAtMs) {
   return `${String(startedAtMs).padStart(16, '0')}-${process.pid}-${randomUUID()}`;
 }
 
+// EI-21917992245424964: the owner record answered "IS the holder alive?" and nothing about
+// "is the holder WORTH waiting for?". A blocked peer therefore saw {pid, host, startedAt,
+// name} and had to choose between waiting indefinitely and interrupting possibly-critical
+// work — so the safe default was always to wait. Measured 2026-08-30: a peer read "it is
+// progressing, so I will not interrupt it" off a holder that had just entered a ~26-minute
+// leg whose output nobody wanted; resolution needed an out-of-band coord message and the
+// holder happening to be awake to answer it.
+//
+// `intent` is that missing half: a small, caller-supplied, self-describing record carried
+// INSIDE the owner record, so the answer travels with the lock and is readable by anyone
+// who is blocked, with no round-trip and no liveness on the holder's part.
+//
+// Bounded on purpose. This value is written into a file that every waiter reads and that a
+// timeout embeds into an error message, so an unbounded caller value would be a way to make
+// the lock's own diagnostics unreadable — or to break the JSON a waiter parses. Scalars
+// only, key- and length-capped, and anything unrepresentable is DROPPED rather than
+// coerced: a missing field reads as "not declared", which is honest, whereas a coerced
+// "[object Object]" reads as data.
+const INTENT_MAX_KEYS = 12;
+const INTENT_MAX_STRING_CHARS = 200;
+
+function sanitizeIntent(intent) {
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null;
+  const out = {};
+  let kept = 0;
+  for (const [key, value] of Object.entries(intent)) {
+    if (kept >= INTENT_MAX_KEYS) break;
+    if (typeof value === 'string') {
+      if (value.length === 0) continue;
+      out[key] =
+        value.length > INTENT_MAX_STRING_CHARS
+          ? `${value.slice(0, INTENT_MAX_STRING_CHARS)}…`
+          : value;
+    } else if (typeof value === 'number') {
+      if (!Number.isFinite(value)) continue;
+      out[key] = value;
+    } else if (typeof value === 'boolean') {
+      out[key] = value;
+    } else {
+      continue;
+    }
+    kept += 1;
+  }
+  return kept > 0 ? out : null;
+}
+
 /**
  * Reclaim one abandoned WAIT TICKET. Deliberately NOT the same policy as
  * `reclaimAbandonedLock`: a ticket legitimately gets old while its owner is
@@ -282,7 +328,7 @@ async function waitForReaders(
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, intent?: Record<string, string | number | boolean> }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -298,11 +344,15 @@ export async function withFsMutex(name, fn, opts = {}) {
   const staleMs = opts.staleMs ?? intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
   const retryMs = opts.retryMs ?? intEnv('PAPERCUSP_FS_MUTEX_RETRY_MS', DEFAULT_RETRY_MS);
   const startedAt = Date.now();
+  // Nested under its own key rather than merged: a caller can then never shadow `pid` /
+  // `host` / `startedAt`, which are the fields the reclaim path and every waiter trust.
+  const intent = sanitizeIntent(opts.intent);
   const owner = {
     pid: process.pid,
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,
+    ...(intent ? { intent } : {}),
   };
 
   await mkdir(root, { recursive: true });
@@ -519,7 +569,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
  * fail-open error handling).
  *
  * @param {string} name
- * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, name?: string }, lockDir: string }}
+ * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
 export function peekFsMutexSync(name) {
   const lockDir = join(lockRoot(), `${safeName(name)}.lock`);
