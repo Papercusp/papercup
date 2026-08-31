@@ -47,6 +47,12 @@ import {
   type WorkspaceHostCredentialFamily,
   type WorkspaceHostCredentialMaterializer,
 } from './workspace-host-credential-namespace';
+import {
+  NodeWorkspaceHostCredentialDeliveryFilesystem,
+  recordWorkspaceHostCredentialRevocation,
+  workspaceHostCredentialMaterialPath,
+  type WorkspaceHostCredentialDeliveryFilesystem,
+} from './workspace-host-credential-delivery';
 import type {
   WorkspaceHostCloneRepositoryInput,
   WorkspaceHostCreateWorkspaceInput,
@@ -455,17 +461,20 @@ export class ProductionWorkspaceHostCredentialMaterializer
   private readonly system: WorkspaceHostSystem;
   private readonly locate: (binding: WorkspaceHostCredentialBindingDescriptor) => string | null;
   private readonly gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry;
+  private readonly recordRevocation?: (generation: number) => Promise<void>;
 
   constructor(
     family: WorkspaceHostCredentialFamily,
     system: WorkspaceHostSystem,
     locate: (binding: WorkspaceHostCredentialBindingDescriptor) => string | null,
     gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry,
+    recordRevocation?: (generation: number) => Promise<void>,
   ) {
     this.family = family;
     this.system = system;
     this.locate = locate;
     this.gitCredentialBindings = gitCredentialBindings;
+    this.recordRevocation = recordRevocation;
   }
 
   private describe(
@@ -525,6 +534,11 @@ export class ProductionWorkspaceHostCredentialMaterializer
   ): Promise<Readonly<Record<string, unknown>>> {
     const path = this.locate(binding);
     if (path !== null) await this.system.removePath(path);
+    // The ledger is raised BEFORE the in-memory registry is cleared and before success is
+    // reported, because it is the only durable trace that this generation was destroyed. Removing
+    // the file alone leaves "revoked" and "never delivered" indistinguishable on disk, and
+    // delivery would then happily write the material back (D-215 point 5).
+    if (path !== null) await this.recordRevocation?.(binding.generation);
     this.gitCredentialBindings?.revoke(binding);
     return this.describe(binding, false);
   }
@@ -560,7 +574,9 @@ function materialPathFor(
     // bind() pass against a path we created ourselves. Keying on the spec means a fifth family
     // has to declare which it is instead of silently inheriting the wrong branch.
     if (!WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial) return null;
-    return join(root, family, `${binding.generation}`, 'material');
+    // The layout is owned by the delivery module — the writer and this reader must agree on the
+    // path, and two `join` calls that happen to match today are how they stop matching later.
+    return workspaceHostCredentialMaterialPath(root, family, binding.generation);
   };
 }
 
@@ -568,6 +584,7 @@ export function createProductionWorkspaceHostCredentialMaterializers(
   system: WorkspaceHostSystem,
   materialRoot: string = WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT,
   gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry,
+  deliveryFilesystem: WorkspaceHostCredentialDeliveryFilesystem = new NodeWorkspaceHostCredentialDeliveryFilesystem(),
 ): readonly WorkspaceHostCredentialMaterializer[] {
   // Enumerated explicitly rather than mapped over WORKSPACE_HOST_CREDENTIAL_FAMILIES: adding a
   // family should be a decision that lands here deliberately, not one that silently acquires a
@@ -585,6 +602,18 @@ export function createProductionWorkspaceHostCredentialMaterializers(
         system,
         materialPathFor(materialRoot, family),
         gitCredentialBindings,
+        // Only families with an on-host artifact have anything to revoke, so only they carry a
+        // ledger. Passing one for an ambient family would create a revocation record for material
+        // that never existed.
+        WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial
+          ? async (generation: number) =>
+              await recordWorkspaceHostCredentialRevocation(
+                deliveryFilesystem,
+                materialRoot,
+                family,
+                generation,
+              )
+          : undefined,
       ),
   );
 }

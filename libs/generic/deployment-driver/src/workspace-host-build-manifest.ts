@@ -435,6 +435,16 @@ export function verifyWorkspaceHostBuildManifest(
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT =
   "bin/papercusp-remote-initializer";
 
+/**
+ * Bundle-relative path of the credential-delivery executable inside the extracted release.
+ *
+ * Separate from the remote initializer because the two programs have opposite relationships with
+ * secret material (D-215); a bundle carrying one but not the other can initialize a host and then
+ * fail every `git`/`agent` bind on it.
+ */
+export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT =
+  "bin/papercusp-credential-delivery";
+
 /** Bundle-relative PUI generation installed and attested as one immutable release unit. */
 export const WORKSPACE_HOST_PUI_ENTRYPOINT = "bin/pui";
 export const WORKSPACE_HOST_PUI_COMPANION_PATH = "pui-companion.wasm";
@@ -454,6 +464,7 @@ export interface WorkspaceHostRequiredReleaseMaterial {
 export const WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS: readonly WorkspaceHostRequiredReleaseMaterial[] =
   [
     { path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT, executable: true },
+    { path: WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT, executable: true },
     { path: WORKSPACE_HOST_PUI_ENTRYPOINT, executable: true },
     { path: WORKSPACE_HOST_PUI_COMPANION_PATH },
     { path: WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH },

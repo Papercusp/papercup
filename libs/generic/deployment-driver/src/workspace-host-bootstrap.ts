@@ -1,4 +1,5 @@
 import {
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
   WORKSPACE_HOST_PUI_ENTRYPOINT,
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
@@ -311,6 +312,13 @@ export interface WorkspaceHostBootstrapEntrypoints {
    * exactly the silent failure the `remote-initializer` check exists to convert into a loud one.
    */
   remoteInitializer: string;
+  /**
+   * The credential-delivery program the controller spawns to place material on the host. Required
+   * for the same reason `remoteInitializer` is: a bundle without it installs, reports healthy, and
+   * then fails every `git` and `agent` bind at the far end with a message that cannot distinguish
+   * "this host cannot receive material" from "delivery was attempted and lost" (D-215).
+   */
+  credentialDelivery: string;
 }
 
 export const DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS: Readonly<WorkspaceHostBootstrapEntrypoints> =
@@ -327,6 +335,7 @@ export const DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS: Readonly<WorkspaceHos
     codex: 'bin/codex',
     omp: 'bin/omp',
     remoteInitializer: 'bin/papercusp-remote-initializer',
+    credentialDelivery: WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   };
 
 export interface WorkspaceHostBootstrapService {
@@ -712,6 +721,7 @@ export function buildWorkspaceHostBootstrap(
     assignment('CODEX_ENTRYPOINT', entrypoints.codex),
     assignment('OMP_ENTRYPOINT', entrypoints.omp),
     assignment('REMOTE_INITIALIZER_ENTRYPOINT', entrypoints.remoteInitializer),
+    assignment('CREDENTIAL_DELIVERY_ENTRYPOINT', entrypoints.credentialDelivery),
     '',
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
     'die() { log "ERROR: $1" >&2; exit 1; }',
