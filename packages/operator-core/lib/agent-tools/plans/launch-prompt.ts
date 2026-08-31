@@ -228,6 +228,18 @@ export function deriveLaunchPromptText(
   //  · "(C) … executed with the `fleet:launch-on-plan` tool" — sessions 9870/9865
   //    chose C, then never launched (the tool was hidden) or hand-built a broken psu
   //    command; naming the exact verb makes option C real.
+  //  · Option (B) read "hand it to the Mug" until 2026-08-31 (EI-21972876172423322).
+  //    That is the SAME defect as the 9870/9865 case in its terminal form: not an
+  //    unnamed verb, but a nonexistent RECIPIENT. The Mug/Kettle/Cup tier is
+  //    permanently retired — MUG_KETTLE_SYSTEM deleted, `mugKettleSystemEnabled()`
+  //    a constant false, every spawn door and the D-017 actuators refusing — so an
+  //    agent following this text offered the owner a menu whose middle option was a
+  //    fabricated capability, discoverable as such only after they picked it. This
+  //    text is consumed by plans/launch.ts, bootstrap-su.ts AND carry-respawn.ts, so
+  //    it reached essentially every su. (B) is now the ALREADY-RUNNING fleet, which
+  //    is also what makes it genuinely distinct from (C)'s launch-a-NEW-fleet.
+  //    ⚠ Keep every option's recipient and verb REACHABLE — this gate's whole value
+  //    is that the owner's choice can actually be executed the moment they make it.
   // P-004 lean (claude), AUTO-off: plan binding + orient pointer + the routing
   // gate. The routing gate + the named `fleet:launch-on-plan` verb are BEHAVIOR,
   // not tool-usage guards — no absorber landed for them, so they stay in both
@@ -242,7 +254,8 @@ export function deriveLaunchPromptText(
       `\`## Now\` block + the next actionable item (\`plans:get\` ${plansGetArgs(plan)} for ` +
       'the full body). Then, BEFORE doing any work, go through your routing gate: outline ' +
       'the approach and present the execution options — (A) do it yourself, (B) hand it to ' +
-      `the Mug, or (C) ${remoteFleetOptionClause(remoteSeats)} — recommend ` +
+      'an ALREADY-RUNNING fleet (`fleet:assignments` to see if one exists, `coord:dispatch` ' +
+      `to hand it over), or (C) ${remoteFleetOptionClause(remoteSeats)} — recommend ` +
       'one based on the plan size, and confirm with the owner which to use. Do not start ' +
       'editing until they choose.'
     );
@@ -260,7 +273,8 @@ export function deriveLaunchPromptText(
     'route a tool call through `lsp`, do NOT invent an `eval`/`code` tool, and NEVER call MCP ' +
     'tools from INSIDE `eval` (the eval runtime has no `tools` object — that is a NameError). ' +
     'Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
-    'and present the execution options — (A) do it yourself, (B) hand it to the Mug, or (C) ' +
+    'and present the execution options — (A) do it yourself, (B) hand it to an ALREADY-RUNNING ' +
+    'fleet (`fleet:assignments` to see if one exists, `coord:dispatch` to hand it over), or (C) ' +
     `${remoteFleetOptionClause(remoteSeats)} — recommend one based on the ` +
     'plan size, and confirm with the owner which to use. Do not start editing until they choose.';
 }

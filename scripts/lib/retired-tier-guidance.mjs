@@ -69,6 +69,25 @@ export const ACTIVE_RETIRED_GUIDANCE_ROOTS = [
 
 export const ACTIVE_RETIRED_GUIDANCE_FILES = [
   "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+  // WI-1726926 — the same WI-1713506 reasoning as `lib/scout` above, applied to the
+  // three highest-blast-radius prompt BUILDERS in the tree. `deriveLaunchPromptText`
+  // composes the routing-gate kickoff and is consumed by plans/launch.ts, bootstrap-su
+  // AND carry-respawn, so its text reaches essentially every su; the other two compose
+  // the launch/respawn context around it.
+  //
+  // Added because the corpus gap was not hypothetical here: until 2026-08-31 the
+  // routing gate offered "(B) hand it to the Mug" — a retired recipient no agent could
+  // reach — in BOTH profiles, and it survived the tier's entire retirement because
+  // nothing scanned this file (EI-21972876172423322).
+  //
+  // ⚠ ADDED ONLY AFTER MEASURING EACH AT ZERO OFFENDERS. This family has no baseline
+  // by design, so a path admitted while still dirty turns the ~93s gate leg red on
+  // arrival and the guard gets waived instead of obeyed — the exact "earns a baseline,
+  // stops being read" failure comment-stripping was added to avoid. Measure first,
+  // widen second; that ordering is the rule, not a courtesy.
+  "packages/operator-core/lib/agent-tools/plans/launch-prompt.ts",
+  "packages/operator-core/lib/carry-respawn.ts",
+  "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
 ];
 
 /**
