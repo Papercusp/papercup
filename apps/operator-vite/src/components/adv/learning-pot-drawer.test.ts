@@ -26,12 +26,21 @@ import {
 } from '@papercusp/operator-core/lib/learning-governor/core';
 
 import {
+  DEFAULT_SCOUT_BUDGET,
+  resolveScoutBudget,
+} from '@papercusp/operator-core/lib/scout/budget';
+
+import {
+  POT_DRAWER_BUDGET_KEYS,
   POT_DRAWER_SECTION_IDS,
   budgetUnit,
   buildPotDrawer,
   drawerBudget,
+  drawerScoutBudget,
   formatBudget,
   laneSectionId,
+  type PotDrawerBudgetKey,
+  type PotDrawerConfigField,
   type PotDrawerSectionId,
 } from './learning-pot-drawer';
 
@@ -324,5 +333,148 @@ describe('PINS — the model’s assumptions still match the engine (D-009)', ()
     // silently unlabelled number in the pane.
     const kinds = ['lifetime', 'per-cycle'] as const;
     for (const k of kinds) expect(budgetUnit(k)).not.toBe('USD');
+  });
+});
+
+function cfg(fields: PotDrawerConfigField[], key: PotDrawerBudgetKey): PotDrawerConfigField {
+  const found = fields.find((f) => f.field === key);
+  if (!found) throw new Error(`no ${key} field — the model must emit every ScoutBudget key`);
+  return found;
+}
+
+describe('the scout cycle budget is the CONFIG (P-013 / D-011)', () => {
+  it('keeps UNSET and 0 DISTINCT — an empty box is not a zero cap', () => {
+    const unset = cfg(drawerScoutBudget('p', {}), 'maxCostUsd');
+    const zero = cfg(drawerScoutBudget('p', { maxCostUsd: 0 }), 'maxCostUsd');
+
+    expect(unset.value).toBeNull();
+    expect(zero.value).toBe(0);
+
+    // The distinction has to survive into what the pane RUNS and what it SAYS,
+    // not just into the stored value — collapsing either one would switch a
+    // pot's scout spend off while reporting it as a default.
+    expect(unset.effective).toBe(DEFAULT_SCOUT_BUDGET.maxCostUsd);
+    expect(zero.effective).toBe(0);
+    expect(unset.note).not.toBe(zero.note);
+    expect(unset.note).toMatch(/unset/i);
+  });
+
+  it('PIN: the engine keeps 0 for the cost cap and DISCARDS it for the two counts', () => {
+    // This is the whole reason `min` differs per key. resolveScoutBudget runs
+    // the counts through pos() — a 0 there falls back to the default — but the
+    // cost cap through nonneg(), where 0 is honoured (EI-305). A UI offering 0
+    // on a count would offer a value the engine ignores; one refusing 0 on the
+    // cap would hide a real instruction. If the engine changes, this fails here
+    // instead of the pane quietly offering the wrong range.
+    const resolved = resolveScoutBudget({ maxCostUsd: 0, maxIdeators: 0, maxCriticsPerIdea: 0 });
+    expect(resolved.maxCostUsd).toBe(0);
+    expect(resolved.maxIdeators).toBe(DEFAULT_SCOUT_BUDGET.maxIdeators);
+    expect(resolved.maxCriticsPerIdea).toBe(DEFAULT_SCOUT_BUDGET.maxCriticsPerIdea);
+
+    const fields = drawerScoutBudget('p', {});
+    expect(cfg(fields, 'maxCostUsd').min).toBe(0);
+    expect(cfg(fields, 'maxIdeators').min).toBe(1);
+    expect(cfg(fields, 'maxCriticsPerIdea').min).toBe(1);
+  });
+
+  it('emits every ScoutBudget key, and calls only maxCostUsd money', () => {
+    // POT_DRAWER_BUDGET_KEYS is derived from `keyof Required<ScoutBudget>`, so a
+    // new server key becomes a compile error rather than a knob that silently
+    // stops being editable.
+    expect([...POT_DRAWER_BUDGET_KEYS].sort()).toEqual(
+      Object.keys(DEFAULT_SCOUT_BUDGET).sort(),
+    );
+
+    const fields = drawerScoutBudget('p', {});
+    expect(fields).toHaveLength(POT_DRAWER_BUDGET_KEYS.length);
+    expect(cfg(fields, 'maxCostUsd').unit).toMatch(/USD/);
+    // The counts must NOT be labelled in dollars — they are fan-out counts, and
+    // routing them through budgetUnit() would print "USD per cycle" beside a
+    // number of critics.
+    expect(cfg(fields, 'maxIdeators').unit).not.toMatch(/USD/);
+    expect(cfg(fields, 'maxCriticsPerIdea').unit).not.toMatch(/USD/);
+    expect(cfg(fields, 'maxIdeators').integer).toBe(true);
+    expect(cfg(fields, 'maxCostUsd').integer).toBe(false);
+  });
+
+  it('reads engineDefault OFF DEFAULT_SCOUT_BUDGET rather than restating it', () => {
+    for (const f of drawerScoutBudget('p', {})) {
+      expect(f.engineDefault).toBe(DEFAULT_SCOUT_BUDGET[f.field]);
+      expect(f.note).toContain(String(f.engineDefault));
+    }
+  });
+
+  it('treats a junk config as UNSET instead of throwing (D-006)', () => {
+    // The config crosses a sync cache boundary and is user-authored JSON, so
+    // every one of these is reachable at runtime.
+    for (const junk of [null, undefined, 42, 'nope', [], { maxCostUsd: 'free' }, { maxCostUsd: NaN }]) {
+      const f = cfg(drawerScoutBudget('p', junk), 'maxCostUsd');
+      expect(f.value).toBeNull();
+      expect(f.effective).toBe(DEFAULT_SCOUT_BUDGET.maxCostUsd);
+    }
+  });
+
+  it('names the pot it will write, so a write cannot land on another pot', () => {
+    for (const f of drawerScoutBudget('cocoa', {})) {
+      expect(f.write).toEqual({
+        tool: 'hive.overrideSet',
+        potSlug: 'cocoa',
+        section: 'budget',
+        field: f.field,
+      });
+    }
+  });
+});
+
+describe('the blender lane row is a MIRROR, so it is read-only (D-011)', () => {
+  it('offers NO write on a blender: lane, and says why', () => {
+    // The scout tick re-registers this row from the budget config after every
+    // cycle, so an arm/budget write here is reverted — a control that lies.
+    const f = section(buildPotDrawer(arming({ lanes: [lane('blender:p', 'p')] }), 'p'), 'blender')
+      .fields[0]!;
+    expect(f.write).toBeNull();
+    expect(f.readOnlyReason).toBeTruthy();
+    expect(f.readOnlyReason).toMatch(/budget config/i);
+  });
+
+  it('still offers a write on a non-blender lane — this is not a blanket read-only', () => {
+    const f = section(buildPotDrawer(arming({ lanes: [lane('frontier:x', 'p')] }), 'p'), 'frontier')
+      .fields[0]!;
+    expect(f.write).toEqual({ tool: 'governor:arm', loopId: 'frontier:x' });
+    expect(f.readOnlyReason).toBeNull();
+  });
+
+  it('is NEVER empty — the cycle budget is editable before any lane exists', () => {
+    // The pots D-009 measured as owning no lanes at all are exactly the ones
+    // that need to set the budget their FIRST cycle will run under.
+    const blender = section(buildPotDrawer(arming(), 'p'), 'blender');
+    expect(blender.fields).toHaveLength(0);
+    expect(blender.configFields).toHaveLength(POT_DRAWER_BUDGET_KEYS.length);
+    expect(blender.empty).toBe(false);
+  });
+
+  it('still SAYS the pot has no blender lane, now that `empty` cannot carry it', () => {
+    // The empty-state note used to be the only place this was said. It moved
+    // into the live note rather than becoming dead text.
+    const none = section(buildPotDrawer(arming(), 'p'), 'blender');
+    expect(none.note).toMatch(/no blender: lane/i);
+    expect(none.note).toMatch(/still editable/i);
+
+    const some = section(buildPotDrawer(arming({ lanes: [lane('blender:p', 'p')] }), 'p'), 'blender');
+    expect(some.note).not.toMatch(/no blender: lane/i);
+  });
+
+  it('threads the pot config through buildPotDrawer into the section', () => {
+    const model = buildPotDrawer(arming(), 'p', { maxIdeators: 3 });
+    const fields = section(model, 'blender').configFields;
+    expect(cfg(fields, 'maxIdeators').value).toBe(3);
+    expect(cfg(fields, 'maxCostUsd').value).toBeNull();
+  });
+
+  it('puts config fields ONLY where the config applies', () => {
+    const model = buildPotDrawer(arming({ gymPots: [gym('p')] }), 'p');
+    for (const s of model.sections) {
+      expect(s.configFields.length > 0).toBe(s.id === 'blender');
+    }
   });
 });
