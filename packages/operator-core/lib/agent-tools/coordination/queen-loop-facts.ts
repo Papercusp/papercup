@@ -66,4 +66,4 @@ export function withholdQueenLoopControl<T>(
  *  from a responsive caller — never a silent drop (mirrors coord:send's scoped
  *  report). */
 export const QUEEN_LOOP_WITHHELD_REASON =
-  "queen-loop steering (pauseNewWork/maxBees/hive-pause) was withheld from an owner-directed (responsive) session — it governs the queen-bee loop, not your task. Pull live fleet state on demand via pot:get-steering; a fleet is paused only by an explicit fleet:* / owner action.";
+  "legacy queen-loop steering facts (pauseNewWork/maxBees/hive-pause) were withheld from an owner-directed (responsive) session — they govern the RETIRED autonomous placement loop, not your task, and no agent acts on them today. Pull live fleet state on demand via pot:get-steering; a fleet is paused only by an explicit fleet:* / owner action.";

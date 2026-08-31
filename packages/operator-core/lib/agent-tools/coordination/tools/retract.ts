@@ -9,9 +9,17 @@
  * durable retracted-mark, visible "disregard that" delivery, idempotency
  * marker.
  *
- * INVOKER GUARD (v1): the original sender, THEIR fleet's current leader, the
- * queen (mug/kettle pane), or the owner (su pane — the owner-proxy rule).
+ * INVOKER GUARD (v1): the original sender, THEIR fleet's current leader, a
+ * system-authority pane, or the owner (su pane — the owner-proxy rule).
  * Everyone else is refused with nothing written.
+ *
+ * ⚠ The system-authority arm is `classifyRetractInvoker`'s `'queen'` return, and
+ * that literal is a LIVE wire value — do NOT "clean it up" as tier residue.
+ * `classifyAgentPane` maps the presence role `overwatch`/`kettle` to pane kind
+ * `'kettle'` (overwatch/liveness.ts pins `OVERWATCH_ROLE = 'kettle'`), so a live
+ * Overwatch session reaches this arm today. Only the AGENT-FACING prose was
+ * corrected here (WI-1726926): it named a retired executor as the current
+ * authority, which is a different defect from the identifier the code keys on.
  *
  * THE NOTICE IS SENT FROM A SYSTEM PRINCIPAL, deliberately: (a) v1 records no
  * who-acted (per the plan item) — the guard gates the act, the ledger stays
@@ -100,7 +108,7 @@ async function findExistingRetraction(
 export default defineTool({
   name: 'coord:retract',
   description:
-    'Withdraw a coord message you are authorized over: marks it retracted (a durable retraction-notice row — the log is append-only) and delivers the notice to the ORIGINALLY-DELIVERED audience so every recipient sees "disregard that". Read surfaces (coord:inbox, the [coord+N] injection, coord:feed, coord:catch-up, orient folds) then SUPPRESS the retracted message; coord:thread deliberately keeps both (forensics). Invoker must be the original sender, THEIR fleet\'s current leader, the queen, or the owner. Idempotent — retracting an already-retracted message reports alreadyRetracted without a duplicate notice. Pass wake:true to also re-invoke sleeping concrete recipients so they see the retraction NOW (a broadcast audience cannot be woken). v1 records no who-retracted ledger.',
+    'Withdraw a coord message you are authorized over: marks it retracted (a durable retraction-notice row — the log is append-only) and delivers the notice to the ORIGINALLY-DELIVERED audience so every recipient sees "disregard that". Read surfaces (coord:inbox, the [coord+N] injection, coord:feed, coord:catch-up, orient folds) then SUPPRESS the retracted message; coord:thread deliberately keeps both (forensics). Invoker must be the original sender, THEIR fleet\'s current leader, an Overwatch (system-authority) pane, or the owner. Idempotent — retracting an already-retracted message reports alreadyRetracted without a duplicate notice. Pass wake:true to also re-invoke sleeping concrete recipients so they see the retraction NOW (a broadcast audience cannot be woken). v1 records no who-retracted ledger.',
   guidance: {
     when:
       'A sent message is wrong/dangerous and recipients must disregard it — a mistaken directive, a leaked-scope broadcast (the EI-9501 cleanup), superseded instructions.',
@@ -178,7 +186,7 @@ export default defineTool({
           error: 'not_authorized',
           message:
             `coord:retract on ${args.msg_id} refused: only the original sender (${senderOwnerId || 'unknown'}), ` +
-            `their fleet leader, the queen, or the owner may retract a message (H5c, the EI-9501 hardening family). ` +
+            `their fleet leader, an Overwatch (system-authority) pane, or the owner may retract a message (H5c, the EI-9501 hardening family). ` +
             'Nothing was retracted.',
         },
         true,

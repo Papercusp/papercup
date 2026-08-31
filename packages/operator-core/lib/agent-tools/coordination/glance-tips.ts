@@ -101,8 +101,8 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
     render: (c) => ({
       text:
         c.stagedTotal > 0
-          ? `Wake mode is manual — ${plural(c.stagedTotal, 'staged wake')} waiting; the queen won't self-drive. Back to auto:`
-          : `Wake mode is manual — the queen won't self-drive. Back to auto:`,
+          ? `Wake mode is manual — ${plural(c.stagedTotal, 'staged wake')} waiting; agents won't self-drive. Back to auto:`
+          : `Wake mode is manual — agents won't self-drive. Back to auto:`,
       command: '/mcp__papercusp-su__tool:coord:wake-mode mode=auto',
       invoke: { tool: 'coord:wake-mode', args: { mode: 'auto' } },
     }),
