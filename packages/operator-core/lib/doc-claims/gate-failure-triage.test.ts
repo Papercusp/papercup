@@ -8,12 +8,15 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readCorpus, ROOT } from './corpus-subject';
-// The production entrypoint deliberately stays executable by plain Node.
-// @ts-expect-error — .mjs script, no type declarations by design.
 import {
   collectionAttributionMarker,
   evaluateMatch,
   formatProvenanceBanner,
+  // The production entrypoint deliberately stays executable by plain Node, so the .mjs script has
+  // no declaration file. On a MULTI-LINE import the diagnostic lands on the `from` line, not the
+  // `import` line, so the suppression must be the LAST comment line immediately above it — the
+  // same placement the sibling test-file-provenance.test.ts documents.
+  // @ts-expect-error
 } from '../../../../scripts/test-files.mjs';
 
 const HEADING = '## Gate failure triage — re-run named files individually';
