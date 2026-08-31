@@ -50,6 +50,7 @@ import {
   formatStaleFailureSummary,
   AFFECTED_TESTS_STALE_FAILURES_TOKEN,
 } from '../../../../scripts/lib/vitest-summary.mjs';
+// @ts-ignore -- runtime reporter module intentionally tested from TypeScript; see report-cargo-tests.test.ts, which suppresses the same import for the same reason. NOT enrolled in tsconfig.declarations.json: the generated .d.mts infers `never[]` for this module's option bags and adds 10 fresh TS2322/TS2345/TS2353 errors to that sibling (measured 2026-08-31, WI-1615183).
 import { classifyAffectedCargoFailure } from '../../../../scripts/lib/cargo-result.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
