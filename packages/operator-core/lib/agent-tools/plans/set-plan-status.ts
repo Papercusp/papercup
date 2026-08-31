@@ -38,6 +38,7 @@ import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
+import { PLAN_STATUSES } from './parser';
 import {
   recoverHarnessFromSlugs,
   requireUnambiguousSlugScope,
@@ -46,9 +47,11 @@ import {
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
-/** Statuses a caller may guard on via `expectedCurrent` — the full set,
- *  since existing plans can still carry the legacy `active`. */
-const GUARDABLE = ['draft', 'ready', 'active', 'shipped', 'superseded'] as const;
+/** Statuses a caller may guard on via `expectedCurrent` — the parser's full
+ * vocabulary, including the derived `awaiting-acceptance` state and legacy
+ * `active`. Keeping this sourced from PLAN_STATUSES prevents a new lifecycle
+ * state from being writable but impossible to guard against. */
+const GUARDABLE = PLAN_STATUSES;
 /** Caller-DX (watchdog P-006): aliases agents reach for, mapped to the
  *  canonical settable status instead of being zod-rejected. `active` is the
  *  legacy synonym for `ready` (bucketOf treats it as approved). `done` is the
@@ -85,7 +88,7 @@ const argsSchema = z
         "Target plan-level status. Canonical: draft | ready | shipped | superseded. Aliases accepted + mapped: 'active'→ready, 'done'→shipped (the item-status words agents reach for). For a P-NNN item's status use plans:set-status instead.",
       ),
     expectedCurrent: z
-      .enum(GUARDABLE)
+      .enum([...GUARDABLE] as [string, ...string[]])
       .optional()
       .describe(
         'Optional transition guard — only flip if the current status matches. e.g. approve passes `draft` so it never overwrites an already-shipped plan.',

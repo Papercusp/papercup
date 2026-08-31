@@ -71,6 +71,18 @@ describe('normalizePlanStatus (P-006)', () => {
   });
 });
 
+describe('set-plan-status expectedCurrent vocabulary', () => {
+  it('accepts the derived awaiting-acceptance lifecycle state as a guard', () => {
+    const parsed = setPlanStatusTool.args.safeParse({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      status: 'shipped',
+      expectedCurrent: 'awaiting-acceptance',
+    });
+    expect(parsed.success).toBe(true);
+  });
+});
+
 // Sanity that the mapped target actually flips the frontmatter (active→ready writes ready).
 describe('flipPlanFrontmatterStatus with mapped alias', () => {
   it('writes the canonical target from a mapped alias', () => {
