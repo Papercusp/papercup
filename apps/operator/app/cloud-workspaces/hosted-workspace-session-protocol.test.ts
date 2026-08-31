@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { HOSTED_WORKSPACE_MAX_MESSAGE_BYTES } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
 import {
+  HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES,
   HOSTED_WORKSPACE_SESSION_PROTOCOL,
   base64ToBytes,
   base64ToUtf8,
@@ -208,5 +210,97 @@ describe("hosted workspace browser protocol", () => {
         transport: "gcp-iap-ssh",
       }),
     ).toBeNull();
+  });
+
+  it("reads upload limits as a capability, never as a default to assume", () => {
+    expect(
+      parseHostedWorkspaceProtocolMessage({
+        type: "pty.ready",
+        resumed: false,
+        role: "controller",
+        limits: { maxFileBytes: 8388608, maxUploadChunkBytes: 524288 },
+      }),
+    ).toEqual({
+      kind: "ready",
+      resumed: false,
+      role: "controller",
+      limits: { maxFileBytes: 8388608, maxUploadChunkBytes: 524288 },
+    });
+
+    /* A host that predates chunked upload sends no `limits`, and the parse must
+     * leave it ABSENT rather than substituting the current values. Filling it in
+     * would make the client chunk at a host that writes each chunk as a whole
+     * file, leaving only the last one on disk — a silent truncation. */
+    expect(
+      parseHostedWorkspaceProtocolMessage({
+        type: "pty.ready",
+        resumed: false,
+        role: "controller",
+      }),
+    ).toEqual({ kind: "ready", resumed: false, role: "controller" });
+
+    /* Half a capability is not a capability: a partially-readable `limits` is
+     * dropped whole, not merged with assumptions. */
+    for (const limits of [
+      { maxFileBytes: 8388608 },
+      { maxUploadChunkBytes: 524288 },
+      { maxFileBytes: 8388608, maxUploadChunkBytes: 0 },
+      { maxFileBytes: "8388608", maxUploadChunkBytes: 524288 },
+      "not-an-object",
+    ]) {
+      expect(
+        parseHostedWorkspaceProtocolMessage({
+          type: "pty.ready",
+          resumed: false,
+          role: "controller",
+          limits,
+        }),
+      ).toEqual({ kind: "ready", resumed: false, role: "controller" });
+    }
+  });
+
+  it("reads the per-chunk upload ack the client paces on", () => {
+    expect(
+      parseHostedWorkspaceProtocolMessage({
+        type: "file.progress",
+        requestId: "upload-1",
+        uploadId: "up-1",
+        received: 1024,
+        chunks: 2,
+        count: 5,
+      }),
+    ).toEqual({
+      kind: "upload-progress",
+      requestId: "upload-1",
+      uploadId: "up-1",
+      received: 1024,
+      chunks: 2,
+      count: 5,
+    });
+    /* Dropped rather than half-read: the ack is what releases the next chunk,
+     * so acting on an unidentifiable one would advance the wrong upload. */
+    expect(
+      parseHostedWorkspaceProtocolMessage({
+        type: "file.progress",
+        requestId: "upload-1",
+        received: 1024,
+        chunks: 2,
+        count: 5,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the whole-file guard inside the relay envelope it exists to respect", () => {
+    /* PIN, not a restatement (derived-truth ladder rung 2). The client cap is a
+     * second copy of a bound the RELAY owns, so this imports the relay's real
+     * constant and fails if either side drifts. The failure it prevents is
+     * specific: over the envelope the relay CLOSES the browser socket, taking
+     * the terminal down with the upload, so a client cap that no longer fits is
+     * not a rounding error — it is a destroyed session. */
+    const encoded = Math.ceil((HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES * 4) / 3);
+    expect(encoded).toBeLessThan(HOSTED_WORKSPACE_MAX_MESSAGE_BYTES);
+    /* And it must leave room for the JSON envelope around the payload (type,
+     * requestId, path, encoding), not merely squeak under the raw cap. */
+    expect(HOSTED_WORKSPACE_MAX_MESSAGE_BYTES - encoded).toBeGreaterThan(4096);
   });
 });
