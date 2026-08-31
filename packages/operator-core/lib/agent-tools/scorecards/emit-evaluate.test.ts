@@ -55,6 +55,7 @@ import { getIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
 import { emitScorecard, scorecardEmitArgs } from './emit';
 import { evaluateScorecard } from './evaluate';
+import { collapseCriticsToSoleParty } from './grader-eligibility';
 
 const getRubricM = vi.mocked(getRubric);
 const getRubricPlanRevisionM = vi.mocked(getRubricPlanRevision);
@@ -984,5 +985,163 @@ describe('evaluateScorecard', () => {
     expect(r.ok).toBe(false);
     expect((r as { skeleton?: unknown }).skeleton).toBeDefined();
     expect((r as { instrumentContract?: unknown }).instrumentContract).toBeDefined();
+  });
+});
+
+describe('acceptance-grader eligibility is answerable BEFORE the grading work (EI-21974075442192005)', () => {
+  // The rails are pure identity facts, so the only thing that made them expensive
+  // was WHERE they were reachable: a launched reviewer completed a full independent
+  // pass — re-running both bound suites, verifying every claimed repair, writing
+  // evidence strings for seven criteria — and learned at the terminal emit that it
+  // could never file the result. Each test below pins the PRE-FLIGHT answer AND the
+  // refusal it predicts in the same case: an advisory that drifts from its rail is
+  // the failure this module exists to prevent (WI-905074 widened the refusal and
+  // left the advisory speaking for it on the old narrow test).
+  const vettingCard = (critics: string[]) =>
+    ({
+      issueId: 'EI-vetting',
+      createdAt: '2026-08-25T21:00:12Z',
+      createdBy: 'su-vetting-author',
+      rubricRef: 'meta-acceptance-rubric',
+      subject: { kind: 'rubric', ref: 'acceptance-rubric' },
+      ratings: RATINGS,
+      nKeys: 2,
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      synthesized: false,
+      score10: 10,
+      linkedItems: [],
+      vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 1, critics },
+    }) as unknown as ScorecardRow;
+
+  it('the sole vetting critic is told it is disqualified by the PRE-FLIGHT, with the same code emit refuses with', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    listM.mockResolvedValue([vettingCard(['su-critic'])]);
+
+    const preflight = await evaluateScorecard(
+      { rubricRef: 'acceptance-rubric' },
+      { id: 'su-critic', workspaceId: 'ws' },
+    );
+    expect(preflight).toMatchObject({
+      ok: true,
+      graderEligibility: {
+        role: 'disqualified',
+        blocksEmit: true,
+        canEmitGrading: false,
+        refusal: { code: 'grader_is_sole_vetting_critic' },
+      },
+    });
+    // The pre-flight still returns the skeleton: a disqualified reviewer's useful
+    // next act is handing it to the replacement grader.
+    expect((preflight as { skeleton?: unknown[] }).skeleton).toHaveLength(2);
+
+    // …and it agrees with the surface that actually refuses.
+    const emitted = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-critic' },
+    );
+    expect(emitted).toMatchObject({ ok: false, code: 'grader_is_sole_vetting_critic' });
+  });
+
+  it('a grader inside the implementer lineage is refused by the pre-flight too, not only by emit', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    lineageRelatedM.mockImplementation(
+      async (author, candidate) =>
+        author === candidate || (author === 'su-implementer' && candidate === 'su-relative'),
+    );
+
+    const preflight = await evaluateScorecard(
+      { rubricRef: 'acceptance-rubric' },
+      { id: 'su-relative', workspaceId: 'ws' },
+    );
+    expect(preflight).toMatchObject({
+      graderEligibility: {
+        role: 'disqualified',
+        blocksEmit: true,
+        refusal: { code: 'grader_in_implementer_lineage' },
+      },
+    });
+    await expect(
+      emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-relative' }),
+    ).resolves.toMatchObject({ ok: false, code: 'grader_in_implementer_lineage' });
+  });
+
+  it('an eligible independent grader is told so — the pre-flight is not a blanket warning', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    listM.mockResolvedValue([vettingCard(['su-critic'])]);
+
+    const preflight = await evaluateScorecard(
+      { rubricRef: 'acceptance-rubric' },
+      { id: 'su-someone-else', workspaceId: 'ws' },
+    );
+    expect(preflight).toMatchObject({
+      graderEligibility: { role: 'independent-grader', canEmitGrading: true, blocksEmit: false },
+    });
+  });
+
+  it('the rubric author is told it records the acceptance verdict, not the grading', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+
+    const preflight = await evaluateScorecard(
+      { rubricRef: 'acceptance-rubric' },
+      { id: 'su-implementer', workspaceId: 'ws' },
+    );
+    expect(preflight).toMatchObject({
+      graderEligibility: {
+        role: 'acceptance-author',
+        canEmitGrading: false,
+        blocksEmit: false,
+        implementer: 'su-implementer',
+      },
+    });
+  });
+
+  it('a NON-acceptance rubric, and a caller-less call, report null rather than a guess', async () => {
+    getRubricM.mockResolvedValue(RUBRIC);
+    await expect(
+      evaluateScorecard({ rubricRef: 'test-rubric' }, { id: 'su-anyone', workspaceId: 'ws' }),
+    ).resolves.toMatchObject({ graderEligibility: null });
+
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    await expect(evaluateScorecard({ rubricRef: 'acceptance-rubric' })).resolves.toMatchObject({
+      graderEligibility: null,
+    });
+  });
+
+  it('an unresolvable eligibility read reports `unknown` and explicitly denies clearance', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    readRubricPlanRevisionM.mockRejectedValue(new Error('pg down'));
+
+    const preflight = await evaluateScorecard(
+      { rubricRef: 'acceptance-rubric' },
+      { id: 'su-someone-else', workspaceId: 'ws' },
+    );
+    expect(preflight).toMatchObject({
+      ok: true,
+      graderEligibility: { role: 'unknown', canEmitGrading: false },
+    });
+    // The wording matters: silence from a pre-flight reads as permission.
+    expect(
+      (preflight as { graderEligibility: { advice: string } }).graderEligibility.advice,
+    ).toContain('NOT a clearance');
+  });
+});
+
+describe('collapseCriticsToSoleParty — the predicate the refusal and its advisory share', () => {
+  it('collapses a lone critic, and a longer list that is all one lineage', async () => {
+    await expect(collapseCriticsToSoleParty(['su-a'], { workspaceId: 'ws' })).resolves.toBe('su-a');
+    await expect(
+      collapseCriticsToSoleParty(['su-a', 'su-a-rebound'], {
+        workspaceId: 'ws',
+        lineageRelated: (async (x: string | null, y: string | null) =>
+          x === y || (x === 'su-a-rebound' && y === 'su-a')) as typeof areAcceptanceLineageRelated,
+      }),
+    ).resolves.toBe('su-a');
+  });
+
+  it('does NOT collapse two genuinely independent critics — that vetting preserved the three-party chain', async () => {
+    await expect(collapseCriticsToSoleParty(['su-a', 'su-b'], { workspaceId: 'ws' })).resolves.toBeNull();
+    await expect(collapseCriticsToSoleParty([], { workspaceId: 'ws' })).resolves.toBeNull();
   });
 });
