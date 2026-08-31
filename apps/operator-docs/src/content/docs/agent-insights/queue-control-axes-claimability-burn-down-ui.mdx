@@ -11,18 +11,16 @@ discovered: 2026-08-27
 tags: ["work-items", "claimability", "scheduler", "burn-down", "fleet", "tui", "queue-control"]
 status: active
 documents:
-  - "work_items:claimable"
-  - "scheduler:get_next"
-  - "work_items:burn_down"
-  - "fleet TUI frontier"
+  - packages/operator-core/lib/agent-tools/work_items/claimable.ts
+  - packages/operator-core/lib/agent-tools/scheduler/get_next.ts
+  - packages/operator-core/lib/agent-tools/work_items/burn_down.ts
 plans:
   - "work-queue-admission-and-bulk-dedup-2026-08-24"
 normative: true
 governs:
-  - "work_items:claimable"
-  - "scheduler:get_next"
-  - "work_items:burn_down"
-  - "fleet TUI frontier"
+  - packages/operator-core/lib/agent-tools/work_items/claimable.ts
+  - packages/operator-core/lib/agent-tools/scheduler/get_next.ts
+  - packages/operator-core/lib/agent-tools/work_items/burn_down.ts
 ---
 
 An `open` work item can simultaneously be actively claimed, protected by a hold-open lease, durably parked, and waiting for agent review. Those are independent queue-control axes, not mutually exclusive lifecycle states. Read them separately before deciding that a queue is drained, stuck, or ready.

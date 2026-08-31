@@ -124,6 +124,29 @@ export const ACK_MARKER = /^[ \t]*--[ \t]*FORWARD-COMPAT:[ \t]*\S/im;
 
 const RULES = [
   {
+    // KNOWN, ACCEPTED false positive: capture-drop-REBUILD. Widening a pgvector
+    // column requires dropping and rebuilding its HNSW/IVFFlat index in the same
+    // DO block (the index is bound to the column's dimensionality), so this static
+    // scan sees the DROP without its paired rebuild. EI-19407054630567497 proposed
+    // teaching the rule to recognise that shape. DECLINED after measurement —
+    // recorded here, not only in the closed item, because this is where the next
+    // agent arrives:
+    //   1. Shape-detection trades certainty for inference in a LOAD-BEARING safety
+    //      rule. This guards EI-18797473716313783, where a dropped ON CONFLICT
+    //      arbiter broke facts:assert fleet-wide for ~3h. A false NEGATIVE here
+    //      costs far more than the false positive it would remove.
+    //   2. The false positive now costs one line, not an incident. Since the
+    //      edit-time nudge hook landed (2026-08-03T20:12Z, EI-19462877357083817)
+    //      the author is prompted BEFORE commit: mig 727 (pre-hook) red-pinned the
+    //      fleet gate and took 5 commits to settle; mig 847 (post-hook, the ONLY
+    //      recurrence since) carried the marker in its first commit — 1 commit,
+    //      zero gate impact.
+    //   3. Base rate, measured 2026-08-31: of 327 migrations >= 693, 15 contain
+    //      DROP INDEX and 15/15 are acknowledged (14 inline, 1 sidecar). None
+    //      unacknowledged. This is not a costly recurring class.
+    // Acknowledge a genuine capture-drop-rebuild with `-- FORWARD-COMPAT: <why>`,
+    // or a sidecar .forward-compat.json when the migration is ALREADY APPLIED and
+    // editing it would trip migration-drift. Do NOT relax this regex.
     id: 'drop-index',
     re: /\bDROP\s+INDEX\b/i,
     why: 'drops an index the deployed release may be relying on as an ON CONFLICT arbiter (this is exactly EI-18797473716313783)',
