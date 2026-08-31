@@ -285,7 +285,12 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
 
     const it_ = h.out.find((m) => m.kind === 'input_transcript');
     expect(it_).toMatchObject({ kind: 'input_transcript', text: 'what is the status', final: true });
-    expect(h.deps.persistTurn).toHaveBeenCalledWith('user', 'what is the status', 'el_42');
+    expect(h.deps.persistTurn).toHaveBeenCalledWith(
+      'op_conv_1',
+      'user',
+      'what is the status',
+      'el_42',
+    );
     expect(lastState(h.out)?.status).toBe('listening');
   });
 
@@ -307,7 +312,7 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
       text: '<say>on it</say><set_mode>passive</set_mode>',
     });
     expect(h.out.find((m) => m.kind === 'response_tag')).toMatchObject({ kind: 'response_tag', tag: 'set_mode', value: 'passive' });
-    expect(h.deps.persistTurn).toHaveBeenCalledWith('assistant', 'on it', 'el_7');
+    expect(h.deps.persistTurn).toHaveBeenCalledWith('op_conv_1', 'assistant', 'on it', 'el_7');
   });
 
   it('answers a ping with a pong on the EL socket', async () => {
@@ -325,7 +330,7 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
     h.getEl().push({ type: 'user_transcript', user_transcription_event: { user_transcript: 'how goes it' } });
     await flush();
     expect(h.deps.relayToBrain).toHaveBeenCalledWith('how goes it');
-    expect(h.deps.persistTurn).toHaveBeenCalledWith('user', 'how goes it', null);
+    expect(h.deps.persistTurn).toHaveBeenCalledWith('op_conv_1', 'user', 'how goes it', null);
   });
 
   it('acks an ask_operator tool call instantly with the relay ack (D-002)', async () => {

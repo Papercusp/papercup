@@ -1,8 +1,8 @@
 /**
- * P-002 integration proof: the voice router's owner-continuity dependency is
- * the production operator-conversations store, exercised against real
- * Postgres. Unit fakes can prove which dependency is called; this suite proves
- * that repeated local and Phone turns resolve the same persisted active row.
+ * P-002/P-004 integration proof: the voice router and hosted-session
+ * persistence use the production operator-conversations store against real
+ * Postgres. Unit fakes prove which dependency is called; this suite proves
+ * typed, hosted-voice, and Phone turns retain one server-selected owner thread.
  */
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -31,8 +31,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
-const { getOrCreateActiveConversation } = await import('./operator-conversations');
+const { appendTurn, getOrCreateActiveConversation } = await import('./operator-conversations');
 const { createVoiceTurnRouter } = await import('./voice-turn-router');
+const { createOperatorVoiceSessionDeps } = await import('./voice-node/operator-voice-session-deps');
 
 const owner = {
   kind: 'owner',
@@ -70,6 +71,21 @@ beforeAll(async () => {
       ended_at bigint,
       el_conversation_ids text[] DEFAULT '{}' NOT NULL,
       has_audio boolean DEFAULT false NOT NULL
+    );
+    CREATE TABLE harness_shared.operator_turns (
+      id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY,
+      conversation_id uuid NOT NULL REFERENCES harness_shared.operator_conversations(id) ON DELETE CASCADE,
+      seq integer NOT NULL,
+      role text NOT NULL,
+      text text NOT NULL,
+      source text DEFAULT 'text_typed' NOT NULL,
+      el_conv_id text,
+      audio_url text,
+      created_at bigint NOT NULL,
+      tools jsonb,
+      report jsonb,
+      workspace_id text NOT NULL,
+      CONSTRAINT operator_turns_conv_seq UNIQUE (conversation_id, seq)
     );
   `);
   await rootSql.unsafe(
@@ -136,5 +152,90 @@ describe('voice-turn router owner continuity (real operator-conversation store)'
          AND subject_ref IS NULL
          AND status = 'active'`;
     expect(rows).toEqual([{ id: persisted.id }]);
+  });
+
+  it('keeps typed → hosted voice → typed turns on the session-pinned conversation with ordered metadata', async () => {
+    const workspaceId = `${WORKSPACE_ID}-hosted-continuity`;
+    const pinned = await getOrCreateActiveConversation(workspaceId);
+
+    await appendTurn({
+      conversationId: pinned.id,
+      role: 'user',
+      text: 'typed before voice',
+      source: 'text_typed',
+    });
+
+    // Rotate the workspace's active row after the hosted session loaded its id.
+    // Re-resolving "active" during persistence would now split voice turns into
+    // this replacement thread; a session-pinned writer must ignore the drift.
+    await rootSql`
+      UPDATE harness_shared.operator_conversations
+         SET status = 'done', ended_at = ${Date.now()}
+       WHERE id = ${pinned.id}`;
+    const replacement = await getOrCreateActiveConversation(workspaceId);
+    expect(replacement.id).not.toBe(pinned.id);
+
+    const hostedDeps = createOperatorVoiceSessionDeps(() => {});
+    await hostedDeps.persistTurn(pinned.id, 'user', 'spoken question', 'el-p004');
+    await hostedDeps.persistTurn(pinned.id, 'assistant', 'spoken answer', 'el-p004');
+    await appendTurn({
+      conversationId: pinned.id,
+      role: 'user',
+      text: 'typed after voice',
+      source: 'text_typed',
+    });
+
+    const turns = await rootSql<{
+      conversation_id: string;
+      seq: number;
+      role: string;
+      text: string;
+      source: string;
+      el_conv_id: string | null;
+    }[]>`
+      SELECT conversation_id, seq, role, text, source, el_conv_id
+        FROM harness_shared.operator_turns
+       WHERE conversation_id = ${pinned.id}
+       ORDER BY seq`;
+    expect(turns).toEqual([
+      {
+        conversation_id: pinned.id,
+        seq: 0,
+        role: 'user',
+        text: 'typed before voice',
+        source: 'text_typed',
+        el_conv_id: null,
+      },
+      {
+        conversation_id: pinned.id,
+        seq: 1,
+        role: 'user',
+        text: 'spoken question',
+        source: 'voice_stt',
+        el_conv_id: 'el-p004',
+      },
+      {
+        conversation_id: pinned.id,
+        seq: 2,
+        role: 'assistant',
+        text: 'spoken answer',
+        source: 'voice_tts',
+        el_conv_id: 'el-p004',
+      },
+      {
+        conversation_id: pinned.id,
+        seq: 3,
+        role: 'user',
+        text: 'typed after voice',
+        source: 'text_typed',
+        el_conv_id: null,
+      },
+    ]);
+
+    const replacementTurns = await rootSql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.operator_turns
+       WHERE conversation_id = ${replacement.id}`;
+    expect(replacementTurns).toEqual([{ count: 0 }]);
   });
 });

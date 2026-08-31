@@ -111,8 +111,13 @@ export interface OperatorVoiceSessionDeps {
   relayToBrain(text: string): Promise<BrainRelayResult>;
   /** The shared operator conversation id (D-005) — voice turns persist into it. */
   loadConversationId(): Promise<string | null>;
-  /** Persist one turn into the shared thread (host is the SOLE writer → once). */
-  persistTurn(role: 'user' | 'assistant', text: string, elConvId: string | null): Promise<void>;
+  /** Persist one turn into the session-pinned shared thread (host is the SOLE writer → once). */
+  persistTurn(
+    conversationId: string | null,
+    role: 'user' | 'assistant',
+    text: string,
+    elConvId: string | null,
+  ): Promise<void>;
   /** Parse an agent utterance for spoken text + control tags. */
   parseUtterance(raw: string): { say: string | null; setMode: string | null };
   claimLease(playerId: string, kind: VoiceClientKind, force: boolean): Promise<boolean>;
@@ -444,7 +449,7 @@ export class OperatorVoiceSession {
           executor: 'papercup-hosted',
         });
         this.deps.broadcast(encodeInputTranscript({ text: t, final: true }));
-        void this.deps.persistTurn('user', t, this.elConversationId);
+        void this.deps.persistTurn(this.opConversationId, 'user', t, this.elConversationId);
         // ONE-BRAIN RELAY (D-001): hand the utterance to the Sentinel pane
         // deterministically, in OUR code — never dependent on whether the EL
         // agent's LLM decides to call its tool. Fire-and-forget; the ack path
@@ -469,7 +474,7 @@ export class OperatorVoiceSession {
             this.canonicalAdapter?.assistantSentence(spoken);
             this.canonicalAdapter?.complete();
           }
-          void this.deps.persistTurn('assistant', spoken, this.elConversationId);
+          void this.deps.persistTurn(this.opConversationId, 'assistant', spoken, this.elConversationId);
         }
         return;
       }

@@ -169,14 +169,18 @@ async function loadConversationId(): Promise<string | null> {
 }
 
 async function persistTurn(
+  conversationId: string | null,
   role: TurnRole & ('user' | 'assistant'),
   text: string,
   elConvId: string | null,
 ): Promise<void> {
   try {
-    const conv = await getOrCreateActiveConversation();
+    const pinnedConversationId = conversationId?.trim();
+    if (!pinnedConversationId) {
+      throw new Error('hosted voice session has no pinned operator conversation id');
+    }
     await appendTurn({
-      conversationId: conv.id,
+      conversationId: pinnedConversationId,
       role,
       text,
       source: role === 'user' ? 'voice_stt' : 'voice_tts',
@@ -185,7 +189,7 @@ async function persistTurn(
     // Without this the turn is stored but no open chat pane refetches — the
     // user only sees it after an unrelated invalidate/reload (WI-4838 C).
     const { notifySyncInvalidate } = await import('../sync-sse');
-    void notifySyncInvalidate('operatorTurns.page', { conversationId: conv.id })
+    void notifySyncInvalidate('operatorTurns.page', { conversationId: pinnedConversationId })
       .catch(() => { /* best-effort */ });
   } catch (err) {
     console.warn('[voice-host] persist turn failed:', (err as Error)?.message ?? err);
