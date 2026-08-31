@@ -54,7 +54,9 @@ export function guidanceTextFor(relativeFile, source) {
     text = source;
   }
   return blankDomainTermCollisions(
-    blankImportSpecifiers(blankRoleConfigKeys(blankRoleAllowlistArrays(text))),
+    blankImportSpecifiers(
+      blankRoleAuthorizationLists(blankRoleConfigKeys(blankRoleAllowlistArrays(text))),
+    ),
   );
 }
 
@@ -191,6 +193,34 @@ function blankRoleConfigKeys(text) {
   while ((match = KEY_CLAUSE_RE.exec(text)) !== null)
     blankQuotedRoles(match[0], match.index);
 
+  return chars.join("");
+}
+
+/**
+ * A role list in an authorization-denial message is access-control data, not a
+ * prescription to route work through one of those roles.
+ *
+ * The shared `isOperatorConfigWriteRole` predicate intentionally includes the
+ * operator-equivalent Mug, so its denial text names `operator, architect, or mug`.
+ * The detector previously combined that value with unrelated executable code in
+ * the same tool segment and reported a false positive in four agent-tools files.
+ * Keep this narrower than a blanket role-token pass: only the role at the end of
+ * the exact operator-config authorization list is blanked. A real prescription
+ * elsewhere in the same clause remains visible. Blanking is length-preserving,
+ * so reported line numbers stay exact.
+ */
+function blankRoleAuthorizationLists(text) {
+  const AUTHORIZATION_LIST_RE =
+    /\brequires\s+(?:an\s+)?operator-config\s+write\s+role\s*\(\s*operator\s*,\s*architect\s*,\s*or\s*(queen|mug|kettle)\b/gi;
+  const chars = text.split("");
+  AUTHORIZATION_LIST_RE.lastIndex = 0;
+  for (const match of text.matchAll(AUTHORIZATION_LIST_RE)) {
+    const role = match[1];
+    const roleOffset = match[0].toLowerCase().lastIndexOf(role.toLowerCase());
+    if (roleOffset < 0) continue;
+    const start = (match.index ?? 0) + roleOffset;
+    for (let i = start; i < start + role.length; i += 1) chars[i] = " ";
+  }
   return chars.join("");
 }
 

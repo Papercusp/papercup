@@ -206,6 +206,52 @@ describe('quoted role config keys are data, not guidance', () => {
   });
 });
 
+describe('authorization role lists are access-control data, not guidance', () => {
+  const offenders = (file: string, source: string) =>
+    findRetiredGuidanceOffenders(file, guidanceTextFor(file, source));
+
+  it('does not flag the shared operator-config authorization-denial shape', () => {
+    expect(
+      offenders(
+        't.ts',
+        `const policy = 'the migrator uses this policy'; throw new Error('requires an operator-config write role (operator, architect, or mug; the shared predicate is authoritative)');`,
+      ),
+    ).toEqual([]);
+    expect(
+      offenders(
+        't.ts',
+        `const policy = 'the runner uses this policy'; throw new Error('requires an operator-config write role (operator, architect, or kettle role)');`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('still flags a real prescription adjacent to the authorization list', () => {
+    expect(
+      offenders(
+        't.ts',
+        `const d = 'requires an operator-config write role (operator, architect, or mug); the Mug dispatches work.';`,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('does not turn an ordinary role mention into an authorization exemption', () => {
+    expect(offenders('t.ts', `const d = 'The Mug dispatches work; it requires the operator.';`).length).toBeGreaterThan(0);
+  });
+
+  it('does not turn a markdown example into a code exemption', () => {
+    expect(
+      offenders('t.md', 'requires an operator-config write role (operator, architect, or mug); the Mug dispatches work.'),
+    ).toHaveLength(1);
+  });
+
+  it('preserves length and line positions', () => {
+    const source = `const e = 'requires an operator-config write role (operator, architect, or mug)';\nconst d = 'The Mug dispatches work.';\n`;
+    const normalized = guidanceTextFor('t.ts', source);
+    expect(normalized).toHaveLength(source.length);
+    expect(offenders('t.ts', source).map((o: { line: number }) => o.line)).toEqual([2]);
+  });
+});
+
 /**
  * WI-1726926 — `red-queen` is a DOMAIN TERM (the arms-race hypothesis the gym's
  * adversarial drills and the learning governor are named after), and `\bqueen\b`
