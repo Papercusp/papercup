@@ -27,6 +27,7 @@ import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../.
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { crossCheckLaunchVerification, buildOwnerActivityReader } from '../../fleet/launch-verification-cross-check';
 import { fleetEverMembers } from '../../fleet-membership-store';
 import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
@@ -328,6 +329,13 @@ export default defineTool({
       .describe(
         'Optional harness slug for progress reporting. When provided, the result includes `completionStats` so genuine completions are separated from dedup/unverified terminal rows.',
       ),
+    workspace: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Workspace holding the fleet. Defaults to the caller\'s own workspace, which is right for nearly every call. Pass it only to read a fleet in a DIFFERENT workspace — fleet slugs are unique per workspace, not globally, so the default cannot reach one filed elsewhere.',
+      ),
   }),
   // Context-trimming tiers keep the supervision decision core while bounding
   // the roster. Full-tier callers retain the lossless handler response.
@@ -336,11 +344,26 @@ export default defineTool({
     trimmed: (data) => shapeFleetStatus(data, 'trimmed'),
   },
   async handler(args, ctx) {
-    const { workspaceId } = resolveFleetCaller(ctx);
+    // EI-21934696112365508: a fleet slug is unique PER WORKSPACE, not globally
+    // (`getFleet` is a `workspace_id = $1 AND fleet_slug = $2` equality read), so a
+    // caller whose workspace differs from the fleet's had no way to name the one it
+    // meant — every sibling `fleet/`-family read already takes this override. An
+    // explicit `workspace` wins; otherwise the caller's own workspace is used, with
+    // `resolveConcreteWorkspaceId` absorbing the unscoped-su '*' sentinel (EI-13820).
+    const { workspaceId: callerWorkspaceId } = resolveFleetCaller(ctx);
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, callerWorkspaceId);
     const fleet = await getFleet(workspaceId, args.fleet);
     if (!fleet) {
+      // Name the workspace actually searched: "not in this workspace" is unactionable
+      // when the caller cannot see which workspace "this" resolved to.
       return json(
-        { ok: false, error: `no fleet '${args.fleet}' in this workspace — see fleet:list` },
+        {
+          ok: false,
+          error:
+            `no fleet '${args.fleet}' in workspace '${workspaceId}' — see fleet:list. ` +
+            `If it belongs to a different workspace, pass { workspace } to read it there.`,
+          workspaceSearched: workspaceId,
+        },
         true,
       );
     }

@@ -44,7 +44,22 @@ vi.mock('../../fleet-membership-store', () => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: (...a: unknown[]) => h.resolveAgentIdentity(...a),
 }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
+// Mirrors the real resolveConcreteWorkspaceId contract (workspace-registry.ts): the
+// first CONCRETE candidate wins, the unscoped '*' sentinel is skipped rather than
+// passed into a workspace_id equality filter, and an all-empty list falls back to the
+// active workspace.
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'ws',
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) => {
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (trimmed && trimmed !== '*') return trimmed;
+      }
+    }
+    return 'ws';
+  },
+}));
 
 import statusTool, {
   classifyLaunchTransactionUnconfirmedMembers,
@@ -668,5 +683,88 @@ describe('fleet:status payload-tier shaping', () => {
       trimmed: expect.any(Function),
       standard: expect.any(Function),
     });
+  });
+});
+
+/**
+ * EI-21934696112365508 — fleet:status could not name the workspace it meant.
+ *
+ * `getFleet` is a `workspace_id = $1 AND fleet_slug = $2` equality read and fleet
+ * slugs are unique PER WORKSPACE, not globally (observed live: `p2p-release` exists
+ * in both `default` and `papercusp-workspace`; `citations-sweep` only in `papercusp`).
+ * The tool accepted only { fleet, harness }, so a caller whose workspace differed
+ * from the fleet's was stranded — `citations-sweep` was `active` and unreachable,
+ * with no argument that could reach it — while every sibling `fleet/`-family read
+ * (assignments, leader-brief, bench, kill, tree, ...) already took a `workspace`
+ * override. The original report surfaced as a hard `invalid_args` reject.
+ */
+describe('fleet:status workspace targeting (EI-21934696112365508)', () => {
+  it("accepts an explicit workspace and reads the fleet THERE, not in the caller's", async () => {
+    // The caller sits in 'ws'; the fleet it names lives in another workspace.
+    h.getFleet.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'other-ws'
+        ? { workspaceId: 'other-ws', fleetSlug: 'rocket', title: 'Elsewhere', leaderOwnerId: null }
+        : null,
+    );
+
+    const res = parse(await invoke({ fleet: 'rocket', workspace: 'other-ws' })) as {
+      ok?: boolean;
+      slug?: string;
+    };
+
+    // The read must be issued against the REQUESTED workspace...
+    expect(h.getFleet).toHaveBeenCalledWith('other-ws', 'rocket');
+    // ...and must not silently fall back to the caller's own.
+    expect(h.getFleet).not.toHaveBeenCalledWith('ws', 'rocket');
+    expect(res.ok).not.toBe(false);
+    expect(res.slug).toBe('rocket');
+  });
+
+  it("defaults to the caller's workspace when none is passed", async () => {
+    await invoke({ fleet: 'rocket' });
+    expect(h.getFleet).toHaveBeenCalledWith('ws', 'rocket');
+  });
+
+  it('declares workspace as an OPTIONAL arg the schema actually admits', () => {
+    // The filed failure was a hard invalid_args reject: undeclared args are rejected,
+    // never ignored, so the arg has to exist on the schema for any of the above to hold.
+    const schema = (
+      statusTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }
+    ).args;
+    expect(schema.safeParse({ fleet: 'rocket', workspace: 'other-ws' }).success).toBe(true);
+    expect(schema.safeParse({ fleet: 'rocket' }).success).toBe(true);
+  });
+
+  it('names the workspace it searched when the fleet is absent', async () => {
+    h.getFleet.mockResolvedValue(null);
+
+    const res = parse(await invoke({ fleet: 'citations-sweep', workspace: 'papercusp' })) as {
+      ok?: boolean;
+      error?: string;
+      workspaceSearched?: string;
+    };
+
+    expect(res.ok).toBe(false);
+    // "not in this workspace" is unactionable when the caller cannot see which
+    // workspace "this" resolved to — the miss must name it, and say how to retarget.
+    expect(res.workspaceSearched).toBe('papercusp');
+    expect(res.error).toContain('papercusp');
+    expect(res.error).toContain('workspace');
+  });
+
+  it("skips the unscoped-su '*' sentinel rather than querying for it (EI-13820)", async () => {
+    // An unscoped su session's identity echoes ctx.workspaceId verbatim, and that is
+    // the literal '*' — which no real row matches, so it must never reach the filter.
+    h.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-test', workspaceId: '*' });
+    h.getFleet.mockResolvedValue(null);
+
+    await (
+      statusTool as unknown as {
+        handler: (a: unknown, c: unknown) => Promise<unknown>;
+      }
+    ).handler({ fleet: 'rocket' }, { workspaceId: '*', role: 'operator' } as never);
+
+    expect(h.getFleet).toHaveBeenCalledWith('ws', 'rocket');
+    expect(h.getFleet).not.toHaveBeenCalledWith('*', 'rocket');
   });
 });
