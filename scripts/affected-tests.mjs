@@ -829,13 +829,29 @@ const repoWideGuardBase = repoWideGuardBaseSha ?? repoWideGuardBaseRef;
 // strand guards. Expand an explicit path against the complete present tree before
 // using it for either purpose. A unique suffix match is the normal case; ambiguous
 // matches are conservatively expanded so the probe cannot silently under-select.
-const explicitPathCorpus = (() => {
+//
+// LAZY ON PURPOSE — do not collapse this back to an eagerly-evaluated IIFE.
+// Building the corpus costs a measured 387ms: `listFilesIncludingUntracked` spawns
+// git once for the superproject and once per declared submodule (39 spawns here) to
+// enumerate 33,307 paths. That was ~49% of the CLI's entire 790ms startup, and it was
+// paid on EVERY invocation — including the two cases that never read it:
+//   • a git-diff run (no --changed-paths at all), where `changedPathsOverride` short-
+//     circuits to null and normalizeExplicitChangedPath is never called; and
+//   • the common explicit-path case, where `existsSync` below succeeds and the `||`
+//     short-circuits before the corpus is ever touched.
+// Only an unresolvable path (the basename-expansion case this corpus exists for) now
+// pays for it, once. Measured on the repo-wide-invariant-guards suite, whose 71 `--dry`
+// probes are pure CLI startup: 73.3s -> 45.9s (-37.4%).
+let explicitPathCorpusCache = null;
+function explicitPathCorpus() {
+  if (explicitPathCorpusCache !== null) return explicitPathCorpusCache;
   try {
-    return listFilesIncludingUntracked(ROOT).files;
+    explicitPathCorpusCache = listFilesIncludingUntracked(ROOT).files;
   } catch {
-    return [];
+    explicitPathCorpusCache = [];
   }
-})();
+  return explicitPathCorpusCache;
+}
 
 function normalizeExplicitChangedPath(raw) {
   let path = String(raw ?? "").trim().replaceAll("\\", "/");
@@ -853,9 +869,9 @@ function normalizeExplicitChangedPath(raw) {
   // Preserve an explicitly named file/directory even when it is ignored and therefore
   // absent from the git-backed corpus. This also preserves submodule gitlink roots,
   // which are directories rather than file entries in the corpus.
-  if (existsSync(resolve(ROOT, path)) || explicitPathCorpus.includes(path)) return [path];
+  if (existsSync(resolve(ROOT, path)) || explicitPathCorpus().includes(path)) return [path];
 
-  const matches = explicitPathCorpus.filter(
+  const matches = explicitPathCorpus().filter(
     (candidate) => candidate === path || candidate.endsWith(`/${path}`),
   );
   // A basename such as `index.ts` can legitimately have many owners. Expanding every
