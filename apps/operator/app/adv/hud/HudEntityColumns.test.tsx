@@ -773,6 +773,29 @@ describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () 
     expect(document.querySelectorAll('.hud__pip')).toHaveLength(0);
   });
 
+  it('derives the pips from itemCounts, not from badge labels — a wip count between them proves it', () => {
+    // D-003, DISCRIMINATING case. The test above cannot tell a derived
+    // implementation from one that parses the digits back out of badge labels:
+    // with {'needs-human':2, blocked:3} BOTH render ['2','3'], because the two
+    // labels carry the same two digits in the same order. A case that passes
+    // whichever implementation is underneath discriminates nothing.
+    //
+    // toPlanCard pushes badges in the order needs-human → wip → blocked → todo
+    // (hud-entity-board.ts), while the pips render needsHumanCount then
+    // blockedCount and ignore wip entirely. So a wip count that is present and
+    // distinct splits the two apart: the derived implementation reads
+    // itemCounts and yields ['2','3'], while anything reading the first two
+    // numeric badge labels in order yields ['2','9'].
+    renderPlanBoard([
+      metaPlan({ itemCounts: { 'needs-human': 2, wip: 9, blocked: 3, todo: 4 } }),
+    ]);
+    const pips = [...document.querySelectorAll('.hud__pip')].map((el) => el.textContent);
+    expect(pips).toEqual(['2', '3']);
+    // Stated separately so the failure names the defect rather than a diff: a 9
+    // in the pips means the renderer read the wip BADGE, not the wip COUNT.
+    expect(pips).not.toContain('9');
+  });
+
   it('drops the now line in the settled columns — a Ready plan has no next action', () => {
     // D-002 / variant D, implemented as a TSX branch: the node is absent, not
     // painted invisible, so a screen reader is not offered a line nobody sees.

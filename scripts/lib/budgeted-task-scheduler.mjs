@@ -20,6 +20,32 @@ export const DURATION_HISTORY_VERSION = 1;
 // crashed holder is still reclaimed immediately without allowing a live,
 // long-running test to be mistaken for an abandoned lock.
 const SHARED_TEST_PROCESS_ADMISSION_MUTEX = "papercusp-test-process-admission";
+// WI-1746759: the release gate's OWN admission lane.
+//
+// `runBudgetedTasks` takes this mutex ONCE PER SHARD (see the run-budget note below), so on
+// the shared lane the gate does not queue once — it re-queues per shard, and every re-entry
+// lands at the BACK of the FIFO queue behind whoever arrived meanwhile. Measured on the
+// 2026-08-31T12:23:04Z run: `shards=17`, 46 `AFFECTED_TESTS_ADMISSION_QUEUED` notices, ZERO
+// acquisitions in 45 minutes, and the run then died on the run budget having executed no
+// tests at all (`tasks=130 failed=0 undeterminedTasks=130`). That is a NON-VERDICT, not a
+// red — the gate learned nothing about the code and still consumed its hourly slot.
+//
+// `scripts/pc-heavy.sh` already exempts the gate from the OUTER semaphore and states the
+// policy in as many words — "this exempts it from ADMISSION, never from PRIORITY" — keeping
+// it deferential via `nice 10 + ionice 7` (EI-78) rather than by queueing. That exemption
+// stopped short of this inner mutex, which is the layer that actually serializes. A separate
+// lane restores the stated policy instead of inventing a new one: the gate's shards contend
+// only with EACH OTHER, so it still runs one test process at a time and neither the gate nor
+// the fleet is starved by the other.
+//
+// ⚠ DERIVED from the shared name, never hand-written. `isSharedAdmissionTimeout` below
+// classifies a timeout by `message.includes(SHARED_TEST_PROCESS_ADMISSION_MUTEX)`, so
+// EXTENDING the base name is what keeps a gate timeout classified as admission-starved.
+// Give this lane an unrelated name and that check returns false for the gate: the error
+// re-throws instead of becoming `status=refused reason=admission-starved`, no
+// AFFECTED_TESTS_RESULT line is emitted, and green-checkpoint records a lost run — the exact
+// failure WI-1490656 exists to prevent, landing only on the one caller nobody watches live.
+const RELEASE_GATE_ADMISSION_MUTEX = `${SHARED_TEST_PROCESS_ADMISSION_MUTEX}-release-gate`;
 const SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
 const SHARED_TEST_PROCESS_ADMISSION_STALE_MS = 2 * 60 * 60 * 1_000;
 const SHARED_TEST_PROCESS_ADMISSION_RETRY_MS = 250;
@@ -35,6 +61,29 @@ const SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS = 60 * 1_000;
 // stops producing verdicts at all. Bound the SUM instead, well inside the gate's own
 // hourly cadence, so a starved run fails loudly and frees the lock for the next fire.
 export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS = 45 * 60 * 1_000;
+
+/**
+ * WI-1746759: which admission lane THIS process belongs in.
+ *
+ * ⚠ Keyed on `PC_HEAVY_RELEASE_GATE` ONLY — deliberately NOT `GREEN_CHECKPOINT`, and the two
+ * are not interchangeable here even though the gate's environment carries both. `pc-heavy.sh`
+ * records why, from an incident: GREEN_CHECKPOINT is double-duty (it also drives
+ * `describe.skipIf` in load-/network-sensitive tests), so agents legitimately export it BY
+ * HAND to reproduce the gate's skip-set — and keying admission off it once meant
+ * `GREEN_CHECKPOINT=1 npm run test:affected` bypassed that semaphore at nice 0, "re-opening
+ * the very hole this wrapper closes". Keying a private admission LANE off it would repeat
+ * that a layer down: any agent exporting the marker would leave the queue its peers wait in.
+ * `PC_HEAVY_RELEASE_GATE` is the dedicated key, set by `buildGreenCheckpointEnv` and
+ * inherited by the whole child tree, which is why it is the only safe discriminator.
+ *
+ * Matches pc-heavy.sh's own test (`[ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]`): the literal "1",
+ * not truthiness, so an empty or absent value stays on the shared lane.
+ */
+export function admissionMutexName(env = process.env) {
+  return env?.PC_HEAVY_RELEASE_GATE === "1"
+    ? RELEASE_GATE_ADMISSION_MUTEX
+    : SHARED_TEST_PROCESS_ADMISSION_MUTEX;
+}
 
 /**
  * Does this error mean "we never got admitted", as opposed to a real test failure?
@@ -967,7 +1016,8 @@ export async function runBudgetedTasks(tasks, options) {
       ? Number(options.admissionTimeoutMs)
       : SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS;
   return withFsMutex(
-    SHARED_TEST_PROCESS_ADMISSION_MUTEX,
+    // WI-1746759: the release gate rides its own lane; everyone else shares one.
+    admissionMutexName(),
     () => runBudgetedTasksWithoutSharedAdmission(tasks, options),
     {
       timeoutMs,

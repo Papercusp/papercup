@@ -35,6 +35,7 @@ import {
   writeInstallStamp,
   classifyDowngrade,
   resolveSourceGitProvenance,
+  resolveUncommittedSources,
   gcStrandedInstallTmp,
 } from './install-provenance';
 import {
@@ -2920,6 +2921,57 @@ export function mergeClaudeHookSettings(
     });
 
   return cfg;
+}
+
+/**
+ * Syntax-check a hook we are about to publish, by interpreter, before it is renamed into
+ * the machine-wide hooks dir (EI-21974793277035753).
+ *
+ * This is the COMPLEMENT to the atomic-rename discipline below, not a duplicate of it.
+ * EI-18755593630003816 made a concurrent reader see a *whole* file instead of a torn
+ * prefix; nothing yet made it see a *valid* one. A hook that does not parse fails at the
+ * worst possible moment — inside another agent's turn — and `pretooluse-bash-resource-gate.sh`
+ * in particular is fail-open by construction (`python3 ... || { echo 'hook error'; exit 0; }`),
+ * so a broken copy does not crash and does not deny: it silently stops gating, fleet-wide,
+ * with nothing in any log.
+ *
+ * Only interpreters that can answer in milliseconds, and only parse-level checks — this
+ * runs on the hot path of every psu launch. `.d.mts` declarations and anything else are
+ * deliberately unvalidated rather than validated badly: `node --check` cannot parse TS.
+ *
+ * Fail-safe: an interpreter that is missing or errors in an unexpected way returns `ok`.
+ * Refusing to install because `bash` could not be spawned would turn a diagnostic into an
+ * outage — the verdict must be "this file definitely does not parse", never "I could not tell".
+ */
+export async function checkHookSyntax(
+  filePath: string,
+  name: string,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const argv: string[] | null = name.endsWith('.sh')
+    ? ['bash', '-n', filePath]
+    : name.endsWith('.mjs')
+      ? ['node', '--check', filePath]
+      : name.endsWith('.py')
+        ? ['python3', '-c', 'import ast,sys; ast.parse(open(sys.argv[1],"rb").read())', filePath]
+        : null;
+  if (!argv) return { ok: true };
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    await promisify(execFile)(argv[0], argv.slice(1), { timeout: 10_000 });
+    return { ok: true };
+  } catch (e) {
+    const err = e as { code?: unknown; stderr?: unknown; message?: string };
+    // A non-numeric `code` (ENOENT, ETIMEDOUT) is the interpreter failing to run, not the
+    // file failing to parse — fail safe. Only a real non-zero exit condemns the file.
+    if (typeof err.code !== 'number') return { ok: true };
+    const detail = String(err.stderr || err.message || '')
+      .trim()
+      .split('\n')
+      .slice(0, 3)
+      .join('; ');
+    return { ok: false, detail: detail || `exit ${err.code}` };
+  }
 }
 
 /**

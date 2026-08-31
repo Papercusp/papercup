@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
 import {
+  admissionMutexName,
   classifyAffectedBlastRadius,
   durationEstimate,
   emptyDurationHistory,
