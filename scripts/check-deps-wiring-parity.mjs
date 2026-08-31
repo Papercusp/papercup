@@ -569,9 +569,9 @@ const FAIL_BASELINE = new Map([
   // misattributed literals that are no longer in the population at all, so re-seeding is
   // the only correct move: hand-pruning would have implied an adjudication nobody made.
   ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', NOT_ADJUDICATED],
-  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', NOT_ADJUDICATED],
-  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', NOT_ADJUDICATED],
-  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', NOT_ADJUDICATED],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', VERB_SPECIFIC_BINDING],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
   ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_get.ts|progress', NOT_ADJUDICATED],
   ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_outline.ts|progress', NOT_ADJUDICATED],
   ['EngineCtx|packages/operator-core/lib/agent-tools/docs/get.ts|progress', NOT_ADJUDICATED],
@@ -581,7 +581,7 @@ const FAIL_BASELINE = new Map([
   ['GetInProcessStatusOpts|packages/operator-core/lib/agent-tools/dev/dogfood_substrate_status.ts|resolveDhtBootstrapProbeStaleMs,resolveSidecarLive', NOT_ADJUDICATED],
   ['GetInProcessStatusOpts|packages/operator-core/lib/endpoint-route/routes/discovery/build-federation-status.ts|resolveClaimStats,resolveRemoteBootedHandles', NOT_ADJUDICATED],
   ['GovernedOperationInput|packages/operator-core/lib/agent-tools/testing/run.ts|measureActualDemand', NOT_ADJUDICATED],
-  ['GracefulRecycleOpts|apps/operator/bin/hono-host.ts|closeSubstrate,dropReplicationTracking,exit,isSaturated,killSelf', NOT_ADJUDICATED],
+  ['GracefulRecycleOpts|apps/operator/bin/hono-host.ts|closeSubstrate,dropReplicationTracking,exit,isSaturated,killSelf', DEFAULTED_PLUS_FORWARDER],
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts|fetchHivePresenceRows', SCOPE_VARIANT_PAIR],
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
