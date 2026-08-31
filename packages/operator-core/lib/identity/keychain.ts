@@ -390,11 +390,16 @@ async function atomicWritePrivateFile(path: string, blob: Buffer): Promise<void>
   }
 }
 
-async function fileStoreInDir(
+/**
+ * Encrypt for ONE mirror and stage it beside its final path without publishing.
+ * A staged temp is also a proof that this dir is reachable and writable, which
+ * is what lets `fileStore` commit to publishing every mirror or none.
+ */
+async function fileStageInDir(
   dir: string,
   keychainId: string,
   privateKeyDer: Buffer,
-): Promise<void> {
+): Promise<{ temporaryPath: string; finalPath: string }> {
   await mkdir(dir, { recursive: true });
   const salt = randomBytes(SALT_LEN);
   const iv = randomBytes(IV_LEN);
@@ -405,7 +410,10 @@ async function fileStoreInDir(
   const authTag = cipher.getAuthTag();
 
   const blob = Buffer.concat([salt, iv, authTag, ciphertext]);
-  await atomicWritePrivateFile(join(dir, encFileName(keychainId)), blob);
+  const finalPath = join(dir, encFileName(keychainId));
+  const temporaryPath = `${finalPath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
+  await writeFile(temporaryPath, blob, { mode: 0o600, flag: 'wx' });
+  return { temporaryPath, finalPath };
 }
 
 async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<void> {
@@ -416,8 +424,48 @@ async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<voi
   // true not_found and legitimately mints a different device identity into the
   // legacy root. The next configured reader used to prefer that new legacy key
   // and overwrite the good shared mirror — the live EI-203928 recurrence.
-  for (const dir of identityReadDirs()) {
-    await fileStoreInDir(dir, keychainId, privateKeyDer);
+  //
+  // Converging them in a bare sequential loop is NOT sufficient, and no rogue
+  // writer is needed to split them (EI-21987155936742109): each file write is
+  // atomic on its own, but the PAIR was not. A crash, kill, ENOSPC, EACCES, or
+  // an unmounted share between the two writes published a fresh key into the
+  // configured root while the legacy root kept the ATTESTED one — the split
+  // `fileLoad` then refuses forever, leaving every P2P substrate unbooted (live
+  // on Avis-iMac.local 2026-08-31, a recurrence of resolved WI-2018). So STAGE
+  // every mirror first: a staged temp proves that dir writable, and only then
+  // do the renames run. A store that cannot reach every mirror now publishes
+  // none and leaves the last converged identity intact.
+  const dirs = identityReadDirs();
+  const staged: Array<{ temporaryPath: string; finalPath: string }> = [];
+  try {
+    for (const dir of dirs) {
+      staged.push(await fileStageInDir(dir, keychainId, privateKeyDer));
+    }
+  } catch (err) {
+    await Promise.all(staged.map((s) => unlink(s.temporaryPath).catch(() => {})));
+    throw err;
+  }
+
+  // Every mirror is proven writable. Publish; if a rename still fails part way,
+  // restore the mirrors already replaced so the pair cannot be left divergent.
+  const priorBlobs = await Promise.all(staged.map((s) => readFile(s.finalPath).catch(() => null)));
+  const published = new Set<number>();
+  try {
+    for (let i = 0; i < staged.length; i++) {
+      await rename(staged[i].temporaryPath, staged[i].finalPath);
+      published.add(i);
+    }
+  } catch (err) {
+    for (let i = 0; i < staged.length; i++) {
+      if (!published.has(i)) {
+        await unlink(staged[i].temporaryPath).catch(() => {});
+        continue;
+      }
+      const before = priorBlobs[i];
+      if (before) await atomicWritePrivateFile(staged[i].finalPath, before).catch(() => {});
+      else await unlink(staged[i].finalPath).catch(() => {});
+    }
+    throw err;
   }
 }
 
@@ -536,7 +584,12 @@ async function fileDelete(keychainId: string): Promise<void> {
 export async function keychainProbeTiers(
   keychainId: string,
   serviceName: string = SERVICE_NAME,
-): Promise<{ secretTool: boolean; securityCli: boolean; file: 'primary' | 'legacy' | null }> {
+): Promise<{
+  secretTool: boolean;
+  securityCli: boolean;
+  file: 'primary' | 'legacy' | null;
+  mirrorsDiverged: boolean;
+}> {
   let secretTool = false;
   let securityCli = false;
   try {
@@ -551,16 +604,25 @@ export async function keychainProbeTiers(
   } catch {
     /* probe only */
   }
+  // This probe used to stop at the first mirror that read, so a box whose
+  // mirrors had SPLIT still reported a healthy `file:'primary'` — structurally
+  // blind to the one recurrence it was added to diagnose. Read EVERY mirror and
+  // report the divergence itself, so the condition is visible while the box is
+  // live instead of only as a fail-closed load much later
+  // (EI-21987155936742109, recurrence of WI-2018).
   let file: 'primary' | 'legacy' | null = null;
+  const decrypted: Buffer[] = [];
+  const name = encFileName(keychainId);
   const dirs = identityReadDirs();
   for (let i = 0; i < dirs.length; i++) {
-    try {
-      await readFile(join(dirs[i], encFileName(keychainId)));
-      file = i === 0 ? 'primary' : 'legacy';
-      break;
-    } catch {
-      /* miss — try next */
-    }
+    const result = await fileLoadFromDir(dirs[i], name);
+    // Present == the bytes were readable, whether or not they decrypt; that is
+    // the same condition the previous existence check reported.
+    const present = result.kind === 'ok' || result.error.kind === 'decryption_failed';
+    if (!present) continue;
+    if (file === null) file = i === 0 ? 'primary' : 'legacy';
+    if (result.kind === 'ok') decrypted.push(result.value);
   }
-  return { secretTool, securityCli, file };
+  const mirrorsDiverged = decrypted.length > 1 && decrypted.some((d) => !d.equals(decrypted[0]));
+  return { secretTool, securityCli, file, mirrorsDiverged };
 }

@@ -153,7 +153,14 @@ export async function buildHiveRekeyBootDeps(opts: {
           opts.workspaceId,
           opts.harnessSlug,
           'epoch_boot_device',
-          `pubkey=${localDevice.pubkeyBase64} keychainId=${localDevice.keychainId} tiers=secretTool:${tiers.secretTool},securityCli:${tiers.securityCli},file:${tiers.file}`,
+          `pubkey=${localDevice.pubkeyBase64} keychainId=${localDevice.keychainId} tiers=secretTool:${tiers.secretTool},securityCli:${tiers.securityCli},file:${tiers.file}` +
+            // Only emitted when true, so a healthy boot record is unchanged.
+            (tiers.mirrorsDiverged
+              ? ' MIRRORS_DIVERGED=true (the configured and legacy encrypted identity ' +
+                'mirrors hold DIFFERENT device keys — every keychain load fails closed ' +
+                'and the P2P substrates stay unbooted; converge both mirrors onto the ' +
+                'ATTESTED pubkey before restart)'
+              : ''),
         );
       } catch {
         /* diagnostics must never affect boot */
