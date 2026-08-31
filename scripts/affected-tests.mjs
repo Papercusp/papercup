@@ -1214,6 +1214,14 @@ function invariantGuardChangedPaths() {
 }
 
 const AUTHORED_DOCS_ROOT = "apps/operator-docs/src/content/docs";
+// WI-1399902 — the served-docs mirror guard's three subjects. DELIBERATELY NOT reusing
+// AUTHORED_DOCS_ROOT above even though the source path is byte-identical today: that constant
+// is scoped to the PG-canonical authored-doc corpus, and narrowing it to that projector's
+// subset (a plausible future edit) would silently narrow THIS guard too — in the
+// false-negative direction, which is the one nobody notices. Same tree, different owners.
+const DOCS_MIRROR_SOURCE_ROOT = "apps/operator-docs/src/content/docs";
+const DOCS_MIRROR_SERVED_ROOT = "apps/operator/public/internal/docs";
+const DOCS_MIRROR_DETECTOR = "scripts/check-docs-mirror.mjs";
 const AUTHORED_DOC_GUARD_SCRIPT = "gen:authored-docs:check";
 const AUTHORED_DOC_PROJECTOR = "scripts/project-authored-docs.ts";
 const AUTHORED_DOCS_CONFIG = ".papercusp/docs.json";
@@ -2266,6 +2274,44 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === DECLARATIONS_CONFIG ||
       f === UNENROLLED_MJS_IMPORTS_DETECTOR ||
       f === UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR,
+  },
+  {
+    // WI-1399902 — the served-docs completeness/freshness guard. Agents read the SERVED twin
+    // under /internal/docs; a source page without its twin is a silent 404, and a twin whose
+    // content predates its source hands the reader the exact instruction the edit was written
+    // to delete. `lint:docs-mirror` detects both and, until now, ran on no blocking path.
+    //
+    // ⚠ SAME SHAPE AS lint:workspace-deps-complete ABOVE — "already enforced" is true and
+    // irrelevant. .github/workflows/test.yml runs it, but git-sync stamps every commit
+    // `[skip ci]` (measured 2026-08-31: 232 of the last 200 commit messages/bodies carry it),
+    // and GitHub honors that marker for BOTH `push` and `pull_request` — so the two triggers
+    // have never fired on a real advance (EI-18661485259809120). green-checkpoint dispatches
+    // the workflow explicitly, but only AFTER it fast-forwards `main`: post-promotion. The
+    // other caller is operator-docs' own `build:inner`, which runs the detector at the END of
+    // a rebuild — i.e. only in the one state where it cannot fail. A check that runs only
+    // after the repair it would demand is decoration.
+    //
+    // MEASURED, and the turnover is the finding: filed 2026-08-30T23:33Z naming 2 missing
+    // pages; re-measured 2026-08-31T12:41Z — still red, but with 4 DIFFERENT pages, the
+    // original 2 having been fixed by an unrelated rebuild. A completely fresh population in
+    // ~13h is what continuous unattended drift looks like. The rebuild that cleared it also
+    // rewrote 959 twins whose CONTENT had gone stale (build-system/vms.md was still serving
+    // `nohup bash boot-windows.sh` against a source that had moved to a systemd unit).
+    //
+    // No hostSuiteRatchet: check-docs-mirror.test.ts exercises the detector's mapping rules
+    // against FIXTURE trees and never execs it over the real corpus, so no suite run implies
+    // this has executed — which is precisely why the tree stayed red behind a green suite.
+    workspace: "@papercusp/operator-core",
+    // 0.21-0.22s (3 runs measured 2026-08-31) — a pure fs walk, cheaper than every guard here.
+    script: "lint:docs-mirror",
+    // Both directions. Source: a page ADDED without a rebuild has no twin, and a page EDITED
+    // without one leaves the twin stale. Served root: the OTHER direction — deleting a twin
+    // breaks the pairing without touching a single source file. The detector itself attaches
+    // because a change to the mapping rules re-judges all 959 pages at once.
+    appliesTo: (f) =>
+      f.startsWith(`${DOCS_MIRROR_SOURCE_ROOT}/`) ||
+      f.startsWith(`${DOCS_MIRROR_SERVED_ROOT}/`) ||
+      f === DOCS_MIRROR_DETECTOR,
   },
   {
     // WI-38239 — the drift detector for the PG-canonical authored-doc corpus (plan
