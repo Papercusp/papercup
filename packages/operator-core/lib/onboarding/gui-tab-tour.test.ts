@@ -32,7 +32,15 @@ describe('DRIFT GUARD: GUI_TAB_TOUR vs the real ADV_TABS strip (AdvShell.tsx)', 
     '../../../../apps/operator-vite/src/components/adv/AdvShell.tsx',
   );
 
-  it.skipIf(!existsSync(shellPath))('ids + labels + order match exactly', () => {
+  it('ids + labels + order match exactly', () => {
+    // NOT skipIf(existsSync): AdvShell.tsx is committed superproject source, not a
+    // build artifact, so it is always present in a real checkout. Skipping on its
+    // absence would silently DISARM this guard exactly when the file is moved or
+    // renamed — the case the assertion below is written to report (EI-21850497063792053).
+    expect(
+      existsSync(shellPath),
+      `AdvShell.tsx not found at ${shellPath} — this drift guard measured NOTHING. If the file moved, update this path; do not skip.`,
+    ).toBe(true);
     const src = readFileSync(shellPath, 'utf8');
     const arrayStart = src.indexOf('export const ADV_TABS');
     expect(arrayStart, 'ADV_TABS not found — did AdvShell.tsx move or rename it?').toBeGreaterThan(-1);
