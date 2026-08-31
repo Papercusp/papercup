@@ -447,7 +447,15 @@ const SERVICEABLE_CLAMP_MODEL = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP_
  *  squats its slot for the full internal wait budget, so the queue would otherwise grow without bound
  *  until the gateway is wedged (the 2026-06-19/20 outages: queue hit 2k–3.6k deep, needing a manual
  *  restart). A bounded queue degrades to fast retryable 429s and self-recovers when the throttle clears.
- *  Env-tunable (PAPERCUSP_GATEWAY_MAX_QUEUED); generous by default so normal bursts still queue. */
+ *  Env-tunable (PAPERCUSP_GATEWAY_MAX_QUEUED); generous by default so normal bursts still queue.
+ *
+ *  Retained deliberately by the capless migration, NOT missed by it: it bounds how many requests may
+ *  WAIT in resident memory, never the admission window. The gateway resolves the bound as
+ *  `deps.maxQueued ?? (payloadSpool ? 0 : DEFAULT_MAX_QUEUED)`, and 0 is PriorityAdmissionQueue's
+ *  uncapped sentinel — so with the durable payload spool active this constant does not bind at all
+ *  (capacity-inventory.ts P-006/P-014 row: live GET /stats 2026-08-30T00:17Z reported maxQueued=0
+ *  and shed429=0 across 27,329 requests).
+ *  @capacity-disposition: semantic — resident-memory safety backstop for requests with nowhere durable to spill; 0 (uncapped) whenever the payload spool is active, and it never bounds the admission window */
 const DEFAULT_MAX_QUEUED = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUED) || 256;
 /** retry-after (seconds) on a load-shed 429 — short, since the backlog drains as in-flight requests
  *  settle; the caller should retry soon (and will likely land once the burst/throttle eases). */

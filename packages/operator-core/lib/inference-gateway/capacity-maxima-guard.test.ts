@@ -128,4 +128,67 @@ describe('check-no-capacity-maxima is falsifiable', () => {
     expect(code).toBe(1);
     expect(output).toContain('maxQueued: 128');
   });
+
+  // EI-21833221898785902. The guard measured 0 sites across BOTH real scan dirs with an
+  // empty baseline — a vacuous pass. Two independent gaps hid the live gateway cap
+  // `const DEFAULT_MAX_QUEUED = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUED) || 256`:
+  // the identifier was camelCase-only, AND no pinning shape modelled an env read with a
+  // literal fallback. Closing either alone still measured the site as absent, so both are
+  // asserted separately below.
+  describe('SCREAMING_SNAKE constants and env-with-literal-fallback bounds', () => {
+    it('CATCHES a SCREAMING_SNAKE capacity maximum', () => {
+      const { code, output } = runGuard('export const MAX_CONCURRENT = 4;\n');
+      expect(code, `guard missed an ALL-CAPS cap:\n${output}`).toBe(1);
+      expect(output).toContain('MAX_CONCURRENT = 4');
+    });
+
+    it('CATCHES an ALL-CAPS-prefixed constant (DEFAULT_/PAPERCUSP_GATEWAY_ spelling)', () => {
+      const { code, output } = runGuard('export const DEFAULT_MAX_QUEUED = 256;\n');
+      expect(code, `guard missed a prefixed ALL-CAPS cap:\n${output}`).toBe(1);
+      expect(output).toContain('DEFAULT_MAX_QUEUED = 256');
+    });
+
+    it('CATCHES the live shape: an env read with a literal fallback', () => {
+      // Verbatim gateway.ts. Neither PINNED_LITERAL_RE (wants a digit right after `=`)
+      // nor PINNED_CLAMP_RE (wants Math.min/clamp) sees this, yet with the variable
+      // unset — the normal deployment — the bound IS the literal.
+      const { code, output } = runGuard(
+        'export const DEFAULT_MAX_QUEUED = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUED) || 256;\n',
+      );
+      expect(code, `guard missed an env-with-fallback cap:\n${output}`).toBe(1);
+      expect(output).toContain('|| 256');
+    });
+
+    it('CATCHES a ?? fallback as well as ||', () => {
+      const { code, output } = runGuard(
+        'export const admission = { maxQueued: readEnv() ?? 512 };\n',
+      );
+      expect(code, `guard missed a ?? fallback cap:\n${output}`).toBe(1);
+      expect(output).toContain('?? 512');
+    });
+
+    it('ACCEPTS the live cap once its disposition is declared (calibration)', () => {
+      // The real gateway site. Without this passing, every CATCH above could be a
+      // guard that simply fires on everything ALL-CAPS.
+      const { code, output } = runGuard([
+        '// @capacity-disposition: semantic — resident-memory backstop, never the admission window',
+        'export const DEFAULT_MAX_QUEUED = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUED) || 256;',
+        '',
+      ].join('\n'));
+      expect(code, `guard rejected a properly declared bound:\n${output}`).toBe(0);
+    });
+
+    it('IGNORES an ALL-CAPS timeout, matching the camelCase arm’s strictness', () => {
+      // `\b` already stops `maxWindow` matching `maxWindowMs`; the snake arm allows a
+      // PREFIX but deliberately no SUFFIX so `_MS` durations stay out. Sweeping timeouts
+      // in is exactly the noise that trains people to baseline everything.
+      const source = [
+        'export const RETRY_MAX_WINDOW_MS = 60000;',
+        'export const UPSTREAM_MAX_WINDOW_SEC = 30;',
+        '',
+      ].join('\n');
+      const { code, output } = runGuard(source);
+      expect(code, `guard fired on ALL-CAPS timeouts:\n${output}`).toBe(0);
+    });
+  });
 });

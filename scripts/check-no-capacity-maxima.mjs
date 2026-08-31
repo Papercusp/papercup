@@ -66,8 +66,25 @@ const DISPOSITION_RE = /@capacity-disposition:\s*([a-z-]+)\s*(.*)$/;
  * timeout, a retry count, or a byte size is not a capacity maximum, and sweeping
  * them in would produce noise that trains people to add allowlist entries.
  */
-const CAPACITY_IDENT =
+const CAPACITY_IDENT_CAMEL =
   '(?:max(?:Concurrent|Concurrency|Queued|QueueDepth|Slots|InFlight|Window|Starts|Admitted)|concurrencyCap|capacityCap|slotsPerAccount|maxPerAccount)';
+
+/**
+ * The SCREAMING_SNAKE spelling of the same names (EI-21833221898785902). A
+ * module-scope `const DEFAULT_MAX_QUEUED = …` caps exactly as hard as a
+ * `maxQueued` property, and the camelCase-only pattern could not see one — so
+ * the guard measured 0 sites in both scan dirs and passed vacuously.
+ *
+ * An ALL-CAPS PREFIX is allowed (`DEFAULT_`, `PAPERCUSP_GATEWAY_`) because that
+ * is how these constants are actually spelled. A SUFFIX is deliberately NOT,
+ * which mirrors the camelCase arm's strictness: `\b` already stops `maxWindow`
+ * from matching `maxWindowMs`, and allowing `_MS` here would sweep in timeouts —
+ * the noise this identifier list was kept narrow to avoid.
+ */
+const CAPACITY_IDENT_SNAKE =
+  '(?:[A-Z0-9]+_)*(?:MAX_(?:CONCURRENT|CONCURRENCY|QUEUED|QUEUE_DEPTH|SLOTS|IN_FLIGHT|WINDOW|STARTS|ADMITTED|PER_ACCOUNT)|CONCURRENCY_CAP|CAPACITY_CAP|SLOTS_PER_ACCOUNT)';
+
+const CAPACITY_IDENT = `(?:${CAPACITY_IDENT_CAMEL}|${CAPACITY_IDENT_SNAKE})`;
 
 /**
  * A bound only counts when the capacity identifier ITSELF is pinned.
@@ -93,6 +110,23 @@ const PINNED_LITERAL_RE = new RegExp(
 );
 const PINNED_CLAMP_RE = new RegExp(
   `(?:\\b${CAPACITY_IDENT}\\s*${ASSIGN}|${KEY_IDENT}\\s*:)\\s*(?:Math\\.min|clamp)\\s*\\(`,
+);
+/**
+ * The THIRD pinning shape: an environment read with a literal fallback.
+ *
+ *     const DEFAULT_MAX_QUEUED = Number(process.env.PAPERCUSP_GATEWAY_MAX_QUEUED) || 256;
+ *
+ * Neither of the two regexes above sees this — `PINNED_LITERAL_RE` wants a digit
+ * immediately after the assignment and `PINNED_CLAMP_RE` wants Math.min/clamp — yet
+ * with the variable unset (the normal deployment) the bound IS the literal. Missing
+ * this shape is why widening the identifier alone still measured the live gateway cap
+ * as absent: BOTH gaps had to close for the site to become visible.
+ *
+ * Bounded to the current statement with `[^;\n]*` so a fallback later in the file
+ * cannot bind to a capacity word on an earlier line.
+ */
+const PINNED_FALLBACK_RE = new RegExp(
+  `(?:\\b${CAPACITY_IDENT}\\b\\s*${ASSIGN}|${KEY_IDENT}\\b\\s*:)[^;\\n]*(?:\\|\\||\\?\\?)\\s*-?\\d`,
 );
 const CAPACITY_MAX_RE = new RegExp(`\\b${CAPACITY_IDENT}\\b`);
 
@@ -164,7 +198,11 @@ function findings() {
       lines.forEach((line, i) => {
         const unquoted = maskedLines[i] ?? '';
         if (!CAPACITY_MAX_RE.test(unquoted)) return;
-        if (!PINNED_LITERAL_RE.test(unquoted) && !PINNED_CLAMP_RE.test(unquoted)) return;
+        if (
+          !PINNED_LITERAL_RE.test(unquoted)
+          && !PINNED_CLAMP_RE.test(unquoted)
+          && !PINNED_FALLBACK_RE.test(unquoted)
+        ) return;
         const site = `${relative(REPO_ROOT, file)}:${i + 1}`;
         found.push({ site, line: line.trim(), disposition: declaredDisposition(lines, i) });
       });

@@ -595,4 +595,99 @@ describe('fleet headcount target (WI-2479)', () => {
     expect(typeof row?.headcount_config === 'string' ? JSON.parse(row.headcount_config) : row?.headcount_config)
       .toMatchObject(config);
   });
+
+  // WI-1454201. A wound-down fleet kept being topped up forever: fleet:wind-down
+  // left headcount_target armed AND the governor's selection had no control_state
+  // predicate, so `capless-inference-gateway-ship-2026-08-28` relaunched a DESKTOP
+  // member 20 times over 23h onto a plan that had already shipped. Both halves are
+  // asserted here, independently, because either one alone leaves the trap
+  // re-armable — and each block carries an ACTIVE positive control so a predicate
+  // that refused everything (or an instrument that returned nothing) could not pass.
+  describe('winding-down disarms the headcount governor (WI-1454201)', () => {
+    it('wind-down clears the target, preserves the recipe, and does not re-arm on resume', async () => {
+      await insertFleet('headcount-wind-down');
+      await insertFleet('headcount-wind-down-control');
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-wind-down', target: 4, config, sql: rootSql });
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-wind-down-control', target: 4, config, sql: rootSql });
+
+      // Calibration: both are armed and claimable BEFORE the wind-down, so a later
+      // refusal is attributable to control_state and not to a fleet that never armed.
+      const armed = await listFleetHeadcountTargets(WS, rootSql);
+      expect(armed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ fleetSlug: 'headcount-wind-down', target: 4 }),
+        expect.objectContaining({ fleetSlug: 'headcount-wind-down-control', target: 4 }),
+      ]));
+
+      const wound = await setFleetControlState(
+        WS, 'headcount-wind-down', { state: 'winding-down', reason: 'plan shipped', by: 'su-test' }, rootSql,
+      );
+      expect(wound?.controlState).toBe('winding-down');
+
+      // The governor can neither see it nor open a member for it...
+      expect(await listFleetHeadcountTargets(WS, rootSql)).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ fleetSlug: 'headcount-wind-down' })]),
+      );
+      expect(await claimFleetHeadcountAttempt({
+        workspaceId: WS, fleetSlug: 'headcount-wind-down', now: 11_000_000, sql: rootSql,
+      })).toBeNull();
+
+      // ...while the untouched sibling still is, so the predicate discriminates.
+      expect(await listFleetHeadcountTargets(WS, rootSql)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ fleetSlug: 'headcount-wind-down-control', target: 4 })]),
+      );
+      expect(await claimFleetHeadcountAttempt({
+        workspaceId: WS, fleetSlug: 'headcount-wind-down-control', now: 11_000_000, sql: rootSql,
+      })).toMatchObject({ fleetSlug: 'headcount-wind-down-control', target: 4 });
+
+      // The launch recipe survives for a later takeover/respawn/explicit re-arm.
+      expect(await getFleetHeadcountTarget(WS, 'headcount-wind-down', rootSql)).toMatchObject({
+        enabled: false, config,
+      });
+
+      // Resuming does NOT silently re-arm top-up — re-arming is an explicit call.
+      const resumed = await setFleetControlState(WS, 'headcount-wind-down', { state: 'active' }, rootSql);
+      expect(resumed?.controlState).toBe('active');
+      expect(await listFleetHeadcountTargets(WS, rootSql)).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ fleetSlug: 'headcount-wind-down' })]),
+      );
+    });
+
+    it('refuses a legacy row wound down with its target still armed', async () => {
+      // The exact production shape: control_state='winding-down' with a live
+      // headcount_target, as written by a build whose wind-down did not clear it.
+      // The selection predicate is what has to catch this, not the writer.
+      await insertFleet('headcount-legacy-wound');
+      await insertFleet('headcount-legacy-active');
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-legacy-wound', target: 1, config, sql: rootSql });
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-legacy-active', target: 1, config, sql: rootSql });
+      await rootSql.unsafe(
+        `UPDATE harness_shared.agent_fleets
+            SET control_state = 'winding-down'
+          WHERE workspace_id = $1 AND fleet_slug = $2`,
+        [WS, 'headcount-legacy-wound'],
+      );
+
+      const [row] = await rootSql.unsafe<{ headcount_target: number | null; control_state: string }[]>(
+        `SELECT headcount_target, control_state
+           FROM harness_shared.agent_fleets
+          WHERE workspace_id = $1 AND fleet_slug = $2`,
+        [WS, 'headcount-legacy-wound'],
+      );
+      expect(row).toMatchObject({ headcount_target: 1, control_state: 'winding-down' });
+
+      expect(await listFleetHeadcountTargets(WS, rootSql)).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ fleetSlug: 'headcount-legacy-wound' })]),
+      );
+      expect(await claimFleetHeadcountAttempt({
+        workspaceId: WS, fleetSlug: 'headcount-legacy-wound', now: 12_000_000, sql: rootSql,
+      })).toBeNull();
+
+      expect(await listFleetHeadcountTargets(WS, rootSql)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ fleetSlug: 'headcount-legacy-active', target: 1 })]),
+      );
+      expect(await claimFleetHeadcountAttempt({
+        workspaceId: WS, fleetSlug: 'headcount-legacy-active', now: 12_000_000, sql: rootSql,
+      })).toMatchObject({ fleetSlug: 'headcount-legacy-active', target: 1 });
+    });
+  });
 });

@@ -598,6 +598,21 @@ export async function setFleetLeader(
  * Records who flipped it, why, and when — the registry row is the durable
  * source late joiners read at orient. Idempotent re-sets refresh reason/by/at
  * (the newest invocation's word stands). Returns null if the fleet doesn't exist.
+ *
+ * WINDING-DOWN ALSO DISARMS THE HEADCOUNT GOVERNOR (WI-1454201). Winding a fleet
+ * down means "stop new pulls"; leaving `headcount_target` armed meant the
+ * top-up routine kept opening replacement members forever. Measured: fleet
+ * `capless-inference-gateway-ship-2026-08-28` was wound down at 2026-08-30
+ * 03:01Z on an already-shipped plan and the governor still relaunched a
+ * DESKTOP member 20 times over the next 23h — each one booting, finding zero
+ * claimable work, dying, and being replaced a minute later.
+ *
+ * `headcount_config` is deliberately PRESERVED: disabling automatic restoration
+ * must not erase the boot-baked model/account/headless/carry contract a later
+ * takeover, respawn, or explicit re-arm needs (same contract as
+ * `setFleetHeadcountTarget(target: null)` and `getFleetHeadcountTarget`). So
+ * resuming a fleet does NOT silently re-arm top-up — that is the safe
+ * direction, and re-arming is an explicit `fleet:headcount-target` call.
  */
 export async function setFleetControlState(
   workspaceId: string,
@@ -613,7 +628,12 @@ export async function setFleetControlState(
   const hasExpectedUpdatedAt = expected?.updatedAtMs !== undefined;
   const rows = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
-        SET control_state = $3, control_reason = $4, control_by = $5, control_at = $6, updated_at = $6
+        SET control_state = $3, control_reason = $4, control_by = $5, control_at = $6, updated_at = $6,
+            headcount_target = CASE WHEN $3::text = 'winding-down' THEN NULL ELSE headcount_target END,
+            headcount_next_attempt_at =
+              CASE WHEN $3::text = 'winding-down' THEN NULL ELSE headcount_next_attempt_at END,
+            headcount_backoff_ms = CASE WHEN $3::text = 'winding-down' THEN 0 ELSE headcount_backoff_ms END,
+            headcount_last_error = CASE WHEN $3::text = 'winding-down' THEN NULL ELSE headcount_last_error END
       WHERE workspace_id = $1 AND fleet_slug = $2
         AND ($7::boolean = false OR leader_owner_id IS NOT DISTINCT FROM $8::text)
         AND ($9::boolean = false OR control_state = $10::text)
@@ -953,12 +973,21 @@ function headcountRowToTarget(r: {
 const HEADCOUNT_COLS = `workspace_id, fleet_slug, headcount_target, headcount_config,
   headcount_next_attempt_at, headcount_backoff_ms, headcount_last_error`;
 
-/** Read all enabled targets in one workspace. */
+/**
+ * Read all enabled targets in one workspace.
+ *
+ * A WINDING-DOWN FLEET IS NEVER ENABLED (WI-1454201). `setFleetControlState`
+ * already clears the target on wind-down, so this predicate is the second,
+ * independent half of that fix: it also covers rows wound down by an older
+ * build (or by a direct write) whose target was left armed. Both halves are
+ * deliberate — either one alone leaves the trap re-armable.
+ */
 export async function listFleetHeadcountTargets(workspaceId: string, sql?: Sql): Promise<FleetHeadcountTarget[]> {
   const s = pg(sql);
   const rows = (await s.unsafe(
     `SELECT ${HEADCOUNT_COLS} FROM harness_shared.agent_fleets
       WHERE workspace_id = $1 AND headcount_target IS NOT NULL AND headcount_config IS NOT NULL
+        AND control_state IS DISTINCT FROM 'winding-down'
       ORDER BY updated_at ASC`,
     [workspaceId],
   )) as unknown as Parameters<typeof headcountRowToTarget>[0][];
@@ -988,7 +1017,10 @@ export async function getFleetHeadcountTarget(
   return rows[0] ? headcountRowToTarget(rows[0]) : null;
 }
 
-/** Claim one retry lease. The lease is the duplicate-suppression barrier between ticks. */
+/** Claim one retry lease. The lease is the duplicate-suppression barrier between ticks.
+ *  Refuses a winding-down fleet for the same reason as `listFleetHeadcountTargets`
+ *  (WI-1454201) — this is the barrier a member is actually opened behind, so the
+ *  predicate has to hold here even if a caller reached it without enumerating. */
 export async function claimFleetHeadcountAttempt(opts: {
   workspaceId: string;
   fleetSlug: string;
@@ -1004,6 +1036,7 @@ export async function claimFleetHeadcountAttempt(opts: {
         SET headcount_next_attempt_at = $3 + $4, updated_at = $3
       WHERE workspace_id = $1 AND fleet_slug = $2
         AND headcount_target IS NOT NULL AND headcount_config IS NOT NULL
+        AND control_state IS DISTINCT FROM 'winding-down'
         AND (headcount_next_attempt_at IS NULL OR headcount_next_attempt_at <= $3)
       RETURNING ${HEADCOUNT_COLS}`,
     [opts.workspaceId, opts.fleetSlug, now, leaseMs],
