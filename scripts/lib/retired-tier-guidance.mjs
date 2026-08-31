@@ -135,8 +135,16 @@ const EXPLICIT_REFUSAL_RE_GLOBAL =
  * How far after a refusal word we look for the thing it governs. Short on purpose:
  * long enough for "never route work to the Mug", short enough that an unrelated role
  * mention later in the same sentence cannot adopt the negation.
+ *
+ * A raw character count is NOT sufficient on its own, and the failure is instructive:
+ * "...so the Queen was never idle). Review each and either promote it..." puts the
+ * unrelated word "Review" 13 characters after `never`, so a pure-distance window let
+ * an incidental negation adopt the NEXT sentence's verb and exempt the segment. The
+ * window is therefore clause-bounded FIRST — a negation cannot reach past the
+ * punctuation that ends its own clause — with the character cap as a backstop.
  */
 const REFUSAL_GOVERNS_WINDOW = 30;
+const CLAUSE_END_RE = /[.;:)\n]|—/;
 
 /**
  * WI-1723896 — a refusal marker must REFUSE SOMETHING.
@@ -163,7 +171,9 @@ function qualifyingRefusalIndex(text) {
   EXPLICIT_REFUSAL_RE_GLOBAL.lastIndex = 0;
   for (const match of text.matchAll(EXPLICIT_REFUSAL_RE_GLOBAL)) {
     const start = (match.index ?? 0) + match[0].length;
-    const governed = text.slice(start, start + REFUSAL_GOVERNS_WINDOW);
+    const capped = text.slice(start, start + REFUSAL_GOVERNS_WINDOW);
+    const clauseEnd = capped.search(CLAUSE_END_RE);
+    const governed = clauseEnd >= 0 ? capped.slice(0, clauseEnd) : capped;
     if (
       ROLE_RE.test(governed) ||
       EXECUTION_RE.test(governed) ||

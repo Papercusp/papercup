@@ -53,6 +53,39 @@ describe('retired-tier current-guidance detector', () => {
     expect(findRetiredGuidanceOffenders('kitchen.md', 'Choose the current kettle and mug size.')).toEqual([]);
   });
 
+  it('flags a retired role given REVIEW/PROMOTE authority, not just execution (WI-1713506)', () => {
+    // The regression: this text prescribes a retired role and contains ZERO execution
+    // verbs (no launch/spawn/dispatch/place/schedule), so an execution-only detector
+    // passed it. It was stamped into every Blender-routed draft's `## Now`, and a draft
+    // sat unreviewed for 1d 13h waiting on a reviewer that cannot exist.
+    const source = 'Mug reviews this proposal in the loop: it promotes it to greenlight (ready).';
+    expect(findRetiredGuidanceOffenders('prompt.ts', source)).toEqual([
+      expect.objectContaining({ line: 1, roles: ['mug'] }),
+    ]);
+  });
+
+  it('does not accept an incidental "never" as a refusal marker (WI-1723896)', () => {
+    // The regression: EXPLICIT_REFUSAL_RE matched a bare `never` ANYWHERE in the segment
+    // and exempted the whole thing. This is the real runtime string the scout-draft
+    // backstop emitted — two incidental `never`s, neither refusing anything, which bought
+    // a live "the Queen was never idle" total silence from the guard.
+    const source =
+      'Scout-draft review backstop: N draft(s) unreviewed (the plan-review idle activity ' +
+      'never ran — the hive has been saturated, so the Queen was never idle). Review each ' +
+      'and either promote it (= ready) or deprecate it WITH learnings (never just leave it).';
+    expect(findRetiredGuidanceOffenders('watchdog.ts', source)).toEqual([
+      expect.objectContaining({ line: 1, roles: ['queen'] }),
+    ]);
+  });
+
+  it('still exempts a refusal that actually GOVERNS a role or an action', () => {
+    // The other direction of the same rule — tightening the marker must not turn genuine
+    // refusal prose into noise, or the guard gets baselined and stops being read.
+    expect(findRetiredGuidanceOffenders('x.md', 'Never route work to the Mug; it is not a placement target.')).toEqual([]);
+    expect(findRetiredGuidanceOffenders('x.md', 'Do not ask the Queen to place this; use su instead.')).toEqual([]);
+    expect(findRetiredGuidanceOffenders('x.md', 'The Mug tier is retired and no longer reviews drafts.')).toEqual([]);
+  });
+
   it('beats the naive token-only rule on explicitly historical text', () => {
     const historical = 'The Queen once placed bees; this executor is retired and was replaced.';
     const naiveTokenOnly =
