@@ -33,8 +33,13 @@ import {
   type PotPickerRow,
 } from "./learning-pot-picker";
 
-/** Minimal shape of the workspace pot listing this surface needs. */
-type ProjectLite = { slug: string };
+/**
+ * Minimal shape of the workspace pot listing this surface needs.
+ * `harness_kind` is the wire field from `harnessProjects.lite` and is what
+ * separates a POT from an ordinary repo — the query returns every project in
+ * the workspace, so without it this surface lists submodules as pots.
+ */
+type ProjectLite = { slug: string; harness_kind?: string | null };
 
 /**
  * URL keys. The picker's open state is addressable on purpose: the repo rule

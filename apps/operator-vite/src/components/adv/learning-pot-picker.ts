@@ -76,7 +76,18 @@ export interface PotPickerRow {
  */
 export interface PickerPotRef {
   slug: string;
+  /**
+   * `'hive'` marks a POT. The listing this comes from (`harnessProjects.lite`)
+   * is EVERY project in the workspace — repos and submodules included — and
+   * only a pot can hold learning rows, so this is what separates the two.
+   * Snake_case because it is the wire field, unmapped, straight off the sync
+   * payload (`projects-lite.ts`).
+   */
+  harness_kind?: string | null;
 }
+
+/** Pots are the only projects that can learn — everything else cannot hold a lane. */
+const POT_HARNESS_KIND = 'hive';
 
 function laneLabel(lane: AutomationLaneArm): string {
   return lane.displayName ?? lane.loopId;
@@ -93,13 +104,27 @@ function laneLabel(lane: AutomationLaneArm): string {
  * that unreachable-but-spending state impossible to hide, at the cost of
  * occasionally showing a pot the listing has not caught up with. That is the
  * correct direction to fail in for a spend control.
+ *
+ * ...BUT THE LISTING HALF IS POTS ONLY. `harnessProjects.lite` is every PROJECT
+ * in the workspace, and taking it whole made this surface list 116 rows against
+ * 28 real pots — 38 of them `papercusp/libs/*` submodules that cannot hold a
+ * learning row at all, and every one of them a row `learning:set-pot-scope`
+ * would REFUSE as an unknown pot slug. So the listing is filtered to
+ * `harness_kind:'hive'`.
+ *
+ * Filtering here is safe precisely BECAUSE of the union above: a pot the
+ * listing mislabels or omits still enters through `learningPotSlugs(arming)`,
+ * so the strict filter cannot hide a pot that is spending — and cannot empty
+ * the picker either if an older cached payload predates the field.
  */
 export function buildPotPickerRows(
   projects: readonly PickerPotRef[] | null | undefined,
   arming: AutomationArming | null | undefined,
 ): PotPickerRow[] {
   const slugs = new Set<string>();
-  for (const p of projects ?? []) if (p?.slug) slugs.add(p.slug);
+  for (const p of projects ?? []) {
+    if (p?.slug && p.harness_kind === POT_HARNESS_KIND) slugs.add(p.slug);
+  }
   if (arming) for (const s of learningPotSlugs(arming)) slugs.add(s);
 
   const rows: PotPickerRow[] = [];
