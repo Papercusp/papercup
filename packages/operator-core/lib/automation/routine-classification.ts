@@ -348,6 +348,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Recruits or re-dispatches an independent grader, which can launch a model session',
   },
+  'system:plan-drain-sweep': { spend: 'none', why: 'Applies deterministic plan status transitions; no model or agent launch' },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
