@@ -324,7 +324,7 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
-  it('normalizes queue liveness, age, retirement guard, and the exact CAS action', () => {
+  it('normalizes queue liveness, age, retirement guard, and advertises the SAFE verb', () => {
     const dead = markFrozenRepairFixerDispatched(fresh(), {
       spawnId: 'dead-fixer',
       nowMs: T0 + 1,
@@ -343,7 +343,14 @@ describe('frozen-candidate repair queue', () => {
       retireAllowed: true,
       retireRefusal: null,
     });
-    expect(diagnostic?.nextAction).toContain(`expectedUpdatedAtMs: ${dead.updatedAtMs}`);
+    // WI-1586801: retirement is PERMITTED here (dead fixer, safe phase), but the mechanism's
+    // own verdict is `recover-dead-fixer` — it will recover this queue itself. Advertising a
+    // paste-ready retire call for it is what destroyed recoverable queues in the field, so the
+    // destructive recipe must be absent and the safe verb offered instead.
+    expect(diagnostic?.nextAction).not.toContain(`expectedUpdatedAtMs: ${dead.updatedAtMs}`);
+    expect(diagnostic?.nextAction).not.toContain("op: 'retire'");
+    expect(diagnostic?.nextAction).toContain('recover-dead-fixer');
+    expect(diagnostic?.nextAction).toContain("op: 'converge'");
 
     expect(
       diagnoseFrozenCandidateRepairQueue(dead, {
@@ -351,6 +358,25 @@ describe('frozen-candidate repair queue', () => {
         fixerAlive: true,
       }),
     ).toMatchObject({ retireAllowed: false, retireRefusal: 'live-fixer', nextAction: null });
+  });
+
+  it('WI-1586801: advertises the retire recipe ONLY when the decision is terminal', () => {
+    // The control for the assertions above: if `nextAction` simply never rendered the retire
+    // call, those would pass vacuously. A genuinely terminal decision must still get the exact
+    // CAS recipe — the trap was advertising it for RECOVERABLE queues, not advertising it ever.
+    const exhausted = {
+      ...fresh(),
+      phase: 'blocked' as const,
+      blockedReason: 'attempts-exhausted' as const,
+      attempts: 9,
+      fixerSpawnId: null,
+    };
+    const diagnostic = diagnoseFrozenCandidateRepairQueue(exhausted, { nowMs: T0 + 2 });
+
+    expect(diagnostic?.decision).toBe('hold-exhausted');
+    expect(diagnostic?.retireAllowed).toBe(true);
+    expect(diagnostic?.nextAction).toContain("op: 'retire'");
+    expect(diagnostic?.nextAction).toContain(`expectedUpdatedAtMs: ${exhausted.updatedAtMs}`);
   });
 
   it('verifies exactly the forward head reported by the current fixer', () => {

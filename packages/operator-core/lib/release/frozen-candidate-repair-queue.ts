@@ -1046,9 +1046,20 @@ export function diagnoseFrozenCandidateRepairQueue(
           ? 'liveness-unknown'
           : null;
   const retireAllowed = retireRefusal === null;
-  const nextAction = retireAllowed
-    ? `release:repair-queue { op: 'retire', expectedCandidate: '${queue.candidate}', expectedRepairHead: '${queue.repairHead}', expectedUpdatedAtMs: ${queue.updatedAtMs}, reason: '<why this exact non-live queue is terminal>', confirm: true }`
-    : null;
+  // WI-1586801: `retireAllowed` answers "is retiring PERMITTED?" — a safety predicate, never a
+  // recommendation. Rendering the paste-ready retire recipe whenever retirement is merely
+  // permitted advertises the DESTRUCTIVE verb for a queue the mechanism is about to recover on
+  // its own: `recover-dead-fixer` sets retireAllowed:true with retireRefusal:null, and agents
+  // that copied this string destroyed recoverable queues. Only a decision that is genuinely
+  // terminal for this candidate earns the retire recipe; every other decision keeps the SAFE
+  // verb advertised. `retireAllowed`/`retireRefusal` are deliberately left untouched — the
+  // permission and the recommendation are different questions and other callers read the former.
+  const retirementIsTheDecision = decision.kind === 'hold-exhausted' || decision.kind === 'recut-at-tip';
+  const nextAction = !retireAllowed
+    ? null
+    : retirementIsTheDecision
+      ? `release:repair-queue { op: 'retire', expectedCandidate: '${queue.candidate}', expectedRepairHead: '${queue.repairHead}', expectedUpdatedAtMs: ${queue.updatedAtMs}, reason: '<why this exact non-live queue is terminal>', confirm: true }`
+      : `decision '${decision.kind}': this queue is still recoverable — do NOT retire it. Land your fix on the judged lineage with release:repair-queue { op: 'converge', paths: ['<your changed path>'] }.`;
   return {
     phase: queue.phase,
     candidate: queue.candidate,

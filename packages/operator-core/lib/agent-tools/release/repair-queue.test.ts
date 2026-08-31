@@ -51,7 +51,7 @@ describe('release:repair-queue', () => {
     expect(tool.guidance?.notWhen).toContain('Do not pass harness or workspace');
   });
 
-  it('get exposes one normalized queue with an exact retirement action', async () => {
+  it('get exposes one normalized queue and never advertises retire for a recoverable one', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toMatchObject({
       ok: true,
@@ -63,7 +63,11 @@ describe('release:repair-queue', () => {
         retireAllowed: true,
       },
     });
-    expect(result.repairQueue.nextAction).toContain('expectedUpdatedAtMs: 2');
+    // WI-1586801: this fixture is a dead-fixer queue, so retirement is permitted but the
+    // decision is `recover-dead-fixer`. The tool must surface the safe verb, not a
+    // paste-ready call that would destroy a queue the gate is about to recover.
+    expect(result.repairQueue.nextAction).not.toContain('expectedUpdatedAtMs: 2');
+    expect(result.repairQueue.nextAction).toContain("op: 'converge'");
   });
 
   it('refuses retirement while the fixer is live', async () => {
