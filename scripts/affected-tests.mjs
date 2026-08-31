@@ -2902,8 +2902,16 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // console door (D-022) appeared in endpoint-route/routes/agent-mcp/, which no
     // narrower predicate would have thought to watch.
     workspace: "@papercusp/operator-core",
-    // ~3.4s: it shells out to scripts/mug-kettle-surface-census.mjs --json rather than
+    // It shells out to scripts/mug-kettle-surface-census.mjs --json rather than
     // re-implementing its 8 detectors, so there is exactly ONE implementation of them.
+    //
+    // No runtime figure is quoted here on purpose. This line read "~3.4s" until 2026-08-31,
+    // when the leg measured 98.2s end-to-end (48.3s of it the census subprocess) — a
+    // hand-maintained code-describing number that drifted ~30x and was still being read as
+    // current. Per the derived-truth ladder, a cost belongs where it is MEASURED, not
+    // transcribed into a comment that nothing can falsify: the standing measurement lives on
+    // plan gate-speed-round-2-2026-08-31 (D-003), and `testing:runs` / the gate's own
+    // AFFECTED_TASK_PROGRESS lines are the live sources. Do not re-add a number here.
     script: "lint:no-ungated-mug-kettle",
     // Mirrors the union of all three scan surfaces: the census + role-door passes cover
     // executable TS/JS and Markdown prompts; P-005's current-guidance family also scans
