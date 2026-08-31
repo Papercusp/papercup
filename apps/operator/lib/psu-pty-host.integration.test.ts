@@ -20,6 +20,8 @@ import {
   metaPathFor,
   eventLogPathForOwner,
   encodeControl,
+  KICKOFF_PROOF_PATH_ENV,
+  KICKOFF_PROOF_TOKEN_ENV,
   readManagedKickoffFile,
   ptyWriteChunks,
   findNativeTranscriptMarker,
@@ -354,6 +356,77 @@ describe('hostThroughPty real round-trip', () => {
       }
     },
     10_000,
+  );
+
+  it(
+    'publishes a plain-launch native kickoff proof into the parent receipt',
+    async () => {
+      if (typeof process.getuid !== 'function') return;
+      const root = mkdtempSync(join(tmpdir(), 'psu-kickoff-proof-itest-'));
+      const ownerId = `su-kickoff-proof-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const proofPath = join(root, 'kickoff-proof.json');
+      const token = 'c'.repeat(48);
+      const codexHome = join(root, 'codex-home');
+      const nativeFile = join(codexHome, 'sessions', '2026', '08', 'rollout.jsonl');
+      const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+      const kickoff = `${marker}\nBEGIN_PROOF_KICKOFF`;
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      chmodSync(proofPath, 0o600);
+      const { captured, io } = fakeIo();
+      const childCode = [
+        "const fs=require('fs'),path=require('path');",
+        "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+        "let b='';process.stdout.write('62% context left\\n');",
+        "process.stdin.on('data',d=>{b+=d;if(!b.includes('BEGIN_PROOF_KICKOFF'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
+        'setTimeout(()=>process.exit(2),5000);',
+      ].join('');
+      let done;
+      try {
+        done = hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode],
+          cwd: root,
+          env: {
+            ...process.env,
+            PAPERCUSP_SID: ownerId,
+            PAPERCUSP_AGENT: 'codex',
+            CODEX_HOME: codexHome,
+            NATIVE_FILE: nativeFile,
+            KICKOFF_MARKER: marker,
+            [KICKOFF_PROOF_PATH_ENV]: proofPath,
+            [KICKOFF_PROOF_TOKEN_ENV]: token,
+            PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+            PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+            PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '20',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+            PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+            TERM: 'xterm-256color',
+          },
+          ownerId,
+          io,
+          bridgeTty: false,
+          kickoff,
+          onExit: () => undefined,
+        });
+        const deadline = Date.now() + 5_000;
+        while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
+        expect(captured()).toContain('KICKOFF_RECEIVED');
+        expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual({
+          token,
+          persisted: true,
+          nativeRef: nativeFile,
+          reason: null,
+        });
+        expect(await done).toBe(0);
+      } finally {
+        await done?.catch(() => undefined);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
   );
 
   it(
