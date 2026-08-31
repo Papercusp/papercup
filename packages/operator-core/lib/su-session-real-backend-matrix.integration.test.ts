@@ -50,6 +50,7 @@
  * RUNNING IT
  * ----------
  *   PAPERCUSP_REAL_BACKEND_MATRIX=1 \
+ *   PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=auto \
  *   PAPERCUSP_TEST_FILE_TIMEOUT_MS=1800000 \
  *   npm run test:file -- packages/operator-core/lib/su-session-real-backend-matrix.integration.test.ts
  *
@@ -139,6 +140,16 @@ const HARNESS = 'papercusp';
 const OMP_MODEL =
   process.env.PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL?.trim() ||
   'papercusp-gateway/claude-sonnet-4-6';
+
+/**
+ * Codex's default/system route requires a local ~/.codex/auth.json. The
+ * acceptance host may instead have only a gateway account, so make that route
+ * an explicit matrix input while preserving the historical default for
+ * provenance. This changes no product default; it only lets a run select the
+ * credential path it can actually exercise.
+ */
+const CODEX_ACCOUNT =
+  process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT?.trim() || 'default';
 
 /** A real agent boot is not fast: psu resolves an account, the CLI starts, and
  *  bootstrap has to adopt the row before a native session exists. */
@@ -567,7 +578,7 @@ const liveLegs: LiveLeg[] = [];
  * That made this file a HYBRID and nobody could see it: CREATE ran deployed
  * code over HTTP while SPAWN/ATTACH/OWNER-TURN ran the working tree in-process.
  * The trap is not that it fails — it is that it PASSES. The D-014 parity guard
- * below asserts `--account=default` on the argv :3070 produced, so it would
+ * below asserts the selected `--account=` on the argv :3070 produced, so it would
  * have certified a fix that was never in the operator it tested.
  *
  * So: pin the operator, and PROVE it carries this tree's launch-su before
@@ -741,9 +752,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       expect(launchArgv[0]).toMatch(/psu/);
       expect(
         launchArgv,
-        `deferred ${backend} row ${advSessionId} omitted --account=default; ` +
+        `deferred ${backend} row ${advSessionId} omitted --account=${backend === 'codex' ? CODEX_ACCOUNT : 'default'}; ` +
           'bootstrap-su may reinterpret the PUI launch through the inference gateway',
-      ).toContain('--account=default');
+      ).toContain(`--account=${backend === 'codex' ? CODEX_ACCOUNT : 'default'}`);
     }, 120_000);
 
     it('SPAWN + READY: claiming the row then running the pane argv materialises a native session on the SAME row', async () => {
@@ -1582,10 +1593,10 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         headless: true,
         // REQUIRED, not a default: launch-agent.ts states that psu with no
         // --account opens an interactive picker, which would hang this spawn
-        // forever behind a prompt no test can answer. 'default' is the system
-        // credential with the gateway skipped — the cheapest route for a boot
-        // that never takes a turn.
-        account: 'default',
+        // forever behind a prompt no test can answer. Keep Claude/OMP on the
+        // system credential; Codex can opt into its explicit gateway route on
+        // hosts without ~/.codex/auth.json (PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=auto).
+        account: backend === 'codex' ? CODEX_ACCOUNT : 'default',
         ...(backend === 'omp' ? { model: OMP_MODEL } : {}),
       });
 
