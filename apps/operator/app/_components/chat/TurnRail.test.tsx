@@ -249,7 +249,12 @@ describe('spine density — the degraded one that ships on a narrow window', () 
 });
 
 describe('the WebKitGTK trap: a button-backed shape must lay out via inner spans', () => {
-  const css = readFileSync(join(__dirname, 'chat-controls.css'), 'utf8');
+  /* Overridable so falsifiability can be PROVEN against a mutated COPY outside
+     the tree (scripts/mutation-probe.sh tier 2). Mutating the real stylesheet
+     in place to test this guard would hand git-sync a window in which to commit
+     the mutant — a sweep race no trap can close. */
+  const cssPath = process.env.TURN_RAIL_CSS ?? join(__dirname, 'chat-controls.css');
+  const css = readFileSync(cssPath, 'utf8');
   /** Comments stripped: this file's own headers quote the declarations these
    *  guards are about, so scanning raw text matches the EXPLANATION of the rule
    *  rather than a violation of it (the same correction chat-controls.vocabulary
