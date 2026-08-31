@@ -34,7 +34,7 @@ const hiveSpecArgs = z.object({
 export default defineTool({
   name: 'deploy:pot',
   description:
-    "Deploy a pot (grouping of harnesses) to a Swarm (cloud fleet): place the Mug (local|dedicated|colocated) and deploy each member harness's execution to a frame. Per-member failures are reported, not fatal. Returns {ok, result}.",
+    "⛔ HISTORICAL — built around the retired Mug tier; fleet:launch-on-plan is the current way to run agents. Deploy a pot (grouping of harnesses) to a Swarm (cloud fleet): place the control frame (local|dedicated|colocated) and deploy each member harness's execution to a frame. Per-member failures are reported, not fatal. Returns {ok, result}.",
   guidance: {
     when: 'Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.',
     notWhen: 'A single harness — deploy:harness. Tearing one down — deploy:teardown_pot.',
@@ -64,7 +64,7 @@ export default defineTool({
 export const deployTeardownHiveTool = defineTool({
   name: 'deploy:teardown_pot',
   description:
-    'Tear down a pot — DESTROY every member execution frame + the Mug control frame (ends all billing). Pass the same potId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.',
+    '⛔ HISTORICAL — the control tier it was built around is retired. Tear down a pot: DESTROY every member execution frame + the control frame (ends all billing). Pass the same potId + members + placement used to deploy. Returns {ok, destroyed, failed}.',
   guidance: {
     when: 'Done with a deployed pot (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
     seeAlso: [

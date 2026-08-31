@@ -3116,7 +3116,7 @@ export default defineTool({
       "monitor. Folded into coord:orient { mode:'monitor' }. " +
       'Spec: agent-insights/leading-a-fleet-without-polling.',
     notWhen:
-      'Mug/placement read over the WHOLE roster (fleet:assignments), ' +
+      'A placement read over the WHOLE roster (fleet:assignments), ' +
       "or a member's message history (coord:inbox { agent }).",
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +

@@ -33,7 +33,7 @@ import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 export default defineTool({
   name: 'fleet:drain',
   description:
-    'Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Mug waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don\'t count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
+    'Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don\'t count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
   guidance: {
     when: 'You (the Mug) want to reclaim cup slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
@@ -84,7 +84,7 @@ export default defineTool({
     ]);
     const summary = `Graceful drain cue: release your slot`;
     const body =
-      `You are being asked to gracefully wind down and release your slot so the Mug can place higher-priority work.\n\n` +
+      `You are being asked to gracefully wind down and release your slot so the fleet leader can place higher-priority work.\n\n` +
       `**What to do:**\n` +
       `1. Checkpoint your state (commit any pending edits, save work-in-progress notes).\n` +
       `2. Release all locks (any files you have claimed via \`locks:acquire\`).\n` +

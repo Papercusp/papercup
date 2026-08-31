@@ -265,22 +265,34 @@ JSON.stringify({ MEASURE: "floor-applied",
 width while claiming to be at the floor. Refusing to emit a green."
 echo "  floor confirmed applied: resolved tracks are 220/260/180/46/46"
 
-# ---- MODE (i): vertical clipping / height growth --------------------------
-say "4a. CONTROL — inject a 400px node; vclip MUST go red"
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tall(true)' >/dev/null
-if ! "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.vclip() >= 1'; then
-  "$TAT" eval --pid "$PID" 'window.__hudprobe.tall(false)' >/dev/null || true
-  fatal "vclip control DID NOT FIRE. A 400px node inside a card did not make
-scrollHeight exceed clientHeight, so this probe cannot report red and any
-clean reading from it is worthless. Do not report mode (i) as verified."
+# ---- MODE (i): no height growth from wrapping -----------------------------
+# The control forces the ACTUAL MECHANISM the claim is about. Both card lines
+# are white-space:nowrap (.hud__cardtitle hud.css:812, .hud__entity-why :778),
+# which is precisely WHY they cannot wrap and grow — so a control that merely
+# squeezes the columns can never make this fire, which is exactly why round 1's
+# control refused to break and its clean reading meant nothing. Lifting nowrap
+# at the floor makes long titles genuinely wrap, and the SAME probe must see it.
+say "4a. CONTROL — lift white-space:nowrap so titles really wrap; height MUST grow"
+"$POLL" --require '.hud__cardtitle' \
+  --eval 'window.__hudprobe.style("probe-wrap",
+    ".hud__cardtitle,.hud__entity-why{white-space:normal !important;overflow:visible !important}")' >/dev/null
+if ! "$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.grown() >= 1'; then
+  "$TAT" eval --pid "$PID" 'window.__hudprobe.style("probe-wrap", null)' >/dev/null || true
+  fatal "height control DID NOT FIRE. Letting the title wrap at a 220px column
+did not grow a single card past the baseline, so this probe cannot report red
+and a clean reading from it is worthless. Do not report mode (i) as verified."
 fi
-echo "  control fired: vclip reports red on an injected tall node"
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.tall(false) === true' >/dev/null
+"$TAT" eval --pid "$PID" '
+JSON.stringify({ CONTROL: "wrap-forced", baseline: window.__hudprobe._baseline,
+  grownCards: window.__hudprobe.grown(),
+  maxHeight: window.__hudprobe.maxHeight() }, null, 1)'
+echo "  control fired: the height probe reports red when titles actually wrap"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.style("probe-wrap", null) === true' >/dev/null
 settle
-say "4a. MEASURE — vclip at the floor (same probe) MUST be 0"
-"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.vclip() === 0' \
-  || fatal "MODE (i) RED: plan cards are vertically clipping at the floor."
-echo "  mode (i) no vertical clipping/height loss at the floor: GREEN (control-backed)"
+say "4a. MEASURE — height at the floor (same probe) MUST NOT exceed the baseline"
+"$POLL" --require '.hud__cardtitle' --eval 'window.__hudprobe.grown() === 0' \
+  || fatal "MODE (i) RED: plan cards grow taller at the floor than at natural width."
+echo "  mode (i) no height growth at the floor: GREEN (control-backed)"
 
 # ---- MODE (iii): rail clipping -------------------------------------------
 say "4b. CONTROL — force .hud__cardright wider than the card; railOut MUST go red"
