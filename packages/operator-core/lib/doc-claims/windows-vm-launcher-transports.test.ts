@@ -47,7 +47,14 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const TRACKED_RELPATH = 'papercusp-desktop/scripts/windows-vm/launch-install.sh';
-const TRACKED_PATH = join(REPO_ROOT, TRACKED_RELPATH);
+/**
+ * Overridable so the absent-launcher branch below can be PROVEN without mutating the
+ * shared tree — CLAUDE.md's tier-2 mutation-probe pattern ("make the test's subject path
+ * overridable; that one line is what makes tier 2 available at all"). Mutating a tracked
+ * file to prove a guard is unsafe here: the git-sync sweep can commit the mutant even when
+ * nothing goes wrong and no handler fails.
+ */
+const TRACKED_PATH = process.env.WINDOWS_VM_LAUNCHER_PATH ?? join(REPO_ROOT, TRACKED_RELPATH);
 
 const EXEC_LINE = 'exec qemu-system-x86_64';
 
@@ -86,7 +93,36 @@ function execContinuation(script: string): { lines: string[]; commentsInside: st
   return { lines, commentsInside };
 }
 
-const TRACKED = readFileSync(TRACKED_PATH, 'utf8');
+/**
+ * READ DEFENSIVELY, AND AT MODULE SCOPE ONLY BECAUSE IT CANNOT THROW HERE.
+ *
+ * The tracked launcher lives in the `papercusp-desktop` SUBMODULE, and the superproject
+ * advances that gitlink in its OWN commit — a separate one from the commit carrying this
+ * file. So a perfectly ordinary checkout can legitimately lack the launcher: the release
+ * and checkpoint trees on this box both do right now, and so does any gate candidate cut
+ * in the window between this test landing (315e70b0, 12:32:20Z) and the gitlink bump that
+ * follows it (5a45c574). This is not a defect in the launcher and must not be reported as
+ * one.
+ *
+ * A bare `readFileSync` here made that ordinary state throw ENOENT during COLLECTION,
+ * which fails the whole FILE rather than one test — and a multi-file vitest invocation can
+ * abort collection outright when one file's module graph crashes (CLAUDE.md, gate-failure
+ * triage). That is a fleet-wide red produced by a checkout state nobody did wrong.
+ *
+ * The invariant this file guards is conditional by nature: IF the tracked launcher is in
+ * this checkout, THEN it declares both transports and the deployed copy matches it. So
+ * absence SKIPS — via `describe.skipIf`, which keeps the skip VISIBLE in the run output
+ * instead of letting the suite pass vacuously. Existence of the launcher is the
+ * papercusp-desktop repo's invariant to hold, not this one's.
+ */
+const TRACKED_RAW = existsSync(TRACKED_PATH) ? readFileSync(TRACKED_PATH, 'utf8') : null;
+const NO_TRACKED = TRACKED_RAW === null;
+const NO_TRACKED_REASON =
+  `${TRACKED_RELPATH} is absent from this checkout (the papercusp-desktop gitlink ` +
+  'predates it) — nothing to drift-check here';
+// Never observed: both describes below are skipped when NO_TRACKED. Keeping the type
+// `string` is what lets every assertion below stay unchanged.
+const TRACKED = TRACKED_RAW ?? '';
 
 // ── Controls. Fixtures, never the real tree — a probe that mutates a tracked file can
 // be committed by the git-sync sweep even when nothing goes wrong (CLAUDE.md).
@@ -109,7 +145,9 @@ const CONTROL_VNC_ONLY = [
   '',
 ].join('\n');
 
-describe('windows-vm launcher: display transports are pinned', () => {
+describe.skipIf(NO_TRACKED)(`windows-vm launcher: display transports are pinned${
+  NO_TRACKED ? ` [SKIPPED: ${NO_TRACKED_REASON}]` : ''
+}`, () => {
   it('serves the owner-facing SPICE transport', () => {
     const { lines } = execContinuation(TRACKED);
     const argv = lines.join('\n');
@@ -157,7 +195,9 @@ describe('windows-vm launcher: display transports are pinned', () => {
   });
 });
 
-describe('windows-vm launcher: deployed copy has not drifted from the tracked one', () => {
+describe.skipIf(NO_TRACKED)(`windows-vm launcher: deployed copy has not drifted from the tracked one${
+  NO_TRACKED ? ` [SKIPPED: ${NO_TRACKED_REASON}]` : ''
+}`, () => {
   const deployedDir = deployedDirFrom(TRACKED);
 
   it('the tracked script still declares where it deploys', () => {
