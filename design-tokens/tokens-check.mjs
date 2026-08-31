@@ -14,6 +14,9 @@ const OUTPUTS = [
   "apps/operator/app/_semantic.css",
   "apps/operator/app/_semantic.frost.css",
   "apps/operator/app/_semantic.black.css",
+  "apps/operator/app/_semantic.honeycomb.css",
+  "apps/operator/app/_semantic.portal-light.css",
+  "apps/operator/app/_semantic.portal-dark.css",
   "design-tokens/primitives.tokens.json",
 ];
 

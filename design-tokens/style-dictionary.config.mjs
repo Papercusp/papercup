@@ -34,7 +34,7 @@ StyleDictionary.registerTransform({
 // Theme namespaces — each is a top-level key holding a semantic-override set,
 // emitted to its own `[data-theme="<name>"]` block. Frost is NOT here: it is the
 // base `:root` layer (top-level semantic keys), not a variant.
-const THEME_NAMESPACES = ["black", "honeycomb"];
+const THEME_NAMESPACES = ["black", "honeycomb", "portal-light", "portal-dark"];
 const isThemeToken = (t) => THEME_NAMESPACES.includes(t.path[0]);
 
 // Filter: primitives layer only (anything under `color.*`).
@@ -114,6 +114,33 @@ export default {
           format: "css/variables",
           options: { outputReferences: false, selector: '[data-theme="honeycomb"]' },
           filter: (t) => t.path[0] === "honeycomb",
+        },
+      ],
+    },
+    // Hosted-portal companions. These are real Papercusp semantic themes, not
+    // iframe-only CSS aliases: portalEmbed selects them before paint, and the
+    // ordinary theme picker may select them directly too.
+    "css-semantic-portal-light": {
+      transforms: themeTransforms,
+      buildPath: "apps/operator/app/",
+      files: [
+        {
+          destination: "_semantic.portal-light.css",
+          format: "css/variables",
+          options: { outputReferences: false, selector: '[data-theme="portal-light"]' },
+          filter: (t) => t.path[0] === "portal-light",
+        },
+      ],
+    },
+    "css-semantic-portal-dark": {
+      transforms: themeTransforms,
+      buildPath: "apps/operator/app/",
+      files: [
+        {
+          destination: "_semantic.portal-dark.css",
+          format: "css/variables",
+          options: { outputReferences: false, selector: '[data-theme="portal-dark"]' },
+          filter: (t) => t.path[0] === "portal-dark",
         },
       ],
     },

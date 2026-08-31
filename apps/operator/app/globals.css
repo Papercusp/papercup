@@ -20,6 +20,8 @@
 @import './_semantic.frost.css';
 @import './_semantic.black.css';
 @import './_semantic.honeycomb.css';
+@import './_semantic.portal-light.css';
+@import './_semantic.portal-dark.css';
 
 :root {
   color-scheme: dark;
@@ -99,6 +101,9 @@
    *   --dur-slow  : multi-element choreography only
    */
 }
+
+[data-theme="portal-light"] { color-scheme: light; }
+[data-theme="portal-dark"] { color-scheme: dark; }
 
 [data-theme="honeycomb"] {
   /* Legacy harness dashboard tables still consume JS color constants. These

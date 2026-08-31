@@ -1,0 +1,106 @@
+/**
+ * Browser-safe contract shared by the hosted portal and the operator document
+ * it embeds.  Keep this module free of React, filesystem, and server imports:
+ * the portal uses it while building an iframe URL and the operator uses it in
+ * both its pre-paint bootstrap and its React shell.
+ */
+
+export const PORTAL_EMBED_PARAM = 'portalEmbed' as const;
+export const PORTAL_EMBED_THEME_PARAM = 'portalTheme' as const;
+export const PORTAL_EMBED_ORIGIN_PARAM = 'portalOrigin' as const;
+export const PORTAL_EMBED_MESSAGE = 'papercusp:portal-embed' as const;
+export const PORTAL_EMBED_PROTOCOL_VERSION = 1 as const;
+
+export const PORTAL_EMBED_THEMES = ['light', 'dark', 'system'] as const;
+export type PortalEmbedTheme = (typeof PORTAL_EMBED_THEMES)[number];
+export type OperatorThemeId = 'portal-light' | 'portal-dark';
+
+export interface PortalEmbedThemeMessage {
+  type: typeof PORTAL_EMBED_MESSAGE;
+  version: typeof PORTAL_EMBED_PROTOCOL_VERSION;
+  theme: PortalEmbedTheme;
+}
+
+/** Parse the portal's deliberately small theme vocabulary. */
+export function parsePortalEmbedTheme(value: unknown): PortalEmbedTheme | null {
+  return typeof value === 'string' && (PORTAL_EMBED_THEMES as readonly string[]).includes(value)
+    ? value as PortalEmbedTheme
+    : null;
+}
+
+/** Query values are presence-like, but only explicit truthy spellings enable the mode. */
+export function isPortalEmbedFlag(value: unknown): boolean {
+  return value === '' || value === '1' || value === 'true' || value === 'yes';
+}
+
+/** True when a pathname + query describe an operator document hosted by the portal. */
+export function isPortalEmbedLocation(pathname: string, search = ''): boolean {
+  if (pathname !== '/adv' && !pathname.startsWith('/adv/')) return false;
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  return isPortalEmbedFlag(params.get(PORTAL_EMBED_PARAM));
+}
+
+/** Resolve the URL fallback theme, defaulting to system when it is absent/invalid. */
+export function portalEmbedThemeFromSearch(search = ''): PortalEmbedTheme {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  return parsePortalEmbedTheme(params.get(PORTAL_EMBED_THEME_PARAM)) ?? 'system';
+}
+
+/** Convert the portal's light/dark/system vocabulary to the operator themes. */
+export function operatorThemeForPortalTheme(
+  theme: PortalEmbedTheme,
+  prefersDark = false,
+): OperatorThemeId {
+  return theme === 'dark' || (theme === 'system' && prefersDark) ? 'portal-dark' : 'portal-light';
+}
+
+/** Build an embedded operator URL while preserving the surface's existing query. */
+export function portalEmbedHref(
+  href: string,
+  theme: PortalEmbedTheme,
+  parentOrigin?: string | null,
+): string {
+  const [pathAndQuery, hash = ''] = href.split('#', 2);
+  const [path, query = ''] = pathAndQuery.split('?', 2);
+  const params = new URLSearchParams(query);
+  params.set(PORTAL_EMBED_PARAM, '1');
+  params.set(PORTAL_EMBED_THEME_PARAM, theme);
+  const origin = typeof parentOrigin === 'string' ? parentOrigin.trim() : '';
+  if (origin) params.set(PORTAL_EMBED_ORIGIN_PARAM, origin);
+  return `${path}?${params.toString()}${hash ? `#${hash}` : ''}`;
+}
+
+export function portalEmbedThemeMessage(theme: PortalEmbedTheme): PortalEmbedThemeMessage {
+  return {
+    type: PORTAL_EMBED_MESSAGE,
+    version: PORTAL_EMBED_PROTOCOL_VERSION,
+    theme,
+  };
+}
+
+/**
+ * Validate a message before applying it.  The expected origin is derived from
+ * the embedding document's referrer/query, never from the message itself.
+ */
+export function isTrustedPortalEmbedMessage(
+  data: unknown,
+  origin: string,
+  expectedOrigin: string | null | undefined,
+): data is PortalEmbedThemeMessage {
+  if (!expectedOrigin || origin !== expectedOrigin) return false;
+  if (!data || typeof data !== 'object') return false;
+  const value = data as Record<string, unknown>;
+  return value.type === PORTAL_EMBED_MESSAGE
+    && value.version === PORTAL_EMBED_PROTOCOL_VERSION
+    && parsePortalEmbedTheme(value.theme) !== null;
+}
+
+/** Extract a canonical origin from a URL-like string without throwing. */
+export function safeOrigin(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}

@@ -21,7 +21,11 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { findShellSyntaxError } from '../packages/operator-core/lib/content-lint/shell-syntax';
+// Node 25 (the repository's pinned runtime) can strip types from an explicit
+// `.ts` import. Keep the extension here: plain `node scripts/check-shell-syntax.mjs`
+// is the documented/shebang entrypoint, and Node's ESM resolver never guesses
+// `.ts` for an extensionless specifier (the old import died before scanning).
+import { findShellSyntaxError } from '../packages/operator-core/lib/content-lint/shell-syntax.ts';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 export { findShellSyntaxError };

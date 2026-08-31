@@ -48,6 +48,8 @@ const THEME_DESCRIPTIONS: Record<string, string> = {
   frost: 'The default — a slate-navy base with sky-cyan accents and glassy frost surfaces.',
   black: 'Pure-black surfaces with neutral greys and a white accent. High contrast, minimal color.',
   honeycomb: 'The Swarm palette — ominous charcoal surfaces with honey-amber signal color.',
+  'portal-light': 'The hosted portal light palette — warm paper, dark ink, and green interactive accents.',
+  'portal-dark': 'The hosted portal dark palette — charcoal surfaces, warm text, and green interactive accents.',
 };
 
 /** Live mini-preview of a theme, scoped via `data-theme={id}` so it renders that

@@ -180,6 +180,41 @@ describe('design tokens — Honeycomb theme variant ([data-theme="honeycomb"])',
   });
 });
 
+for (const theme of ['portal-light', 'portal-dark'] as const) {
+  describe(`design tokens — ${theme} portal companion`, () => {
+    const source = loadTokens(`design-tokens/${theme}.semantic.tokens.json`);
+    const css = loadCss(`apps/operator/app/_semantic.${theme}.css`);
+    const baseSemantic = loadTokens('design-tokens/desktop.semantic.tokens.json');
+    const baseMotion = loadTokens('design-tokens/desktop.motion.tokens.json');
+    const allowed = new Set(
+      [...Object.keys(baseSemantic), ...Object.keys(baseMotion)].map((key) =>
+        key.replace(/^motion-/, '').replace(/^shadow-/, '').replace(/^overlay-/, ''),
+      ),
+    );
+
+    test('emits every source token into its scoped theme block', () => {
+      expect(Object.keys(source).length).toBeGreaterThan(0);
+      for (const key of Object.keys(source)) {
+        const cssKey = key.replace(new RegExp(`^${theme}-`), '');
+        expect(css, `${theme} token "${cssKey}" not emitted`).toHaveProperty(cssKey);
+        expect(css[cssKey]).not.toMatch(/^\{/);
+      }
+      const body = readFileSync(join(REPO, `apps/operator/app/_semantic.${theme}.css`), 'utf8');
+      expect(body).toContain(`[data-theme="${theme}"]`);
+      expect(body).not.toMatch(/:root\s*\{/);
+    });
+
+    test('overrides semantic tokens only', () => {
+      for (const cssKey of Object.keys(css)) {
+        expect(
+          allowed.has(cssKey),
+          `${theme} overrides "--${cssKey}", which is not a base semantic token`,
+        ).toBe(true);
+      }
+    });
+  });
+}
+
 describe('design tokens — frost is explicitly scopable ([data-theme="frost"])', () => {
   // Frost is the :root default; the scoped block lets a subtree render frost under
   // another active theme (preview swatches). It must carry the SAME color tokens

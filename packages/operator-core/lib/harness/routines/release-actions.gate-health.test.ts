@@ -35,6 +35,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 type UnsafeCall = { query: string; params: unknown[] };
 const calls: UnsafeCall[] = [];
 let seededGh: Record<string, unknown> | null = null;
+let seededRepairQueue: Record<string, unknown> | null = null;
 /**
  * WI-42118: the `green_checkpoint` pipeline_events page the CROSS-STREAK cause digest reads.
  * Default EMPTY, which the reader turns into a `null` digest — so every pre-existing test in
@@ -60,7 +61,7 @@ const fakeSql = {
   unsafe: (query: string, params: unknown[] = []): Promise<FakeSqlResult> => {
     calls.push({ query, params });
     if (/SELECT\s+metadata->'gate_health'/i.test(query)) {
-      return Promise.resolve([{ gh: seededGh }]);
+      return Promise.resolve([{ gh: seededGh, rq: seededRepairQueue }]);
     }
     // Escalation clear (green path) reads `.count`. A real DB would only have a
     // row to clear when the seeded gate_health actually believed an escalation
@@ -107,9 +108,12 @@ const notifyAttention = vi.fn(async (..._a: unknown[]) => {});
 // that accepts `dedupeKey`). It MUST be stubbed here: the call site swallows its own errors, so
 // an absent export would not fail a test, it would silently turn every stall-notify assertion
 // into a no-op while `console.warn('stall alert failed')` scrolled past.
-const notifyAttentionOnce = vi.fn(
-  async (..._a: unknown[]) => ({ recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true }),
-);
+const notifyAttentionOnce = vi.fn(async (..._a: unknown[]) => ({
+  recordId: 1,
+  deduped: false,
+  mobileDelivered: true,
+  desktopDelivered: true,
+}));
 vi.mock('../../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
   notifyAttentionOnce: (...a: unknown[]) => notifyAttentionOnce(...a),
@@ -140,6 +144,7 @@ import {
   measureCandidateStaleness,
   gateRedStreakBroadcast,
   resolveIntegrationRoot,
+  FIXER_SUCCESSION_STALL_MS,
   type GitCheckRunner,
 } from './release-actions';
 import { gateRedStreakConditionKey } from '../../coord/gate-ownership';
@@ -163,6 +168,7 @@ function lastGateHealthWrite(): Record<string, unknown> | null {
 beforeEach(() => {
   calls.length = 0;
   seededGh = null;
+  seededRepairQueue = null;
   seededEvents = [];
   notifyAttention.mockClear();
   notifyAttentionOnce.mockClear();
@@ -207,10 +213,7 @@ describe('P-003: trackGateStall ANNOUNCES a torn sweep on the record-only tick',
     await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts', 'b/two.test.ts'], null, staleRetriage);
 
     const emits = tornSweepEmits();
-    expect(emits.map((e) => e.key)).toEqual([
-      'green-checkpoint:torn-sweep',
-      'green-checkpoint:torn-sweep:test-slug',
-    ]);
+    expect(emits.map((e) => e.key)).toEqual(['green-checkpoint:torn-sweep', 'green-checkpoint:torn-sweep:test-slug']);
     const payload = (emits[0] as { payload?: Record<string, unknown> }).payload!;
     expect(payload).toMatchObject({
       installSlug: 'test-slug',
@@ -268,7 +271,17 @@ describe('P-003: trackGateStall ANNOUNCES a torn sweep on the record-only tick',
       calls.length = 0;
       emitAwaitedEvent.mockClear();
       seededGh = { consecutiveReds: 4, stallAlerted: false, lastGreenAt: Date.now() };
-      await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts'], null, staleRetriage, null, undefined, options);
+      await trackGateStall(
+        ctx,
+        'not-green',
+        CANDIDATE,
+        ['a/one.test.ts'],
+        null,
+        staleRetriage,
+        null,
+        undefined,
+        options,
+      );
       return { emits: tornSweepEmits(), reds: gateHealth().consecutiveReds };
     };
 
@@ -897,7 +910,8 @@ describe('trackGateStall persists retriage staleness into gate_health (EI-13288)
 describe('trackGateStall persists candidate staleness into gate_health (EI-19329732364513693)', () => {
   /** Fake git: `log -1 --format=%cI` → commit time, `rev-list --count` → distance behind tip.
    *  A null argument makes that specific git call FAIL, to exercise the fail-safe path. */
-  const stalenessRunner = (commitIso: string | null, behind: string | null): GitCheckRunner =>
+  const stalenessRunner =
+    (commitIso: string | null, behind: string | null): GitCheckRunner =>
     async (_root, args) => {
       if (args[0] === 'log') return { ok: commitIso != null, stdout: commitIso ?? '' };
       if (args[0] === 'rev-list') return { ok: behind != null, stdout: behind ?? '' };
@@ -940,17 +954,11 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
   // consulting the env pin, this fails LOUDLY here rather than letting the two cases below
   // start depending on the ambient checkout name again without anyone noticing.
   it('the env pin is what resolves the root (premise of the two persistence cases below)', () => {
-    expect(resolveIntegrationRoot(process.env, '/tmp/papercusp-checkpoint/packages/operator-core')).toBe(
-      PINNED_ROOT,
-    );
+    expect(resolveIntegrationRoot(process.env, '/tmp/papercusp-checkpoint/packages/operator-core')).toBe(PINNED_ROOT);
   });
 
   it('measureCandidateStaleness reads the commit time and the distance behind tip', async () => {
-    const out = await measureCandidateStaleness(
-      '/repo',
-      'deadbeefcafe',
-      stalenessRunner('2026-08-02T02:27:59Z', '86'),
-    );
+    const out = await measureCandidateStaleness('/repo', 'deadbeefcafe', stalenessRunner('2026-08-02T02:27:59Z', '86'));
     expect(out.candidateCommittedAt).toBe('2026-08-02T02:27:59Z');
     expect(out.commitsBehindTip).toBe(86);
   });
@@ -974,7 +982,11 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
   });
 
   it('reports a null distance when the count is unparseable, never NaN', async () => {
-    const out = await measureCandidateStaleness('/repo', 'deadbeefcafe', stalenessRunner('2026-08-02T02:27:59Z', 'not-a-number'));
+    const out = await measureCandidateStaleness(
+      '/repo',
+      'deadbeefcafe',
+      stalenessRunner('2026-08-02T02:27:59Z', 'not-a-number'),
+    );
     // NaN would serialize into the jsonb blob as `null` anyway, but via a route that also
     // makes arithmetic on the field silently wrong — reject it at the source.
     expect(out.commitsBehindTip).toBeNull();
@@ -1007,7 +1019,16 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
   it('carries the fields through a GREEN/reset tick too (the whole-object replace must not drop them)', async () => {
     seededGh = { consecutiveReds: 5, stallAlerted: true, lastGreenAt: Date.now() - 60_000 };
 
-    await trackGateStall(ctx, 'advanced', 'bb054adbccf5', [], null, undefined, null, stalenessRunner('2026-08-02T02:27:59Z', '3'));
+    await trackGateStall(
+      ctx,
+      'advanced',
+      'bb054adbccf5',
+      [],
+      null,
+      undefined,
+      null,
+      stalenessRunner('2026-08-02T02:27:59Z', '3'),
+    );
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
@@ -1063,9 +1084,22 @@ describe('trackGateStall records an inconclusive ABORT without counting it as a 
   }
 
   it('⭐ records status + candidate + the pending-migration detail on a migrations-pending abort', async () => {
-    seededGh = { consecutiveReds: 3, stallAlerted: true, failingTests: ['pkgA/old.test.ts'], observedCandidate: 'oldcandidat' };
+    seededGh = {
+      consecutiveReds: 3,
+      stallAlerted: true,
+      failingTests: ['pkgA/old.test.ts'],
+      observedCandidate: 'oldcandidat',
+    };
 
-    await trackGateStall(ctx, 'migrations-pending', 'deadbeefcafe1234', undefined, null, undefined, '727-widen-vectors.sql: null value in column "vector"');
+    await trackGateStall(
+      ctx,
+      'migrations-pending',
+      'deadbeefcafe1234',
+      undefined,
+      null,
+      undefined,
+      '727-widen-vectors.sql: null value in column "vector"',
+    );
 
     const inc = lastInconclusiveWrite();
     // The bug: before this fix the noop branch returned early and wrote nothing at all.
@@ -1097,14 +1131,27 @@ describe('trackGateStall records an inconclusive ABORT without counting it as a 
     // to write the real verdict, which is precisely the write EI-2615 proved must not be raced.
     seededGh = { consecutiveReds: 2, stallAlerted: false };
 
-    await trackGateStall(ctx, 'skipped-locked', 'deadbeefcafe1234', undefined, null, undefined, 'a peer holds the lock');
+    await trackGateStall(
+      ctx,
+      'skipped-locked',
+      'deadbeefcafe1234',
+      undefined,
+      null,
+      undefined,
+      'a peer holds the lock',
+    );
 
     expect(lastInconclusiveWrite()).toBeNull();
     expect(lastGateHealthWrite()).toBeNull();
   });
 
   it('⭐ a subsequent RED verdict clears the recorded abort (it superseded it)', async () => {
-    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now(), inconclusive: { status: 'migrations-pending' } };
+    seededGh = {
+      consecutiveReds: 0,
+      stallAlerted: false,
+      lastGreenAt: Date.now(),
+      inconclusive: { status: 'migrations-pending' },
+    };
 
     await trackGateStall(ctx, 'not-green', 'cafebabe1234', ['pkgA/foo.test.ts']);
 
@@ -1295,7 +1342,14 @@ describe('EI-20706962612084953: a pin-moved NOT-GREEN tick must not write a GREE
   it('CONTROL: a genuinely GREEN tick still writes the full green signature and DOES all-clear', async () => {
     // Calibration — without this, every assertion above would pass just as happily against a
     // build that had broken the green path outright.
-    seededGh = { consecutiveReds: 2, stallAlerted: true, watchdogAlerted: true, lastGreenAt: OLD_GREEN, lastMainPin: LAST_MAIN, failingTests: ['stale.test.ts'] };
+    seededGh = {
+      consecutiveReds: 2,
+      stallAlerted: true,
+      watchdogAlerted: true,
+      lastGreenAt: OLD_GREEN,
+      lastMainPin: LAST_MAIN,
+      failingTests: ['stale.test.ts'],
+    };
 
     await trackGateStall(ctx, 'advanced', 'cafebabe1234', [], MOVED_FROM);
 
@@ -1557,6 +1611,29 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
       dedupeKey: string;
       data: Record<string, unknown>;
     };
+  const fixerMarkWrite = () =>
+    [...calls]
+      .reverse()
+      .find((c) => /stallAlertedAtFixerAgeMs/.test(c.query) && /stallFixerSuccessionKey/.test(c.query));
+  const awaitingFixer = (over: Record<string, unknown> = {}): Record<string, unknown> => {
+    const now = Date.now();
+    return {
+      schemaVersion: 3,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      qualificationAttemptId: null,
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      affectedTestProofGroup: null,
+      worktreePath: '/tmp/frozen-repair',
+      attempts: 1,
+      openedAtMs: now - 2 * FIXER_SUCCESSION_STALL_MS,
+      updatedAtMs: now - FIXER_SUCCESSION_STALL_MS - 1_000,
+      fixerSpawnId: 'dead-fixer',
+      failingTests: ['lib/broken.test.ts'],
+      ...over,
+    };
+  };
 
   it('⭐ RE-NOTIFIES at the next count rung — the deeper red that used to be silent', async () => {
     // Rung 1 (stallReds) already announced. This tick lands ON rung 2 (stallReds * 3).
@@ -1633,6 +1710,71 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     expect(broadcastSevereEvent).not.toHaveBeenCalled();
   });
 
+  it('⭐ escalates a confirmed-dead awaiting-fixer queue on its OWN axis without counting a red', async () => {
+    seededGh = {
+      consecutiveReds: stallReds + 1,
+      stallAlerted: true,
+      stallAlertedAtReds: stallReds,
+      lastGreenAt: Date.now(),
+    };
+    seededRepairQueue = awaitingFixer();
+
+    await trackGateStall(ctx, 'repair-in-progress', 'a'.repeat(40), [], null, undefined, 'waiting on fixer');
+
+    expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    const alert = notifyArg();
+    expect(alert.title).toContain('fixer DEAD');
+    expect(alert.data).toMatchObject({
+      stallAxis: 'fixer',
+      stallRung: FIXER_SUCCESSION_STALL_MS,
+      fixerSuccessionState: 'dead',
+      fixerSpawnId: 'dead-fixer',
+    });
+    expect(alert.body).toContain('awaiting-fixer');
+    expect(alert.body).toContain('do not start a parallel repair');
+    // This is an ownership/succession alarm, never a code verdict or second owning item.
+    expect(lastGateHealthWrite()).toBeNull();
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(escalationWrites()).toHaveLength(0);
+    const mark = fixerMarkWrite();
+    expect(mark).toBeDefined();
+    expect(JSON.parse(String(mark!.params[1]))).toBe(FIXER_SUCCESSION_STALL_MS);
+    expect(JSON.parse(String(mark!.params[2]))).toContain('dead-fixer');
+  });
+
+  it('⭐ alarms when no fixer materialized after the reservation window, and holds on replay', async () => {
+    seededGh = { consecutiveReds: 1, stallAlerted: false, lastGreenAt: Date.now() };
+    seededRepairQueue = awaitingFixer({ attempts: 0, fixerSpawnId: null });
+
+    await trackGateStall(ctx, 'repair-in-progress');
+
+    expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    expect(notifyArg().title).toContain('fixer ABSENT');
+    expect(notifyArg().data).toMatchObject({
+      stallAxis: 'fixer',
+      fixerSuccessionState: 'absent',
+      fixerSpawnId: null,
+    });
+    const mark = fixerMarkWrite();
+    expect(mark).toBeDefined();
+    const priorMark = JSON.parse(String(mark!.params[1]));
+    const priorKey = JSON.parse(String(mark!.params[2]));
+
+    // Feed back the exact persisted identity/mark: the same hourly observation must hold,
+    // proving the axis did not become a per-tick pager.
+    calls.length = 0;
+    notifyAttentionOnce.mockClear();
+    seededGh = {
+      consecutiveReds: 1,
+      stallAlerted: false,
+      lastGreenAt: Date.now(),
+      stallAlertedAtFixerAgeMs: priorMark,
+      stallFixerSuccessionKey: priorKey,
+    };
+    await trackGateStall(ctx, 'repair-in-progress');
+    expect(notifyAttentionOnce).not.toHaveBeenCalled();
+  });
+
   it('⭐ a legacy blob (stallAlerted, no marks) does NOT re-alert for a stall already announced', async () => {
     // Back-compat is a one-time migration, not a decision re-taken hourly: seed each axis at its
     // FIRST rung so the ladder resumes at rung 2 instead of re-announcing on the deploy tick.
@@ -1646,7 +1788,7 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     expect(written().stallAlertedAtAgeMs).toBe(stallAgeMs);
   });
 
-  it('⭐ a GREEN resets the ladder to the bottom — both marks cleared', async () => {
+  it('⭐ a GREEN resets the ladder to the bottom — all marks cleared', async () => {
     // The ONLY intended way back to null: the decision layer never regresses a mark, so if green
     // did not clear them the NEXT stall would resume halfway up the previous episode's ladder and
     // skip its own rung-1 alert.
@@ -1655,6 +1797,8 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
       stallAlerted: true,
       stallAlertedAtReds: stallReds * 3,
       stallAlertedAtAgeMs: stallAgeMs * 3,
+      stallAlertedAtFixerAgeMs: FIXER_SUCCESSION_STALL_MS,
+      stallFixerSuccessionKey: 'old-fixer-attempt',
       lastGreenAt: Date.now() - 60_000,
     };
 
@@ -1662,6 +1806,8 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
 
     expect(written().stallAlertedAtReds).toBeNull();
     expect(written().stallAlertedAtAgeMs).toBeNull();
+    expect(written().stallAlertedAtFixerAgeMs).toBeNull();
+    expect(written().stallFixerSuccessionKey).toBeNull();
   });
 
   it('⭐ opens the one-shot legs on rung 1, exactly as before — the fix changed cadence, not the edge', async () => {
@@ -1761,11 +1907,7 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
 
   it('⭐ says the alarm is about the GATE when every red named nothing — the livelock shape', async () => {
     seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
-    seededEvents = [
-      evt(2 * HOUR, 'not-green', []),
-      evt(10 * HOUR, 'not-green', []),
-      evt(20 * HOUR, 'not-green', []),
-    ];
+    seededEvents = [evt(2 * HOUR, 'not-green', []), evt(10 * HOUR, 'not-green', []), evt(20 * HOUR, 'not-green', [])];
 
     await trackGateStall(ctx, 'not-green');
 

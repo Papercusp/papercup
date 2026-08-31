@@ -497,6 +497,16 @@ describe('<AgentsRunningPill>', () => {
     expect(modal.getAttribute('data-url')).toContain('/api/adv/session/thinking?sessionId=live-sess-xyz');
   });
 
+  it('opens the canonical inspector from the portal agentsInspect deep-link', async () => {
+    H.active = [agent({ ownerId: 'portal-agent', role: 'su', agent: 'claude', sessionId: 'portal-session', thinkingResolvable: true })];
+    nuqs.open = true;
+    nuqsOther.state.agentsInspect = 'portal-agent';
+    render(<Pill />);
+    await waitFor(() => expect(screen.getByTestId('inspector-modal')).toBeTruthy());
+    expect(screen.getByTestId('inspector-modal').getAttribute('data-url'))
+      .toContain('/api/adv/session/thinking?sessionId=portal-session');
+  });
+
   it('a CODEX session (adv row id, no claude sessionId) streams via codexSessionKey', () => {
     H.active = [agent({ ownerId: 'cq1', role: 'queen', agent: 'codex', advSessionId: 9444, runId: null, harnessSlug: null, sessionId: null })];
     nuqs.open = true;

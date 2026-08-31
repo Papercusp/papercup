@@ -33,6 +33,10 @@ export function PotThemeBridge() {
     if (typeof document === 'undefined') return undefined;
 
     const apply = () => {
+      // portalEmbed owns the document theme while this operator is framed by
+      // the hosted portal. A profile/theme subscription must not clobber that
+      // parent-owned contract after the pre-paint bootstrap has applied it.
+      if (document.documentElement.dataset.portalEmbed === 'true') return;
       if (hiveEnabled) {
         document.documentElement.dataset.theme = HIVE_THEME_ID;
         document.title = HIVE_TITLE;
