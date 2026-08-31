@@ -4405,6 +4405,64 @@ export function accountRoutingMode(value) {
   return "pin";
 }
 
+/**
+ * Return whether raw Codex auth.json content contains a usable ChatGPT access
+ * token. Pure and secret-free: this only parses the shape needed by the Codex
+ * CLI, and never returns or logs token contents.
+ *
+ * A fresh isolated CODEX_HOME inherits the user's auth.json as a symlink. When
+ * that source is absent (or malformed), Codex falls through to its interactive
+ * sign-in screen; a headless launch then remains alive forever waiting on fd0.
+ * Keep this predicate aligned with the gateway's readCodexAuth contract.
+ */
+export function codexAuthJsonReady(raw) {
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return false;
+    const tokens = parsed.tokens;
+    return Boolean(
+      tokens &&
+        typeof tokens === "object" &&
+        !Array.isArray(tokens) &&
+        typeof tokens.access_token === "string" &&
+        tokens.access_token.trim(),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Preflight the credential a FRESH headless Codex launch will actually use.
+ * Gateway auto/pin routes do not consume the machine's ~/.codex login and all
+ * non-Codex/non-headless launches retain their existing behavior.
+ *
+ * The filesystem reader is injectable so the decision remains deterministic in
+ * tests. The returned reason is diagnostic only and never includes credentials.
+ */
+export function codexFreshDefaultAuthPreflight({
+  agent,
+  headless = false,
+  account = null,
+  codexHome = null,
+  readFile = readFileSync,
+} = {}) {
+  if (agent !== "codex" || headless !== true || accountRoutingMode(account) !== "default")
+    return { checked: false, ready: true, reason: "not-required" };
+  if (!codexHome)
+    return { checked: true, ready: false, reason: "missing-codex-home" };
+  let raw;
+  try {
+    raw = readFile(join(codexHome, "auth.json"), "utf8");
+  } catch {
+    return { checked: true, ready: false, reason: "missing-auth-json" };
+  }
+  if (!codexAuthJsonReady(raw))
+    return { checked: true, ready: false, reason: "unusable-auth-json" };
+  return { checked: true, ready: true, reason: "ready" };
+}
+
 /** Explicit launch-envelope marker for the direct system/CLI credential route.
  * It must be envelope state (not inherited ambient state), because runWrapper uses
  * it to clear every higher-precedence Claude credential before restoring the
@@ -12128,6 +12186,27 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // WI-1408 (fleet-join-startup-assertion): a requested fleet must have actually
   // registered — see assertFleetJoined's doc comment.
   assertFleetJoined(args.fleet || args.fleetName, res);
+
+  // A fresh headless Codex process cannot complete an interactive sign-in. The
+  // server-created home inherits the machine's default auth.json when it is
+  // available, so check the exact home that the child will use before doing any
+  // further launch setup or starting the managed PTY. Gateway-routed Codex
+  // launches do not use this local credential and are intentionally skipped.
+  const codexAuthPreflight = codexFreshDefaultAuthPreflight({
+    agent: res.agent,
+    headless: args.headless,
+    account: args.account,
+    codexHome: res.codexHome,
+  });
+  if (codexAuthPreflight.checked && !codexAuthPreflight.ready) {
+    console.error(
+      "psu: refusing headless Codex launch on the default system account — " +
+        `${codexAuthPreflight.reason}. ` +
+        "Authenticate with `codex` first, or choose `--account=auto` / a Codex pool account; " +
+        "a headless launch cannot complete an interactive sign-in.",
+    );
+    process.exit(1);
+  }
 
   // res.cwd is server-decided: the harness repo for a harness launch, or
   // our cwd (above) for a no-harness one. Agents scope resumable sessions

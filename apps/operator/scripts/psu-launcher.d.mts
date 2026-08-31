@@ -1183,6 +1183,35 @@ export function gatewayPinEnv(account: any, provider?: string, ownerId?: undefin
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
 export function accountRoutingMode(value: any): "default" | "pin" | "auto";
+/**
+ * Return whether raw Codex auth.json content contains a usable ChatGPT access
+ * token. Pure and secret-free: this only parses the shape needed by the Codex
+ * CLI, and never returns or logs token contents.
+ *
+ * A fresh isolated CODEX_HOME inherits the user's auth.json as a symlink. When
+ * that source is absent (or malformed), Codex falls through to its interactive
+ * sign-in screen; a headless launch then remains alive forever waiting on fd0.
+ * Keep this predicate aligned with the gateway's readCodexAuth contract.
+ */
+export function codexAuthJsonReady(raw: any): boolean;
+/**
+ * Preflight the credential a FRESH headless Codex launch will actually use.
+ * Gateway auto/pin routes do not consume the machine's ~/.codex login and all
+ * non-Codex/non-headless launches retain their existing behavior.
+ *
+ * The filesystem reader is injectable so the decision remains deterministic in
+ * tests. The returned reason is diagnostic only and never includes credentials.
+ */
+export function codexFreshDefaultAuthPreflight({ agent, headless, account, codexHome, readFile, }?: {
+    headless?: boolean | undefined;
+    account?: null | undefined;
+    codexHome?: null | undefined;
+    readFile?: typeof readFileSync | undefined;
+}): {
+    checked: boolean;
+    ready: boolean;
+    reason: string;
+};
 /** Test seam: force the probe result (and reset the memo) so unit tests stay deterministic
  *  regardless of whether this machine happens to be running the proxy. */
 export function __setCacheProxyReachable(v: any): void;
@@ -3355,5 +3384,6 @@ export type RunWrapperOptions = {
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
 };
+import { readFileSync } from "node:fs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 export {};
