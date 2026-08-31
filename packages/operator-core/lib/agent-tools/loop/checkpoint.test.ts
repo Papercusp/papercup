@@ -534,6 +534,50 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(parsed.checks[0]).not.toHaveProperty('kind');
   });
 
+  it('EI-21926988610689807: accepts a NESTED probe whose kind is implied by `tool`', () => {
+    // Lockstep with work_items:checkpoint — the shared normalizer means both
+    // surfaces gain this together. A probe shape valid on one carry surface and
+    // `invalid_args` on the other is the exact bug this pairing exists to prevent.
+    const revision = continuityProbeRevision(LOOP_CONTINUITY_TEST_TOOL)!;
+    const parsed = parse({
+      did: 'progress',
+      checks: [
+        {
+          claim: 'gate is green',
+          probe: {
+            tool: LOOP_CONTINUITY_TEST_TOOL,
+            args: { value: 'green' },
+            schemaRevision: revision,
+            expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+          },
+        },
+      ],
+    }) as { checks: Array<Record<string, unknown>> };
+
+    expect(parsed.checks[0]).toEqual({
+      claim: 'gate is green',
+      probe: {
+        kind: 'tool',
+        tool: LOOP_CONTINUITY_TEST_TOOL,
+        args: { value: 'green' },
+        schemaRevision: revision,
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    });
+  });
+
+  it('EI-21926988610689807: still REFUSES a nested probe with nothing to execute', () => {
+    // The literal shape this item reported: probe:{expect:{path,op,value}}.
+    // Rejection is correct — the row wants `recheck`, not a probe — but it must
+    // stay a rejection rather than becoming a silently invented tool probe.
+    expect(() =>
+      parse({
+        did: 'progress',
+        checks: [{ claim: 'gate is green', probe: { expect: { path: '$.value', op: 'eq' as const, value: 'green' } } }],
+      }),
+    ).toThrow(/discriminator/i);
+  });
+
   it('warns when left/next imperatively invokes a singleton mutator without its precondition', async () => {
     const b = body(
       await call({
