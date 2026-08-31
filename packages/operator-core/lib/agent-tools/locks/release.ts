@@ -19,10 +19,13 @@ import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   FILE_LOCK_OP_KINDS,
   emitReleaseLockEvents,
+  isNativeEditProofForPaths,
   type FileLockReleaseParams,
+  type NativeEditProof,
 } from '../../authority/file-lock-authority-ops';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
+import { recordEditAttribution } from '../../edit-attribution';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { domainsHoldingLocks, ownedLocksForPaths, type OwnedLockPaths } from './owner-lock-domains';
@@ -85,6 +88,18 @@ export default defineTool({
     published_sha: z
       .string()
       .regex(/^[0-9a-f]{40,64}$/)
+      .optional(),
+    native_edit_proof: z
+      .object({
+        success: z.literal(true),
+        source: z.enum(['claude', 'codex', 'omp']),
+        tool: z.string().min(1).optional(),
+        tools: z.array(z.string().min(1)).min(1).optional(),
+        paths: z.array(z.string().min(1)).min(1),
+      })
+      .refine((proof) => Boolean(proof.tool) || (proof.tools?.length ?? 0) > 0, {
+        message: 'native_edit_proof requires tool or tools',
+      })
       .optional(),
   })
     .refine(
@@ -225,6 +240,21 @@ export default defineTool({
         if (released && released.length > 0) {
           noteShaTokenRelease(domain, released, args.published_sha ?? null, Date.now());
         }
+        // EI-21641025582934324: a lock grant proves ownership intent, not a
+        // mutation. Attribute only after a successful recognized native edit
+        // proof whose paths exactly equal the rows actually released.
+        const proof = args.native_edit_proof as NativeEditProof | undefined;
+        if (released && isNativeEditProofForPaths(proof, released)) {
+          const identity = resolveAgentIdentity(ctx);
+          void recordEditAttribution({
+            repoRoot: domain,
+            files: released,
+            agentId: ownerId,
+            intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',') ?? 'native-edit'}`,
+            workspaceId: identity.workspaceId ?? undefined,
+            contributor: identity.userId ?? undefined,
+          });
+        }
         // P-025: push the release to the plan lock banner. Uses the paths the
         // store actually released rather than `args.paths`, which is absent on
         // the lock_id and all-mine releases. No-ops for non-plan paths; see
@@ -247,6 +277,7 @@ export default defineTool({
                   allMine,
                   coordinationDomain: domain,
                   publishedSha: args.published_sha ?? null,
+                  nativeEditProof: args.native_edit_proof as NativeEditProof | undefined,
                 } satisfies FileLockReleaseParams,
                 decode: (raw) => {
                   const r = raw as { released?: string[]; heldBefore?: number };

@@ -66,6 +66,54 @@ export interface FileLockReleaseParams {
    *  hive-git namespace before releasing — stamped on the NEXT grant of these
    *  paths as `requiredSha`. Null/absent = released without publishing. */
   publishedSha?: string | null;
+  /** Positive proof that a recognized native edit completed before release. */
+  nativeEditProof?: NativeEditProof;
+}
+
+/** Evidence supplied by a native edit-result hook, never by lock acquisition. */
+export interface NativeEditProof {
+  success: true;
+  source: 'claude' | 'codex' | 'omp';
+  /** A single native tool (the common PostToolUse/OMP case). */
+  tool?: string;
+  /** Native tools covered by one successful Claude PostToolBatch. */
+  tools?: string[];
+  paths: string[];
+}
+
+const NATIVE_EDIT_TOOLS: Record<NativeEditProof['source'], ReadonlySet<string>> = {
+  claude: new Set(['Edit', 'Write', 'MultiEdit']),
+  codex: new Set(['apply_patch', 'write_file', 'edit_file', 'Edit', 'Write', 'MultiEdit']),
+  omp: new Set(['write', 'edit', 'ast_edit', 'multi_edit']),
+};
+
+/**
+ * Validate the positive edit proof at the release boundary. Lock ownership is
+ * intent only; attribution requires a successful recognized native tool and the
+ * exact paths the release actually freed. Compare paths as sets because a lock
+ * store may return rows in a different order, while rejecting duplicates/extras.
+ */
+export function isNativeEditProofForPaths(
+  value: unknown,
+  released: readonly string[],
+): value is NativeEditProof {
+  if (!value || typeof value !== 'object') return false;
+  const proof = value as Partial<NativeEditProof>;
+  if (proof.success !== true) return false;
+  if (proof.source !== 'claude' && proof.source !== 'codex' && proof.source !== 'omp') return false;
+  const tools = [
+    ...(typeof proof.tool === 'string' ? [proof.tool] : []),
+    ...(Array.isArray(proof.tools) ? proof.tools : []),
+  ];
+  if (tools.length === 0 || tools.some((tool) => typeof tool !== 'string' || !NATIVE_EDIT_TOOLS[proof.source].has(tool))) {
+    return false;
+  }
+  if (!Array.isArray(proof.paths) || proof.paths.length === 0) return false;
+  if (!proof.paths.every((path) => typeof path === 'string' && path.length > 0)) return false;
+  if (new Set(proof.paths).size !== proof.paths.length || new Set(released).size !== released.length) return false;
+  if (proof.paths.length !== released.length) return false;
+  const releasedSet = new Set(released);
+  return proof.paths.every((path) => releasedSet.has(path));
 }
 export interface FileLockQueueParams {
   owner: string;
