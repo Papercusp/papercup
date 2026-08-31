@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 
 vi.mock('../../release/checkpoint-serializer-authority', () => ({
   readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
@@ -1765,6 +1766,32 @@ describe('release-fixer.md prompt banners stay in sync with this file', () => {
     dirname(fileURLToPath(import.meta.url)),
     '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/release-fixer.md',
   );
+  const BLUEPRINT_PATH = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../../libs/papercusp/packages/harness/blueprints/release-fix/blueprint.yaml',
+  );
+
+  it('declares every catalog tool required by the release-fixer prompt', () => {
+    const prompt = readFileSync(PROMPT_PATH, 'utf8');
+    const blueprint = parseYaml(readFileSync(BLUEPRINT_PATH, 'utf8')) as {
+      dependencies?: { tools?: unknown };
+    };
+    const requiredTools = [
+      'checkpoint:await',
+      'coord:escalate',
+      'plans:get',
+      'release:checkpoint-run',
+      'release:trace',
+      'sessions:search',
+      'work_items:list',
+    ];
+    const declaredTools = new Set((blueprint.dependencies?.tools as string[] | undefined) ?? []);
+
+    for (const tool of requiredTools) {
+      expect(prompt, `release-fixer prompt must reference ${tool}`).toContain(`\`${tool}\``);
+      expect(declaredTools, `release-fix blueprint must declare ${tool}`).toContain(tool);
+    }
+  });
 
   it('quotes the current PREDICTED-exclusion banner prefixes, not a retired one', () => {
     const prompt = readFileSync(PROMPT_PATH, 'utf8');
