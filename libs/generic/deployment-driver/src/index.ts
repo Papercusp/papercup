@@ -179,6 +179,16 @@ export {
   nextWorkspaceHostControllerAction,
 } from "./workspace-host-workflow";
 export type {
+  WorkspaceHostChaosProbe,
+  WorkspaceHostChaosClass,
+} from "./workspace-host-chaos-classes";
+export {
+  WORKSPACE_HOST_CHAOS_CLASSES,
+  WORKSPACE_HOST_CHAOS_MAX_APPLY_ATTEMPTS,
+  workspaceHostProviderRetryClass,
+  resolveWorkspaceHostChaosRecovery,
+} from "./workspace-host-chaos-classes";
+export type {
   WorkspaceHostProviderContractCheck,
   FakeWorkspaceHostProviderContractFixture,
   WorkspaceHostProviderContractReport,

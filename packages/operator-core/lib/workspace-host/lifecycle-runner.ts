@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   nextWorkspaceHostControllerAction,
+  workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
   type WorkspaceHostImageRef,
   type WorkspaceHostObservation,
@@ -370,18 +371,46 @@ export async function runWorkspaceHostLifecycle(
             )
           : await input.provider.apply(applyRequest, context);
       } catch (error) {
+        // Classify the refusal; do not assume it is uncertain. A deterministic 4xx (an expired
+        // credential, a quota denial, a retired image) will be refused identically forever, and
+        // `ambiguous` is exempt from the attempt ceiling in workspaceHostRecoveryAction — so
+        // recording every failure as ambiguous turned a hard failure into a permanent hang that
+        // reconciled on every resume and never reached a terminal verdict. This is the same
+        // defect WI-1743793 fixed in the provisioning runner; both now share one classifier.
+        const retryClass = workspaceHostProviderRetryClass(error);
         const failed: WorkspaceHostResourceCheckpoint = {
           logicalKey: prior.logicalKey,
           state: 'failed',
           attempts,
-          retryClass: 'ambiguous',
-          retryAfterMs: DEFAULT_RETRY_AFTER_MS,
+          retryClass,
+          ...(retryClass === 'terminal' ? {} : { retryAfterMs: DEFAULT_RETRY_AFTER_MS }),
           ...(prior.providerResource ? { providerResource: prior.providerResource } : {}),
           ...(prior.providerRequestId ? { providerRequestId: prior.providerRequestId } : {}),
           error: message(error),
         };
         await store.upsertCheckpoint({ workspaceId, hostId: resultHostId, operationId, checkpoint: failed });
         checkpoints = replaceCheckpoint(checkpoints, failed);
+        if (retryClass === 'terminal') {
+          await store.updateOperation({
+            workspaceId,
+            operationId,
+            status: 'failed',
+            percent: progress(checkpoints, plan.steps.length),
+            message: `Provider rejected step '${prior.logicalKey}'`,
+            error: { reason: message(error) },
+          });
+          await store.appendEvent({
+            workspaceId,
+            hostId: resultHostId,
+            operationId,
+            phase: prior.logicalKey,
+            status: 'failed',
+            level: 'error',
+            message: 'Provider rejected the request; retrying it unchanged cannot succeed',
+            details: { error: message(error) },
+          });
+          return { status: 'failed', operationId, hostId: resultHostId, plan, checkpoints };
+        }
         await store.updateOperation({
           workspaceId,
           operationId,

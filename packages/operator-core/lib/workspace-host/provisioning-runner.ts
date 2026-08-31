@@ -12,6 +12,7 @@ import {
   assertWorkspaceHostSecretIsolation,
   createWorkspaceHostManualDestroyReceipt,
   nextWorkspaceHostControllerAction,
+  workspaceHostProviderRetryClass,
   WORKSPACE_HOST_CANARY_TAG_KEYS,
   WorkspaceHostLiveCanaryHarness,
   type WorkspaceHostApplyResult,
@@ -30,7 +31,6 @@ import {
   type WorkspaceHostProviderConnection,
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
-  type WorkspaceHostRetryClass,
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
@@ -546,25 +546,6 @@ function progress(checkpoints: readonly WorkspaceHostResourceCheckpoint[], total
   return Math.max(0, Math.min(99, Math.floor((settled / total) * 100)));
 }
 
-/**
- * Classify a thrown provider call so the controller knows whether retrying can ever help.
- *
- * Default to `ambiguous` — an error with no HTTP status may be a lost response, and the mutation
- * may already have been accepted, so the next pass must reconcile rather than assume anything.
- * A 4xx is the exception: the provider parsed the request and REFUSED it, so the identical body
- * will be refused identically forever and `terminal` (which the controller turns into `halt`) is
- * the only classification that does not loop. 408 and 429 are the two 4xx codes that explicitly
- * invite a retry, and 409 stays ambiguous because an idempotent replay can legitimately conflict
- * with the caller's own earlier accepted write.
- */
-function providerRetryClass(error: unknown): WorkspaceHostRetryClass {
-  const status = (error as { status?: unknown } | null | undefined)?.status;
-  if (typeof status !== 'number') return 'ambiguous';
-  if (status === 408 || status === 429) return 'throttled';
-  if (status === 409) return 'ambiguous';
-  return status >= 400 && status < 500 ? 'terminal' : 'ambiguous';
-}
-
 function resultCheckpoint(
   prior: WorkspaceHostResourceCheckpoint,
   attempts: number,
@@ -806,7 +787,7 @@ export async function runWorkspaceHostProvisioning(
         // will be rejected identically forever, so it must HALT instead of reconciling. Treating
         // those as ambiguous made a hard failure present as a hang: a boot disk smaller than its
         // source image retried every 2s past 40 attempts, never terminal and never surfaced.
-        const retryClass = providerRetryClass(error);
+        const retryClass = workspaceHostProviderRetryClass(error);
         const failed: WorkspaceHostResourceCheckpoint = {
           logicalKey: prior.logicalKey,
           state: 'failed',
