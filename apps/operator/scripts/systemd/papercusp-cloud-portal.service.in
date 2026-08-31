@@ -1,0 +1,34 @@
+# Papercusp Cloud Portal backend user service template (EI-21983147886595945).
+#
+# This file is intentionally a template. deploy-cloud-portal.sh resolves the
+# machine-specific portal checkout and Node binary, verifies the rendered unit,
+# and installs it atomically in ~/.config/systemd/user. Keeping the app path out
+# of this source file prevents a build-box user's home directory from becoming a
+# shipped identity/path pin.
+[Unit]
+Description=Papercusp Cloud Portal backend on 127.0.0.1:@PORT@
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@PORTAL_ROOT@
+# Next loads the portal's .env.local from WorkingDirectory. Secrets therefore
+# stay in the external app checkout and are never copied into this unit.
+Environment=NODE_ENV=development
+Environment=PORT=@PORT@
+Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@NODE@ @NEXT_BIN@ dev --webpack -H 127.0.0.1 -p @PORT@
+Restart=on-failure
+RestartSec=3s
+TimeoutStartSec=120s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+# next dev forks a server child; the named unit must own and reap that child
+# instead of leaving it behind in a terminal scope.
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+# Install and safely hand off the Cloud Portal's Next.js backend.
+#
+# The portal is a separate, user-owned checkout. This helper is the only
+# supported path for turning the checked-in unit template into a user service:
+# it validates the checkout and executable, verifies the rendered unit, writes
+# it with an atomic rename, and never touches the separate :3081 proxy unit.
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE="${PAPERCUSP_CLOUD_PORTAL_TEMPLATE:-$SCRIPT_DIR/papercusp-cloud-portal.service.in}"
+
+: "${HOME:?HOME must be set for the user-service deployment}"
+
+PORTAL_ROOT="${PAPERCUSP_CLOUD_PORTAL_ROOT:-$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal}"
+PORTAL_PORT="${PAPERCUSP_CLOUD_PORTAL_PORT:-3801}"
+NODE_BIN="${PAPERCUSP_CLOUD_PORTAL_NODE:-$HOME/.local/node25/bin/node}"
+UNIT_NAME="${PAPERCUSP_CLOUD_PORTAL_UNIT:-papercusp-cloud-portal.service}"
+UNIT_DIR="${PAPERCUSP_CLOUD_PORTAL_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+TEMP_DIR="${PAPERCUSP_CLOUD_PORTAL_TMPDIR:-${TMPDIR:-/tmp}}"
+TEMP_DIR_EXPLICIT=0
+[[ -n "${PAPERCUSP_CLOUD_PORTAL_TMPDIR:-}" ]] && TEMP_DIR_EXPLICIT=1
+SYSTEMCTL_BIN="${PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL:-systemctl}"
+SYSTEMD_ANALYZE_BIN="${PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE:-systemd-analyze}"
+CURL_BIN="${PAPERCUSP_CLOUD_PORTAL_CURL:-curl}"
+SS_BIN="${PAPERCUSP_CLOUD_PORTAL_SS:-ss}"
+PS_BIN="${PAPERCUSP_CLOUD_PORTAL_PS:-ps}"
+READLINK_BIN="${PAPERCUSP_CLOUD_PORTAL_READLINK:-readlink}"
+KILL_BIN="${PAPERCUSP_CLOUD_PORTAL_KILL:-kill}"
+HEALTH_PATH="${PAPERCUSP_CLOUD_PORTAL_HEALTH_PATH:-/}"
+HEALTH_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC:-60}"
+CURL_TIMEOUT_SEC="${PAPERCUSP_CLOUD_PORTAL_CURL_TIMEOUT_SEC:-5}"
+PORT_RELEASE_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_PORT_RELEASE_WAIT_SEC:-30}"
+FALLBACK_LOG="${PAPERCUSP_CLOUD_PORTAL_FALLBACK_LOG:-$HOME/.papercusp/logs/cloud-portal-legacy.log}"
+
+MODE="install"
+TEMP_PATH=""
+
+log() {
+  printf 'cloud-portal: %s\n' "$*"
+}
+
+die() {
+  printf 'cloud-portal: ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage: deploy-cloud-portal.sh [--render-only|--install-only|--handoff]
+
+  --render-only  validate inputs and print the rendered unit; do not write or
+                 call systemd
+  --install-only atomically install, verify, reload, and enable the unit; do
+                 not start it or touch the existing backend
+  --handoff      install the unit, then cut the validated :3801 listener over
+                 to systemd with health-checked rollback on failure
+
+Environment overrides:
+  PAPERCUSP_CLOUD_PORTAL_ROOT, PAPERCUSP_CLOUD_PORTAL_PORT,
+  PAPERCUSP_CLOUD_PORTAL_NODE, PAPERCUSP_CLOUD_PORTAL_UNIT_DIR,
+  PAPERCUSP_CLOUD_PORTAL_TMPDIR,
+  PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL, PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE,
+  PAPERCUSP_CLOUD_PORTAL_CURL, PAPERCUSP_CLOUD_PORTAL_HEALTH_PATH,
+  PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --render-only) MODE=render ;;
+    --install|--install-only) MODE=install ;;
+    --handoff) MODE=handoff ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+require_absolute() {
+  local label=$1 value=$2
+  [[ "$value" == /* ]] || die "$label must be an absolute path: $value"
+}
+
+require_uint_range() {
+  local label=$1 value=$2 min=$3 max=$4
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$label must be an integer: $value"
+  ((10#$value >= min && 10#$value <= max)) || die "$label must be between $min and $max: $value"
+}
+
+validate_inputs() {
+  require_absolute PORTAL_ROOT "$PORTAL_ROOT"
+  require_absolute NODE_BIN "$NODE_BIN"
+  require_absolute UNIT_DIR "$UNIT_DIR"
+  require_absolute TEMP_DIR "$TEMP_DIR"
+  [[ -f "$TEMPLATE" ]] || die "unit template is missing: $TEMPLATE"
+  [[ -d "$PORTAL_ROOT" ]] || die "portal root is not a directory: $PORTAL_ROOT"
+  [[ -f "$PORTAL_ROOT/package.json" ]] || die "portal package.json is missing: $PORTAL_ROOT/package.json"
+  [[ -x "$NODE_BIN" ]] || die "Node executable is not executable: $NODE_BIN"
+
+  NEXT_BIN="$PORTAL_ROOT/node_modules/.bin/next"
+  [[ -x "$NEXT_BIN" ]] || die "Next executable is not executable: $NEXT_BIN"
+  NODE_DIR="$(dirname -- "$NODE_BIN")"
+
+  require_uint_range PORTAL_PORT "$PORTAL_PORT" 1 65535
+  require_uint_range HEALTH_WAIT_SEC "$HEALTH_WAIT_SEC" 0 600
+  require_uint_range CURL_TIMEOUT_SEC "$CURL_TIMEOUT_SEC" 1 120
+  require_uint_range PORT_RELEASE_WAIT_SEC "$PORT_RELEASE_WAIT_SEC" 1 300
+  [[ "$UNIT_NAME" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || die "invalid user unit name: $UNIT_NAME"
+
+  # These values become systemd syntax. Reject control bytes and specifier
+  # markers rather than allowing a path to alter a unit's meaning.
+  for value in "$PORTAL_ROOT" "$NODE_BIN" "$NEXT_BIN" "$NODE_DIR"; do
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* ]] ||
+      die "portal paths may not contain newlines or systemd '%' specifiers"
+  done
+}
+
+# Escape one systemd unit word. Unlike shell quoting, systemd uses backslash
+# escapes and does not invoke a shell for ExecStart.
+unit_escape() {
+  local value=$1
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value// /\\ }
+  value=${value//$'\t'/\\$'\t'}
+  printf '%s' "$value"
+}
+
+render_unit() {
+  local root node next node_dir
+  root="$(unit_escape "$PORTAL_ROOT")"
+  node="$(unit_escape "$NODE_BIN")"
+  next="$(unit_escape "$NEXT_BIN")"
+  node_dir="$(unit_escape "$NODE_DIR")"
+
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line//@PORT@/$PORTAL_PORT}
+    line=${line//@PORTAL_ROOT@/$root}
+    line=${line//@NODE@/$node}
+    line=${line//@NEXT_BIN@/$next}
+    line=${line//@NODE_DIR@/$node_dir}
+    printf '%s\n' "$line"
+  done < "$TEMPLATE"
+}
+
+verify_unit_path() {
+  [[ -x "$(command -v "$SYSTEMD_ANALYZE_BIN" 2>/dev/null || true)" ]] ||
+    die "systemd-analyze is required to verify the rendered unit"
+  "$SYSTEMD_ANALYZE_BIN" verify "$1" >/dev/null
+}
+
+cleanup_temp() {
+  if [[ -n "$TEMP_PATH" && -e "$TEMP_PATH" ]]; then
+    rm -f -- "$TEMP_PATH"
+  fi
+}
+trap cleanup_temp EXIT
+
+install_unit() {
+  mkdir -p -- "$UNIT_DIR"
+  if [[ ! -d "$TEMP_DIR" ]]; then
+    mkdir -p -- "$TEMP_DIR"
+  fi
+  if [[ "$(stat -c '%d' "$TEMP_DIR")" != "$(stat -c '%d' "$UNIT_DIR")" ]]; then
+    if ((TEMP_DIR_EXPLICIT)); then
+      die "temporary directory and user-unit directory must be on the same filesystem"
+    fi
+    # Some Linux hosts mount /tmp as tmpfs while ~/.config is on the home
+    # filesystem. Keep the default convenient there without sacrificing mv's
+    # atomic same-filesystem guarantee.
+    TEMP_DIR="/var/tmp"
+  fi
+  # The destination is protected by the external file lock, but a random
+  # sibling under ~/.config would be a different lock key on the hook path.
+  # Stage outside HOME, then rename into the locked destination. /tmp and the
+  # user config directory share the host filesystem in the supported install
+  # layout, so mv remains an atomic replacement rather than a copy fallback.
+  [[ "$(stat -c '%d' "$TEMP_DIR")" == "$(stat -c '%d' "$UNIT_DIR")" ]] ||
+    die "temporary directory and user-unit directory must be on the same filesystem"
+  # Keep the .service suffix: systemd-analyze derives the unit type from the
+  # filename and rejects a suffix-less temporary path before parsing content.
+  TEMP_PATH="$(mktemp "$TEMP_DIR/.${UNIT_NAME}.tmp.XXXXXX.service")"
+  render_unit > "$TEMP_PATH"
+  chmod 0644 "$TEMP_PATH"
+  verify_unit_path "$TEMP_PATH"
+  mv -f -- "$TEMP_PATH" "$UNIT_DIR/$UNIT_NAME"
+  TEMP_PATH=""
+}
+
+systemctl_user() {
+  "$SYSTEMCTL_BIN" --user "$@"
+}
+
+reload_and_enable() {
+  systemctl_user daemon-reload
+  systemctl_user enable "$UNIT_NAME"
+}
+
+health_check() {
+  local port=$1
+  "$CURL_BIN" --fail --silent --show-error --max-time "$CURL_TIMEOUT_SEC" \
+    "http://127.0.0.1:${port}${HEALTH_PATH}" >/dev/null
+}
+
+wait_for_health() {
+  local port=$1 attempts=$((HEALTH_WAIT_SEC + 1))
+  while ((attempts > 0)); do
+    if health_check "$port"; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    ((attempts > 0)) && sleep 1
+  done
+  return 1
+}
+
+start_managed() {
+  systemctl_user reset-failed "$UNIT_NAME" >/dev/null 2>&1 || true
+  systemctl_user start "$UNIT_NAME" || return 1
+  wait_for_health "$PORTAL_PORT"
+}
+
+listener_pid() {
+  local output
+  output="$("$SS_BIN" -ltnpH "sport = :$PORTAL_PORT" 2>/dev/null || true)"
+  if [[ "$output" =~ pid=([0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+process_lineage_is_next_dev() {
+  local cursor=$1 line ppid i
+  for i in 1 2 3 4 5 6; do
+    [[ -r "/proc/$cursor/cmdline" ]] || return 1
+    line="$(tr '\0' ' ' < "/proc/$cursor/cmdline" 2>/dev/null || true)"
+    if [[ "$line" == *next* && "$line" == *dev* ]]; then
+      return 0
+    fi
+    ppid="$(awk '/^PPid:/{print $2; exit}' "/proc/$cursor/status" 2>/dev/null || true)"
+    [[ "$ppid" =~ ^[0-9]+$ && "$ppid" != 1 && "$ppid" != "$cursor" ]] || break
+    cursor="$ppid"
+  done
+  return 1
+}
+
+validate_legacy_listener() {
+  local pid=$1 cwd pgid own_pgid uid
+  [[ "$pid" =~ ^[0-9]+$ && -d "/proc/$pid" ]] || die "listener PID is not a live process: $pid"
+  cwd="$("$READLINK_BIN" -f "/proc/$pid/cwd" 2>/dev/null || true)"
+  [[ "$cwd" == "$PORTAL_ROOT" ]] ||
+    die "refusing to stop PID $pid: cwd is '$cwd', expected '$PORTAL_ROOT'"
+  uid="$(stat -c '%u' "/proc/$pid" 2>/dev/null || true)"
+  [[ "$uid" == "$(id -u)" ]] || die "refusing to stop PID $pid owned by uid '$uid'"
+  process_lineage_is_next_dev "$pid" ||
+    die "refusing to stop PID $pid: listener lineage is not a portal next dev process"
+  pgid="$("$PS_BIN" -o pgid= -p "$pid" | tr -d '[:space:]')"
+  own_pgid="$("$PS_BIN" -o pgid= -p "$$" | tr -d '[:space:]')"
+  [[ "$pgid" =~ ^[0-9]+$ && "$pgid" != "$own_pgid" ]] ||
+    die "refusing to signal unsafe process group '$pgid'"
+  printf '%s\n' "$pgid"
+}
+
+stop_legacy_listener() {
+  local pgid=$1 attempts=$((PORT_RELEASE_WAIT_SEC + 1))
+  "$KILL_BIN" -TERM -- "-$pgid"
+  while ((attempts > 0)); do
+    [[ -z "$(listener_pid)" ]] && return 0
+    attempts=$((attempts - 1))
+    ((attempts > 0)) && sleep 1
+  done
+  return 1
+}
+
+restore_legacy_listener() {
+  mkdir -p -- "$(dirname -- "$FALLBACK_LOG")"
+  log "managed start failed; restoring the previous Next dev command for rollback"
+  (
+    cd -- "$PORTAL_ROOT" || exit 1
+    exec nohup "$NODE_BIN" "$NEXT_BIN" dev --webpack -H 127.0.0.1 -p "$PORTAL_PORT"
+  ) >> "$FALLBACK_LOG" 2>&1 < /dev/null &
+  wait_for_health "$PORTAL_PORT"
+}
+
+handoff() {
+  install_unit
+  reload_and_enable
+
+  # A prior successful handoff is idempotent: do not restart a healthy managed
+  # service merely because this helper was invoked again.
+  if systemctl_user is-active --quiet "$UNIT_NAME" 2>/dev/null &&
+    wait_for_health "$PORTAL_PORT"; then
+    log "$UNIT_NAME is already active and healthy; legacy handoff not needed"
+    return 0
+  fi
+
+  local old_pid old_pgid
+  old_pid="$(listener_pid || true)"
+  if [[ -z "$old_pid" ]]; then
+    start_managed || die "managed portal unit did not become healthy on :$PORTAL_PORT"
+    log "started $UNIT_NAME and verified http://127.0.0.1:$PORTAL_PORT${HEALTH_PATH}"
+    return 0
+  fi
+
+  # Validate the exact listener before signaling it. In particular, never stop
+  # papercusp-cloud-portal-3081.service: that separate proxy stays up through
+  # this cutover and is the user's stable front door.
+  health_check "$PORTAL_PORT" || die "legacy :$PORTAL_PORT listener is not healthy; refusing handoff"
+  old_pgid="$(validate_legacy_listener "$old_pid")"
+  log "validated legacy portal listener PID $old_pid / process group $old_pgid"
+
+  # Next dev cannot bind the same port while the terminal process owns it. The
+  # cutover therefore has a bounded outage window, with an automatic rollback
+  # command if the systemd-managed replacement fails its health check.
+  if ! stop_legacy_listener "$old_pgid"; then
+    die "legacy listener did not release :$PORTAL_PORT after SIGTERM; no replacement started"
+  fi
+
+  if start_managed; then
+    log "handoff complete: $UNIT_NAME owns :$PORTAL_PORT and passed health check"
+    return 0
+  fi
+
+  systemctl_user stop "$UNIT_NAME" >/dev/null 2>&1 || true
+  if restore_legacy_listener; then
+    die "managed portal start/health failed; legacy listener restored (still terminal-scoped)"
+  fi
+  die "managed portal start/health failed and rollback could not restore the legacy listener; inspect $FALLBACK_LOG"
+}
+
+validate_inputs
+
+case "$MODE" in
+  render)
+    render_unit
+    ;;
+  install)
+    install_unit
+    reload_and_enable
+    log "installed and enabled $UNIT_NAME at $UNIT_DIR/$UNIT_NAME (not started)"
+    ;;
+  handoff)
+    handoff
+    ;;
+esac
