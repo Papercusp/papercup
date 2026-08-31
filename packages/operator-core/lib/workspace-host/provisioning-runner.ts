@@ -76,6 +76,48 @@ export class WorkspaceHostProvisioningConnectionError extends Error {
   }
 }
 
+/**
+ * A TRANSPORT-class admission failure: the provider API could not be reached or read, so nothing
+ * was learned about the connection. Deliberately NOT a WorkspaceHostProvisioningConnectionError —
+ * the durable workflow's shouldRetry excludes that class from retry, which would turn one dropped
+ * packet into a permanently failed lifecycle action.
+ */
+export class WorkspaceHostProvisioningTransientError extends Error {
+  readonly problems: readonly string[];
+
+  constructor(problems: readonly string[]) {
+    super('workspace-host provider connection could not be reached');
+    this.name = 'WorkspaceHostProvisioningTransientError';
+    this.problems = problems;
+  }
+}
+
+/**
+ * Validate the provider connection for one admission, shared by the provision, lifecycle and
+ * destroy runners.
+ *
+ * This is deliberately ONE implementation. It previously existed as three byte-identical copies,
+ * which is precisely what let `start` and `destroy` reach different outcomes against the same
+ * connection and the same host minutes apart (WI-1743793).
+ */
+export async function assertProviderConnectionUsable(
+  provider: Pick<WorkspaceHostProvider, 'validateConnection'>,
+  context: WorkspaceHostProviderContext,
+): Promise<void> {
+  let validation;
+  try {
+    validation = await provider.validateConnection(context);
+  } catch {
+    // The provider threw instead of reporting: we learned nothing about the connection, so this is
+    // transport-class and must stay retryable.
+    throw new WorkspaceHostProvisioningTransientError(['provider connection validation failed']);
+  }
+  if (validation.ok) return;
+  const problems = validation.errors.length > 0 ? validation.errors : ['provider connection is not usable'];
+  if (validation.retryable) throw new WorkspaceHostProvisioningTransientError(problems);
+  throw new WorkspaceHostProvisioningConnectionError(problems);
+}
+
 export interface WorkspaceHostProvisioningStore {
   upsertHost: typeof upsertWorkspaceHost;
   beginOperation: typeof beginWorkspaceHostOperation;
@@ -637,17 +679,7 @@ export async function runWorkspaceHostProvisioning(
     ...(input.signal ? { signal: input.signal } : {}),
   };
 
-  let validation;
-  try {
-    validation = await input.provider.validateConnection(context);
-  } catch {
-    throw new WorkspaceHostProvisioningConnectionError(['provider connection validation failed']);
-  }
-  if (!validation.ok) {
-    throw new WorkspaceHostProvisioningConnectionError(
-      validation.errors.length > 0 ? validation.errors : ['provider connection is not usable'],
-    );
-  }
+  await assertProviderConnectionUsable(input.provider, context);
 
   let plan: WorkspaceHostPlan;
   try {
@@ -1188,17 +1220,7 @@ export async function runWorkspaceHostDestroy(
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };
-  let validation;
-  try {
-    validation = await input.provider.validateConnection(context);
-  } catch {
-    throw new WorkspaceHostProvisioningConnectionError(['provider connection validation failed']);
-  }
-  if (!validation.ok) {
-    throw new WorkspaceHostProvisioningConnectionError(
-      validation.errors.length > 0 ? validation.errors : ['provider connection is not usable'],
-    );
-  }
+  await assertProviderConnectionUsable(input.provider, context);
   // Validate the canary ledger immediately before planning. For a pre-tagging legacy host this
   // also performs the controller-independent exact-population census, while canonical hosts take
   // the cheaper label-only path.

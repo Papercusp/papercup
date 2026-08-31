@@ -147,6 +147,11 @@ function connectionInput(
   inspection: WorkspaceHostConnectionInspection,
 ): WorkspaceHostConnectionInput {
   const connected = inspection.validation.ok;
+  // WI-1743793: a transport-class failure proves nothing about the connection, so it must NOT be
+  // recorded as 'invalid' — that verdict is sticky, and every later lifecycle action is refused
+  // against a connection that was never actually disproved. 'degraded' says "last inspection could
+  // not reach the provider" without condemning it.
+  const status = connected ? 'connected' : inspection.validation.retryable ? 'degraded' : 'invalid';
   return {
     workspaceId,
     id: connectionId,
@@ -154,7 +159,7 @@ function connectionInput(
     label,
     credentialRef: connection.cloudCredentialRef.ref,
     provider: connection.provider,
-    status: connected ? 'connected' : 'invalid',
+    status,
     statusDetail: connected
       ? inspection.validation.warnings.join('; ') || undefined
       : inspection.validation.errors.join('; ') || 'Provider validation failed.',

@@ -19,6 +19,7 @@ import {
   runWorkspaceHostProvisioning,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
+  WorkspaceHostProvisioningTransientError,
   type WorkspaceHostDestroyCanaryEvidence,
   type WorkspaceHostDestroyResult,
   type WorkspaceHostProvisioningResult,
@@ -182,7 +183,8 @@ function serializedProvisioningProblems(error: unknown, expectedName: string): r
 function rehydrateWorkspaceHostProvisioningError(error: unknown): unknown {
   if (
     error instanceof WorkspaceHostProvisioningRequestError ||
-    error instanceof WorkspaceHostProvisioningConnectionError
+    error instanceof WorkspaceHostProvisioningConnectionError ||
+    error instanceof WorkspaceHostProvisioningTransientError
   ) {
     return error;
   }
@@ -192,6 +194,9 @@ function rehydrateWorkspaceHostProvisioningError(error: unknown): unknown {
 
   const connectionProblems = serializedProvisioningProblems(error, 'WorkspaceHostProvisioningConnectionError');
   if (connectionProblems) return new WorkspaceHostProvisioningConnectionError(connectionProblems);
+
+  const transientProblems = serializedProvisioningProblems(error, 'WorkspaceHostProvisioningTransientError');
+  if (transientProblems) return new WorkspaceHostProvisioningTransientError(transientProblems);
 
   return error;
 }

@@ -98,6 +98,17 @@ export interface WorkspaceHostConnectionValidation {
   identity?: string;
   warnings: readonly string[];
   errors: readonly string[];
+  /**
+   * Set when a FAILED validation is transport-class (the provider API was unreachable, answered
+   * with a retryable status, or returned an unreadable body) rather than a settled statement that
+   * the connection itself is bad. Callers must retry a `retryable` failure instead of failing the
+   * operation terminally: a single dropped packet during admission is not evidence that the
+   * credential, project, or scope is wrong.
+   *
+   * Optional and absent-means-unknown, so an existing provider that has not classified its
+   * failures keeps its current terminal behaviour rather than silently becoming retryable.
+   */
+  retryable?: boolean;
 }
 
 export const WORKSPACE_HOST_LIFECYCLE_ACTIONS = [

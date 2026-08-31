@@ -25,7 +25,7 @@ import {
   type StoredWorkspaceHostDestroyTarget,
 } from './observability-store';
 import {
-  WorkspaceHostProvisioningConnectionError,
+  assertProviderConnectionUsable,
   WorkspaceHostProvisioningRequestError,
   type WorkspaceHostProvisioningResult,
 } from './provisioning-runner';
@@ -267,17 +267,7 @@ export async function runWorkspaceHostLifecycle(
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };
-  let validation;
-  try {
-    validation = await input.provider.validateConnection(context);
-  } catch {
-    throw new WorkspaceHostProvisioningConnectionError(['provider connection validation failed']);
-  }
-  if (!validation.ok) {
-    throw new WorkspaceHostProvisioningConnectionError(
-      validation.errors.length > 0 ? validation.errors : ['provider connection is not usable'],
-    );
-  }
+  await assertProviderConnectionUsable(input.provider, context);
 
   let plan: WorkspaceHostPlan;
   try {

@@ -73,11 +73,39 @@ const SAFE_CONNECTION_VALIDATION_PROBLEMS: Readonly<Record<string, string>> = {
   gcp_workspace_host_project_unreadable: 'GCP Compute project is unreadable.',
 };
 
-function safeConnectionValidationProblem(error: unknown): string {
+interface SafeConnectionValidationProblem {
+  readonly message: string;
+  /** Transport-class failures are retryable; a settled credential/configuration fault is not. */
+  readonly retryable: boolean;
+}
+
+/**
+ * Map a validation failure to a caller-safe problem string plus a retry classification.
+ *
+ * Every credential- and configuration-class failure this client can raise carries a code that is
+ * present in SAFE_CONNECTION_VALIDATION_PROBLEMS. An error reaching the final branch is therefore
+ * NOT a credential fault by construction — it is the Compute API being unreachable, hung up on, or
+ * answering with a body we could not read. Reporting those as a credential problem sends the
+ * operator to re-check credentials that were never in question, and treating them as terminal
+ * fails a lifecycle action that a 2-second retry would have completed.
+ */
+function safeConnectionValidationProblem(error: unknown): SafeConnectionValidationProblem {
   const status = (error as GcpHttpError | undefined)?.status;
-  if (typeof status === 'number') return `GCP Compute validation failed (HTTP ${status})`;
+  if (typeof status === 'number') {
+    // 401/403 are settled answers about this credential; 408/429/5xx are the API asking us to retry.
+    return {
+      message: `GCP Compute validation failed (HTTP ${status})`,
+      retryable: status === 408 || status === 429 || status >= 500,
+    };
+  }
   const code = error instanceof Error ? error.message : '';
-  return SAFE_CONNECTION_VALIDATION_PROBLEMS[code] ?? 'GCP credential/Compute validation failed';
+  const mapped = SAFE_CONNECTION_VALIDATION_PROBLEMS[code];
+  if (mapped) return { message: mapped, retryable: false };
+  return {
+    message:
+      'GCP Compute API was unreachable or returned an unreadable response; the connection itself was not disproved.',
+    retryable: true,
+  };
 }
 
 interface RawOperation {
@@ -447,11 +475,13 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         errors: [],
       };
     } catch (error) {
+      const problem = safeConnectionValidationProblem(error);
       return {
         ok: false,
         checkedAt,
         warnings: [],
-        errors: [safeConnectionValidationProblem(error)],
+        errors: [problem.message],
+        retryable: problem.retryable,
       };
     }
   }

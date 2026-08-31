@@ -9,8 +9,11 @@ import type {
   WorkspaceHostResourceCheckpoint,
 } from '@papercusp/deployment-driver';
 import {
+  assertProviderConnectionUsable,
   runWorkspaceHostProvisioning,
+  WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
+  WorkspaceHostProvisioningTransientError,
   type WorkspaceHostProvisioningStore,
 } from './provisioning-runner';
 
@@ -286,5 +289,88 @@ describe('runWorkspaceHostProvisioning', () => {
       status: 'in-progress',
     });
     expect(checkpoints()[0]).toMatchObject({ state: 'failed', retryClass });
+  });
+});
+
+describe('assertProviderConnectionUsable (WI-1743793)', () => {
+  const context = { workspaceId: 'ws-1', requestId: 'op-1', connection } as never;
+
+  function validator(result: unknown) {
+    return { validateConnection: vi.fn().mockResolvedValue(result) } as never;
+  }
+
+  it('admits a connection the provider reports usable', async () => {
+    await expect(
+      assertProviderConnectionUsable(
+        validator({ ok: true, checkedAt: '2026-01-01T00:00:00.000Z', warnings: [], errors: [] }),
+        context,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('raises a RETRYABLE transient error when the provider could not reach its API', async () => {
+    // The regression: a transport blip during admission was thrown as a ConnectionError, which the
+    // durable workflow's shouldRetry excludes from retry — so one dropped packet permanently
+    // failed a lifecycle action against a connection that was demonstrably fine.
+    const error = await assertProviderConnectionUsable(
+      validator({
+        ok: false,
+        checkedAt: '2026-01-01T00:00:00.000Z',
+        warnings: [],
+        errors: ['GCP Compute API was unreachable'],
+        retryable: true,
+      }),
+      context,
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningTransientError);
+    expect(error).not.toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
+    expect((error as WorkspaceHostProvisioningTransientError).problems).toEqual([
+      'GCP Compute API was unreachable',
+    ]);
+  });
+
+  it('raises a TERMINAL connection error when the provider settled that the connection is bad', async () => {
+    const error = await assertProviderConnectionUsable(
+      validator({
+        ok: false,
+        checkedAt: '2026-01-01T00:00:00.000Z',
+        warnings: [],
+        errors: ['GCP connection project is missing; reconnect with an explicit project.'],
+        retryable: false,
+      }),
+      context,
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
+    expect(error).not.toBeInstanceOf(WorkspaceHostProvisioningTransientError);
+  });
+
+  it('keeps an UNCLASSIFIED failure terminal, so a provider that never classifies cannot silently become retryable', async () => {
+    const error = await assertProviderConnectionUsable(
+      validator({ ok: false, checkedAt: '2026-01-01T00:00:00.000Z', warnings: [], errors: ['nope'] }),
+      context,
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
+  });
+
+  it('treats a THROWING validator as transient, because nothing was learned about the connection', async () => {
+    const error = await assertProviderConnectionUsable(
+      { validateConnection: vi.fn().mockRejectedValue(new Error('socket hang up')) } as never,
+      context,
+    ).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(WorkspaceHostProvisioningTransientError);
+  });
+
+  it('keeps the transient class OUTSIDE the two classes the workflow refuses to retry', () => {
+    // workspace-host-provision-workflow.ts's shouldRetry retries anything that is neither a
+    // request nor a connection error. If the transient class were ever made to extend either of
+    // them, retry would silently stop happening with no other test failing.
+    const transient = new WorkspaceHostProvisioningTransientError(['x']);
+    expect(transient).not.toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
+    expect(transient).not.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect(transient.name).toBe('WorkspaceHostProvisioningTransientError');
   });
 });

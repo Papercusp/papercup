@@ -23,6 +23,7 @@ import {
 import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
+  WorkspaceHostProvisioningTransientError,
   type WorkspaceHostDestroyCanaryEvidence,
 } from '../../../workspace-host/provisioning-runner';
 
@@ -172,7 +173,11 @@ export function createWorkspaceHostActionRoute(
       if (!target) return requestError('workspace host not found', 404);
       const stored = await dependencies.readConnection(workspaceId, target.connectionId);
       if (!stored) return requestError('workspace-host connection not found', 404);
-      if (stored.status !== 'connected') {
+      // 'degraded' means the LAST INSPECTION could not reach the provider, not that the connection
+      // is bad — and the runner re-validates it live before it mutates anything, so that fresh read
+      // is the authority here. Refusing on a stale cached status would let one transport blip during
+      // an unrelated inspection lock every later lifecycle action out (WI-1743793).
+      if (stored.status !== 'connected' && stored.status !== 'degraded') {
         return requestError('workspace-host connection is not ready', 409, {
           status: stored.status,
           ...(stored.statusDetail ? { detail: stored.statusDetail } : {}),
@@ -244,6 +249,14 @@ export function createWorkspaceHostActionRoute(
         }
         if (error instanceof WorkspaceHostProvisioningConnectionError) {
           return requestError('workspace-host connection validation failed', 409, { problems: error.problems });
+        }
+        if (error instanceof WorkspaceHostProvisioningTransientError) {
+          // The provider API could not be reached, so the connection was never disproved. 503 (not
+          // 409) so the caller retries instead of going to audit a credential that is fine.
+          return requestError('workspace-host provider is temporarily unreachable', 503, {
+            problems: error.problems,
+            retryable: true,
+          });
         }
         if (error instanceof WorkspaceHostProvisioningRequestError) {
           return requestError(`workspace-host ${action} request rejected`, 422, { problems: error.problems });

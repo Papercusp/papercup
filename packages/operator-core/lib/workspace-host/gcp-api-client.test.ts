@@ -179,7 +179,19 @@ describe('ADC-backed GCP workspace-host API client', () => {
       now: () => NOW,
     });
     const validation = await unknownFailure.validateConnection(connection());
-    expect(validation).toMatchObject({ ok: false, errors: ['GCP credential/Compute validation failed'] });
+    expect(validation).toMatchObject({
+      ok: false,
+      errors: [
+        'GCP Compute API was unreachable or returned an unreadable response; the connection itself was not disproved.',
+      ],
+      // WI-1743793: an unclassified failure is transport-class, so it must stay retryable rather
+      // than terminally failing the lifecycle action.
+      retryable: true,
+    });
+    // Every credential-class failure this client raises carries a mapped code, so an unmapped error
+    // must NEVER be reported as a credential fault — that sent an operator to audit a credential
+    // that had driven three other operations to success minutes earlier.
+    expect(validation.errors.join(' ')).not.toMatch(/credential/i);
     expect(JSON.stringify(validation)).not.toContain(TOKEN);
   });
 
