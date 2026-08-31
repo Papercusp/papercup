@@ -62,7 +62,10 @@ function harness() {
   const dependencies: WorkspaceHostCredentialLifecycleRouteDependencies = {
     activeWorkspaceId: () => 'workspace-1',
     resolveControllerProfile: () => ({
-      sshUser: 'papercusp', knownHostsFile: '/known-hosts', remoteEntrypoint: '/initializer',
+      sshUser: 'papercusp',
+      knownHostsFile: '/known-hosts',
+      remoteEntrypoint: '/initializer',
+      deliveryEntrypoint: '/deliver-material',
     }),
     resolveOperationsForHost: vi.fn(async () => ({
       desired: {} as never,

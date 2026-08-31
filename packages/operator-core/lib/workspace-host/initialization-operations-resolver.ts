@@ -18,6 +18,14 @@
  *    plan items (P-030 / P-035) and do not exist yet. A transport kind never implies command,
  *    transfer, pairing or credential-delivery parity — the contract says so explicitly — so
  *    falling back to "some other adapter" would be actively wrong. Refusing names the gap.
+ *
+ * 3. THE ADAPTER IT RETURNS DELIVERS CREDENTIAL MATERIAL BEFORE IT BINDS IT (D-215). `bind()` on
+ *    the host is an OBSERVATION — it checks that the material file exists — so an adapter that
+ *    only spoke the initialization protocol could never make the `git` or `agent` channels pass.
+ *    The delivering wrapper is applied unconditionally, including when no material source is
+ *    configured, because the difference it makes then is WHICH error a binding fails with: a
+ *    controller-side refusal naming the missing configuration, or the host's `material is not
+ *    present`, which blames the host for the controller's gap.
  */
 import { createHash, createPublicKey, randomUUID, type KeyObject } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
@@ -34,6 +42,11 @@ import {
 } from '@papercusp/deployment-driver';
 import { createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient } from './gcp-api-client';
+import {
+  GcpIapDeliveringWorkspaceHostInitializationOperations,
+  UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+  type WorkspaceHostCredentialMaterialSource,
+} from './gcp-iap-credential-delivery';
 import { isHostedProviderCredentialRef, resolveHostedGcpAuth } from './hosted-gcp-auth';
 import {
   GcpIapWorkspaceHostInitializationOperations,
@@ -61,6 +74,15 @@ export interface WorkspaceHostInitializationControllerProfile {
   knownHostsFile: string;
   /** Absolute path to the fixed initializer binary in the signed release. */
   remoteEntrypoint: string;
+  /**
+   * Absolute path to the fixed credential-DELIVERY binary in the signed release.
+   *
+   * Its own field rather than a reuse of `remoteEntrypoint`: they are two different programs
+   * speaking two different protocols, and a profile carrying one path for both would send
+   * delivery requests to the initializer, which refuses them as a version mismatch — a
+   * misconfigured profile reported as a broken step.
+   */
+  deliveryEntrypoint: string;
   identityFile?: string;
   sshExecutable?: string;
   gcloudExecutable?: string;
@@ -374,25 +396,39 @@ export class UnsupportedWorkspaceHostInitializationTargetError extends Error {
 export function resolveWorkspaceHostInitializationOperations(
   desired: WorkspaceHostDesiredSpec,
   controller: WorkspaceHostInitializationControllerProfile,
+  credentialMaterialSource?: WorkspaceHostCredentialMaterialSource,
 ): WorkspaceHostInitializationHostOperations {
   if (desired.target !== GCP_WORKSPACE_HOST_TARGET) {
     throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
   }
 
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
-  const profile: GcpIapWorkspaceHostInitializationProfile = {
+  const transport = {
     projectId: identity.projectId,
     zone: identity.zone,
     instanceName: identity.instanceName,
     sshUser: controller.sshUser,
     knownHostsFile: controller.knownHostsFile,
-    remoteEntrypoint: controller.remoteEntrypoint,
     ...(controller.identityFile ? { identityFile: controller.identityFile } : {}),
     ...(controller.sshExecutable ? { sshExecutable: controller.sshExecutable } : {}),
     ...(controller.gcloudExecutable ? { gcloudExecutable: controller.gcloudExecutable } : {}),
   };
+  const profile: GcpIapWorkspaceHostInitializationProfile = {
+    ...transport,
+    remoteEntrypoint: controller.remoteEntrypoint,
+  };
 
-  return new GcpIapWorkspaceHostInitializationOperations(profile);
+  // The delivering wrapper is UNCONDITIONAL, not applied only when a material source is
+  // configured. Delivery is required by the `git` and `agent` families whether or not this
+  // controller can satisfy it, so the difference an absent source makes is WHICH error a binding
+  // step fails with — a controller-side refusal naming the missing configuration, or the host's
+  // `material is not present` message, which blames the host for the controller's gap. Wrapping
+  // always is what keeps the honest one.
+  return new GcpIapDeliveringWorkspaceHostInitializationOperations(
+    new GcpIapWorkspaceHostInitializationOperations(profile),
+    { ...transport, deliveryEntrypoint: controller.deliveryEntrypoint },
+    credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+  );
 }
 
 /**
@@ -428,6 +464,7 @@ const CONTROLLER_ENV = {
   sshUser: 'PAPERCUSP_WORKSPACE_HOST_SSH_USER',
   knownHostsFile: 'PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS',
   remoteEntrypoint: 'PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT',
+  deliveryEntrypoint: 'PAPERCUSP_WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT',
   identityFile: 'PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE',
   sshExecutable: 'PAPERCUSP_WORKSPACE_HOST_SSH_EXECUTABLE',
   gcloudExecutable: 'PAPERCUSP_WORKSPACE_HOST_GCLOUD_EXECUTABLE',
@@ -437,6 +474,11 @@ const DEFAULT_CONTROLLER_REMOTE_ENTRYPOINT = join(
   WORKSPACE_HOST_RUNTIME_ROOT,
   'current',
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer,
+);
+const DEFAULT_CONTROLLER_DELIVERY_ENTRYPOINT = join(
+  WORKSPACE_HOST_RUNTIME_ROOT,
+  'current',
+  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.credentialDelivery,
 );
 const SYSTEMD_STATE_DIRECTORY_ENV = 'STATE_DIRECTORY';
 
@@ -479,6 +521,7 @@ export function resolveWorkspaceHostInitializationControllerProfile(
 
   const sshUser = configured('sshUser', false) ?? DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
   const remoteEntrypoint = configured('remoteEntrypoint', true) ?? DEFAULT_CONTROLLER_REMOTE_ENTRYPOINT;
+  const deliveryEntrypoint = configured('deliveryEntrypoint', true) ?? DEFAULT_CONTROLLER_DELIVERY_ENTRYPOINT;
   const configuredKnownHostsFile = configured('knownHostsFile', true);
   let knownHostsFile = configuredKnownHostsFile ?? '';
   if (!configuredKnownHostsFile && env[CONTROLLER_ENV.knownHostsFile] === undefined) {
@@ -513,6 +556,7 @@ export function resolveWorkspaceHostInitializationControllerProfile(
     sshUser,
     knownHostsFile,
     remoteEntrypoint,
+    deliveryEntrypoint,
     ...(identityFile ? { identityFile } : {}),
     ...(sshExecutable ? { sshExecutable } : {}),
     ...(gcloudExecutable ? { gcloudExecutable } : {}),
@@ -542,6 +586,11 @@ export interface ResolveOperationsForHostInput {
   workspaceId: string;
   hostId: string;
   controller: WorkspaceHostInitializationControllerProfile;
+  /**
+   * Resolves the authorization bytes a binding names. Omitted here means the controller has none,
+   * and a channel that requires delivered material refuses by name instead of failing on the host.
+   */
+  credentialMaterialSource?: WorkspaceHostCredentialMaterialSource;
   /** Test seam; defaults to the durable host record. */
   readDesiredSpec?: typeof readWorkspaceHostDesiredSpec;
   /** Test seam; production uses the persisted cloud credential reference. */
@@ -580,7 +629,11 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
 
   // Keep the provider boundary ahead of the GCP-only trust enrollment. Unsupported targets must
   // refuse without making a cloud call (or attempting to interpret an AWS/Azure spec as GCP).
-  const operations = resolveWorkspaceHostInitializationOperations(desired, input.controller);
+  const operations = resolveWorkspaceHostInitializationOperations(
+    desired,
+    input.controller,
+    input.credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+  );
   const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
   const credentialRef = desired.credentials.cloudCredentialRef.ref;
   const client =

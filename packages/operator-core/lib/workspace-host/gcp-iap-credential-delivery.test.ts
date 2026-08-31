@@ -2,20 +2,29 @@ import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
   WorkspaceHostCredentialMaterial,
   buildWorkspaceHostCredentialReference,
+  buildWorkspaceHostCredentialRevocationReference,
   parseWorkspaceHostCredentialDeliveryRequest,
+  type WorkspaceHostCredentialLifecycleStep,
+  type WorkspaceHostInitializationHostOperationResult,
+  type WorkspaceHostInitializationHostOperations,
+  type WorkspaceHostInitializationStep,
 } from '@papercusp/deployment-driver';
 import { describe, expect, it } from 'vitest';
 
 import {
+  GcpIapDeliveringWorkspaceHostInitializationOperations,
   GcpIapWorkspaceHostCredentialDeliveryError,
   buildGcpIapWorkspaceHostCredentialDeliveryCommand,
   deliverGcpIapWorkspaceHostCredentialMaterial,
   parseGcpIapWorkspaceHostCredentialDeliveryReceipt,
   type GcpIapWorkspaceHostCredentialDeliveryProfile,
+  type WorkspaceHostCredentialMaterialRequest,
+  type WorkspaceHostCredentialMaterialSource,
 } from './gcp-iap-credential-delivery';
 import type {
   GcpIapWorkspaceHostInitializationCommand,
   GcpIapWorkspaceHostInitializationCommandRunner,
+  GcpIapWorkspaceHostInitializationStep,
 } from './gcp-iap-initialization-operations';
 
 const GIT_REF = buildWorkspaceHostCredentialReference('git-short-lived-delegation', {
@@ -196,16 +205,18 @@ describe('GCP IAP credential delivery — running it', () => {
       stderr: 'WorkspaceHostRevokedCredentialGenerationError: generations through 7 have been revoked',
     });
 
-    const error = await deliverGcpIapWorkspaceHostCredentialMaterial(
-      PROFILE,
-      input(),
-      runner,
-    ).catch((caught: unknown) => caught as Error);
+    let message = '';
+    try {
+      await deliverGcpIapWorkspaceHostCredentialMaterial(PROFILE, input(), runner);
+      expect.unreachable('delivery should have rejected');
+    } catch (caught) {
+      message = (caught as Error).message;
+    }
 
-    expect(error.message).toMatch(/have been revoked/);
+    expect(message).toMatch(/have been revoked/);
     // The diagnostic is the host's stderr, which the delivery CLI writes as `name: message` and
     // never as the request — so the secret must not appear anywhere in the surfaced failure.
-    expect(error.message).not.toContain('private-token-value');
+    expect(message).not.toContain('private-token-value');
   });
 
   it('surfaces the exit code on the typed error', async () => {
@@ -216,5 +227,278 @@ describe('GCP IAP credential delivery — running it', () => {
       name: 'GcpIapWorkspaceHostCredentialDeliveryError',
       exitCode: 255,
     });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------ */
+
+const CLOUD_REF = buildWorkspaceHostCredentialReference('cloud-workload-identity', {
+  provider: 'gcp',
+  scopeId: 'active-alcove-504205-q3',
+  workloadId: 'p046-canary-03',
+});
+
+function gitDelivery(generation = 7) {
+  return {
+    kind: 'short-lived-delegation' as const,
+    generation,
+    audience: 'github.com/papercupai/private-canary',
+    revocationRef: buildWorkspaceHostCredentialRevocationReference(
+      'git-short-lived-delegation',
+      { forge: 'github', owner: 'papercupai', repository: 'private-canary' },
+      generation,
+    ),
+    expiresAt: '2026-08-31T12:00:00.000Z',
+  };
+}
+
+function bindCredentialStep(
+  channel: 'git' | 'cloud' = 'git',
+  generation = 7,
+): WorkspaceHostInitializationStep {
+  return {
+    id: `bind-${channel}`,
+    kind: 'bind-credential',
+    dependsOn: ['workspace'],
+    idempotencyKey: `p046-canary-03:bind-${channel}`,
+    input: {
+      channel,
+      credentialRef: { kind: channel, ref: channel === 'git' ? GIT_REF : CLOUD_REF },
+      delivery:
+        channel === 'git'
+          ? gitDelivery(generation)
+          : {
+              kind: 'provider-identity' as const,
+              generation,
+              audience: 'https://compute.googleapis.com',
+              revocationRef: buildWorkspaceHostCredentialRevocationReference(
+                'cloud-workload-identity',
+                { provider: 'gcp', scopeId: 'active-alcove-504205-q3', workloadId: 'p046-canary-03' },
+                generation,
+              ),
+            },
+    },
+  };
+}
+
+/** The rotation shape: the same fields, at the top level rather than inside `input`. */
+function lifecycleBindStep(generation = 8): WorkspaceHostCredentialLifecycleStep {
+  return {
+    id: 'bind-git',
+    kind: 'bind',
+    channel: 'git',
+    dependsOn: [],
+    idempotencyKey: `p046-canary-03:rotate:bind-git`,
+    credentialRef: { kind: 'git', ref: GIT_REF },
+    delivery: gitDelivery(generation),
+  };
+}
+
+class StubOperations implements WorkspaceHostInitializationHostOperations {
+  readonly supportedStepKinds = ['create-workspace', 'bind-credential'] as const;
+  readonly executed: string[] = [];
+
+  /** `log` is shared with the runner, so a test can assert delivery ran BEFORE the step was sent. */
+  constructor(private readonly log: string[]) {}
+
+  async execute(step: { id: string }): Promise<WorkspaceHostInitializationHostOperationResult> {
+    this.executed.push(step.id);
+    this.log.push(`execute:${step.id}`);
+    return { observedAt: '2026-08-31T10:00:01.000Z' };
+  }
+}
+
+class RecordingRunner implements GcpIapWorkspaceHostInitializationCommandRunner {
+  readonly commands: GcpIapWorkspaceHostInitializationCommand[] = [];
+  constructor(
+    private readonly log: string[],
+    private readonly result: { exitCode: number; stdout: string; stderr: string },
+  ) {}
+  async run(command: GcpIapWorkspaceHostInitializationCommand) {
+    this.commands.push(command);
+    this.log.push('deliver');
+    return this.result;
+  }
+}
+
+function materialSource(seen: WorkspaceHostCredentialMaterialRequest[]): WorkspaceHostCredentialMaterialSource {
+  return {
+    async resolve(request) {
+      seen.push(request);
+      return new WorkspaceHostCredentialMaterial(Buffer.from(SECRET, 'utf8'));
+    },
+  };
+}
+
+function delivering(
+  log: string[],
+  source: WorkspaceHostCredentialMaterialSource | undefined,
+  result = { exitCode: 0, stdout: receipt(), stderr: '' },
+) {
+  const inner = new StubOperations(log);
+  const runner = new RecordingRunner(log, result);
+  const operations = new GcpIapDeliveringWorkspaceHostInitializationOperations(
+    inner,
+    PROFILE,
+    source,
+    runner,
+  );
+  return { inner, runner, operations };
+}
+
+describe('delivery runs BEFORE the binding step it makes possible', () => {
+  /**
+   * `ProductionWorkspaceHostCredentialMaterializer.bind()` is an OBSERVATION: it checks that the
+   * material path exists and refuses when it does not. Delivery is what makes that observation
+   * able to succeed, so the ordering here is the whole feature — not an implementation detail.
+   */
+  it('delivers the material, then sends the bind step', async () => {
+    const log: string[] = [];
+    const seen: WorkspaceHostCredentialMaterialRequest[] = [];
+    const { inner, runner, operations } = delivering(log, materialSource(seen));
+
+    await operations.execute(bindCredentialStep());
+
+    expect(log).toEqual(['deliver', 'execute:bind-git']);
+    expect(inner.executed).toEqual(['bind-git']);
+    // The family is DERIVED from the reference, never taken from a second field that could disagree.
+    expect(seen).toEqual([
+      { channel: 'git', credentialRef: GIT_REF, family: 'git-short-lived-delegation', generation: 7 },
+    ]);
+    // And the bytes went down the pipe of the DELIVERY entrypoint, not the initializer's.
+    const [command] = runner.commands;
+    expect(command?.args.at(-1)).toContain(PROFILE.deliveryEntrypoint);
+    expect(command?.stdin).toContain(Buffer.from(SECRET, 'utf8').toString('base64'));
+    expect([command?.command, ...(command?.args ?? [])].join(' ')).not.toContain('private-token-value');
+  });
+
+  it('delivers for a ROTATION bind too, whose fields sit at the top level', async () => {
+    const log: string[] = [];
+    const seen: WorkspaceHostCredentialMaterialRequest[] = [];
+    const { operations } = delivering(log, materialSource(seen), {
+      exitCode: 0,
+      stdout: receipt({ generation: 8 }),
+      stderr: '',
+    });
+
+    await operations.execute(lifecycleBindStep());
+
+    expect(log).toEqual(['deliver', 'execute:bind-git']);
+    expect(seen[0]?.generation).toBe(8);
+  });
+
+  it('SKIPS delivery for an ambient family, and still runs the binding step', async () => {
+    const log: string[] = [];
+    const seen: WorkspaceHostCredentialMaterialRequest[] = [];
+    const { runner, operations } = delivering(log, materialSource(seen));
+
+    await operations.execute(bindCredentialStep('cloud'));
+
+    // `cloud-workload-identity` is answered by the metadata server. Writing a file for it would
+    // make bind() pass against a path delivery created itself (D-215 point 4).
+    expect(log).toEqual(['execute:bind-cloud']);
+    expect(runner.commands).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  it('resolves no material at all for a step that is not a binding', async () => {
+    const log: string[] = [];
+    const seen: WorkspaceHostCredentialMaterialRequest[] = [];
+    const { operations } = delivering(log, materialSource(seen));
+
+    await operations.execute({
+      id: 'workspace',
+      kind: 'create-workspace',
+      dependsOn: [],
+      idempotencyKey: 'p046-canary-03:workspace',
+      input: { workspaceId: 'workspace-1', hostId: 'p046-canary-03' },
+    });
+
+    expect(log).toEqual(['execute:workspace']);
+    expect(seen).toEqual([]);
+  });
+
+  it('advertises the inner adapter’s step kinds unchanged — delivery is not a step', () => {
+    const { inner, operations } = delivering([], materialSource([]));
+    expect(operations.supportedStepKinds).toBe(inner.supportedStepKinds);
+  });
+});
+
+describe('a controller with no material source refuses by NAME', () => {
+  /**
+   * The host's own message for this gap is `delivered material for family 'X' is not present on
+   * the host`, which blames the host for a controller configuration gap — the message that made
+   * this defect look like a broken VM through six holders of this item (D-215's Measured section).
+   */
+  it('refuses on the controller, before the tunnel opens, and never sends the bind step', async () => {
+    const log: string[] = [];
+    const { inner, runner, operations } = delivering(log, undefined);
+
+    await expect(operations.execute(bindCredentialStep())).rejects.toMatchObject({
+      name: 'WorkspaceHostCredentialMaterialUnavailableError',
+      channel: 'git',
+      family: 'git-short-lived-delegation',
+      generation: 7,
+    });
+    expect(inner.executed).toEqual([]);
+    expect(runner.commands).toEqual([]);
+  });
+
+  it('still binds an ambient family with no source configured (calibration control)', async () => {
+    const log: string[] = [];
+    const { inner, operations } = delivering(log, undefined);
+
+    await operations.execute(bindCredentialStep('cloud'));
+
+    // Without this control, the refusal above would also pass if the wrapper simply refused
+    // everything — which would break the cloud channel that works today.
+    expect(inner.executed).toEqual(['bind-cloud']);
+  });
+});
+
+describe('a receipt must answer about the binding that was asked for', () => {
+  it('refuses a receipt naming a different generation, and does not send the bind step', async () => {
+    const log: string[] = [];
+    const { inner, operations } = delivering(log, materialSource([]), {
+      exitCode: 0,
+      stdout: receipt({ generation: 3 }),
+      stderr: '',
+    });
+
+    await expect(operations.execute(bindCredentialStep())).rejects.toThrow(
+      /acknowledged family 'git-short-lived-delegation' generation 3, but the binding asked for .* generation 7/,
+    );
+    expect(inner.executed).toEqual([]);
+  });
+
+  it('refuses a receipt naming a different family', async () => {
+    const log: string[] = [];
+    const { operations } = delivering(log, materialSource([]), {
+      exitCode: 0,
+      stdout: receipt({ family: 'agent-encrypted-reference' }),
+      stderr: '',
+    });
+
+    await expect(operations.execute(bindCredentialStep())).rejects.toThrow(
+      /acknowledged family 'agent-encrypted-reference'/,
+    );
+  });
+});
+
+describe('a malformed binding step is refused rather than silently skipped', () => {
+  it('refuses a bind step whose generation is not a positive integer', async () => {
+    const log: string[] = [];
+    const { operations } = delivering(log, materialSource([]));
+    const step = bindCredentialStep();
+    const broken = {
+      ...step,
+      input: { ...step.input, delivery: { ...gitDelivery(), generation: 0 } },
+    } as GcpIapWorkspaceHostInitializationStep;
+
+    // Skipping it would deliver nothing and then let bind fail on the host — the exact
+    // misattributed failure this wrapper exists to remove.
+    await expect(operations.execute(broken as WorkspaceHostInitializationStep)).rejects.toThrow(
+      /delivery.generation must be a positive safe integer/,
+    );
   });
 });

@@ -40,6 +40,7 @@ const controller: WorkspaceHostInitializationControllerProfile = {
   sshUser: 'papercusp',
   knownHostsFile: '/etc/papercusp/known_hosts',
   remoteEntrypoint: '/opt/papercusp/bin/workspace-host-initializer',
+  deliveryEntrypoint: '/opt/papercusp/bin/papercusp-deliver-material',
 };
 
 const execFileAsync = promisify(execFile);
@@ -203,6 +204,7 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
     PAPERCUSP_WORKSPACE_HOST_SSH_USER: 'papercusp',
     PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS: '/etc/papercusp/known_hosts',
     PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT: '/opt/papercusp/bin/workspace-host-initializer',
+    PAPERCUSP_WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT: '/opt/papercusp/bin/papercusp-deliver-material',
   };
 
   it('builds the profile from deployment configuration', () => {
@@ -210,6 +212,7 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
       sshUser: 'papercusp',
       knownHostsFile: '/etc/papercusp/known_hosts',
       remoteEntrypoint: '/opt/papercusp/bin/workspace-host-initializer',
+      deliveryEntrypoint: '/opt/papercusp/bin/papercusp-deliver-material',
     });
   });
 
@@ -223,7 +226,33 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
         'current',
         DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer,
       ),
+      deliveryEntrypoint: join(
+        WORKSPACE_HOST_RUNTIME_ROOT,
+        'current',
+        DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.credentialDelivery,
+      ),
     });
+  });
+
+  it('keeps the delivery entrypoint DISTINCT from the initializer, both by default and when set', () => {
+    const defaults = resolveWorkspaceHostInitializationControllerProfile({
+      STATE_DIRECTORY: '/home/papercusp/.local/state/papercusp/controller',
+    });
+    // Two programs, two protocols. A profile that resolved one path for both would send delivery
+    // requests to the initializer, which refuses them as a version mismatch — a misconfigured
+    // profile surfacing as a broken step.
+    expect(defaults.deliveryEntrypoint).not.toBe(defaults.remoteEntrypoint);
+    const configured = resolveWorkspaceHostInitializationControllerProfile(complete);
+    expect(configured.deliveryEntrypoint).not.toBe(configured.remoteEntrypoint);
+  });
+
+  it('refuses a RELATIVE delivery entrypoint', () => {
+    expect(() =>
+      resolveWorkspaceHostInitializationControllerProfile({
+        ...complete,
+        PAPERCUSP_WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT: './deliver-material',
+      }),
+    ).toThrow(/PAPERCUSP_WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT must be an absolute path/);
   });
 
   it('carries optional overrides through and omits absent ones entirely', () => {

@@ -223,6 +223,7 @@ function harness(adapted = false) {
       sshUser: 'papercusp',
       knownHostsFile: '/etc/papercusp/known_hosts',
       remoteEntrypoint: '/usr/local/bin/papercusp-workspace-host-initializer',
+      deliveryEntrypoint: '/usr/local/bin/papercusp-deliver-material',
     }),
     resolveOperationsForHost,
     runCanary,

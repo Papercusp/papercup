@@ -17,15 +17,27 @@
 import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
+  WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
   encodeWorkspaceHostCredentialDeliveryRequest,
+  parseWorkspaceHostCredentialReference,
   type WorkspaceHostCredentialMaterial,
 } from '@papercusp/deployment-driver';
-import type { WorkspaceHostCredentialChannel } from '@papercusp/deployment-driver';
+import type {
+  WorkspaceHostCredentialChannel,
+  WorkspaceHostCredentialFamily,
+  WorkspaceHostCredentialLifecycleStep,
+  WorkspaceHostInitializationHostOperationResult,
+  WorkspaceHostInitializationHostOperations,
+  WorkspaceHostInitializationStep,
+  WorkspaceHostInitializationSupportedStepKind,
+} from '@papercusp/deployment-driver';
 
 import {
+  NodeGcpIapWorkspaceHostInitializationCommandRunner,
   buildGcpIapSshInvocation,
   type GcpIapWorkspaceHostInitializationCommand,
   type GcpIapWorkspaceHostInitializationCommandRunner,
+  type GcpIapWorkspaceHostInitializationStep,
   type GcpIapWorkspaceHostTransportProfile,
 } from './gcp-iap-initialization-operations';
 
@@ -183,4 +195,234 @@ export async function deliverGcpIapWorkspaceHostCredentialMaterial(
     );
   }
   return parseGcpIapWorkspaceHostCredentialDeliveryReceipt(result.stdout);
+}
+
+/* ------------------------------------------------------------------------------------------ */
+
+/**
+ * One binding's need for material, as the controller sees it.
+ *
+ * `family` is DERIVED from `credentialRef` here, exactly as the delivery request derives it, and
+ * for the same reason: two fields naming one fact can disagree, and the disagreement gets settled
+ * silently in favour of whichever field the reader happened to consult.
+ */
+export interface WorkspaceHostCredentialMaterialRequest {
+  readonly channel: WorkspaceHostCredentialChannel;
+  readonly credentialRef: string;
+  readonly family: WorkspaceHostCredentialFamily;
+  readonly generation: number;
+}
+
+/**
+ * The controller-side seam that turns a public credential REFERENCE into the bytes it names.
+ *
+ * The initialization contract has always said the material arrives "out of band" and that the
+ * resolver named by the typed reference produces it; this is that resolver's interface, and it is
+ * deliberately the ONLY thing in the controller that is allowed to hold material. It is a seam
+ * rather than an implementation because which identity a reference resolves to is a product
+ * decision D-215 explicitly left open — the delivery mechanism is identity-agnostic, and wiring it
+ * to one concrete minting path would have quietly made that decision here.
+ */
+export interface WorkspaceHostCredentialMaterialSource {
+  resolve(request: WorkspaceHostCredentialMaterialRequest): Promise<WorkspaceHostCredentialMaterial>;
+}
+
+/**
+ * Raised when a binding needs delivered material and the controller has no source for it.
+ *
+ * This refuses on the CONTROLLER, before the tunnel opens, rather than letting the host answer
+ * `delivered material for family 'X' is not present on the host`. Those are the same underlying
+ * gap, but the host's version blames the host — it is the message that made this defect look like
+ * a broken VM for six holders of this item (D-215's "Measured" section). Naming the missing
+ * controller configuration is the whole difference.
+ */
+export class WorkspaceHostCredentialMaterialUnavailableError extends Error {
+  readonly channel: WorkspaceHostCredentialChannel;
+  readonly family: WorkspaceHostCredentialFamily;
+  readonly generation: number;
+
+  constructor(request: WorkspaceHostCredentialMaterialRequest) {
+    super(
+      `No credential material source is configured, so channel '${request.channel}' (family ` +
+        `'${request.family}', generation ${request.generation}) cannot be delivered. This family ` +
+        `requires material to be written to the host before bind, so binding it would fail on the ` +
+        `host with a message that blames the host rather than this configuration.`,
+    );
+    this.name = 'WorkspaceHostCredentialMaterialUnavailableError';
+    this.channel = request.channel;
+    this.family = request.family;
+    this.generation = request.generation;
+  }
+}
+
+/**
+ * The default source: none. Refuses every request, naming the gap.
+ *
+ * A no-op that returned empty bytes would be worse than this error in the one way that matters —
+ * `bind()` only checks that the path EXISTS, so empty material would make every binding step pass
+ * and the canary go green against credentials that authenticate nothing.
+ */
+export const UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE: WorkspaceHostCredentialMaterialSource =
+  {
+    resolve(request: WorkspaceHostCredentialMaterialRequest): Promise<WorkspaceHostCredentialMaterial> {
+      return Promise.reject(new WorkspaceHostCredentialMaterialUnavailableError(request));
+    },
+  };
+
+interface WorkspaceHostCredentialBindingNeed {
+  readonly channel: WorkspaceHostCredentialChannel;
+  readonly credentialRef: string;
+  readonly generation: number;
+}
+
+function readBindingField(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new GcpIapWorkspaceHostCredentialDeliveryError(`binding step ${label} must be an object`, 1);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Recover what a step needs delivered, or `null` when it is not a binding step at all.
+ *
+ * The two binding shapes differ only in where the fields sit: an initialization `bind-credential`
+ * step carries them inside `input`, a credential-lifecycle `bind` step carries them at the top
+ * level. Both are handled because both bind — a rotation's new generation needs its material on
+ * the host exactly as much as the first one does, and a decorator that only understood
+ * initialization would leave rotation failing at bind with the same misleading host-side message.
+ */
+function bindingNeedOf(
+  step: GcpIapWorkspaceHostInitializationStep,
+): WorkspaceHostCredentialBindingNeed | null {
+  if (step.kind !== 'bind-credential' && step.kind !== 'bind') return null;
+  const source: Readonly<Record<string, unknown>> =
+    step.kind === 'bind-credential'
+      ? readBindingField((step as WorkspaceHostInitializationStep).input, 'input')
+      : (step as unknown as Readonly<Record<string, unknown>>);
+
+  const credentialRef = readBindingField(source.credentialRef, 'credentialRef');
+  const delivery = readBindingField(source.delivery, 'delivery');
+  const ref = credentialRef.ref;
+  const channel = source.channel;
+  const generation = delivery.generation;
+  if (typeof ref !== 'string' || ref.length === 0) {
+    throw new GcpIapWorkspaceHostCredentialDeliveryError(
+      'binding step credentialRef.ref must be a non-empty string',
+      1,
+    );
+  }
+  if (typeof channel !== 'string' || channel.length === 0) {
+    throw new GcpIapWorkspaceHostCredentialDeliveryError(
+      'binding step channel must be a non-empty string',
+      1,
+    );
+  }
+  if (!Number.isSafeInteger(generation) || (generation as number) < 1) {
+    throw new GcpIapWorkspaceHostCredentialDeliveryError(
+      'binding step delivery.generation must be a positive safe integer',
+      1,
+    );
+  }
+  return {
+    channel: channel as WorkspaceHostCredentialChannel,
+    credentialRef: ref,
+    generation: generation as number,
+  };
+}
+
+/**
+ * The initialization adapter, with credential-material delivery in front of every binding step.
+ *
+ * WHY A DECORATOR RATHER THAN A BRANCH INSIDE THE ADAPTER. `GcpIapWorkspaceHostInitializationOperations`
+ * asserts that no credential bytes cross its boundary, on every step and every encoded request.
+ * Teaching it to also carry material would make that assertion conditional, and a conditional
+ * assertion proves only that the condition was not met. Wrapping it instead leaves the inner
+ * contract total: material travels on this object's OWN protocol, to its OWN entrypoint, and the
+ * step that follows is byte-for-byte the step the bare adapter would have sent.
+ *
+ * ORDERING IS THE POINT. `ProductionWorkspaceHostCredentialMaterializer.bind()` is an OBSERVATION —
+ * it checks that `<materialRoot>/<family>/<generation>/material` exists and refuses when it does
+ * not. Delivery is what makes that observation able to succeed, so it must complete before the
+ * bind step is sent, not alongside it.
+ *
+ * REPLAY GETS THIS RIGHT FOR FREE. The runner wraps `execute` in the durable replay store, so a
+ * step that already succeeded is never re-executed and no material is resolved on a replayed pass.
+ * When a step DOES re-execute, delivery is idempotent per `(family, generation)` on the host.
+ */
+export class GcpIapDeliveringWorkspaceHostInitializationOperations
+  implements WorkspaceHostInitializationHostOperations
+{
+  readonly supportedStepKinds: readonly WorkspaceHostInitializationSupportedStepKind[];
+
+  private readonly inner: WorkspaceHostInitializationHostOperations;
+  private readonly profile: GcpIapWorkspaceHostCredentialDeliveryProfile;
+  private readonly materialSource: WorkspaceHostCredentialMaterialSource;
+  private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
+
+  constructor(
+    inner: WorkspaceHostInitializationHostOperations,
+    profile: GcpIapWorkspaceHostCredentialDeliveryProfile,
+    materialSource: WorkspaceHostCredentialMaterialSource = UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+    runner: GcpIapWorkspaceHostInitializationCommandRunner = new NodeGcpIapWorkspaceHostInitializationCommandRunner(),
+  ) {
+    this.inner = inner;
+    this.profile = profile;
+    this.materialSource = materialSource;
+    this.runner = runner;
+    // Delivery adds no step kinds: it is not a step. Advertising the inner adapter's manifest
+    // unchanged is what keeps that true — a wrapper that grew the manifest would be claiming the
+    // executor may route a step kind to it that no host program implements.
+    this.supportedStepKinds = inner.supportedStepKinds;
+  }
+
+  async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(step: WorkspaceHostCredentialLifecycleStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(
+    step: GcpIapWorkspaceHostInitializationStep,
+  ): Promise<WorkspaceHostInitializationHostOperationResult> {
+    const need = bindingNeedOf(step);
+    if (need) await this.deliver(need);
+    return await (this.inner as {
+      execute(step: GcpIapWorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+    }).execute(step);
+  }
+
+  private async deliver(need: WorkspaceHostCredentialBindingNeed): Promise<void> {
+    // The reference is the authority on the family, and the family spec is the authority on
+    // whether this binding has an on-host artifact at all (D-215 point 4). An ambient family is
+    // skipped here rather than refused: it is a legitimate binding, it simply has nothing to
+    // deliver, and sending it would be refused by the host as a request for a file that must
+    // never exist.
+    const family = parseWorkspaceHostCredentialReference(need.credentialRef, need.channel).family;
+    if (!WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS[family].requiresDeliveredMaterial) return;
+
+    const material = await this.materialSource.resolve({
+      channel: need.channel,
+      credentialRef: need.credentialRef,
+      family,
+      generation: need.generation,
+    });
+    const receipt = await deliverGcpIapWorkspaceHostCredentialMaterial(
+      this.profile,
+      {
+        channel: need.channel,
+        credentialRef: need.credentialRef,
+        generation: need.generation,
+        material,
+      },
+      this.runner,
+    );
+    // The receipt is parsed for shape by the sender; what only the CALLER can check is that it
+    // answers about the binding that was actually asked for. Without this, a host that wrote
+    // generation 1 could acknowledge a request for generation 2, and bind would then fail on a
+    // path that delivery reported as present.
+    if (receipt.family !== family || receipt.generation !== need.generation) {
+      throw new GcpIapWorkspaceHostCredentialDeliveryError(
+        `credential delivery acknowledged family '${receipt.family}' generation ` +
+          `${receipt.generation}, but the binding asked for family '${family}' generation ` +
+          `${need.generation}`,
+        1,
+      );
+    }
+  }
 }
