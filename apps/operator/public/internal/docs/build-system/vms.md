@@ -5,12 +5,12 @@ SSH access, sudo credentials, port maps, disk-sizing notes, the Windows-VM survi
 
 ## Inventory
 
-| VM                                           | Host process                                                                        | SSH port      | Display                       | Inside-VM repo path                                                                                                                          |
-| -------------------------------------------- | ----------------------------------------------------------------------------------- | ------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS Sonoma** (x86\_64)                   | `qemu-system-x86_64 ... mac_hdd_ng.img`                                             | `2222`        | SPICE on `127.0.0.1:5930`     | rsync'd `~/papercup-build-mac/papercup/papercusp-desktop` (the in-VM `~/papercupai/papercusp-desktop` checkout is legacy/broken — see below) |
-| **Windows 11**                               | `qemu-system-x86_64 ... windows_hdd.qcow2`                                          | `2223`        | SPICE on `127.0.0.1:5931`     | `C:\Users\User\papercupai\papercusp-desktop`                                                                                                 |
-| **Linux test** `clean` (Ubuntu 24.04)        | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224`        | SPICE on `127.0.0.1:5932`     | n/a — installs the packaged `.deb` (no checkout)                                                                                             |
-| **Linux fed** `fed-a`/`fed-b` (Ubuntu 24.04) | same golden image, +2nd NIC on `pcusp-fedbr0` (via `bin/vm-federation.sh`)          | `2225`/`2226` | SPICE `127.0.0.1:5933`/`5934` | n/a — two-machine federation testing                                                                                                         |
+| VM                                           | Host process                                                                        | SSH port      | Display                                       | Inside-VM repo path                                                                                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- | ------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **macOS Sonoma** (x86\_64)                   | `qemu-system-x86_64 ... mac_hdd_ng.img`                                             | `2222`        | SPICE on `127.0.0.1:5930`                     | rsync'd `~/papercup-build-mac/papercup/papercusp-desktop` (the in-VM `~/papercupai/papercusp-desktop` checkout is legacy/broken — see below) |
+| **Windows 11**                               | `qemu-system-x86_64 ... windows_hdd.qcow2`                                          | `2223`        | SPICE `127.0.0.1:5931` + VNC `127.0.0.1:5909` | `C:\Users\User\papercupai\papercusp-desktop`                                                                                                 |
+| **Linux test** `clean` (Ubuntu 24.04)        | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224`        | SPICE on `127.0.0.1:5932`                     | n/a — installs the packaged `.deb` (no checkout)                                                                                             |
+| **Linux fed** `fed-a`/`fed-b` (Ubuntu 24.04) | same golden image, +2nd NIC on `pcusp-fedbr0` (via `bin/vm-federation.sh`)          | `2225`/`2226` | SPICE `127.0.0.1:5933`/`5934`                 | n/a — two-machine federation testing                                                                                                         |
 
 The **Mac** and **Windows** VMs exist only to *produce* their platform's Tauri bundle. The **Linux test** VM is different in kind — it *consumes* the built `.deb`, fresh-installing it on a pristine Ubuntu to validate the shipped artifact (and to act as a separate machine for federation testing). Day-to-day operator dev (`:3055`) and Linux builds still run entirely on the host.
 
@@ -156,19 +156,33 @@ To view the desktop: `remote-viewer spice://127.0.0.1:5930`.
 ### Windows VM
 
 ```sh
-cd ~/windows-vm
-nohup bash boot-windows.sh > /tmp/win-boot.log 2>&1 &
+systemctl --user start papercup-vm-win.service   # the supported path
 ```
 
-\~90s to SSH-ready. (To get a desktop window in one shot, `~/windows-vm/launch-vm-and-viewer.sh`
-boots the VM and opens `remote-viewer spice://127.0.0.1:5931`.)
+\~90s to SSH-ready.
+
+To put it on the owner’s desktop: `DISPLAY=:1 setsid nohup remote-viewer spice://127.0.0.1:5931 &`.
+The viewer is **always `remote-viewer`**, never TigerVNC `vncviewer` — remote-viewer speaks both
+`spice://` and `vnc://`, so a VNC-only rig is not a reason to reach for a different client.
+
+⚠ **Do not assume the port — read it off the live instance** with `ss -ltn | grep -E '5909|5931'`.
+The unit runs `/mnt/data/offload/windows-vm/launch-install.sh`, which serves SPICE `5931` **and**
+VNC `5909` (`-vnc 127.0.0.1:9`) concurrently under `-display none`. An instance booted before
+2026-08-31 has VNC only: that script was promoted from an unattended-install harness on
+2026-08-20 and silently dropped SPICE for 11 days (WI-1716951). Its canonical copy is now tracked
+at `papercusp-desktop/scripts/windows-vm/launch-install.sh` and pinned against the deployed copy by
+`packages/operator-core/lib/doc-claims/windows-vm-launcher-transports.test.ts`.
+
+⚠ `boot-windows.sh` and `launch-vm-and-viewer.sh` **no longer exist** — both were lost in the
+2026-08-15 rebuild (WI-39356). `~/windows-vm` is a symlink to `/mnt/data/offload/windows-vm`;
+they are the same directory, so either path resolves.
 
 ## Resource specs (current; tunable in the boot scripts)
 
 |         | macOS VM                                   | Windows VM                          |
 | ------- | ------------------------------------------ | ----------------------------------- |
-| RAM     | 32 GB (was 16; Xcode + Rust eats RAM)      | 32 GiB (was 8 GB pre-2026-05-12)    |
-| vCPUs   | 8 (`-smp 8`: 4 cores × 2 threads)          | 16                                  |
+| RAM     | 32 GB (was 16; Xcode + Rust eats RAM)      | 16 GiB (`-m 16384`)                 |
+| vCPUs   | 8 (`-smp 8`: 4 cores × 2 threads)          | 8 (`-smp 8`)                        |
 | Disk    | 120 GB qcow2 (grown from 80 on 2026-05-13) | `windows_hdd.qcow2`, \~120 GB qcow2 |
 | Cache   | writeback                                  | writeback                           |
 | Net     | virtio-net-pci                             | e1000                               |
@@ -262,7 +276,7 @@ The Windows VM crashed **6+ times during a single build session** (2026-05-13). 
 ps -ef | grep -v grep | grep "qemu.*windows_hdd"   # → should be empty
 
 # Restart
-cd ~/windows-vm && nohup bash boot-windows.sh > /tmp/win-boot.log 2>&1 &
+systemctl --user restart papercup-vm-win.service
 
 # Wait ~90s
 sleep 90 && ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 'echo ok'
