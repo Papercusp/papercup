@@ -2329,9 +2329,15 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       expect(gateErr.peek()).not.toContain('PC_HEAVY_ADMISSION');
       expect(readdirSync(admissionDir).some((name) => name.includes('release'))).toBe(false);
 
-      expect(newErr.peek()).toContain(
-        'PC_HEAVY_ADMISSION status=frozen reason=memory-psi-high priority=10 psiFullAvg10=9 admittedCgroupMiB=128 admissionId=ordinary-new retryHandle=psi-recovery:ordinary-new',
-      );
+      // WI-1707579, one step further apart than the reported case: the wait above is on the
+      // GATE's marker FILE, while this assertion reads the ordinary-new root's STDERR — two
+      // different processes and two different channels, with no ordering guarantee between
+      // them. The stream assertion needs its own wait on the stream it actually reads.
+      const frozenNewLine =
+        'PC_HEAVY_ADMISSION status=frozen reason=memory-psi-high priority=10 psiFullAvg10=9 admittedCgroupMiB=128 admissionId=ordinary-new retryHandle=psi-recovery:ordinary-new';
+      await waitFor('the frozen admission line reaching the ordinary-new stderr', () =>
+        newErr.peek().includes(frozenNewLine));
+      expect(newErr.peek()).toContain(frozenNewLine);
 
       writeFileSync(psiFile, '0\n');
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -2390,6 +2396,12 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
     );
     const holderErr = createTextCollector(holder.stderr);
     const exited = new Promise<number>((resolve) => holder.on('exit', (code) => resolve(code ?? -1)));
+    // WI-1707579, the subtlest form of the same cross-channel race. 'exit' fires when the
+    // process goes away; 'close' fires only once its stdio streams have closed and FLUSHED.
+    // The assertions below read the stderr COLLECTOR, so gating them on 'exit' waits on the
+    // wrong channel — and `status=expired` is emitted immediately before exit, making it
+    // precisely the line most likely to still be in flight when 'exit' lands.
+    const closed = new Promise<void>((resolve) => holder.on('close', () => resolve()));
     try {
       await waitFor('the root entering the high-PSI frozen state', () =>
         holderErr.peek().includes('PC_HEAVY_ADMISSION status=frozen'),
@@ -2397,6 +2409,7 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       await waitFor('the permanently pressured root terminating after its lease', () => holder.exitCode !== null, 8_000);
 
       expect(await exited).toBe(75);
+      await closed;
       expect(holderErr.peek()).toContain(
         'PC_HEAVY_ADMISSION status=expired reason=memory-psi-high-timeout priority=10 psiFullAvg10=9 admittedCgroupMiB=128 admissionId=permanent-high-psi retryHandle=psi-recovery:permanent-high-psi',
       );
@@ -2501,9 +2514,17 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       await waitFor('the floor-disabled candidate freezing under high PSI', () =>
         existsSync(join(admissionDir, 'floor-disabled-victim.state')) &&
           admissionState('floor-disabled-victim').includes('state=frozen'));
-      expect(holderErr.peek()).toContain(
-        'PC_HEAVY_ADMISSION status=frozen reason=memory-psi-high priority=10 psiFullAvg10=9 admittedCgroupMiB=24 admissionId=floor-disabled-victim retryHandle=psi-recovery:floor-disabled-victim',
-      );
+      // WI-1707579 — the reported case. The wait above is satisfied by pc-heavy's STATE FILE
+      // write; this assertion reads the STDERR the child emitted. Two independent channels
+      // with no ordering guarantee: on an idle box the stderr line has always landed by the
+      // time the file appears, but under a loaded sweep the collector's drain is descheduled
+      // and peek() still holds only the earlier `slot acquired` line. Keep the state-file wait
+      // as the precondition, and give the stream assertion its own wait on the stream.
+      const frozenVictimLine =
+        'PC_HEAVY_ADMISSION status=frozen reason=memory-psi-high priority=10 psiFullAvg10=9 admittedCgroupMiB=24 admissionId=floor-disabled-victim retryHandle=psi-recovery:floor-disabled-victim';
+      await waitFor('the frozen admission line reaching the holder stderr', () =>
+        holderErr.peek().includes(frozenVictimLine));
+      expect(holderErr.peek()).toContain(frozenVictimLine);
       await waitFor('the chosen process group reaching the stopped state', () =>
         ['T', 't'].includes(processState(childPid)));
     } finally {
