@@ -35,8 +35,16 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readlinkSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { isReservedServicePort } from './reserved-service-ports';
+import {
+  attributeSocket,
+  viewableUrl,
+  type AppProject,
+  type CwdReader,
+  type SocketAttribution,
+} from './listening-socket-apps';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
 // scope): this module is reachable via a transitive import chain from test files
@@ -128,8 +136,40 @@ export interface ListeningSocket {
   acceptQueue: { pending: number; backlog: number };
 }
 
+/**
+ * A listen-table row plus the workspace app serving it and the URL to open.
+ * See `listening-socket-apps.ts` for why the app is DERIVED from the owning
+ * process's cwd rather than stored on the registry project row.
+ */
+export type AttributedListeningSocket = ListeningSocket & SocketAttribution;
+
+/**
+ * Read a process's cwd from `/proc`. Same-uid only — an unreadable link means
+ * "cannot see", never "no cwd", which is why the caller distinguishes
+ * `cwd-unreadable` from `no-registry-project`.
+ */
+export function procCwdReader(pid: number): string | null {
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How to attribute sockets to apps. `projects: null` states that the registry
+ * could not be READ (every row reports `registry-unavailable`) and is
+ * deliberately distinct from `[]`, an empty registry that legitimately
+ * attributes nothing.
+ */
+export interface AppAttributionSeam {
+  projects: readonly AppProject[] | null;
+  /** Defaults to {@link procCwdReader}; injected in tests so no /proc is touched. */
+  readCwd?: CwdReader;
+}
+
 export interface ListeningSocketsResult {
-  sockets: ListeningSocket[];
+  sockets: AttributedListeningSocket[];
   /** Rows matching the filter BEFORE the limit was applied. */
   matched: number;
   /** Every listening socket on the host, regardless of filter. */
@@ -140,6 +180,20 @@ export interface ListeningSocketsResult {
    * say "bound by another user" instead of misreporting an empty owner.
    */
   ownerHidden: number;
+  /**
+   * Present only when an `app` filter was used. Without it, zero rows is
+   * ambiguous in exactly the way this module refuses to be elsewhere:
+   * "that app is not registered" and "that app is registered but nothing is
+   * serving it right now" are different answers with different next actions,
+   * and an empty `sockets` array alone cannot tell them apart.
+   */
+  appFilter?: {
+    slug: string;
+    /** Is there a registry project with this slug at all? */
+    known: boolean;
+    /** Its registered path when known — where to go start it. */
+    path: string | null;
+  };
 }
 
 export class ListeningSocketsError extends Error {}
@@ -245,6 +299,10 @@ export interface ListListeningOptions {
   port?: number;
   /** Only sockets owned by this pid (resolvable only for same-uid processes). */
   pid?: number;
+  /** Only sockets served by this registry app/harness slug. Requires `apps`. */
+  app?: string;
+  /** Registry projects + cwd reader used to attribute sockets to apps. */
+  apps?: AppAttributionSeam;
   limit?: number;
 }
 
@@ -269,14 +327,39 @@ export async function listListeningSockets(
   }
 
   const all = parseSsOutput(stdout);
-  const matchedRows = all.filter(
+  const portPidRows = all.filter(
     (s) =>
       (opts.port === undefined || s.port === opts.port) &&
       // Match ANY listener in the group, not just the representative pid —
       // otherwise a `pid` filter for worker 12 of a cluster finds nothing.
       (opts.pid === undefined || s.pids.includes(opts.pid)),
   );
+
+  const seam = opts.apps;
+  const readCwd = seam?.readCwd ?? procCwdReader;
+  const attribute = (s: ListeningSocket): AttributedListeningSocket =>
+    seam
+      ? { ...s, ...attributeSocket(s, seam.projects, readCwd) }
+      : {
+          ...s,
+          app: null,
+          appUnknownReason: 'not-attempted',
+          // Independent of the registry, so it is always answerable.
+          localUrl: viewableUrl(s.address, s.port),
+        };
+
+  const attributed = portPidRows.map(attribute);
+  const matchedRows =
+    opts.app === undefined ? attributed : attributed.filter((s) => s.app?.slug === opts.app);
   const limit = opts.limit ?? LISTENING_SOCKETS_DEFAULT_LIMIT;
+
+  // An `app` filter that matched nothing must say WHICH kind of nothing, so the
+  // caller can tell "no such app" from "registered but not running".
+  let appFilter: ListeningSocketsResult['appFilter'];
+  if (opts.app !== undefined) {
+    const project = (seam?.projects ?? []).find((p) => p.slug === opts.app) ?? null;
+    appFilter = { slug: opts.app, known: project !== null, path: project?.path ?? null };
+  }
 
   return {
     sockets: matchedRows.slice(0, limit),
@@ -284,5 +367,6 @@ export async function listListeningSockets(
     totalListening: all.length,
     truncated: matchedRows.length > limit,
     ownerHidden: matchedRows.filter((s) => !s.ownerVisible).length,
+    ...(appFilter ? { appFilter } : {}),
   };
 }
