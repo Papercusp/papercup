@@ -291,3 +291,83 @@ describe('checkScoutWorkspaceCeiling — the P-051 aggregate scout gate (D-005)'
     expect(v.allow).toBe(false);
   });
 });
+
+describe('CONTROL — the per-pot gate assertions above can actually fail', () => {
+  /**
+   * Two deliberately-wrong verdict functions, kept PERMANENTLY here rather than
+   * mutated into `core.ts`. The shared tree is swept into commits on a timer, so
+   * an in-tree mutant can be committed even when nothing goes wrong and no
+   * handler fails (CLAUDE.md, "Proving a guard is falsifiable"). For a module you
+   * import, the prescribed tier is a permanent wrong implementation plus a
+   * calibration case — which is what this block is.
+   *
+   * Each control reproduces one driftMarker the acceptance rubric names for this
+   * seam, so the assertions above are shown to REDDEN on the real historical
+   * defect rather than merely never having failed.
+   */
+
+  /** driftMarker: "a COALESCE or `?? false` on the enabled column." */
+  function failClosedVerdict(
+    r: LearningLoopRegistration | null | undefined,
+    floorUsd: number = LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
+    potEnabled?: boolean,
+  ) {
+    if (!r) return { allow: false, reason: 'unregistered', remainingUsd: null };
+    // ← the bug: an ABSENT scope row (undefined) collapses to disabled, which on
+    // a live workspace of 28 pots would have halted every pot's learning at once.
+    if (!(potEnabled ?? false)) {
+      return { allow: false, reason: 'pot-disabled', remainingUsd: remainingLoopBudgetUsd(r) };
+    }
+    return checkLoopVerdict(r, floorUsd, potEnabled);
+  }
+
+  /** driftMarker: "a gate ... because the check sits after an early return." */
+  function lateGateVerdict(
+    r: LearningLoopRegistration | null | undefined,
+    floorUsd: number = LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
+    potEnabled?: boolean,
+  ) {
+    if (!r) return { allow: false, reason: 'unregistered', remainingUsd: null };
+    // ← the bug: pot scope is consulted LAST, so any lane that is ALSO disabled
+    // or unbudgeted reports its own cause and the pot gate becomes unobservable.
+    if (!r.enabled) return { allow: false, reason: 'disabled', remainingUsd: remainingLoopBudgetUsd(r) };
+    if (r.budgetUsd === null) return { allow: false, reason: 'unbudgeted', remainingUsd: null };
+    if (potEnabled === false) {
+      return { allow: false, reason: 'pot-disabled', remainingUsd: remainingLoopBudgetUsd(r) };
+    }
+    return checkLoopVerdict(r, floorUsd, potEnabled);
+  }
+
+  it('CAUGHT: the fail-closed control disables an absent scope row, where the real gate fails OPEN', () => {
+    expect(failClosedVerdict(reg(), undefined, undefined).reason).toBe('pot-disabled');
+    expect(checkLoopVerdict(reg(), undefined, undefined)).toEqual({ allow: true, remainingUsd: 10 });
+  });
+
+  it('CAUGHT: the late-gate control lets a lane cause mask the pot cause', () => {
+    expect(lateGateVerdict(reg({ budgetUsd: null }), undefined, false).reason).toBe('unbudgeted');
+    expect(checkLoopVerdict(reg({ budgetUsd: null }), undefined, false).reason).toBe('pot-disabled');
+
+    expect(lateGateVerdict(reg({ enabled: false }), undefined, false).reason).toBe('disabled');
+    expect(checkLoopVerdict(reg({ enabled: false }), undefined, false).reason).toBe('pot-disabled');
+  });
+
+  it('CALIBRATION: both controls agree with the real gate on every OTHER input', () => {
+    // Without this, a control could be discriminating merely because it is broken
+    // for ALL inputs, which would make the two CAUGHT cases above meaningless.
+    const cases: Array<[LearningLoopRegistration | null, boolean | undefined]> = [
+      [reg(), true],
+      [reg(), false],
+      [null, false],
+      [null, undefined],
+      [reg({ enabled: false }), true],
+      [reg({ budgetUsd: null }), true],
+      [reg({ budgetUsd: 10, spentUsd: 12 }), true],
+      [reg({ budgetKind: 'per-cycle', budgetUsd: 1, spentUsd: 500 }), true],
+    ];
+    for (const [r, potEnabled] of cases) {
+      const real = checkLoopVerdict(r, undefined, potEnabled);
+      expect(failClosedVerdict(r, undefined, potEnabled)).toEqual(real);
+      expect(lateGateVerdict(r, undefined, potEnabled)).toEqual(real);
+    }
+  });
+});
