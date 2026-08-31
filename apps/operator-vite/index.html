@@ -109,6 +109,30 @@
       (() => {
         const KEY = 'papercusp.theme';
         const DEFAULT = 'frost';
+        // The portal owns the embedded document's palette. Resolve its query
+        // contract synchronously, before the ordinary PG/local cache path, so
+        // an iframe never paints frost and flips after React mounts.
+        try {
+          const params = new URL(window.location.href).searchParams;
+          const embedValue = params.get('portalEmbed');
+          const embedded = params.has('portalEmbed')
+            && (embedValue === '' || embedValue === '1' || embedValue === 'true' || embedValue === 'yes');
+          if (embedded) {
+            const requested = params.get('portalTheme');
+            const portalTheme = requested === 'light' || requested === 'dark' || requested === 'system'
+              ? requested
+              : 'system';
+            const systemDark = portalTheme === 'system'
+              && typeof window.matchMedia === 'function'
+              && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            document.documentElement.dataset.portalEmbed = 'true';
+            document.documentElement.dataset.portalEmbedTheme = portalTheme;
+            document.documentElement.dataset.theme = portalTheme === 'dark' || systemDark
+              ? 'portal-dark'
+              : 'portal-light';
+            return;
+          }
+        } catch (e) {}
         const wsId = () => {
           try { if (window.__PAPERCUSP_WS__ && String(window.__PAPERCUSP_WS__).trim()) return window.__PAPERCUSP_WS__; } catch (e) {}
           try { const ws = new URL(window.location.href).searchParams.get('ws'); if (ws && ws.trim()) return ws; } catch (e) {}

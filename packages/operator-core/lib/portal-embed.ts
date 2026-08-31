@@ -35,8 +35,12 @@ export function isPortalEmbedFlag(value: unknown): boolean {
 
 /** True when a pathname + query describe an operator document hosted by the portal. */
 export function isPortalEmbedLocation(pathname: string, search = ''): boolean {
-  if (pathname !== '/adv' && !pathname.startsWith('/adv/')) return false;
-  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  // Router adapters normally split pathname/search. Normalize the full-path
+  // form too so a query-bearing location cannot accidentally retain chrome.
+  const [path, inlineSearch = ''] = pathname.split('?', 2);
+  if (path !== '/adv' && !path.startsWith('/adv/')) return false;
+  const explicitSearch = search.startsWith('?') ? search.slice(1) : search;
+  const params = new URLSearchParams([inlineSearch, explicitSearch].filter(Boolean).join('&'));
   return isPortalEmbedFlag(params.get(PORTAL_EMBED_PARAM));
 }
 

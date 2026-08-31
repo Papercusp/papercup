@@ -276,6 +276,17 @@ describe('ChromeShell', () => {
     expect(screen.queryByTestId('op-chat')).toBeNull();
   });
 
+  it('keeps only the Papercup chat dock when /adv is framed by the portal', () => {
+    pathname = '/adv';
+    search = 'portalEmbed=1&portalTheme=light';
+    operatorChatSidebarFlag = false;
+    const { container } = render(<ChromeShell />);
+
+    expect(screen.getByTestId('op-chat')).toBeTruthy();
+    expect(container.querySelector('.pc-header')).toBeNull();
+    expect(screen.queryByText('OPS')).toBeNull();
+  });
+
   it('never renders the still-retired legacy chats (OracleDock / Tutorial), regardless of flags', () => {
     // Recurrence guard for design-simplification-2026-07-09 P-003: OracleDock
     // and TutorialButton stay in _retired/legacy-web-chats/ — only the
