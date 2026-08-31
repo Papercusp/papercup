@@ -1,0 +1,242 @@
+/**
+ * plans:get — `shipReadiness`, the opt-in ship-blocker verdict (EI-21967410937471873).
+ *
+ * WHY THE FIELD EXISTS. The verdict was already computed read-only, but only the UI
+ * could reach it (the `plans.acceptanceGate` sync resolver). An agent's sole route to
+ * the same answer was to ATTEMPT `plans:set-plan-status` and read the refusal — so
+ * agents guessed the blocker instead and wrote the guess into `## Now`, where
+ * successors inherited it unverified. Measured on dead-target-routine-reaper-2026-08-30:
+ * ~11h waiting on a green-checkpoint gate that was never the blocker (the real one was
+ * `audit_coverage_stale`).
+ *
+ * WHAT THIS PINS, and each case is a failure that would make the field WORSE than not
+ * having it — because every one of them reports a plan as shippable when it is not:
+ *
+ *   - absent unless asked, so absence is never read as "nothing is blocking";
+ *   - the verdict is the shared evaluator's, returned verbatim — not re-derived, so it
+ *     cannot drift from what set-plan-status actually enforces;
+ *   - NOT SERVED FROM CACHE. This is the load-bearing one. A gate verdict is
+ *     TIME-VARYING in a way the plan body is not: on a shared tree many agents commit
+ *     to, audit citations go stale with nobody touching the plan, so
+ *     `audit_coverage_stale` can appear or clear with no plan revision at all. The
+ *     first draft of this feature computed the verdict INSIDE cachedRead, whose key
+ *     (slug + harness + mode + heading + includeRaw + selections) does not fold
+ *     `shipReadiness` — which would have both served a `shipReadiness:true` caller an
+ *     entry that never had the field, and pinned a stale `satisfied:true` for the whole
+ *     soft TTL. The test asserts the plan read is still cached while the verdict is not;
+ *     moving the call back inside the cache fails here loudly;
+ *   - a gate that cannot run reports `unavailableReason`, never a silent omission and
+ *     never a green, and never fails the surrounding plans:get.
+ */
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { setFlagOverridesForTest } from "@papercusp/flags/test";
+
+const M = vi.hoisted(() => {
+  const planFixture = (slug: string) => ({
+    parsed: {
+      isLegacy: false,
+      slug,
+      prose: "## Now\nbody\n",
+      raw: `slug: ${slug}\n`,
+      frontmatter: { slug },
+      now: { state: "s", next: "n" },
+      decisions: [],
+      items: [],
+    },
+    archived: false,
+    row: {
+      workspaceId: "ws-ship-readiness",
+      planSlug: slug,
+      harnessSlug: "papercup",
+      version: 1,
+      promotePolicy: null,
+      forcedPast: null,
+    },
+  });
+  type PlanRead = ReturnType<typeof planFixture> | null;
+  return {
+    planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
+    readPlanBySlug: vi.fn(async (slug: string): Promise<PlanRead> => planFixture(slug)),
+    ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string }) => ({
+      harnessSlug: ctx.harnessSlug ?? "papercup",
+    })),
+    resolveCtxHarnessSlug: vi.fn(() => "papercup"),
+    resolveEffectiveHarnessSlug: vi.fn(() => "papercup"),
+    getAcceptanceRubricForPlan: vi.fn(async () => null),
+    getLatestPlanAudit: vi.fn(async () => null),
+    // The REAL refusal shape this feature exists to surface — the same code that
+    // actually blocked dead-target-routine-reaper-2026-08-30.
+    resolvePlanAcceptanceGateVerdict: vi.fn(async ({ planSlug }: { planSlug: string }) => [
+      {
+        planSlug,
+        satisfied: false,
+        skipped: null,
+        code: "audit_coverage_stale",
+        message: "3 item audit(s) are missing or stale — P-002; P-004; P-005.",
+        rubricId: null,
+        gradedBy: null,
+        gradedVia: null,
+        forcedPast: null,
+        vettedUnderWaiver: null,
+        unavailableReason: null,
+      },
+    ]),
+  };
+});
+
+vi.mock("./source", async (orig) => {
+  const actual = await orig<typeof import("./source")>();
+  return {
+    ...actual,
+    planHarnessesForSlugs: M.planHarnessesForSlugs,
+    readPlanBySlug: M.readPlanBySlug,
+  };
+});
+vi.mock("./_ctx-opts", () => ({
+  ctxToPlanSourceOpts: M.ctxToPlanSourceOpts,
+  resolveCtxHarnessSlug: M.resolveCtxHarnessSlug,
+  resolveEffectiveHarnessSlug: M.resolveEffectiveHarnessSlug,
+}));
+vi.mock("../../issue-blocks-merge", async (orig) => {
+  const actual = await orig<typeof import("../../issue-blocks-merge")>();
+  return {
+    ...actual,
+    overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({
+      items,
+      blockingIssues: {},
+    })),
+  };
+});
+vi.mock("@papercusp/db-org", async (orig) => {
+  const actual = await orig<typeof import("@papercusp/db-org")>();
+  return {
+    ...actual,
+    withWorkspace: vi.fn(async () => {
+      throw new Error("no-db-in-unit-test");
+    }),
+  };
+});
+vi.mock("../../rubrics", () => ({
+  getAcceptanceRubricForPlan: M.getAcceptanceRubricForPlan,
+}));
+vi.mock("../../plan-audits", () => ({
+  getLatestPlanAudit: M.getLatestPlanAudit,
+}));
+vi.mock("../../sync-resolver/plan-acceptance-gate-verdict", () => ({
+  resolvePlanAcceptanceGateVerdict: M.resolvePlanAcceptanceGateVerdict,
+}));
+
+import tool from "./get";
+import {
+  resetOperatorCacheForTests,
+  resetCachedReadStatsForTests,
+  __setCachedReadEnabledForTests,
+} from "../../cache";
+import { _refreshCacheLayerForTests } from "../../cache/instance";
+
+const CACHE_LAYER = "papercusp-cache-layer";
+
+const ctx = (workspaceId = "ws-ship-readiness", harnessSlug = "papercup"): never =>
+  ({
+    workspaceId,
+    harnessSlug,
+    metadata: vi.fn(),
+    log: vi.fn(),
+    progress: vi.fn(),
+  }) as never;
+
+const run = async (args: Record<string, unknown>) =>
+  ((await tool.handler(args as never, ctx())) as {
+    data: { results: Array<Record<string, unknown>> };
+  }).data;
+
+beforeEach(async () => {
+  resetOperatorCacheForTests();
+  resetCachedReadStatsForTests();
+  __setCachedReadEnabledForTests(true);
+  M.readPlanBySlug.mockClear();
+  M.resolvePlanAcceptanceGateVerdict.mockClear();
+  M.planHarnessesForSlugs.mockReset();
+  M.planHarnessesForSlugs.mockResolvedValue(new Map());
+  setFlagOverridesForTest({ [CACHE_LAYER]: true });
+  await _refreshCacheLayerForTests();
+});
+
+afterEach(async () => {
+  __setCachedReadEnabledForTests(false);
+  setFlagOverridesForTest(null);
+  await _refreshCacheLayerForTests();
+  resetOperatorCacheForTests();
+  resetCachedReadStatsForTests();
+});
+
+describe("plans:get — shipReadiness", () => {
+  it("accepts a boolean and rejects the string a caller might guess", () => {
+    expect(tool.args.safeParse({ slug: "alpha", shipReadiness: true }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: "alpha", shipReadiness: "yes" }).success).toBe(false);
+  });
+
+  it("is ABSENT when not requested — and the gate is never even evaluated", async () => {
+    const result = await run({ slug: "alpha" });
+    expect(result.results[0]).not.toHaveProperty("shipReadiness");
+    // Not merely absent from the payload: the five-check-family gate must not
+    // have run at all, or every plans:get would silently pay for it.
+    expect(M.resolvePlanAcceptanceGateVerdict).not.toHaveBeenCalled();
+  });
+
+  it("returns the shared evaluator's verdict VERBATIM when requested", async () => {
+    const result = await run({ slug: "alpha", shipReadiness: true });
+    expect(M.resolvePlanAcceptanceGateVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ planSlug: "alpha" }),
+    );
+    // The teaching message is passed through unsummarized — an agent acts on the
+    // named repair, so paraphrasing it here would defeat the point.
+    expect(result.results[0].shipReadiness).toMatchObject({
+      satisfied: false,
+      code: "audit_coverage_stale",
+      message: "3 item audit(s) are missing or stale — P-002; P-004; P-005.",
+    });
+  });
+
+  it("rides on meta mode too, so a cheap read can still ask what is blocking", async () => {
+    const result = await run({ slug: "alpha", mode: "meta", shipReadiness: true });
+    expect(result.results[0].shipReadiness).toMatchObject({ code: "audit_coverage_stale" });
+  });
+
+  it("evaluates the gate PER CALL even though the plan read is cached", async () => {
+    // The regression guard for the bug this feature nearly shipped with. The plan
+    // body is cacheable; the verdict is not, because audit citations go stale on a
+    // shared tree with no plan revision at all. If the verdict is ever moved back
+    // inside cachedRead, the second call returns the FIRST call's verdict and this
+    // fails — which is the whole point, since the stale value would be a green.
+    await run({ slug: "alpha", shipReadiness: true });
+    await run({ slug: "alpha", shipReadiness: true });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(1); // plan read: cached
+    expect(M.resolvePlanAcceptanceGateVerdict).toHaveBeenCalledTimes(2); // verdict: fresh
+  });
+
+  it("a cached plan read still gains the field when a later caller asks for it", async () => {
+    // The other half of the cache hazard: the entry populated by the first call
+    // never carried shipReadiness, so serving it unchanged would answer the second
+    // caller's explicit question with silence.
+    const without = await run({ slug: "alpha" });
+    expect(without.results[0]).not.toHaveProperty("shipReadiness");
+    const withField = await run({ slug: "alpha", shipReadiness: true });
+    expect(withField.results[0].shipReadiness).toMatchObject({ code: "audit_coverage_stale" });
+  });
+
+  it("reports unavailableReason rather than a green when the gate cannot be evaluated", async () => {
+    M.resolvePlanAcceptanceGateVerdict.mockRejectedValueOnce(new Error("gate exploded"));
+    const result = await run({ slug: "alpha", shipReadiness: true });
+    // plans:get itself must still succeed — this is an advisory field on an
+    // unrelated payload.
+    expect(result.results[0].ok).toBe(true);
+    // ...and the failure must be legible AS a failure. `satisfied:false` plus an
+    // explicit unavailableReason keeps "could not evaluate" distinguishable from
+    // "passed"; omitting the field would have read as "nothing is blocking".
+    expect(result.results[0].shipReadiness).toMatchObject({
+      satisfied: false,
+      unavailableReason: "resolver-unavailable",
+    });
+  });
+});

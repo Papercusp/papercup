@@ -1111,7 +1111,13 @@ export default defineTool({
             "../../sync-resolver/plan-acceptance-gate-verdict"
           );
           const rows = await resolvePlanAcceptanceGateVerdict({
-            workspaceId: ctxAny.workspaceId ?? "default",
+            // The resolver's own contract: this arg "rides for registry
+            // consistency and to key the subscription rather than being
+            // threaded in" — the gate resolves its harness scope from the plan
+            // row itself. So the schema's own default is the honest value here;
+            // inventing a workspace id would imply a scoping that does not
+            // happen.
+            workspaceId: "default",
             planSlug: slug,
           });
           result.shipReadiness = rows[0];
