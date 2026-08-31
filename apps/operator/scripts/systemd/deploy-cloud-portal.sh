@@ -100,6 +100,9 @@ validate_inputs() {
 
   NEXT_BIN="$PORTAL_ROOT/node_modules/.bin/next"
   [[ -x "$NEXT_BIN" ]] || die "Next executable is not executable: $NEXT_BIN"
+  STANDALONE_ENTRY="$PORTAL_ROOT/.next/standalone/standalone-entry.mjs"
+  [[ -f "$STANDALONE_ENTRY" ]] ||
+    die "portal production artifact is missing: $STANDALONE_ENTRY (run npm run build first)"
   NODE_DIR="$(dirname -- "$NODE_BIN")"
 
   require_uint_range PORTAL_PORT "$PORTAL_PORT" 1 65535
@@ -110,7 +113,7 @@ validate_inputs() {
 
   # These values become systemd syntax. Reject control bytes and specifier
   # markers rather than allowing a path to alter a unit's meaning.
-  for value in "$PORTAL_ROOT" "$NODE_BIN" "$NEXT_BIN" "$NODE_DIR"; do
+  for value in "$PORTAL_ROOT" "$NODE_BIN" "$NEXT_BIN" "$STANDALONE_ENTRY" "$NODE_DIR"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* ]] ||
       die "portal paths may not contain newlines or systemd '%' specifiers"
   done
@@ -128,10 +131,11 @@ unit_escape() {
 }
 
 render_unit() {
-  local root node next node_dir
+  local root node next standalone node_dir
   root="$(unit_escape "$PORTAL_ROOT")"
   node="$(unit_escape "$NODE_BIN")"
   next="$(unit_escape "$NEXT_BIN")"
+  standalone="$(unit_escape "$STANDALONE_ENTRY")"
   node_dir="$(unit_escape "$NODE_DIR")"
 
   local line
@@ -140,6 +144,7 @@ render_unit() {
     line=${line//@PORTAL_ROOT@/$root}
     line=${line//@NODE@/$node}
     line=${line//@NEXT_BIN@/$next}
+    line=${line//@STANDALONE_ENTRY@/$standalone}
     line=${line//@NODE_DIR@/$node_dir}
     printf '%s\n' "$line"
   done < "$TEMPLATE"

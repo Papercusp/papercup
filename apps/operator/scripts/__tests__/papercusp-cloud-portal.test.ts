@@ -22,16 +22,19 @@ function fixture(): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-"));
   const portalRoot = join(dir, "portal app");
   const nextDir = join(portalRoot, "node_modules", ".bin");
+  const standaloneDir = join(portalRoot, ".next", "standalone");
   const unitDir = join(dir, "systemd", "user");
   const tempDir = join(dir, "tmp");
   const binDir = join(dir, "bin");
   mkdirSync(nextDir, { recursive: true });
+  mkdirSync(standaloneDir, { recursive: true });
   mkdirSync(unitDir, { recursive: true });
   mkdirSync(tempDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(portalRoot, "package.json"), '{"name":"portal-fixture"}\n');
   writeFileSync(join(nextDir, "next"), "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(join(nextDir, "next"), 0o755);
+  writeFileSync(join(standaloneDir, "standalone-entry.mjs"), "export {};\n");
   return {
     dir,
     portalRoot,
@@ -69,7 +72,11 @@ describe("Cloud Portal systemd deployment contract", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain(`WorkingDirectory=${files.portalRoot.replaceAll(" ", "\\ ")}`);
       expect(result.stdout).toContain(`ExecStart=${process.execPath} `);
-      expect(result.stdout).toContain("dev --webpack -H 127.0.0.1 -p 3801");
+      expect(result.stdout).toContain("Environment=NODE_ENV=production");
+      expect(result.stdout).toContain("Environment=HOSTNAME=127.0.0.1");
+      expect(result.stdout).toContain(`EnvironmentFile=-${files.portalRoot.replaceAll(" ", "\\ ")}/.env.local`);
+      expect(result.stdout).toContain(".next/standalone/standalone-entry.mjs");
+      expect(result.stdout).not.toContain("ExecStart=" + process.execPath + " " + files.portalRoot + "/node_modules/.bin/next dev");
       expect(result.stdout).toContain("KillMode=control-group");
 
       const template = readFileSync(TEMPLATE, "utf8");
@@ -122,6 +129,9 @@ esac
       const installed = readFileSync(join(files.unitDir, "papercusp-cloud-portal.service"), "utf8");
       expect(installed).toContain("WorkingDirectory=");
       expect(installed).toContain("ExecStart=");
+      expect(installed).toContain("Environment=NODE_ENV=production");
+      expect(installed).toContain("EnvironmentFile=-");
+      expect(installed).toContain("standalone-entry.mjs");
       expect(readFileSync(files.logPath, "utf8")).toBe(
         "--user daemon-reload\n--user enable papercusp-cloud-portal.service\n",
       );
@@ -134,9 +144,23 @@ esac
     }
   });
 
+  it("refuses installation until the standalone production artifact has been built", () => {
+    const files = fixture();
+    try {
+      rmSync(join(files.portalRoot, ".next", "standalone", "standalone-entry.mjs"));
+      const result = run(files, ["--render-only"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("portal production artifact is missing");
+      expect(result.stderr).toContain("run npm run build first");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the handoff safety boundary around the validated backend, not the :3081 proxy", () => {
     const script = readFileSync(SCRIPT, "utf8");
     expect(script).toContain("validate_legacy_listener");
+    expect(script).toContain("STANDALONE_ENTRY");
     expect(script).toContain("process_lineage_is_next_dev");
     expect(script).toContain("restore_legacy_listener");
     expect(script).toContain('cd -- "$PORTAL_ROOT"');

@@ -176,12 +176,14 @@ Verify the live unit resolves to this repo source and that its effective
 
 # Cloud Portal backend — installation (EI-21983147886595945)
 
-`papercusp-cloud-portal.service` supervises the Portal's upstream Next.js
-development server on `127.0.0.1:3801`. The checked-in
+`papercusp-cloud-portal.service` supervises the Portal's built Next.js
+standalone production artifact on `127.0.0.1:3801`. Run `npm run build` in the
+Portal checkout first; the checked-in
 `papercusp-cloud-portal.service.in` is a machine-neutral template; the deploy
 helper resolves the external Portal checkout and Node binary at install time.
 The Portal's own `.env.local` remains in that external checkout and is loaded by
-Next from the unit's `WorkingDirectory`.
+the unit as an external `EnvironmentFile`; it is never copied into the portable
+artifact or the checked-in template.
 
 Validate/render and install the unit without touching the currently running
 backend:
@@ -196,7 +198,8 @@ systemctl --user show papercusp-cloud-portal.service \
   -p ActiveState -p MainPID -p ControlGroup -p ExecStart
 ```
 
-Use the explicit handoff mode for an existing terminal-scoped `next dev`:
+Use the explicit handoff mode for an existing terminal-scoped `next dev`; the
+replacement service runs the already-built standalone artifact:
 
 ```bash
 bash ./deploy-cloud-portal.sh --handoff

@@ -15,19 +15,21 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=@PORTAL_ROOT@
-# Next loads the portal's .env.local from WorkingDirectory. Secrets therefore
-# stay in the external app checkout and are never copied into this unit.
-Environment=NODE_ENV=development
+# Runtime configuration remains in the external app checkout and is read by
+# systemd rather than copied into the standalone artifact or this unit.
+EnvironmentFile=-@PORTAL_ROOT@/.env.local
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
 Environment=PORT=@PORT@
 Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=@NODE@ @NEXT_BIN@ dev --webpack -H 127.0.0.1 -p @PORT@
+ExecStart=@NODE@ @STANDALONE_ENTRY@
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=120s
 TimeoutStopSec=15s
 KillSignal=SIGTERM
-# next dev forks a server child; the named unit must own and reap that child
-# instead of leaving it behind in a terminal scope.
+# The standalone launcher forks the traced server; the named unit must own and
+# reap both processes instead of leaving a server child behind.
 KillMode=control-group
 
 [Install]
