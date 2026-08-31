@@ -50,7 +50,31 @@ export interface PlanAssertionCandidate {
 
 // Accepts both canonical `**[VAL-id]**` and scoper-written `[VAL-id] description` forms.
 const VAL_HEADER_RE = /^\s{1,8}-\s+\*{0,2}\[VAL-([^\]]+)\]\*{0,2}(?:\s+(.*?))?\s*$/;
-const VAL_FIELD_RE = /^\s{2,12}-\s+\*\*(Verify|Evidence|Status|RequiresTest):\*\*\s*(.*)/;
+/**
+ * TOLERANT ABOUT FORM, STRICT ABOUT SUBSTANCE (WI-1411580).
+ *
+ * These lines are HAND-AUTHORED by agents, so the emphasis markup, bullet character
+ * and indent style vary while the meaning does not. This regex used to require exactly
+ * `  - **Verify:**` — bold, colon INSIDE the bold, a `-` bullet, and two or more spaces
+ * of indent. Measured: of 12 plausible authored spellings only 4 matched. A miss is
+ * silent and self-contradicting: `extractAssertions` drops any candidate without
+ * `verifyText`, so `promotion-assertion-gate` then tells an agent who DID write a
+ * `**Verify**:` line that their item "declares no validation assertion" — and the
+ * suggested repair is the thing they already did.
+ *
+ * The line directly above already made this call: `VAL_HEADER_RE` is deliberately
+ * form-tolerant (`\*{0,2}`). The header got that tolerance and the field line did not.
+ * `item-parse-feedback.ts`, this predicate's only external caller, likewise recognises
+ * `[-*+]` bullets — so the `-`-only field rule disagreed with its own consumer.
+ *
+ * What stays STRICT is everything that carries meaning: the key must be one of the four
+ * known fields (`Verifying`/`Notes` still miss), a colon is still required, the line must
+ * still be a nested bullet (a top-level `- **Verify:**` still misses), and an empty value
+ * still yields no assertion because `extractAssertions` filters on non-empty `verifyText`.
+ * Accepted emphasis: none, `*italic*`, `**bold**`, with the colon inside or outside it.
+ */
+const VAL_FIELD_RE =
+  /^[ \t]{1,12}[-*+]\s+\*{0,2}(Verify|Evidence|Status|RequiresTest)\*{0,2}\s*:\s*\*{0,2}\s*(.*)/;
 const ITEM_LINE_RE = /^-\s+\*\*(P-\d{3,})\*\*/;
 
 /**

@@ -112,7 +112,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // migration-fixture-drift nudge (EI-19359711978838614) +
     // migration-forward-compat nudge (EI-19462877357083817) + tool-prompt-weight nudge
     // (EI-19459260956682226) + mock-cast-escape nudge (WI-37497) + css-design-primitives
-    // nudge (EI-20023819609804890) + registry-census-drift nudge (EI-19401978567233485) +
+    // nudge (EI-20023819609804890) + frozen-candidate-edit nudge (WI-40081) +
+    // registry-census-drift nudge (EI-19401978567233485) +
     // ask-gate-mirror (in install order). The separate
     // coord-inbox entry is retired — merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
@@ -129,6 +130,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-tool-prompt-weight-nudge.mjs`,
       `${DEST}/posttooluse-mock-cast-escape-nudge.mjs`,
       `${DEST}/posttooluse-css-design-primitives-nudge.mjs`,
+      `${DEST}/posttooluse-frozen-candidate-edit-nudge.mjs`,
       `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,

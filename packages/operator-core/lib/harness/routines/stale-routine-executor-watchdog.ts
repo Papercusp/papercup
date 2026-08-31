@@ -167,6 +167,15 @@ export interface ExecutorAlarmContext {
  * rather than to correct one more carry-note. Pinned against drift by
  * doc-claims/dev-restart-gate-collision-rationale.test.ts, so if the guard ever
  * legitimately starts blocking an isolated run, this text fails in the same change.
+ *
+ * THE SECOND HALF was added 2026-08-31 for the opposite failure. Once the refuted
+ * caution was cleared, the remediation still did not happen — because the lever
+ * REFUSES almost every time it is pulled, on `git_sync_collision`, and a single
+ * refusal reads exactly like "blocked, not my problem". Measured that night: 20
+ * consecutive attempts over 40s never saw fewer than 4 concurrent git-sync
+ * operations. A reader who does not know that refusal is expected and transient
+ * will abandon a remediation that was one retry loop away, which is how a page
+ * stays open for two and a half hours with nothing actually wrong.
  */
 export const RESTART_SAFETY_NOTE =
   'Do NOT hand-derive whether restarting is safe right now — the lever answers it. Run the same call WITHOUT ' +
@@ -174,7 +183,15 @@ export const RESTART_SAFETY_NOTE =
   'which is authoritative. In particular an in-flight green-checkpoint run is NOT by itself a reason to wait — the ' +
   'suite runs detached in its own transient systemd scope, so it is cgroup-isolated and SURVIVES this restart ' +
   '(measured: EI-20286473216066539, re-confirmed EI-21437097591910648). Wait only if the dry run itself reports ' +
-  'would_block:true.';
+  'would_block:true. ' +
+  'EXPECT the refusal you will actually get to be `git_sync_collision`, and do NOT read it as the end of the road: ' +
+  'git-sync sweeps 38 submodules plus several pots from inside this host\'s own cgroup, so its operations are in ' +
+  'flight nearly continuously (measured 2026-08-31: 20 consecutive attempts over 40s, never fewer than 4 in ' +
+  'flight). That refusal is EXPECTED, TRANSIENT, and side-effect-free — "NOTHING was done: no cooldown claimed, ' +
+  'no drain, no signal" — so retry it in a loop until a window opens rather than abandoning the remediation. ' +
+  'Do NOT reach for `override_git_sync_collision` to force past it: that SIGKILLs a commit after lock acquisition ' +
+  'and strands a peer\'s uncommitted work. It is reserved for a host that is genuinely wedged, which a merely ' +
+  'busy one is not.';
 
 /**
  * Resolve the user-facing identity and sanctioned remediation for an executor.

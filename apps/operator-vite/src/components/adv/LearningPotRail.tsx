@@ -518,7 +518,7 @@ export default function LearningPotRail() {
         }
         .pc-potrail__dormant:hover { color: var(--fg); }
         .pc-potrail__dormant:focus-visible {
-          outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 999px;
+          outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 999px;
         }
         .pc-potrail__dormant { color: var(--fg-mute); }
         .pc-potrail__sr {
@@ -536,7 +536,7 @@ export default function LearningPotRail() {
           cursor: pointer;
         }
         .pc-potrail__trigger:focus-visible {
-          outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 999px;
+          outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 999px;
         }
         .pc-potrail__chip:hover { border-color: var(--border-strong); }
 
@@ -598,7 +598,7 @@ export default function LearningPotRail() {
         .pc-potrail__arm[data-on="1"] { color: var(--good); }
         .pc-potrail__arm:hover:not(:disabled) { background: var(--bg-2); color: var(--fg); }
         .pc-potrail__arm:disabled { cursor: default; opacity: .5; }
-        .pc-potrail__arm:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+        .pc-potrail__arm:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
         .pc-potrail__spinner {
           width: 10px; height: 10px; border-radius: 50%;
           border: 1.5px solid var(--border-strong); border-top-color: var(--fg);

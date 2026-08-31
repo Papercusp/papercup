@@ -30,6 +30,17 @@ WORKER_UNIT="papercusp-phone-worker.service"
 WORKER_DIR="${PHONE_WORKER_DIR:-$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app/worker}"
 NODE_BIN="${PHONE_NODE_BIN:-$(command -v node || echo /usr/bin/node)}"
 
+# The portal-facing sidecar (WI-1409555) — same out-of-repo tree as the worker,
+# so same rendered-template treatment. It is what lets the Portal at :3801 start
+# a call; without it the Phone surface renders but "Call assistant" cannot mint
+# a room.
+SIDECAR_UNIT="papercusp-phone-sidecar.service"
+SIDECAR_DIR="${PHONE_SIDECAR_DIR:-$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app/apps/sidecar}"
+# The portal↔sidecar shared bearer secret. Kept OUT of livekit.env on purpose:
+# that file is the media credential of record and the portal must never be given
+# it, but the portal DOES need this one.
+PORTAL_ENV_FILE="$CONF_DIR/portal.env"
+
 ROTATE=0; STATUS_ONLY=0
 for a in "$@"; do
   case "$a" in
@@ -175,6 +186,25 @@ if [[ -d "$WORKER_DIR" ]]; then
   say "rendered $WORKER_UNIT (worker dir: $WORKER_DIR, node: $NODE_BIN)"
 else
   say "SKIP $WORKER_UNIT — no worker tree at $WORKER_DIR (set PHONE_WORKER_DIR to override)"
+fi
+
+# The sidecar, on the same present-or-skip rule as the worker.
+if [[ -d "$SIDECAR_DIR" ]]; then
+  # Mint the portal↔sidecar secret ONCE and never rotate it silently: both sides
+  # read this file, so regenerating it on every deploy would break a running
+  # portal's bearer until someone restarted it with the new value.
+  if [[ ! -s "$PORTAL_ENV_FILE" ]] || ! grep -q '^PHONE_AUTH_SECRET=' "$PORTAL_ENV_FILE" 2>/dev/null; then
+    mkdir -p "$CONF_DIR"
+    ( umask 077; printf 'PHONE_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" > "$PORTAL_ENV_FILE" )
+    chmod 600 "$PORTAL_ENV_FILE"
+    say "minted PHONE_AUTH_SECRET into $PORTAL_ENV_FILE (portal must be started with it)"
+  fi
+  render "$HERE/systemd/$SIDECAR_UNIT.tmpl" "$UNIT_DIR/$SIDECAR_UNIT"
+  chmod 644 "$UNIT_DIR/$SIDECAR_UNIT"   # render() writes 0600 for secret files; a unit is not one
+  UNITS+=("$SIDECAR_UNIT")
+  say "rendered $SIDECAR_UNIT (sidecar dir: $SIDECAR_DIR, node: $NODE_BIN)"
+else
+  say "SKIP $SIDECAR_UNIT — no sidecar tree at $SIDECAR_DIR (set PHONE_SIDECAR_DIR to override)"
 fi
 systemctl --user daemon-reload
 

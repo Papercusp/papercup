@@ -11,16 +11,20 @@ import { describe, expect, it } from 'vitest';
 
 import {
   RESTART_SAFETY_NOTE,
+  ROUTINE_DRIFT_NAME_CAP,
   evaluateExecutorStaleness,
   executorAlarmContext,
   executorIdentity,
   refreshedEscalationPayload,
+  routineDriftSentence,
   staleExecutorThresholdSec,
 } from './stale-routine-executor-watchdog';
 import {
   captureProcessBootIdentity,
   processBootTimeMs,
   resolveCommitsBehind,
+  resolveRoutineCodeDrift,
+  type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
 
 const TWO_H = 2 * 3_600_000;
@@ -338,6 +342,23 @@ describe('the stale-executor page carries the restart-safety precondition, not j
     expect(note).toContain('EI-20286473216066539');
   });
 
+  it('pre-empts the refusal a reader ACTUALLY hits, so one git_sync_collision does not end the remediation', () => {
+    // 2026-08-31: the refuted gate caution was cleared and the page STILL sat open,
+    // because every attempt to pull the lever was refused on git_sync_collision and a
+    // lone refusal reads as "blocked, not mine". Measured: 20 consecutive attempts
+    // over 40s, never fewer than 4 git-sync operations in flight.
+    const note = executorAlarmContext('port-3271').restartSafety ?? '';
+
+    expect(note).toContain('git_sync_collision');
+    expect(note).toContain('EXPECTED');
+    expect(note).toContain('retry it in a loop');
+    // And the destructive escape hatch is named as the WRONG answer — it is the
+    // obvious next reach for someone who has just been refused seven times.
+    expect(note).toContain('override_git_sync_collision');
+    expect(note).toMatch(/Do NOT reach for `override_git_sync_collision`/);
+    expect(note).toMatch(/strands a peer's uncommitted work/);
+  });
+
   it('never asserts the refuted mechanism it exists to replace', () => {
     const note = executorAlarmContext('port-3271').restartSafety ?? '';
 
@@ -390,6 +411,12 @@ describe('refreshedEscalationPayload — an open page ages visibly instead of fr
     identity: prior.identity,
     ageHours: 5,
     commitsBehind: 240,
+    // The functional drift is a CURRENT reading like every other field here, so a
+    // refresh must carry today's answer rather than whatever the page opened with.
+    routineDrift: {
+      changed: ['packages/operator-core/lib/harness/routines/register-system-actions.ts'],
+      addedSinceBoot: ['packages/operator-core/lib/harness/routines/seed-frozen-candidate-drift-sweep-routine.ts'],
+    },
     detail: 'the reading now',
     unit: prior.unit,
     restartLever: prior.restartLever,
@@ -402,6 +429,11 @@ describe('refreshedEscalationPayload — an open page ages visibly instead of fr
     expect(refreshed.ageHours).toBe(5);
     expect(refreshed.commitsBehind).toBe(240);
     expect(refreshed.detail).toBe('the reading now');
+    // Including the functional drift: an open page that kept reporting the routines
+    // that were missing THREE HOURS AGO would be the same freeze in a new field.
+    expect(refreshed.routineDrift?.addedSinceBoot).toEqual([
+      'packages/operator-core/lib/harness/routines/seed-frozen-candidate-drift-sweep-routine.ts',
+    ]);
   });
 
   it('PRESERVES emitted_at and derives openForHours from it — the number that makes an ignored page loud', () => {
@@ -484,6 +516,174 @@ describe('refreshedEscalationPayload — an open page ages visibly instead of fr
       expect(refreshed.emitted_at).toBe(T0);
       expect(refreshed.openForHours).toBeNull();
       expect(refreshed.ageHours).toBe(5);
+    }
+  });
+});
+
+/**
+ * The page must say WHAT is stale, not only HOW MUCH.
+ *
+ * The 2026-08-31 incident is the bar: a page reading "143 COMMITS BEHIND" sat open
+ * and unacted for 2h11m while two agents read it, because a commit count cannot
+ * distinguish unrelated churn from the actual state — four routine source files
+ * absent from the running process, two of them whole routines that had never fired.
+ *
+ * FALSIFIABILITY. `routineDriftSentence` is a module we import, so per the repo's
+ * mutation-probe guidance the controls are two deliberately-WRONG implementations
+ * kept permanently beside it, plus a calibration case every implementation must
+ * pass (without which the controls could be "failing" for an unrelated reason).
+ */
+describe('routineDriftSentence — the page names what is stale, not just how much', () => {
+  const SEEDS = [
+    'packages/operator-core/lib/harness/routines/seed-account-capacity-reprobe-routine.ts',
+    'packages/operator-core/lib/harness/routines/seed-frozen-candidate-drift-sweep-routine.ts',
+  ];
+  const HANDLERS = [
+    'packages/operator-core/lib/harness/routines/register-system-actions.ts',
+    'packages/operator-core/lib/harness/routines/dead-target-sweep.ts',
+  ];
+
+  // ── controls: what this guard must REJECT ──────────────────────────────────
+  /** WRONG #1: collapses added files into "changed", losing the severity that makes
+   *  the page actionable — the process runs an OLD version vs. runs NO version. */
+  const wrongCollapsesSeverity = (d: RoutineCodeDrift | null | undefined): string => {
+    if (!d) return '';
+    const all = [...(d.addedSinceBoot ?? []), ...(d.changed ?? [])];
+    if (all.length === 0) return '';
+    return ` — ${all.length} routine files changed since boot`;
+  };
+  /** WRONG #2: turns a bounded probe that found nothing into a reassuring all-clear —
+   *  the false-negative this watchdog exists to prevent. */
+  const wrongEmitsAllClear = (d: RoutineCodeDrift | null | undefined): string => {
+    if (!d) return '';
+    const added = d.addedSinceBoot ?? [];
+    const changed = d.changed ?? [];
+    if (added.length === 0 && changed.length === 0) return ' — no routine code changed since boot';
+    return ` — ${added.length} added, ${changed.length} changed`;
+  };
+
+  it('CALIBRATION: every implementation names a lone changed handler (so a failing control is failing for the right reason)', () => {
+    const drift: RoutineCodeDrift = { changed: [HANDLERS[1]], addedSinceBoot: [] };
+    for (const impl of [routineDriftSentence, wrongCollapsesSeverity, wrongEmitsAllClear]) {
+      expect(impl(drift)).not.toBe('');
+    }
+  });
+
+  it('names files ADDED since boot and says they are NOT RUNNING — the severe case a commit count hides', () => {
+    const drift: RoutineCodeDrift = { changed: [], addedSinceBoot: SEEDS };
+    const s = routineDriftSentence(drift);
+    expect(s).toContain('seed-account-capacity-reprobe-routine.ts');
+    expect(s).toContain('seed-frozen-candidate-drift-sweep-routine.ts');
+    expect(s).toContain('NOT RUNNING');
+    // The control that collapses severity cannot produce this, which is the point.
+    expect(wrongCollapsesSeverity(drift)).not.toContain('NOT RUNNING');
+  });
+
+  it('distinguishes ADDED from CHANGED rather than reporting one undifferentiated count', () => {
+    const drift: RoutineCodeDrift = { changed: HANDLERS, addedSinceBoot: SEEDS };
+    const s = routineDriftSentence(drift);
+    expect(s).toContain('NOT RUNNING');
+    expect(s).toContain('does run');
+    expect(s).toContain('2 routine source files');
+    expect(s).toContain('2 routine handlers');
+    // A single fused count is exactly the failure mode.
+    expect(wrongCollapsesSeverity(drift)).toContain('4 routine files');
+    expect(s).not.toContain('4 routine files');
+  });
+
+  it('says NOTHING when the probe could not run — never a fabricated verdict', () => {
+    for (const missing of [null, undefined]) {
+      expect(routineDriftSentence(missing)).toBe('');
+    }
+  });
+
+  it('says NOTHING — not an all-clear — when the bounded probe ran and found nothing', () => {
+    // ROUTINE_SOURCE_PREFIX is a LOWER BOUND: handlers reach helpers all over
+    // operator-core. "Found nothing in scope" must never be rendered as "fine".
+    const empty: RoutineCodeDrift = { changed: [], addedSinceBoot: [] };
+    expect(routineDriftSentence(empty)).toBe('');
+    expect(routineDriftSentence(empty)).not.toContain('no routine');
+    // The control does emit the false all-clear; that is what this guard catches.
+    expect(wrongEmitsAllClear(empty)).toContain('no routine code changed');
+  });
+
+  it('caps the printed names but STATES the overflow instead of truncating silently', () => {
+    const many = Array.from(
+      { length: ROUTINE_DRIFT_NAME_CAP + 3 },
+      (_, i) => `packages/operator-core/lib/harness/routines/handler-${i}.ts`,
+    );
+    const s = routineDriftSentence({ changed: many, addedSinceBoot: [] });
+    expect(s).toContain('+3 more');
+    expect(s).toContain(`${many.length} routine handlers`); // the TOTAL is never capped
+    expect(s).toContain('handler-0.ts');
+    expect(s).not.toContain(`handler-${ROUTINE_DRIFT_NAME_CAP}.ts`);
+  });
+
+  it('singularises a lone file in both severities', () => {
+    expect(routineDriftSentence({ changed: [], addedSinceBoot: [SEEDS[0]] })).toContain(
+      '1 routine source file',
+    );
+    expect(routineDriftSentence({ changed: [HANDLERS[0]], addedSinceBoot: [] })).toContain(
+      '1 routine handler',
+    );
+  });
+});
+
+describe('evaluateExecutorStaleness — the verdict carries the functional drift', () => {
+  const boot = 'a'.repeat(40);
+  const head = 'b'.repeat(40);
+  const stale = (routineDrift?: RoutineCodeDrift | null) =>
+    evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: boot,
+      currentCommit: head,
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H,
+      thresholdMs: TWO_H,
+      commitsBehind: 143,
+      routineDrift,
+    });
+
+  it('reproduces the measured 2026-08-31 page: magnitude AND the routines that are not running', () => {
+    const v = stale({
+      changed: ['packages/operator-core/lib/harness/routines/register-system-actions.ts'],
+      addedSinceBoot: ['packages/operator-core/lib/harness/routines/seed-frozen-candidate-drift-sweep-routine.ts'],
+    });
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('143 COMMITS BEHIND'); // the magnitude still leads
+    expect(v.reason).toContain('NOT RUNNING'); // ...but no longer alone
+    expect(v.reason).toContain('seed-frozen-candidate-drift-sweep-routine.ts');
+    expect(v.routineDrift?.addedSinceBoot).toHaveLength(1);
+  });
+
+  it('is unchanged from the pre-increment wording when drift is unresolvable', () => {
+    const v = stale(null);
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('143 COMMITS BEHIND');
+    expect(v.reason).not.toContain('NOT RUNNING');
+    expect(v.reason).not.toContain('routine handler');
+    expect(v.routineDrift).toBeNull();
+  });
+
+  it('staleness itself never depends on the drift probe', () => {
+    // A git failure must not be able to silence the alarm — the fail-safe direction
+    // for THIS field is the opposite of the one for bootCommit/currentCommit.
+    for (const d of [null, undefined, { changed: [], addedSinceBoot: [] }]) {
+      expect(stale(d).stale).toBe(true);
+    }
+  });
+});
+
+describe('resolveRoutineCodeDrift — fail-safe and argv-safe', () => {
+  it('answers an empty (not null) drift for an identical pair without consulting git', async () => {
+    const sha = 'c'.repeat(40);
+    await expect(resolveRoutineCodeDrift(sha, sha)).resolves.toEqual({ changed: [], addedSinceBoot: [] });
+  });
+
+  it('refuses non-sha input rather than interpolating it into a revision range', async () => {
+    for (const bad of ['--output=/tmp/pwned', 'HEAD', '', null]) {
+      await expect(resolveRoutineCodeDrift(bad, 'd'.repeat(40))).resolves.toBeNull();
+      await expect(resolveRoutineCodeDrift('d'.repeat(40), bad)).resolves.toBeNull();
     }
   });
 });

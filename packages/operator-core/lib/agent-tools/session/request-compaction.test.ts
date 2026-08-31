@@ -107,11 +107,26 @@ vi.mock('../coordination/identity', () => ({
 const getLoopStatus = vi.fn();
 const readActiveLoopFacts = vi.fn();
 const materializeLoop = vi.fn();
-vi.mock('../../harness/routines/loop', () => ({
-  getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
-  readActiveLoopFacts: (...a: unknown[]) => readActiveLoopFacts(...a),
-  materializeLoop: (...a: unknown[]) => materializeLoop(...a),
-}));
+// Spread the real module rather than enumerating the exports this test happens to
+// need: a bare factory strands silently the moment `loop.ts` gains an export. That
+// is not hypothetical here — `countAgentToolCallsInWindow` (loop.ts, added for
+// EI-21874665446367942) was added after this mock was written, so the flush gate's
+// dynamic import resolved `undefined`, threw, and the caught error's console.warn
+// reddened this file under vitest-fail-on-console. `countAgentToolCallsInWindow` is
+// stubbed to `null` = "evidence unavailable", which is exactly the effective
+// behaviour before the strand: `detectFlushTripwires` never fires
+// 'cold-successor-no-progress' on null, so the tripwire assertions below still test
+// only what they mean to. A real number here would be a DIFFERENT test (0 fires it).
+vi.mock('../../harness/routines/loop', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness/routines/loop')>();
+  return {
+    ...actual,
+    getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+    readActiveLoopFacts: (...a: unknown[]) => readActiveLoopFacts(...a),
+    materializeLoop: (...a: unknown[]) => materializeLoop(...a),
+    countAgentToolCallsInWindow: async () => null,
+  };
+});
 const getLoopCarryNoteWithMeta = vi.fn();
 const setLoopCarryNoteWithPrior = vi.fn();
 vi.mock('../../carry-note', async () => {

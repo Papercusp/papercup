@@ -1,0 +1,54 @@
+# Papercusp Phone app — the portal-facing HTTP sidecar (plan phone-app-2026-08-30,
+# WI-1409555). Docs: infra/phone-app/README.md in the papercusp repo.
+#
+# RENDERED, not copied, for the same reason as the worker unit: the sidecar tree
+# lives OUTSIDE this repo (its own git repo under
+# .papercusp-workspaces/<workspace>/.papercusp/apps/phone-app), so its path is a
+# machine fact no systemd specifier can express. deploy.sh substitutes it and
+# REFUSES to write the unit if a placeholder is left unresolved.
+#
+# WHAT THIS PROCESS IS. The control plane for the phone app and nothing more: it
+# mints LiveKit join tokens for the browser, and it reports call history. Call
+# MEDIA never touches it — audio goes browser↔LiveKit directly over WebRTC, which
+# is what keeps a call at conversational latency (D-015) instead of paying a proxy
+# hop per audio frame. So this unit being down costs you the ability to START a
+# call; it does not degrade one already in progress.
+[Unit]
+Description=Papercusp Phone app — portal-facing sidecar (plan phone-app-2026-08-30 WI-1409555)
+After=network.target papercusp-phone-livekit.service
+Wants=papercusp-phone-livekit.service
+# Same crash-loop policy as the media plane and the worker: a genuinely broken
+# sidecar should stop and STAY stopped so it is visible, rather than retrying
+# forever behind a healthy-looking portal.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=${SIDECAR_DIR}
+
+# TWO env files, and the split is deliberate.
+#
+# livekit.env is the media-plane credential of record — the SAME file the worker
+# reads. The sidecar reads it rather than taking a copy, so there is never a
+# second key to rotate or to drift.
+EnvironmentFile=%h/.config/papercusp-phone/livekit.env
+# portal.env carries only PHONE_AUTH_SECRET: the shared secret the PORTAL signs
+# its short-lived bearer with. It is separate because it is a different trust
+# relationship (portal↔sidecar) from the media credential, and because the portal
+# must read this one too — a media key must never be handed to the portal to
+# satisfy an auth check.
+EnvironmentFile=%h/.config/papercusp-phone/portal.env
+
+# Fixed port, matching PORTAL_PHONE_ORIGIN. The sidecar also writes
+# ~/.papercusp-phone/operator.json for discovery, so the portal can find it
+# WITHOUT the origin env var — but a pinned port means a portal restart that
+# forgets the env still lands on the right place.
+Environment=PHONE_HTTP_PORT=8793
+
+ExecStart=${NODE_BIN} --import tsx src/index.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
