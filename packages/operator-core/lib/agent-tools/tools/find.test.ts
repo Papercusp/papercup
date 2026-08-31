@@ -20,7 +20,9 @@ import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
+import workItemsCreate from '../work_items/create';
 import coordSend from '../coordination/tools/send';
+import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -240,6 +242,45 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
 
       expect(compact).toBe('one-of:path|sha; path?:string; sha?:string');
     }
+  });
+
+  it('annotates description- and metadata-declared aliases at the root and in array items', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'body / summary text' },
+        body: { type: 'string', description: 'alias for `summary` — pass either spelling' },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              canonical: { type: 'string' },
+              legacy: { type: 'string', 'x-papercusp-aliases': ['canonical'] },
+            },
+          },
+        },
+      },
+    };
+
+    expect(schemaAliasAnnotation(schema)).toBe(
+      'alias-group:summary|body; alias-group:items[].canonical|legacy',
+    );
+    const compact = compactSchemaForResult(schema);
+    expect(compact).toContain('alias-group:summary|body');
+    expect(compact).toContain('alias-group:items[].canonical|legacy');
+  });
+
+  it('surfaces the live work_items:create alias groups in both discovery projections', () => {
+    expect(workItemsCreate.name).toBe('work_items:create');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'work_items:create');
+    const compact = compactSchemaForResult(schemaByTool.get('work_items:create'));
+
+    expect(entry?.argSchema).toContain('alias-group:summary|body');
+    expect(entry?.argSchema).toContain('alias-group:items[].summary|body');
+    expect(compact).toContain('alias-group:summary|body');
+    expect(compact).toContain('alias-group:items[].summary|body');
   });
 
   it('merges every discriminated-union literal instead of advertising only the first op', () => {

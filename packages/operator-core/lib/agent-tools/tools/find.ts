@@ -48,6 +48,7 @@ import {
   arrayItemConstraintText,
   mergeRepeatedPropertySchema,
   renderSchemaBounds,
+  schemaAliasAnnotation,
   schemaToText,
   type ToolDiscoveryEntry,
   unionConditionalHint,
@@ -436,7 +437,8 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     };
   });
   if (parts.length === 0) return null;
-  const prefix = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}`;
+  const aliasHint = schemaAliasAnnotation(root);
+  const prefix = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}`;
   const withDescriptions = new Set(parts.filter((part) => part.description).map((part) => part.index));
   const render = (includedDescriptions: ReadonlySet<number>): string =>
     `${prefix}${parts
