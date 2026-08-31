@@ -22,6 +22,7 @@ import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import coordSend from '../coordination/tools/send';
+import { scorecardEmitArgs } from '../scorecards/emit';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
@@ -381,6 +382,43 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       },
     });
     expect(compact).toBe('wait?:object{max_sec:integer seconds}');
+  });
+
+  it('retains required shallow fields beside a wide nested field in the bounded fallback (EI-21985077629322871)', () => {
+    const wideFingerprint: Record<string, unknown> = {};
+    for (let i = 0; i < 24; i += 1) wideFingerprint[`field${i}`] = { type: 'string' };
+
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        payload: {
+          type: 'object',
+          properties: {
+            prefix: { type: 'string' },
+            current: {
+              type: 'object',
+              required: ['supplied'],
+              properties: {
+                fingerprints: { type: 'array', items: { type: 'object', properties: wideFingerprint } },
+                supplied: { type: 'boolean' },
+              },
+            },
+            tail: { type: 'boolean' },
+          },
+        },
+      },
+    });
+
+    expect(compact).toContain('current?:object{fingerprints?:array,supplied:boolean}');
+    expect(compact).toContain('tail?:boolean');
+  });
+
+  it('keeps scorecards:emit rerunRecipe.current.supplied visible at the root budget (EI-21985077629322871)', () => {
+    const schema = z.toJSONSchema(scorecardEmitArgs) as { properties?: Record<string, unknown> };
+    const compact = compactSchemaForResult(schema);
+
+    expect(compact).toContain('rerunRecipe?:object{');
+    expect(compact).toContain('current:object{supplied:boolean}');
   });
 
 });

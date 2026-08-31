@@ -207,27 +207,73 @@ const NESTED_FIELDS_SEGMENT_MAX_CHARS = 320;
  * bounded child in schema order with its structural fields expanded; this
  * preserves a contract path such as `completion.verification.coverage` and
  * its residue bucket without allowing a large recursive evidence record to
- * consume the whole discovery result.
+ * consume the whole discovery result. Once that structural path is selected,
+ * retain shallow direct fields while room remains. A direct primitive can be
+ * required by the runtime schema even when a sibling array/object is the field
+ * that made the segment too wide (for example, `rerunRecipe.current.supplied`).
  */
 const NESTED_OBJECT_HINT_MAX_CHARS = 180;
 
-function nestedObjectFieldHint(node: JsonSchemaNode, depth: number): string {
+function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNestedPath = true): string {
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
-  const fields = Object.entries(nested.properties).filter(([, raw]) => {
+  const entries = Object.entries(nested.properties);
+  const fields = entries.filter(([, raw]) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
     return nestedObjectProperties(raw as JsonSchemaNode) != null;
   });
-  for (const [name, raw] of fields) {
-    const child = raw as JsonSchemaNode;
-    const shape = schemaShape(child, depth, false, true);
-    const rendered = `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
-    if (rendered.length <= NESTED_OBJECT_HINT_MAX_CHARS) return `{${rendered}}`;
+  const directFields = entries.filter(([, raw]) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true;
+    return nestedObjectProperties(raw as JsonSchemaNode) == null;
+  });
+
+  let body = '';
+  let expandedNestedPath = false;
+  if (includeNestedPath) {
+    for (const [name, raw] of fields) {
+      const child = raw as JsonSchemaNode;
+      const shape = schemaShape(child, depth, false, true);
+      const rendered = `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+      if (rendered.length <= NESTED_OBJECT_HINT_MAX_CHARS) {
+        body = rendered;
+        expandedNestedPath = true;
+        break;
+      }
+    }
+    if (!body) {
+      const [name, raw] = fields[0] ?? [];
+      if (name && raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const shape = schemaType(raw as JsonSchemaNode);
+        body = `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+      }
+    }
   }
-  const [name, raw] = fields[0] ?? [];
-  if (!name || !raw || typeof raw !== 'object' || Array.isArray(raw)) return '';
-  const shape = schemaType(raw as JsonSchemaNode);
-  return `{${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}}`;
+
+  // Keep required shallow fields ahead of optional ones so a long run of
+  // optional metadata cannot evict a required primitive from the bounded hint.
+  // An expanded structural child already consumes most of its parent's
+  // fallback budget. Keep that established path intact (notably
+  // completion.verification.coverage); direct siblings are needed here only
+  // when the wide child itself had to degrade to a shallow type.
+  if (!expandedNestedPath || !includeNestedPath) {
+    const directCandidates = directFields
+      .map(([name, raw], index) => {
+        const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
+        const shape = schemaShape(child, depth, false, false);
+        return {
+          index,
+          required: nested.required.has(name),
+          rendered: `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
+        };
+      })
+      .sort((a, b) => Number(b.required) - Number(a.required) || a.index - b.index);
+    for (const candidate of directCandidates) {
+      const next = body ? `${body},${candidate.rendered}` : candidate.rendered;
+      if (next.length <= NESTED_OBJECT_HINT_MAX_CHARS) body = next;
+    }
+  }
+
+  return body ? `{${body}}` : '';
 }
 
 function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptions = true): string {
@@ -272,9 +318,25 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
           ? nestedObjectFieldHint(raw as JsonSchemaNode, depth)
           : '';
       const hintedFallback = nestedHint ? `${fallback}${nestedHint}` : fallback;
-      const fallbackCandidate = `${body},${hintedFallback}`;
-      if (hintedFallback.length < entry.length && fallbackCandidate.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS) {
-        body = fallbackCandidate;
+      // If the preserved nested path plus direct fields is too large for the
+      // remaining parent segment, retain the direct fields on their own. This
+      // keeps required values discoverable even when an earlier sibling has
+      // already consumed most of the 320-character budget.
+      const directHint =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? nestedObjectFieldHint(raw as JsonSchemaNode, depth, false)
+          : '';
+      const fallbackCandidates = [
+        hintedFallback,
+        directHint ? `${fallback}${directHint}` : fallback,
+        fallback,
+      ];
+      const selectedFallback = fallbackCandidates.find((candidate) => {
+        const candidateWithBody = `${body},${candidate}`;
+        return candidate.length < entry.length && candidateWithBody.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS;
+      });
+      if (selectedFallback) {
+        body = `${body},${selectedFallback}`;
         continue;
       }
       dropped += 1;
