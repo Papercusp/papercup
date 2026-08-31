@@ -313,18 +313,90 @@ export function findInvalidWorkspacePackageVersions({
 
 /**
  * Resolve `dep` the way Node/Rolldown would from `fromDir`: that dir's own
- * node_modules, then every ancestor's, up to and including `repoRoot`.
+ * node_modules, then every ancestor's, up to and including `repoRoot`. Returns
+ * the resolved package directory, or null if it does not resolve anywhere on
+ * that path.
  */
-export function resolvesOnDisk(repoRoot, fromDir, dep, exists = fsExistsSync) {
+export function resolvedDepDir(repoRoot, fromDir, dep, exists = fsExistsSync) {
   let dir = resolve(fromDir);
   const root = resolve(repoRoot);
   for (;;) {
-    if (exists(join(dir, 'node_modules', dep))) return true;
-    if (dir === root) return false;
+    const candidate = join(dir, 'node_modules', dep);
+    if (exists(candidate)) return candidate;
+    if (dir === root) return null;
     const parent = dirname(dir);
-    if (parent === dir || !`${dir}${sep}`.startsWith(`${root}${sep}`)) return false;
+    if (parent === dir || !`${dir}${sep}`.startsWith(`${root}${sep}`)) return null;
     dir = parent;
   }
+}
+
+/**
+ * Resolve `dep` the way Node/Rolldown would from `fromDir`: that dir's own
+ * node_modules, then every ancestor's, up to and including `repoRoot`.
+ */
+export function resolvesOnDisk(repoRoot, fromDir, dep, exists = fsExistsSync) {
+  return resolvedDepDir(repoRoot, fromDir, dep, exists) !== null;
+}
+
+/**
+ * The edge-SATISFACTION leg (EI-21927402678532138): every directly-declared
+ * runtime dependency that DOES resolve on disk (the "unextracted" leg above
+ * already flags one that doesn't) but whose resolved version does not satisfy
+ * the declaring workspace's range. `findInvalidWorkspacePackageVersions`
+ * checks only workspace-LOCAL node_modules; a dependency HOISTED to a shared
+ * ancestor (the common case in this npm-workspaces monorepo) never appears
+ * there, so a hoisted placement that fell behind a workspace's declared range
+ * — while package-lock.json's per-workspace manifest mirror still agrees with
+ * that range, and a directory-presence check still says "resolves fine" —
+ * passed every existing leg while `npm ls` was already calling it
+ * ELSPROBLEMS/invalid. This is a read of an answer `npm ls --all --json`
+ * already computes for the direct declarations we track, not a new resolver.
+ */
+export function findUnsatisfiedDeclaredDepRanges({
+  repoRoot = REPO_ROOT,
+  workspaceDirs,
+  deps = {},
+} = {}) {
+  const readJson = deps.readJson ?? ((p) => JSON.parse(readFileSync(p, 'utf8')));
+  const exists = deps.existsSync ?? fsExistsSync;
+  const dirs = workspaceDirs ?? resolveWorkspaceDirs(repoRoot, deps);
+
+  const invalid = [];
+  for (const rel of dirs) {
+    let pkg;
+    try {
+      pkg = readJson(join(repoRoot, rel, 'package.json'));
+    } catch {
+      continue;
+    }
+    for (const [dep, declared] of Object.entries(pkg.dependencies ?? {})) {
+      const range = declaredVersionRange(declared);
+      if (range === null) continue;
+      const dir = resolvedDepDir(repoRoot, join(repoRoot, rel), dep, exists);
+      if (dir === null) continue; // the "unextracted" leg owns "missing entirely"
+      let installedManifest;
+      try {
+        installedManifest = readJson(join(dir, 'package.json'));
+      } catch {
+        continue; // an unreadable manifest is the incomplete-package leg's business
+      }
+      const installed = installedManifest?.version;
+      if (typeof installed !== 'string' || installed.trim() === '') continue;
+      try {
+        if (!satisfies(installed, range)) {
+          invalid.push({ dep, workspace: rel, declared, installed });
+        }
+      } catch (error) {
+        if (!(error instanceof UnsupportedRange)) throw error;
+        // File/git/workspace/tag/prerelease declarations are outside the shared
+        // matcher's intentionally bounded grammar. Skipping is safer than a false red.
+      }
+    }
+  }
+
+  return invalid.sort(
+    (a, b) => a.workspace.localeCompare(b.workspace) || a.dep.localeCompare(b.dep),
+  );
 }
 
 /**
@@ -495,6 +567,28 @@ export async function findInvalidWorkspacePackageVersionsWithRetry({
   return { invalid, attempts };
 }
 
+/** Retry the edge-satisfaction leg for the same filesystem-settle window. */
+export async function findUnsatisfiedDeclaredDepRangesWithRetry({
+  repoRoot = REPO_ROOT,
+  workspaceDirs,
+  attempts = 3,
+  delayMs = 2000,
+  deps = {},
+  onRetry,
+} = {}) {
+  const wait = deps.sleep ?? sleep;
+  let invalid = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    invalid = findUnsatisfiedDeclaredDepRanges({ repoRoot, workspaceDirs, deps });
+    if (invalid.length === 0) return { invalid: [], attempts: attempt };
+    if (attempt < attempts) {
+      onRetry?.({ attempt, attempts, invalid });
+      await wait(delayMs);
+    }
+  }
+  return { invalid, attempts };
+}
+
 /** Retry the real-import leg for the same filesystem-settle window as the directory leg. */
 export async function findUnusableRuntimeDepsWithRetry({
   repoRoot = REPO_ROOT,
@@ -585,6 +679,26 @@ export function formatInvalidWorkspacePackageVersions(invalid) {
   return lines.join('\n');
 }
 
+export function formatUnsatisfiedDeclaredDepRanges(invalid) {
+  const lines = [
+    `DECLARED_DEPS_UNSATISFIED: ${invalid.length} directly-declared dependency/ies resolve on disk to a version that does NOT satisfy the declaring workspace's range.`,
+    "npm's own reify bookkeeping (package-lock.json's per-workspace manifest mirror) can agree the",
+    'tree is up to date while the shared/hoisted placement never re-resolved to match — `npm ls`',
+    'calls this ELSPROBLEMS/invalid; a directory-presence check alone cannot see it (EI-21927402678532138).',
+    '',
+  ];
+  for (const item of invalid) {
+    lines.push(
+      `  - ${item.dep} (declared in ${item.workspace}/package.json): installed ${item.installed}, declared ${item.declared}`,
+    );
+  }
+  lines.push(
+    '',
+    'FIX: npm run install:safe -- install --legacy-peer-deps   (serialized; never a bare `npm install`)',
+  );
+  return lines.join('\n');
+}
+
 function parseArgs(argv) {
   const workspaces = [];
   let attempts = 3;
@@ -644,6 +758,21 @@ export async function main(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
   });
   if (invalid.length > 0) {
     console.error(formatInvalidWorkspacePackageVersions(invalid));
+    return 1;
+  }
+
+  const { invalid: unsatisfiedRanges } = await findUnsatisfiedDeclaredDepRangesWithRetry({
+    repoRoot,
+    workspaceDirs,
+    attempts,
+    delayMs,
+    onRetry: ({ attempt, attempts: total, invalid: seen }) =>
+      console.error(
+        `dep-range-check attempt ${attempt}/${total}: ${seen.length} unsatisfied declared range(s) — retrying in ${delayMs}ms (could be a filesystem-sync race)`,
+      ),
+  });
+  if (unsatisfiedRanges.length > 0) {
+    console.error(formatUnsatisfiedDeclaredDepRanges(unsatisfiedRanges));
     return 1;
   }
 

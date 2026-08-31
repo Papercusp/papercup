@@ -35,7 +35,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePackages, findIncompleteWorkspacePackagesWithRetry, findInvalidWorkspacePackageVersions, findInvalidWorkspacePackageVersionsWithRetry, findUnextractedDeps, findUnextractedDepsWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, isDirectCliInvocation, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
+import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePackages, findIncompleteWorkspacePackagesWithRetry, findInvalidWorkspacePackageVersions, findInvalidWorkspacePackageVersionsWithRetry, findUnextractedDeps, findUnextractedDepsWithRetry, findUnsatisfiedDeclaredDepRanges, findUnsatisfiedDeclaredDepRangesWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, isDirectCliInvocation, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
 import { normalizeNpmArgs, packageLocalRepairTargets, parseCliArgs, removePackageLocalRepairLockEntries, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
@@ -349,6 +349,118 @@ describe('package-local version guard catches readable stale dev tools (EI-20863
   });
 });
 
+describe('edge-satisfaction guard catches a stale HOISTED placement (EI-21927402678532138)', () => {
+  it('FLAGS a hoisted dep two workspaces declare when its resolved version does not satisfy either range', () => {
+    // The observed shape: two workspaces both declare `sharp: ^0.35.0`, the
+    // only reachable placement is the root-hoisted node_modules/sharp, and it
+    // resolved to 0.34.5 — present, readable, and INVISIBLE to
+    // findUnextractedDeps (it exists) and findInvalidWorkspacePackageVersions
+    // (it is not workspace-LOCAL).
+    const root = fixture({
+      packages: {
+        'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } },
+        'apps/papercusp-docs': { dependencies: { sharp: '^0.35.0' } },
+      },
+      extracted: { '': ['sharp'] },
+    });
+    writeFileSync(
+      join(root, 'node_modules/sharp/package.json'),
+      JSON.stringify({ name: 'sharp', version: '0.34.5' }),
+    );
+
+    // Neither existing leg sees it.
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([]);
+
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([
+      { dep: 'sharp', workspace: 'apps/operator-docs', declared: '^0.35.0', installed: '0.34.5' },
+      { dep: 'sharp', workspace: 'apps/papercusp-docs', declared: '^0.35.0', installed: '0.34.5' },
+    ]);
+  });
+
+  it('accepts a hoisted placement that satisfies the declared range', () => {
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } } },
+      extracted: { '': ['sharp'] },
+    });
+    writeFileSync(
+      join(root, 'node_modules/sharp/package.json'),
+      JSON.stringify({ name: 'sharp', version: '0.35.4' }),
+    );
+
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([]);
+  });
+
+  it('leaves a dep missing entirely to the unextracted-dep leg (does not double-report)', () => {
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } } },
+      extracted: {},
+    });
+
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([]);
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([
+      { dep: 'sharp', workspace: 'apps/operator-docs' },
+    ]);
+  });
+
+  it('ignores an unsupported range grammar rather than false-reddening it', () => {
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { odd: 'file:../local-odd' } } },
+      extracted: { '': ['odd'] },
+    });
+    writeFileSync(
+      join(root, 'node_modules/odd/package.json'),
+      JSON.stringify({ name: 'odd', version: '0.0.0' }),
+    );
+
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([]);
+  });
+
+  it('retries so a version bump that lands mid-check is not a false red', async () => {
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } } },
+      extracted: { '': ['sharp'] },
+    });
+    const manifestPath = join(root, 'node_modules/sharp/package.json');
+    writeFileSync(manifestPath, JSON.stringify({ name: 'sharp', version: '0.34.5' }));
+
+    const result = await findUnsatisfiedDeclaredDepRangesWithRetry({
+      repoRoot: root,
+      attempts: 3,
+      delayMs: 0,
+      deps: {
+        sleep: async () => {
+          writeFileSync(manifestPath, JSON.stringify({ name: 'sharp', version: '0.35.4' }));
+        },
+      },
+    });
+
+    expect(result).toEqual({ invalid: [], attempts: 2 });
+  });
+
+  it('reports a PERSISTENT hoisted mismatch after every attempt', async () => {
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } } },
+      extracted: { '': ['sharp'] },
+    });
+    writeFileSync(
+      join(root, 'node_modules/sharp/package.json'),
+      JSON.stringify({ name: 'sharp', version: '0.34.5' }),
+    );
+
+    const result = await findUnsatisfiedDeclaredDepRangesWithRetry({
+      repoRoot: root,
+      attempts: 3,
+      delayMs: 0,
+      deps: { sleep: async () => {} },
+    });
+    expect(result.attempts).toBe(3);
+    expect(result.invalid).toEqual([
+      { dep: 'sharp', workspace: 'apps/operator-docs', declared: '^0.35.0', installed: '0.34.5' },
+    ]);
+  });
+});
+
 describe('runtime-content probes catch partial packages that directory checks cannot (EI-21252116452570853)', () => {
   it('selects probes from the locked graph and flags missing entrypoint/transitive/native content', () => {
     const root = fixture({
@@ -496,6 +608,51 @@ describe('install:safe post-install verification (the half the mutex cannot cove
       runNpm: (args: string[]) => {
         calls.push(args);
         return 0; // npm "succeeds" but leaves it un-extracted — the exact bug
+      },
+      deps: { sleep: async () => {} },
+    });
+    expect(status).toBe(1);
+    expect(calls).toHaveLength(1); // ONE bounded repair, not a loop
+  });
+
+  it('REPAIRS once when a hoisted dep resolves to a version outside the declared range', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } } },
+      extracted: { '': ['sharp'] },
+    });
+    const manifestPath = join(root, 'node_modules/sharp/package.json');
+    writeFileSync(manifestPath, JSON.stringify({ name: 'sharp', version: '0.34.5' }));
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      runNpm: (args: string[]) => {
+        calls.push(args);
+        writeFileSync(manifestPath, JSON.stringify({ name: 'sharp', version: '0.35.4' })); // the repair install re-resolves it
+        return 0;
+      },
+      deps: { sleep: async () => {} },
+    });
+    expect(status).toBe(0);
+    expect(calls).toEqual([['install', '--legacy-peer-deps']]);
+  });
+
+  it('FAILS (1) when a hoisted range mismatch survives the repair — never publishes an invalid tree as healthy', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/operator-docs': { dependencies: { sharp: '^0.35.0' } } },
+      extracted: { '': ['sharp'] },
+    });
+    writeFileSync(
+      join(root, 'node_modules/sharp/package.json'),
+      JSON.stringify({ name: 'sharp', version: '0.34.5' }),
+    );
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      runNpm: (args: string[]) => {
+        calls.push(args);
+        return 0; // npm "succeeds" but the hoisted placement still does not satisfy the range
       },
       deps: { sleep: async () => {} },
     });

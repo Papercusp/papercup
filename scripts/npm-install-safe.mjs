@@ -59,11 +59,13 @@ import {
   findIncompleteWorkspacePackagesWithRetry,
   findInvalidWorkspacePackageVersionsWithRetry,
   findUnextractedDepsWithRetry,
+  findUnsatisfiedDeclaredDepRangesWithRetry,
   findUnusableRuntimeDepsWithRetry,
   formatIncompleteWorkspacePackages,
   formatInvalidWorkspacePackageVersions,
   formatMissing,
   formatRuntimeFailures,
+  formatUnsatisfiedDeclaredDepRanges,
   resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
 
@@ -328,15 +330,22 @@ export async function verifyDepsExtracted({
       workspaceDirs,
       deps,
     });
+    const unsatisfiedRanges = await findUnsatisfiedDeclaredDepRangesWithRetry({
+      repoRoot,
+      workspaceDirs,
+      deps,
+    });
     if (
       declared.missing.length > 0 ||
       packageLocal.incomplete.length > 0 ||
-      packageVersions.invalid.length > 0
+      packageVersions.invalid.length > 0 ||
+      unsatisfiedRanges.invalid.length > 0
     )
       return {
         missing: declared.missing,
         incomplete: packageLocal.incomplete,
         invalidVersions: packageVersions.invalid,
+        unsatisfiedRanges: unsatisfiedRanges.invalid,
         runtimeFailures: [],
       };
     const runtime = await findUnusableRuntimeDepsWithRetry({
@@ -348,24 +357,28 @@ export async function verifyDepsExtracted({
       missing: [],
       incomplete: [],
       invalidVersions: [],
+      unsatisfiedRanges: [],
       runtimeFailures: runtime.failures,
     };
   };
 
-  const report = ({ missing, incomplete, invalidVersions, runtimeFailures }) => {
+  const report = ({ missing, incomplete, invalidVersions, unsatisfiedRanges, runtimeFailures }) => {
     if (missing.length > 0) console.error(formatMissing(missing));
     if (incomplete.length > 0)
       console.error(formatIncompleteWorkspacePackages(incomplete));
     if (invalidVersions.length > 0)
       console.error(formatInvalidWorkspacePackageVersions(invalidVersions));
+    if (unsatisfiedRanges.length > 0)
+      console.error(formatUnsatisfiedDeclaredDepRanges(unsatisfiedRanges));
     if (runtimeFailures.length > 0)
       console.error(formatRuntimeFailures(runtimeFailures));
   };
 
-  const healthy = ({ missing, incomplete, invalidVersions, runtimeFailures }) =>
+  const healthy = ({ missing, incomplete, invalidVersions, unsatisfiedRanges, runtimeFailures }) =>
     missing.length === 0 &&
     incomplete.length === 0 &&
     invalidVersions.length === 0 &&
+    unsatisfiedRanges.length === 0 &&
     runtimeFailures.length === 0;
 
   const first = await inspect();
