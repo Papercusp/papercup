@@ -9,6 +9,7 @@
  * real Server is never started; the fixture models serve.mjs's side-effect-free
  * help branch and records every non-help invocation.
  */
+import { DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS } from '@papercusp/deployment-driver';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   chmodSync,
@@ -40,20 +41,21 @@ const VM_RELEASE_CONFIG = join(
 const PUI_MANIFEST_WRITER = join(REPO_ROOT, 'apps/tui/scripts/write-install-manifest.py');
 const scratchRoots: string[] = [];
 
-const ENTRYPOINTS = [
-  'papercusp-install',
-  'papercusp-rollback',
-  'node',
-  'papercusp-migrate',
-  'papercusp-server',
-  'papercusp-health',
-  'psu',
-  'pui',
-  'claude',
-  'codex',
-  'omp',
-  'papercusp-remote-initializer',
-] as const;
+/**
+ * DERIVED from the bootstrap contract, never restated.
+ *
+ * A hand-written copy of this list is how the set silently stopped matching: `bin/papercusp-deliver-material`
+ * became a required bootstrap entrypoint and a required release material (D-215), and every check
+ * in this file kept passing against the twelve it already knew. Reading the contract means a
+ * fourteenth entrypoint fails here the moment it is declared, instead of surfacing as a VM that
+ * aborts during install.
+ */
+const ENTRYPOINTS = Object.values(DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS).map((path) => {
+  if (!path.startsWith('bin/')) {
+    throw new Error(`bootstrap entrypoint '${path}' is not under bin/; this test's mapping is stale`);
+  }
+  return path.slice('bin/'.length);
+});
 const PG_TOOLS = ['pg_dump', 'psql', 'pg_dumpall', 'pg_restore'] as const;
 
 function makeFixture(): string {
@@ -109,6 +111,8 @@ function makeFixture(): string {
   writeFileSync(join(root, 'db-sql/000-baseline.sql'), 'select 1;\n');
   writeFileSync(join(root, 'bin/papercusp-remote-initializer'), '#!/usr/bin/env bash\nexit 0\n');
   chmodSync(join(root, 'bin/papercusp-remote-initializer'), 0o755);
+  writeFileSync(join(root, 'bin/papercusp-deliver-material'), '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(join(root, 'bin/papercusp-deliver-material'), 0o755);
   writeFileSync(
     join(root, 'build-provenance.json'),
     `${JSON.stringify({ version: '2026.8.26-1', buildSha: 'a'.repeat(40), artifacts: [] })}\n`,
@@ -150,10 +154,26 @@ describe('workspace-host sidecar entrypoint producer', () => {
     },
   );
 
-  it('emits all twelve executable paths without replacing Node, PUI, or the initializer', () => {
+  it.each(['papercusp-remote-initializer', 'papercusp-deliver-material'])(
+    'fails closed when the builder did not produce bin/%s',
+    (program) => {
+      const root = makeFixture();
+      rmSync(join(root, 'bin', program));
+      const result = run('bash', [INSTALLER, '--release-root', root]);
+      // These two are esbuild bundles the BUILDER emits, not wrappers this overlay writes — so
+      // the only thing that can catch their absence here is a refusal. Emitting the nine wrappers
+      // anyway would produce a bundle that installs and then fails on the host.
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(program === 'papercusp-deliver-material' ? 'delivery' : 'initializer');
+      expect(existsSync(join(root, 'bin/papercusp-server'))).toBe(false);
+    },
+  );
+
+  it('emits every declared bootstrap path without replacing Node, PUI, or the two host programs', () => {
     const root = makeFixture();
     const nodeTarget = readlinkSync(join(root, 'bin/node'));
     const initializer = readFileSync(join(root, 'bin/papercusp-remote-initializer'), 'utf8');
+    const delivery = readFileSync(join(root, 'bin/papercusp-deliver-material'), 'utf8');
     const pui = readFileSync(join(root, 'bin/pui'), 'utf8');
     install(root);
     for (const name of ENTRYPOINTS) {
@@ -161,6 +181,10 @@ describe('workspace-host sidecar entrypoint producer', () => {
     }
     expect(readlinkSync(join(root, 'bin/node'))).toBe(nodeTarget);
     expect(readFileSync(join(root, 'bin/papercusp-remote-initializer'), 'utf8')).toBe(initializer);
+    // The overlay emits WRAPPERS; the two controller-spawned programs are esbuild bundles the
+    // builder produced, and overwriting either with a shim would pass every existence check here
+    // while breaking the protocol on a real host.
+    expect(readFileSync(join(root, 'bin/papercusp-deliver-material'), 'utf8')).toBe(delivery);
     expect(readFileSync(join(root, 'bin/pui'), 'utf8')).toBe(pui);
     for (const tool of PG_TOOLS) {
       const target = readlinkSync(join(root, 'bin', tool));
@@ -181,6 +205,12 @@ describe('workspace-host sidecar entrypoint producer', () => {
     expect(builder.slice(emit - 400, emit)).toContain('DISTRIBUTION_PROFILE');
     expect(builder).toContain('ln -sfn "../$_pg_rel_src"');
     expect(builder).toContain('re-verifying atomically published sidecar at its final path');
+    // The two controller-spawned programs are BUNDLED by the builder, before the overlay runs and
+    // demands them. Nothing on the build host invokes either, so a builder that quietly stopped
+    // producing one would be invisible until a real remote operation failed.
+    const bundle = builder.indexOf('for _wh_entrypoint in papercusp-remote-initializer papercusp-deliver-material');
+    expect(bundle).toBeGreaterThan(0);
+    expect(bundle).toBeLessThan(emit);
   });
 
   it('carries the complete PUI generation through the vm-release resource allowlist', () => {
