@@ -143,6 +143,8 @@ import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, probeKeyF
 // Namespace view of the SAME mocked module — the coverage guard at the bottom of this
 // file checks its key set against production's import list.
 import * as storeMock from '../../events/await/store';
+import type { AwaitRow } from '../../events/await/types';
+import { mockImplementationTyped } from '../../testing/typed-mock';
 import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
@@ -732,24 +734,48 @@ describe('WI-1632193 — a DECLARED announced gate is legitimate even when no ca
   // longer MATCHES `plan:<slug>:<gate>` either (the announcedShape row is documented,
   // never matched), so without this check a real declared plan gate would be warned
   // about — the EI-21666331086562886 failure, in a louder form.
-  const supersededRow = (overrides: Record<string, unknown> = {}) => ({
+  // A COMPLETE AwaitRow with a Partial override seam, so the fixture genuinely
+  // typechecks against the real store signature rather than being cast past it —
+  // a stale `as never` fixture goes red at the fleet green-checkpoint, in a file
+  // whoever is waiting on that deploy never touched.
+  const supersededRow = (overrides: Partial<AwaitRow> = {}): AwaitRow => ({
     id: 7,
+    workspaceId: 'default',
     subscriberId: 'su-declarer',
     eventKey: 'plan:my-plan:sidecar-released',
+    policy: 'announce',
+    note: null,
+    wakeHandle: null,
+    timeoutBehavior: 'expire',
+    expiresTs: null,
+    createdAt: '2026-08-30T00:00:00.000Z',
     firedAt: '2026-08-30T00:00:00.000Z',
     firedReason: 'superseded', // NOT 'event' ⇒ not a latch, and not unfired ⇒ not announcedGate
+    cancelledAt: null,
+    cancelReason: null,
+    once: true,
+    minSleepSec: null,
+    urgency: false,
+    payloadFilter: null,
+    scopeKind: 'plan',
+    scopeRef: 'my-plan',
     causalGeneration: 1,
-    expectedCondition: null,
-    note: null,
     ...overrides,
   });
 
   /** Only the includeSuperseded read sees history — exactly how the real store behaves. */
-  const withDeclarationHistory = (rows: unknown[]) =>
-    vi.mocked(findAnnouncementsForKey).mockImplementation((async (
-      _key: string,
-      opts?: { includeSuperseded?: boolean },
-    ) => (opts?.includeSuperseded ? rows : [])) as never);
+  const withDeclarationHistory = (rows: AwaitRow[]) =>
+    mockImplementationTyped(vi.mocked(findAnnouncementsForKey), async (_key, opts) =>
+      opts?.includeSuperseded ? rows : [],
+    );
+
+  // A persistent mockImplementation SURVIVES the suite-level vi.clearAllMocks() (that
+  // clears calls, not implementations), unlike the mockResolvedValueOnce the
+  // neighbouring describes use — so without this it leaks into every later test in the
+  // file and breaks them somewhere the failure looks unrelated.
+  afterEach(() => {
+    mockImplementationTyped(vi.mocked(findAnnouncementsForKey), async () => []);
+  });
 
   it('clears the orphan warning and says the gate is DECLARED', async () => {
     withDeclarationHistory([supersededRow()]);
@@ -758,7 +784,7 @@ describe('WI-1632193 — a DECLARED announced gate is legitimate even when no ca
     expect(out.unknown_event_key).toBeUndefined();
     expect(out.unknown_event_key_advice).toBeUndefined();
     expect(out.declared_announced_gate).toBe(true);
-    expect(out.declared_announced_gate_advice).toMatch(/has been declared/);
+    expect(out.declared_announced_gate_advice).toMatch(/HAS been declared/);
     // It must NOT masquerade as the uncatalogued-but-firing case: there is no catalog
     // gap to file for a runtime-minted key, and telling an agent to file one is noise.
     expect(out.uncatalogued_event_key).toBeUndefined();
@@ -784,18 +810,20 @@ describe('WI-1632193 — a DECLARED announced gate is legitimate even when no ca
     // Every probe in this handler is fail-soft on purpose: an unreadable source must
     // never manufacture a reassurance, which would be the orphan guard going quiet
     // for the one reason nobody can see.
-    vi.mocked(findAnnouncementsForKey).mockImplementation((async (
-      _key: string,
-      opts?: { includeSuperseded?: boolean },
-    ) => {
+    mockImplementationTyped(vi.mocked(findAnnouncementsForKey), async (_key, opts) => {
       if (opts?.includeSuperseded) throw new Error('store unavailable');
       return [];
-    }) as never);
+    });
+    // withBoundedTimeout reports the swallowed rejection; assert it rather than
+    // silencing it, so "fail-soft" cannot quietly become "fails silently".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const out = await call({ event: 'plan:my-plan:sidecar-released' });
     expect(out.declared_announced_gate).toBeUndefined();
     expect(out.unknown_event_key).toBe(true);
     expect(out.ok).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
