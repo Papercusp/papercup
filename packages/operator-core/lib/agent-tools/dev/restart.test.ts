@@ -79,6 +79,7 @@ import {
   checkGateCollision,
   checkGitSyncCollision,
 } from '../../release/gate-collision-guard';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
@@ -656,6 +657,19 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     // remediation unfireable. The authoritative signal is the barrier LOCK, measured
     // FREE in 20 of 40 sampled seconds. A caller willing to wait must reach it.
     gitSyncCollisionM.mockResolvedValue(blocked());
+    // Let the cooldown claim succeed so the call actually reaches the barrier; the
+    // barrier then refuses, which is what proves the preflight is no longer the gate.
+    // mockResolvedTyped, not `as never`: the cast would defeat the one check vi.mocked
+    // gives us, and lint:mock-cast-escape is shrink-only.
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-DRAIN',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
     gitSyncBarrierM.mockResolvedValue({ acquired: false, resource: 'git-sync', reason: 'drain_timeout', holders: [] });
 
     const b = body(
