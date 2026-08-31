@@ -81,6 +81,24 @@ const SKIP_DIR = new Set([
  * re-opens the hole this guard closes.
  */
 const ALLOW = new Set([
+  // LAST remaining entry (20 of the original 21 sites migrated). Unlike the rest
+  // of this list, it is NOT unmigrated debt — the pin is DELIBERATE, and its
+  // reason is stated at the site: channel.ts:22-25 picks a brand-neutral,
+  // package-internal key precisely so the lib stays borrowable ("No consuming-app
+  // or project coupling — any project can borrow this as-is").
+  //
+  // That rationale argues AGAINST the ordinary fix here: libs/generic/* are
+  // standalone published submodules, so declaring @papercusp/module-singleton
+  // couples a generic lib to this monorepo for every downstream borrower that
+  // does not inherit our hoisting. Note there is no configure*() seam in
+  // libs/generic/sse to inject it through either — grep for `export .* configure`
+  // returns zero; one would have to be built.
+  //
+  // So the open question is narrow: does pinModuleState's central visibility
+  // (listModuleDuplications() can see the module) outweigh the borrowability the
+  // author chose on purpose? That is a generic-first trade-off, tracked on
+  // EI-19479108855357092 and still awaiting a plan Decision. Until it is settled,
+  // this entry is an intentional exemption, not a migration someone forgot.
   'libs/generic/sse/src/server/channel.ts',
 ]);
 
