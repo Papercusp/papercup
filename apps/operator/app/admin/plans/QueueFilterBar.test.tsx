@@ -17,7 +17,14 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 afterEach(() => cleanup()); // no auto-cleanup configured → unmount between renders
 
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => children }));
-vi.mock('./plans-api', () => ({ TIER_LABEL: { all: 'All', now: 'Now', next: 'Next', blocker: 'Blocker' } }));
+// Spread the REAL module and override only TIER_LABEL (what this test controls).
+// A bare factory here enumerates the exports plans-api happened to have that day, so the
+// next export added to it strands this file at collection — QueueFilterBar pulls in
+// resolveLex → use-create-data, which imports PLAN_BUCKETS from this same module.
+vi.mock('./plans-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./plans-api')>()),
+  TIER_LABEL: { all: 'All', now: 'Now', next: 'Next', blocker: 'Blocker' },
+}));
 
 import QueueFilterBar, { type QueueFilterBarProps } from './QueueFilterBar';
 
