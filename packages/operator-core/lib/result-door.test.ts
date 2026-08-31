@@ -184,7 +184,7 @@ describe('applyResultDoor', () => {
 
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
     const noise = (prefix: string) => Object.fromEntries(
-      Array.from({ length: 64 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
+      Array.from({ length: 128 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
     );
     const itemText = 'Read this plan item before acting on the associated work.';
     const source = {
