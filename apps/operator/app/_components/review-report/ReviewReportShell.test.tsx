@@ -158,8 +158,17 @@ describe("rendering", () => {
     expect(
       responsiveRow.querySelector(".review-report__row-conf"),
     ).toBeTruthy();
-    expect(screen.getByTestId("review-row-conf-f1").textContent).toBe("high");
-    expect(screen.getByTestId("review-row-conf-f2").textContent).toBe("medium");
+    // D-001: the confidence cell is now a STATIC indicator (dot + word +
+    // sr-only "confidence"), not a control. Its visible label is what matters.
+    expect(
+      screen.getByTestId("review-row-conf-f1").getAttribute("data-confidence"),
+    ).toBe("high");
+    expect(
+      screen.getByTestId("review-row-conf-f2").getAttribute("data-confidence"),
+    ).toBe("medium");
+    expect(screen.getByTestId("review-row-conf-f1").textContent).toContain(
+      "high",
+    );
     expect(
       screen
         .getByTestId("review-group-toggle-flip-to-done")
@@ -192,12 +201,20 @@ describe("rendering", () => {
 
     for (const confidence of levels) {
       const disclosure = screen.getByTestId(`review-row-conf-${confidence}`);
-      expect(disclosure.textContent).toBe(confidence);
+      expect(disclosure.textContent).toContain(confidence);
       expect(disclosure.getAttribute("data-confidence")).toBe(confidence);
       expect(disclosure.className).toContain(
         `review-report__row-conf--${confidence}`,
       );
-      expect(disclosure.getAttribute("aria-label")).toContain(
+      // D-001: confidence is not editable, so it is no longer a button and
+      // carries no aria-label — the DISCLOSURE beside it owns that role.
+      expect(disclosure.tagName).toBe("SPAN");
+      expect(disclosure.getAttribute("aria-label")).toBeNull();
+      expect(
+        screen
+          .getByTestId(`review-row-why-${confidence}`)
+          .getAttribute("aria-label"),
+      ).toContain(
         `${confidence} confidence`,
       );
     }
@@ -224,10 +241,15 @@ describe("rendering", () => {
     expect(
       screen.getByTestId("review-report-not-applied-count").textContent,
     ).toBe("0");
+    // P-004: the fifth category. A row the resolver never reached is its own
+    // outcome, not "manual" — the two need opposite actions.
+    expect(
+      screen.getByTestId("review-report-not-assessed-count").textContent,
+    ).toBe("0");
     expect(
       screen.getByTestId("review-report-accounting-invariant").textContent,
     ).toContain(
-      "4 results accounted for: 3 ready, 1 handled, 0 manual, and 0 not applied.",
+      "4 results accounted for: 3 ready, 1 handled, 0 manual, 0 not assessed, and 0 not applied.",
     );
     expect(report.querySelector(".review-report__eyebrow")).toBeNull();
     expect(
@@ -297,12 +319,17 @@ describe("rendering", () => {
       ready: 2,
       handled: 1,
       manual: 1,
+      // P-004: an unassessed row is NOT manual — manual wants a human,
+      // not-assessed wants the run resumed. Counting them together told the
+      // owner to go do by hand what the resolver simply never reached.
+      notAssessed: 0,
       notApplied: 1,
     });
     expect(partition.results).toBe(
       partition.ready +
         partition.handled +
         partition.manual +
+        partition.notAssessed +
         partition.notApplied,
     );
   });
@@ -372,12 +399,17 @@ describe("rendering", () => {
     expect(detail.textContent).toContain("WI-100 done; completion recorded");
     expect(detail.textContent).toContain("plan item linked by coverage");
     expect(screen.getByTestId("consumer-detail-f1")).toBeTruthy();
-    const toggleF1 = screen.getByTestId("review-row-conf-f1");
+    // D-001: the disclosure is its OWN control now. The confidence cell beside
+    // it is a static indicator and carries no aria-expanded at all.
+    const toggleF1 = screen.getByTestId("review-row-why-f1");
     expect(toggleF1.getAttribute("aria-expanded")).toBe("true");
     expect(toggleF1.getAttribute("aria-controls")).toBe(detail.id);
     expect(toggleF1.getAttribute("aria-label")).toBe(
-      "Hide details for Index the finished work — high confidence",
+      "Hide why: Index the finished work — high confidence",
     );
+    expect(
+      screen.getByTestId("review-row-conf-f1").getAttribute("aria-expanded"),
+    ).toBeNull();
 
     const rowF2 = screen.getByTestId("review-row-f2");
     fireEvent.click(rowF2);
@@ -411,7 +443,7 @@ describe("rendering", () => {
   it("offers an explicit keyboard-operable details control for every row", async () => {
     const user = userEvent.setup();
     renderShell();
-    const toggleF1 = screen.getByTestId("review-row-conf-f1");
+    const toggleF1 = screen.getByTestId("review-row-why-f1");
     toggleF1.focus();
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("review-row-detail-f1")).toBeTruthy();
@@ -419,7 +451,7 @@ describe("rendering", () => {
     expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
 
     expect(screen.queryByTestId("review-row-check-o1")).toBeNull();
-    const appliedToggle = screen.getByTestId("review-row-conf-o1");
+    const appliedToggle = screen.getByTestId("review-row-why-o1");
     fireEvent.click(appliedToggle);
     expect(screen.getByTestId("review-row-detail-o1").textContent).toContain(
       "lease lapsed 42min ago; holder dead",
@@ -544,15 +576,16 @@ describe("rendering", () => {
     expect(REPORT_CSS).toMatch(
       /\.review-report__row--busy\s*\{[^}]*cursor: default;/s,
     );
-    expect(REPORT_CSS).toMatch(
-      /\.review-report__row-conf\s*\{[^}]*cursor: pointer;/s,
-    );
-    const detailButtonRule = REPORT_CSS.match(
+    // D-001, the whole point: the confidence cell must NOT look clickable, and
+    // the control that DOES disclose must. Asserting both directions is what
+    // stops the pill quietly becoming a lying affordance again.
+    const confRule = REPORT_CSS.match(
       /\.review-report__row-conf\s*\{[^}]*\}/s,
     )?.[0];
-    expect(detailButtonRule).toContain("display: block");
-    expect(detailButtonRule).not.toMatch(
-      /display:\s*(?:inline-)?(?:flex|grid)/,
+    expect(confRule).toBeTruthy();
+    expect(confRule).not.toMatch(/cursor:\s*pointer/);
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row-detail-toggle\s*\{[^}]*cursor: pointer;/s,
     );
     expect(REPORT_CSS).toMatch(
       /\.review-report__row-detail-toggle-inner\s*\{[^}]*display: inline-flex;/s,
