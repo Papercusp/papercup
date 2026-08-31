@@ -237,6 +237,10 @@ export interface ListFleetAssignmentsOpts {
   fleet?: string;
   /** Drop lapsed plan-item leases (claim_active=false). Default true. */
   activeOnly?: boolean;
+  /** Restrict to these plan-item refs (`<plan>#<P-NNN>`). */
+  planItemRefs?: readonly string[];
+  /** Restrict to these linked work-item ids. */
+  workItemIds?: readonly string[];
 }
 
 const toIso = (v: unknown): string | null =>
@@ -299,6 +303,23 @@ export async function listFleetAssignments(
       }
       AND ${opts.fleet ? sql`fleet_slug = ${opts.fleet}` : sql`TRUE`}
       AND ${activeOnly ? sql`(claim_active IS DISTINCT FROM false)` : sql`TRUE`}
+      AND ${
+        opts.planItemRefs !== undefined || opts.workItemIds !== undefined
+          ? sql`(
+              ${opts.planItemRefs !== undefined
+                ? opts.planItemRefs.length > 0
+                  ? sql`(plan_slug || '#' || item_id) = ANY(${opts.planItemRefs}::text[])`
+                  : sql`FALSE`
+                : sql`FALSE`}
+              OR
+              ${opts.workItemIds !== undefined
+                ? opts.workItemIds.length > 0
+                  ? sql`work_item_id = ANY(${opts.workItemIds}::text[])`
+                  : sql`FALSE`
+                : sql`FALSE`}
+            )`
+          : sql`TRUE`
+      }
     ORDER BY source, holder_heartbeat_at DESC NULLS LAST
   `;
   const mapped = rows.map(
