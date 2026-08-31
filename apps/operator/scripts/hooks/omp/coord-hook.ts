@@ -2175,6 +2175,44 @@ function workspaceRoot(): string {
   }
 }
 
+/** The workspace registry root that owns suite-app checkouts. */
+function workspacesRoot(): string {
+  const raw =
+    process.env.PAPERCUSP_WORKSPACES_ROOT ??
+    resolve(process.env.HOME ?? '/tmp', '.papercusp-workspaces');
+  try {
+    return realpathSync(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Workspace-owned suite apps are separate repositories at
+ * `<workspaces>/<workspace>/.papercusp/apps/<app>`. They are managed edit
+ * trees even though they do not sit below `PAPERCUSP_WORKSPACE_ROOT`, so their
+ * automatic lock must use the physical repository domain just like an
+ * explicit `locks:acquire { coordination_domain, paths }` call.
+ */
+function isManagedSuiteAppRepo(repoRoot: string): boolean {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(repoRoot);
+  } catch {
+    realRoot = repoRoot;
+  }
+  const rel = relative(workspacesRoot(), realRoot);
+  const parts = rel.split('/');
+  return (
+    parts.length === 4 &&
+    !['', '.', '..'].includes(parts[0]) &&
+    parts[1] === '.papercusp' &&
+    parts[2] === 'apps' &&
+    !['', '.', '..'].includes(parts[3]) &&
+    validGitEntry(repoRoot)
+  );
+}
+
 /** A `.git` entry marks a repository root only when it is valid: a file
  * (submodule/link-worktree gitlink) or a directory containing HEAD (an
  * ordinary clone). Mirrors the cc hook's `_valid_git_entry` predicate so a
@@ -2292,9 +2330,10 @@ export interface LockTarget {
  *
  * Worktree resolution MIRRORS the cc hook
  * (`pretooluse-locks-acquire.sh` `find_repo_root` + workspace gate):
- * walk up from each path to the dir holding `.git`, and keep it only
- * when that root is a direct child of `workspaceRoot()`. The key is
- * RELATIVE TO that worktree root, so the same logical file collides
+ * walk up from each path to the dir holding `.git`, and keep it when that root
+ * belongs to either a direct child of `workspaceRoot()` or a managed suite app
+ * under `<workspaces>/<workspace>/.papercusp/apps/<app>`. The key is RELATIVE
+ * TO that worktree root, so the same logical file collides
  * across sibling worktrees AND with a cc edit (which keys the same
  * way) — that's the cross-client / cross-worktree contention this buys.
  * The old single fixed `papercupRoot()` silently dropped every
@@ -2353,7 +2392,8 @@ export function extractLockTargets(
     // belongs to the enclosing direct-child checkout. Retain nested roots
     // only when that enclosing checkout is the canonical tree; a nested repo
     // inside an independent sibling remains outside automatic coordination.
-    const scopeRoot = workspaceRepoRoot(root, ws);
+    const scopeRoot = workspaceRepoRoot(root, ws) ??
+      (isManagedSuiteAppRepo(root) ? root : null);
     if (scopeRoot === null) continue;
     let realRoot: string;
     try {

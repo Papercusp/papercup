@@ -3345,6 +3345,7 @@ describe('formatBusyRefusal (file-locking #2)', () => {
 describe('onToolCall / onToolResult (file-locking #2)', () => {
   const originalFetch = global.fetch;
   const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
+  const prevWorkspacesRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
   const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
   const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
   const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
@@ -3355,6 +3356,7 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     fx = await makeWorktreeFixture();
     repo = fx.repo;
     process.env.PAPERCUSP_WORKSPACE_ROOT = fx.workspace;
+    process.env.PAPERCUSP_WORKSPACES_ROOT = join(fx.workspace, 'managed-workspaces');
     process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
     process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
     process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-test';
@@ -3364,6 +3366,8 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     global.fetch = originalFetch;
     if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
     else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
+    if (prevWorkspacesRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+    else process.env.PAPERCUSP_WORKSPACES_ROOT = prevWorkspacesRoot;
     if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
     else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
     if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
@@ -3564,6 +3568,62 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     expect(lockCalls()[1]).toMatchObject({
       name: 'locks:release',
       args: { lock_id: 'L-nested', coordination_domain: await fs.realpath(nested) },
+    });
+  });
+
+  it('passes a managed suite app repository domain through acquire and release', async () => {
+    const portal = join(
+      process.env.PAPERCUSP_WORKSPACES_ROOT!,
+      'papercusp-workspace',
+      '.papercusp',
+      'apps',
+      'portal',
+    );
+    const target = join(portal, 'packages', 'contracts', 'src', 'index.ts');
+    await fs.mkdir(join(portal, '.git'), { recursive: true });
+    await fs.writeFile(join(portal, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    await fs.mkdir(dirname(target), { recursive: true });
+    await fs.writeFile(target, 'export {};\n');
+
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-suite-app', held: ['packages/contracts/src/index.ts'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    expect(await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'tc-suite-app',
+      input: { path: target, content: 'export const value = 1;' },
+    })).toEqual({});
+
+    const lockCalls = () => calls.filter((call) => call.name.startsWith('locks:'));
+    expect(lockCalls()[0]).toMatchObject({
+      name: 'locks:acquire',
+      args: {
+        paths: ['packages/contracts/src/index.ts'],
+        coordination_domain: await fs.realpath(portal),
+      },
+    });
+
+    await onToolResult({ type: 'tool_result', toolCallId: 'tc-suite-app' });
+    expect(lockCalls()[1]).toMatchObject({
+      name: 'locks:release',
+      args: { lock_id: 'L-suite-app', coordination_domain: await fs.realpath(portal) },
     });
   });
 
