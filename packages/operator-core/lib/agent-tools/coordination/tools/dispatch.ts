@@ -673,7 +673,7 @@ export default defineTool({
   description:
     'One call assigns either plan items (`items`) or concrete promoted work-items (`workItemIds`) to `to`, delivers `note`, and issues a required wake. The work-item path re-checks canonical blockers and assigns/wakes only the current actionable frontier; blocked descendants stay unassigned. Dead/absent/unwakeable targets return `ok:false` plus structured `failure` while durable assignment remains recoverable. Queueing is not proof a turn executed.',
   guidance: {
-    when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
+    when: 'You are a fleet leader / coordinator handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
     notWhen:
       'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
     chaining:

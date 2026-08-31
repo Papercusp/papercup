@@ -10,7 +10,9 @@
  *   - view=history — historical who-was-ever-here (append-only coord log filtered by
  *     audience, requires coord:catch-up infrastructure)
  *
- * Scope defaults to 'hive' (caller's home hive); accepts 'workspace' or 'all' for admin/Queen.
+ * Scope defaults to 'hive' (caller's home hive); accepts 'workspace', and 'all' for a
+ * SUPERUSER caller (the live gate is `ctx.isSuperuser`, not any agent role — a
+ * non-superuser asking for 'all' is narrowed to 'workspace', never refused).
  *
  * The singular interface kills "which of 5 tools do I call" — coord:presence /
  * fleet:status / fleet:assignments / coord:glance become thin aliases (or deprecate).
@@ -134,7 +136,7 @@ export default defineTool({
       .enum(['hive', 'workspace', 'all'])
       .optional()
       .describe(
-        'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace (admin/Mug). Caller with no Hive (SU/operator) falls back to workspace.',
+        'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace — SUPERUSER only, and a non-superuser asking for it is silently narrowed to workspace rather than refused. Caller with no Hive (SU/operator) falls back to workspace.',
       ),
     pot: z
       .string()

@@ -2532,7 +2532,7 @@ export function summarizeLaneClaim(
     summary.warning =
       `NONE of the ${req.length} requested plan item(s) are held — you do NOT hold this lane, ` +
       `even though the declaration itself succeeded.${why} An unclaimed lane is invisible to peers ` +
-      `and the Mug, so work gets double-placed. ${summary.hint ?? laneClaimFallback(req)}`;
+      `and to your fleet leader, so work gets double-placed. ${summary.hint ?? laneClaimFallback(req)}`;
   }
   return summary;
 }
