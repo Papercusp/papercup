@@ -42,10 +42,45 @@ const CONTRACT = [
   TEST_FILE_EXIT_TEMPFAIL,
 ] as number[];
 
+/**
+ * Ambient environment of the worker this suite runs in, which the nested router
+ * run started by `runMain` must NOT inherit.
+ *
+ * `runMain` drives the REAL CLI entrypoint IN THIS PROCESS, so `main()` reads the
+ * env of the vitest worker executing this file, and the child Vitest it spawns
+ * inherits it in turn. Two variables that are correct for THIS suite are actively
+ * wrong for the router run it starts, and each converts a contract assertion into
+ * an unrelated TEST_FILE_ROUTE_ERROR about the harness rather than the contract:
+ *
+ *  - PAPERCUSP_FORBID_REAL_PG=1 is set for unit lanes, but the router legitimately
+ *    opens its own governor pool (resource-governor/execution.ts ->
+ *    createDedicatedOrgPg('governed-process'), i.e. pool "org-admin-governed-process"),
+ *    so assertRealPgAllowed refuses the launch: "could not launch Vitest: A UNIT
+ *    test tried to open a REAL Postgres connection" [EI-19311807188719573].
+ *  - PC_HEAVY_PREEMPT_READY_FILE / PC_HEAVY_PSI_FINALIZATION_FILE name the marker
+ *    the OUTER pc-heavy wrapper is still holding LIVE. The nested publish then hits
+ *    EEXIST, and scripts/lib/preempt-markers.mjs propagates a LIVE owner's EEXIST
+ *    BY DESIGN (it reclaims only dead debris), so the run refuses
+ *    [EI-21882371330313535].
+ *
+ * MEASURED 2026-08-31: clearing only the pc-heavy pair still failed on the PG
+ * guard, so both must go. Neither is part of the exit-code contract being pinned,
+ * so they are cleared for the nested call only and restored in `finally`.
+ */
+const NESTED_RUN_INHERITED_CONTAMINATION = [
+  'PAPERCUSP_FORBID_REAL_PG',
+  'PC_HEAVY_PREEMPT_READY_FILE',
+  'PC_HEAVY_PSI_FINALIZATION_FILE',
+] as const;
+
 /** Drive the real CLI entrypoint with console captured, and return its exit code. */
 async function runMain(argv: string[]): Promise<{ code: number; out: string; err: string }> {
   const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const saved = new Map<string, string | undefined>(
+    NESTED_RUN_INHERITED_CONTAMINATION.map((key) => [key, process.env[key]]),
+  );
+  for (const key of NESTED_RUN_INHERITED_CONTAMINATION) delete process.env[key];
   try {
     const code = (await main(argv)) as number;
     return {
@@ -54,6 +89,10 @@ async function runMain(argv: string[]): Promise<{ code: number; out: string; err
       err: errorSpy.mock.calls.map((call) => String(call[0])).join('\n'),
     };
   } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     errorSpy.mockRestore();
     logSpy.mockRestore();
   }
