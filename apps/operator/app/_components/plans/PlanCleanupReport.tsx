@@ -132,14 +132,14 @@ function planCleanupAction(
   status: ReviewRowStatus,
 ): ReviewRowAction {
   if (status === "applied") {
-    return { label: "Fixed", tone: "good", description: "Already applied." };
+    return { key: "fixed", tone: "good", description: "Already applied." };
   }
   if (status === "dismissed") {
-    return { label: "Skipped", tone: "manual", description: "Left alone." };
+    return { key: "skipped", tone: "manual", description: "Left alone." };
   }
   if (finding.outcome === "pending") {
     return {
-      label: "Assess",
+      key: "assess",
       tone: "warn",
       description:
         "Found by the scan but never judged — resume the run to assess it.",
@@ -148,43 +148,43 @@ function planCleanupAction(
   switch (finding.kind) {
     case "flip-to-done":
       return {
-        label: "Mark done",
+        key: "mark-done",
         description: `Set ${finding.itemId ?? "this item"} to done in ${finding.planSlug}.`,
       };
     case "cleared-blocker":
       return {
-        label: "Clear blocker",
+        key: "clear-blocker",
         description: `Move ${finding.itemId ?? "this item"} back to todo — its blocker already finished.`,
       };
     case "finish-plan":
       return {
-        label: "Finish plan",
+        key: "finish-plan",
         tone: "good",
         description: `Mark ${finding.planSlug} shipped.`,
       };
     case "archive-candidate":
       return {
-        label: "Archive plan",
+        key: "archive-plan",
         tone: "warn",
         description: `Archive ${finding.planSlug}.`,
       };
     case "stale-now":
       return {
-        label: "You write it",
+        key: "you-write-it",
         tone: "manual",
         description:
           "Papercup can spot the stale Now section but not author its replacement.",
       };
     case "orphaned-claim":
       return {
-        label: "Reaper clears it",
+        key: "reaper-clears",
         tone: "manual",
         description:
           "Claim release is re-verified by the stale-claim reaper, not written blind from here.",
       };
     default:
       return {
-        label: "You handle it",
+        key: "you-handle-it",
         tone: "manual",
         description:
           "This recommendation has no registered hand-edit action; open the plan.",
@@ -258,8 +258,8 @@ function reportRow(
     title: finding.target,
     action: applyFailed
       ? {
-          label: "Retry",
-          tone: "warn",
+          key: "retry" as const,
+          tone: "warn" as const,
           description: `The write failed: ${localError}. Re-check it, then apply it again.`,
         }
       : planCleanupAction(finding, status),
