@@ -21,6 +21,7 @@ import { accountStatus, type AccountStatusRow } from './deployment/account-pool-
 import { runtimeDiagnostic, type RuntimeDiagnostic } from './runtime-diagnostic';
 import { computeDiagnosticVintage, type DiagnosticVintage } from './diagnostic-vintage';
 import { getBuildInfo } from './build-info';
+import { gateAbortLever, gateAbortRefireClause } from './release/gate-abort-status';
 
 /** A postgres-js-like tagged-template client; injectable so this stays unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown[]>;
@@ -160,12 +161,22 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
  * silent.
  *
  * `stale-verdict` is deliberately its OWN colour, not a red — see gateStage below.
+ * `inconclusive` is likewise not a verdict colour: the last checkpoint rendered no code verdict,
+ * so any counters and failing tests beside it describe an older run.
  */
-export type GateLabel = 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict';
+export type GateLabel =
+  | 'green'
+  | 'red'
+  | 'stalled'
+  | 'wedged'
+  | 'stale-verdict'
+  | 'conflict'
+  | 'inconclusive';
 
 export function gateLabel(snap: GitPipelineSnapshot): GateLabel {
   const g = snap.gate;
   if (snap.openConflict) return 'conflict';
+  if (g.inconclusive) return 'inconclusive';
   if (g.fireStale) return 'wedged';
   if (g.verdictStale && g.consecutiveReds > 0) return 'stale-verdict';
   if (g.stalled) return 'stalled';
@@ -339,7 +350,10 @@ export async function verifyGateVerdict(
   snap: GitPipelineSnapshot,
   deps: WhyChainDeps = {},
 ): Promise<{ snap: GitPipelineSnapshot; disjoint: boolean; ledgerFiles: string[] }> {
-  if (snap.gate.verdictStale) return { snap, disjoint: false, ledgerFiles: [] };
+  // An inconclusive tick rendered no code verdict. Its failingTests/candidate fields, when
+  // present, are inherited from the previous verdict and must never be reconciled into a new
+  // dispatch target (the same containment rule as a stale verdict, but a distinct label).
+  if (snap.gate.verdictStale || snap.gate.inconclusive) return { snap, disjoint: false, ledgerFiles: [] };
   const { failingFiles, failingSteps } = splitFailingSignature(snap.gate.failingTests ?? []);
   if (failingFiles.length === 0 || !snap.gate.observedCandidate) {
     return { snap, disjoint: false, ledgerFiles: [] };
@@ -373,6 +387,25 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
       reason: `an OPEN merge conflict is unresolved (scopes: ${snap.openConflict.scopes.join(', ') || 'unknown'}) — git-sync cannot advance staging until it resolves`,
       // Resolution is a coordination hand-off (merge-resolver), not a single diagnostic call —
       // no nextVerb: naming one here would misrepresent a routing decision as a tool call.
+    };
+  }
+  // The latest checkpoint attempt rendered NO verdict. This must outrank fire freshness,
+  // stale-verdict, stalled, and the historical red counter: an aborting routine can be firing
+  // on schedule while the counters beside the abort remain frozen on an older candidate.
+  if (g.inconclusive) {
+    return {
+      stage: 'gate',
+      status: 'blocked',
+      reason:
+        `gate verdict is INCONCLUSIVE — the last green-checkpoint run ABORTED before judging ` +
+        `(${g.inconclusive.status}) and rendered NO verdict${gateAbortRefireClause(g.inconclusive.status)} ` +
+        `${g.inconclusive.detail ?? 'See the green-checkpoint log for the blocking condition.'}` +
+        (g.consecutiveReds > 0
+          ? ` ⚠ The gate counters still show ${g.consecutiveReds} historical red(s)${
+              g.observedCandidate ? ` on ${g.observedCandidate}` : ''
+            } — those belong to the PREVIOUS verdict, not this run; do not chase its failing tests.`
+          : ''),
+      nextVerb: gateAbortLever(g.inconclusive.status),
     };
   }
   if (g.fireStale) {
@@ -695,6 +728,8 @@ export interface PipelineHealth {
    *  `refire-in-flight` means a fresh verdict is imminent (do not even re-fire the checkpoint);
    *  null whenever `verdictStale` is false. */
   verdictStaleReasonCode?: GitPipelineSnapshot['gate']['verdictStaleReasonCode'];
+  /** The latest checkpoint attempt rendered no code verdict; counters and failing tests are historical. */
+  inconclusive: GitPipelineSnapshot['gate']['inconclusive'];
   /** Commits on `main` not yet promoted to the green pin (`ready`). */
   greenPinBehindStaging: number | null;
   /** Commits on the green pin not yet live on :3070. */
@@ -755,6 +790,7 @@ export async function computePipelineHealth(
       lastGreenAtMs: null,
       verdictStale: false,
       verdictStaleReasonCode: null,
+      inconclusive: null,
       greenPinBehindStaging: null,
       deployedBehindGreenPin: null,
       recentFailingFiles: [],
@@ -775,7 +811,8 @@ export async function computePipelineHealth(
   // `?? []` (not `?.length === 0`): a blob written before failingTests existed has the field
   // UNDEFINED, and `undefined === 0` is false — which would have silently skipped the fallback
   // scan for exactly the old gates that most need it.
-  const needsProxy = provisional.status !== 'ok' && (snap.gate.failingTests ?? []).length === 0;
+  const needsProxy =
+    !snap.gate.inconclusive && provisional.status !== 'ok' && (snap.gate.failingTests ?? []).length === 0;
   // Disjoint ⇒ we already have the precise, commit-scoped ledger files; reuse them instead of
   // paying for a second (broader, less precise) 2h scan.
   const proxyFiles = needsProxy ? (disjoint ? ledgerFiles : await recentFailingFiles(deps)) : [];
@@ -786,7 +823,9 @@ export async function computePipelineHealth(
   // a file to dispatch a fix at). `namedFailures` can legitimately return sentinels mixed in with
   // files (they still belong in the human-readable `gate.reason` above), so strip them here for
   // the STRUCTURED field.
-  const failingFiles = splitFailingSignature(namedFailures(snap, proxyFiles)).failingFiles;
+  const failingFiles = snap.gate.inconclusive
+    ? []
+    : splitFailingSignature(namedFailures(snap, proxyFiles)).failingFiles;
 
   return {
     generatedAtMs: now,
@@ -798,6 +837,7 @@ export async function computePipelineHealth(
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     verdictStale: snap.gate.verdictStale,
     verdictStaleReasonCode: snap.gate.verdictStaleReasonCode,
+    inconclusive: snap.gate.inconclusive,
     greenPinBehindStaging: snap.deploy.greenPinBehindStaging ?? null,
     deployedBehindGreenPin: snap.deploy.deployedBehindGreenPin ?? null,
     recentFailingFiles: failingFiles,
@@ -849,7 +889,9 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
   // naming two failing files while this field reported `[]` in the SAME response. Package/step
   // sentinels are stripped (see the matching comment in computePipelineHealth) — this field is
   // documented as FILES, never a build-step name to (mis)dispatch a fix at.
-  const failingFiles = splitFailingSignature(namedFailures(snap, proxyFiles)).failingFiles;
+  const failingFiles = snap.gate.inconclusive
+    ? []
+    : splitFailingSignature(namedFailures(snap, proxyFiles)).failingFiles;
 
   const chainLine = stages.map((s) => `${s.stage.toUpperCase()}: ${s.status} (${s.reason})`).join(' → ');
   const summary = rootCause
