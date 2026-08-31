@@ -694,7 +694,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) `limit` window (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. Returns counts by kind plus a priority-ranked (not newest-first) `limit` window (default 50; `coord:orient.inboxLimit` maps to `limit`). Ambient system broadcasts are excluded by default; include_ambient shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
       " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
       " This is a VIEW, not a delta: re-reading the same window does not empty it.",
@@ -707,6 +707,16 @@ export default defineTool({
     // "Free-text `q` and time bounds (`since`) are not inbox arguments" sentence — it is now
     // fully redundant with the argRedirects.since/argRedirects.q entries below, which teach
     // the exact same redirect at ZERO prompt weight, paid only on the failure path.
+    // 2026-08-31: trimmed a THIRD time (1508 — a third gate RED, ~8 over). Nothing was lost:
+    // the standalone "The direct bound is `limit`; `coord:orient.inboxLimit` maps to it."
+    // sentence was folded into the `limit`-window sentence that already names the default,
+    // and "(alias includeAmbient)" was dropped because the arg schema already documents that
+    // alias — a stale caller passing camelCase does not need to DISCOVER it from prose.
+    // ⚠ This tool has now breached three times, always by ACCRETION into `description`.
+    // It is the single heaviest coord tool; treat its headroom as spent. Before adding a
+    // sentence here, put it in `argRedirects` (zero prompt weight, paid only on the failure
+    // path) or in the returns/schema — and re-run `npx tsx scripts/tool-weight.ts`, which
+    // prints this tool's exact projected weight, BEFORE committing.
     when: "At turn start; whenever you suspect another agent contacted you.",
     notWhen:
       'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll.',
