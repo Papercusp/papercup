@@ -124,6 +124,7 @@ describe('runWorkspaceHostCredentialLifecycle', () => {
       hostId: 'host-1',
       operationId: 'rotate-1',
       requestedAt: REQUESTED_AT,
+      deliveryCapabilities: { fileTransfer: true },
       action: 'rotate' as const,
       currentCredentialRefs: current.refs,
       currentDelivery: current.delivery,
@@ -152,6 +153,7 @@ describe('runWorkspaceHostCredentialLifecycle', () => {
     const onPlanned = vi.fn();
     await expect(runWorkspaceHostCredentialLifecycle({
       workspaceId: 'workspace-1', hostId: 'host-1', requestedAt: REQUESTED_AT,
+      deliveryCapabilities: { fileTransfer: true },
       action: 'rotate',
       currentCredentialRefs: same.refs, currentDelivery: same.delivery,
       nextCredentialRefs: same.refs, nextDelivery: same.delivery,
@@ -165,6 +167,7 @@ describe('runWorkspaceHostCredentialLifecycle', () => {
     const current = credentials(1);
     await expect(runWorkspaceHostCredentialLifecycle({
       workspaceId: 'workspace-1', hostId: 'host-1', requestedAt: REQUESTED_AT,
+      deliveryCapabilities: { fileTransfer: true },
       action: 'reconnect',
       currentCredentialRefs: current.refs, currentDelivery: current.delivery,
       operations: recordingOperations('bind-cloud'),

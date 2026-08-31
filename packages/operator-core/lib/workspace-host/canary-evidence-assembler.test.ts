@@ -62,6 +62,7 @@ const common = {
   workspaceId: 'workspace-1',
   hostId: 'host-1',
   requestedAt: REQUESTED_AT,
+  deliveryCapabilities: { fileTransfer: true },
 } as const;
 
 function rotatePlan(): WorkspaceHostCredentialLifecyclePlan {

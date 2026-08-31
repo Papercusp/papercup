@@ -242,6 +242,7 @@ export {
   verifyWorkspaceHostBuildManifest,
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   WORKSPACE_HOST_PUI_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
@@ -474,3 +475,40 @@ export {
   createProductionWorkspaceHostCredentialMaterializers,
   createProductionWorkspaceHostRemoteInitializerDeps,
 } from "./workspace-host-remote-initializer-host";
+
+// Credential MATERIAL DELIVERY (D-215). A separate protocol, entrypoint and bin from the remote
+// initializer above, because the two programs have opposite relationships with secret material:
+// that one must never carry any, this one carries it by definition.
+export type {
+  WorkspaceHostCredentialDeliveryRequest,
+  WorkspaceHostCredentialDeliveryReceipt,
+  WorkspaceHostCredentialDeliveryFilesystem,
+  WorkspaceHostCredentialDeliveryDeps,
+} from "./workspace-host-credential-delivery";
+export {
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV,
+  WORKSPACE_HOST_CREDENTIAL_MATERIAL_MAX_BYTES,
+  WorkspaceHostCredentialMaterial,
+  WorkspaceHostCredentialDeliveryProtocolError,
+  WorkspaceHostAmbientCredentialDeliveryError,
+  WorkspaceHostRevokedCredentialGenerationError,
+  WorkspaceHostCredentialGenerationConflictError,
+  NodeWorkspaceHostCredentialDeliveryFilesystem,
+  workspaceHostCredentialGenerationDirectory,
+  workspaceHostCredentialMaterialPath,
+  workspaceHostCredentialRevocationLedgerPath,
+  readWorkspaceHostCredentialRevokedThrough,
+  recordWorkspaceHostCredentialRevocation,
+  parseWorkspaceHostCredentialDeliveryRequest,
+  executeWorkspaceHostCredentialDelivery,
+  handleWorkspaceHostCredentialDeliveryPayload,
+  assertWorkspaceHostCredentialDeliveryArgv,
+  encodeWorkspaceHostCredentialDeliveryRequest,
+} from "./workspace-host-credential-delivery";
+export type { WorkspaceHostCredentialDeliveryCliIo } from "./workspace-host-credential-delivery-cli";
+export {
+  readDeliveryStdin,
+  runWorkspaceHostCredentialDeliveryCli,
+  createProductionWorkspaceHostCredentialDeliveryDeps,
+} from "./workspace-host-credential-delivery-cli";

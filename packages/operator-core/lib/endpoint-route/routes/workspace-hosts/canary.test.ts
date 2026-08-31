@@ -215,7 +215,7 @@ function requestBody() {
 function harness(adapted = false) {
   const runCanary = vi.fn<WorkspaceHostCanaryRouteDependencies['runCanary']>(async () => resultFixture(adapted));
   const resolveOperationsForHost = vi.fn<WorkspaceHostCanaryRouteDependencies['resolveOperationsForHost']>(
-    async () => ({ desired: {} as never, operations }),
+    async () => ({ desired: {} as never, operations, deliveryCapabilities: { fileTransfer: true } }),
   );
   const dependencies: WorkspaceHostCanaryRouteDependencies = {
     activeWorkspaceId: () => 'workspace-1',

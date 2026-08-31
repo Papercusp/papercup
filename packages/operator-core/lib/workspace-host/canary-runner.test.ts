@@ -96,6 +96,7 @@ function input(overrides: Partial<WorkspaceHostCanaryRunInput> = {}): WorkspaceH
     workspaceId: 'workspace-1',
     hostId: 'host-1',
     requestedAt: REQUESTED_AT,
+    deliveryCapabilities: { fileTransfer: true },
     source: {
       kind: 'git',
       repositoryUrl: 'https://github.com/papercusp/private-canary.git',
@@ -119,6 +120,7 @@ async function fakeInitialization(run: WorkspaceHostInitializationRunInput) {
   const plan = planWorkspaceHostInitialization({
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
     operationId,
+    deliveryCapabilities: run.deliveryCapabilities,
     workspaceId: run.workspaceId,
     hostId: run.hostId,
     requestedAt,
@@ -163,6 +165,7 @@ function lifecycleRequest(run: WorkspaceHostCredentialLifecycleRunInput): Worksp
     workspaceId: run.workspaceId,
     hostId: run.hostId,
     requestedAt: run.requestedAt!,
+    deliveryCapabilities: run.deliveryCapabilities,
   } as const;
   switch (run.action) {
     case 'rotate':

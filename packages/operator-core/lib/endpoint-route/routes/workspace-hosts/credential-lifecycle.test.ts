@@ -64,7 +64,11 @@ function harness() {
     resolveControllerProfile: () => ({
       sshUser: 'papercusp', knownHostsFile: '/known-hosts', remoteEntrypoint: '/initializer',
     }),
-    resolveOperationsForHost: vi.fn(async () => ({ desired: {} as never, operations: { execute } as never })),
+    resolveOperationsForHost: vi.fn(async () => ({
+      desired: {} as never,
+      operations: { execute } as never,
+      deliveryCapabilities: { fileTransfer: true },
+    })),
     runLifecycle,
   };
   return { dependencies, execute, runLifecycle };
@@ -146,6 +150,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
     dependencies.resolveOperationsForHost = vi.fn(async () => ({
       desired: {} as never,
       operations,
+      deliveryCapabilities: { fileTransfer: true },
     }));
 
     const response = await post(dependencies, bodies.rotate);
