@@ -6628,7 +6628,7 @@
           "POST"
         ]
       },
-      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `body[].blockedOn` names a section's wait (structured, diffable). `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
+      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is { goalRef, note? }, not prose. `body[].blockedOn` names a section's wait (structured, diffable). `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
       "capabilities": [
         "coord:write"
       ],
