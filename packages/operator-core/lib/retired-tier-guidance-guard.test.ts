@@ -4,6 +4,7 @@
  * enforcing test, while the fixtures prove both error directions are discriminating.
  */
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error — untyped .mjs guard helper, imported for its pure detector.
@@ -14,6 +15,7 @@ const {
   ACTIVE_RETIRED_GUIDANCE_ROOTS,
   collectActiveRetiredGuidance,
   findRetiredGuidanceOffenders,
+  guidanceTextFor,
   pendingRootStatus,
 } = retiredGuidance;
 
@@ -151,6 +153,32 @@ describe('retired-tier current-guidance live verdict', () => {
         'packages/operator-core/lib/agent-tools',
       ]),
     );
+  });
+});
+
+describe('the single-file view agrees with the corpus verdict', () => {
+  // WI-1726926. `findRetiredGuidanceOffenders` takes ALREADY-NORMALIZED text. The
+  // guard's own --check path used to pass raw source, so it scanned comments the
+  // corpus scan strips — and reported offenders on files the gate calls clean
+  // (measured: launch-prompt.ts 1 vs 0, decide.ts 2 vs 0). That is a false alarm
+  // aimed squarely at whoever is verifying their own fix, and it is the same
+  // mistake that made a census report 1,325 offenders against a real 382.
+  it('normalized and raw scans differ on real files — so the normalization is load-bearing, not decorative', () => {
+    const rel = 'packages/operator-core/lib/agent-tools/plans/launch-prompt.ts';
+    const source = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+
+    // Positive control: this file DOES carry a historical mention, in a comment.
+    expect(findRetiredGuidanceOffenders(rel, source).length).toBeGreaterThan(0);
+    // The corpus verdict — the one the gate acts on — is clean.
+    expect(findRetiredGuidanceOffenders(rel, guidanceTextFor(rel, source))).toEqual([]);
+  });
+
+  it('guidanceTextFor is what reconciles them, for every file the corpus scans', () => {
+    // Whole-corpus form of the assertion above: the gate is green, so every scanned
+    // file must read clean THROUGH the normalization. If a caller ever reintroduces a
+    // raw-source scan, this is the contract it violates.
+    const result = collectActiveRetiredGuidance(REPO_ROOT);
+    expect(result.offenders).toEqual([]);
   });
 });
 

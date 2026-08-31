@@ -47,11 +47,11 @@ export default defineTool({
     'The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): `auto` when within ceiling + reversible + system-authority; `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner full-autonomy grant ON, even that residue is `auto`. Overwatch callers get the overwatch envelope (B-06) instead: nudge/observe/escalate/wake bookkeeping auto, structural escalate-only — selected by `role:"kettle"` (OVERWATCH_ROLE, a LIVE id).',
   capability: 'intel:read',
   guidance: {
-    when: "You are the Mug (or a cup) deciding whether to auto-handle a queue item / answer a card without the owner — or the Kettle deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
+    when: "You are deciding whether to auto-handle a queue item / answer a card without the owner — or you are Overwatch (`role:\"kettle\"`, OVERWATCH_ROLE) deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
     notWhen:
       'To READ or render the whole policy use autonomy:policy_get. To CHANGE a ceiling use autonomy:policy_set (owner-authority). This tool DECIDES one action; it never mutates.',
     chaining:
-      'improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Kettle: per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones.',
+      'improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Overwatch (OVERWATCH_ROLE): per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones.',
     seeAlso: [
       'autonomy:record_disposition (log what you did after deciding)',
       'autonomy:policy_get (the ceilings that gate auto-handling)',
@@ -85,7 +85,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'The deciding role. Defaults to the caller\'s role (ctx.role). "kettle" applies the Kettle envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the Mug 13-category gate.',
+        'The deciding role. Defaults to the caller\'s role (ctx.role). "kettle" — the wire value of OVERWATCH_ROLE, i.e. LIVE Overwatch, not the retired tier — applies the overwatch envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the 13-category autonomy gate.',
       ),
   }),
   async handler(args, ctx) {
