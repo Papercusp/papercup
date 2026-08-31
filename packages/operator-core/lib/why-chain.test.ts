@@ -51,6 +51,7 @@ const snap = (over: {
       lastFiredAtMs: 1,
       fireStale: false,
       fireStaleReason: null,
+      inconclusive: null,
       lastFixerStatus: null,
       lastFixerAtMs: null,
       lastFixerCandidate: null,
@@ -213,6 +214,84 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.stages[0].status).toBe('blocked');
     expect(res.stages[0].reason).toContain('merge conflict');
     expect(res.stages[0].reason).toContain('libs/foo');
+  });
+
+  it('a migration-preflight ABORT is inconclusive, suppresses historical reds, and names the clear lever', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: snap({
+          gate: {
+            consecutiveReds: 4,
+            observedCandidate: 'oldred123456',
+            failingTests: ['lib/historical-red.test.ts'],
+            fireStale: true,
+            fireStaleReason: 'stale counter beside an aborted tick',
+            inconclusive: {
+              status: 'migrations-pending',
+              candidate: 'newcandidate12',
+              detail: 'migration 1044 could not apply: snapshot precondition failed',
+              observedAtMs: Date.now(),
+            },
+          } as Partial<GitPipelineSnapshot['gate']>,
+        }),
+        sql: (async () => [{ file_path: 'lib/proxy-historical.test.ts', finished_at: new Date().toISOString() }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.stages[0].status).toBe('blocked');
+    expect(res.stages[0].reason).toContain('INCONCLUSIVE');
+    expect(res.stages[0].reason).toContain('migrations-pending');
+    expect(res.stages[0].reason).toContain('migration 1044');
+    expect(res.stages[0].reason).toContain('historical red(s)');
+    expect(res.stages[0].reason).not.toContain('historical-red.test.ts');
+    expect(res.nextVerb).toContain("clear the gate's abort condition");
+    expect(res.nextVerb).toContain('migrations-pending');
+    expect(res.recentFailingFiles).toEqual([]);
+  });
+
+  it('a transient ABORT is inconclusive and explicitly permits a re-fire without triaging old files', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: snap({
+          gate: {
+            consecutiveReds: 2,
+            failingTests: ['lib/old-red.test.ts'],
+            inconclusive: {
+              status: 'cancelled',
+              candidate: 'candidate123456',
+              detail: 'checkpoint received an external termination signal',
+              observedAtMs: Date.now(),
+            },
+          } as Partial<GitPipelineSnapshot['gate']>,
+        }),
+      }),
+    );
+    expect(res.stages[0].status).toBe('blocked');
+    expect(res.stages[0].reason).toContain('cancelled');
+    expect(res.stages[0].reason).toContain('nothing about it blocks a re-fire');
+    expect(res.stages[0].reason).not.toContain('old-red.test.ts');
+    expect(res.nextVerb).toContain('nothing is blocking a re-fire');
+    expect(res.recentFailingFiles).toEqual([]);
+  });
+
+  it('an OPEN conflict still outranks an inconclusive checkpoint abort', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: snap({
+          openConflict: { scopes: ['packages/operator-core'], conflicts: [], emittedAtMs: Date.now() },
+          gate: {
+            inconclusive: {
+              status: 'migrations-pending',
+              candidate: 'candidate123456',
+              detail: 'migration preflight stopped',
+              observedAtMs: Date.now(),
+            },
+          } as Partial<GitPipelineSnapshot['gate']>,
+        }),
+      }),
+    );
+    expect(res.stages[0].reason).toContain('OPEN merge conflict');
+    expect(res.stages[0].reason).not.toContain('INCONCLUSIVE');
+    expect(res.nextVerb).toBeNull();
   });
 
   // ── EI-11012: the staging buffer is NOT a deploy fault ────────────────────
@@ -638,6 +717,35 @@ describe('WI-4533 — computePipelineHealth (the coord:orient fold)', () => {
     expect(res.gateLabel).toBe('stale-verdict');
     expect(res.verdictStale).toBe(true);
   });
+
+  it('propagates a structured migration ABORT and suppresses historical failing files in PipelineHealth', async () => {
+    const inconclusive = {
+      status: 'migrations-pending',
+      candidate: 'candidate123456',
+      detail: 'migration 1044 is pending',
+      observedAtMs: Date.now(),
+    };
+    const res = await computePipelineHealth(
+      deps({
+        snap: withRoutines(
+          snap({
+            gate: {
+              consecutiveReds: 3,
+              failingTests: ['lib/historical.test.ts'],
+              inconclusive,
+            } as Partial<GitPipelineSnapshot['gate']>,
+          }),
+        ),
+        sql: (async () => [{ file_path: 'lib/proxy.test.ts', finished_at: new Date().toISOString() }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.gateLabel).toBe('inconclusive');
+    expect(res.inconclusive).toEqual(inconclusive);
+    expect(res.recentFailingFiles).toEqual([]);
+    expect(res.gate.reason).toContain('migration 1044');
+    expect(res.gate.reason).not.toContain('historical.test.ts');
+    expect(res.rootCause?.nextVerb).toContain("clear the gate's abort condition");
+  });
 });
 
 /**
@@ -850,6 +958,27 @@ describe('EI-17603 — verifyGateVerdict: distrust the gate\'s own record when t
     });
     expect(res.disjoint).toBe(false);
     expect(queried).toBe(0);
+  });
+
+  it('an INCONCLUSIVE abort is out of scope — historical failingTests never trigger ledger reconciliation', async () => {
+    let queried = 0;
+    const s = redWithFiles(['lib/old-red.test.ts']);
+    s.gate.inconclusive = {
+      status: 'infra-inconclusive',
+      candidate: 'candidate123456',
+      detail: 'the runner cache disappeared during the suite',
+      observedAtMs: Date.now(),
+    };
+    const res = await verifyGateVerdict(s, {
+      sql: (async () => {
+        queried++;
+        return [{ file_path: 'lib/actually-red.test.ts' }];
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(false);
+    expect(res.ledgerFiles).toEqual([]);
+    expect(queried).toBe(0);
+    expect(res.snap).toBe(s);
   });
 
   it('unverifiable (no ledger rows for this commit) ⇒ leaves the gate\'s record untouched', async () => {

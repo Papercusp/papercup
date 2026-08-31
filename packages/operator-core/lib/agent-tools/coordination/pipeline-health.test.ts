@@ -16,6 +16,7 @@ import {
   toOrientPipeline,
   PIPELINE_BEHIND_NOTE,
   PIPELINE_RED_NOTE,
+  PIPELINE_INCONCLUSIVE_NOTE,
   PIPELINE_STALE_NOTE,
   PIPELINE_REFIRE_IN_FLIGHT_NOTE,
   PIPELINE_RUN_IN_FLIGHT_NOTE,
@@ -33,6 +34,7 @@ const health = (over: Partial<PipelineHealth> = {}): PipelineHealth => ({
   consecutiveReds: 0,
   lastGreenAtMs: NOW - 60_000,
   verdictStale: false,
+  inconclusive: null,
   greenPinBehindStaging: 0,
   deployedBehindGreenPin: 0,
   recentFailingFiles: [],
@@ -125,6 +127,88 @@ describe('toOrientPipeline — what a waking agent is told', () => {
     expect(out.failingFiles).toBeUndefined();
     expect(out.note).toBe(PIPELINE_STALE_NOTE);
     expect(JSON.stringify(out)).not.toContain('innocent.test.ts');
+  });
+
+  it('a migration-preflight ABORT propagates structured detail and nextVerb without historical files', () => {
+    const inconclusive = {
+      status: 'migrations-pending',
+      candidate: 'candidate123456',
+      detail: 'migration 1044 could not apply because the snapshot precondition failed',
+      observedAtMs: NOW,
+    };
+    const out = toOrientPipeline(
+      health({
+        gateLabel: 'inconclusive',
+        inconclusive,
+        consecutiveReds: 4,
+        recentFailingFiles: ['lib/historical-red.test.ts'],
+        gate: { stage: 'gate', status: 'blocked', reason: 'gate verdict is INCONCLUSIVE — migration 1044' },
+        rootCause: {
+          stage: 'gate',
+          status: 'blocked',
+          reason: 'gate verdict is INCONCLUSIVE — migration 1044',
+          nextVerb: "clear the gate's abort condition (migrations-pending)",
+        },
+      }),
+      NOW,
+    )!;
+    expect(out.gate).toBe('inconclusive');
+    expect(out.inconclusive).toEqual(inconclusive);
+    expect(out.nextVerb).toBe("clear the gate's abort condition (migrations-pending)");
+    expect(out.failingFiles).toBeUndefined();
+    expect(out.consecutiveReds).toBeUndefined();
+    expect(out.note).toBe(PIPELINE_INCONCLUSIVE_NOTE);
+    expect(out.rootCause).toContain('migration 1044');
+    expect(JSON.stringify(out)).not.toContain('historical-red.test.ts');
+  });
+
+  it('a transient ABORT permits re-fire and still names no old files', () => {
+    const out = toOrientPipeline(
+      health({
+        gateLabel: 'inconclusive',
+        inconclusive: {
+          status: 'cancelled',
+          candidate: 'candidate123456',
+          detail: 'checkpoint was externally terminated',
+          observedAtMs: NOW,
+        },
+        recentFailingFiles: ['lib/old-red.test.ts'],
+        rootCause: {
+          stage: 'gate',
+          status: 'blocked',
+          reason: 'gate verdict is INCONCLUSIVE — cancelled',
+          nextVerb: 'nothing is blocking a re-fire after the external termination',
+        },
+      }),
+      NOW,
+    )!;
+    expect(out.gate).toBe('inconclusive');
+    expect(out.nextVerb).toContain('nothing is blocking a re-fire');
+    expect(out.failingFiles).toBeUndefined();
+    expect(out.note).toBe(PIPELINE_INCONCLUSIVE_NOTE);
+    expect(JSON.stringify(out)).not.toContain('old-red.test.ts');
+  });
+
+  it('an OPEN conflict remains the primary orient signal when an abort is also present', () => {
+    const out = toOrientPipeline(
+      health({
+        gateLabel: 'conflict',
+        inconclusive: {
+          status: 'migrations-pending',
+          candidate: 'candidate123456',
+          detail: 'migration preflight stopped',
+          observedAtMs: NOW,
+        },
+        recentFailingFiles: ['lib/old-red.test.ts'],
+        gate: { stage: 'gate', status: 'blocked', reason: 'an OPEN merge conflict is unresolved' },
+        rootCause: { stage: 'gate', status: 'blocked', reason: 'an OPEN merge conflict is unresolved' },
+      }),
+      NOW,
+    )!;
+    expect(out.gate).toBe('conflict');
+    expect(out.note).toBe(PIPELINE_RED_NOTE);
+    expect(out.inconclusive?.status).toBe('migrations-pending');
+    expect(out.failingFiles).toEqual(['lib/old-red.test.ts']);
   });
 
   it('⭐ EI-18669342433807110: a REFIRE-IN-FLIGHT stale reason gets its OWN note — "re-run the checkpoint" is wrong when one is already running', () => {

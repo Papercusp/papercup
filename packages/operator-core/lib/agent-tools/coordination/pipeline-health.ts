@@ -39,8 +39,8 @@ import type { PipelineHealth } from '../../why-chain';
 
 /** The shaped block an agent reads at wake. Terse when healthy; actionable when not. */
 export interface OrientPipeline {
-  /** The gate's colour. `stale-verdict` = the recorded red is superseded — colour UNKNOWN. */
-  gate: 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict';
+  /** The gate's colour. `stale-verdict` = superseded red; `inconclusive` = no code verdict. */
+  gate: 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict' | 'inconclusive';
   /** Is what's live on :3070 caught up with the green pin and main? */
   deploy: 'current' | 'behind';
   /** Consecutive red checkpoint runs — present only when non-zero. */
@@ -50,6 +50,10 @@ export interface OrientPipeline {
   /** The test files behind a real (non-stale) red — the ones to go fix. Never set for a
    *  stale-verdict gate: those names are exactly what must NOT be dispatched against. */
   failingFiles?: string[];
+  /** The latest checkpoint attempt rendered no code verdict; counters/files are historical. */
+  inconclusive?: NonNullable<PipelineHealth['inconclusive']>;
+  /** The decisive next action for a non-green root cause, when one is available. */
+  nextVerb?: string;
   /** The upstream-most blocking leg, "<stage> — <reason>". Present only when not all-ok. */
   rootCause?: string;
   /** What this means for the caller's work. Present only when not all-ok. */
@@ -65,6 +69,12 @@ export const PIPELINE_RED_NOTE =
   'the release gate is NOT green — your merged change will NOT reach :3070 until it is. A red gate ' +
   'blocking your work is YOURS to green: fix the failing tests (never force-deploy past it, never ' +
   'wait for someone else). Full causal chain: dev:why.';
+
+/** The latest checkpoint rendered no code verdict; its counters and failing files are historical. */
+export const PIPELINE_INCONCLUSIVE_NOTE =
+  'the latest green-checkpoint run is INCONCLUSIVE — it ABORTED before judging code, so any red ' +
+  'counter or failing-file list beside it belongs to an older verdict. Do NOT triage those files; ' +
+  'follow the abort detail and nextVerb for the measured condition.';
 
 /** The advisory a green-but-lagging pipeline rides with. */
 export const PIPELINE_BEHIND_NOTE =
@@ -120,6 +130,8 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
     deploy: deployBehind ? 'behind' : 'current',
     checkedAtMs: health.generatedAtMs,
   };
+  if (health.inconclusive) out.inconclusive = health.inconclusive;
+  if (health.rootCause?.nextVerb) out.nextVerb = health.rootCause.nextVerb;
   if (gateOk && !deployBehind) {
     if (health.diagnosticVintage.status !== 'current') {
       out.diagnosticVintage = health.diagnosticVintage;
@@ -127,17 +139,23 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
     return out;
   }
 
-  if (health.consecutiveReds > 0) out.consecutiveReds = health.consecutiveReds;
+  // An inconclusive abort leaves the red streak frozen on the previous verdict. Do not expose
+  // that historical counter alongside the abort, or the wake fold still looks like a current RED.
+  if (gate !== 'inconclusive' && health.consecutiveReds > 0) out.consecutiveReds = health.consecutiveReds;
   if (!gateOk && health.lastGreenAtMs != null) {
     out.lastGreenAgoMs = Math.max(0, nowMs - health.lastGreenAtMs);
   }
-  // A stale verdict names NO files, by design (see PIPELINE_STALE_NOTE).
-  if (gate !== 'stale-verdict' && health.recentFailingFiles.length) {
+  // A stale verdict or inconclusive abort names NO files, by design. An abort's counters and
+  // failingTests are inherited from the previous verdict, so exposing them would re-arm the
+  // phantom dispatch this fold exists to prevent.
+  if (gate !== 'stale-verdict' && gate !== 'inconclusive' && health.recentFailingFiles.length) {
     out.failingFiles = health.recentFailingFiles.slice(0, 5);
   }
   if (health.rootCause) out.rootCause = `${health.rootCause.stage} — ${health.rootCause.reason}`;
   out.note =
-    gate === 'stale-verdict'
+    gate === 'inconclusive'
+      ? PIPELINE_INCONCLUSIVE_NOTE
+      : gate === 'stale-verdict'
       ? // EI-18669342433807110: a refire-in-flight stale reason gets its OWN note — the generic
         // PIPELINE_STALE_NOTE says "re-run the checkpoint for a real verdict", which is actively
         // wrong advice while one is already running.
