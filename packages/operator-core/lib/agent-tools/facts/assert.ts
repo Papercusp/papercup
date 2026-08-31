@@ -504,7 +504,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Mark the asserted values as a snapshot of a subject that may still be changing. When true, measuredAt is required; if measuredAt is supplied without this flag, the store infers subjectVolatile:true. The fold renders an explicit SNAPSHOT marker and the TTL is limited to 15 minutes.',
+        'Mark the asserted values as a snapshot of a subject that may still be changing. The ONE hard refusal in this group: when true, measuredAt is required (never defaulted to now() — that would stamp a sample of unknown age as fresh). Supplying measuredAt alone is accepted and the store infers subjectVolatile:true. The fold renders a SNAPSHOT marker, and the TTL is CLAMPED to 15 minutes rather than refused.',
       ),
     measurement: FACT_MEASUREMENT_SCHEMA,
     measuredAt: z
@@ -557,8 +557,8 @@ export default defineTool({
       .optional()
       .describe(
         `TTL seconds (default 7d for ordinary facts; omitted kind:convention means permanent; max 90d). ` +
-          `When subjectVolatile:true, ttlSec must be ≤${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes); ` +
-          `subjectVolatile:true also requires measuredAt.`,
+          `A volatile fact's ttlSec is CLAMPED, never refused (D-011): anything over ` +
+          `${FACT_VOLATILE_MAX_TTL_SEC}s (15 minutes) is shortened to it and disclosed back as ttlClampedFrom.`,
       ),
     dryRun: z
       .boolean()
@@ -645,14 +645,60 @@ export default defineTool({
     const [harnessScopeUndecidable, harnessScopeDeclared] = modalityBranches(explicitHarnessScope);
     const [privateUndecidable, privateDeclared] = modalityBranches(privateFact);
 
-    return z.union([
-      shareableUndecidable,
-      shareableDeclared,
-      harnessScopeUndecidable,
-      harnessScopeDeclared,
-      privateUndecidable,
-      privateDeclared,
-    ]);
+    return z
+      .union([
+        shareableUndecidable,
+        shareableDeclared,
+        harnessScopeUndecidable,
+        harnessScopeDeclared,
+        privateUndecidable,
+        privateDeclared,
+      ])
+      /**
+       * EI-21949855462339968 — PUBLISH THE CONTRACT, do not let callers discover it by rejection.
+       *
+       * D-011 normalized two of the three volatile rules into repairs (measuredAt alone INFERS
+       * subjectVolatile; an over-cap ttlSec is CLAMPED and disclosed). Exactly ONE hard refusal
+       * survived — subjectVolatile:true without measuredAt — and it lived only in the store, past
+       * the schema. Two consequences, both measured on this item:
+       *
+       *   1. `assertTool.args.safeParse({ subjectVolatile: true })` ACCEPTED an argument set that
+       *      the write then refused, so the schema was not the contract.
+       *   2. `dryRun:true` — whose entire job is "compute what this assert WOULD cost" — ran its
+       *      forecast on that unvalidated input and answered `ok:true, wrote:false`, a FALSE GREEN
+       *      for a write that cannot succeed. A caller doing the responsible thing (preview first)
+       *      was told to proceed and then refused anyway.
+       *
+       * Enforcing it HERE fixes both at once: args validation runs before the handler, so the
+       * forecast path can no longer be reached with input the write would reject. The message is
+       * kept identical to the store's so whichever layer refuses teaches the same thing.
+       *
+       * `measurement` is the compatibility alias for the same pair, so a caller who supplies the
+       * timestamp only through it is satisfied and must not be refused.
+       */
+      .superRefine((value, ctx) => {
+        if (!value || typeof value !== 'object') return;
+        const candidate = value as {
+          subjectVolatile?: unknown;
+          measuredAt?: unknown;
+          measurement?: { measuredAt?: unknown } | null;
+        };
+        if (candidate.subjectVolatile !== true) return;
+        const flat = typeof candidate.measuredAt === 'string' ? candidate.measuredAt.trim() : '';
+        const aliased =
+          candidate.measurement && typeof candidate.measurement.measuredAt === 'string'
+            ? candidate.measurement.measuredAt.trim()
+            : '';
+        if (flat || aliased) return;
+        ctx.addIssue({
+          code: 'custom',
+          path: ['measuredAt'],
+          message:
+            'facts:assert — subjectVolatile:true requires measuredAt (the ISO timestamp of the sample). ' +
+            'It is NOT defaulted to now(): that would stamp a sample of unknown age as fresh, which is ' +
+            'the exact misreading measuredAt exists to prevent.',
+        });
+      });
   })(),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');

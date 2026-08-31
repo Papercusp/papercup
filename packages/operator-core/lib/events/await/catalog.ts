@@ -800,7 +800,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe:
       'An escalation you raised was RESOLVED (or a spawn request was approved) — wake instead of re-polling for the verdict.',
     emitter:
-      'coord:resolve (packages/operator-core/lib/agent-tools/coordination/tools/resolve.ts) + spawn approve (packages/operator-core/lib/agent-tools/spawn/approve.ts)',
+      'settleEscalationRequesterInterest (packages/operator-core/lib/agent-tools/coordination/escalations.ts), reached via resolveEscalation from coord:resolve (packages/operator-core/lib/agent-tools/coordination/tools/resolve.ts) + spawn approve (packages/operator-core/lib/agent-tools/spawn/approve.ts)',
     exists: true,
     replacesPoll: 'coord:escalations re-polling for a verdict',
   },

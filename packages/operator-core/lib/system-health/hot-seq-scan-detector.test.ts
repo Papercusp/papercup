@@ -584,7 +584,7 @@ describe('runHotSeqScanDetectionOnce', () => {
 // ---------------------------------------------------------------------------
 
 describe('describeFinding', () => {
-  it('leads with the cost and the relation', () => {
+  it('leads with the MEASURED cost and marks the plan as generic, not executed', () => {
     const line = describeFinding({
       queryid: '777',
       key: '10:20:777:true',
@@ -602,5 +602,9 @@ describe('describeFinding', () => {
     expect(line).toContain('harness_shared.work_items (284 MB)');
     expect(line).toContain('14379 blocks/call');
     expect(line).toContain('27.0% of window exec time');
+    // GENERIC_PLAN plans without parameter values, so it can miss an expression or
+    // partial index the runtime custom plan would use. The wording has to keep a reader
+    // from treating the plan as the executed one and writing a migration off it.
+    expect(line).toContain('generic-plans a Seq Scan');
   });
 });

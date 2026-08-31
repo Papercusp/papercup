@@ -35,6 +35,22 @@
  * Both halves are required: the ratio alone flags legitimate aggregates, and a Seq Scan
  * alone is correct and optimal on a small table.
  *
+ * ⚠ WHAT A FINDING DOES AND DOES NOT PROVE — read before acting on one.
+ * The two halves of a finding carry very different weight, and conflating them is the
+ * easiest way to waste a day on this detector's output:
+ *   - The COUNTERS are measured from real executions. `blocksPerCall`, `rowsPerCall` and
+ *     the amplification between them are facts about work the database actually did.
+ *   - The PLAN is inferred. `GENERIC_PLAN` deliberately plans WITHOUT parameter values,
+ *     so it cannot use a partial or expression index whose applicability depends on the
+ *     value bound at runtime. A statement can therefore show a Seq Scan here while its
+ *     runtime custom plan uses an index. Measured on this box 2026-08-31: the memory
+ *     recall query generic-plans as a Seq Scan on memory_canonical even though
+ *     `memory_canonical_user_id_idx` indexes the very expression it filters on.
+ * So a finding says "this statement really is reading many blocks to return few rows,
+ * AND here is a plausible reason" — not "this is its executed plan". Confirm with
+ * `EXPLAIN (ANALYZE, BUFFERS)` against representative parameter VALUES before writing a
+ * migration. The amplification is the finding; the plan is the lead.
+ *
  * Deliberately NOT keyed on reltuples: `pg_class.reltuples = -1` on a never-analyzed
  * relation, and a VIEW reports its own trivial row count rather than the base table's
  * (harness_features_consolidated reads as 2,090 rows over a 30,088-row / 284 MB table —
@@ -699,17 +715,19 @@ export async function runHotSeqScanDetectionOnce(
 
 /**
  * One-line human summary of a finding, for a log line or an escalation body.
- * Leads with the cost and the relation, because those are what decide whether anyone
- * acts on it.
+ *
+ * Leads with the MEASURED cost, because that is the part that is a fact, and says
+ * "generic-plans a Seq Scan" rather than "seq-scans" so the plan is never read as the
+ * executed one — see the header's note on what a finding does and does not prove.
  */
 export function describeFinding(f: HotSeqScanFinding): string {
   const mb = (b: number): string => `${(b / 1024 / 1024).toFixed(0)} MB`;
   const rel = f.seqScans.map((s) => `${s.schema ? `${s.schema}.` : ''}${s.relation} (${mb(s.sizeBytes)})`).join(', ');
   return (
-    `queryid=${f.queryid} seq-scans ${rel}: ` +
-    `${f.blocksPerCall.toFixed(0)} blocks/call to return ${f.rowsPerCall.toFixed(1)} rows/call ` +
-    `(${f.amplification.toFixed(0)}x amplification), ${f.callsDelta} calls, ` +
-    `${(f.shareOfWindowTime * 100).toFixed(1)}% of window exec time` +
+    `queryid=${f.queryid} reads ${f.blocksPerCall.toFixed(0)} blocks/call to return ` +
+    `${f.rowsPerCall.toFixed(1)} rows/call (${f.amplification.toFixed(0)}x amplification) ` +
+    `over ${f.callsDelta} calls, ${(f.shareOfWindowTime * 100).toFixed(1)}% of window exec time; ` +
+    `generic-plans a Seq Scan on ${rel}` +
     `${f.caller ? `, caller≈${f.caller}` : ''}`
   );
 }

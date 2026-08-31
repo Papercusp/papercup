@@ -140,8 +140,13 @@ const EMIT_SURFACE_TOKEN = 'emitAwaitedEvent';
  * emit. This file's own header would otherwise self-report, and several emitters
  * document their key shape in prose directly above the call. Replaces with spaces
  * rather than deleting, so reported line numbers stay true to the original file.
+ *
+ * Exported for `./emitter-pin`, the opposite-direction guard: this module asks
+ * "is every EMITTED key registered?", that one asks "does every REGISTERED key's
+ * declared emitter really emit it?". Both have to draw the code/prose line the
+ * same way, so they share this one implementation rather than each rolling one.
  */
-function stripComments(text: string): string {
+export function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
 }
 

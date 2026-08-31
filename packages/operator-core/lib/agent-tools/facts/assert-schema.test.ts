@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import assertTool from './assert';
-import { FACT_MAX_SUPERSEDES } from '../../agent-facts/store';
+import { FACT_MAX_SUPERSEDES, FACT_VOLATILE_MAX_TTL_SEC } from '../../agent-facts/store';
 
 const base = {
   scope: 'owner',
@@ -155,5 +155,87 @@ describe('facts:assert cap-admission contract', () => {
     expect(dryRun).toMatch(/refused before write/i);
     expect(dryRun).toMatch(/another author.*verified fact/i);
     expect(dryRun).toMatch(/conventions and typed safety slots take no cap seat/i);
+  });
+});
+
+/**
+ * EI-21949855462339968 — the volatile-measurement contract must live in the SCHEMA,
+ * and the schema's prose must state the verdict the validator actually applies.
+ *
+ * D-011 turned two of the three volatile rules into repairs (measuredAt alone INFERS
+ * subjectVolatile; an over-cap ttlSec is CLAMPED and disclosed) and left exactly one
+ * refusal. The published `ttlSec` text was never updated with it, so the schema told
+ * callers an over-cap volatile TTL "must be ≤900 seconds" while the store quietly
+ * clamped and accepted it — a described refusal the validator does not perform, which
+ * is how a legal call looks illegal. Meanwhile the one REAL refusal lived only in the
+ * store, so `args.safeParse` accepted input the write rejected and `dryRun:true`
+ * forecast `ok:true` for a write that cannot succeed.
+ *
+ * These pins hold both directions: what is REFUSED must parse as refused, and what is
+ * REPAIRED must parse as accepted.
+ */
+describe('facts:assert volatile-measurement contract', () => {
+  const volatileBase = { ...base, key: 'volatile-probe' };
+
+  it('REFUSES subjectVolatile:true without measuredAt at the schema, not only at the write', () => {
+    const parsed = assertTool.args.safeParse({ ...volatileBase, subjectVolatile: true });
+    expect(parsed.success).toBe(false);
+    // Attributed to the missing field, and teaching what the store teaches, so
+    // whichever layer refuses reads identically to the caller.
+    const issue = parsed.success ? undefined : parsed.error.issues[0];
+    expect(issue?.path).toEqual(['measuredAt']);
+    expect(issue?.message).toMatch(/subjectVolatile:true requires measuredAt/);
+    expect(issue?.message).toMatch(/NOT defaulted to now\(\)/);
+  });
+
+  it('accepts the timestamp through either the flat field or the measurement alias', () => {
+    const measuredAt = '2026-08-31T11:00:00Z';
+    expect(assertTool.args.safeParse({ ...volatileBase, subjectVolatile: true, measuredAt }).success).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        ...volatileBase,
+        subjectVolatile: true,
+        measurement: { subjectVolatile: true, measuredAt },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('leaves every D-011 REPAIRED combination accepted — a repair is not a refusal', () => {
+    const measuredAt = '2026-08-31T11:00:00Z';
+    // Over-cap TTL on a volatile fact is CLAMPED by the store, so the schema must not
+    // refuse it. This is the pin that catches the drifted `ttlSec` prose.
+    expect(
+      assertTool.args.safeParse({
+        ...volatileBase,
+        subjectVolatile: true,
+        measuredAt,
+        ttlSec: FACT_VOLATILE_MAX_TTL_SEC * 4,
+      }).success,
+    ).toBe(true);
+    // measuredAt alone INFERS subjectVolatile — accepted, never refused.
+    expect(assertTool.args.safeParse({ ...volatileBase, measuredAt }).success).toBe(true);
+    // subjectVolatile:false is an ordinary fact and needs no timestamp.
+    expect(assertTool.args.safeParse({ ...volatileBase, subjectVolatile: false }).success).toBe(true);
+    expect(assertTool.args.safeParse({ ...volatileBase }).success).toBe(true);
+  });
+
+  it('publishes the clamp verdict on ttlSec instead of a refusal it does not perform', () => {
+    const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
+    const describedOn = (field: string) =>
+      options.map((option) => option.shape[field] as { description?: string } | undefined).find(Boolean)?.description ?? '';
+
+    const ttlSec = describedOn('ttlSec');
+    expect(ttlSec).toMatch(/clamped/i);
+    expect(ttlSec).toContain(String(FACT_VOLATILE_MAX_TTL_SEC));
+    // The drifted claim: an over-cap volatile TTL described as forbidden while the
+    // store accepted it. Nothing here may assert that refusal again.
+    expect(ttlSec).not.toMatch(/must be\s*(≤|<=)/i);
+
+    // The one real refusal stays stated AS the only one, on the field that carries
+    // it — and beside it, the clamp, so the two verdicts are never conflated again.
+    // (facts-disclosure.test.ts separately pins the requirement + inference wording.)
+    const subjectVolatile = describedOn('subjectVolatile');
+    expect(subjectVolatile).toMatch(/hard refusal/i);
+    expect(subjectVolatile).toMatch(/clamped/i);
   });
 });
