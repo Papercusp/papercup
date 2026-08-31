@@ -3661,3 +3661,175 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
     });
   });
 });
+
+// EI-21985804122617157 — a MIXED `--files` set must ROUTE its out-of-project files, not skip them.
+//
+// The report that opened this said `lint:tsc` gives an apps/operator edit "NO typecheck at all".
+// Measurement refuted that: auto-routing already existed, and a set lying ENTIRELY outside
+// operator-core has run the owning gate since EI-19461218392796337. The real hole was one
+// condition narrower than the report claimed — `canAutoRoute` required `fatal`, so naming files in
+// TWO packages (the shape this gate's own comments call "the common, legitimate 'check my edit
+// across two packages' run") took the partial branch and exited 0 with the out-of-project files
+// never compiled. Measured on the real repo BEFORE the fix:
+//   --files=<one operator-core file>,<one apps/operator file>
+//   -> LINT_TSC_RESULT ... exit=0 status=partial filesUnchecked=1
+describe('EI-21985804122617157 - mixed --files sets delegate instead of silently skipping', () => {
+  describe('the marker discloses delegation WITHOUT claiming the routed vocabulary', () => {
+    // The load-bearing distinction. `routed`/`routed-failed` mean "this gate had no verdict of its
+    // own and handed the whole request over". A partial run keeps its OWN verdict, so stamping it
+    // `routed` would make a genuine operator-core regression print `routed-failed` and read as
+    // somebody else's failure.
+    it('keeps status=clean and appends filesRouted when a delegate covered the remainder', () => {
+      expect(
+        formatLintTscResultMarker({
+          label: 'operator-core',
+          scope: 'files',
+          code: 0,
+          filesUnchecked: 0,
+          filesRouted: 1,
+        }),
+      ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean filesRouted=1');
+    });
+
+    it('a REGRESSION in this gate still reads regressed - never routed-failed - when files were routed', () => {
+      const marker = formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'files',
+        code: 1,
+        filesRouted: 2,
+      });
+      expect(marker).toContain('status=regressed');
+      expect(marker).not.toContain('routed-failed');
+      expect(marker).toContain('filesRouted=2');
+    });
+
+    // Both fields can legitimately co-occur: some uncovered files had a known owner and were
+    // routed, others had none and genuinely went unchecked. Suppressing either is a false claim.
+    it('reports filesUnchecked and filesRouted together, in that order', () => {
+      expect(
+        formatLintTscResultMarker({
+          label: 'operator-core',
+          scope: 'files',
+          code: 0,
+          filesUnchecked: 2,
+          filesRouted: 1,
+        }),
+      ).toBe(
+        'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=2 filesRouted=1',
+      );
+    });
+
+    // Additive-only: a run that routed nothing must be byte-identical to before this change, or
+    // every existing consumer assertion in this file is silently measuring new behaviour.
+    it('is byte-identical to the pre-change marker when nothing was routed', () => {
+      for (const filesRouted of [0, undefined]) {
+        expect(
+          formatLintTscResultMarker({
+            label: 'operator-core',
+            scope: 'files',
+            code: 0,
+            filesRouted,
+          }),
+        ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean');
+      }
+    });
+  });
+
+  // WHY A SUBPROCESS AND A REAL WORKSPACE. The formatter tests above cannot fail if the partial
+  // branch never CALLS the router - which is precisely the bug that was here. `runAutoTypecheckRoutes`
+  // is not injectable from `runTscBaselineGate`, so the delegate has to be a real `npm run` against a
+  // real workspace. Its `typecheck` script prints a sentinel, so "the delegate actually executed" is
+  // proven by output rather than inferred from an exit code a no-op would produce too.
+  describe('the WIRING: the partial branch really runs the owning gate', () => {
+    const GATE_URL = pathToFileURL(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        '..',
+        '..',
+        '..',
+        'scripts',
+        'lib',
+        'tsc-baseline-gate.mjs',
+      ),
+    ).href;
+
+    /**
+     * A fixture repo with TWO workspaces: `pkg-a` is the gate's own project, `pkg-b` is outside it
+     * but declares a `typecheck` script, which is what makes it routable.
+     *
+     * The `# -p pkg-a/tsconfig.json` suffix on tscCommand is load-bearing: `projectPrefixFromTscCommand`
+     * scans the command STRING for `-p <path>`, while the shell treats the `#` as a comment and still
+     * just cats the canned diagnostics. Without a resolvable project prefix the coverage branch is
+     * skipped entirely, and this test would pass against code that never routes anything.
+     */
+    function runMixedGate(delegateScript: string): { out: string; code: number } {
+      const root = mkdtempSync(join(tmpdir(), 'tsc-gate-mixed-route-'));
+      try {
+        mkdirSync(join(root, 'pkg-a', 'lib'), { recursive: true });
+        mkdirSync(join(root, 'pkg-b', 'lib'), { recursive: true });
+        writeFileSync(join(root, 'pkg-a', 'tsconfig.json'), '{}');
+        writeFileSync(
+          join(root, 'package.json'),
+          JSON.stringify({ name: 'fixture-root', private: true, workspaces: ['pkg-b'] }),
+        );
+        writeFileSync(
+          join(root, 'pkg-b', 'package.json'),
+          JSON.stringify({
+            name: 'pkg-b',
+            version: '0.0.0',
+            scripts: { typecheck: delegateScript },
+          }),
+        );
+        // Two diagnostics for the COVERED file, matched exactly by the baseline below, so this
+        // gate's own verdict is a true `clean` and the assertion is about routing alone.
+        writeFileSync(
+          join(root, 'tsc-output.txt'),
+          "pkg-a/lib/a.ts(10,3): error TS2322: Type 'string' is not assignable to type 'number'.\n" +
+            'pkg-a/lib/a.ts(11,3): error TS2339: Property x does not exist.\n',
+        );
+        writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'pkg-a/lib/a.ts': 2 } }));
+        writeFileSync(
+          join(root, 'run.mjs'),
+          `import { runTscBaselineGate } from ${JSON.stringify(GATE_URL)};\n` +
+            `await runTscBaselineGate({\n` +
+            `  root: ${JSON.stringify(root)},\n` +
+            `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')} # -p pkg-a/tsconfig.json`)},\n` +
+            `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+            `  label: 'test',\n` +
+            `  argv: ['--files=pkg-a/lib/a.ts,pkg-b/lib/b.ts'],\n` +
+            `});\n`,
+        );
+        try {
+          const out = execFileSync('node', [join(root, 'run.mjs')], {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+            cwd: root,
+          });
+          return { out, code: 0 };
+        } catch (e: any) {
+          return { out: `${e.stdout ?? ''}${e.stderr ?? ''}`, code: e.status ?? -1 };
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    it('executes the owning gate for the out-of-project file and reports filesRouted, not partial', () => {
+      const { out, code } = runMixedGate('node -e "console.log(\'DELEGATE-RAN\')"');
+      // The delegate genuinely executed - not merely named in a banner, which is what the
+      // pre-fix behaviour did and what let the gap survive.
+      expect(out).toContain('DELEGATE-RAN');
+      expect(out).toContain('filesRouted=1');
+      // The whole point: the file is no longer reported as never-compiled.
+      expect(out).not.toContain('status=partial');
+      expect(out).not.toContain('filesUnchecked=1');
+      expect(code).toBe(0);
+    });
+
+    it('a FAILING delegate fails the run and reads routed-failed, carrying the child exit code', () => {
+      const { out, code } = runMixedGate('node -e "process.exit(3)"');
+      expect(code).toBe(3);
+      expect(out).toContain('status=routed-failed');
+    });
+  });
+});
