@@ -1391,4 +1391,110 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
     expect(result.note).toMatch(/functional POST \/embed failed within 40ms/);
     expect(elapsed).toBeLessThan(1000);
   });
+
+  describe('WI-1647443 — the probe text is constant, so the LRU can answer it forever', () => {
+    it('forces a real inference on a fresh process and at most once per interval afterwards', () => {
+      // Nothing proven yet is not "recently proven" — the first probe of a
+      // process is exactly when "does this sidecar embed at all?" is open.
+      expect(embedSidecarProbeShouldExercise(1_000_000, null)).toBe(true);
+      expect(embedSidecarProbeShouldExercise(1_000_000, 1_000_000)).toBe(false);
+      expect(
+        embedSidecarProbeShouldExercise(1_000_000 + EMBED_SIDECAR_EXERCISE_INTERVAL_MS - 1, 1_000_000),
+      ).toBe(false);
+      expect(
+        embedSidecarProbeShouldExercise(1_000_000 + EMBED_SIDECAR_EXERCISE_INTERVAL_MS, 1_000_000),
+      ).toBe(true);
+      // The interval bounds how long a dead worker can hide, so it must be
+      // longer than a tick and far shorter than a shift.
+      expect(EMBED_SIDECAR_EXERCISE_INTERVAL_MS).toBeGreaterThan(60_000);
+      expect(EMBED_SIDECAR_EXERCISE_INTERVAL_MS).toBeLessThanOrEqual(15 * 60_000);
+    });
+
+    it('sends bypassCache and reports the model as exercised when the response proves it', async () => {
+      const bodies = serveEmbed(inferredOnce);
+
+      const result = await probeEmbedSidecar(500, { exercise: true });
+      expect(bodies).toEqual([
+        { model: 'gemma', kind: 'query', texts: ['health probe'], bypassCache: true },
+      ]);
+      expect(result.up).toBe(true);
+      expect(result.embedModelExercised).toBe('yes');
+      expect(result.note).toMatch(/the model ran for THIS probe/);
+    });
+
+    it('does NOT claim functionality when the vector came out of the sidecar LRU', async () => {
+      // The filed defect, reproduced at the probe: HTTP 200, a usable vector,
+      // ~0ms — and the ONNX worker never touched. The old note called this
+      // "functional POST /embed OK".
+      serveEmbed({ ...inferredOnce, cache: { hits: 1, coalesced: 0, inferred: 0 } });
+
+      const result = await probeEmbedSidecar(500, { exercise: false });
+      expect(result.up).toBe(true); // a cache hit is not evidence of DOWN
+      expect(result.embedModelExercised).toBe('no');
+      expect(result.note).toMatch(/model was NOT exercised/);
+      expect(result.note).toMatch(/cache lookup/);
+      expect(result.note).not.toMatch(/functional POST \/embed OK/);
+    });
+
+    it('reports an unaccounted response as UNDECIDABLE, not as a cache hit and not as OK', async () => {
+      // The live failure measured on :3384 on 2026-08-31: a sidecar bundle
+      // predating the accounting accepts `bypassCache` as an unknown JSON
+      // field, ignores it, and answers from its LRU in ~2ms. Every layer looks
+      // successful, so the flag we sent is worthless as evidence and the
+      // response has to carry the proof.
+      const bodies = serveEmbed({ vectors: [[0.25, -0.5]], dims: 2, runtime: 'test', modelRev: 'test' });
+
+      const result = await probeEmbedSidecar(500, { exercise: true });
+      expect(bodies).toHaveLength(1);
+      expect(result.up).toBe(true);
+      expect(result.embedModelExercised).toBe('unknown');
+      expect(result.note).toMatch(/UNDECIDABLE/);
+      expect(result.note).toMatch(/asked for bypassCache and the response did not account for it/);
+      expect(result.note).not.toMatch(/functional POST \/embed OK/);
+
+      // CONTROL — the shortcut this probe must not take: read a missing/zero
+      // `hits` as "the cache was cold". It is DELIBERATELY WRONG and kept here
+      // permanently, because it passes the exact body above. If someone
+      // "simplifies" the probe onto it, `embedModelExercised` collapses to
+      // 'yes' here and this case goes red instead of going quietly optimistic.
+      const naiveExercised = (body: Record<string, unknown>): boolean =>
+        !(body as { cache?: { hits?: number } }).cache?.hits;
+      expect(naiveExercised({ vectors: [[0.25, -0.5]] })).toBe(true);
+      expect(result.embedModelExercised).not.toBe('yes');
+      // CALIBRATION — on a body that really was fully inferred the two agree,
+      // so the disagreement above is about the unaccounted case and not about
+      // the probe refusing everything.
+      expect(naiveExercised(inferredOnce)).toBe(true);
+    });
+
+    it('advances the back-off clock only on PROVEN inference, so an unprovable probe re-tries next tick', async () => {
+      const bodies = serveEmbed({ vectors: [[0.25, -0.5]], dims: 2, runtime: 'test', modelRev: 'test' });
+
+      // Fresh process ⇒ the duty cycle chooses to exercise, unprompted.
+      const first = await probeEmbedSidecar(500);
+      expect(first.embedModelExercised).toBe('unknown');
+      // Unproven, so the clock did NOT move: the next tick tries again rather
+      // than reporting an interval of cheap cached "ups" after one failure.
+      const second = await probeEmbedSidecar(500);
+      expect(bodies).toEqual([
+        { model: 'gemma', kind: 'query', texts: ['health probe'], bypassCache: true },
+        { model: 'gemma', kind: 'query', texts: ['health probe'], bypassCache: true },
+      ]);
+      expect(second.embedModelExercised).toBe('unknown');
+    });
+
+    it('backs off after a proven inference instead of bypassing the cache every tick', async () => {
+      const bodies = serveEmbed(inferredOnce);
+
+      const first = await probeEmbedSidecar(500);
+      expect(first.embedModelExercised).toBe('yes');
+      const second = await probeEmbedSidecar(500);
+      expect(second.embedModelExercised).toBe('yes'); // this mock always infers
+      expect(bodies).toEqual([
+        { model: 'gemma', kind: 'query', texts: ['health probe'], bypassCache: true },
+        // The proof moved the clock, so the follow-up tick pays nothing.
+        { model: 'gemma', kind: 'query', texts: ['health probe'] },
+      ]);
+    });
+  });
 });
