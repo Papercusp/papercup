@@ -6,6 +6,7 @@ describe('route presentation predicates', () => {
     expect(isChromelessPath('/pi')).toBe(true);
     expect(isChromelessPath('/project-docs/reference')).toBe(true);
     expect(isChromelessPath('/adv')).toBe(false);
+    expect(isChromelessPath('/tasks-roster')).toBe(true);
   });
 
   it('recognises the portal embed query only on operator /adv routes', () => {
@@ -13,5 +14,6 @@ describe('route presentation predicates', () => {
     expect(isPortalEmbedLocation('/adv?tab=workflows', '?portalEmbed=true')).toBe(true);
     expect(isPortalEmbedLocation('/adv', '?portalEmbed=0')).toBe(false);
     expect(isPortalEmbedLocation('/settings', '?portalEmbed=1')).toBe(false);
+    expect(isPortalEmbedLocation('/tasks-roster', '?portalEmbed=true')).toBe(true);
   });
 });

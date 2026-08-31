@@ -16,6 +16,7 @@ describe('portalEmbed protocol', () => {
     expect(isPortalEmbedLocation('/adv?tab=workflows&portalEmbed=yes')).toBe(true);
     expect(isPortalEmbedLocation('/adv', '')).toBe(false);
     expect(isPortalEmbedLocation('/settings', '?portalEmbed=1')).toBe(false);
+    expect(isPortalEmbedLocation('/tasks-roster', '?portalEmbed=1')).toBe(true);
   });
 
   it('maps portal themes to the operator semantic themes', () => {

@@ -11,6 +11,9 @@ export const PORTAL_EMBED_ORIGIN_PARAM = 'portalOrigin' as const;
 export const PORTAL_EMBED_MESSAGE = 'papercusp:portal-embed' as const;
 export const PORTAL_EMBED_PROTOCOL_VERSION = 1 as const;
 
+/** Operator documents that may be framed by the hosted portal. */
+export const PORTAL_EMBED_PATH_PREFIXES = ['/adv', '/tasks-roster'] as const;
+
 export const PORTAL_EMBED_THEMES = ['light', 'dark', 'system'] as const;
 export type PortalEmbedTheme = (typeof PORTAL_EMBED_THEMES)[number];
 export type OperatorThemeId = 'portal-light' | 'portal-dark';
@@ -38,7 +41,7 @@ export function isPortalEmbedLocation(pathname: string, search = ''): boolean {
   // Router adapters normally split pathname/search. Normalize the full-path
   // form too so a query-bearing location cannot accidentally retain chrome.
   const [path, inlineSearch = ''] = pathname.split('?', 2);
-  if (path !== '/adv' && !path.startsWith('/adv/')) return false;
+  if (!PORTAL_EMBED_PATH_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) return false;
   const explicitSearch = search.startsWith('?') ? search.slice(1) : search;
   const params = new URLSearchParams([inlineSearch, explicitSearch].filter(Boolean).join('&'));
   return isPortalEmbedFlag(params.get(PORTAL_EMBED_PARAM));

@@ -22,7 +22,7 @@
  * whether a navigation is LEAVING the panel's sandbox (WI-4827). The SPA imports
  * this same module, so there is exactly one list.
  */
-export const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min', '/quick-panel'] as const;
+export const CHROMELESS_PREFIXES = ['/pi', '/project-docs', '/el-min', '/quick-panel', '/tasks-roster'] as const;
 
 /** True when `pathname` is (or is nested under) a chromeless route. */
 export function isChromelessPath(pathname: string): boolean {

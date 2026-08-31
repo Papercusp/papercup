@@ -163,6 +163,28 @@
   font-size: 12px;
   color: #e6ecf4;
 }
+/* Chromeless portal iframe route. The native popover supplies its own 620px
+   containing block; this route instead gives the SAME panel the full frame and
+   lets only its canonical row scroller consume the remaining height. */
+.pc-tasks-roster-embed {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #0d1829;
+}
+.pc-tasks-roster-embed > .pc-tasks-roster {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.pc-tasks-roster-embed .pc-tasks-roster__scroll {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
 .pc-tasks-roster__loading,
 .pc-tasks-roster__empty {
   padding: 14px;
