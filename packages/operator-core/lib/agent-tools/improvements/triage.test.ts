@@ -155,6 +155,89 @@ describe('improvements:triage tool', () => {
       expect(response.scanned).toBe(2);
       expect(response.complete).toBe(false);
       expect(response.remaining).toBe(898);
+      // Default scope is still the corpus — the id-scoped fields below stay null so a
+      // reader can never mistake an unscoped run for a cohort sweep.
+      expect(response.coverage).toMatchObject({ scope: 'corpus', requested: null, missing: null });
+    });
+  });
+
+  // EI-19374906980984233 — a backlog COHORT (390 rows mis-routed by the 2026-07-19→08-02
+  // triage collapse) is unreachable through the ranked first-window read, and widening the
+  // WRITE to the whole corpus was declined on purpose in this file. `ids` is the scoped
+  // third option: mutate exactly the rows the caller named.
+  describe('cohort scope via ids (EI-19374906980984233)', () => {
+    it('pushes ids into the READ as a SQL predicate on both legs, not a post-filter', async () => {
+      const items = [mockItem({ id: 'a' }), mockItem({ id: 'b' })];
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockCountImprovementItems.mockResolvedValue(2);
+      mockBuildDigest.mockReturnValue(mockDigest({ total: 2, returned: 2, open: 2, autoEligible: items }));
+
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      await triageTool.handler({ mode: 'retriage-all', ids: ['a', 'b'] }, ctx);
+
+      // A post-filter would read the first N of the corpus and then shrink it, which looks
+      // identical to success. The predicate has to reach SQL.
+      expect(mockReadImprovementItems.mock.calls[0]?.[0]).toMatchObject({ issueIds: ['a', 'b'] });
+      // WI-1206660's invariant survives the new scope: one filter, both legs.
+      expect(mockCountImprovementItems.mock.calls[0]?.[0]).toEqual(mockReadImprovementItems.mock.calls[0]?.[0]);
+    });
+
+    it('re-routes exactly the named cohort and reports complete over the REQUESTED ids', async () => {
+      const items = [mockItem({ id: 'a' }), mockItem({ id: 'b' })];
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockCountImprovementItems.mockResolvedValue(2);
+      mockBuildDigest.mockReturnValue(mockDigest({ total: 2, returned: 2, open: 2, autoEligible: items }));
+
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler({ mode: 'retriage-all', ids: ['a', 'b'] }, ctx)) as any;
+      const response = JSON.parse(result.content[0].text);
+
+      expect(mockApplyTriageDecision).toHaveBeenCalledTimes(2);
+      expect(mockApplyTriageDecision.mock.calls.map((c) => c[0].id).sort()).toEqual(['a', 'b']);
+      expect(response.complete).toBe(true);
+      expect(response.completeOver).toBe('requested-ids');
+      expect(response.coverage).toMatchObject({ scope: 'requested-ids', requested: 2, missing: 0, missingIds: [] });
+      // `remaining` counts corpus rows left untouched; under an id scope the read never
+      // tried to cover the corpus, so it must read NOT-MEASURED rather than 0.
+      expect(response.remaining).toBeNull();
+    });
+
+    it('reports complete:false when a requested id never came back (already terminal, wrong topic, other harness)', async () => {
+      const items = [mockItem({ id: 'a' })];
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockCountImprovementItems.mockResolvedValue(1);
+      mockBuildDigest.mockReturnValue(mockDigest({ total: 1, returned: 1, open: 1, autoEligible: items }));
+
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler({ mode: 'retriage-all', ids: ['a', 'gone'] }, ctx)) as any;
+      const response = JSON.parse(result.content[0].text);
+
+      // The whole point: a sweep that silently skipped half its cohort must not report
+      // success just because everything it DID read succeeded.
+      expect(response.applied).toBe(1);
+      expect(response.complete).toBe(false);
+      expect(response.coverage).toMatchObject({ requested: 2, missing: 1, missingIds: ['gone'] });
+    });
+
+    it('refuses ids on triage-one instead of silently dropping them', async () => {
+      const ctx = { principalIdentity: 'test-agent' } as any;
+      const result = (await triageTool.handler(
+        { mode: 'triage-one', ideaId: 'a', decision: 'place', reason: 'r', ids: ['b'] },
+        ctx,
+      )) as any;
+      const response = JSON.parse(result.content[0].text);
+
+      expect(response.ok).toBe(false);
+      expect(response.error).toContain('triage-one does not accept `ids`');
+      expect(mockApplyTriageDecision).not.toHaveBeenCalled();
+    });
+
+    it('caps a single cohort pass at the window size so one call can never become an unbounded bulk mutation', () => {
+      const schema = triageTool.args as any;
+      expect(schema.shape.ids.isOptional()).toBe(true);
+      expect(() => schema.parse({ mode: 'retriage-all', ids: Array.from({ length: 101 }, (_, i) => `id-${i}`) })).toThrow();
+      expect(() => schema.parse({ mode: 'retriage-all', ids: [] })).toThrow();
+      expect(schema.parse({ mode: 'retriage-all', ids: ['a'] }).ids).toEqual(['a']);
     });
   });
 
@@ -241,7 +324,14 @@ describe('improvements:triage tool', () => {
       expect(productDecision.rankFeatures).toEqual(['blocking-impact: 1.00']);
     });
 
-    it('includes the Queen\'s instructions in the response', async () => {
+    // This assertion used to require the note to name the "Mug". That tier is RETIRED
+    // (permanently — its gate flag was deleted), and the note was rewritten accordingly,
+    // so the test had been red in CI ever since while asserting a vocabulary the product
+    // no longer has. Pin what the note must actually carry instead: triage-all is a
+    // PREVIEW, and triage-one is the verb that records a decision. Naming the caller was
+    // never the invariant — an agent acting on this note needs to know it persisted
+    // nothing, which is the half a stale actor-name check silently stopped guarding.
+    it('tells the caller triage-all persisted nothing and names the verb that does', async () => {
       mockReadImprovementItems.mockResolvedValue([]);
       mockBuildDigest.mockReturnValue(mockDigest({}));
 
@@ -249,8 +339,11 @@ describe('improvements:triage tool', () => {
       const result = (await triageTool.handler({ mode: 'triage-all' }, ctx)) as any;
 
       const response = JSON.parse(result.content[0].text);
-      expect(response.note).toContain('Mug');
+      expect(response.note).toContain('PREVIEW ONLY');
+      expect(response.note).toContain('persists nothing');
       expect(response.note).toContain('triage-one');
+      // The retired tier must not creep back into agent-facing copy.
+      expect(response.note).not.toContain('Mug');
     });
   });
 
