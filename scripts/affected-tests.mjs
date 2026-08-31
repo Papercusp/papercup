@@ -140,6 +140,7 @@ import {
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   isSharedAdmissionTimeout,
+  isTaskDeadlineRefusal,
   runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
@@ -840,8 +841,13 @@ const repoWideGuardBase = repoWideGuardBaseSha ?? repoWideGuardBaseRef;
 //   • the common explicit-path case, where `existsSync` below succeeds and the `||`
 //     short-circuits before the corpus is ever touched.
 // Only an unresolvable path (the basename-expansion case this corpus exists for) now
-// pays for it, once. Measured on the repo-wide-invariant-guards suite, whose 71 `--dry`
-// probes are pure CLI startup: 73.3s -> 45.9s (-37.4%).
+// pays for it, once. Measured 2026-08-31 on the repo-wide-invariant-guards suite, whose
+// 71 `--dry` probes are almost pure CLI startup: 73.3s -> 41.5s (-43.3%), 105 tests and
+// 0 non-passing on both sides. Single invocation with a resolvable path: 0.79s -> 0.34s.
+// Equivalence was checked by diffing full CLI output across 10 probe shapes (explicit
+// path, basename, submodule gitlink, multi-path, nonexistent, --print-affected): all
+// identical once the pid-stamped log path and ambient memAvailableMb — both of which
+// differ between two runs of the SAME binary — are normalized.
 let explicitPathCorpusCache = null;
 function explicitPathCorpus() {
   if (explicitPathCorpusCache !== null) return explicitPathCorpusCache;
@@ -5408,6 +5414,30 @@ try {
   onAdmissionNotice: (line) => errSync(line),
   });
 } catch (error) {
+  // WI-1639265: the run was launched with less wall clock than the work already known to be
+  // queued needs. Same terminal shape as admission starvation, and for the same reason: the
+  // alternative is a SIGKILL part-way through with no `AFFECTED_TESTS_RESULT` line at all,
+  // which the gate records as a LOST RUN and a triager reads as a hang. Exit 78 (EX_CONFIG)
+  // keeps it a red that is explicitly NOT a test verdict.
+  if (isTaskDeadlineRefusal(error)) {
+    errSync(
+      `AFFECTED_TESTS_REFUSAL kind=deadline-insufficient detail=${String(error?.message ?? error)}`,
+    );
+    errSync(
+      `AFFECTED_TESTS_RESULT status=refused reason=deadline-insufficient tasks=${tasks.length} ` +
+        `failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=${tasks.length}`,
+    );
+    errSync(
+      "NOT MEASURED — this run's launcher gave it a wall clock shorter than the work it was " +
+        "asked to do, so it refused before running anything rather than being killed mid-suite " +
+        "with no verdict. Nothing here is a test verdict. Re-fire with a longer timeout: the " +
+        "TASK_DEADLINE_REFUSAL line above names the remaining clock and the KNOWN work (a lower " +
+        "bound — unknown-duration tasks are counted as zero and reported separately).",
+    );
+    terminalEmitted = true;
+    errSync(`Full run log: ${RUN_LOG_PATH}`);
+    process.exit(78);
+  }
   if (!isSharedAdmissionTimeout(error)) throw error;
   errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
   errSync(

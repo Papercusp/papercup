@@ -7,10 +7,13 @@ import { describe, expect, it } from 'vitest';
 import {
   buildIsolatedScopeArgv,
   buildTaskScopeArgv,
+  buildTaskScopeArgvWithTransport,
   buildTaskServiceArgv,
   createSecretEnvironmentTransport,
   escapeSystemdServiceArgument,
   SYSTEMD_ENV_RUNNER_PATH,
+  TASK_DEADLINE_EPOCH_MS_ENV,
+  taskDeadlineEnv,
 } from './systemd-scope';
 import {
   isDirectSystemdScopeEnvRunnerInvocation,
@@ -79,6 +82,61 @@ describe('transient service payload escaping', () => {
 
     const protectedOrchestrator = buildIsolatedScopeArgv(['/bin/false'], 6, 'deny');
     expect(protectedOrchestrator).toContain('--property=MemorySwapMax=0');
+  });
+
+  it('publishes an ABSOLUTE deadline, and nothing at all when the task is unbounded', () => {
+    expect(taskDeadlineEnv(600, 1_000_000)).toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '1600000' });
+    // Absent is the honest answer for an unbounded task: a reader can tell "no deadline was
+    // set" from "a deadline I have not reached" only while this stays empty.
+    expect(taskDeadlineEnv(null)).toEqual({});
+    expect(taskDeadlineEnv(0)).toEqual({});
+    expect(taskDeadlineEnv(-5)).toEqual({});
+    expect(taskDeadlineEnv(Number.POSITIVE_INFINITY)).toEqual({});
+    expect(taskDeadlineEnv(Number.NaN)).toEqual({});
+  });
+
+  it('folds the deadline into an exact-env payload without displacing the caller env', () => {
+    const before = Date.now();
+    const built = buildTaskScopeArgvWithTransport(['/bin/false'], {
+      unit: 'papercusp-bash-job-test.scope',
+      slice: 'papercusp-bash-job.slice',
+      env: { PATH: '/usr/bin', CALLER_KEEPS_THIS: 'yes' },
+      runtimeMaxSec: 90,
+    });
+    try {
+      const records = readFileSync(built.transport!.sourcePath, 'utf8').split('\0').filter(Boolean);
+      expect(records).toContain('PATH=/usr/bin');
+      expect(records).toContain('CALLER_KEEPS_THIS=yes');
+      const deadline = records.find((r) => r.startsWith(`${TASK_DEADLINE_EPOCH_MS_ENV}=`));
+      const epochMs = Number(deadline?.split('=')[1]);
+      expect(epochMs).toBeGreaterThanOrEqual(before + 90_000);
+      expect(epochMs).toBeLessThanOrEqual(Date.now() + 90_000);
+    } finally {
+      built.transport?.release();
+    }
+  });
+
+  it('reaches an envless SERVICE through --setenv, and never puts one on a --scope', () => {
+    const props = { ...PROPS, runtimeMaxSec: 120 };
+    const service = buildTaskServiceArgv(['/bin/false'], props);
+    const setenv = service.filter((arg) => arg.startsWith('--setenv='));
+    expect(setenv).toHaveLength(1);
+    expect(setenv[0]).toMatch(new RegExp(`^--setenv=${TASK_DEADLINE_EPOCH_MS_ENV}=\\d+$`));
+
+    // A `--scope` payload is forked from the systemd-run client, so `--setenv` is not the
+    // seam that reaches it — and a flag this launcher rejected would fail EVERY confined
+    // spawn on the host. The scope path is covered at its launch site (managed-spawn.ts).
+    const scope = buildTaskScopeArgv(['/bin/false'], {
+      unit: 'papercusp-bash-job-test.scope',
+      slice: 'papercusp-bash-job.slice',
+      runtimeMaxSec: 120,
+    });
+    expect(scope.filter((arg) => arg.startsWith('--setenv='))).toEqual([]);
+    expect(scope).toContain('--property=RuntimeMaxSec=120');
+    expect(scope.at(-1)).toBe('/bin/false');
+
+    // An unbounded task publishes nothing on either shape.
+    expect(buildTaskServiceArgv(['/bin/false'], PROPS).filter((a) => a.startsWith('--setenv='))).toEqual([]);
   });
 
   it('keeps a redacted file-backed service log after the live pipe reader disappears', async () => {

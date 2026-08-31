@@ -27,6 +27,7 @@ import {
   buildTaskScopeArgvWithTransport,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+  taskDeadlineEnv,
 } from '../systemd-scope';
 import {
   absCgroupDir,
@@ -332,6 +333,17 @@ export async function managedSpawn(
   if (scopeOk && payloadEnv) {
     const { env: _payloadEnvMovedIntoArgv, ...rest } = launchSpawnOptions;
     launchSpawnOptions = rest;
+  } else if (scopeOk && spec.runtimeMaxSec && spec.runtimeMaxSec > 0) {
+    // WI-1639265: with no payload env there is no exact-env transport to fold the deadline
+    // into, and a `--scope` payload is forked from THIS client — so the client's env is the
+    // only seam that reaches it. Spelling out `process.env` changes nothing about what the
+    // payload sees (node's default for an omitted `env` is exactly that); it just makes the
+    // one added variable expressible. `RuntimeMaxSec` alone is enforced by systemd and
+    // invisible to the payload, which is how a bounded run gets SIGKILLed with no verdict.
+    launchSpawnOptions = {
+      ...launchSpawnOptions,
+      env: { ...process.env, ...taskDeadlineEnv(spec.runtimeMaxSec) },
+    };
   }
 
   let child: ChildProcess;

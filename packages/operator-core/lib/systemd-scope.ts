@@ -366,6 +366,45 @@ function appendTaskProperties(argv: string[], props: TaskScopeProperties): void 
 }
 
 /**
+ * The task's own wall-clock deadline, exported INTO the payload as absolute epoch ms.
+ *
+ * ── WHY (WI-1639265, measured 2026-08-31) ───────────────────────────────────
+ *
+ * `RuntimeMaxSec` above is a systemd PROPERTY: the manager enforces it and the
+ * payload never learns of it. A payload that schedules its own work against an
+ * internal budget therefore admits work it has no time left to finish, and is
+ * SIGKILLed part-way through with no verdict of its own. Every liveness probe
+ * reads that as a hang rather than as a deadline, which is what makes it
+ * expensive — the measured case was a `test:affected` run whose 45-minute
+ * shared-admission QUEUE budget is a fixed internal constant that knows nothing
+ * about the caller's wall clock.
+ *
+ * ABSOLUTE, never a duration: a duration restarts at every hop that re-reads it,
+ * and the whole point is that the clock has been running since the unit started.
+ *
+ * A payload that finds this variable should treat it as an upper bound it may
+ * only ever tighten. Inheriting an OUTER task's deadline is correct — a child
+ * cannot outlive the scope that contains it.
+ */
+export const TASK_DEADLINE_EPOCH_MS_ENV = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+
+/**
+ * The deadline env for a task, or an EMPTY object when the task carries no
+ * `RuntimeMaxSec`. Empty is the honest answer for an unbounded task: an absent
+ * variable means "no deadline was set", which a reader can distinguish from a
+ * deadline it simply has not reached.
+ */
+export function taskDeadlineEnv(
+  runtimeMaxSec: number | null | undefined,
+  nowMs: number = Date.now(),
+): Record<string, string> {
+  if (typeof runtimeMaxSec !== 'number' || !Number.isFinite(runtimeMaxSec) || runtimeMaxSec <= 0) return {};
+  return {
+    [TASK_DEADLINE_EPOCH_MS_ENV]: String(Math.floor(nowMs) + Math.floor(runtimeMaxSec) * 1000),
+  };
+}
+
+/**
  * Wrap a payload so it runs under EXACTLY `env`, independently of the environment
  * the `systemd-run` client itself needs (WI-40906).
  *
@@ -426,10 +465,19 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   // transient SCOPE whose payload is forked from this process. Keep the scope
   // path byte-for-byte compatible while protecting every service payload arg.
   const payloadBase = kind === 'service' ? base.map(escapeSystemdServiceArgument) : base;
-  const payload = props.env
+  // WI-1639265: fold the deadline into the env the caller already supplied, rather than
+  // synthesizing one. `buildExactEnvPayload` is TOTAL REPLACEMENT, so manufacturing an env
+  // where the caller passed none would strip the payload's whole environment down to this
+  // one variable — a far worse bug than the one being fixed. The envless cases are covered
+  // where they can be reached instead: a SERVICE takes `--setenv` below, and an envless
+  // SCOPE payload is forked from the systemd-run client, so its deadline rides the client's
+  // env at the launch site (see managed-spawn.ts).
+  const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec);
+  const payloadEnv = props.env ? { ...props.env, ...deadlineEnv } : null;
+  const payload = payloadEnv
     ? kind === 'service'
-      ? buildServiceEnvPayloadWithTransport(payloadBase, props.env)
-      : buildExactEnvPayloadWithTransport(payloadBase, props.env)
+      ? buildServiceEnvPayloadWithTransport(payloadBase, payloadEnv)
+      : buildExactEnvPayloadWithTransport(payloadBase, payloadEnv)
     : null;
   const argv = [
     'systemd-run',
@@ -446,6 +494,17 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
       '--property=KillMode=control-group',
       '--property=TimeoutStopSec=10s',
     );
+  }
+  // WI-1639265: a transient SERVICE is started by the user manager and inherits nothing, so
+  // `--setenv` is the established way to reach its payload — six sibling launchers already
+  // pass gate/watchdog variables exactly like this. Only when there is NO exact-env payload:
+  // the env runner replaces the environment wholesale, so a `--setenv` beside it would be
+  // silently dropped. Deliberately not emitted for a `--scope`: that payload is forked from
+  // the systemd-run client rather than started by the manager, `--setenv` is documented for
+  // the service case, and a flag this launcher rejected would fail EVERY confined spawn on
+  // the host. The scope path is covered at its launch site instead.
+  if (kind === 'service' && !payloadEnv) {
+    for (const [name, value] of Object.entries(deadlineEnv)) argv.push(`--setenv=${name}=${value}`);
   }
   if (kind === 'service' && props.workingDirectory) {
     argv.push(`--working-directory=${props.workingDirectory}`);
