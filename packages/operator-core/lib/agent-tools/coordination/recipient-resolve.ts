@@ -18,6 +18,7 @@ import { listRecordedLiveSessions } from '../../adv-sessions';
 import { shortHandle } from '../../coord-schema';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { listLiveSessionPresence } from '../../sync/hyperbee/session-presence-store';
+import { listRunningNurseryAliasRows } from './nursery-alias-liveness';
 
 /** Wildcards + audience selectors that bypass concrete-recipient validation —
  *  sendMessage expands these itself (`*`/`human` broadcast; `@plan:`/`@role:`/
@@ -177,13 +178,18 @@ function readKnownOwnerIds(workspaceId?: string | null): Promise<string[]> {
 }
 
 async function fetchKnownOwnerIds(workspaceId?: string | null): Promise<string[]> {
-  const [presenceRes, recordedRes, remoteRes] = await Promise.allSettled([
+  const [presenceRes, recordedRes, remoteRes, nurseryRes] = await Promise.allSettled([
     listPresence({ workspaceId }),
     listRecordedLiveSessions({ workspaceId }),
     // P-007: the unified-roster leg — remote su-/bee ownerIds from
     // shared_session_presence, so direct addressing, prefix, AND short-handle
     // resolution all work cross-machine (the parity ask). Best-effort.
     remoteSessionOwnerIds(workspaceId),
+    // EI-21987499463893160: a running nursery launch can be addressable only by
+    // its spawned_agents aliases (spawn_id/session_owner/run_id) before it has
+    // written coord_presence or adv_sessions. Keep this local source in the
+    // authoritative set so a remote echo cannot shadow or make it ambiguous.
+    listRunningNurseryAliasRows({ workspaceId }),
   ]);
   const ids = new Set<string>();
   // Collect the LOCAL identities first (this machine's own presence + recorded
@@ -201,6 +207,14 @@ async function fetchKnownOwnerIds(workspaceId?: string | null): Promise<string[]
       if (s.coordOwnerId) {
         ids.add(s.coordOwnerId);
         localIds.add(s.coordOwnerId);
+      }
+    }
+  }
+  if (nurseryRes.status === 'fulfilled') {
+    for (const row of nurseryRes.value) {
+      if (row.alias) {
+        ids.add(row.alias);
+        localIds.add(row.alias);
       }
     }
   }

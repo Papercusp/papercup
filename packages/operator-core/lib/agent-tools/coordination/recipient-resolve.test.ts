@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('./presence', () => ({ listPresence: vi.fn() }));
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()), listRecordedLiveSessions: vi.fn() }));
 vi.mock('../../sync/hyperbee/session-presence-store', () => ({ listLiveSessionPresence: vi.fn() }));
+vi.mock('./nursery-alias-liveness', () => ({ listRunningNurseryAliasRows: vi.fn() }));
 import {
   isSelectorOrWildcard,
   resolveBestEffort,
@@ -14,10 +15,12 @@ import {
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
 import { listLiveSessionPresence } from '../../sync/hyperbee/session-presence-store';
+import { listRunningNurseryAliasRows } from './nursery-alias-liveness';
 
 const mockedList = vi.mocked(listPresence);
 const mockedRecorded = vi.mocked(listRecordedLiveSessions);
 const mockedRemote = vi.mocked(listLiveSessionPresence);
+const mockedNursery = vi.mocked(listRunningNurseryAliasRows);
 const remoteSess = (ids: string[]) =>
   ids.map((owner_id) => ({ owner_id, last_seen_ms: 1 })) as unknown as Awaited<
     ReturnType<typeof listLiveSessionPresence>
@@ -25,6 +28,15 @@ const remoteSess = (ids: string[]) =>
 const roster = (ids: string[]) => ids.map((ownerId) => ({ ownerId })) as Awaited<ReturnType<typeof listPresence>>;
 const recorded = (ids: string[]) =>
   ids.map((coordOwnerId) => ({ coordOwnerId })) as Awaited<ReturnType<typeof listRecordedLiveSessions>>;
+const nursery = (aliases: string[]) =>
+  aliases.map((alias) => ({ alias, spawnId: 's-nursery-1', workspaceId: 'ws-1', heartbeatAt: null })) as Awaited<
+    ReturnType<typeof listRunningNurseryAliasRows>
+  >;
+
+beforeEach(() => {
+  mockedNursery.mockReset();
+  mockedNursery.mockResolvedValue([]);
+});
 
 // Two `su-` agents (distinct uuids) + a `pus-` agent — the prefix `su-df00939e`
 // uniquely picks the first; the prefix `su-` is ambiguous across both.
@@ -180,6 +192,33 @@ describe('resolveRecipients (host wrapper — fail-open against the live roster)
       ambiguous: [],
     });
   });
+
+  it('accepts running nursery spawn_id/session_owner/run_id aliases before presence or adv_sessions exists', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    mockedRecorded.mockResolvedValue([]);
+    mockedNursery.mockResolvedValue(
+      nursery(['s-release-fixer-1', 'session-owner-release-fixer', 'run-release-fixer-1']),
+    );
+    const r = await resolveRecipients(
+      ['s-release-fixer', 'session-owner-release-fixer', 'run-release-fixer-1'],
+      'ws-1',
+    );
+    expect(r).toEqual({
+      resolved: ['s-release-fixer-1', 'session-owner-release-fixer', 'run-release-fixer-1'],
+      unknown: [],
+      ambiguous: [],
+    });
+    expect(mockedNursery).toHaveBeenCalledWith({ workspaceId: 'ws-1' });
+  });
+
+  it('keeps nursery alias lookup fail-soft when that roster leg is unavailable', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    mockedNursery.mockRejectedValue(new Error('spawned_agents unavailable'));
+    const r = await resolveRecipients(['su-df00939e']);
+    expect(r.resolved).toEqual(['su-df00939e-1f16-410d-ac0d-ef1aebd41d96']);
+    expect(r.unknown).toEqual([]);
+    expect(r.ambiguous).toEqual([]);
+  });
 });
 
 describe('H1 (audit D-013) — remote session presence never shadows a LOCAL identity', () => {
@@ -208,6 +247,16 @@ describe('H1 (audit D-013) — remote session presence never shadows a LOCAL ide
     mockedRemote.mockResolvedValue(remoteSess(['mug']));
     const r = await resolveRecipients(['mug'], 'ws-1');
     expect(r.resolved).toEqual(['mug']);
+    expect(r.ambiguous).toEqual([]);
+    expect(r.unknown).toEqual([]);
+  });
+
+  it('a remote session echoing a running nursery alias never makes the local alias ambiguous', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    mockedNursery.mockResolvedValue(nursery(['s-nursery-local']));
+    mockedRemote.mockResolvedValue(remoteSess(['s-nursery-local']));
+    const r = await resolveRecipients(['s-nursery-local'], 'ws-1');
+    expect(r.resolved).toEqual(['s-nursery-local']);
     expect(r.ambiguous).toEqual([]);
     expect(r.unknown).toEqual([]);
   });
@@ -240,6 +289,13 @@ describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circu
     expect(await resolveBestEffortAgainstRoster(['s-1782352639138'])).toEqual([
       's-1782352639138-43ed80c0',
     ]);
+  });
+
+  it('resolves a running nursery alias when raw presence and recorded sessions have no owner', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    mockedRecorded.mockResolvedValue([]);
+    mockedNursery.mockResolvedValue(nursery(['s-release-fixer-1']));
+    expect(await resolveBestEffortAgainstRoster(['s-release-fixer'])).toEqual(['s-release-fixer-1']);
   });
 });
 

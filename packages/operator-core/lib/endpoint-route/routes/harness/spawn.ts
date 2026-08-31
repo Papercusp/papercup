@@ -321,6 +321,27 @@ const invoke = defineTool({
     // tracked/resumable session, the brief env, and the OVERWATCH turn-end check
     // (B-09), never the Queen's hive ones.
     const isOverwatchLaunch = url.searchParams.get('bpkind') === 'overwatch';
+    // EI-21987499463893160: launch-blueprint/release-fixer invokes already carry
+    // the durable spawned_agents id, but a plain invoke has no SessionStart hook
+    // of its own to arm the standing inbox-wake. Arm that exact alias here so a
+    // required coord:send wake can rendezvous with the launch even before the
+    // child has written a presence row. Tracked hive/overwatch launches mint a
+    // distinct hiveSpawnId below and own their session lifecycle; do not arm the
+    // caller's spawned_agents row for those launches.
+    if (spawnRecordId && !isHiveLaunch && !isOverwatchLaunch) {
+      try {
+        const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
+        await armInboxWake({ ownerId: spawnRecordId });
+      } catch (e) {
+        // Wakeability is best-effort bookkeeping and must never prevent the
+        // already-admitted child from launching.
+        console.warn(
+          `[invoke ${project.slug}/${role}] launch-row inbox-wake arm failed for ${spawnRecordId}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
     const timeoutMs = resolveInvokeTimeoutMs((body as any)?.timeoutMs, isHiveLaunch || isOverwatchLaunch);
     const extra: string[] = Array.isArray((body as any)?.extra)
       ? (body as any).extra.filter((s: any) => typeof s === 'string')

@@ -70,6 +70,16 @@ vi.mock('../../fleet/spawn-reclaim', async (orig) => ({
   recordSpawnPid: (...a: unknown[]) => (recordSpawnPid as (...args: unknown[]) => unknown)(...a),
 }));
 
+const armInboxWake = vi.hoisted(() => vi.fn(async (_args: unknown) => ({
+  awaitId: 1,
+  eventKey: 'coord:inbox-wake:test',
+  handleNote: 'resumable',
+  minSleepSec: 60,
+})));
+vi.mock('../../events/await/inbox-wake-arm', () => ({
+  armInboxWake: (...a: unknown[]) => armInboxWake(...a),
+}));
+
 // P-059: the `pot/mug-brief-launch` stub is gone with the module. WI-682 put a
 // wake-brief COMPUTE at this route (the one chokepoint every wake path traverses,
 // after EI-995's durable seam bypassed the launcher-side compute); the Mug/Kettle
@@ -245,6 +255,7 @@ beforeEach(() => {
   resolveSpawnBackendModel.mockReturnValue({ backend: 'omp', model: '' });
   mugKettleSystemEnabled.mockResolvedValue(true);
   spawnMock.mockImplementation(() => makeFakeChild(0));
+  armInboxWake.mockClear();
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -318,6 +329,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
+    expect(armInboxWake).toHaveBeenCalledWith({ ownerId: spawnRecordId });
     expect(buildInvokeOnce).toHaveBeenCalledWith(
       expect.objectContaining({
         projectDir: repairWorktree,
@@ -354,6 +366,9 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
+    // Tracked launches mint a distinct hiveSpawnId for their own session
+    // lifecycle; the plain spawned_agents row must not be armed here.
+    expect(armInboxWake).not.toHaveBeenCalled();
     expect(recordAdvSession).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: repairWorktree }),
     );
