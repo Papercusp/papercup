@@ -30,6 +30,35 @@ function digestTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
 }
 
+/**
+ * The corpus total is useful metadata, but it must never hold an already
+ * available item window hostage. A topic COUNT can scan a much larger table
+ * than the bounded list (and can queue behind a writer), so give that optional
+ * leg its own shorter budget. The list + ranking remain governed by the main
+ * digest deadline below. Tests may lower this with an env override.
+ */
+function digestCountTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_DIGEST_COUNT_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return Math.min(5_000, Math.max(1_000, Math.floor(digestTimeoutMs() / 4)));
+}
+
+async function countWithSoftDeadline(
+  readOpts: Parameters<typeof countImprovementItems>[0],
+): Promise<number | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      countImprovementItems(readOpts).catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), digestCountTimeoutMs());
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** EI-5350: a no-`limit` digest can serialize the WHOLE backlog (observed 232KB)
  *  and overflow the agent token cap — the caller then gets an error + a spill file
  *  instead of a usable result, unlike every other house read (the bulk tools cap +
@@ -103,9 +132,13 @@ export default defineTool({
           // failure must never sink an otherwise-good digest, so it degrades to
           // `undefined` (buildDigest then falls back to candidates.length, the prior
           // behavior) rather than throwing.
+          // Keep the bounded item read independent from the optional full-corpus
+          // COUNT. Previously Promise.all made a slow COUNT erase a successful
+          // item window and the outer timeout returned buildDigest([]), a
+          // false-empty result that looked like an empty queue.
           const [items, corpusTotal] = await Promise.all([
             readImprovementItems(readOpts),
-            countImprovementItems(readOpts).catch(() => undefined),
+            countWithSoftDeadline(readOpts),
           ]);
           // The OWNER FULL-AUTONOMY grant (Phase 2): keep this review lens consistent with the
           // live dispatch — when ON, protected-surface kind=bugs show in the auto lane.

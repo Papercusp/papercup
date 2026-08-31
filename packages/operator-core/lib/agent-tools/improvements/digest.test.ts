@@ -85,6 +85,24 @@ describe('improvements:digest tool envelope', () => {
     expect(mockBuild).toHaveBeenCalledWith(ITEMS, expect.objectContaining({ corpusTotal: undefined }));
   });
 
+  it('a slow count does not erase an already-read item window (EI-22002654288385722)', async () => {
+    const prev = process.env.PAPERCUSP_DIGEST_COUNT_TIMEOUT_MS;
+    process.env.PAPERCUSP_DIGEST_COUNT_TIMEOUT_MS = '15';
+    mockCount.mockImplementation(() => new Promise(() => {}) as ReturnType<typeof countImprovementItems>);
+    try {
+      const res = await callTool({});
+      const body = JSON.parse(res.content[0].text);
+      expect(body).toEqual({ ok: true, digest: RANKED });
+      expect(mockBuild).toHaveBeenCalledWith(
+        ITEMS,
+        expect.objectContaining({ corpusTotal: undefined }),
+      );
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_DIGEST_COUNT_TIMEOUT_MS;
+      else process.env.PAPERCUSP_DIGEST_COUNT_TIMEOUT_MS = prev;
+    }
+  });
+
   it('returns { ok:true, digest:<ranked> } — the ranked digest, not the raw build', async () => {
     const res = await callTool({});
     const body = JSON.parse(res.content[0].text);
