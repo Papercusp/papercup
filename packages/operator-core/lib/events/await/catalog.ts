@@ -39,6 +39,119 @@ export interface EventKeyParam {
   describe: string;
 }
 
+/**
+ * EI-19299170840541307 — CAN I USE THIS KEY IF I DON'T ALREADY KNOW THE SUBJECT?
+ *
+ * The question a subscriber most needs answered before parking, and the one the
+ * catalog could not answer. Three populations were silently mixed:
+ *
+ *   · 'id'     — usable ONLY by someone already holding the specific subject id
+ *                (`work-item:done:<id>`, `claim:released:<id>`). A waiter who wants
+ *                "any of these" must register N awaits and re-register as the set moves.
+ *   · 'scope'  — usable by anyone who knows a DURABLE CONTAINER they own: their fleet,
+ *                plan, workspace, account, owner id (`fleet:drained:<slug>`). Knowing a
+ *                scope you own is categorically different from knowing an item id.
+ *   · 'global' — usable by anyone; narrow via `payload_filter` (`work-item:claimable`).
+ *
+ * WHY THIS IS EXPENSIVE, MEASURED: it cost a wrong survey verdict on P-009 of
+ * `fleet-leadership-continuity-and-actuation-2026-08-01`. Five requested transitions
+ * were matched against the live catalogue BY NAME, three read as already-firing
+ * (`claim-released`, `item-completed`, `idle-with-claimable`), and P-009 was recorded
+ * "~60% already built". Two of the three are id-scoped, so a fleet LEADER — who by
+ * definition does not know which item will free or finish next — cannot use them at
+ * all. The real figure was one of five.
+ *
+ * The failure mode is exact and repeatable: NAME-MATCHING READS AS CAPABILITY-MATCHING,
+ * and the catalog gave you nothing to catch it with. "Already built" is the expensive
+ * direction to be wrong in — it argues against building something that is missing, and
+ * it does so with apparent evidence.
+ */
+export type SubjectScope = 'id' | 'global' | 'scope';
+
+/** One line per value, rendered beside the field so the row explains itself. */
+export const SUBJECT_SCOPE_GLOSS: Record<SubjectScope, string> = {
+  id: 'Usable ONLY if you already hold the specific subject id — you cannot park on "any of these" without registering one await per id.',
+  global:
+    'Usable by anyone: the bare key fires for every occurrence. Narrow with `payload_filter`, not by inventing a key suffix.',
+  scope:
+    'Usable by anyone who knows a durable scope they already own (fleet, plan, workspace, account, owner id) — no per-subject id needed.',
+};
+
+/**
+ * Param names that denote a DURABLE CONTAINER the waiter owns rather than a transient
+ * subject instance. Deliberately a closed vocabulary: an unrecognised name derives
+ * `'unknown'` (below), never a confident `'id'`.
+ */
+const SCOPE_PARAM_NAMES: ReadonlySet<string> = new Set([
+  'slug',
+  'scope',
+  'workspace',
+  'owner',
+  'ownerId',
+  'name',
+  'source',
+  'accountId',
+  'pipeline',
+  'rubricRef',
+]);
+
+/**
+ * Param names that are a small FIXED VOCABULARY (an enum discriminator), not a subject.
+ * A required one still leaves the family globally usable, because you can enumerate the
+ * values without holding any subject — `governor:transition:<kind>` is reachable by
+ * anyone who knows the kinds.
+ */
+const ENUM_PARAM_NAMES: ReadonlySet<string> = new Set([
+  'kind',
+  'status',
+  'severity',
+  'gate',
+  'event',
+  'level',
+  'state',
+  'phase',
+  'verdict',
+]);
+
+/**
+ * Derive {@link SubjectScope} from the template's own param shape — rung 1 of the
+ * derived-truth ladder, so the field cannot drift from the key it describes.
+ *
+ * ⚠ RETURNS `'unknown'`, NEVER A CONFIDENT DEFAULT. An unrecognised required param
+ * name is not evidence of anything, and defaulting it to `'id'` would reproduce this
+ * item's own bug one level down: a value that LOOKS like a capability statement while
+ * actually meaning "nobody classified this". `'unknown'` is a first-class outcome —
+ * {@link assertKnownSubjectScopes} fails the build on one in the builtin registry, and
+ * an installed pack's unclassifiable family renders as `unknown` rather than as a lie.
+ *
+ * Rule, in order: ANY required id-shaped param ⇒ 'id' (a family needing BOTH a scope
+ * and an id, like `plan-item:done:<slug>:<id>`, is id-scoped — the id is the binding
+ * constraint); else any required scope-shaped param ⇒ 'scope'; else 'global' (no
+ * required params, or only enum discriminators).
+ */
+export function deriveSubjectScope(entry: Pick<EventCatalogEntry, 'params'>): SubjectScope | 'unknown' {
+  const required = (entry.params ?? []).filter((p) => p?.required);
+  if (required.length === 0) return 'global';
+  const unclassified = required.filter(
+    (p) => !SCOPE_PARAM_NAMES.has(p.name) && !ENUM_PARAM_NAMES.has(p.name) && !isIdShapedParam(p.name),
+  );
+  if (unclassified.length > 0) return 'unknown';
+  if (required.some((p) => isIdShapedParam(p.name))) return 'id';
+  if (required.some((p) => SCOPE_PARAM_NAMES.has(p.name))) return 'scope';
+  return 'global';
+}
+
+/**
+ * An id-shaped param names a transient subject INSTANCE you must already hold.
+ * Matched structurally (`id`, or a `*Id`/`*Ref` suffix) rather than by an enumerated
+ * list, so a new `…Id` param classifies correctly without touching this file — while
+ * anything outside both this shape and the two vocabularies above stays `'unknown'`.
+ */
+function isIdShapedParam(name: string): boolean {
+  if (SCOPE_PARAM_NAMES.has(name)) return false;
+  return name === 'id' || /(?:Id|Ref)$/.test(name) || name === 'ticket' || name === 'candidate';
+}
+
 /** One awaitable event-key family. */
 export interface EventCatalogEntry {
   /** Stable family id — the catalog lookup key and `buildKey` handle. */
@@ -64,6 +177,23 @@ export interface EventCatalogEntry {
    * once per checkpoint; `payload.sha` says which). The sugar echoes this caveat.
    */
   payloadFiltered?: boolean;
+  /**
+   * EI-19299170840541307 — an EXPLICIT {@link SubjectScope} override, for the rare
+   * family whose param vocabulary genuinely cannot decide it.
+   *
+   * Normally OMITTED: the value is derived from the template's own params
+   * ({@link deriveSubjectScope}), which is what keeps it from drifting away from the
+   * key it describes. Set this only when the derivation is wrong, and say why in a
+   * comment — {@link findRedundantSubjectScopeOverrides} fails the build on an
+   * override that merely restates what the derivation already returns, because a
+   * redundant second copy is exactly the drift this field exists to avoid.
+   */
+  subjectScope?: SubjectScope;
+}
+
+/** The effective scope for an entry: an explicit override, else the derivation. */
+export function subjectScopeOf(entry: EventCatalogEntry): SubjectScope | 'unknown' {
+  return entry.subjectScope ?? deriveSubjectScope(entry);
 }
 
 /**
@@ -962,6 +1092,99 @@ export function findZeroParamSuffixMismatch(
 }
 
 /**
+ * EI-19299170840541307 — the FAMILY-PREFIX-SHADOWING guard.
+ *
+ * The three guards above all check a CALLER'S key against the catalog. This one
+ * checks the CATALOG AGAINST ITSELF, at authoring time, and it is the only one that
+ * can catch the defect below — because by the time a caller's key is being checked,
+ * the damage is that the check WRONGLY PASSES.
+ *
+ * {@link familyKeyPrefix} truncates a template at its FIRST placeholder. A template
+ * whose placeholder comes first therefore registers only its bare namespace, and
+ * {@link keyMatchesCatalog} then answers `true` for EVERY key under it — including
+ * typos — silently disarming the EI-10870 orphan guard for the whole namespace.
+ *
+ * ⚠ NOT HYPOTHETICAL — measured 2026-08-31, this returns exactly ONE pair today:
+ *   · `plan-event` `plan:<slug>:<gate>` → prefix `plan`, which shadows
+ *     `plan-draft-ready` (`plan:draft-ready`) and makes {@link keyMatchesCatalog}
+ *     answer true for `plan:draft-redy:x`, `plan:typo`, `plan:total:garbage`.
+ *
+ * ⚠ AND READ WHAT IT DOES **NOT** RETURN. This finds catalog-internal SHADOWING —
+ * one family swallowing another — which is a strictly narrower population than
+ * "placeholder-first templates". `external-trigger` (`ext:<source>:<event>`) is also
+ * placeholder-first and also admits its whole `ext:*` namespace, but no OTHER family
+ * lives under `ext:`, so it shadows nothing and is correctly absent from these rows.
+ * An empty result therefore means "no family swallows another", NEVER "every family's
+ * prefix is tight". The namespace-width hazard is real and separate; the callers that
+ * bound it are {@link findRequiredParamPrefixMatch} and {@link findZeroParamSuffixMismatch}.
+ *
+ * The shape is legitimate; what is not is the orphan guard going quiet over a
+ * namespace another family occupies. So this reports rather than throws, and the test
+ * that consumes it pins the known pair — a NEW shadowing family fails the build, while
+ * the existing one stays visible instead of being silently normalised.
+ *
+ * Returns one row per (shadower, shadowed) pair; empty when no family's derived
+ * prefix is a prefix of another's.
+ */
+export function findFamilyPrefixShadowing(
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): Array<{ shadower: string; shadowerPrefix: string; shadowed: string; shadowedPrefix: string }> {
+  const rows: Array<{ shadower: string; shadowerPrefix: string; shadowed: string; shadowedPrefix: string }> = [];
+  const prefixes = entries.map((e) => ({ family: e.family, prefix: familyKeyPrefix(e) }));
+  for (const a of prefixes) {
+    if (a.prefix.length === 0) continue;
+    for (const b of prefixes) {
+      if (a.family === b.family || b.prefix.length === 0) continue;
+      // `b` is swallowed by `a` when a's prefix IS b's, or is a strict `:`-bounded
+      // ancestor of it. Segment-bounded on purpose: `plan` must shadow `plan:x` but
+      // NOT the unrelated top-level family `plan-item:done`.
+      if (b.prefix === a.prefix || b.prefix.startsWith(`${a.prefix}:`)) {
+        rows.push({ shadower: a.family, shadowerPrefix: a.prefix, shadowed: b.family, shadowedPrefix: b.prefix });
+      }
+    }
+  }
+  return rows;
+}
+
+/**
+ * EI-19299170840541307 — families whose {@link SubjectScope} could not be classified.
+ *
+ * The population-reporting half of the derivation: an unrecognised required param
+ * name yields `'unknown'`, and this names exactly which families are in that bucket
+ * so a green catalog can never mean "we did not look". The builtin registry must be
+ * empty here (pinned by test); an installed pack's family may legitimately appear,
+ * and renders as `unknown` rather than as a confident wrong answer.
+ */
+export function findUnknownSubjectScopes(
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): Array<{ family: string; keyTemplate: string; unclassifiedParams: string[] }> {
+  return entries
+    .filter((e) => subjectScopeOf(e) === 'unknown')
+    .map((e) => ({
+      family: e.family,
+      keyTemplate: e.keyTemplate,
+      unclassifiedParams: (e.params ?? []).filter((p) => p?.required).map((p) => p.name),
+    }));
+}
+
+/**
+ * EI-19299170840541307 — explicit `subjectScope` overrides that merely restate what
+ * {@link deriveSubjectScope} already returns.
+ *
+ * A redundant override is a second copy of a truth the template already owns, which
+ * is the exact drift the derived field exists to prevent (the repo's derived-truth
+ * ladder: derive, pin, attest — never hand-maintain). Pinned by test, so an override
+ * survives only while it is genuinely doing work.
+ */
+export function findRedundantSubjectScopeOverrides(
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+): Array<{ family: string; declared: SubjectScope; derived: SubjectScope | 'unknown' }> {
+  return entries
+    .filter((e) => e.subjectScope !== undefined && e.subjectScope === deriveSubjectScope(e))
+    .map((e) => ({ family: e.family, declared: e.subjectScope as SubjectScope, derived: deriveSubjectScope(e) }));
+}
+
+/**
  * EI-18701276960172209 — a catalog-based "did you mean…?" suggestion for a key
  * that matches NO family ({@link keyMatchesCatalog} false). A self-declared
  * announced gate is deliberately exempted from the orphan-await guard above (an
@@ -1198,6 +1421,16 @@ export interface CatalogRow {
   replaces_poll?: string;
   sugar?: string;
   payload_filtered?: boolean;
+  /**
+   * EI-19299170840541307 — CAN I PARK ON THIS WITHOUT ALREADY KNOWING THE SUBJECT?
+   * `id` = only if you hold the specific id · `scope` = if you know a scope you own
+   * · `global` = anyone · `unknown` = not classifiable from the template (installed
+   * packs only; the builtin registry is pinned to zero). Always present — this is a
+   * capability statement, and omitting it on the awkward cases is how it stops being one.
+   */
+  subject_scope: SubjectScope | 'unknown';
+  /** One-line gloss for {@link CatalogRow.subject_scope}, so a row explains itself. */
+  subject_scope_gloss: string;
   /** EI-9000: live (unfired, uncancelled) events:await registrations matching this
    *  family RIGHT NOW — "is anyone actually listening" at read time. Filled in by
    *  the events:catalog tool handler (a DB read renderCatalog itself stays free of);
@@ -1222,6 +1455,14 @@ export function renderCatalog(installed: readonly InstalledUnitEvents[] = []): C
     describe: e.describe,
     emitter: e.emitter,
     provenance: e.provenance,
+    // EI-19299170840541307: UNCONDITIONAL, including the `unknown` case. Emitting it
+    // only when confidently classified would make the awkward rows indistinguishable
+    // from the well-understood ones — the absence-vs-not-measured rule, on the field
+    // whose entire purpose is to stop a name-match reading as a capability-match.
+    subject_scope: subjectScopeOf(e),
+    subject_scope_gloss:
+      SUBJECT_SCOPE_GLOSS[subjectScopeOf(e) as SubjectScope] ??
+      'NOT CLASSIFIABLE from this key template — an installed pack declared a param this catalog cannot interpret. Treat the scope as unmeasured, not as global: confirm with the emitting unit before parking on it.',
     ...(e.replacesPoll ? { replaces_poll: e.replacesPoll } : {}),
     ...(e.sugar ? { sugar: e.sugar } : {}),
     ...(e.payloadFiltered ? { payload_filtered: true } : {}),

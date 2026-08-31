@@ -16,9 +16,11 @@ import {
   mergeInstalledEventCatalog,
   renderCatalog,
   familyKeyPrefix,
+  SUBJECT_SCOPE_GLOSS,
   type CatalogRow,
   type EventFamilyCollision,
   type InstalledUnitEvents,
+  type SubjectScope,
 } from '../../events/await/catalog';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../events/await/store';
@@ -107,6 +109,15 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('true = only families whose emitter fires TODAY (hide not-yet-wired Phase-2 keys).'),
+    subjectScope: z
+      .union([
+        z.enum(['id', 'global', 'scope', 'unknown']),
+        z.array(z.enum(['id', 'global', 'scope', 'unknown'])).min(1).max(4),
+      ])
+      .optional()
+      .describe(
+        'Filter by whether you can park on the key WITHOUT already knowing the subject (EI-19299170840541307). `id` = usable only if you already hold the specific id; `scope` = usable if you know a durable scope you own (fleet/plan/workspace/account/owner); `global` = usable by anyone, narrow with payload_filter; `unknown` = not classifiable from the template (installed packs only). A fleet leader asking "what can I actually wait on?" wants ["global","scope"] — the id-scoped families are unusable to anyone who does not already know which subject will move next. Accepts one value or an array.',
+      ),
     liveAwaiters: z
       .boolean()
       .optional()
@@ -148,8 +159,24 @@ export default defineTool({
     const query = (args.q ?? args.pattern)?.trim().toLowerCase();
 
     let rows = renderCatalog(installedUnits);
+
+    // EI-19299170840541307: the census is taken over the UNFILTERED catalog, BEFORE any
+    // narrowing below, and is always returned. A `subjectScope` filter is the one filter
+    // here whose whole purpose is to hide families the caller cannot use — so reporting
+    // only the surviving count would reproduce this item's own bug: a confident number
+    // over a silently-narrowed population. `subject_scope_census` says how many families
+    // exist in EACH bucket, so a filtered `count` can never be read as a total.
+    const subjectScopeCensus = rows.reduce<Record<string, number>>((acc, r) => {
+      acc[r.subject_scope] = (acc[r.subject_scope] ?? 0) + 1;
+      return acc;
+    }, {});
+
     if (args.family) rows = rows.filter((r) => r.family === args.family);
     if (args.awaitable_now) rows = rows.filter((r) => r.awaitable_now);
+    const wantedScopes = args.subjectScope
+      ? new Set<string>(Array.isArray(args.subjectScope) ? args.subjectScope : [args.subjectScope])
+      : undefined;
+    if (wantedScopes) rows = rows.filter((r) => wantedScopes.has(r.subject_scope));
     if (query) rows = rows.filter((r) => catalogRowMatches(r, query));
     if (args.limit !== undefined) rows = rows.slice(0, args.limit);
 
@@ -345,6 +372,10 @@ export default defineTool({
             ok: true,
             count: rowsOut.length,
             total: merged.entries.length,
+            // EI-19299170840541307: ALWAYS present, and always over the UNFILTERED
+            // catalog — the denominator for `count`, broken down by whether a family
+            // is reachable without already knowing its subject.
+            subject_scope_census: subjectScopeCensus,
             ...(installedCount > 0 ? { installed_families: installedCount } : {}),
             ...(announced && announced.length > 0 ? { announced } : {}),
             // EI-21907772459508454: ALWAYS present when the announced section ran, even
@@ -362,7 +393,7 @@ export default defineTool({
             // pack author debugs a family that "just doesn't appear" with no signal.
             ...(collisions.length > 0 ? { collisions } : {}),
             note:
-              `A gate MISSING from \`announced\` is not proof it was never declared — read \`announced_visibility\`: gates scoped to a fleet/plan you are not recorded on are withheld here, while events:await on the exact key still resolves them. Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. An announced gate carrying \`stale_owner:true\` is STRANDED: its declarer's session ended and no live role/fleet-leadership successor holds the binding, so it will never fire — do NOT events:await it; \`live_successor_ids\` (when present) names who COULD declare a fresh gate instead. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. ${CATALOG_SCOPE_NOTE}`,
+              `A gate MISSING from \`announced\` is not proof it was never declared — read \`announced_visibility\`: gates scoped to a fleet/plan you are not recorded on are withheld here, while events:await on the exact key still resolves them. Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. An announced gate carrying \`stale_owner:true\` is STRANDED: its declarer's session ended and no live role/fleet-leadership successor holds the binding, so it will never fire — do NOT events:await it; \`live_successor_ids\` (when present) names who COULD declare a fresh gate instead. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. \`subject_scope\` says whether you can park on a key WITHOUT already knowing the subject: \`id\` families are unusable unless you already hold that exact id, so matching a family BY NAME and concluding "this already exists for my case" is the specific mistake this field exists to stop — filter with \`subjectScope:["global","scope"]\` to see only what you can actually reach, and read \`subject_scope_census\` for how many were withheld. ${CATALOG_SCOPE_NOTE}`,
             families: rowsOut,
           }),
         },
