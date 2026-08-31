@@ -289,3 +289,66 @@ describe('PATCH /agent-config resolver profiles', () => {
     expect(writeMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * portal-universal-bar-and-agent-roster-2026-08-31 P-015 — the `portal` surface
+ * key (which agent/model answers "Ask Papercup") across all three legs.
+ *
+ * The point of the item: because POST is strict, an unknown surface key is a
+ * 422, so the portal settings surface (P-016) cannot persist this preference
+ * through a passthrough — the key has to be a genuine SURFACE_KEYS member. The
+ * POST case below is therefore a REGRESSION test in the exact shape of the
+ * failure it prevents: it is a 422 if `portal` is ever removed from the
+ * registry, not a silently-dropped field.
+ */
+describe('portal surface key end-to-end through /agent-config', () => {
+  it('POST persists a portal backend + model instead of rejecting them 422', async () => {
+    const res = await callPost({
+      ...VALID_BODY,
+      backends: { ...VALID_BODY.backends, portal: 'claude-code' },
+      surfaceModels: { ...VALID_BODY.surfaceModels, portal: 'opus:high' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(writeMock).toHaveBeenCalledTimes(1);
+    const written = writeMock.mock.calls[0][0] as {
+      backends: Record<string, string>;
+      surfaceModels: Record<string, string>;
+    };
+    // Persisted verbatim — the strict guard counts entries, so a dropped
+    // `portal` would have surfaced as a 422 above rather than as a hole here.
+    expect(written.backends.portal).toBe('claude-code');
+    expect(written.surfaceModels.portal).toBe('opus:high');
+    // The pre-existing surfaces are untouched by the widening.
+    expect(written.backends.oracle).toBe('claude-code');
+    expect(written.surfaceModels.oracle).toBe('opus');
+  });
+
+  it('GET returns a stored portal override to the client', async () => {
+    readMock.mockResolvedValueOnce({
+      ...VALID_BODY,
+      backends: { portal: 'codex' },
+      surfaceModels: { portal: 'sonnet' },
+    });
+
+    const json = (await (await callGet()).json()) as {
+      config: { backends: Record<string, string>; surfaceModels: Record<string, string> };
+    };
+    expect(json.config.backends.portal).toBe('codex');
+    expect(json.config.surfaceModels.portal).toBe('sonnet');
+  });
+
+  it('PATCH still refuses surface keys — it is the resolverProfiles-only leg', async () => {
+    // Widening SURFACE_KEYS must not widen PATCH: its whole reason for existing
+    // is that a stale tab holding a full document cannot overwrite unrelated
+    // edits, so the portal settings surface saves through POST like every other
+    // /settings/agent client.
+    const res = await callPatch({
+      resolverProfiles: VALID_BODY.resolverProfiles,
+      backends: { portal: 'claude-code' },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/only resolverProfiles.*backends/);
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+});
