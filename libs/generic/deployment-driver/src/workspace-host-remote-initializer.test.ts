@@ -798,6 +798,7 @@ describe('executeWorkspaceHostRemoteInitializerStep', () => {
       const plan = planWorkspaceHostCredentialLifecycle({
         contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
         operationId: 'revoke-wire-1',
+        deliveryCapabilities: { fileTransfer: true },
         workspaceId: 'ws-1',
         hostId: 'byoc-canary-01',
         requestedAt: NOW,

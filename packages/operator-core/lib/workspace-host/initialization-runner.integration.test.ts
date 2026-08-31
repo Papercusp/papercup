@@ -138,6 +138,7 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     source: { kind: 'empty' as const },
     credentialRefs: refs(),
     credentialDelivery: delivery(),
+    deliveryCapabilities: { fileTransfer: true },
     operations,
   });
 

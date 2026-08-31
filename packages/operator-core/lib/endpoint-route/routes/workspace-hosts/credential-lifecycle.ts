@@ -127,8 +127,9 @@ export function createWorkspaceHostCredentialLifecycleRoute(
       }
 
       let hostOperations;
+      let deliveryCapabilities;
       try {
-        ({ operations: hostOperations } = await dependencies.resolveOperationsForHost({
+        ({ operations: hostOperations, deliveryCapabilities } = await dependencies.resolveOperationsForHost({
           workspaceId,
           hostId,
           controller,
@@ -169,6 +170,7 @@ export function createWorkspaceHostCredentialLifecycleRoute(
         workspaceId,
         hostId,
         operations,
+        deliveryCapabilities,
         ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
       };
       let planned = false;
