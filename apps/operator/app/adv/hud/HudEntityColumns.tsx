@@ -131,8 +131,31 @@ const SETTLED_PLAN_COLUMNS: ReadonlySet<HudEntityColumnId> = new Set<HudEntityCo
  *                         independent rubric review (WI-1743279 F2). Folding it
  *                         into the hover title costs zero pixels and stops the
  *                         fact being lost in exactly the case the claim ignored.
- *   - the chips row     → the two exception counts survive as pips; `wip`/`todo`
- *                         restate the track and the column the card sits in
+ *   - the chips row     → the two exception counts survive as pips. `wip`/`todo`
+ *                         and `archived` are DROPPED. The reason is deliberate
+ *                         and it is not the one this line used to give: it read
+ *                         "`wip`/`todo` restate the track and the column the
+ *                         card sits in", which is FALSE, and was the second
+ *                         unchecked premise found in this docblock (the
+ *                         `card.context` note above was the first). `planColumn`
+ *                         is ORDERED — `needsHuman > 0` returns `needs-you`
+ *                         before `wip > 0` can return `working`, and an explicit
+ *                         `blocked` status outranks both — so a plan with
+ *                         needsHuman=2 AND wip=3 sits in `needs-you` and its
+ *                         column restates nothing about wip; `todo` is rung 6
+ *                         and is likewise unreachable for any plan with wip. Nor
+ *                         does the track restate them: `.hud__track` draws
+ *                         itemsDone/itemsTotal, where total sums ALL buckets, so
+ *                         it isolates neither. The HONEST disposition is that
+ *                         `wip`/`todo` are the ORDINARY states of a live plan
+ *                         and the rail is budgeted for the EXCEPTIONAL ones —
+ *                         they are dropped because they are not worth the pixels
+ *                         on a two-line card, which is a design call, not a
+ *                         redundancy. Caught by the independent acceptance
+ *                         grading (EI-21975441333986366); see D-006.
+ *                         `archived` never reaches this board at all —
+ *                         HudView.tsx passes `usePlanList({ includeArchived:
+ *                         false })`, so the badge kind cannot render here.
  *   - `n/m items`       → nothing; `.hud__track` below already draws it
  *   - ✎ last edit and the avatar stack → nothing. This is the accepted cost of
  *     variant B over variant C, which spent the same rail on presence instead.

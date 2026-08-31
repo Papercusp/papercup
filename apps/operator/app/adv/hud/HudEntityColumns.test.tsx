@@ -773,27 +773,61 @@ describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () 
     expect(document.querySelectorAll('.hud__pip')).toHaveLength(0);
   });
 
+  /**
+   * D-003 CONTROL — the implementation this criterion exists to exclude: a
+   * renderer that parses the digits back out of the BADGE LABELS, in badge
+   * order, instead of reading itemCounts.
+   *
+   * Kept permanently in the suite rather than applied as a one-off mutation
+   * probe. A control that lives here re-proves the discrimination on every
+   * run and cannot be lost; a probe proves it once, for the version that
+   * happened to be on disk that afternoon.
+   */
+  function labelParsingPips(plan: HudPlanInput): string[] {
+    const board = buildPlanBoard([plan], { nowMs: NOW_M });
+    const card = board.columns.flatMap((col) => col.cards).find((c) => c.ref === plan.slug);
+    return (card?.badges ?? [])
+      .map((b) => b.label.match(/\d+/)?.[0])
+      .filter((d): d is string => d != null)
+      .slice(0, 2);
+  }
+
   it('derives the pips from itemCounts, not from badge labels — a wip count between them proves it', () => {
-    // D-003, DISCRIMINATING case. The test above cannot tell a derived
-    // implementation from one that parses the digits back out of badge labels:
-    // with {'needs-human':2, blocked:3} BOTH render ['2','3'], because the two
-    // labels carry the same two digits in the same order. A case that passes
-    // whichever implementation is underneath discriminates nothing.
+    // D-003, DISCRIMINATING case. The test above cannot tell the derived
+    // implementation from the label-parsing one: with {'needs-human':2,
+    // blocked:3} BOTH render ['2','3'], because the two labels carry the same
+    // two digits in the same order. A case that passes whichever
+    // implementation is underneath discriminates nothing.
     //
-    // toPlanCard pushes badges in the order needs-human → wip → blocked → todo
-    // (hud-entity-board.ts), while the pips render needsHumanCount then
-    // blockedCount and ignore wip entirely. So a wip count that is present and
-    // distinct splits the two apart: the derived implementation reads
-    // itemCounts and yields ['2','3'], while anything reading the first two
-    // numeric badge labels in order yields ['2','9'].
-    renderPlanBoard([
-      metaPlan({ itemCounts: { 'needs-human': 2, wip: 9, blocked: 3, todo: 4 } }),
-    ]);
+    // toPlanCard pushes badges in the order needs-human → wip → blocked →
+    // todo, while the pips render needsHumanCount then blockedCount and ignore
+    // wip entirely. So a wip count that is present and distinct splits them.
+    const discriminating = metaPlan({
+      itemCounts: { 'needs-human': 2, wip: 9, blocked: 3, todo: 4 },
+    });
+
+    // The control genuinely diverges on this input — otherwise the assertion
+    // below is green against BOTH implementations and proves nothing.
+    expect(labelParsingPips(discriminating)).toEqual(['2', '9']);
+
+    renderPlanBoard([discriminating]);
     const pips = [...document.querySelectorAll('.hud__pip')].map((el) => el.textContent);
     expect(pips).toEqual(['2', '3']);
-    // Stated separately so the failure names the defect rather than a diff: a 9
+    // Stated separately so a failure names the defect rather than a diff: a 9
     // in the pips means the renderer read the wip BADGE, not the wip COUNT.
     expect(pips).not.toContain('9');
+
+    // CALIBRATION — why the case above the discriminating one cannot stand
+    // alone: on its input the control agrees with the real implementation, so
+    // that test is green under a label-parser too.
+    cleanup();
+    const indistinguishable = metaPlan({ itemCounts: { 'needs-human': 2, blocked: 3, todo: 4 } });
+    expect(labelParsingPips(indistinguishable)).toEqual(['2', '3']);
+    renderPlanBoard([indistinguishable]);
+    expect([...document.querySelectorAll('.hud__pip')].map((el) => el.textContent)).toEqual([
+      '2',
+      '3',
+    ]);
   });
 
   it('drops the now line in the settled columns — a Ready plan has no next action', () => {
