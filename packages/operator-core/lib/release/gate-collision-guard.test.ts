@@ -527,6 +527,86 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
     ...over,
   });
 
+  it('passes the caller drain budget through as maxWaitSec, so a busy sweep is waited out rather than bounced', async () => {
+    // EI-21930094737784126. Measured 2026-08-31: git-sync fires hold this barrier
+    // ~5-10s in bursts of ~6, and it was FREE in 20 of 40 sampled seconds. A bare
+    // try-acquire lands on a burst and refuses; a drain budget clears it, because a
+    // draining exclusive also refuses NEW shared acquires and so stops the sweep
+    // feeding itself. 20/20 hand attempts failed before this existed.
+    const acquire = vi.fn(async () => ({
+      ok: true as const,
+      lock_id: 'barrier-1',
+      expires_ts: new Date('2026-08-27T19:00:00Z'),
+    }));
+    await acquireGitSyncRestartBarrier('Agent', deps({ acquire }), { maxDrainSec: 45 });
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ maxWaitSec: 45 }));
+  });
+
+  it('RELEASES the queued exclusive a failed acquire leaves behind — an abandoned one back-pressures every harness', async () => {
+    // The hazard, hit by hand on 2026-08-31 before it was guarded: a FAILED
+    // acquire still returns a lock_id and parks the exclusive in 'draining', which
+    // REFUSES NEW SHARED ACQUIRES. Left there it throttles every harness's git-sync
+    // until TTL — a restart attempt that quietly degrades the whole fleet.
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async () => ({
+      ok: false as const,
+      reason: 'drain_timeout',
+      holders: [{ owner: 'system:git-sync:1:x', mode: 'shared', status: 'held' }],
+      lock_id: 'queued-exclusive-1',
+    }));
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ acquire, release }), { maxDrainSec: 20 });
+
+    expect(result).toMatchObject({ acquired: false, reason: 'drain_timeout' });
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ lockId: 'queued-exclusive-1' }));
+  });
+
+  it('does not attempt a release when the failure left NO queue row', async () => {
+    // Control for the test above: releasing a lock_id we never got would be a
+    // different bug, and would make the guard pass for the wrong reason.
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async () => ({
+      ok: false as const,
+      reason: 'held_exclusive',
+      holders: [],
+    }));
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ acquire, release }));
+    expect(result).toMatchObject({ acquired: false, reason: 'held_exclusive' });
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it('never reports a parked draining queue row as an acquisition', async () => {
+    // `status:'draining'` comes back as ok:true from the wait module (maxWaitSec 0),
+    // which is the one shape that could read as success while holding nothing. If it
+    // ever did, dev:restart would proceed to SIGKILL a live git-sync commit.
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async () => ({
+      ok: false as const,
+      reason: 'draining',
+      holders: [{ owner: 'system:git-sync:1:x', mode: 'shared', status: 'held' }],
+      lock_id: 'queued-exclusive-2',
+    }));
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ acquire, release }));
+    expect(result).toMatchObject({ acquired: false, reason: 'draining' });
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ lockId: 'queued-exclusive-2' }));
+  });
+
+  it('a release failure does not mask the acquire failure the caller needs to see', async () => {
+    const release = vi.fn(async () => {
+      throw new Error('pg down');
+    });
+    const acquire = vi.fn(async () => ({
+      ok: false as const,
+      reason: 'drain_timeout',
+      holders: [],
+      lock_id: 'queued-exclusive-3',
+    }));
+    // Must resolve, not reject: the TTL is the backstop for the orphaned row, and
+    // swallowing the real refusal behind a cleanup error would be strictly worse.
+    await expect(
+      acquireGitSyncRestartBarrier('Agent', deps({ acquire, release }), { maxDrainSec: 10 }),
+    ).resolves.toMatchObject({ acquired: false, reason: 'drain_timeout' });
+  });
+
   it('resolves the existing exact git-sync resource through the canonical domain mapper and acquires it exclusively', async () => {
     const resolveDomain = vi.fn(() => 'workspace-domain');
     const acquire = vi.fn(async () => ({
@@ -542,6 +622,9 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
       owner: 'system:dev-restart:git-sync-barrier:42:uuid',
       ownerLabel: 'Agent',
       ttlSec: GIT_SYNC_RESTART_BARRIER_TTL_SEC,
+      // EI-21930094737784126: the DEFAULT stays no-wait, so every existing caller
+      // keeps today's immediate fast-fail. Draining is opt-in per call.
+      maxWaitSec: 0,
     });
     expect(result).toMatchObject({
       acquired: true,

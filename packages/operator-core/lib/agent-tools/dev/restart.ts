@@ -85,6 +85,7 @@ import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } fr
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   acquireGitSyncRestartBarrier,
+  GIT_SYNC_RESTART_BARRIER_DRAIN_SEC,
   checkGateCollision,
   checkGitSyncCollision,
   isGateSensitiveTarget,
@@ -477,6 +478,33 @@ export default defineTool({
       .describe(
         'Restart dev/staging/bg-host even though a live git-sync lock holder is inside that target systemd cgroup. This kills and abandons the commit; pass only when the host itself is wedged and record why.',
       ),
+    /**
+     * EI-21930094737784126: WAIT for git-sync to drain instead of bouncing off it.
+     *
+     * Without this, `dev:restart` refuses on the CGROUP PREFLIGHT — "is a git-sync
+     * process inside this unit?" — which on bg-host is ~always true, because the
+     * git-sync worker IS the host process. Measured 2026-08-31: 20 consecutive
+     * confirm:true attempts, 20/20 refused, colliding-resource floor never below 4.
+     * The remediation the stale-executor page names was effectively unfireable, and
+     * an open page sat unacted for 2h46m as a direct result.
+     *
+     * The authoritative signal is the `git-sync` barrier LOCK, not the cgroup: fires
+     * hold it ~5-10s in bursts, and it measured FREE in 20 of 40 sampled seconds. So
+     * with a drain budget the preflight becomes ADVISORY and the barrier arbitrates —
+     * and because a draining exclusive refuses NEW shared acquires, the wait actually
+     * converges instead of racing the sweep.
+     *
+     * Omitted/0 keeps today's fast-fail behaviour byte-for-byte.
+     */
+    git_sync_drain_sec: z
+      .number()
+      .int()
+      .min(0)
+      .max(GIT_SYNC_RESTART_BARRIER_DRAIN_SEC)
+      .optional()
+      .describe(
+        'Seconds to WAIT for in-flight git-sync operations to drain instead of refusing immediately. Use this rather than override_git_sync_collision on a merely BUSY host: git-sync fires hold the barrier only ~5-10s, so a short drain usually succeeds where a one-shot attempt always fails. 0/omitted = today\'s immediate refusal.',
+      ),
     /** EI-18661647550414959: restart a target whose tree cannot boot. Only pass when
      *  the restart is itself the remedy — otherwise this hands you the crash-loop the
      *  preflight just predicted. */
@@ -676,8 +704,16 @@ export default defineTool({
     // inside this unit, systemctl restart would SIGKILL its commit and orphan the
     // lease. This covers both scheduled bg-host fires and manual :3070/:3170
     // fires, unlike a target-name-only bg-host check.
+    const gitSyncDrainSec = Math.max(0, Math.trunc(args.git_sync_drain_sec ?? 0));
     const gitSync = await checkGitSyncCollision(target, args.override_git_sync_collision === true);
-    if (gitSync.blocked) {
+    // EI-21930094737784126: this preflight is a CGROUP PROXY ("is a git-sync process
+    // inside this unit?"), not the authoritative signal. On bg-host the git-sync worker
+    // IS the host process, so the proxy is ~always true while the barrier LOCK it stands
+    // in for is free ~half the time. When the caller has given us a drain budget, demote
+    // it to ADVISORY and let the barrier below arbitrate — that is the whole difference
+    // between a lever that fires and one that refuses 20/20. With no budget it stays a
+    // hard refusal, so the default path is unchanged.
+    if (gitSync.blocked && gitSyncDrainSec === 0) {
       return json({
         ok: false,
         target,
@@ -847,7 +883,7 @@ export default defineTool({
     try {
       gitSyncBarrier =
         isGitSyncSensitiveTarget(target) && args.override_git_sync_collision !== true
-          ? await acquireGitSyncRestartBarrier(ownerLabel)
+          ? await acquireGitSyncRestartBarrier(ownerLabel, undefined, { maxDrainSec: gitSyncDrainSec })
           : null;
     } catch (error) {
       await releaseCooldownOnAbort();
@@ -870,7 +906,12 @@ export default defineTool({
         })),
         note:
           `Restart REFUSED before draining — a git-sync operation holds the atomic ${gitSyncBarrier.resource} ` +
-          'barrier after the earlier cgroup preflight. No target users were drained; retry when that operation settles.',
+          'barrier after the earlier cgroup preflight. No target users were drained; retry when that operation settles.' +
+          // Point at the lever rather than leaving the reader to invent one: a bare
+          // refusal here is exactly what made this remediation look unreachable.
+          (gitSyncDrainSec === 0
+            ? ` git-sync fires hold this barrier only ~5-10s, so pass git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}) to WAIT for it instead of retrying by hand — that is the supported way through on a merely busy host, not override_git_sync_collision.`
+            : ` Already waited ${gitSyncDrainSec}s for a drain and it did not clear; the sweep is unusually saturated, so retry shortly rather than forcing.`),
       });
     }
 
