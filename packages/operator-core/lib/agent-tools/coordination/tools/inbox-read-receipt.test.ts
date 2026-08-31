@@ -83,7 +83,7 @@ vi.mock("../../../cache", () => ({
   ) => fn(),
 }));
 
-import tool from "./inbox";
+import tool, { receiptSafeShownTs } from "./inbox";
 
 const ctx = (ownerId = "owner-a"): never =>
   ({ ownerId, workspaceId: "ws", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
@@ -235,5 +235,111 @@ describe("coord:inbox EI-2042 read-receipt write-through", () => {
     expect(M.emitAwaitedEvent).toHaveBeenCalledTimes(1);
     expect(M.sendMessage).toHaveBeenCalledTimes(1);
     expect(M.writeWatermark).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * EI-21949790802251298 — the read-receipt cursor must never claim an UNSHOWN
+ * message was seen.
+ *
+ * `prioritizedInboxWindow` selects by P-009 priority bucket BEFORE ts, so a
+ * bounded read can keep a NEWER actionable ask while dropping an OLDER status
+ * message. `summary.newest_ts` is the max over that window, so it can sit ABOVE
+ * an entry the window skipped. Writing it into `messages_shown_ts` would tell
+ * the skipped message's sender it was seen — and coord:watermark documents
+ * `seen:true` to the sender as "ping them, don't re-route", so the message is
+ * silently dropped and the sender cannot detect it.
+ */
+describe("coord:inbox EI-21949790802251298 receipt-safe cursor", () => {
+  const ask = (ts: string, id: string) => ({ ...msg(ts, id), expects: "action" });
+
+  it("does NOT advance the cursor past an older entry the priority window skipped", async () => {
+    // bucket 0 (expects:'action') and NEWER — survives limit:1.
+    const keptAsk = ask("2026-07-18T10:00:00.000Z", "ask-kept");
+    // bucket 2 and OLDER than the kept ask — dropped, and the old code's
+    // newest_ts (10:00) would have claimed this 09:00 message was seen.
+    const skippedOlder = msg("2026-07-18T09:00:00.000Z", "status-skipped");
+    M.readInbox.mockImplementation(async () => [skippedOlder, keptAsk]);
+
+    const out = await callInbox({ limit: 1 });
+
+    expect(out.entries).toHaveLength(1);
+    expect((out.entries as Array<{ msg_id: string }>)[0]!.msg_id).toBe("ask-kept");
+    // The regression: the cursor must never be written at the window max here.
+    expect(M.writeWatermark).not.toHaveBeenCalledWith(
+      "owner-a",
+      expect.objectContaining({ messages_shown_ts: keptAsk.ts }),
+    );
+    // Nothing below the oldest unshown entry qualifies, so it must not move.
+    expect(M.writeWatermark).not.toHaveBeenCalled();
+  });
+
+  it("marks newest_ts as window-scoped and reports the full-set newest when truncated", async () => {
+    const keptAsk = ask("2026-07-18T10:00:00.000Z", "ask-kept");
+    const skippedOlder = msg("2026-07-18T09:00:00.000Z", "status-old");
+    const skippedNewer = msg("2026-07-18T11:00:00.000Z", "status-new");
+    M.readInbox.mockImplementation(async () => [skippedOlder, keptAsk, skippedNewer]);
+
+    const out = await callInbox({ limit: 1 });
+    const summary = out.summary as Record<string, unknown>;
+
+    expect(summary.truncated).toBe(2);
+    // The window max — unchanged, so the injection cursor keeps its meaning.
+    expect(summary.newest_ts).toBe(keptAsk.ts);
+    // ...but it is now explicitly labelled as a bounded reading, with the
+    // real newest of the filtered set beside it.
+    expect(summary.newest_ts_scope).toBe("returned-window");
+    expect(summary.newest_ts_total).toBe(skippedNewer.ts);
+  });
+
+  it("still advances normally when the window shows everything (no gap)", async () => {
+    const a = msg("2026-07-18T10:00:00.000Z", "m1");
+    const b = msg("2026-07-18T10:05:00.000Z", "m2");
+    M.readInbox.mockImplementation(async () => [a, b]);
+
+    const out = await callInbox({ limit: 50 });
+    const summary = out.summary as Record<string, unknown>;
+
+    expect(summary.truncated).toBe(0);
+    // No truncation ⇒ no scope markers, and the cursor advances as before.
+    expect(summary.newest_ts_scope).toBeUndefined();
+    expect(summary.newest_ts_total).toBeUndefined();
+    expect(M.writeWatermark).toHaveBeenCalledWith("owner-a", {
+      messages_shown_ts: b.ts,
+    });
+  });
+});
+
+describe("receiptSafeShownTs", () => {
+  const e = (ts: string, id: string) => ({ ts, msg_id: id });
+
+  it("returns the window max when every population entry was shown", () => {
+    const shown = [e("2026-07-18T10:00:00.000Z", "a"), e("2026-07-18T11:00:00.000Z", "b")];
+    expect(receiptSafeShownTs(shown, shown)).toBe("2026-07-18T11:00:00.000Z");
+  });
+
+  it("stops below the oldest UNSHOWN entry rather than claiming it was seen", () => {
+    const shown = [e("2026-07-18T09:00:00.000Z", "a"), e("2026-07-18T12:00:00.000Z", "c")];
+    const population = [...shown, e("2026-07-18T11:00:00.000Z", "b-unshown")];
+    // 12:00 would claim the unshown 11:00 was seen; 09:00 is the newest safe ts.
+    expect(receiptSafeShownTs(shown, population)).toBe("2026-07-18T09:00:00.000Z");
+  });
+
+  it("returns null when no shown ts is below the oldest unshown entry", () => {
+    const shown = [e("2026-07-18T12:00:00.000Z", "c")];
+    const population = [...shown, e("2026-07-18T09:00:00.000Z", "a-unshown")];
+    expect(receiptSafeShownTs(shown, population)).toBeNull();
+  });
+
+  it("treats an entry with no usable msg_id/ts as UNSHOWN (fails toward not-seen)", () => {
+    const shown = [e("2026-07-18T12:00:00.000Z", "c")];
+    const population = [...shown, { ts: "2026-07-18T10:00:00.000Z" }];
+    expect(receiptSafeShownTs(shown, population)).toBeNull();
+  });
+
+  it("is unaffected by population order", () => {
+    const shown = [e("2026-07-18T09:00:00.000Z", "a")];
+    const population = [e("2026-07-18T11:00:00.000Z", "z-unshown"), ...shown];
+    expect(receiptSafeShownTs(shown, population)).toBe("2026-07-18T09:00:00.000Z");
   });
 });

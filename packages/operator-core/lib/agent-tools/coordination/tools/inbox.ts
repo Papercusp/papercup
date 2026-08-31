@@ -202,6 +202,62 @@ export function newlyShownReceiptEntries(
   });
 }
 
+/**
+ * EI-21949790802251298: the largest timestamp this read may claim as SEEN.
+ *
+ * `messages_shown_ts` is a timestamp CURSOR, and a sender reads it as proof of
+ * delivery (coord:watermark `{ agent, sent_ts }` -> `seen: shown_ts >= sent_ts`,
+ * documented to the sender as "they've SEEN it — ping them, don't re-route").
+ * A timestamp cursor can only say "everything at or before T was shown", so it
+ * is sound ONLY when the shown window has no gaps below T.
+ *
+ * The window has gaps by design: `prioritizedInboxWindow` sorts by priority
+ * bucket BEFORE ts (P-009, so an actionable ask survives a status flood), then
+ * slices. A high-priority OLDER entry is therefore kept while a lower-priority
+ * NEWER one is dropped — so max(shown) routinely sits ABOVE an entry that was
+ * never shown. Advancing the cursor to max(shown) tells that message's sender
+ * it was seen when it was not, and the documented reaction to `seen:true` is to
+ * STOP re-routing — a silently dropped message, and the sender cannot detect it.
+ *
+ * So: never advance past the OLDEST UNSHOWN entry. Return the newest shown ts
+ * strictly below it, or null when no shown ts qualifies.
+ *
+ * This deliberately fails toward "not seen": the cursor can stall while an old
+ * low-priority message sits outside the window, which costs the sender a needless
+ * ping. The opposite error loses the message outright, so the asymmetry is the
+ * point — a receipt is a claim about what the reader was SHOWN, not about how far
+ * the clock has run. Entries without a usable `msg_id`/`ts` count as UNSHOWN for
+ * the same reason (they cannot be proven shown).
+ */
+export function receiptSafeShownTs(
+  shown: readonly Record<string, unknown>[],
+  population: readonly Record<string, unknown>[],
+): string | null {
+  const shownIds = new Set<string>();
+  for (const entry of shown) {
+    const msgId = entry.msg_id;
+    if (typeof msgId === "string" && msgId.length > 0) shownIds.add(msgId);
+  }
+
+  let oldestUnshownTs: string | null = null;
+  for (const entry of population) {
+    const msgId = entry.msg_id;
+    const ts = entry.ts;
+    if (typeof ts !== "string" || ts.length === 0) continue;
+    if (typeof msgId === "string" && msgId.length > 0 && shownIds.has(msgId)) continue;
+    if (oldestUnshownTs === null || ts < oldestUnshownTs) oldestUnshownTs = ts;
+  }
+
+  let safest: string | null = null;
+  for (const entry of shown) {
+    const ts = entry.ts;
+    if (typeof ts !== "string" || ts.length === 0) continue;
+    if (oldestUnshownTs !== null && ts >= oldestUnshownTs) continue;
+    if (safest === null || ts > safest) safest = ts;
+  }
+  return safest;
+}
+
 async function emitReadReceipt(
   entry: Record<string, unknown>,
   identity: { ownerId: string; workspaceId?: string | null },
@@ -638,7 +694,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) `limit` window (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
       " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
       " This is a VIEW, not a delta: re-reading the same window does not empty it.",
@@ -1003,6 +1059,23 @@ export default defineTool({
             return ts && (!max || ts > max) ? ts : max;
           }, null)
         : null,
+      // EI-21949790802251298: `newest_ts` is a max over the RETURNED window, and
+      // that window is selected by PRIORITY before ts (prioritizedInboxWindow,
+      // P-009) — so whenever `truncated > 0` it is NOT the newest of the filtered
+      // set, and entries newer than it were withheld. `total` already describes
+      // the full set, so an unmarked window-max reads as the set's newest and a
+      // bounded read becomes indistinguishable from a complete one. The repo rule
+      // is that a caller's `limit` bounds ROW LISTS ONLY, never an aggregate — and
+      // where it does bound one, the RESULT must say so ON the aggregate.
+      ...(truncated > 0
+        ? {
+            newest_ts_scope: "returned-window",
+            newest_ts_total: filtered.reduce<string | null>((max, entry) => {
+              const ts = typeof entry.ts === "string" ? entry.ts : null;
+              return ts && (!max || ts > max) ? ts : max;
+            }, null),
+          }
+        : {}),
     };
 
     // P-005 (fleet-member-dx, D-003): intents stay IN the mid-turn `[coord+N]`
@@ -1012,6 +1085,10 @@ export default defineTool({
     // it (the cc/omp hooks advance their cursor from newest_ts — a newest_ts that
     // lags an injected intent would re-inject the same line every read).
     let injectionEntries = entries;
+    // EI-21949790802251298: the receipt cursor below must compare the SHOWN set
+    // against the population it was sliced from, which is the intent-inclusive
+    // list whenever the injection window is rebuilt just below.
+    let injectionPopulation = coalesced as unknown as Array<Record<string, unknown>>;
     if (!keepIntents && intentExcluded > 0) {
       const withIntents = coalesceRepeatedBroadcasts(
         filterInboxByUnanswered(
@@ -1019,6 +1096,7 @@ export default defineTool({
           unansweredMsgIds,
         ) as unknown as Array<Record<string, unknown>>,
       );
+      injectionPopulation = withIntents;
       injectionEntries = prioritizedInboxWindow(withIntents, limit) as unknown as typeof entries;
       const injNewest = injectionEntries.length
         ? injectionEntries.reduce<string | null>((max, entry) => {
@@ -1055,9 +1133,19 @@ export default defineTool({
     // re-delivers). Monotonic by guard (only ever forward — you can't un-see a message;
     // writeWatermark itself is last-write-wins, so the guard is what keeps shown_ts from
     // moving backward) + best-effort (a write failure must never break the inbox read).
-    if (receiptsEmitted && summary.newest_ts && summary.newest_ts > wm.messages_shown_ts) {
+    //
+    // EI-21949790802251298: advance to the receipt-SAFE ts, NOT summary.newest_ts.
+    // newest_ts is a max over the priority-selected window, which can sit above an
+    // entry that window skipped — writing it would tell that message's sender it was
+    // seen when it never was. receiptSafeShownTs() stops below the oldest unshown
+    // entry; the monotonic guard is unchanged.
+    const safeShownTs = receiptSafeShownTs(
+      injectionEntries as unknown as Array<Record<string, unknown>>,
+      injectionPopulation,
+    );
+    if (receiptsEmitted && safeShownTs && safeShownTs > wm.messages_shown_ts) {
       await writeWatermark(identity.ownerId, {
-        messages_shown_ts: summary.newest_ts,
+        messages_shown_ts: safeShownTs,
       }).catch(() => {});
     }
 
