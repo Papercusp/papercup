@@ -27,6 +27,12 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useLexicon } from '@/lib/useLexicon';
+import {
+  hiveOverrideSetRest,
+  type HiveOverrideRow,
+  type HiveOverrideSetArgs,
+  type HiveOverrideSetResp,
+} from '@/lib/hive-override-set';
 import { Select } from '../../harness/Select';
 import { agentRoleLabel } from '../../harness/agent-display';
 import { PotPolicyPanel } from './PotPolicyPanel';
@@ -35,36 +41,35 @@ interface HiveRow {
   slug: string;
   remote: boolean;
 }
-interface OverrideRow {
-  kind: 'prompt' | 'config';
-  name: string;
-  value: unknown;
-}
-interface SetArgs {
-  potSlug: string;
-  kind: 'prompt' | 'config';
-  name: string;
-  value: unknown;
-}
-interface SetResp {
-  ok: boolean;
-  error?: string;
-  cleared?: boolean;
-  /** scout config only: the accepted override + resolved config + dropped keys. */
-  accepted?: unknown;
-  resolved?: unknown;
-  dropped?: string[];
-}
+/**
+ * The row/arg/response shapes and the REST fallback now live in
+ * `@/lib/hive-override-set`, because the per-pot learning drawer performs this
+ * same write (P-013 / D-011) and a mirrored copy of an endpoint path is exactly
+ * the code-describing duplicate that drifts. Local aliases keep the rest of this
+ * file reading as it did.
+ */
+type OverrideRow = HiveOverrideRow;
+type SetArgs = HiveOverrideSetArgs;
+type SetResp = HiveOverrideSetResp;
 
 /** Roles whose persona a hive can override. Any already-overridden role outside this
  *  set is surfaced too (below), so nothing a hive set is ever hidden. */
 const ROLE_OPTIONS = ['su', 'mug', 'cup', 'overwatch', 'operator', 'kettle'] as const;
 /** Structured config sections (D-005 + learning-settings 2026-07-19):
  *  `scout` = judgment tuning (lenses/buckets/routing/framing/models);
- *  `cadence` = the FIRE knobs (threshold, heartbeat, floors — ScoutCadenceOptions);
- *  `budget` = per-cycle spend. scout-cycle-action layers all three onto the
- *  tick payload, so these settings are the live knobs. */
-const CONFIG_SECTIONS = ['scout', 'cadence', 'budget'] as const;
+ *  `cadence` = the FIRE knobs (threshold, heartbeat, floors — ScoutCadenceOptions).
+ *  scout-cycle-action layers these onto the tick payload, so they are the live knobs.
+ *
+ *  ⚠ `budget` IS DELIBERATELY ABSENT (P-013 / D-011), not forgotten. It is still
+ *  a live config section — the scout cadence reads it every cycle and rebuilds
+ *  the `blender:<pot>` governor row from it — but it is no longer edited as raw
+ *  JSON here. Its three keys now have typed, unit-labelled fields on the per-pot
+ *  learning drawer, which say which value is UNSET (engine default) and which is
+ *  an override: `maxCostUsd: 0` means "no spend this cycle" and unset means "use
+ *  the default", and a JSON textarea gave no way to see the difference. Putting
+ *  it back here would mean two writable editors for one value with no lock
+ *  between them, each able to clobber the other's keys on save. */
+const CONFIG_SECTIONS = ['scout', 'cadence'] as const;
 
 const CADENCE_PLACEHOLDER = `{
   "signalScoreThreshold": 25,
@@ -74,37 +79,11 @@ const CADENCE_PLACEHOLDER = `{
   "frictionThreshold": 3
 }`;
 
-const BUDGET_PLACEHOLDER = `{
-  "maxCostUsd": 0.25,
-  "maxIdeators": 6,
-  "maxCriticsPerIdea": 2
-}`;
-
 const SCOUT_PLACEHOLDER = `{
   "lenses": ["analogical", "first-principles", "inversion"],
   "buckets": { "moonshotNoveltyFloor": 0.8 },
   "routing": { "defaultRail": "improvement", "wholeSystemMarkers": [] }
 }`;
-
-/** REST fallback the sync-mutate hook calls (every transport on desktop SSE). */
-async function hiveOverrideSetRest(args: SetArgs): Promise<SetResp> {
-  const r = await fetch('/api/agent-mcp/pot-override-set', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(args),
-  });
-  const text = await r.text();
-  let data: SetResp = { ok: false };
-  try {
-    data = JSON.parse(text) as SetResp;
-  } catch {
-    /* non-JSON */
-  }
-  if (!r.ok || data.ok === false) {
-    throw new Error(data.error ?? `HTTP ${r.status}`);
-  }
-  return data;
-}
 
 const TEXTAREA_STYLE = {
   width: '100%',
@@ -253,9 +232,7 @@ function ConfigOverrideEditor({
             ? SCOUT_PLACEHOLDER
             : section === 'cadence'
               ? CADENCE_PLACEHOLDER
-              : section === 'budget'
-                ? BUDGET_PLACEHOLDER
-                : '{ }'
+              : '{ }'
         }
         style={TEXTAREA_STYLE}
       />
@@ -323,7 +300,17 @@ export default function PotCustomizationPage() {
 
   const [hive, setHive] = useQueryState('hive', parseAsString);
   const [role, setRole] = useQueryState('role', parseAsString.withDefault('su'));
-  const [section, setSection] = useQueryState('section', parseAsString.withDefault('scout'));
+  const [rawSection, setSection] = useQueryState('section', parseAsString.withDefault('scout'));
+  /**
+   * An unrecognised `?section=` resolves to the first real one. This is not
+   * defensive tidying: a URL saved while `budget` was still a JSON section
+   * (P-013 retired it) would otherwise render a full editor that no selector can
+   * reach — a second writable surface for a value the learning drawer now owns,
+   * whose whole-object save would silently clobber the drawer's keys.
+   */
+  const section = (CONFIG_SECTIONS as readonly string[]).includes(rawSection)
+    ? rawSection
+    : CONFIG_SECTIONS[0];
 
   // `hive` is null until one is picked from the URL, so without the gate this
   // fetches `{potSlug:''}` on every poll — a round-trip whose result the

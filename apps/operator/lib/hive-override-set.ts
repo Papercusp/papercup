@@ -37,7 +37,7 @@ export interface HiveOverrideSetResp {
   /** scout config only: the accepted override + resolved config + dropped keys. */
   accepted?: unknown;
   resolved?: unknown;
-  droppedKeys?: string[];
+  dropped?: string[];
 }
 
 /** REST fallback the sync-mutate hook calls (every transport on desktop is SSE). */

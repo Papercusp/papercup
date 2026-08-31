@@ -221,23 +221,137 @@ function FieldRow({
   );
 }
 
+/**
+ * One editable CONFIG knob (P-013 / D-011).
+ *
+ * Deliberately not `BudgetEditor` above: that one writes a governor ROW and its
+ * value is always money. These write the pot's settings config, and two of the
+ * three scout-budget keys are fan-out COUNTS — rendering them through the money
+ * editor would print "USD per cycle" beside a number of critics.
+ */
+function ConfigFieldRow({
+  field,
+  busyKey,
+  anyBusy,
+  onSave,
+}: {
+  field: PotDrawerConfigField;
+  busyKey: string | null;
+  anyBusy: boolean;
+  onSave: (field: PotDrawerConfigField, value: number | null) => void;
+}) {
+  const busy = busyKey === field.key;
+  const set = field.value !== null;
+  const stored = set ? String(field.value) : "";
+  const [draft, setDraft] = useState<string | null>(null);
+  const text = draft ?? stored;
+  const trimmed = text.trim();
+
+  // ⚠ EMPTY IS *UNSET*, NEVER ZERO. The engine default applies to an absent
+  // key, and for the cost cap `0` is a real and opposite instruction — "no LLM
+  // spend this cycle" (EI-305). So an empty box submits null (delete the key)
+  // and a typed 0 submits 0; collapsing them would silently switch a pot's
+  // scout off and report it as a default.
+  const parsed = trimmed === "" ? null : Number(trimmed);
+  const invalid =
+    parsed !== null &&
+    (!Number.isFinite(parsed) ||
+      parsed < field.min ||
+      (field.integer && !Number.isInteger(parsed)));
+  const dirty = trimmed !== stored.trim();
+
+  return (
+    <li className="pc-potdraw__field" data-key={field.key} data-set={set ? "1" : "0"}>
+      <div className="pc-potdraw__head">
+        <span className="pc-potdraw__name">{field.label}</span>
+        <span className="pc-potdraw__state" data-on={set ? "1" : "0"}>
+          {set ? "overridden" : "default"}
+        </span>
+      </div>
+
+      <div className="pc-potdraw__budget">
+        <label className="pc-potdraw__blabel">
+          <span className="pc-potdraw__bunit">{field.unit}</span>
+          <input
+            className="pc-potdraw__binput"
+            type="text"
+            inputMode={field.integer ? "numeric" : "decimal"}
+            value={text}
+            // The placeholder is the value that ACTUALLY runs when the box is
+            // empty, so an unset field never looks like an empty setting.
+            placeholder={String(field.engineDefault)}
+            disabled={anyBusy}
+            aria-label={`${field.label} in ${field.unit}`}
+            aria-invalid={invalid || undefined}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="pc-potdraw__save"
+          disabled={anyBusy || invalid || !dirty}
+          onClick={() => {
+            onSave(field, parsed);
+            setDraft(null);
+          }}
+        >
+          {busy ? "…" : dirty && parsed === null ? "Reset" : "Save"}
+        </button>
+        {invalid ? (
+          <span className="pc-potdraw__bad" role="alert">
+            {field.integer
+              ? `Whole numbers, ${field.min} or more — or empty for the default.`
+              : `${field.min} or more, or empty for the default.`}
+          </span>
+        ) : null}
+      </div>
+
+      {/* The default is STATED, not merely placeheld: an empty box reads as
+          "zero" to everyone who did not write this surface. */}
+      <p className="pc-potdraw__enf">{field.note}</p>
+    </li>
+  );
+}
+
 function SectionBlock({
   section,
   busyKey,
   anyBusy,
   onArm,
   onBudget,
+  onConfig,
 }: {
   section: PotDrawerSection;
   busyKey: string | null;
   anyBusy: boolean;
   onArm: (field: PotDrawerField, next: boolean) => void;
   onBudget: (field: PotDrawerField, usd: number | null) => void;
+  onConfig: (field: PotDrawerConfigField, value: number | null) => void;
 }) {
   return (
     <section className="pc-potdraw__sec" data-section={section.id} aria-label={section.title}>
       <h3 className="pc-potdraw__sectitle">{section.title}</h3>
       <p className="pc-potdraw__secnote">{section.note}</p>
+      {/* CONFIG FIRST, then the rows it governs (D-011). These are the SOURCE:
+          the scout cadence rebuilds the `blender:` governor row below from them
+          after every cycle, so reading the section top-to-bottom reads the
+          direction the data actually flows. */}
+      {section.configFields.length > 0 ? (
+        <ul
+          className="pc-potdraw__fields pc-potdraw__cfg"
+          aria-label={`${section.title} configuration`}
+        >
+          {section.configFields.map((f) => (
+            <ConfigFieldRow
+              key={f.key}
+              field={f}
+              busyKey={busyKey}
+              anyBusy={anyBusy}
+              onSave={onConfig}
+            />
+          ))}
+        </ul>
+      ) : null}
       {section.fields.length > 0 ? (
         <ul className="pc-potdraw__fields">
           {section.fields.map((f) => (
@@ -283,49 +397,136 @@ export default function LearningPotDrawer() {
    */
   const slug = typeof potSlug === "string" ? potSlug : "";
   const open = slug !== "";
-  const model = useMemo(() => buildPotDrawer(arming, slug), [arming, slug]);
 
-  const run = useCallback(
-    async (key: string, tool: string, args: Record<string, unknown>) => {
-      setBusyKey(key);
-      setErr(null);
-      try {
-        await runAgentTool(tool, args);
-        catalogQuery.invalidate?.();
-      } catch (e) {
-        // Surface the refusal rather than rendering the old state as if the
-        // write had landed — these tools refuse an unknown slug/loopId on
-        // purpose, so a typo must not read as a successful change.
-        setErr(e instanceof Error ? e.message : String(e));
-      } finally {
-        setBusyKey(null);
-      }
-    },
-    [catalogQuery],
+  /**
+   * The pot's settings config — the SOURCE the scout cycle budget lives in
+   * (P-013 / D-011). Gated on the slug for the same reason the pot-customization
+   * page gates its copy: without it this fetches `{potSlug:''}` on every poll
+   * for a closed drawer, and the result is discarded anyway.
+   */
+  const overrideQuery = useSyncQuery<HiveOverrideRow>({
+    queryName: "hive.overrides",
+    args: { potSlug: slug },
+    enabled: open,
+  });
+  const budgetConfig = useMemo(
+    () => budgetOverrideOf(overrideQuery.data),
+    [overrideQuery.data],
   );
 
+  const model = useMemo(
+    () => buildPotDrawer(arming, slug, budgetConfig),
+    [arming, slug, budgetConfig],
+  );
+
+  /**
+   * Every write on this surface shares one busy key and one error line, so the
+   * lifecycle lives here once. It is deliberately NOT the transport: the arming
+   * writes are agent tools and the config write is a sync-mutate, and merging
+   * those two would mean picking one endpoint for both.
+   */
+  const withBusy = useCallback(async (key: string, write: () => Promise<unknown>) => {
+    setBusyKey(key);
+    setErr(null);
+    try {
+      await write();
+    } catch (e) {
+      // Surface the refusal rather than rendering the old state as if the
+      // write had landed — these tools refuse an unknown slug/loopId on
+      // purpose, so a typo must not read as a successful change.
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }, []);
+
+  const run = useCallback(
+    (key: string, tool: string, args: Record<string, unknown>) =>
+      withBusy(key, async () => {
+        await runAgentTool(tool, args);
+        catalogQuery.invalidate?.();
+      }),
+    [catalogQuery, withBusy],
+  );
+
+  const setOverride = useSyncMutate<HiveOverrideSetArgs, HiveOverrideSetResp>(
+    "hive.overrideSet",
+    hiveOverrideSetRest,
+  );
+
+  /**
+   * ⚠ NARROW ON `tool`, BOTH BRANCHES NAMED — never `else`.
+   *
+   * `PotDrawerWrite` gained a third member for P-013: the pot-CONFIG write that
+   * backs the scout cycle budget (D-011). It is not an arming tool and has no
+   * `loopId`, so the old `gym:arm ? … : loopId` shape would have posted
+   * `loopId: undefined` to `governor:arm` — a refusal at runtime, from a call
+   * the types had approved. Discriminating on `tool` is what turned that into a
+   * compile error, which is why the fix is to narrow here and NEVER to widen the
+   * union (an optional `loopId` would re-admit exactly this bug).
+   */
   const onArm = useCallback(
     (field: PotDrawerField, next: boolean) => {
-      if (!field.write) return;
-      const args =
-        field.write.tool === "gym:arm"
-          ? { harness: field.write.harness, enabled: next }
-          : { loopId: field.write.loopId, enabled: next };
-      void run(field.key, field.write.tool, args);
+      const write = field.write;
+      if (write?.tool === "gym:arm") {
+        void run(field.key, write.tool, { harness: write.harness, enabled: next });
+      } else if (write?.tool === "governor:arm") {
+        void run(field.key, write.tool, { loopId: write.loopId, enabled: next });
+      }
     },
     [run],
   );
 
   const onBudget = useCallback(
     (field: PotDrawerField, usd: number | null) => {
-      if (!field.write) return;
-      const args =
-        field.write.tool === "gym:arm"
-          ? { harness: field.write.harness, budgetUsd: usd }
-          : { loopId: field.write.loopId, budgetUsd: usd };
-      void run(field.key, field.write.tool, args);
+      const write = field.write;
+      if (write?.tool === "gym:arm") {
+        void run(field.key, write.tool, { harness: write.harness, budgetUsd: usd });
+      } else if (write?.tool === "governor:arm") {
+        void run(field.key, write.tool, { loopId: write.loopId, budgetUsd: usd });
+      }
     },
     [run],
+  );
+
+  /**
+   * Write one scout-cycle budget key (P-013 / D-011).
+   *
+   * READ-MODIFY-WRITE of the WHOLE budget object, on purpose: the endpoint
+   * stores ONE json value per (pot, section), so posting just the edited key
+   * would clear every other one. Keys outside `ScoutBudget` ride through
+   * untouched for the same reason — this surface edits the three it knows, it
+   * does not own the object.
+   */
+  const onConfig = useCallback(
+    (field: PotDrawerConfigField, next: number | null) => {
+      const write = field.write;
+      if (write.tool !== "hive.overrideSet") return;
+      void withBusy(field.key, async () => {
+        const current =
+          budgetConfig && typeof budgetConfig === "object" && !Array.isArray(budgetConfig)
+            ? (budgetConfig as Record<string, unknown>)
+            : {};
+        const value: Record<string, unknown> = { ...current };
+        // Clearing DELETES the key — an absent key is exactly what the engine
+        // reads as "use the default", so it round-trips through
+        // `drawerScoutBudget` as UNSET. Storing a null instead would make the
+        // two states indistinguishable to anything reading the raw config.
+        // ⚠ `0` is NOT a clear: `maxCostUsd: 0` is a real cap ("no spend this
+        // cycle", EI-305), which is the whole reason unset and zero are
+        // separate values on this surface.
+        if (next === null) delete value[write.field];
+        else value[write.field] = next;
+        await setOverride({
+          potSlug: write.potSlug,
+          kind: "config",
+          name: write.section,
+          value,
+        });
+        overrideQuery.invalidate?.();
+      });
+    },
+    [budgetConfig, overrideQuery, setOverride, withBusy],
   );
 
   const setMaster = useCallback(
@@ -416,6 +617,7 @@ export default function LearningPotDrawer() {
             anyBusy={anyBusy}
             onArm={onArm}
             onBudget={onBudget}
+            onConfig={onConfig}
           />
         ))}
 
@@ -458,6 +660,11 @@ export default function LearningPotDrawer() {
         .pc-potdraw__sectitle { margin: 0 0 2px; font-size: 12.5px; color: var(--fg); }
         .pc-potdraw__secnote { margin: 0 0 6px; font-size: 10.5px; color: var(--fg-mute); line-height: 1.45; }
         .pc-potdraw__fields { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+        /* The config knobs are the SOURCE the rows beneath them are rebuilt
+           from (D-011), so they read as one group ahead of the mirrors. */
+        .pc-potdraw__cfg { margin-bottom: 8px; }
+        .pc-potdraw__cfg .pc-potdraw__field { border-color: var(--border-strong); background: var(--bg-1); }
+        .pc-potdraw__field[data-set="0"] .pc-potdraw__state { color: var(--fg-mute); }
         .pc-potdraw__field {
           border: 1px solid var(--border); border-radius: 10px;
           padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
