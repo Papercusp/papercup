@@ -288,6 +288,8 @@
     "lint:optional-seam-strands:fail": "node scripts/check-optional-seam-strands.mjs --fail",
     "lint:di-seam-arity-strands": "node scripts/check-di-seam-arity-strands.mjs",
     "lint:di-seam-arity-strands:fail": "node scripts/check-di-seam-arity-strands.mjs --fail",
+    "lint:deps-wiring-parity": "node scripts/check-deps-wiring-parity.mjs",
+    "lint:deps-wiring-parity:fail": "node scripts/check-deps-wiring-parity.mjs --fail",
     "lint:migration-fixture-drift": "node scripts/check-migration-fixture-drift.mjs --base HEAD",
     "lint:migration-fixture-drift:check": "node scripts/check-migration-fixture-drift.mjs --check --base HEAD",
     "lint:no-box-identity": "node scripts/check-no-box-identity.mjs",

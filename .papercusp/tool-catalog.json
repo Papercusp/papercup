@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 837,
+  "count": 838,
   "tools": [
     {
       "name": "ablation:report",
@@ -26927,6 +26927,36 @@
         "when": "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). To read where a session left off, use `tail:N` (or explicit order:'desc' + limit); use order:'asc' for the opening turns.",
         "notWhen": "Finding WHERE something was said — sessions:search (which owns `query` and `mode`). Raw un-indexed files — dev:claude_session op=read (being absorbed here).",
         "chaining": "sessions:search result.ref → sessions:read { ref, context?, limit?, order? }."
+      }
+    },
+    {
+      "name": "sessions:rename",
+      "http": {
+        "path": "/api/agent-tools/sessions/rename",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Name a session, so its HUD card and OS terminal title lead with the name instead of an id or its objective. Omit `name` to clear it and fall back to the objective. Defaults to yourself; pass `agent` to name another session.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want a session identifiable at a glance across a busy board — a long-running lane, or one whose objective does not say what it is really for.",
+        "notWhen": "To change what a session is DOING (that is coord:declare-intent, and the objective follows it automatically)."
       }
     },
     {
