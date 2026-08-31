@@ -48,6 +48,7 @@ import {
 import { augmentedSpawnPath } from '../../plugin-spawn-impl';
 import { taskManagerEnabledSync } from '../../task-manager/enabled';
 import * as enrollSync from '../../task-manager/enroll-sync';
+import { notifyTaskKillRequested } from '../../task-manager/kill-notify';
 import {
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
@@ -625,6 +626,60 @@ describe('background jobs', () => {
     const r = killJob(job);
     expect(r.alreadyDone).toBe(false);
     expect(job.status).toBe('killed');
+  });
+
+  // EI-21905196224862433: reproduced live — a background job killed via
+  // `processes:kill` (task-manager's killTask, NOT this module's own killJob)
+  // used to report status=completed exit_code=0 with truncated output, because
+  // a confined job's watched child is the `systemd-run --pipe --wait` client,
+  // which exits 0 once the unit is gone regardless of whether it was killed.
+  // killTask() now calls notifyTaskKillRequested() the instant it signals a
+  // taskId; these tests exercise that wiring directly (unconfined here, since
+  // confinement itself is not under test — only that the notice reaches and
+  // sticks on the matching job).
+  describe('external kill-intent notice (EI-21905196224862433)', () => {
+    it('flips a running job to killed the instant an external kill-intent notice arrives for its taskId', async () => {
+      const job = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+      expect(job.status).toBe('running');
+      expect(job.taskId).toBeTruthy();
+
+      notifyTaskKillRequested(job.taskId!, 'SIGTERM');
+      expect(job.status).toBe('killed');
+
+      // Clean up the real child so it doesn't run for the full 30s past this test.
+      job.child.kill('SIGTERM');
+      await waitForStatus(job.id);
+    });
+
+    it('preserves the killed status once the real close handler runs, instead of trusting the child exit code (EI-21905196224862433)', async () => {
+      const job = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+      notifyTaskKillRequested(job.taskId!, 'SIGTERM');
+      expect(job.status).toBe('killed');
+
+      job.child.kill('SIGTERM');
+      await waitForStatus(job.id);
+
+      // The close handler's `if (job.status === 'running')` guard must have
+      // left 'killed' alone — never overwritten to 'completed'/'failed' by the
+      // untrustworthy `code === 0` check this bug is about.
+      expect(getJob(job.id)!.status).toBe('killed');
+    });
+
+    it('ignores a kill-intent notice for a taskId that matches no live job', () => {
+      const job = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+      notifyTaskKillRequested('not-a-real-taskid', 'SIGTERM');
+      expect(job.status).toBe('running');
+      killJob(job);
+    });
+
+    it('does not flip a job that already reached a terminal state', async () => {
+      const job = startBackground({ command: 'true', cwd: STATE, stateDir: STATE }, 10_000);
+      await waitForStatus(job.id);
+      expect(job.status).toBe('completed');
+
+      notifyTaskKillRequested(job.taskId!, 'SIGTERM');
+      expect(job.status).toBe('completed');
+    });
   });
 
   it('reports unknown ids as undefined', () => {

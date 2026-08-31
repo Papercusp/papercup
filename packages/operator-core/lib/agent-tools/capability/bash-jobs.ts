@@ -47,6 +47,7 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
+import { onTaskKillRequested } from '../../task-manager/kill-notify';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
 import type { CgroupCpuSample } from './cgroup-cpu';
 
@@ -507,6 +508,32 @@ export interface BashJob {
 }
 
 const JOBS = new Map<string, BashJob>();
+
+/**
+ * EI-21905196224862433 — mirror `killJob`'s own synchronous kill-intent flip
+ * for an EXTERNALLY-initiated kill (`processes:kill`, control.ts's
+ * `killTask`), which has no reference to this module's job objects and so
+ * cannot call `killJob` itself. See kill-notify.ts's header for the full
+ * root-cause writeup: a confined job's watched child is the
+ * `systemd-run --pipe --wait` client, which exits 0 once the unit is gone
+ * regardless of whether it was killed — the close handler's naive
+ * `code === 0` check cannot tell the difference on its own, so kill-INTENT
+ * must be recorded before the client can possibly have exited. Registered
+ * once at module load; `taskId` is `BashJob.taskId` (the task-manager ledger
+ * id), NOT this module's own `id`/`bash_id` — JOBS is keyed by the latter, so
+ * a linear scan is required. JOBS is bounded (MAX_RETAINED_JOBS finished jobs
+ * plus whatever is currently running), so this is cheap.
+ */
+onTaskKillRequested((taskId, _signal) => {
+  for (const job of JOBS.values()) {
+    if (job.taskId === taskId && job.status === 'running') {
+      // Same permanent kill-intent semantics as killJob(): this must stick
+      // even if the process later exits cleanly on its own before the signal
+      // takes effect (SIGTERM grace period, a trap, ...).
+      job.status = 'killed';
+    }
+  }
+});
 
 /** Resolve + create the scratch dir for output spill. */
 export function scratchDir(stateDir: string | undefined): string {
