@@ -61,6 +61,13 @@ const ESBUILD_BIN = join(REPO_ROOT, 'node_modules', 'esbuild', 'bin', 'esbuild')
 /** The one string all five surfaces must agree on. */
 const ENTRYPOINT_BASENAME = 'papercusp-remote-initializer';
 const ENTRYPOINT_PATH = `bin/${ENTRYPOINT_BASENAME}`;
+/**
+ * The SECOND controller-spawned program (D-215). The producer emits both from one loop, so this
+ * guard has to name both: when the loop replaced two hand-written blocks, every assertion here
+ * still described the initializer alone and went stale in the same commit that made the script
+ * correct.
+ */
+const DELIVERY_BASENAME = 'papercusp-deliver-material';
 
 /**
  * WI-3831: a release SOURCE BUNDLE excludes the whole `papercusp-desktop/` directory (it is the
@@ -122,10 +129,14 @@ describe.skipIf(!desktopPresent)(
   () => {
     it('esbuild-emits the entrypoint into sidecar/bin', () => {
       const script = read(BUILD_SCRIPT);
-      // The emission itself: the .ts entrypoint is bundled to the exact packaged basename.
-      expect(script).toContain(`bin/${ENTRYPOINT_BASENAME}.ts`);
-      expect(script).toMatch(new RegExp(`REMOTE_INIT_BIN=.*SIDECAR_DIR/bin/${ENTRYPOINT_BASENAME}`));
-      expect(script).toMatch(/--outfile="\$REMOTE_INIT_BIN"/);
+      // The emission itself. ONE loop bundles BOTH controller-spawned programs to their exact
+      // packaged basenames, so assert the loop enumerates each by name and derives source and
+      // output from the loop variable — a bundle missing either is refused by the release gate.
+      expect(script).toMatch(new RegExp(`for _wh_entrypoint in[^\\n]*\\b${ENTRYPOINT_BASENAME}\\b`));
+      expect(script).toMatch(new RegExp(`for _wh_entrypoint in[^\\n]*\\b${DELIVERY_BASENAME}\\b`));
+      expect(script).toContain('_wh_src="$DEPLOY_DRIVER_SRC/bin/$_wh_entrypoint.ts"');
+      expect(script).toContain('_wh_bin="$SIDECAR_DIR/bin/$_wh_entrypoint"');
+      expect(script).toMatch(/--outfile="\$_wh_bin"/);
     });
 
     it('marks the artifact executable and preserves exactly the source-owned shebang', () => {
@@ -139,7 +150,7 @@ describe.skipIf(!desktopPresent)(
       // --banner produces TWO shebangs; Node accepts only the first and parses line 2 as JavaScript,
       // so every invocation dies with `SyntaxError: Invalid or unexpected token` before argv or
       // protocol validation. Keep a single owner for this executable header.
-      expect(script).toContain('chmod 755 "$REMOTE_INIT_BIN"');
+      expect(script).toContain('chmod 755 "$_wh_bin"');
       expect(entrypoint.startsWith('#!/usr/bin/env node\n')).toBe(true);
       expect(script).not.toMatch(/--banner:js=['"]#!\/usr\/bin\/env node['"]/);
     });
@@ -211,13 +222,11 @@ describe.skipIf(!desktopPresent)(
       const script = read(BUILD_SCRIPT);
       // A build that merely WARNED here would produce a bundle that looks complete — the exact
       // shape D-110 found. Each check must exit non-zero.
-      expect(script).toMatch(/if \[\[ ! -s "\$REMOTE_INIT_BIN" \]\]; then[\s\S]{0,220}?exit 1/);
-      expect(script).toMatch(/if \[\[ ! -x "\$REMOTE_INIT_BIN" \]\]; then[\s\S]{0,220}?exit 1/);
+      expect(script).toMatch(/if \[\[ ! -s "\$_wh_bin" \]\]; then[\s\S]{0,220}?exit 1/);
+      expect(script).toMatch(/if \[\[ ! -x "\$_wh_bin" \]\]; then[\s\S]{0,220}?exit 1/);
       // ...and refuse to build at all when the SOURCE entrypoint has gone missing, rather than
-      // silently shipping a bundle without it.
-      expect(script).toMatch(
-        new RegExp(`! -f "\\$DEPLOY_DRIVER_SRC/bin/${ENTRYPOINT_BASENAME}\\.ts"[\\s\\S]{0,400}?exit 1`),
-      );
+      // silently shipping a bundle without it. Inside the loop this covers BOTH programs.
+      expect(script).toMatch(/! -f "\$_wh_src"[\s\S]{0,400}?exit 1/);
     });
   },
 );
@@ -243,6 +252,7 @@ describe.skipIf(!desktopPresent)(
     it('lists the entrypoint as a required tool', () => {
       const script = read(VERIFY_SCRIPT);
       expect(script).toMatch(new RegExp(`REQUIRED_TOOLS="[^"]*\\b${ENTRYPOINT_BASENAME}\\b`));
+      expect(script).toMatch(new RegExp(`REQUIRED_TOOLS="[^"]*\\b${DELIVERY_BASENAME}\\b`));
     });
 
     it('allowlists it in the script-shim scan so its own presence cannot fail the build', () => {
@@ -250,7 +260,15 @@ describe.skipIf(!desktopPresent)(
       // Section [2] fails ANY unlisted `#!`-file in sidecar/bin. Emitting a shebanged bundle
       // without this allowlist entry would make the producer and the verifier contradict each
       // other — a build that cannot pass its own gate.
-      expect(script).toMatch(new RegExp(`^\\s*${ENTRYPOINT_BASENAME}\\)[\\s\\S]{0,400}?allowlisted`, 'm'));
+      // Both controller-spawned programs share ONE case arm (`a|b)`), so the pattern must tolerate
+      // the alternation instead of pinning a bare `<name>)` — and must name each program, or the
+      // arm could drop one and still match.
+      expect(script).toMatch(
+        new RegExp(`^\\s*[^)\\n]*\\b${ENTRYPOINT_BASENAME}\\b[^)\\n]*\\)[\\s\\S]{0,900}?allowlisted`, 'm'),
+      );
+      expect(script).toMatch(
+        new RegExp(`^\\s*[^)\\n]*\\b${DELIVERY_BASENAME}\\b[^)\\n]*\\)[\\s\\S]{0,900}?allowlisted`, 'm'),
+      );
     });
 
     it('runs a real protocol cycle against the packaged artifact', () => {
