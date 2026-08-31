@@ -2712,6 +2712,56 @@ export interface StageState {
 }
 
 /**
+ * EI-19326284032085138 — the PROGRESS term `gate.stalled` / `gate.consecutiveReds` lack.
+ *
+ * Both are derived from a count of consecutive RED VERDICTS and nothing else, so a candidate
+ * whose failing set is being repaired run-over-run and one that is genuinely wedged render
+ * IDENTICALLY on `stages[].health`. `stalled` is documented above as "not progressing, waiting
+ * will probably not help" — a claim about the FUTURE that a backward-looking red tally cannot
+ * support, and the counter says nothing about whether the tree is getting healthier.
+ *
+ * The discriminator already existed and was already on this struct: `gate.candidateFailures`
+ * (`gate-candidate-failures.ts`; cell `gate.candidateFailures.stillBrokenCount`) compares each
+ * failing file's blob on the frozen candidate against `repairHead`, which is exactly the
+ * converging-vs-wedged question. It was computed, tested, and then ignored by this derivation.
+ * This function only READS it — it introduces no new measurement.
+ *
+ * ⚠ THE DEFAULT IS `unknown`, AND THAT IS THE WHOLE SAFETY ARGUMENT. Exactly ONE reading earns
+ * `converging`; absent, unavailable, truncated, unmeasured and none-failing all fall through to
+ * `unknown`, which leaves today's verdict byte-for-byte untouched. A gate that reads healthy
+ * BECAUSE its progress data went missing is the reassuring-degradation failure this surface
+ * exists to prevent, so absence must never be able to produce the good news.
+ */
+export type GateProgressReading = 'converging' | 'outstanding' | 'unknown';
+
+export function gateCandidateProgress(cf: GateCandidateFailures | null | undefined): GateProgressReading {
+  // No frozen repair queue, or the read failed: the other fields are explicitly "not evidence".
+  if (!cf || cf.unavailable !== null) return 'unknown';
+  // A capped list is a BOUNDED measurement, never a total — `alreadyFixedCount === files.length`
+  // then means "every file WE COULD SEE is fixed", and the files past the cap are unexamined.
+  // Reporting convergence off a truncated sample is precisely a floor read as a total.
+  if (cf.truncated) return 'unknown';
+  switch (cf.assessment) {
+    case 'repairs-outstanding':
+      // At least one failing file is still broken at repairHead: real work remains.
+      return 'outstanding';
+    case 'all-fixes-contained':
+      // Every failing file's fix is already in repairHead, awaiting re-verification. This is
+      // freeze-and-converge working as designed — the next run re-tests that sha.
+      return 'converging';
+    // 'none-failing' is NOT convergence. Zero failing TEST files while reds are counted means
+    // the red is not in the leg this cell measures — the lint/perf/desktop/delta legs and the
+    // main fast-forward are separate and unmeasured here (see `scope`/`postSuiteMeasured`).
+    // Calling that "converging" would hand a green-ish reading to a gate wedged on a leg this
+    // function cannot see. 'unmeasured' and 'no-frozen-candidate' are absent subjects outright.
+    case 'none-failing':
+    case 'unmeasured':
+    case 'no-frozen-candidate':
+      return 'unknown';
+  }
+}
+
+/**
  * WI-6357 / EI-18790908999972569 — how long a nonzero staging→main buffer
  * (`verdictProvenance.mainFastForwarded === false`) may persist before it stops
  * being NORMAL lag and starts being a genuine main-stall signal.
@@ -3016,12 +3066,21 @@ export function computeStages(
     // materialisation diagnosis.
     const redWithoutFailingTests =
       g.consecutiveReds > 0 && Array.isArray(g.failingTests) && g.failingTests.length === 0;
+    // EI-19326284032085138: the progress term. `pause`/`fireStale` still OUTRANK it, and must:
+    // a paused or non-firing gate is broken however converged its candidate is, because nothing
+    // is coming to re-verify those contained fixes.
+    const gateProgress = gateCandidateProgress(g.candidateFailures);
     const gateHealth: StageHealth = g.pause
       ? 'broken'
       : g.fireStale
       ? 'broken'
       : g.stalled || g.consecutiveReds > 0
-        ? 'stalled'
+        ? // A red streak whose frozen candidate is CONVERGING is not "waiting will probably not
+          // help" — it is the repair queue doing its job, with re-verification the only next step.
+          // Every other progress reading, `unknown` included, keeps the pre-existing verdict.
+          gateProgress === 'converging'
+          ? 'advancing'
+          : 'stalled'
         : 'advancing';
     // P-004: a red gate and a candidate that lacks your change are the SAME reading
     // for a caller unless something separates them — and the wrong separation is the
@@ -3172,8 +3231,37 @@ export function computeStages(
           ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
           : redWithoutFailingTests
             ? `Gate counters report RED (${g.consecutiveReds} consecutive), but the same gate snapshot records zero failing tests — there is no code-red target to fix. Inspect the latest green-checkpoint run/materialisation blocker before re-firing; do not chase historical test names.`
+          : // EI-19326284032085138: a converging candidate reads `advancing`, which would otherwise
+            // leave `detail: null` — "nothing to say" — on a gate showing a long red streak. That is
+            // the one reading a caller cannot be left to interpret alone, so it is spelled out, with
+            // the scope caveat attached: this cell measures the TEST leg of the frozen candidate only.
+            gateProgress === 'converging' && (g.consecutiveReds > 0 || g.stalled)
+            ? `Gate is RED (${g.consecutiveReds} consecutive) but the frozen candidate is CONVERGING, not wedged: all ${
+                g.candidateFailures?.alreadyFixedCount ?? 0
+              } of its failing file(s) already have their fix in repairHead, so they are awaiting re-verification — there is nothing to go fix.${
+                // The reading NAMES ITS OWN SUBJECT. A convergence claim is a statement about one
+                // (candidate → repairHead) pair, and the failure mode a peer measured on the
+                // sibling `inconclusive` block (2026-08-31: a 'migrations-pending' verdict served
+                // ~1h after the migration it declared impossible had applied) is a load-bearing
+                // field that does not say what it is about. Unlike that block, this term is
+                // computed live per call — a fresh test_runs read plus `git rev-parse` blob
+                // comparisons — never served from the cached gate_health snapshot; printing both
+                // shas is what lets a reader confirm that rather than take it on trust.
+                g.candidateFailures?.candidateSha && g.candidateFailures?.repairHeadSha
+                  ? ` (Measured live against candidate ${g.candidateFailures.candidateSha.slice(
+                      0,
+                      12,
+                    )} → repairHead ${g.candidateFailures.repairHeadSha.slice(0, 12)}, not read from the cached gate snapshot.)`
+                  : ''
+              } ⚠ Scope: that covers the gate's affected-test leg on this candidate only; the lint/perf/desktop/delta legs and the main fast-forward are separate and are ${
+                g.candidateFailures?.postSuiteMeasured === true ? 'measured' : 'NOT reported measured'
+              } here.`
           : gateHealth === 'stalled'
-            ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
+            ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.${
+                gateProgress === 'outstanding' && g.candidateFailures
+                  ? ` ${g.candidateFailures.stillBrokenCount} of ${g.candidateFailures.failingFileCount} failing file(s) are still broken at repairHead; the other ${g.candidateFailures.alreadyFixedCount} already carry their fix and are NOT yours to re-fix.`
+                  : ''
+              }`
             : null;
     stages.push({
       name: 'gate',

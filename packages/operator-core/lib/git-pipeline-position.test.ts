@@ -43,7 +43,9 @@ import {
   mapCheckpointRunInFlight,
   markerNetChange,
   reconcileGateCandidates,
+  gateCandidateProgress,
   MAIN_BUFFER_STALL_MS,
+  type GateProgressReading,
   type GitRunner,
   type PipelinePosition,
   type RuntimeGeneration,
@@ -53,6 +55,7 @@ import {
   type StageState,
   type SweepExposure,
 } from './git-pipeline-position';
+import type { GateCandidateFailures, GateCandidateFailingFile } from './gate-candidate-failures';
 import type { MarkerContainment } from './candidate-contains';
 import type { DevDeployState } from './dev-deploy-state';
 import type { DeployInFlight } from './release-deploy-launch';
@@ -2649,6 +2652,160 @@ describe('computeStages: position x health', () => {
     );
     expect(stage(s, 'gate').health).toBe('stalled');
     expect(stage(s, 'gate').detail).toMatch(/RED \(3 consecutive\)/);
+  });
+
+  describe('EI-19326284032085138: gate health carries a PROGRESS term', () => {
+    const failingFile = (path: string, fixInRepairHead: boolean | null): GateCandidateFailingFile => ({
+      path,
+      attempts: 1,
+      status: 'fail',
+      fixInRepairHead,
+      comparison: `git rev-parse <candidate>:${path} vs <repairHead>:${path}`,
+      candidateBlob: 'a'.repeat(40),
+      repairHeadBlob: fixInRepairHead === null ? null : fixInRepairHead ? 'b'.repeat(40) : 'a'.repeat(40),
+      reading: 'fixture row',
+    });
+
+    const failures = (over: Partial<GateCandidateFailures> = {}): GateCandidateFailures => ({
+      candidateSha: 'c'.repeat(40),
+      repairHeadSha: 'd'.repeat(40),
+      filesJudged: 12,
+      distinctFailingFiles: [],
+      failingFileCount: 0,
+      alreadyFixedCount: 0,
+      stillBrokenCount: 0,
+      postSuiteMeasured: null,
+      scope: 'fixture scope sentence',
+      unavailable: null,
+      truncated: false,
+      assessment: 'none-failing',
+      ...over,
+    });
+
+    /** Every failing file's fix already landed in repairHead — the tree IS converging. */
+    const converging = (over: Partial<GateCandidateFailures> = {}): GateCandidateFailures =>
+      failures({
+        distinctFailingFiles: [failingFile('lib/a.test.ts', true), failingFile('lib/b.test.ts', true)],
+        failingFileCount: 2,
+        alreadyFixedCount: 2,
+        stillBrokenCount: 0,
+        assessment: 'all-fixes-contained',
+        ...over,
+      });
+
+    /** One file still broken at repairHead — real repair work remains. */
+    const outstanding = (): GateCandidateFailures =>
+      failures({
+        distinctFailingFiles: [failingFile('lib/a.test.ts', true), failingFile('lib/b.test.ts', false)],
+        failingFileCount: 2,
+        alreadyFixedCount: 1,
+        stillBrokenCount: 1,
+        assessment: 'repairs-outstanding',
+      });
+
+    const redGate = (candidateFailures: GateCandidateFailures | null): StageInput =>
+      input({
+        gate: {
+          stalled: true,
+          consecutiveReds: 7,
+          failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+          lastGreenAtMs: 1,
+          fireStale: false,
+          fireStaleReason: null,
+          verdictStale: false,
+          verdictStaleReason: null,
+          verdictStaleReasonCode: null,
+          candidateAgeMs: null,
+          commitsBehindTip: null,
+          observedCandidate: null,
+          inconclusive: null,
+          candidateFailures,
+          qualification: NO_QUALIFICATION,
+        },
+      });
+
+    // ── The discriminator, BOTH directions. Either half alone is satisfiable by a
+    //    constant function, which is exactly the weak guard this item warned about.
+    it('SHRINKING: a red streak whose failing set is fully repaired reads advancing, not stalled', () => {
+      const gate = stage(computeStages(redGate(converging())), 'gate');
+      expect(gate.health).toBe('advancing');
+      expect(gate.detail).toMatch(/CONVERGING, not wedged/);
+      expect(gate.detail).toMatch(/awaiting re-verification/);
+      // The claim NAMES ITS OWN SUBJECT — a peer measured the sibling `inconclusive` block
+      // serving a verdict about a state that had already changed, precisely because the
+      // load-bearing field did not say what it was about.
+      expect(gate.detail).toMatch(/Measured live against candidate cccccccccccc → repairHead dddddddddddd/);
+      // An advancing gate must not also hand out a "go fix it" lever.
+      expect(gate.lever).toBeNull();
+    });
+
+    it('NOT SHRINKING: a red streak with repairs still outstanding STAYS stalled', () => {
+      const gate = stage(computeStages(redGate(outstanding())), 'gate');
+      expect(gate.health).toBe('stalled');
+      expect(gate.detail).toMatch(/RED \(7 consecutive\)/);
+      expect(gate.detail).toMatch(/1 of 2 failing file\(s\) are still broken at repairHead/);
+      expect(gate.detail).not.toMatch(/CONVERGING/);
+    });
+
+    it('CALIBRATION: candidateFailures:null reproduces the pre-change verdict exactly', () => {
+      const gate = stage(computeStages(redGate(null)), 'gate');
+      expect(gate.health).toBe('stalled');
+      expect(gate.detail).toMatch(/RED \(7 consecutive\)/);
+      expect(gate.detail).not.toMatch(/CONVERGING/);
+    });
+
+    // ── Absence must never be able to produce the good news.
+    it.each([
+      ['unavailable — the other fields are explicitly not evidence', converging({ unavailable: 'no frozen candidate' })],
+      ['truncated — "all fixed" only covers the capped sample', converging({ truncated: true })],
+      ['none-failing — the red is in a leg this cell cannot see', failures()],
+      ['unmeasured — rows exist but nothing could be compared', converging({ assessment: 'unmeasured' })],
+    ])('degrades to today\'s stalled verdict when the progress data is %s', (_why, cf) => {
+      expect(stage(computeStages(redGate(cf)), 'gate').health).toBe('stalled');
+    });
+
+    it('pause and fireStale still OUTRANK a converging candidate', () => {
+      const paused = redGate(converging());
+      expect(
+        stage(computeStages({ ...paused, gate: { ...paused.gate, fireStale: true, fireStaleReason: 'unit not firing' } }), 'gate')
+          .health,
+      ).toBe('broken');
+    });
+
+    describe('gateCandidateProgress — pure classifier', () => {
+      it('classifies each reading', () => {
+        expect(gateCandidateProgress(converging())).toBe('converging');
+        expect(gateCandidateProgress(outstanding())).toBe('outstanding');
+        expect(gateCandidateProgress(null)).toBe('unknown');
+        expect(gateCandidateProgress(converging({ truncated: true }))).toBe('unknown');
+        expect(gateCandidateProgress(converging({ unavailable: 'read failed' }))).toBe('unknown');
+        expect(gateCandidateProgress(failures())).toBe('unknown');
+      });
+
+      // PERMANENT wrong-implementation controls (never mutate the shared tree to prove a
+      // guard can fail — repo rule "Proving a guard is falsifiable"). Each is a plausible
+      // way to write this classifier; the assertions below show the real one is not either.
+      const naive = (cf: GateCandidateFailures | null): GateProgressReading =>
+        cf && cf.alreadyFixedCount > 0 ? 'converging' : 'unknown';
+      const neverConverges = (_cf: GateCandidateFailures | null): GateProgressReading => 'unknown';
+
+      it('CONTROL: a classifier keying on alreadyFixedCount alone misreads the wedged + truncated cases', () => {
+        // The naive one calls real repair work "converging" — the false all-clear.
+        expect(naive(outstanding())).toBe('converging');
+        expect(gateCandidateProgress(outstanding())).toBe('outstanding');
+        // ...and trusts a bounded sample as a total.
+        expect(naive(converging({ truncated: true }))).toBe('converging');
+        expect(gateCandidateProgress(converging({ truncated: true }))).toBe('unknown');
+      });
+
+      it('CONTROL: a classifier that never converges passes every safety case but fails the calibration', () => {
+        // It satisfies every degradation case above — which is why those alone are not a guard.
+        expect(neverConverges(converging({ truncated: true }))).toBe('unknown');
+        // The calibration case is what separates it from the real subject.
+        expect(neverConverges(converging())).toBe('unknown');
+        expect(gateCandidateProgress(converging())).toBe('converging');
+      });
+    });
   });
 
   it('EI-21337656680788367: a red counter with zero failing tests routes to materialisation, not test triage', () => {
