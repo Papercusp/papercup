@@ -2633,7 +2633,12 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
         res.end(JSON.stringify({ ok: true }));
       }
     },
-    { pool, governorFor: undefined, concurrency: 24, aimd: { floor: 4 }, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
+    // NOT a RIG_BARE_429_BACKOFF_MS site — measured 2026-08-31 (WI-1507930): this rig's penalty length is
+    // LOAD-BEARING. The assertion below that the maxed accounts trip ZERO global AIMD decreases holds only
+    // while they stay OUT OF ROTATION for the whole burst; at a 100ms penalty they re-enter, get re-hit, and
+    // trip one (`1 !== 0`) — and the test gets SLOWER (15.4s → 25.8s) from the extra retry work. Keep the
+    // production 15s.
+    { pool, governorFor: undefined, concurrency: 24, aimd: { floor: 4 } },
   );
 
   const N = 40;
