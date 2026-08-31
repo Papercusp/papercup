@@ -2360,6 +2360,70 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     }
   }
 
+  // EI-19340874432965755 — the WIRING, not the formatters. The pure-function tests above prove
+  // formatStandingRedRow can say UNCHANGED; only this proves the gate actually reaches git,
+  // computes the age, and threads it into both the row and the footer count. The temp root must
+  // be a REAL repo with a REAL backdated commit, because `lastCommitTimes` shells `git log -1`:
+  // in a non-repo it fails soft to null, every row reads UNKNOWN, and a test that skipped this
+  // setup would pass against code that never wired the age through at all.
+  it('names a long-unchanged standing file UNCHANGED and points at the strands tool', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-unchanged-'));
+    try {
+      const git = (args: string[], env?: Record<string, string>) =>
+        execFileSync('git', args, { cwd: root, encoding: 'utf-8', env: { ...process.env, ...env } });
+      git(['init', '-q']);
+      git(['config', 'user.email', 'gate-test@example.invalid']);
+      git(['config', 'user.name', 'gate test']);
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/old-peer.ts'), 'export const x = 1;\n');
+      // Backdate well past LANDING_RACE_WINDOW_SEC so the file is unambiguously "settled".
+      const old = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+      git(['add', '-A']);
+      git(['commit', '-q', '-m', 'old', '--date', old], { GIT_COMMITTER_DATE: old });
+
+      writeFileSync(
+        join(root, 'tsc-output.txt'),
+        [
+          // A baseline file that regressed and is NOT in the named set → verdict ok-peer-drift.
+          'lib/drift.ts(1,1): error TS2322: drifted.',
+          'lib/drift.ts(2,1): error TS2339: drifted again.',
+          // A file ABSENT from the baseline, committed and long settled → the row under test.
+          'lib/old-peer.ts(3,1): error TS2322: surfaced here, caused elsewhere.',
+        ].join('\n') + '\n',
+      );
+      writeFileSync(
+        join(root, 'baseline.json'),
+        JSON.stringify({ files: { 'lib/a.ts': 0, 'lib/drift.ts': 1 } }),
+      );
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+          `  label: 'test',\n` +
+          `  argv: ['--files=lib/a.ts'],\n` +
+          `});\n`,
+      );
+      let out: string;
+      try {
+        out = execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (e: any) {
+        out = `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+
+      expect(out).toContain('lib/old-peer.ts');
+      expect(out).toMatch(/UNCHANGED/);
+      // The whole point: it must NOT tell the reader this file is the standing red to go fix.
+      expect(out).not.toMatch(/lib\/old-peer\.ts.*COMMITTED: a standing red/);
+      // ...and it must say where to look instead.
+      expect(out).toMatch(/lint:required-field-strands/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('a regression in a NAMED file prints the compiler message, not just the count', () => {
     const out = runGate({ 'lib/a.ts': 0 });
     // The count line the gate always printed...
