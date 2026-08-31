@@ -2656,15 +2656,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   // a second independent read can observe an older replica/pinned row and replace
   // the newer checkpoint in the cold reset payload. Share one promise for the
   // delivery-scoped reference so every path consumes the same snapshot.
-  // Keep the legacy note-only seam hermetic for callers that do not need
-  // write-time metadata (notably unit tests). Production callers use the
-  // metadata reader, while the adapter preserves the old note value without
-  // opening the real carry-note store behind an injected getLoopCarryNoteFn.
-  const readCarryNoteWithMeta: typeof defaultGetLoopCarryNoteWithMeta =
-    deps.getLoopCarryNoteWithMetaFn ??
-    (deps.getLoopCarryNoteFn
-      ? async (ref) => ({ note: await deps.getLoopCarryNoteFn!(ref), updatedAtMs: null })
-      : defaultGetLoopCarryNoteWithMeta);
+  const readCarryNoteWithMeta = deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
   const deliveryCarryNoteReads = new Map<string, ReturnType<typeof defaultGetLoopCarryNoteWithMeta>>();
   const getDeliveryCarryNoteWithMeta: typeof defaultGetLoopCarryNoteWithMeta = (ref) => {
     const key = JSON.stringify([ref.workspaceId ?? null, ref.harness, ref.ownerId]);
