@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { physicalDrillSigningBytes, validatePhysicalDrillEvidence } from './sync/pot-git/physical-drill-evidence';
 import { physicalDrillHostReceiptSigningBytes } from './sync/pot-git/physical-drill-host-receipt';
-import { physicalDrillGitSyncSlug } from './sync/pot-git/physical-drill-phase-a';
+import { PHASE_A_REPO_KEY, physicalDrillGitSyncSlug } from './sync/pot-git/physical-drill-phase-a';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from './identity/ed25519';
 import { stagingAdvanceSigningBytes } from './sync/pot-git/staging-advance';
 import {
@@ -150,7 +150,7 @@ function physicalLegD(
     runId,
     stage: input.stage,
     observedAt: input.observedAt,
-    repoPath: `/${input.hostId}/.papercusp/pot-git/hello-world-3-pot/gh-1296269.git`,
+    repoPath: `/${input.hostId}/.papercusp/pot-git/hello-world-3-pot/${PHASE_A_REPO_KEY}.git`,
     worktreePath: `/${input.hostId}/hello-world-3-pot`,
     integratorDeviceKey: tower.pubkeyBase64,
     integratorNamespaceStagingOid: input.stagingSha,
@@ -172,13 +172,13 @@ function physicalLegD(
     observedAt,
     key: 'pot-git:staging-advance',
     source: 'git-sync-integrator',
-    repoKey: 'gh-1296269',
+    repoKey: PHASE_A_REPO_KEY,
     payload,
   });
   const pending = {
     workspaceId: 'papercusp-workspace',
     potSlug: 'hello-world-3-pot',
-    repoKey: 'gh-1296269',
+    repoKey: PHASE_A_REPO_KEY,
     devicePubkey: vm.pubkeyBase64,
     headSha: first,
     authorGithubUserId: 4243,
@@ -1002,7 +1002,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       missingAssertions: [],
       target: {
         potHomeSlug: 'hello-world-3-pot',
-        repoKey: 'gh-1296269',
+        repoKey: PHASE_A_REPO_KEY,
         topology: 'tower-to-vm-cold-join',
       },
       causalOrder: [
@@ -1171,7 +1171,7 @@ esac
       missingAssertions: [],
       target: {
         potHomeSlug: 'hello-world-3-pot',
-        repoKey: 'gh-1296269',
+        repoKey: PHASE_A_REPO_KEY,
         topology: 'bidirectional-tower-vm-ref-announce',
       },
       causalOrder: [
@@ -1249,7 +1249,7 @@ esac
       missingAssertions: [],
       target: {
         potHomeSlug: 'hello-world-3-pot',
-        repoKey: 'gh-1296269',
+        repoKey: PHASE_A_REPO_KEY,
         topology: 'two-host-local-trust-negative-controls',
       },
       causalOrder: [
@@ -1310,7 +1310,7 @@ esac
       missingAssertions: [],
       target: {
         potHomeSlug: 'hello-world-3-pot',
-        repoKey: 'gh-1296269',
+        repoKey: PHASE_A_REPO_KEY,
         topology: 'vm-below-steer-to-tower-integrator-to-vm-worktree',
       },
       causalOrder: [
@@ -1387,7 +1387,7 @@ esac
       missingAssertions: [],
       target: {
         potHomeSlug: 'hello-world-3-pot',
-        repoKey: 'gh-1296269',
+        repoKey: PHASE_A_REPO_KEY,
         topology: 'two-host-commit-only-members-to-single-github-bridge-writer',
       },
       causalOrder: [
