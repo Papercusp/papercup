@@ -56,7 +56,14 @@ export interface GatePipelineEventFailure {
 export interface GatePipelineHealthInput {
   /** false ⇒ this harness runs no green-checkpoint: nothing is known, emit NOTHING. */
   known: boolean;
-  gateLabel: 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict';
+  gateLabel:
+    | 'green'
+    | 'red'
+    | 'stalled'
+    | 'wedged'
+    | 'stale-verdict'
+    | 'conflict'
+    | 'inconclusive';
   /** WI-4489: the recorded red is superseded/unverified ⇒ colour UNKNOWN, never surfaced as red. */
   verdictStale: boolean;
   consecutiveReds: number;
@@ -131,7 +138,10 @@ export function buildGatePipelineHealthPatterns(
   const limit = opts.limit ?? 8;
 
   const out: MetaPattern[] = [];
-  const notGreen = input.gateLabel !== 'green' && !input.verdictStale;
+  const notGreen =
+    input.gateLabel !== 'green' &&
+    input.gateLabel !== 'inconclusive' &&
+    !input.verdictStale;
   const stallMs = input.gateStallMs ?? 0;
 
   // 1. The JOINED gate incident — the acute, un-joined-today signal.
@@ -160,7 +170,9 @@ export function buildGatePipelineHealthPatterns(
       summary: `promotion stalled: ${input.mainBehindStaging} commits ahead of the green pin — the gate is not advancing`,
       detail: notGreen
         ? 'same incident as the standing red gate above — the pin cannot advance past a red verdict; green the gate to drain the backlog'
-        : 'green pin is lagging staging despite a green gate — a promotion/checkpoint routine may be wedged or paused',
+        : input.gateLabel === 'inconclusive'
+          ? 'the latest checkpoint rendered no code verdict — inspect and clear that named abort before attributing the backlog to a red or green gate'
+          : 'green pin is lagging staging despite a green gate — a promotion/checkpoint routine may be wedged or paused',
       weight: 0.9,
     });
   }
@@ -208,9 +220,6 @@ export async function buildGatePipelineHealthLane(
     const { computePipelineHealth } = await import('../why-chain');
     const health = await computePipelineHealth({ slug: opts.slug });
     if (!health.known) return [];
-    // An inconclusive checkpoint rendered no code verdict; its historical red counters and
-    // failing files must not be surfaced as a current gate incident.
-    if (health.gateLabel === 'inconclusive') return [];
     const { sql } = getOrgPg();
     const fails = await sql<Array<{ kind: string; status: string; n: number }>>`
       SELECT kind, status, count(*)::int AS n
