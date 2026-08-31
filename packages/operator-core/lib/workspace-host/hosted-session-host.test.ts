@@ -23,9 +23,20 @@ import {
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import { HOSTED_WORKSPACE_MAX_MESSAGE_BYTES } from '../endpoint-route/hosted-workspace-session';
 
-/** Outbound relay payloads of one wire type, for counting acks and results. */
-function sentOfType(sent: HostedHostOutboundEnvelope[], type: string) {
-  return sent.filter((message) => (message.payload as { type?: string } | undefined)?.type === type);
+type RelayEnvelope = Extract<HostedHostOutboundEnvelope, { type: 'relay' }>;
+
+/**
+ * Outbound relay frames of one wire type, for counting acks and results.
+ *
+ * Narrowed on `type: 'relay'` first because the envelope is a union and
+ * `relay.close` carries no `payload` at all.
+ */
+function sentOfType(sent: HostedHostOutboundEnvelope[], type: string): RelayEnvelope[] {
+  return sent.filter(
+    (message): message is RelayEnvelope =>
+      message.type === 'relay' &&
+      (message.payload as { type?: string } | undefined)?.type === type,
+  );
 }
 
 const roots: string[] = [];
@@ -419,9 +430,7 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
     const root = await projectRoot();
     const { sent, open } = harness(root);
     await open('one');
-    const ready = sent.find(
-      (message) => (message.payload as { type?: string } | undefined)?.type === 'pty.ready',
-    );
+    const ready = sentOfType(sent, 'pty.ready')[0];
     expect(ready?.payload).toMatchObject({
       limits: {
         maxFileBytes: HOSTED_HOST_MAX_FILE_BYTES,

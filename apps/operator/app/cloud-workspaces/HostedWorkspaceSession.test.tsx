@@ -140,8 +140,14 @@ async function connected() {
   return M.sockets[M.sockets.length - 1];
 }
 
-/** Host handshake. Omitting `limits` is how an older, non-chunking host looks. */
-function ready(
+/**
+ * Host handshake. Omitting `limits` is how an older, non-chunking host looks.
+ *
+ * Awaits the rendered controller role before returning: `upload()` closes over
+ * `role` and returns early while it is still null, so firing a file change
+ * before React has re-rendered silently does nothing at all.
+ */
+async function ready(
   socket: { emit: (type: string, event: unknown) => void },
   limits?: { maxFileBytes: number; maxUploadChunkBytes: number },
 ) {
@@ -152,6 +158,10 @@ function ready(
       resumed: false,
       ...(limits ? { limits } : {}),
     }),
+  });
+  await waitFor(() => {
+    const status = screen.getByText("live", { exact: true }).parentElement;
+    expect(status?.textContent).toContain("controller");
   });
 }
 
@@ -665,7 +675,7 @@ describe("HostedWorkspaceSession", () => {
     const socket = await connected();
     /* No `limits` — an older host. The client must fall back to whole-file AND
      * decline anything too big for one frame. */
-    ready(socket);
+    await ready(socket);
 
     socket.send.mockClear();
     fireEvent.change(screen.getByLabelText("Upload workspace file"), {
@@ -691,7 +701,7 @@ describe("HostedWorkspaceSession", () => {
       />,
     );
     const socket = await connected();
-    ready(socket, { maxFileBytes: 1024, maxUploadChunkBytes: 4 });
+    await ready(socket, { maxFileBytes: 1024, maxUploadChunkBytes: 4 });
 
     socket.send.mockClear();
     fireEvent.change(screen.getByLabelText("Upload workspace file"), {
@@ -742,5 +752,31 @@ describe("HostedWorkspaceSession", () => {
       frames.map((frame) => Buffer.from(frame.data as string, "base64")),
     );
     expect(reassembled).toEqual(Buffer.from(fakeBytes(10)));
+  });
+
+  it("stops a chunked upload when the relay drops mid-sequence, without stranding the armed ack", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+    const socket = await connected();
+    await ready(socket, { maxFileBytes: 1024, maxUploadChunkBytes: 4 });
+
+    socket.send.mockClear();
+    /* The socket goes away between chunks — the ordinary reconnect case, and
+     * the path where an armed ack timer would otherwise outlive the upload and
+     * reject with nobody awaiting it. */
+    socket.readyState = 3;
+    fireEvent.change(screen.getByLabelText("Upload workspace file"), {
+      target: { files: [fakeFile("payload.bin", 10)] },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/relay unavailable/i)).toBeTruthy(),
+    );
+    expect(socket.send).not.toHaveBeenCalled();
   });
 });
