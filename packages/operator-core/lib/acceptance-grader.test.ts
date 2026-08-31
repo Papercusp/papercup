@@ -519,16 +519,53 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
   });
 
   it('discovery FAULT → still launches (discovery is a service, never a new failure mode)', async () => {
-    const launch = freshLaunch();
-    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
-      ...deps(launch),
-      discover: vi.fn(async () => {
-        throw new Error('router down');
-      }),
-    });
-    expect(result.state).toBe('launched');
-    expect(result.freshReason).toBe('discovery_error');
-    expect(launch).toHaveBeenCalledTimes(1);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const launch = freshLaunch();
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(launch),
+        discover: vi.fn(async () => {
+          throw new Error('router down');
+        }),
+      });
+      expect(result.state).toBe('launched');
+      expect(result.freshReason).toBe('discovery_error');
+      expect(launch).toHaveBeenCalledTimes(1);
+      // EI-21925808460100711: the fallback must stay silent-to-the-caller
+      // (no new failure mode), but the failure itself must no longer be
+      // discarded — it is surfaced on the lifecycle AND logged so it is
+      // distinguishable from a genuinely empty eligible pool.
+      expect(result.discoveryError).toContain('router down');
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const logged = warnSpy.mock.calls[0]?.[0] as string;
+      expect(logged).toContain('[acceptance-grader]');
+      expect(logged).toContain('ship-the-thing');
+      expect(logged).toContain('acceptance-ship-the-thing');
+      expect(logged).toContain('router down');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('discovery FAULT before the rubric resolves → still logs, without a rubric id', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const launch = freshLaunch();
+      const readPlan = vi.fn(async () => plan);
+      readPlan.mockRejectedValueOnce(new Error('pg down'));
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(launch),
+        readPlan,
+      });
+      expect(result.state).toBe('launched');
+      expect(result.freshReason).toBe('discovery_error');
+      expect(result.discoveryError).toContain('pg down');
+      const logged = warnSpy.mock.calls[0]?.[0] as string;
+      expect(logged).toContain('ship-the-thing');
+      expect(logged).not.toContain('rubric');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('a cascade-open failure does not demote the assignment, and reports no conversation', async () => {
