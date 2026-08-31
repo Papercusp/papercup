@@ -1488,19 +1488,35 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
-  it('EI-21356396390408722: focused verification is not preempted after the 30-second grace', async () => {
+  /**
+   * WI-1507930: this test cost 35.3s — 19.7% of this whole file — because it waited out a
+   * REAL 30-second preempt grace and a `sleep 35` child. Both numbers were the TEST'S OWN
+   * (the grace is injected below, not read from pc-heavy.sh), and the invariant they prove —
+   * a focused run survives the grace expiring under it — depends only on the ORDERING
+   * grace < focusedRun < barrier, never on the magnitudes. Scaled down preserving that order
+   * with wider proportional margins than the original had (grace+4s vs grace+5s on 30).
+   *
+   * Slot acquisition here is ~0.3s (measured against sibling focused-lane cases at 0.3-1.3s),
+   * so a 5s grace leaves ~4.7s of headroom before the window could close early — and the
+   * non-vacuity assertion in the body FAILS LOUDLY rather than passing green if it ever does.
+   * The 30s default itself is pinned by the cheap test immediately after this one.
+   */
+  const GRACE_SEC = 5;
+  const FOCUSED_RUN_SEC = 9;
+
+  it('EI-21356396390408722: focused verification is not preempted once the preempt grace expires under it', async () => {
     const env = {
       PC_HEAVY_SLOTS: '1',
       PC_HEAVY_COALESCE: '0',
-      PC_HEAVY_TIMEOUT_SEC: '45',
+      PC_HEAVY_TIMEOUT_SEC: '20',
       PC_HEAVY_FOCUSED_SLOTS: '1',
-      PC_HEAVY_PREEMPT_GRACE_SEC: '30',
+      PC_HEAVY_PREEMPT_GRACE_SEC: String(GRACE_SEC),
       PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
     };
     const barrier = spawn(
       'bash',
-      [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'sleep 45'],
+      [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'sleep 16'],
       { env: baseEnv(env), cwd: dir, detached: true },
     );
     const barrierErr = createTextCollector(barrier.stderr);
@@ -1514,7 +1530,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       );
       focused = spawn(
         'bash',
-        [PC_HEAVY, 'bash', '-c', 'sleep 35; echo focused-long-run-ok', 'scripts/test-files.mjs'],
+        [PC_HEAVY, 'bash', '-c', `sleep ${FOCUSED_RUN_SEC}; echo focused-long-run-ok`, 'scripts/test-files.mjs'],
         { env: baseEnv(env), cwd: dir },
       );
       const focusedProcess = focused;
@@ -1527,9 +1543,25 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         (t) => t.includes('slot acquired'),
         'focused test:file taking its independent lane',
       );
+      // Non-vacuity clock STARTS at slot acquisition, not at spawn: the claim is that a run
+      // HOLDING a focused slot survives the grace expiring underneath it, so the span that has
+      // to exceed the grace is the one it spent holding the slot.
+      const heldFrom = Date.now();
 
       expect(heldSlotCount(join(dir, 'focused'), 1)).toBe(1);
       expect(await focusedExited).toBe(0);
+      const heldForMs = Date.now() - heldFrom;
+
+      // THE TEST IS ONLY MEANINGFUL IF THE GRACE ACTUALLY EXPIRED WHILE THE RUN HELD ITS SLOT.
+      // Without this, shrinking the timings (or a slow box delaying slot acquisition past the
+      // grace) turns "was not preempted" into "was never around to be preempted" — a vacuous
+      // pass that still reports green. Assert the overlap rather than assuming it.
+      expect(
+        heldForMs,
+        `focused run held its slot for ${heldForMs}ms, which did not outlast the ` +
+          `${GRACE_SEC}s preempt grace — the non-preemption assertions below would be vacuous`,
+      ).toBeGreaterThan(GRACE_SEC * 1000);
+
       expect(focusedOut.text()).toContain('focused-long-run-ok');
       expect(focusedErr.text()).not.toContain('PREEMPTING ordinary holder for exclusive materialization');
       expect(focusedErr.text()).not.toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
@@ -1539,7 +1571,22 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
       }
     }
-  }, 50_000);
+  }, 25_000);
+
+  /**
+   * The behavioural test above INJECTS its grace, so it cannot notice the default drifting —
+   * it passed identically when the injected value was 30 and when it became 5. That default is
+   * the number the name "the 30-second grace" is really about, so pin it HERE, where checking
+   * it costs a file read instead of 30 seconds of waiting.
+   */
+  it('pc-heavy.sh defaults the preempt grace to 30s (the constant the scaled test above no longer waits out)', () => {
+    const script = readFileSync(PC_HEAVY, 'utf8');
+    expect(
+      script,
+      'PC_HEAVY_PREEMPT_GRACE_SEC default moved; the scaled non-preemption test injects its own ' +
+        'grace and will NOT catch this, which is exactly why this assertion exists',
+    ).toContain('PC_HEAVY_PREEMPT_GRACE_SEC:-30');
+  });
 
   it('serializes concurrent exclusive materializers before either can split the slot domain', async () => {
     const env = {
