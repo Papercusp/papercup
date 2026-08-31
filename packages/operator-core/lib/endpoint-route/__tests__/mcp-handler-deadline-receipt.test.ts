@@ -306,6 +306,30 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(textOf(res)).toContain('idem-deadline-1');
   });
 
+  // EI-21697542694243148: naming the VALUE is not enough — the message must also name a DOOR
+  // that can actually send it. `_meta` is transport-level and every projected tool's args schema
+  // is additionalProperties:false, so a caller who reads "pass exactly that value" and puts it in
+  // the tool's arguments gets `invalid_args: Unrecognized key: "_meta"`. That is exactly what the
+  // reporter did before falling back to hand-reconciliation. These assertions pin the two halves
+  // that make the instruction actionable: the reachable flag, and the warning against the args
+  // mistake. Without the fix the message named neither, so this test fails on the old wording.
+  it('names a reachable door for the key, and warns it is not a tool argument (EI-21697542694243148)', async () => {
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), { idempotencyKey: 'idem-deadline-door' });
+    expect(res.isError).toBe(true);
+    // The door that actually works (ptool's transport flag), carrying this call's own key.
+    expect(textOf(res)).toContain('--idempotency-key idem-deadline-door');
+    // And the trap it must steer the reader away from.
+    expect(textOf(res)).toContain('TRANSPORT field');
+    expect(textOf(res)).toContain('Unrecognized key');
+    expect(textOf(res)).toContain('tools:invoke has no passthrough');
+    // The printed invocation must be one ptool would actually accept: its parser THROWS on bare
+    // positional tool args ("tool-specific arguments must be supplied in the JSON payload via
+    // --json, --json-file, or --json -"), so an example ending in a bare `<args>` would reproduce
+    // the very unactionable-instruction defect this item is about, one level down.
+    expect(textOf(res)).toContain("--json '<the same args>'");
+    expect(textOf(res)).not.toMatch(/--idempotency-key \S+ \S+ <args>/);
+  });
+
   // The negative half, and the reason the assertion above is on the value rather than the
   // wording: the no-key branch must NOT start naming a key, or it would print an empty/undefined
   // one and send the caller chasing a replay that cannot work.
@@ -315,6 +339,11 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(textOf(res)).toContain('had no idempotencyKey');
     expect(textOf(res)).not.toContain("This call's key is");
     expect(textOf(res)).not.toMatch(/key is "?(undefined|null|)"/);
+    // EI-21697542694243148: the forward-looking half of this branch ("pass one up front") had the
+    // same gap — it told the caller to supply _meta.idempotencyKey without naming a door that can.
+    // It must name the flag while still naming no concrete key value (asserted above).
+    expect(textOf(res)).toContain('--idempotency-key');
+    expect(textOf(res)).toContain('NOT as a tool argument');
   });
 
   it('does NOT re-block the response on the receipt persist — replayStores is still empty the instant the caller is answered', async () => {

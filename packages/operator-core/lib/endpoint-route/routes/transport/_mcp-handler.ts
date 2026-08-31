@@ -2917,9 +2917,24 @@ const handler = createMcpHandler(
                   // one outcome the replay contract exists to make unnecessary. An instruction that
                   // names a value the reader cannot obtain is worse than none: it reads as a safe
                   // path that silently isn't available.
+                  //
+                  // EI-21697542694243148: echoing the VALUE was necessary but NOT sufficient — the
+                  // message still named no DOOR that can send it back, and the reader's default
+                  // reading of "pass exactly that value" is to put it in the tool's arguments.
+                  // `_meta` is a TRANSPORT-level field (see `req.params._meta` in agent-mcp's
+                  // server), while every projected tool's args schema is additionalProperties:false,
+                  // so that literal compliance is rejected — reproduced verbatim as
+                  // `invalid_args: Unrecognized key: "_meta"`. `tools:invoke` has no passthrough
+                  // either (it takes {name,args} only), so for an agent on those doors the replay
+                  // contract was unreachable. The proxy respects a valid client-supplied key rather
+                  // than overwriting it (mcp-proxy/proxy.ts prepareForward), so the contract itself
+                  // works — only the instructions were missing the door. ptool's own client-side
+                  // `formatToolCallFailure` already names the flag AND warns against the args
+                  // mistake; these two messages now say the same thing, so whichever surface a
+                  // caller hits first gives the same actionable path.
                   text: idempotencyKey
-                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing. This call's key is "${idempotencyKey}" — pass exactly that value; a fresh key re-executes the tool instead of replaying it).`
-                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
+                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing. This call's key is "${idempotencyKey}" — pass exactly that value; a fresh key re-executes the tool instead of replaying it. HOW to pass it: _meta.idempotencyKey is a TRANSPORT field, NOT an argument of this tool — adding it to the tool's JSON arguments is rejected as \`invalid_args: Unrecognized key: "_meta"\`, and tools:invoke has no passthrough for it. Replay via ptool's transport flag instead: \`apps/operator/scripts/ptool.mjs --idempotency-key ${idempotencyKey} ${toolName} --json '<the same args>'\` (ptool takes tool arguments only via --json/--json-file, never as bare positionals)).`
+                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, supply the key up front via ptool's \`--idempotency-key <key>\` transport flag — NOT as a tool argument, since _meta is transport-level and tool schemas reject unknown args — so a timeout-retry can safely replay instead of re-executing).`,
                 },
               ],
             };
