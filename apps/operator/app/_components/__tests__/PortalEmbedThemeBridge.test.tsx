@@ -14,7 +14,6 @@ import { PortalEmbedThemeBridge } from '../PortalEmbedThemeBridge';
 beforeEach(() => {
   locationState.pathname = '/adv';
   locationState.search = '?portalEmbed=1&portalTheme=light&portalOrigin=https%3A%2F%2Fportal.example';
-  document.referrer = 'https://portal.example/workspaces/demo';
   document.documentElement.removeAttribute('data-theme');
   delete document.documentElement.dataset.portalEmbed;
   delete document.documentElement.dataset.portalEmbedTheme;
@@ -62,4 +61,3 @@ describe('PortalEmbedThemeBridge', () => {
     expect(document.documentElement.dataset.portalEmbedTheme).toBeUndefined();
   });
 });
-

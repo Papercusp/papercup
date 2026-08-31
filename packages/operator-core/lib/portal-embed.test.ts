@@ -13,6 +13,7 @@ describe('portalEmbed protocol', () => {
   it('recognises only /adv operator documents with an explicit embed flag', () => {
     expect(isPortalEmbedLocation('/adv', '?portalEmbed=1')).toBe(true);
     expect(isPortalEmbedLocation('/adv/', '?portalEmbed=true')).toBe(true);
+    expect(isPortalEmbedLocation('/adv?tab=workflows&portalEmbed=yes')).toBe(true);
     expect(isPortalEmbedLocation('/adv', '')).toBe(false);
     expect(isPortalEmbedLocation('/settings', '?portalEmbed=1')).toBe(false);
   });
