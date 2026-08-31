@@ -124,6 +124,7 @@ import {
   resetOrchestratorLog,
   renderOrchestratorTranscript,
   pipelineName,
+  pipelineTag,
   formatGateLineageLine,
   computeGateLineage,
   retireInFlightCandidateAfterResult,
@@ -11433,7 +11434,7 @@ describe("EI-15925 — the advance broadcast is attributable to its pipeline", (
     const pipeline = pipelineName(repo);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.summary).toBe(
-      `[${pipeline}] 🟩 green-checkpoint: \`ready\` advanced to 439b4037 (green, deployable)`,
+      `[pipeline:${pipeline}] 🟩 green-checkpoint: \`ready\` advanced to 439b4037 (green, deployable)`,
     );
     expect(sent[0]!.label).toBe(`green-checkpoint[${pipeline}]`);
     vi.doUnmock(
@@ -11484,7 +11485,7 @@ describe("P-004/D-002 — the gate-verdict WAKE BANNER is attributable to its pi
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     const pipeline = pipelineName(repo);
-    const expected = `[${pipeline}] ready advanced to ${c2.slice(0, 8)} (green, deployable)`;
+    const expected = `[pipeline:${pipeline}] ready advanced to ${c2.slice(0, 8)} (green, deployable)`;
     expect(summaries["release:green"]).toBe(expected);
     expect(summaries[`release:green:${pipeline}`]).toBe(expected);
     // The whole point: the banner alone must identify the pipeline, with no payload read.
@@ -11499,9 +11500,66 @@ describe("P-004/D-002 — the gate-verdict WAKE BANNER is attributable to its pi
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     const pipeline = pipelineName(repo);
-    const expected = `[${pipeline}] green-checkpoint: ${c2.slice(0, 8)} not green — ready held`;
+    const expected = `[pipeline:${pipeline}] green-checkpoint: ${c2.slice(0, 8)} not green — ready held`;
     expect(summaries["green-checkpoint:red"]).toBe(expected);
     expect(summaries[`green-checkpoint:red:${pipeline}`]).toBe(expected);
+  });
+});
+
+describe("EI-21949138739080608 — the pipeline tag must READ as an identifier", () => {
+  // Third instance of one class. EI-15925 and P-004/D-002 (both above) each asked "is an
+  // identifier PRESENT?" and stopped there. Neither asked whether a reader RECOGNISES it as
+  // one — and on 2026-08-31 the `email` pipeline broadcast `[email] 🟩 green-checkpoint: ...`
+  // to `*`, and an su who did the CORRECT verification (resolve the sha against your own
+  // checkout, `git cat-file`) still read the bare `[email]` as a redaction/template artifact
+  // rather than a pipeline name, and filed "names no hive" — quoting the tag they had missed.
+  //
+  // So the property under test is not "a tag exists" (the prior two suites cover that) but
+  // "the tag is self-describing to a reader who has never seen the convention".
+
+  it("⭐ tags a word-collision pipeline name unmistakably — the `[email]` case that was misread", () => {
+    // The exact regression: `email` is a real co-hosted pipeline whose bare bracketed
+    // basename is indistinguishable from a redaction/placeholder token.
+    expect(pipelineTag("email")).toBe("[pipeline:email]");
+    // The pre-fix rendering must NOT be what we emit — this is the falsifier: revert
+    // pipelineTag to `[${p}]` and this line fails.
+    expect(pipelineTag("email")).not.toBe("[email]");
+    // ...and it still names the pipeline, so the EI-15925 property is not regressed.
+    expect(pipelineTag("email")).toContain("email");
+  });
+
+  it("keeps the discriminator for every pipeline, not just word-collisions", () => {
+    for (const p of ["papercusp", "papercup", "oddsmith", "hello-world-3-pot"]) {
+      expect(pipelineTag(p)).toBe(`[pipeline:${p}]`);
+      expect(pipelineTag(p)).toContain(p);
+    }
+    // Neighbouring pipelines stay distinguishable (the papercusp/papercup hazard).
+    expect(pipelineTag("papercusp")).not.toBe(pipelineTag("papercup"));
+  });
+
+  it("leads the green broadcast summary, so the tag is the first thing read", async () => {
+    const sent: Array<{ summary: string }> = [];
+    vi.doMock(
+      "@papercusp/operator-core/lib/agent-tools/coordination/messages",
+      () => ({
+        sendMessage: async (_i: unknown, msg: { summary: string }) => {
+          sent.push({ summary: msg.summary });
+        },
+      }),
+    );
+    const deps = realCheckpointDeps(cfg());
+    await deps.broadcast(
+      "🟩 green-checkpoint: `ready` advanced to 439b4037 (green, deployable)",
+    );
+
+    const pipeline = pipelineName(repo);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.summary.startsWith(pipelineTag(pipeline))).toBe(true);
+    // The machine-readable identity is unchanged by this display fix; the tag is additive.
+    expect(sent[0]!.summary).toContain("(green, deployable)");
+    vi.doUnmock(
+      "@papercusp/operator-core/lib/agent-tools/coordination/messages",
+    );
   });
 });
 

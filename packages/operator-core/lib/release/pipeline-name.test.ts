@@ -9,6 +9,7 @@ import {
   isMultiPipelineGateKey,
   isMultiPipelineGateKeyPattern,
   pipelineName,
+  pipelineTag,
   MULTI_PIPELINE_GATE_KEYS,
 } from './pipeline-name';
 
@@ -46,6 +47,29 @@ describe('pipelineName', () => {
    */
   it('⭐ distinguishes the two co-hosted pipelines that differ by one letter', () => {
     expect(pipelineName('/w/papercusp')).not.toBe(pipelineName('/w/papercup'));
+  });
+});
+
+describe('pipelineTag', () => {
+  /**
+   * EI-21949138739080608. Lifted VERBATIM from green-checkpoint.test.ts's own pipelineTag
+   * block, for the same reason the pipelineName cases above are: the emitter of record lives
+   * in another workspace this suite cannot import, so duplicated assertions are what keep the
+   * two renderings pinned. Change either and one of the two suites goes red.
+   */
+  it('⭐ tags with a `pipeline:` discriminator — byte-identical to the emitter', () => {
+    expect(pipelineTag('papercusp')).toBe('[pipeline:papercusp]');
+    expect(pipelineTag('email')).toBe('[pipeline:email]');
+  });
+
+  /**
+   * The regression itself: a BARE bracketed basename reads as a redaction/template artifact
+   * when the pipeline name collides with an ordinary word. `[email]` was filed as "names no
+   * hive" by a reader who quoted that very tag without recognising it.
+   */
+  it('⭐ is not the bare bracketed basename that was misread as a placeholder', () => {
+    expect(pipelineTag('email')).not.toBe('[email]');
+    expect(pipelineTag('email')).toContain('email');
   });
 });
 

@@ -29,7 +29,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
-import { pipelineName } from '../../release/pipeline-name';
+import { pipelineName, pipelineTag } from '../../release/pipeline-name';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
@@ -236,7 +236,7 @@ async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdic
   if (verdict.green !== false || !verdict.candidate) return;
   const pipeline = pipelineName(root);
   const candidate = verdict.candidate;
-  const summary = `[${pipeline}] green-checkpoint: ${candidate.slice(0, 8)} not green — main held`;
+  const summary = `${pipelineTag(pipeline)} green-checkpoint: ${candidate.slice(0, 8)} not green — main held`;
   const payload = {
     sha: candidate,
     from: verdict.from ?? null,

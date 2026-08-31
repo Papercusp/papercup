@@ -1320,7 +1320,7 @@ export async function emitInconclusiveCheckpointVerdict(
   pipeline: string,
   emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>,
 ): Promise<void> {
-  const summary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} INCONCLUSIVE (${result.reason}) — no verdict rendered${result.summary ? `: ${result.summary}` : ""}`;
+  const summary = `${pipelineTag(pipeline)} green-checkpoint: ${result.candidate.slice(0, 8)} INCONCLUSIVE (${result.reason}) — no verdict rendered${result.summary ? `: ${result.summary}` : ""}`;
   const payload = {
     sha: result.candidate,
     from: result.from,
@@ -1373,6 +1373,33 @@ export interface CheckpointRunLock {
 export function pipelineName(integrationRoot: string): string {
   const base = path.basename(path.resolve(integrationRoot));
   return (base.replace(/[^a-zA-Z0-9_-]/g, "-") || "default").slice(0, 64);
+}
+
+/**
+ * EI-21949138739080608 — the LEADING tag on every cross-pipeline gate summary.
+ *
+ * Third instance of one class. EI-15925 added a `[<pipeline>]` prefix to the
+ * broadcast because an unlabelled advance was unattributable; P-004/D-002 added
+ * the same prefix to the event wake-banners for the same reason. Both fixes
+ * asked "is an identifier PRESENT?" — neither asked "does a reader RECOGNISE it
+ * as one?", and on 2026-08-31 that gap cost a filed bug: the `email` pipeline
+ * broadcast `[email] 🟩 green-checkpoint: ...`, and an su who verified the sha
+ * against their own checkout (`git cat-file` — the correct check) still read the
+ * bare `[email]` as a redaction/template artifact rather than a pipeline name,
+ * and filed "names no hive", quoting the very tag they had missed.
+ *
+ * A bare bracketed basename is only self-describing to a reader who ALREADY
+ * knows the convention — and the audience is `*`, i.e. every agent in every
+ * co-hosted hive, most of whom have never seen it. The `pipeline:` discriminator
+ * makes the tag unmistakably a key/value identifier for EVERY pipeline, not just
+ * ones whose directory name doesn't happen to collide with an English word.
+ *
+ * Display-only: nothing parses this tag (the machine-readable pipeline identity
+ * rides `payload.pipeline` and the `:<pipeline>` event-key segment, both
+ * untouched). Kept as ONE helper so the six emit sites cannot drift apart.
+ */
+export function pipelineTag(pipeline: string): string {
+  return `[pipeline:${pipeline}]`;
 }
 
 /**
@@ -8095,7 +8122,7 @@ async function runGreenCheckpointInner(
     if (diagnosticOnly) return;
     await stampJudgedRed(result.candidate);
     const pipeline = pipelineName(cfg.integrationRoot);
-    const redSummary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+    const redSummary = `${pipelineTag(pipeline)} green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
     const payload = {
       sha: result.candidate,
       from: result.from ?? null,
@@ -10140,7 +10167,7 @@ async function runGreenCheckpointInner(
       // emitted here fires from every co-hosted pipeline (30 awaits / 12 agents on
       // record), so a pipeline-blind "not green — main held" reads as the awaiter's OWN
       // gate being red — the same false reading as the green case, in the other direction.
-      const redSummary = `[${pipeline}] green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+      const redSummary = `${pipelineTag(pipeline)} green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
       // WI-4957: carry the FULL failing-test signature + an exact log reference on the
       // event payload itself — a consumer previously had only the de-noised `summary`
       // tail, which is unreliable for anything more precise than "something failed".
@@ -11068,7 +11095,7 @@ async function runGreenCheckpointInner(
     // `release:green` key emitted just below fires from every one of the ~13 co-hosted
     // pipelines, so it is the widest carrier, not the glob. Same `[pipeline]` prefix
     // convention as broadcast, deliberately.
-    const greenSummary = `[${pipeline}] ${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
+    const greenSummary = `${pipelineTag(pipeline)} ${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     // WI-4957: runId (this run's identity) rides the payload alongside sha/from/pipeline.
     const payload = {
       sha: candidate,
@@ -15757,7 +15784,7 @@ export function realCheckpointDeps(
         },
         {
           to: ["*"],
-          summary: `[${pipeline}] ${summary}`,
+          summary: `${pipelineTag(pipeline)} ${summary}`,
           body,
           category: "service-health",
         },

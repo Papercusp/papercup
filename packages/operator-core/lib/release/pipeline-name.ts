@@ -44,6 +44,31 @@ export function pipelineName(integrationRoot: string): string {
 }
 
 /**
+ * EI-21949138739080608 — the LEADING tag on a cross-pipeline gate summary. Byte-identical to
+ * `green-checkpoint.ts`'s exported `pipelineTag` (the emitter of record); pinned equivalent in
+ * `pipeline-name.test.ts` for the same reason `pipelineName` is.
+ *
+ * Third instance of one class. EI-15925 added a `[<pipeline>]` prefix to the advance broadcast
+ * because an unlabelled advance was unattributable; P-004/D-002 added the same prefix to the
+ * event wake-banners. Both asked "is an identifier PRESENT?" — neither asked "does a reader
+ * RECOGNISE it as one?". On 2026-08-31 the `email` pipeline broadcast
+ * `[email] 🟩 green-checkpoint: ...` and an su who correctly verified the sha against their own
+ * checkout still read the bare `[email]` as a redaction/template artifact rather than a pipeline
+ * name, and filed "names no hive" — quoting the very tag they had missed.
+ *
+ * A bare bracketed basename is self-describing only to a reader who ALREADY knows the
+ * convention, and the audience is `*`: every agent in every co-hosted hive. The `pipeline:`
+ * discriminator makes the tag unmistakably an identifier for EVERY pipeline, not just the ones
+ * whose directory name doesn't collide with an English word.
+ *
+ * Display-only. The machine-readable identity rides `payload.pipeline` and the `:<pipeline>`
+ * event-key segment, both untouched — nothing parses this tag.
+ */
+export function pipelineTag(pipeline: string): string {
+  return `[pipeline:${pipeline}]`;
+}
+
+/**
  * The pipeline THIS process belongs to, resolved from the same env var the release plumbing
  * uses (`PAPERCUSP_INTEGRATION_ROOT`, else the operator's conventional `../..`).
  *
