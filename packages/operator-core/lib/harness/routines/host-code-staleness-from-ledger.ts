@@ -221,6 +221,41 @@ export function evaluateLedgerHostStaleness(input: EvaluateLedgerStalenessInput)
 
   const scope = `${population.hostsReporting} of ${population.hostsSeen} host(s) reporting a build sha`;
   if (stale.length === 0) {
+    // A NO-STALE answer is a UNIVERSAL claim over the serving population, so it is only
+    // utterable from a REPRESENTATIVE one. The three guards above catch absolute zero
+    // (no hosts seen, no HEAD, nobody reporting a sha) — but the case that actually
+    // occurs here is near-zero, not zero: a handful of attributed calls beside a window
+    // dominated by hosts too old to stamp ANY identity, whose rows carry no serving_host
+    // and so can never raise hostsSilent above 0.
+    //
+    // Measured 2026-08-31T09:00Z (WI-1401990): 4 attributed vs 1,686 unattributed calls
+    // returned `conclusive: true, stale: []` — a confident all-clear — while :3270 was
+    // live 152 commits behind HEAD with populated routineDrift, and the six :3070 pids
+    // serving the bulk of that window had booted BEFORE the identity writer existed.
+    // That is this module's own stated failure mode ("a confident all-clear that actually
+    // means NOBODY IS REPORTING YET") reappearing one level up, because `remainderSuffix`
+    // only ever mentioned the remainder in PROSE while `conclusive: true` told every
+    // machine reader to trust it.
+    //
+    // The asymmetry is deliberate: a POSITIVE finding below stays conclusive at any
+    // coverage, because "this host is stale" is an EXISTENCE claim that a small sample
+    // can establish and a large unmeasured remainder cannot falsify.
+    const windowCalls = population.callsAttributed + population.callsUnattributed;
+    const coverage = windowCalls === 0 ? 0 : population.callsAttributed / windowCalls;
+    const floor = ledgerAttributionFloor();
+    if (floor > 0 && coverage < floor) {
+      return {
+        conclusive: false,
+        reason:
+          `MEASURED TOO LITTLE: no stale host among ${scope}, but only ` +
+          `${population.callsAttributed} of ${windowCalls} call(s) in the window carry a serving ` +
+          `host at all (${(coverage * 100).toFixed(1)}%, floor ${(floor * 100).toFixed(0)}%). An ` +
+          `all-clear over that remainder would be a statement about the instrument, not about ` +
+          `host health — do not read it as health.${remainderSuffix(population)}`,
+        population,
+        stale,
+      };
+    }
     return {
       conclusive: true,
       reason: `No stale host among ${scope}.${remainderSuffix(population)}`,
@@ -244,6 +279,16 @@ export function evaluateLedgerHostStaleness(input: EvaluateLedgerStalenessInput)
 }
 
 // ── tunables (env-overridable, like every sibling watchdog) ───────────────────────────
+
+/** Minimum share of a window's calls that must carry a serving host before a NO-STALE
+ *  answer may be called conclusive. Default 0.5: an all-clear should rest on at least
+ *  half the traffic actually being measured. Only ever downgrades an all-clear — a
+ *  positive stale finding is conclusive at any coverage. `<=0` disables the floor
+ *  (kill switch), restoring the pre-fix behaviour of trusting any non-empty sample. */
+export function ledgerAttributionFloor(): number {
+  const n = Number(process.env.PAPERCUSP_LEDGER_ATTRIBUTION_FLOOR ?? 0.5);
+  return Number.isFinite(n) ? n : 0.5;
+}
 
 /** How old a host's LOADED CODE may be before it is called stale. Default 3 days — far
  *  above any normal restart cadence here, and far below the 17.5-day case that went

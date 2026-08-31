@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluateLedgerHostStaleness,
   hostCodeStalenessFromLedgerSweep,
+  ledgerAttributionFloor,
   ledgerHostWindowSec,
   ledgerStaleCodeMaxAgeSec,
   type LedgerHostObservation,
@@ -127,6 +128,15 @@ describe('the population rule — a zero is unutterable from an empty population
    * The partial case — a real measurement that must not be read as a total one. The
    * reporting subset is genuinely judgeable, so the verdict IS conclusive; what the
    * reason may never do is stay silent about the hosts it could not see.
+   *
+   * WI-1401990 CORRECTED THIS CASE'S NUMBERS. It was written with callsUnattributed:844
+   * against 20 attributed calls — 2.3% coverage — and asserted `conclusive: true`. That
+   * is the very shape this module's header calls "a confident all-clear that actually
+   * means NOBODY IS REPORTING YET", and it was measured live on 2026-08-31 returning an
+   * all-clear while a 152-commit-stale host served traffic. Conclusiveness at that
+   * coverage now belongs to the coverage-floor block below; this case keeps the property
+   * it was actually written to pin — that a conclusive verdict NAMES its remainder — and
+   * so carries a remainder small enough to stay above the floor.
    */
   it('a conclusive verdict still names the unmeasured remainder', () => {
     const v = evaluateLedgerHostStaleness({
@@ -138,14 +148,14 @@ describe('the population rule — a zero is unutterable from an empty population
       commitTimeMs: never,
       now: NOW,
       maxCodeAgeMs: MAX_AGE,
-      callsUnattributed: 844,
+      callsUnattributed: 15,
     });
     expect(v.conclusive).toBe(true);
     expect(v.stale).toEqual([]);
     expect(v.reason).toContain('No stale host among 1 of 2 host(s)');
     expect(v.reason).toContain('NOT MEASURED');
     expect(v.reason).toContain('port-3070');
-    expect(v.reason).toContain('844 call(s)');
+    expect(v.reason).toContain('15 call(s)');
   });
 
   /** Calibration: with a full population and nothing stale, there is no remainder note —
@@ -305,5 +315,91 @@ describe('staleness by ABSOLUTE code age', () => {
       maxCodeAgeMs: MAX_AGE,
     });
     expect(v.stale.map((s) => s.servingHost)).toEqual(['port-3070', 'port-3170']);
+  });
+});
+
+/**
+ * WI-1401990: the population rule guarded absolute zero but not NEAR-zero, so a
+ * handful of attributed calls beside a window of unattributed ones produced a
+ * confident all-clear. Measured live 2026-08-31T09:00Z: 4 attributed vs 1,686
+ * unattributed calls returned `conclusive: true, stale: []` while :3270 was live
+ * 152 commits behind HEAD.
+ */
+describe('an all-clear needs COVERAGE, not just a non-empty sample', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  /** The exact live shape that produced the false all-clear. */
+  it('refuses to call a no-stale answer conclusive when the window is mostly unattributed', () => {
+    const v = evaluateLedgerHostStaleness({
+      observations: [obs({ servingHost: 'port-3170', servingBuildSha: 'headsha123', calls: 4 })],
+      headSha: 'headsha123',
+      commitTimeMs: never,
+      now: NOW,
+      maxCodeAgeMs: MAX_AGE,
+      callsUnattributed: 1686,
+    });
+    expect(v.stale).toEqual([]);
+    expect(v.conclusive).toBe(false);
+    expect(v.reason).toContain('MEASURED TOO LITTLE');
+    // The remainder must stay visible next to the refusal, not replace it.
+    expect(v.reason).toContain('1686');
+    expect(v.population.callsAttributed).toBe(4);
+  });
+
+  /** Anti-regression control: the fix must not turn every all-clear inconclusive. */
+  it('still calls a no-stale answer conclusive when coverage is good', () => {
+    const v = evaluateLedgerHostStaleness({
+      observations: [obs({ servingHost: 'port-3170', servingBuildSha: 'headsha123', calls: 900 })],
+      headSha: 'headsha123',
+      commitTimeMs: never,
+      now: NOW,
+      maxCodeAgeMs: MAX_AGE,
+      callsUnattributed: 100,
+    });
+    expect(v.stale).toEqual([]);
+    expect(v.conclusive).toBe(true);
+    expect(v.reason).toContain('No stale host');
+  });
+
+  /**
+   * The asymmetry is the point: low coverage may not manufacture an all-clear, but it
+   * also may not SUPPRESS a real finding. "This host is stale" is an existence claim
+   * that a small sample establishes and a large unmeasured remainder cannot falsify.
+   */
+  it('keeps a POSITIVE stale finding conclusive even at the same low coverage', () => {
+    const v = evaluateLedgerHostStaleness({
+      observations: [obs({ servingHost: 'port-3270', servingBuildSha: 'oldsha0000', calls: 4 })],
+      headSha: 'headsha123',
+      commitTimeMs: at({ oldsha0000: NOW - 9 * DAY }),
+      now: NOW,
+      maxCodeAgeMs: MAX_AGE,
+      callsUnattributed: 1686,
+    });
+    expect(v.conclusive).toBe(true);
+    expect(v.stale.map((s) => s.servingHost)).toEqual(['port-3270']);
+  });
+
+  it('the floor kill switch (<=0) restores the pre-fix behaviour', () => {
+    process.env.PAPERCUSP_LEDGER_ATTRIBUTION_FLOOR = '0';
+    const v = evaluateLedgerHostStaleness({
+      observations: [obs({ servingHost: 'port-3170', servingBuildSha: 'headsha123', calls: 4 })],
+      headSha: 'headsha123',
+      commitTimeMs: never,
+      now: NOW,
+      maxCodeAgeMs: MAX_AGE,
+      callsUnattributed: 1686,
+    });
+    expect(v.conclusive).toBe(true);
+  });
+
+  it('defaults to a 50% floor and falls back to it on an unparseable override', () => {
+    delete process.env.PAPERCUSP_LEDGER_ATTRIBUTION_FLOOR;
+    expect(ledgerAttributionFloor()).toBe(0.5);
+    // A NaN floor would make `coverage < floor` false and silently re-enable the bug.
+    process.env.PAPERCUSP_LEDGER_ATTRIBUTION_FLOOR = 'not-a-number';
+    expect(ledgerAttributionFloor()).toBe(0.5);
   });
 });
