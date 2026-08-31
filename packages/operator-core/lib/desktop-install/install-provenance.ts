@@ -57,6 +57,20 @@ export type InstallStamp = {
   installedBy?: string;
   /** Basenames written in that pass. */
   files?: string[];
+  /**
+   * Basenames whose SOURCE bytes differed from `sourceSha` when they were installed —
+   * i.e. what is on disk here is NOT what that commit contains (EI-21974793277035753).
+   *
+   * Tri-state on purpose, and the distinction is load-bearing:
+   *   `undefined` → could not be determined (no git, not a repo, no HEAD) — an in-band
+   *                 unknown, NOT a clean verdict;
+   *   `[]`        → positively checked, everything matched its commit;
+   *   non-empty   → these files are uncommitted, so `sourceSha` does not describe them.
+   *
+   * Collapsing unknown into `[]` would make the stamp lie in the one direction that
+   * matters, which is the defect this field exists to fix.
+   */
+  uncommittedFiles?: string[];
 };
 
 /** Read a dest dir's provenance stamp. Returns null when absent or unparseable. */
@@ -106,6 +120,65 @@ export async function resolveSourceGitProvenance(
     };
   } catch {
     return {};
+  }
+}
+
+/**
+ * Which of `paths` differ from HEAD in `sourceDir` — the question
+ * `resolveSourceGitProvenance` deliberately does not answer, and whose absence made the
+ * install stamp actively misleading (EI-21974793277035753).
+ *
+ * `resolveSourceGitProvenance` reports the last commit *touching* these paths. It never
+ * asks whether the bytes about to be installed *match* that commit, so a hook edited but
+ * not committed was stamped with a `sourceSha` whose blob differs from what landed on
+ * disk. Measured 2026-08-31: a PreToolUse gate edit was live for every agent on the box
+ * ~4.5h before it was committed, stamped the whole time with a sha that did not contain
+ * it. A record that answers "which build are my hooks?" with the wrong sha is worse than
+ * no record, because it looks authoritative.
+ *
+ * Two narrow questions rather than one `status --porcelain` parse: porcelain emits
+ * repo-root-relative paths, shell-quotes anything unusual, and uses a two-field form for
+ * renames — more parsing, and more ways to be quietly wrong, than asking git directly.
+ *
+ * Best-effort, and returns `undefined` (not `[]`) on every failure so an unknown is never
+ * mistaken for a clean verdict: no git, not a repo, and a repo with no HEAD all land here.
+ */
+export async function resolveUncommittedSources(
+  sourceDir: string,
+  paths?: readonly string[],
+): Promise<string[] | undefined> {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const pathArgs = paths && paths.length > 0 ? ['--', ...paths] : [];
+    const [tracked, untracked] = await Promise.all([
+      // Working tree vs HEAD, so a staged-but-uncommitted edit counts as uncommitted too.
+      run('git', ['-C', sourceDir, 'diff', '--name-only', 'HEAD', ...pathArgs], {
+        timeout: 5_000,
+      }),
+      // A brand-new hook has no HEAD blob at all, so `diff` cannot see it.
+      run(
+        'git',
+        ['-C', sourceDir, 'ls-files', '--others', '--exclude-standard', '--full-name', ...pathArgs],
+        { timeout: 5_000 },
+      ),
+    ]);
+    // Both commands emit repo-relative paths; the stamp speaks in basenames (as `files`
+    // does), so normalize to basenames and keep only what the caller actually asked about.
+    const requested = paths && paths.length > 0 ? new Set(paths.map((p) => path.basename(p))) : null;
+    const dirty = new Set<string>();
+    for (const stdout of [tracked.stdout, untracked.stdout]) {
+      for (const line of String(stdout).split('\n')) {
+        const name = path.basename(line.trim());
+        if (!name) continue;
+        if (requested && !requested.has(name)) continue;
+        dirty.add(name);
+      }
+    }
+    return [...dirty].sort();
+  } catch {
+    return undefined;
   }
 }
 
