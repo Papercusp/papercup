@@ -100,9 +100,46 @@ export interface QueueMutationResult extends StoredAdmissionRecord {
   readonly changed: boolean;
 }
 
+/**
+ * How long a receipt may sit in an ACTIVE-but-unleased state (`queued`/`eligible`)
+ * carrying NO numeric `deadlineAtMs` before reconciliation treats it as abandoned
+ * and drives it terminal. WI-1741497.
+ *
+ * WHY THIS FLOOR HAS TO EXIST — two individually-correct mechanisms compose into a leak.
+ *   `reconcileExpiredRows` requeues a receipt whose LEASE died (`leased`/`running` ->
+ *   `queued`), and `receipt-gc.ts` deletes only TERMINAL receipts, deliberately never
+ *   touching an active one ("aging out a 'leased' or 'running' receipt would destroy
+ *   LIVE admission state"). The only exit from `queued` to terminal was the
+ *   deadline branch below, which is gated on `deadlineAtMs` being a NUMBER.
+ *
+ *   But `deadlineAtMs` is `input.deadlineAtMs ?? null` (admission.ts) and ONLY the
+ *   inference gateway ever passes one. So for the `agent`/`process`/`embedding`/
+ *   `transfer` classes the deadline branch can never match: a receipt whose owning
+ *   process died was requeued into `queued` forever, exempt from GC by design and
+ *   from expiry by predicate. MEASURED 2026-08-31: 1,509 such rows, 1,271 of them
+ *   stamped `reason: 'lease-expired'` (proving the reconciler ran and requeued them
+ *   correctly), oldest 91.8h, accumulating ~14/hour and never draining. The four
+ *   `inference` rows — the one class that sets a deadline — were the healthy control.
+ *
+ *   Requeue is the right move for a retryable admission: the inference gateway
+ *   reconciles its namespace before enqueueing, so a crashed request's idempotency
+ *   key is freed for the retry. It is a dead end for a ONE-SHOT spawn, where nobody
+ *   ever comes back with that key. This floor terminates only the latter.
+ *
+ * WHY 6 HOURS. This branch touches only receipts holding NO lease, so it can never
+ * reap a live execution however long it runs. The dwell clock restarts on every write
+ * (including the requeue above), so the question it asks is "nothing has re-leased
+ * this in six hours" — against admission callers whose own waits are seconds to
+ * minutes, and a longest lease TTL of 24h. Generous enough that a legitimately
+ * queued admission is never caught, short enough that the pile drains in a day.
+ */
+export const GOVERNOR_RECEIPT_ABANDON_MS = 6 * 60 * 60_000;
+
 export interface QueueReconciliationResult {
   readonly requeued: number;
   readonly expired: number;
+  /** Receipts driven terminal by the no-deadline abandonment floor. See GOVERNOR_RECEIPT_ABANDON_MS. */
+  readonly abandoned: number;
   readonly total: number;
 }
 
@@ -501,7 +538,7 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     this.reconcileStartedAtMs = nowMs;
     const pending = (
       this.store.reconcileExpired?.(this.namespace, nowMs) ??
-      Promise.resolve({ requeued: 0, expired: 0, total: 0 })
+      Promise.resolve({ requeued: 0, expired: 0, abandoned: 0, total: 0 })
     ).catch((error: unknown) => {
       // Don't let a failed reconcile poison the coalescing window — the next caller (which
       // may arrive within the same window) should get a fresh attempt, not a cached rejection.
@@ -649,16 +686,23 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
 export interface PgWorkItemAdmissionQueueStoreOptions {
   readonly sql?: SqlClient;
   readonly workspaceId?: string;
+  /** Override the no-deadline abandonment dwell. Defaults to GOVERNOR_RECEIPT_ABANDON_MS. */
+  readonly abandonAfterMs?: number;
 }
 
 /** PostgreSQL implementation backed solely by the canonical work_items table. */
 export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore {
   private readonly sql: SqlClient;
   private readonly workspaceId: string;
+  private readonly abandonAfterMs: number;
 
   constructor(options: PgWorkItemAdmissionQueueStoreOptions = {}) {
     this.sql = options.sql ?? getOrgPg().sql;
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
+    this.abandonAfterMs =
+      typeof options.abandonAfterMs === 'number' && Number.isFinite(options.abandonAfterMs) && options.abandonAfterMs > 0
+        ? options.abandonAfterMs
+        : GOVERNOR_RECEIPT_ABANDON_MS;
   }
 
   private async transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
@@ -767,7 +811,51 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
          AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}
        RETURNING feature_id, payload, status, taken_by, created_ts`;
 
-    return { requeued: requeued.length, expired: expired.length, total: requeued.length + expired.length };
+    // The abandonment floor (WI-1741497). Only receipts holding NO lease are eligible,
+    // so this can never reap a live execution; the deadline branch above already owns
+    // every receipt that HAS a numeric deadline, making the two mutually exclusive.
+    //
+    // ⚠ The predicate is `COALESCE(jsonb_typeof(...), 'null') <> 'number'`, not a bare
+    // `<> 'number'`. jsonb_typeof returns SQL NULL when the KEY IS ABSENT (as opposed to
+    // the string 'null' when it is present holding JSON null), and `NULL <> 'number'` is
+    // NULL, not true — so the bare form silently matches nothing for exactly the rows
+    // whose deadline was never written. That is the same shape as the bug this branch
+    // exists to close: a predicate that measures nothing while reporting a clean zero.
+    const abandoned = await tx<QueueDbRow[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(
+               COALESCE(payload, '{}'::jsonb)
+                 - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+                 - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at',
+               ARRAY['resource_governor']::text[],
+               ((COALESCE(payload, '{}'::jsonb)->'resource_governor') - 'lease') || jsonb_build_object(
+                 'state', 'expired',
+                 'updatedAtMs', ${nowMs}::bigint,
+                 'decision', jsonb_build_object(
+                   'generation', COALESCE((payload->'resource_governor'->'decision'->>'generation')::bigint, 0) + 1,
+                   'atMs', ${nowMs}::bigint,
+                   'reason', 'abandoned-without-deadline',
+                   'evidence', '{}'::jsonb
+                 )
+               ),
+               true
+             ),
+             status = 'dropped', taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+       WHERE workspace_id = ${this.workspaceId}
+         AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+         ${namespacePredicate}
+         AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
+         AND COALESCE(jsonb_typeof(payload->'resource_governor'->'deadlineAtMs'), 'null') <> 'number'
+         AND jsonb_typeof(payload->'resource_governor'->'updatedAtMs') = 'number'
+         AND (payload->'resource_governor'->>'updatedAtMs')::double precision <= ${nowMs - this.abandonAfterMs}
+       RETURNING feature_id, payload, status, taken_by, created_ts`;
+
+    return {
+      requeued: requeued.length,
+      expired: expired.length,
+      abandoned: abandoned.length,
+      total: requeued.length + expired.length + abandoned.length,
+    };
   }
 
   async reconcileExpired(namespace: string, nowMs: number): Promise<QueueReconciliationResult> {
