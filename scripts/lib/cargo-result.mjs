@@ -687,6 +687,81 @@ export function classifyCargoRun({ code, output, resultCount }) {
 }
 
 /**
+ * EI-21950408988436927 — why this is its own exported function rather than three
+ * inline branches in `scripts/affected-tests.mjs`.
+ *
+ * The wrapper's cargo branch answers a question the reporter's `classifyCargoRun`
+ * cannot: given a task that ALREADY failed, what does a triager get told about it?
+ * Three causes arrive through one non-zero exit code and, until this existed, two of
+ * them were rendered identically to the third:
+ *
+ *   - the run was KILLED by a signal (already distinguished),
+ *   - the runner REFUSED TO SPAWN cargo at all (exit 75 EX_TEMPFAIL — today's cause
+ *     is low-disk admission; see `assessCargoDiskAdmission` above), so zero Rust
+ *     tests executed and there is nothing in papercusp-desktop to triage,
+ *   - cargo ran and something genuinely failed.
+ *
+ * Reporting the middle case as `papercusp-desktop :: cargo test` failed is a
+ * false-positive generator pointed at source that was never compiled — the
+ * expensive direction, because the natural response is to go read Rust.
+ *
+ * Extracted for the same reason `task-exit-class.mjs` was: this branch runs ONLY
+ * when a cargo task has already failed, which on a healthy tree is never, so
+ * in-process it is reachable by no test and verifiable only by reading it.
+ * Gate-PROTECTING logic must not be the code that never runs until the gate is
+ * already broken.
+ *
+ * ⚠ `gating` is `true` in EVERY case ON PURPOSE, and is returned rather than
+ * implied so a test can hold it. A suite that never ran must NOT let the gate go
+ * green; only the LABELLING is corrected here. A future edit that "forgives" an
+ * admission refusal to unstick a red gate would ship unverified Rust — strictly
+ * worse than the misdirection this fixes.
+ *
+ * Termination is checked FIRST, matching `classifyCargoRun`: a signal kill is
+ * observed in cargo's own output and is the more specific claim.
+ *
+ * @param {{ code: number | null, output?: string }} input
+ * @returns {{ kind: 'killed-by-signal' | 'admission-refused' | 'failed', reason: string, termination: CargoTermination | null, gating: true, message: string }}
+ */
+export function classifyAffectedCargoFailure({ code, output = '' }) {
+  const termination = detectCargoTermination(output);
+  if (termination) {
+    return {
+      kind: 'killed-by-signal',
+      reason: `killed-by-signal:${termination.signalName}`,
+      termination,
+      gating: true,
+      message:
+        `>>> cargo test suite was killed by ${termination.signalName} (signal ${termination.signal}); ` +
+        'this is an external process termination, not a compiler diagnostic — re-run before source triage.',
+    };
+  }
+  if (code === CARGO_DISK_REFUSAL_EXIT_CODE) {
+    return {
+      kind: 'admission-refused',
+      reason: 'disk-admission-refused',
+      termination: null,
+      gating: true,
+      message:
+        '>>> cargo test suite DID NOT RUN: the runner refused to spawn cargo ' +
+        `(exit ${CARGO_DISK_REFUSAL_EXIT_CODE} EX_TEMPFAIL — typically low-disk admission). This is an INFRASTRUCTURE ` +
+        'REFUSAL, not a test failure and not a compiler diagnostic: no Rust test was ' +
+        'executed, so there is nothing to triage in papercusp-desktop. Reclaim space and ' +
+        're-run. Check admission with assessCargoDiskAdmission() in scripts/lib/cargo-result.mjs ' +
+        '— it refuses only when freePct < freePctMin AND freeBytes < percentFloorBypassBytes, ' +
+        'so a low percentage alone is not the cause.',
+    };
+  }
+  return {
+    kind: 'failed',
+    reason: 'non-vitest',
+    termination: null,
+    gating: true,
+    message: `>>> cargo test suite exited with code ${code}`,
+  };
+}
+
+/**
  * Return the reporter's process exit code without allowing an unmeasured Cargo
  * run to pass. Cargo versions/configurations can report an invalid target (for
  * example `--lib` on a bin-only crate) with exit code 0, so a zero parsed-test

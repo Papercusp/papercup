@@ -28,6 +28,7 @@ import {
   CARGO_DISK_REFUSAL_EXIT_CODE,
   CARGO_PERCENT_FLOOR_BYPASS_BYTES,
   cargoDiskPolicyFromEnv,
+  classifyAffectedCargoFailure,
   classifyCargoRun,
   detectCargoTermination,
   DEFAULT_CARGO_DISK_POLICY,
@@ -796,5 +797,146 @@ describe('admission reclaim age gate is decoupled from producer liveness (WI-954
     expect(REPORTER_SOURCE).toContain('policy: { cargoTtlMs: 10 * 60_000 }');
     expect(DEFAULT_CARGO_RECLAIM_POLICY.heartbeatTtlMs).toBe(24 * 3_600_000);
     expect(DEFAULT_CARGO_RECLAIM_POLICY.cargoTtlMs).toBe(24 * 3_600_000);
+  });
+});
+
+describe('affected-tests cargo failure labelling (EI-21950408988436927)', () => {
+  // TWO-SIDED ON PURPOSE. The bug was a MISLABEL, so a one-sided test that only
+  // checks "75 is called an admission refusal" passes just as happily against a
+  // helper that calls EVERYTHING an admission refusal — which would forgive real
+  // Rust reds. Every case below therefore asserts both what the class IS and what
+  // it is NOT, and the ordinary-failure case is the control.
+
+  it('labels an exit-75 refusal as an infrastructure refusal that never ran, not a Rust test failure', () => {
+    const result = classifyAffectedCargoFailure({ code: CARGO_DISK_REFUSAL_EXIT_CODE, output: '' });
+
+    expect(result).toMatchObject({
+      kind: 'admission-refused',
+      reason: 'disk-admission-refused',
+      termination: null,
+    });
+    // The message is the whole point of the fix: it is what a triager reads before
+    // deciding whether to go open papercusp-desktop source.
+    expect(result.message).toContain('DID NOT RUN');
+    expect(result.message).toContain('nothing to triage in papercusp-desktop');
+    expect(result.message).not.toMatch(/exited with code/);
+    // ...and it must not be reported through the generic non-vitest channel, which is
+    // exactly how it read before this fix.
+    expect(result.reason).not.toBe('non-vitest');
+  });
+
+  it('leaves an ordinary non-zero cargo exit as a plain failure — not relabelled, not forgiven', () => {
+    const result = classifyAffectedCargoFailure({ code: 1, output: 'error[E0308]: mismatched types' });
+
+    expect(result).toMatchObject({ kind: 'failed', reason: 'non-vitest', termination: null });
+    expect(result.kind).not.toBe('admission-refused');
+    expect(result.message).toBe('>>> cargo test suite exited with code 1');
+    expect(result.message).not.toContain('DID NOT RUN');
+  });
+
+  it('still reports a signal kill as an external termination rather than a compiler diagnostic', () => {
+    const result = classifyAffectedCargoFailure({ code: 101, output: SIGKILL_CARGO_OUTPUT });
+
+    expect(result).toMatchObject({
+      kind: 'killed-by-signal',
+      reason: 'killed-by-signal:SIGKILL',
+      termination: { signal: 9, signalName: 'SIGKILL' },
+    });
+    expect(result.message).toContain('not a compiler diagnostic');
+  });
+
+  it('prefers the observed signal over the exit code when a refusal code carries kill evidence', () => {
+    // Precedence matches classifyCargoRun: a signal is observed in cargo's own output
+    // and is the more specific claim, so it must not be masked by the numeric code.
+    expect(
+      classifyAffectedCargoFailure({ code: CARGO_DISK_REFUSAL_EXIT_CODE, output: SIGTERM_CARGO_OUTPUT }).kind,
+    ).toBe('killed-by-signal');
+  });
+
+  it('GATES every failure class — a suite that never ran must not let the gate go green', () => {
+    // The forgiving direction is the dangerous one: relabelling an admission refusal is
+    // correct, dropping it from the verdict would ship unverified Rust. Held explicitly
+    // so a later "unstick the gate" edit has to break a test to do it.
+    for (const input of [
+      { code: CARGO_DISK_REFUSAL_EXIT_CODE, output: '' },
+      { code: 1, output: '' },
+      { code: 101, output: SIGKILL_CARGO_OUTPUT },
+      { code: null, output: '' },
+    ]) {
+      expect(classifyAffectedCargoFailure(input).gating).toBe(true);
+    }
+  });
+
+  it('wires the wrapper through the shared classifier instead of re-inlining the exit code', () => {
+    // The branch only runs once cargo has already failed, so nothing else exercises the
+    // call site. Pin it: a re-inlined `status === 75` would make the helper — and every
+    // assertion above — dead code while the wrapper misreported again.
+    expect(AFFECTED_TESTS_SOURCE).toContain('classifyAffectedCargoFailure({');
+    expect(AFFECTED_TESTS_SOURCE).toContain('reason: cargoFailureClass.reason');
+    expect(AFFECTED_TESTS_SOURCE).not.toMatch(/cargoRun\.status === 75/);
+    // The task NAME must stay stable — repair-queue / GATE_HELD_BY consumers match on it.
+    expect(AFFECTED_TESTS_SOURCE).toContain('"papercusp-desktop :: cargo test"');
+  });
+
+  // ── falsifiability controls ────────────────────────────────────────────────
+  // A guard that has never failed is a guard nobody has tested, and this one guards a
+  // branch that runs only when cargo has ALREADY failed — so it will not fail on its
+  // own for months. The subject is an imported module, so the controls are deliberately
+  // WRONG implementations kept permanently here rather than an in-tree mutation (which
+  // this repo's shared checkout can commit mid-probe).
+  //
+  // Each control is wrong in exactly ONE dimension, and each is CALIBRATED: it must
+  // still pass the cases it does not regress, so a control that fails everything —
+  // which would make the assertions look strong for the wrong reason — is itself caught.
+
+  /** The pre-fix wrapper: every non-signal failure collapsed into the generic channel. */
+  function mislabellingControl({ code, output = '' }: { code: number | null; output?: string }) {
+    const termination = detectCargoTermination(output);
+    if (termination) {
+      return {
+        kind: 'killed-by-signal' as const,
+        reason: `killed-by-signal:${termination.signalName}`,
+        gating: true as const,
+        message: `>>> cargo test suite was killed by ${termination.signalName} — not a compiler diagnostic.`,
+      };
+    }
+    return {
+      kind: 'failed' as const,
+      reason: 'non-vitest',
+      gating: true as const,
+      message: `>>> cargo test suite exited with code ${code}`,
+    };
+  }
+
+  /** The tempting "unstick the gate" edit: correctly labelled, wrongly forgiven. */
+  function forgivingControl(input: { code: number | null; output?: string }) {
+    const real = classifyAffectedCargoFailure(input);
+    return { ...real, gating: real.kind === 'admission-refused' ? false : real.gating };
+  }
+
+  it('CONTROL: the pre-fix mislabelling is caught — and is still right about the cases it did not regress', () => {
+    const refusal = mislabellingControl({ code: CARGO_DISK_REFUSAL_EXIT_CODE });
+    // Caught: this is precisely what the admission-refusal case asserts must not happen.
+    expect(refusal.reason).toBe('non-vitest');
+    expect(refusal.kind).not.toBe('admission-refused');
+    expect(refusal.message).toMatch(/exited with code/);
+    expect(refusal.message).not.toContain('nothing to triage in papercusp-desktop');
+
+    // Calibration — the control is wrong ONLY about the refusal. If these drifted, the
+    // assertions above would be passing against a uniformly broken control instead of a
+    // targeted one, and would prove nothing.
+    expect(mislabellingControl({ code: 1 })).toMatchObject({ kind: 'failed', reason: 'non-vitest' });
+    expect(mislabellingControl({ code: 101, output: SIGKILL_CARGO_OUTPUT })).toMatchObject({
+      kind: 'killed-by-signal',
+      reason: 'killed-by-signal:SIGKILL',
+    });
+  });
+
+  it('CONTROL: a refusal dropped from the verdict is caught by the gating assertion', () => {
+    // The dangerous direction — shipping unverified Rust because the suite "did not
+    // really fail". The gating loop above is what stands in front of it.
+    expect(forgivingControl({ code: CARGO_DISK_REFUSAL_EXIT_CODE }).gating).toBe(false);
+    // Calibration: still gating on a real red, so the control is not simply inert.
+    expect(forgivingControl({ code: 1 }).gating).toBe(true);
   });
 });
