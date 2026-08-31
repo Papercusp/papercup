@@ -96,6 +96,13 @@ interface Props {
   /** Exact message index to focus, when the caller has one (the stream's own
    *  `anchor` event). Wins over `focusAnchor`. Forwarded verbatim. */
   focusIndex?: number | null;
+  /** Re-request the SAME `focusIndex` (chat-popup-turn-rail-2026-08-31 P-003).
+   *  Bumped per user gesture so the turn rail's second click on the row you are
+   *  already parked on scrolls again. Forwarded verbatim. */
+  focusNonce?: number | null;
+  /** Which message is under the top of the viewport, reported on change (P-005).
+   *  Forwarded verbatim; this is what drives the turn rail's live row. */
+  onTopMessageIndex?: (index: number) => void;
 
   /**
    * chat:ask_choice resolution. Called when the user commits a
@@ -234,6 +241,8 @@ export function OperatorChat({
   loadingEarlier,
   focusAnchor,
   focusIndex,
+  focusNonce,
+  onTopMessageIndex,
   onAnswerChoice,
   conversationId,
   workspaceId,
@@ -578,6 +587,8 @@ export function OperatorChat({
         loadingEarlier={loadingEarlier}
         focusAnchor={focusAnchor}
         focusIndex={focusIndex}
+        focusNonce={focusNonce}
+        onTopMessageIndex={onTopMessageIndex}
         harnessSlug={harnessSlug}
         onWorkRefActivate={handleWorkRefActivate}
       />

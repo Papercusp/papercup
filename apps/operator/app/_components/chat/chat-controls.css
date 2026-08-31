@@ -1984,6 +1984,232 @@ button.pc-ctl-name:not(:disabled):focus-visible {
   text-align: center;
 }
 
+/* ═══ the TURN RAIL ══════════════════════════════════════════════════════════
+ *
+ * chat-popup-turn-rail-2026-08-31 P-002. The popup's turn index: the reader's
+ * own questions, one row each, clicking one scrolls the transcript to that
+ * turn's ANSWER (D-005).
+ *
+ * Two densities off one component (D-003). `rail` is the default — previews you
+ * can read without interacting. `spine` is what it becomes under width pressure:
+ * a tick gutter, question one hover away. The other three rails overlay when
+ * they run out of room; this one degrades, because a position indicator you must
+ * open to see where you are has stopped being one.
+ *
+ * Both button-backed shapes below are `display: block` with inner spans doing
+ * the layout — this file's header rule 2 (WebKitGTK ignores flex on a <button>
+ * and stacks the children). And no letter-spacing anywhere, per rule 1.
+ */
+
+.pc-turns {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* The rail sits on the popup's LEFT edge, so its rule is on the right — the
+   mirror of `.pc-zone--activity`. */
+.pc-zone--turns {
+  border-right: 1px solid var(--pc-zone-rule);
+}
+
+.pc-turns__count {
+  margin-left: auto;
+  font-size: 9.5px;
+  color: var(--pc-zone-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* At spine density the title bar has ~40px to work with, so the cap is the count
+   alone. The column still has an accessible name — it is on the <aside>. */
+.pc-turns__spine-cap {
+  width: 100%;
+  text-align: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--pc-zone-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-turns__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pc-turns__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A real answer, not a placeholder: a transcript can genuinely contain no
+   questions (an agent woken by a loop fire talks without being asked), and a
+   blank column would read as a load failure instead. */
+.pc-turns__empty {
+  margin: 0;
+  padding: 8px 9px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--fg-mute);
+}
+
+/* ── a turn row ─────────────────────────────────────────────────────────── */
+
+.pc-turn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 6px 9px;
+  border: 0;
+  border-bottom: 1px solid var(--border-muted);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 90ms ease;
+}
+.pc-turn:hover {
+  background: var(--bg-2);
+}
+.pc-turn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* WHERE YOU ARE, not what you picked — hence aria-current on the element. Marked
+   with a rail AND a fill, never colour alone, so it survives greyscale and a
+   colour-blind reader; the same reason the transcript's own focus-match mark is
+   built that way. */
+.pc-turn[data-live='true'] {
+  background: rgb(from var(--accent) r g b / 0.1);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.pc-turn__top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.pc-turn__n {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+.pc-turn[data-live='true'] .pc-turn__n {
+  color: var(--accent);
+}
+.pc-turn__time {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Two lines, then ellipsis. The full question rides in the tooltip and the
+   accessible name, so the clamp costs nothing but height. */
+.pc-turn__q {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+.pc-turn[data-live='true'] .pc-turn__q {
+  color: var(--fg);
+}
+.pc-turn__q[data-empty='true'] {
+  font-style: italic;
+  color: var(--fg-mute);
+}
+
+.pc-turn__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+/* The row's one state word, and it is derived (D-006): this turn has no answer
+   in the transcript. Amber, matching every other "not finished" surface in the
+   popup rather than inventing a second vocabulary. */
+.pc-turn__pending {
+  color: var(--warn);
+}
+
+/* ── a spine tick ───────────────────────────────────────────────────────── */
+
+.pc-turns--spine .pc-turns__list {
+  padding: 6px 0;
+  /* The gutter is too narrow to host a scrollbar without eating the ticks. */
+  scrollbar-width: none;
+}
+.pc-turns--spine .pc-turns__list::-webkit-scrollbar {
+  display: none;
+}
+
+.pc-turn-tick {
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.pc-turn-tick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Height is set inline, from the turn's share of the transcript — the tick is a
+   minimap of the scroll being navigated, so what makes a turn tall is how much
+   of it there is to scroll past. */
+.pc-turn-tick__bar {
+  display: block;
+  width: 18px;
+  margin: 0 auto;
+  border-radius: 2px;
+  background: rgb(from var(--accent-strong) r g b / 0.28);
+  transition: background 90ms ease;
+}
+.pc-turn-tick:hover .pc-turn-tick__bar {
+  background: var(--accent-strong);
+}
+.pc-turn-tick[data-live='true'] .pc-turn-tick__bar {
+  background: var(--accent);
+}
+.pc-turn-tick__n {
+  display: block;
+  margin-top: 1px;
+  text-align: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 8.5px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+.pc-turn-tick[data-live='true'] .pc-turn-tick__n {
+  color: var(--accent);
+}
+
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */
 
 .pc-ctl-mode:focus-visible,

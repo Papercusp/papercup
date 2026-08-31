@@ -410,7 +410,39 @@ export interface ChatConversationProps {
    * does not reach.
    */
   focusIndex?: number | null;
+
+  /**
+   * Re-request the SAME focus target (chat-popup-turn-rail-2026-08-31 P-003).
+   *
+   * Focus is keyed on the request, not on the message, so an unchanged request
+   * never re-steals a reader's scroll — correct for a search deep-link, which
+   * fires once. It is wrong for the turn rail: clicking turn 3, reading on, and
+   * clicking turn 3 AGAIN is a fresh request that must scroll again, and without
+   * this it silently does nothing because `focusIndex` did not change.
+   *
+   * Callers bump this (a counter, a timestamp) per user gesture. Absent/null
+   * behaves exactly as before.
+   */
+  focusNonce?: number | null;
+
+  /**
+   * Report which message is currently under the top of the viewport
+   * (chat-popup-turn-rail-2026-08-31 P-005) — the reverse of `focusIndex`, and
+   * what turns the turn rail from a menu into a position indicator.
+   *
+   * -1 means the transcript is empty. Otherwise it is a real message index,
+   * clamped to the topmost RENDERED row when the reader is scrolled above the
+   * first one — that is not a guess, it is where they are.
+   *
+   * Fires only on change, so a caller can put it straight into state.
+   */
+  onTopMessageIndex?: (index: number) => void;
 }
+
+/** How far below the viewport's top edge counts as "the message you are on"
+ *  (P-005). Sized past the transcript's own top padding so a reader scrolled to
+ *  the very top still resolves to the first message rather than to nothing. */
+const TOP_INDEX_PROBE_PX = 32;
 
 /**
  * Normalize for anchor matching: decode nothing (both sides are already plain
@@ -728,6 +760,8 @@ export function ChatConversation(props: ChatConversationProps) {
     loadingEarlier,
     focusAnchor,
     focusIndex: focusIndexProp,
+    focusNonce,
+    onTopMessageIndex,
   } = props;
 
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -937,6 +971,53 @@ export function ChatConversation(props: ChatConversationProps) {
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
+  // ── Which message is at the top of the viewport (P-005) ────────────────
+  // Deliberately a SEPARATE listener from the follow-the-tail one above, which
+  // returns early on a programmatic scroll. A rail-driven jump IS programmatic,
+  // and it is exactly the moment the rail's own "you are here" row must move —
+  // reusing that handler would make the feature silently not update on its own
+  // click.
+  //
+  // Measured off the rendered rows' `data-message-index` rather than the
+  // virtualizer's `start` offsets: the virtual container is a SIBLING of the
+  // load-earlier block, so virtual coordinates and `scrollTop` differ by
+  // whatever that block occupies. Rects need no such correction and cannot go
+  // stale against it.
+  const lastTopIndexRef = useRef<number>(-2);
+  const reportTopIndex = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el || !onTopMessageIndex) return;
+    const probe = el.getBoundingClientRect().top + TOP_INDEX_PROBE_PX;
+    let best = -1;
+    let firstRendered = -1;
+    for (const node of el.querySelectorAll<HTMLElement>('[data-message-index]')) {
+      const n = Number(node.dataset.messageIndex);
+      if (!Number.isFinite(n)) continue;
+      if (firstRendered < 0 || n < firstRendered) firstRendered = n;
+      if (node.getBoundingClientRect().top <= probe && n > best) best = n;
+    }
+    // Scrolled above the first rendered row: the reader is at the top of what
+    // exists, so that row is where they are. Not a guess — a clamp.
+    if (best < 0) best = firstRendered;
+    if (best === lastTopIndexRef.current) return;
+    lastTopIndexRef.current = best;
+    onTopMessageIndex(best);
+  }, [onTopMessageIndex]);
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el || !onTopMessageIndex) return;
+    el.addEventListener('scroll', reportTopIndex, { passive: true });
+    return () => el.removeEventListener('scroll', reportTopIndex);
+  }, [onTopMessageIndex, reportTopIndex]);
+
+  // Also on every commit that changes what is mounted: a streaming session grows
+  // the transcript under a stationary reader, and rows measuring after mount
+  // move everything below them. Neither fires a scroll event.
+  useEffect(() => {
+    reportTopIndex();
+  }, [reportTopIndex, virtualItems, messages]);
+
   // ── Focus scroll: open ON a message instead of at the tail ─────────────
   // HUD search, owner ask 2026-08-02: clicking a search result must land on
   // the turn that matched.
@@ -965,9 +1046,12 @@ export function ChatConversation(props: ChatConversationProps) {
   const focusFramesRef = useRef(0);
   const focusLoopActiveRef = useRef(false);
   const exactIndex = typeof focusIndexProp === 'number' && focusIndexProp >= 0 ? focusIndexProp : -1;
-  // One key for "which focus request is this", so a change in EITHER input
+  // One key for "which focus request is this", so a change in ANY input
   // re-focuses and an unchanged request never re-steals the user's scroll.
-  const focusKey = exactIndex >= 0 ? `#${exactIndex}` : (focusAnchor ?? null);
+  // `focusNonce` is what lets a caller re-request the SAME index — the turn
+  // rail's second click on the row you are already parked on (P-003).
+  const nonceSuffix = focusNonce == null ? '' : `@${focusNonce}`;
+  const focusKey = exactIndex >= 0 ? `#${exactIndex}${nonceSuffix}` : (focusAnchor ?? null);
   useEffect(() => {
     if (!focusKey) {
       focusedForRef.current = null;

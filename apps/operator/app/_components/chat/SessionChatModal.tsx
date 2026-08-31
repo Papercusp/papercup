@@ -73,6 +73,12 @@ import AgentDossier from '../../adv/sessions/AgentDossier';
 // The rail is presentational; every rule about what counts as a fleet, how peers
 // group and how they sort lives in the unit-tested module beside it.
 import FleetPeersRail from './FleetPeersRail';
+// chat-popup-turn-rail-2026-08-31: the turn index + its rail. The derivation is
+// pure and unit-tested; this file derives it (inside LiveSessionChat, the only
+// place the rendered messages exist) and renders the rail one level up, as a
+// sibling of the conversation region — see D-002.
+import TurnRail from './TurnRail';
+import { deriveSessionTurns, turnAtMessageIndex, type SessionTurn } from './session-turn-index';
 import { deriveFleetPeers, isUnknownSession } from './fleet-peers';
 import { deriveLeaderBriefAlerts } from './leader-brief-alerts';
 import { useChatClock } from './message-timestamp';
@@ -323,6 +329,40 @@ const ORDERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   overflowY: 'auto',
   zIndex: 5,
 };
+
+/* ── the TURN RAIL's geometry (chat-popup-turn-rail-2026-08-31 P-004) ────────
+   Narrower than every other rail on purpose: its rows are two clamped lines of
+   the reader's own question, not a data panel, and the transcript beside it is
+   what the width scheme exists to protect.
+
+   There is NO overlay style here, unlike the other three. Under width pressure
+   this rail DEGRADES to spine density rather than becoming a drawer (D-003) —
+   a "you are here" marker you have to open something to see has stopped being
+   one. That is also why it is last in the give-way order: Fleet (1400px) →
+   Orders (1180px) → Activity (860px) → this, which never goes away at all. */
+const TURN_RAIL_WIDTH = 214;
+const TURN_SPINE_WIDTH = 42;
+
+const TURN_RAIL_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${TURN_RAIL_WIDTH}px`,
+  width: TURN_RAIL_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflow: 'hidden',
+};
+
+const TURN_SPINE_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${TURN_SPINE_WIDTH}px`,
+  width: TURN_SPINE_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflow: 'hidden',
+};
+
+/* Tighter than Orders' 1180px: at 214px this rail costs a third of what Orders
+   does, so it can hold its full density well past the point Orders has to fold.
+   Below this it is still on screen, just as a spine. */
+const TURNS_NARROW_MEDIA_QUERY = '(max-width: 1000px)';
 
 function useIsNarrowViewport(query: string): boolean {
   /* Seeded from matchMedia SYNCHRONOUSLY rather than starting false and
@@ -977,6 +1017,10 @@ export function LiveSessionChat({
   focusAnchor,
   focusTerm,
   projectionTarget = null,
+  onTurnIndex,
+  onTopMessageIndex,
+  jumpToIndex = null,
+  jumpNonce = null,
 }: {
   streamUrl: string;
   /** The su agent this session belongs to — resolves its roster entry for the
@@ -996,6 +1040,20 @@ export function LiveSessionChat({
   /** The canonical projection identity. Unsupported source kinds deliberately
    * resolve to no row until their producer adapter lands. */
   projectionTarget?: ConversationContextProjectionTarget | null;
+  /* ── The turn rail's two wires (chat-popup-turn-rail-2026-08-31 P-003) ─────
+     The rail is a SIBLING of the conversation region (D-002), so it cannot see
+     `projectedMessages` — which only exists here. The index therefore flows UP
+     and the jump request flows DOWN. Do not resolve that by moving the rail
+     inside this component: the sibling shape is the layout invariant maximize
+     depends on, and nothing in the tree would catch breaking it. */
+  /** Publishes the derived turn index whenever the rendered messages change. */
+  onTurnIndex?: (turns: SessionTurn[]) => void;
+  /** Publishes which message is under the top of the viewport, on change. */
+  onTopMessageIndex?: (index: number) => void;
+  /** Scroll to this message index — the rail's chosen turn ANSWER (D-005). */
+  jumpToIndex?: number | null;
+  /** Bumped per rail click so clicking the SAME row twice scrolls twice. */
+  jumpNonce?: number | null;
 }) {
   const { events, status, thinking, anchor, transport, lastSignalAt } = useAgentThinkingStream('', '', '', streamUrl);
 
@@ -1079,6 +1137,27 @@ export function LiveSessionChat({
     return content.includes(term) ? idx : -1;
   }, [anchor, mapped, focusTerm]);
 
+  /* ── The turn index (chat-popup-turn-rail-2026-08-31 P-003) ───────────────
+     Derived from `projectedMessages` — the array actually on screen — for the
+     reason session-turn-index.ts's header gives: the mapper collapses and drops
+     entries, then echoes and projection rows are merged in, so an index built
+     any earlier would address messages that are not in the list being scrolled.
+
+     Published upward rather than rendered here, because the rail is a sibling
+     of the conversation region (D-002). */
+  const turns = useMemo(() => deriveSessionTurns(projectedMessages), [projectedMessages]);
+  useEffect(() => {
+    onTurnIndex?.(turns);
+  }, [turns, onTurnIndex]);
+
+  /* Which focus request wins. The rail's jump is a LIVE user gesture; the search
+     anchor is a property of the URL the popup was opened with, so it fires once
+     and then stays set for the life of the popup. Without this precedence the
+     stale anchor keeps re-winning and the rail appears broken on every click
+     after the first. */
+  const railJumpActive = typeof jumpToIndex === 'number' && jumpToIndex >= 0;
+  const effectiveFocusIndex = railJumpActive ? jumpToIndex : projection ? undefined : focusIndex;
+
   // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
   // the assistant's own turns. Declining (null) on a USER turn is what hands
   // it to OperatorChat's own user-profile-icon fallback (WI-6503) — the owner's
@@ -1158,8 +1237,12 @@ export function LiveSessionChat({
           messages={projectedMessages}
           focusAnchor={focusAnchor}
           // The native stream's flat-entry index cannot address projection-only
-          // tool rows. Once a projection exists, use the corroborated text anchor.
-          focusIndex={projection ? undefined : focusIndex}
+          // tool rows. Once a projection exists, use the corroborated text anchor
+          // — unless the RAIL asked for a specific message, which is an index
+          // into the projected array and so is valid either way.
+          focusIndex={effectiveFocusIndex}
+          focusNonce={railJumpActive ? jumpNonce : null}
+          onTopMessageIndex={onTopMessageIndex}
           busy={sending}
           peerBusy={thinking}
           passive={composerState.passive}
@@ -1702,6 +1785,38 @@ export default function SessionChatModal({
      suite yield `undefined`, so `??` (not `||`) is load-bearing — `false` is a
      real explicit choice and must not fall through to the derived default. */
   const [ordersParam, setOrdersOpen] = useQueryState('chatOrders', parseAsBoolean);
+  /* ── the TURN RAIL (chat-popup-turn-rail-2026-08-31 P-004) ────────────────
+     The fifth zone, and the only one that is about the TRANSCRIPT rather than
+     about the agent — so it sits closest to the conversation, on its left.
+
+     Open by default: it is a navigation aid for the thing the popup exists to
+     show, and a reader who has to find a toggle before they can see where they
+     are has the problem this plan was filed to fix. `chatTurns` in the URL is
+     the only thing that hides it, exactly like the other three rails.
+
+     It has no OVERLAY style, deliberately (D-003). Below its breakpoint it
+     switches to spine density instead — a position indicator you must open a
+     drawer to read has stopped being one. */
+  const [turnsParam, setTurnsOpen] = useQueryState('chatTurns', parseAsBoolean);
+  const isTurnsNarrow = useIsNarrowViewport(TURNS_NARROW_MEDIA_QUERY);
+  const turnsOpen = turnsParam ?? true;
+  const turnsVisible = open && turnsOpen;
+
+  /* The rail's own state. `turns` and `topMessageIndex` are PUBLISHED UP from
+     LiveSessionChat (D-002); `jump` flows back down. The nonce is what makes a
+     second click on the row you are already parked on scroll again — focus is
+     keyed on the request, so an unchanged index alone would be a no-op. */
+  const [turns, setTurns] = useState<SessionTurn[]>([]);
+  const [topMessageIndex, setTopMessageIndex] = useState(-1);
+  const [jump, setJump] = useState<{ index: number; nonce: number } | null>(null);
+  const liveTurn = useMemo(
+    () => turnAtMessageIndex(turns, topMessageIndex),
+    [turns, topMessageIndex],
+  );
+  const onRailJump = useCallback((messageIndex: number) => {
+    setJump((prev) => ({ index: messageIndex, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+
   const isOrdersNarrow = useIsNarrowViewport(ORDERS_NARROW_MEDIA_QUERY);
   const ordersOpen = ordersParam ?? !isOrdersNarrow;
 
@@ -1750,7 +1865,11 @@ export default function SessionChatModal({
   const railColumns =
     (ordersVisible && !isOrdersNarrow ? 272 + 16 : 0) +
     (dossierOpen && !isNarrow ? 300 + 16 : 0) +
-    (peersVisible && !isPeersNarrow ? 248 + 16 : 0);
+    (peersVisible && !isPeersNarrow ? 248 + 16 : 0) +
+    /* The turn rail contributes at BOTH densities, because unlike the other
+       three it never overlays (D-003) — it always takes a column, just a
+       narrower one once space runs out. */
+    (turnsVisible ? (isTurnsNarrow ? TURN_SPINE_WIDTH : TURN_RAIL_WIDTH) + 16 : 0);
 
   /* Leaving the popup must not leave the browser in fullscreen or the mode in
      the URL — reopening any session would otherwise inherit a maximize the
@@ -1989,6 +2108,32 @@ export default function SessionChatModal({
               enabled={ordersVisible}
               ownerKnown={unknownSession ? false : rosterReady ? agentKnown : undefined}
               onClose={() => void setOrdersOpen(false)}
+            />
+          </div>
+        ) : null}
+        {/* ── TURNS (chat-popup-turn-rail-2026-08-31 P-004) — the fifth zone,
+            and the innermost on this side: every other rail describes the
+            AGENT, this one describes the transcript it sits against, so it
+            belongs next to it.
+
+            A SIBLING of the conversation region like the other three (D-002) —
+            which is also what puts it inside the maximize target for free. Do
+            NOT move it into the conversation element to make something line up.
+
+            No overlay branch by design (D-003): under width pressure this rail
+            changes DENSITY rather than becoming a drawer. ── */}
+        {turnsVisible ? (
+          <div
+            className="pc-zone pc-zone--turns"
+            data-testid="session-chat-turn-rail"
+            style={isTurnsNarrow ? TURN_SPINE_SIDE_STYLE : TURN_RAIL_SIDE_STYLE}
+          >
+            <TurnRail
+              turns={turns}
+              liveTurn={liveTurn}
+              density={isTurnsNarrow ? 'spine' : 'rail'}
+              onJump={onRailJump}
+              onClose={() => void setTurnsOpen(false)}
             />
           </div>
         ) : null}
@@ -2278,6 +2423,13 @@ export default function SessionChatModal({
                 sessionId: focusSessionId || resolved.session_id,
                 harness: actionRosterEntry?.harnessSlug ?? null,
               } : null}
+              /* The turn rail's two wires (D-002): the index comes UP from here,
+                 because this is the only component that holds the rendered
+                 messages; the jump goes back DOWN. */
+              onTurnIndex={setTurns}
+              onTopMessageIndex={setTopMessageIndex}
+              jumpToIndex={jump?.index ?? null}
+              jumpNonce={jump?.nonce ?? null}
             />
           </>
         ) : null}
