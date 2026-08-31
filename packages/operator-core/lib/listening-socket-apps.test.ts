@@ -39,6 +39,32 @@ function socket(over: Partial<AttributableSocket> = {}): AttributableSocket {
 
 const cwdOf = (map: Record<number, string>) => (pid: number) => map[pid] ?? null;
 
+/**
+ * The obvious wrong implementation, kept PERMANENTLY as a control (the sanctioned
+ * falsifiability tier for an imported module — never mutate the shared tree).
+ * Without it, the boundary assertions below could pass for a matcher that does
+ * not actually discriminate, and a guard that has never failed is a guard nobody
+ * has tested.
+ */
+const naiveIsWithin = (root: string, candidate: string) => candidate.startsWith(root);
+
+describe('falsifiability control', () => {
+  it('the naive startsWith matcher DOES misattribute — so these assertions bite', () => {
+    // Proof the sibling case is a real discriminator and not a tautology.
+    expect(naiveIsWithin(`${APPS}/portal`, `${APPS}/portal-checkpoint`)).toBe(true);
+    expect(isWithinPath(`${APPS}/portal`, `${APPS}/portal-checkpoint`)).toBe(false);
+  });
+
+  it('the naive matcher also loses the longest-match rule', () => {
+    // Both projects "contain" the sub-harness cwd under the naive rule, so which
+    // one wins is registry order — the silent misattribution this guards.
+    const cwd = `${REPO}/libs/papercusp/libs/db`;
+    const naiveMatches = PROJECTS.filter((p) => naiveIsWithin(p.path, cwd)).map((p) => p.slug);
+    expect(naiveMatches).toEqual(['papercusp', 'papercusp/libs/papercusp']);
+    expect(matchProjectForPath(cwd, PROJECTS)?.slug).toBe('papercusp/libs/papercusp');
+  });
+});
+
 describe('isWithinPath', () => {
   it('matches a path against itself and its descendants', () => {
     expect(isWithinPath(`${APPS}/portal`, `${APPS}/portal`)).toBe(true);
