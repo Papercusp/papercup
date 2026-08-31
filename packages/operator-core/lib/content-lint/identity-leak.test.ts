@@ -29,7 +29,18 @@ function makeRunGit(superprojectProbe: { code: number; stdout: string }, dirty =
   return { runGit: runGit as never, calls };
 }
 
-const LEAKY = 'ExecStart=/home/somedev/.local/bin/thing\n';
+/**
+ * Assembled at runtime, never written as a source literal.
+ *
+ * This fixture has to contain a REAL leak or the assertion below proves nothing — a
+ * sanctioned `PLACEHOLDER_NAMES` stand-in would be skipped by the very matcher under
+ * test. But as a literal it also (correctly) trips `check-no-box-identity.mjs` on this
+ * file, which would make the gate red for stating the thing the gate exists to catch.
+ * Splitting the path keeps the runtime value genuinely leaky while the source text is
+ * clean. Same technique, same reason, as the sibling detector's own test:
+ * `secrets.test.ts` builds its PEM header with `['-----BEGIN','PRIVATE','KEY-----'].join(' ')`.
+ */
+const LEAKY = `ExecStart=${['', 'home', 'somedev', '.local', 'bin', 'thing'].join('/')}\n`;
 
 describe('findIdentityLeakError', () => {
   it('flags a hardcoded home path and names the fix', () => {
