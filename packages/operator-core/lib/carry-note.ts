@@ -831,13 +831,22 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
  * alias, so this lift must run FIRST and only for a COMPLETE executable envelope.
  * Incomplete rows and ordinary `{kind, command, result}` rows keep their existing
  * validation/compatibility behavior; a nested `probe` object is canonical and
- * always wins. The lifted fields are removed from the row so the strict row
- * schema cannot retain a second, ambiguous copy of them.
+ * always wins its own field values. The lifted fields are removed from the row so
+ * the strict row schema cannot retain a second, ambiguous copy of them.
+ *
+ * EI-21674755057848047 / EI-21929976122322931 / EI-21926988610689807: a nested
+ * `probe` used to bypass this normalizer ENTIRELY, so the FLATTENED envelope
+ * `{kind:'tool', tool, args, schemaRevision, expect}` was accepted while the
+ * canonical-looking `probe:{tool, args, schemaRevision, expect}` — identical but
+ * for the discriminator the sibling path INFERS — was refused with a raw zod
+ * "Invalid discriminator value". Callers on both surfaces reacted by dropping
+ * `checks` altogether, which is why this cost EVIDENCE and not just a retry.
+ * A nested probe now gets the same inference, under {@link inferNestedProbeKind}.
  */
 export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const source = row as Record<string, unknown>;
-  if (source.probe !== undefined) return row;
+  if (source.probe !== undefined) return inferNestedProbeKind(row, source);
 
   const kind = source.kind;
   const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : null;
@@ -862,6 +871,39 @@ export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
   delete normalized.kind;
   normalized.probe = lifted;
   return normalized;
+}
+
+/**
+ * Supply the `kind` discriminator for a nested `probe` that omitted it, but ONLY
+ * when the row itself makes the answer unambiguous: `tool` means `kind:'tool'`,
+ * `cell` means `kind:'state-cell'`. This is the same repair the flattened path
+ * above already performs, extended to the canonical nested shape so the two
+ * spellings of one probe stop disagreeing.
+ *
+ * Deliberately NARROW — three cases are left for the strict schema to refuse,
+ * because each would otherwise persist a probe the caller did not describe:
+ *
+ *  - `kind` already present: never overridden, even when it contradicts the
+ *    sibling fields. A caller who states a discriminator must get the error for
+ *    the probe they WROTE, not silent promotion to a different variant.
+ *  - BOTH `tool` and `cell`: genuinely ambiguous, so inference would be a guess.
+ *  - NEITHER: there is nothing to execute. `probe:{expect}` is not an
+ *    under-specified probe, it is a claim with no probe — the row wants
+ *    `recheck` (the human explanation) and no `probe` at all.
+ */
+function inferNestedProbeKind(row: unknown, source: Record<string, unknown>): unknown {
+  const probe = source.probe;
+  if (!probe || typeof probe !== 'object' || Array.isArray(probe)) return row;
+
+  const nested = probe as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(nested, 'kind')) return row;
+
+  const hasTool = Object.prototype.hasOwnProperty.call(nested, 'tool');
+  const hasCell = Object.prototype.hasOwnProperty.call(nested, 'cell');
+  // Equal means both or neither: ambiguous, or nothing to run. Refuse either way.
+  if (hasTool === hasCell) return row;
+
+  return { ...source, probe: { kind: hasTool ? 'tool' : 'state-cell', ...nested } };
 }
 
 /** Fixed legend rendered under the `## Checks` heading so a cold successor reads the

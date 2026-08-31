@@ -39,6 +39,7 @@ import {
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_CHECKS_LEGEND,
   coerceCarryRowShape,
+  normalizeFlattenedContinuityProbeRow,
   type WallEntry,
   type CheckEntry,
   type CarryArgRepair,
@@ -799,6 +800,159 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     // Cap.
     const many = Array.from({ length: CARRY_NOTE_MAX_CHECKS + 3 }, (_, i) => ({ claim: `c${i}` }));
     expect(normalizeCheckEntries(many, [], now)).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+  });
+});
+
+describe('normalizeFlattenedContinuityProbeRow — the nested-probe discriminator (EI-21674755057848047)', () => {
+  const EXPECT = { path: '$.value', op: 'eq' as const, value: 'green' };
+  type Norm = (row: unknown) => unknown;
+  const probeOf = (row: unknown) => (row as { probe?: Record<string, unknown> } | null)?.probe;
+
+  it('infers kind:"tool" for a nested probe carrying `tool`', () => {
+    const out = normalizeFlattenedContinuityProbeRow({
+      claim: 'gate is green',
+      probe: { tool: 'work_items:get', args: { id: 'WI-7' }, schemaRevision: 'live', expect: EXPECT },
+    });
+    expect(probeOf(out)).toEqual({
+      kind: 'tool',
+      tool: 'work_items:get',
+      args: { id: 'WI-7' },
+      schemaRevision: 'live',
+      expect: EXPECT,
+    });
+    // The rest of the row survives untouched.
+    expect(out).toMatchObject({ claim: 'gate is green' });
+  });
+
+  it('infers kind:"state-cell" for a nested probe carrying `cell`', () => {
+    const out = normalizeFlattenedContinuityProbeRow({
+      claim: 'deploy sha moved',
+      probe: { cell: 'deploy.3070.sha', as: 'x.ts', schemaRevision: 'live', expect: EXPECT },
+    });
+    expect(probeOf(out)).toEqual({
+      kind: 'state-cell',
+      cell: 'deploy.3070.sha',
+      as: 'x.ts',
+      schemaRevision: 'live',
+      expect: EXPECT,
+    });
+  });
+
+  // ---- REFUSALS: the strict schema must still see these EXACTLY as written. ----
+
+  it('leaves `probe:{expect}` untouched — a claim with no probe is not an under-specified probe', () => {
+    // The literal shape both EI-21926988610689807 and EI-21674755057848047 reported.
+    // There is nothing to execute, so the row wants `recheck` and no `probe` at all.
+    const row = { claim: 'x', probe: { expect: EXPECT } };
+    expect(normalizeFlattenedContinuityProbeRow(row)).toBe(row);
+  });
+
+  it('leaves a probe carrying BOTH tool and cell untouched — inference would be a guess', () => {
+    const row = { claim: 'x', probe: { tool: 't', cell: 'c', schemaRevision: 'live', expect: EXPECT } };
+    expect(normalizeFlattenedContinuityProbeRow(row)).toBe(row);
+  });
+
+  it('never overrides an explicit kind, even one contradicting its sibling fields', () => {
+    // A caller who states a discriminator must get the error for the probe they
+    // WROTE — silent promotion to another variant would persist a probe nobody described.
+    const row = { claim: 'x', probe: { kind: 'state-cell', tool: 'work_items:get', schemaRevision: 'live', expect: EXPECT } };
+    expect(normalizeFlattenedContinuityProbeRow(row)).toBe(row);
+  });
+
+  it('leaves a non-object probe alone', () => {
+    for (const probe of [null, 'tool', 42, ['tool']]) {
+      const row = { claim: 'x', probe };
+      expect(normalizeFlattenedContinuityProbeRow(row)).toBe(row);
+    }
+  });
+
+  it('still lifts the FLATTENED envelope — the two spellings stay in lockstep', () => {
+    const out = normalizeFlattenedContinuityProbeRow({
+      claim: 'gate is green',
+      kind: 'tool',
+      tool: 'work_items:get',
+      args: { id: 'WI-7' },
+      schemaRevision: 'live',
+      expect: EXPECT,
+    });
+    expect(probeOf(out)).toEqual({
+      kind: 'tool',
+      tool: 'work_items:get',
+      args: { id: 'WI-7' },
+      schemaRevision: 'live',
+      expect: EXPECT,
+    });
+    expect(out).not.toHaveProperty('kind');
+  });
+
+  it('leaves an ordinary row with no probe fields alone', () => {
+    const row = { claim: 'x', recheck: 'run the suite' };
+    expect(normalizeFlattenedContinuityProbeRow(row)).toBe(row);
+  });
+
+  /**
+   * PERMANENT wrong-implementation controls (the repo's sanctioned falsifiability
+   * tier for an imported module — no tree mutation, no sweep race). Each assertion
+   * above is expressed as a predicate and run against implementations that are
+   * deliberately wrong in ONE way. Without these, the suite would pass for a
+   * function that infers NOTHING (the pre-fix behavior) or one that infers
+   * EVERYTHING — so the controls are what prove the assertions discriminate.
+   */
+  describe('falsifiability controls', () => {
+    const infersToolKind = (fn: Norm) =>
+      (probeOf(fn({ claim: 'c', probe: { tool: 't', schemaRevision: 'live', expect: EXPECT } })) as { kind?: unknown } | undefined)
+        ?.kind === 'tool';
+
+    const refusesBareExpect = (fn: Norm) =>
+      (probeOf(fn({ claim: 'c', probe: { expect: EXPECT } })) as { kind?: unknown } | undefined)?.kind === undefined;
+
+    const preservesExplicitKind = (fn: Norm) =>
+      (
+        probeOf(
+          fn({ claim: 'c', probe: { kind: 'state-cell', tool: 't', schemaRevision: 'live', expect: EXPECT } }),
+        ) as { kind?: unknown } | undefined
+      )?.kind === 'state-cell';
+
+    /** WRONG #1 — infers nothing. This IS the pre-fix behavior. */
+    const identityOnly: Norm = (row) => row;
+    /** WRONG #2 — stamps kind:'tool' on any nested probe, executable or not. */
+    const alwaysTool: Norm = (row) => {
+      const s = row as Record<string, unknown>;
+      const p = s?.probe as Record<string, unknown> | undefined;
+      return p && typeof p === 'object' ? { ...s, probe: { kind: 'tool', ...p } } : row;
+    };
+    /** WRONG #3 — infers from siblings while CLOBBERING a stated discriminator. */
+    const clobbersKind: Norm = (row) => {
+      const s = row as Record<string, unknown>;
+      const p = s?.probe as Record<string, unknown> | undefined;
+      if (!p || typeof p !== 'object') return row;
+      if (!('tool' in p) && !('cell' in p)) return row;
+      return { ...s, probe: { ...p, kind: 'tool' in p ? 'tool' : 'state-cell' } };
+    };
+
+    it('CALIBRATION: the real implementation satisfies all three properties', () => {
+      expect(infersToolKind(normalizeFlattenedContinuityProbeRow)).toBe(true);
+      expect(refusesBareExpect(normalizeFlattenedContinuityProbeRow)).toBe(true);
+      expect(preservesExplicitKind(normalizeFlattenedContinuityProbeRow)).toBe(true);
+    });
+
+    it('an infer-nothing implementation FAILS the inference property', () => {
+      expect(infersToolKind(identityOnly)).toBe(false);
+      // ...while still satisfying the two refusal properties, which is exactly why
+      // the refusal tests alone could never have caught the reported bug.
+      expect(refusesBareExpect(identityOnly)).toBe(true);
+      expect(preservesExplicitKind(identityOnly)).toBe(true);
+    });
+
+    it('an always-tool implementation FAILS the bare-expect refusal', () => {
+      expect(infersToolKind(alwaysTool)).toBe(true);
+      expect(refusesBareExpect(alwaysTool)).toBe(false);
+    });
+
+    it('a kind-clobbering implementation FAILS the never-override property', () => {
+      expect(infersToolKind(clobbersKind)).toBe(true);
+      expect(preservesExplicitKind(clobbersKind)).toBe(false);
+    });
   });
 });
 
