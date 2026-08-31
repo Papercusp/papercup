@@ -169,7 +169,9 @@ export default defineTool({
       '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
+  // Release-fixer must inspect the managed task ledger when classifying a
+  // failed checkpoint or diagnosing a dead prior fixer.
+  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'release-fixer'],
   args: z.object({
     state: z.enum(TASK_STATES).optional().describe('filter by one lifecycle state (shorthand for `states: [state]`)'),
     states: z.array(z.enum(TASK_STATES)).optional().describe('filter by one or more lifecycle states'),

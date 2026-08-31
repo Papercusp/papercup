@@ -187,7 +187,7 @@ export default defineTool({
   // the same pool slot they are needlessly retaining. Match docs:search and release
   // that slot before the handler starts its own lazy reads.
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES, 'papercup-deep'],
+  agentRoles: [...SU_ROLES, 'papercup-deep', 'release-fixer'],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },

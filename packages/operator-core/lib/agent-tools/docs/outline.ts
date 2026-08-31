@@ -194,7 +194,9 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // The release-fixer follows the shared docs-first guidance before inspecting
+  // a gate failure; keep its direct role-scoped surface paired with docs:read.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   modality: ['text'],
   args: z.object({
     harness: z

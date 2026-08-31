@@ -96,8 +96,10 @@ describe('loadRoleCapabilities', () => {
       for (const capability of [
         'coord:read',
         'coord:write',
+        'docs:read',
         'work_items:read',
         'work_items:write',
+        'harness:read',
         'locks:read',
         'locks:write',
         'intel:read',
@@ -113,15 +115,35 @@ describe('loadRoleCapabilities', () => {
         { default: acquireLock },
         { default: checkpointRun },
         { default: releaseTrace },
+        { default: docsOutline },
+        { default: docsGet },
+        { default: harnessEscalation },
+        { default: repairQueue },
+        { default: processesList },
       ] = await Promise.all([
         import('../../../agent-tools/coordination/roles.js'),
         import('../../../agent-tools/state/read.js'),
         import('../../../agent-tools/locks/acquire.js'),
         import('../../../agent-tools/release/checkpoint-run.js'),
         import('../../../agent-tools/release/trace.js'),
+        import('../../../agent-tools/docs/outline.js'),
+        import('../../../agent-tools/docs/get.js'),
+        import('../../../agent-tools/harness/escalation.js'),
+        import('../../../agent-tools/release/repair-queue.js'),
+        import('../../../agent-tools/processes/list.js'),
       ]);
       expect(COORD_ROLES).toContain('release-fixer');
-      for (const tool of [stateRead, acquireLock, checkpointRun, releaseTrace]) {
+      for (const tool of [
+        stateRead,
+        acquireLock,
+        checkpointRun,
+        releaseTrace,
+        docsOutline,
+        docsGet,
+        harnessEscalation,
+        repairQueue,
+        processesList,
+      ]) {
         expect(tool.agentRoles).toContain('release-fixer');
       }
     },

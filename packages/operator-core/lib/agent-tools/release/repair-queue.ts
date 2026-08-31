@@ -74,7 +74,9 @@ export default defineTool({
   effectForCall: (args) =>
     args.op === 'get' || (args.op === 'converge' && args.confirm !== true) ? 'read' : 'write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // The release-fixer's runbook uses the read/dry-run and confirmed converge
+  // paths; its existing operator:write cap keeps the write branch guarded.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   rolesQuota: { operator: { perRun: 20 } },
   guidance: {
     when:
