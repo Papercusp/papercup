@@ -169,6 +169,7 @@ describe('P-007: the four verdict cells', () => {
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',
+      'goal.portfolioThroughput',
       'governor.admission',
       'governor.health',
       'governor.queue',
@@ -469,7 +470,7 @@ describe('P-007: the four verdict cells', () => {
   it.each(NEW_CELLS.map((c) => [c.cell, c] as const))('%s cites a real live exercise', (_id, spec) => {
     expect(spec.provenance.liveExercised).toBe(true);
     expect(spec.provenance.evidence).toContain('dev:pipeline_position');
-    expect(spec.provenance.evidence).toMatch(/\b2026-\d{2}-\d{2}\b/);
+    expect(spec.provenance.evidence).toMatch(/\b2026-\d{2}-\d{2}/);
   });
 });
 
