@@ -3408,3 +3408,54 @@ describe('SessionChatModal — the session name (P-008)', () => {
     expect(screen.getByText('Chat — greening the release gate')).toBeTruthy();
   });
 });
+
+/* ── The turn rail's layout invariant ────────────────────────────────────────
+   Plan chat-popup-turn-rail-2026-08-31, D-002 (NOT the `D-002` of
+   chat-ref-pills-2026-07-26 cited elsewhere in this file, and NOT the
+   `D-007 superseded D-002` fullscreen note in SessionChatModal.tsx — bare
+   decision ids collide across plans, so this block names its plan).
+
+   D-002 says the rail is a SIBLING of the conversation region, never a child,
+   because maximize paints the popup container and the scoping rule depends on
+   that shape. It also says, in the source comment at the mount: "Do NOT move it
+   into the conversation element to make something line up."
+
+   That instruction had NO test behind it. Peer vetting of this plan's
+   acceptance rubric (su-3b0568df, consult conv-mthfb0sc) established that the
+   rubric criterion grading this invariant was bound to THIS FILE while this
+   file contained zero references to TurnRail — a path binding masquerading as a
+   detection binding. This block is that missing detection: it fails if the rail
+   is re-nested inside the conversation region, which is exactly the refactor
+   D-002 warns "nothing in the tree would catch". ── */
+describe('chat-popup-turn-rail-2026-08-31 D-002 — the turn rail is a sibling of the conversation region', () => {
+  async function openWithRail() {
+    mockFetchOnce(200, {
+      sessions: [{ source_kind: 'claude', session_id: 'claude-rail', active: true, last_ts: null }],
+    });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+  }
+
+  it('mounts the rail OUTSIDE the conversation region, and the conversation outside the rail', async () => {
+    await openWithRail();
+
+    const rail = screen.getByTestId('session-chat-turn-rail');
+    const conversation = screen.getByTestId('session-chat-conversation');
+
+    // The invariant itself, stated both ways so neither nesting direction slips through.
+    expect(conversation.contains(rail)).toBe(false);
+    expect(rail.contains(conversation)).toBe(false);
+  });
+
+  it('keeps the rail inside the popup container, so it stays within the maximize target', async () => {
+    await openWithRail();
+
+    const modal = screen.getByTestId('session-chat-modal');
+    const rail = screen.getByTestId('session-chat-turn-rail');
+
+    // Sibling-of-conversation must not be achieved by hoisting the rail out of
+    // the popup entirely — that would satisfy the containment check above while
+    // dropping the rail out of what maximize paints.
+    expect(modal.contains(rail)).toBe(true);
+  });
+});
