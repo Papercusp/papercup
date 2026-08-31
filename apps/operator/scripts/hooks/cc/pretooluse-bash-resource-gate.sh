@@ -2219,10 +2219,61 @@ def _is_agent_or_fleet_session():
 # `crontab -` (stdin install), bare `crontab`, and `crontab -l -e`.
 _CRONTAB_READONLY_ARGS_RE = re.compile(r'^crontab((?:\s+(?:-l|-u\s+\S+))*)\s*$')
 
+# EI-21934170410740770: the allowlist above is $-ANCHORED, so ANY shell
+# REDIRECTION token defeated it. `crontab -l 2>&1 | head` denied while bare
+# `crontab -l` passed — and the refusal text promised, in the same breath,
+# that listings pass. An agent that follows the advertised remedy ("re-run
+# the listing form on its own") gets refused a SECOND time, which is the
+# worst shape a rail can have: it teaches that the message cannot be
+# trusted. Pipes were never the problem — `_os_scheduler_violation` already
+# ends a segment at `|`, and `crontab -l | grep x` has always passed.
+#
+# A redirection is DECORATION on the invocation, not an argument to it, so
+# strip it before classifying — but strip it fail-CLOSED, because two
+# redirection shapes really can create a schedule:
+#   - INPUT redirection is NEVER stripped. `crontab < file` (and `<<`/`<<<`)
+#     IS the stdin install vector, so a segment carrying one is never
+#     classified read-only, whatever flags sit beside it.
+#   - An OUTPUT target that is itself a schedule spool or drop-in is never
+#     stripped: `crontab -l > /var/spool/cron/crontabs/bob` installs a
+#     crontab FOR bob with no mutating flag anywhere in the command.
+_SCHEDULER_INPUT_REDIR_RE = re.compile(r'(?:^|\s)\d*<')
+_SCHEDULE_WRITE_TARGET_RE = re.compile(
+    r'/etc/cron|/var/spool/cron|/etc/at\b|/var/spool/at'
+    r'|/etc/systemd|/systemd/(?:user|system)\b'
+)
+# fd-duplication FIRST, so `2>&1` is not consumed as `2>` plus the filename
+# `&1`. The final alternative matches a DANGLING operator at end-of-segment:
+# `_os_scheduler_violation` splits on `[;&|\n]`, and the `&` inside `2>&1`
+# is one of those — so the segment that actually reaches this predicate for
+# `crontab -l 2>&1 | head` is the truncated `crontab -l 2>`.
+_SCHEDULER_OUTPUT_REDIR_RE = re.compile(
+    r'\s*(?:\d*>&\s*[-\d]+|&>>?\s*\S+|\d*>>?\s*\S+|\d*>>?&?\s*$)'
+)
+
+
+def _strip_output_redirections(s):
+    """`s` with output redirections removed, or None when it carries a
+    redirection that must NOT be waved through (see the note above)."""
+    if _SCHEDULER_INPUT_REDIR_RE.search(s):
+        return None
+    vetoed = []
+
+    def _drop(m):
+        if _SCHEDULE_WRITE_TARGET_RE.search(m.group(0)):
+            vetoed.append(m.group(0))
+        return ' '
+
+    stripped = _SCHEDULER_OUTPUT_REDIR_RE.sub(_drop, s)
+    return None if vetoed else stripped.strip()
+
 
 def _is_readonly_scheduler_invocation(seg):
     """True when `seg` only READS schedules — it creates/changes nothing."""
     s = re.sub(r'^sudo\s+', '', seg.strip()).strip()
+    s = _strip_output_redirections(s)
+    if s is None:
+        return False
     m = _CRONTAB_READONLY_ARGS_RE.match(s)
     if m:
         # `-l` must be PRESENT, not merely permitted by the arg shape: bare

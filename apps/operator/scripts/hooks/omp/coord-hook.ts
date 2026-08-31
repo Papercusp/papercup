@@ -1229,8 +1229,46 @@ const CRONTAB_READONLY_ARGS_RE = /^crontab((?:\s+(?:-l|-u\s+\S+))*)\s*$/;
  * (scripts/hooks/cc/pretooluse-bash-resource-gate.sh) — a guard fixed in one
  * path must be fixed in both.
  */
+const SCHEDULER_INPUT_REDIR_RE = /(?:^|\s)\d*</;
+const SCHEDULE_WRITE_TARGET_RE =
+  /\/etc\/cron|\/var\/spool\/cron|\/etc\/at\b|\/var\/spool\/at|\/etc\/systemd|\/systemd\/(?:user|system)\b/;
+/**
+ * fd-duplication FIRST, so `2>&1` is not consumed as `2>` plus the filename
+ * `&1`. The final alternative matches a DANGLING operator at end-of-segment:
+ * {@link isOsSchedulerCommand} splits on `[;&|\n]`, and the `&` inside `2>&1`
+ * is one of those — so the segment that actually reaches this predicate for
+ * `crontab -l 2>&1 | head` is the truncated `crontab -l 2>`.
+ */
+const SCHEDULER_OUTPUT_REDIR_RE = /\s*(?:\d*>&\s*[-\d]+|&>>?\s*\S+|\d*>>?\s*\S+|\d*>>?&?\s*$)/g;
+
+/**
+ * EI-21934170410740770 — `seg` with output redirections removed, or null when
+ * it carries a redirection that must NOT be waved through.
+ *
+ * The allowlist regex is $-ANCHORED, so any redirection token defeated it:
+ * `crontab -l 2>&1` denied while bare `crontab -l` passed, and the refusal
+ * text promised in the same breath that listings pass. A redirection is
+ * DECORATION on the invocation, not an argument to it — but stripping it is
+ * fail-CLOSED, because two shapes really can create a schedule: INPUT
+ * redirection (`crontab < file` IS the stdin install vector) and an OUTPUT
+ * target that is itself a schedule spool or drop-in (`crontab -l >
+ * /var/spool/cron/crontabs/bob` installs a crontab for bob with no mutating
+ * flag anywhere in the command).
+ */
+function stripOutputRedirections(s: string): string | null {
+  if (SCHEDULER_INPUT_REDIR_RE.test(s)) return null;
+  let vetoed = false;
+  const stripped = s.replace(new RegExp(SCHEDULER_OUTPUT_REDIR_RE.source, 'g'), (token) => {
+    if (SCHEDULE_WRITE_TARGET_RE.test(token)) vetoed = true;
+    return ' ';
+  });
+  return vetoed ? null : stripped.trim();
+}
+
 export function isReadOnlySchedulerInvocation(seg: string): boolean {
-  const s = seg.trim().replace(/^sudo\s+/, '').trim();
+  const bare = seg.trim().replace(/^sudo\s+/, '').trim();
+  const s = stripOutputRedirections(bare);
+  if (s === null) return false;
   const m = CRONTAB_READONLY_ARGS_RE.exec(s);
   // `-l` must be PRESENT, not merely permitted by the shape: bare
   // `crontab -u bob` installs bob's crontab FROM STDIN.
