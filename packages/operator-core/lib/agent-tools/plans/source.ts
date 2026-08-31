@@ -35,6 +35,7 @@ import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
+import { deriveOwnerGateMarkers } from './owner-gate-marker';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -1500,6 +1501,8 @@ export interface PlanIndexItem {
   blockedBy: string[];
   decisionRefs: string[];
   phase: string | null;
+  /** Optional marker parsed from plan prose for owner-gated items. */
+  ownerGateMarker?: string | null;
 }
 
 /** A decision as stored in the derived `decisions` jsonb column (Stage 3 normalize). */
@@ -1542,6 +1545,7 @@ export interface PlanIndex {
 export function deriveIndexFromContent(content: string): PlanIndex {
   const p = parsePlan(content);
   const fm = p.frontmatter;
+  const ownerGateMarkers = deriveOwnerGateMarkers(p.items, p.now?.raw, p.decisions);
   return {
     title: fm.title ?? null,
     status: fm.status ?? null,
@@ -1563,6 +1567,7 @@ export function deriveIndexFromContent(content: string): PlanIndex {
       blockedBy: i.blockedBy,
       decisionRefs: i.decisionRefs,
       phase: i.phase,
+      ownerGateMarker: ownerGateMarkers.get(i.id) ?? null,
     })),
     decisions: p.decisions.map((d) => ({
       id: d.id,
