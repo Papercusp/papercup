@@ -10,7 +10,7 @@
  */
 import { existsSync, readdirSync, statSync, promises as fsp } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   defaultSessionDirRoots,
   discoverSessionDirCandidates,
@@ -54,6 +54,90 @@ export interface DiskEntry {
   protectKey?: string;
   /** which protected dimension `protectKey` matches. */
   protectKeyKind?: SessionDirCandidate['keyKind'];
+}
+
+/** Result of the bounded immediate-child sweep used by the growth alarm. */
+export interface DiskRootChildScan {
+  /** One snapshot per immediate child of the requested roots. */
+  entries: DiskEntry[];
+  /** TRUE when the wall-clock or child-count bound stopped the sweep early. */
+  truncated: boolean;
+}
+
+export interface DiskRootChildScanOptions {
+  /** Roots whose immediate children should be sampled. Defaults to known Papercusp roots. */
+  roots?: readonly string[];
+  /** Shared wall-clock budget. A bounded default is created when omitted. */
+  budget?: DiskWalkBudget;
+  /** Registered category paths; descendants are covered, while glob files are exact paths. */
+  registeredPaths?: readonly string[];
+  /** Maximum number of immediate children returned across all roots. */
+  maxChildren?: number;
+}
+
+const DEFAULT_UNDECLARED_DISK_SCAN_MS = 20_000;
+const DEFAULT_ROOT_CHILD_LIMIT = 10_000;
+
+function newDiskScanBudget(): DiskWalkBudget {
+  return { deadlineMs: Date.now() + DEFAULT_UNDECLARED_DISK_SCAN_MS };
+}
+
+/** The filesystem roots where Papercusp may keep a registered or future store. */
+export function undeclaredDiskRoots(): string[] {
+  return [
+    join(homedir(), '.papercusp'),
+    ...plainStoreRoots('scratch'),
+    ...plainStoreRoots('flight-recorder'),
+    ...plainStoreRoots('wake-spills'),
+    ...defaultSessionDirRoots().map((r) => r.root),
+  ].filter((root, i, all) => all.indexOf(root) === i);
+}
+
+/** Pure path-prefix check for a registered disk category/root. */
+export function isRegisteredDiskPath(path: string, registeredPaths: readonly string[]): boolean {
+  return registeredPaths.some((registered) => path === registered || path.startsWith(`${registered}${sep}`));
+}
+
+/**
+ * Resolve the paths currently covered by disk categories. Plain and
+ * session-dir categories cover their whole root; a glob-files category covers
+ * only the matching files, never the containing ~/.papercusp directory.
+ *
+ * This is intentionally a shallow metadata read. It is used to avoid sizing
+ * already-registered trees during the undeclared sweep; the pure alarm
+ * detector still receives the path list and performs the authoritative
+ * subtraction over its snapshots.
+ */
+export function registeredDiskPaths(categories: readonly DiskStorageCategory[]): string[] {
+  const paths: string[] = [];
+  for (const cat of categories) {
+    if (cat.store === 'session-dirs') {
+      paths.push(...defaultSessionDirRoots().map((r) => r.root));
+      continue;
+    }
+    if (cat.store === 'glob-files') {
+      if (!cat.glob) continue;
+      const root = globRoot(cat.glob.rootKind);
+      let names: string[];
+      try {
+        names = readdirSync(root);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (!name.startsWith(cat.glob.prefix) || !name.endsWith(cat.glob.suffix)) continue;
+        const path = join(root, name);
+        try {
+          if (statSync(path).isFile()) paths.push(path);
+        } catch {
+          continue;
+        }
+      }
+      continue;
+    }
+    paths.push(...plainStoreRoots(cat.store));
+  }
+  return paths.filter((path, i, all) => all.indexOf(path) === i);
 }
 
 /** Whole-dir roots for the plain stores (session-dirs resolve via defaultSessionDirRoots;
@@ -151,11 +235,7 @@ export function dirSizeBytes(path: string, maxEntries = 400_000, budget?: DiskWa
  * routine ticker — the periodic `setImmediate` macrotask hop guarantees it runs
  * (and the gate yields EVERY iteration once loop pressure is already elevated).
  */
-export async function dirSizeBytesAsync(
-  path: string,
-  maxEntries = 400_000,
-  budget?: DiskWalkBudget,
-): Promise<number> {
+export async function dirSizeBytesAsync(path: string, maxEntries = 400_000, budget?: DiskWalkBudget): Promise<number> {
   let total = 0;
   let seen = 0;
   let iters = 0;
@@ -191,6 +271,99 @@ export async function dirSizeBytesAsync(
     }
   }
   return total;
+}
+
+function scanBudgetExpired(budget: DiskWalkBudget): boolean {
+  if (Date.now() < budget.deadlineMs) return false;
+  budget.truncated = true;
+  return true;
+}
+
+/**
+ * Enumerate immediate children of known roots and recursively size each child.
+ * The walk is bounded by both a shared wall-clock budget and a child-count cap.
+ * Registered paths are still returned as snapshots, but their recursive size is
+ * skipped because the growth alarm only needs sizes for the unregistered set.
+ * This avoids re-walking the large, already-owned session/spill trees when the
+ * home root overlaps their category roots.
+ */
+export function listDiskRootChildren(options: DiskRootChildScanOptions = {}): DiskRootChildScan {
+  const roots = options.roots ?? undeclaredDiskRoots();
+  const budget = options.budget ?? newDiskScanBudget();
+  const registeredPaths = options.registeredPaths ?? [];
+  const maxChildren = options.maxChildren ?? DEFAULT_ROOT_CHILD_LIMIT;
+  const entries: DiskEntry[] = [];
+  const seen = new Set<string>();
+
+  rootsLoop: for (const root of roots) {
+    let names: string[];
+    try {
+      names = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (entries.length >= maxChildren || scanBudgetExpired(budget)) {
+        budget.truncated = true;
+        break rootsLoop;
+      }
+      const path = join(root, name);
+      if (seen.has(path)) continue;
+      seen.add(path);
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(path);
+      } catch {
+        continue; // raced removal / permission — skip
+      }
+      const registered = isRegisteredDiskPath(path, registeredPaths);
+      const sizeBytes = registered ? (st.isFile() ? st.size : 0) : dirSizeBytes(path, 400_000, budget);
+      entries.push({ path, mtimeMs: st.mtimeMs, sizeBytes });
+      if (budget.truncated) break rootsLoop;
+    }
+  }
+
+  return { entries, truncated: Boolean(budget.truncated) };
+}
+
+/** Async, event-loop-cooperative twin of {@link listDiskRootChildren}. */
+export async function listDiskRootChildrenAsync(options: DiskRootChildScanOptions = {}): Promise<DiskRootChildScan> {
+  const roots = options.roots ?? undeclaredDiskRoots();
+  const budget = options.budget ?? newDiskScanBudget();
+  const registeredPaths = options.registeredPaths ?? [];
+  const maxChildren = options.maxChildren ?? DEFAULT_ROOT_CHILD_LIMIT;
+  const entries: DiskEntry[] = [];
+  const seen = new Set<string>();
+
+  rootsLoop: for (const root of roots) {
+    let names: string[];
+    try {
+      names = await fsp.readdir(root);
+    } catch {
+      continue; // missing / unreadable root
+    }
+    for (const name of names) {
+      if (entries.length >= maxChildren || scanBudgetExpired(budget)) {
+        budget.truncated = true;
+        break rootsLoop;
+      }
+      const path = join(root, name);
+      if (seen.has(path)) continue;
+      seen.add(path);
+      let st: Awaited<ReturnType<typeof fsp.stat>>;
+      try {
+        st = await fsp.stat(path);
+      } catch {
+        continue; // raced removal / permission — skip
+      }
+      const registered = isRegisteredDiskPath(path, registeredPaths);
+      const sizeBytes = registered ? (st.isFile() ? st.size : 0) : await dirSizeBytesAsync(path, 400_000, budget);
+      entries.push({ path, mtimeMs: st.mtimeMs, sizeBytes });
+      if (budget.truncated) break rootsLoop;
+    }
+  }
+
+  return { entries, truncated: Boolean(budget.truncated) };
 }
 
 /**
@@ -265,10 +438,7 @@ export function listDiskEntries(cat: DiskStorageCategory, budget?: DiskWalkBudge
  * missing/unreadable root resolves to `[]`/skip via the readdir throw (drops the
  * sync twin's `existsSync` TOCTOU pre-check).
  */
-export async function listDiskEntriesAsync(
-  cat: DiskStorageCategory,
-  budget?: DiskWalkBudget,
-): Promise<DiskEntry[]> {
+export async function listDiskEntriesAsync(cat: DiskStorageCategory, budget?: DiskWalkBudget): Promise<DiskEntry[]> {
   if (cat.store === 'session-dirs') {
     const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());
     const out: DiskEntry[] = [];

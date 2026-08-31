@@ -46,6 +46,13 @@ import { desc, inArray } from 'drizzle-orm';
 import { escalateAlarm } from '../alarm-attention';
 import { notifySyncInvalidate } from '../sync-sse';
 import { isPgCategory, STORAGE_CATEGORIES } from './categories';
+import {
+  isRegisteredDiskPath,
+  listDiskRootChildrenAsync,
+  registeredDiskPaths,
+  type DiskEntry,
+  type DiskRootChildScan,
+} from './disk';
 import { computeStorageUsage, type StorageUsageRow } from './usage';
 
 const GIB = 1024 ** 3;
@@ -88,6 +95,8 @@ export interface GrowthAlarmDeps {
    *  Feeds the UNDECLARED sweep below, which deliberately does NOT go through
    *  `computeStorageUsage` (that is category-derived — the blind spot). */
   listTableSizes?: () => Promise<TableSizeRow[]>;
+  /** Injectable for tests — defaults to the bounded, cooperative immediate-child disk sweep. */
+  listDiskRootChildren?: (registeredPaths: readonly string[]) => Promise<DiskRootChildScan>;
   /** Injectable for tests — defaults to one bounded COUNT per EXEMPT_SUBSET_PROBES
    *  entry. Feeds the THIRD leg: growth inside a table the other two legs are
    *  structurally forbidden to look at (WI-936229). */
@@ -113,6 +122,13 @@ export interface UndeclaredGrowth {
   floorBytes: number;
 }
 
+/** An on-disk immediate child over the shared undeclared-growth floor. */
+export interface UndeclaredDiskGrowth {
+  path: string;
+  bytes: number;
+  floorBytes: number;
+}
+
 /**
  * Floor above which a `harness_shared` table is EXPECTED to carry a retention
  * decision. Deliberately far tighter than `categoryCeilingBytes` (GBs): a
@@ -122,6 +138,11 @@ export interface UndeclaredGrowth {
  */
 export function undeclaredFloorBytes(): number {
   return envNum('PAPERCUSP_STORAGE_ALARM_UNDECLARED_MB', 128) * 1024 * 1024;
+}
+
+/** Disk uses the same floor as the catalog leg so the alarm has one policy. */
+export function undeclaredDiskFloorBytes(): number {
+  return undeclaredFloorBytes();
 }
 
 /**
@@ -154,9 +175,7 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
 
 /** Tables whose retention decision is "nothing prunes this, ever". Derived from
  *  the map above rather than re-listed, so the two cannot drift apart. */
-export function unprunedByDesignTables(
-  map: Readonly<Record<string, string>> = RETENTION_COVERED_ELSEWHERE,
-): string[] {
+export function unprunedByDesignTables(map: Readonly<Record<string, string>> = RETENTION_COVERED_ELSEWHERE): string[] {
   return Object.keys(map)
     .filter((t) => map[t].includes(NOT_AGE_PRUNABLE))
     .sort();
@@ -314,6 +333,39 @@ export function detectUndeclaredGrowth(
   return { undeclared, staleCovered };
 }
 
+/**
+ * Pure disk twin of {@link detectUndeclaredGrowth}. The scanner deliberately
+ * returns overlapping root views, so this detector repeats the exact-path
+ * deduplication as a defense-in-depth boundary. A registered path covers its
+ * descendants; only an unregistered child over the floor is reported.
+ *
+ * `incomplete` is fail-closed: a bounded walk that stopped early is UNKNOWN,
+ * not evidence that the unvisited portion is healthy. Known offenders remain
+ * useful evidence and are returned alongside that qualification.
+ */
+export function detectUndeclaredDiskGrowth(
+  entries: readonly DiskEntry[],
+  registeredPaths: readonly string[],
+  floorBytes: number = undeclaredDiskFloorBytes(),
+  truncated = false,
+): { undeclared: UndeclaredDiskGrowth[]; incomplete: boolean } {
+  const seen = new Set<string>();
+  const undeclared = entries
+    .filter((entry) => {
+      if (seen.has(entry.path)) return false;
+      seen.add(entry.path);
+      return (
+        Number.isFinite(entry.sizeBytes) &&
+        entry.sizeBytes > floorBytes &&
+        !isRegisteredDiskPath(entry.path, registeredPaths)
+      );
+    })
+    .map((entry) => ({ path: entry.path, bytes: entry.sizeBytes, floorBytes }))
+    .sort((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path));
+
+  return { undeclared, incomplete: truncated };
+}
+
 function fmtGb(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GB`;
 }
@@ -346,12 +398,14 @@ async function defaultEmitToast(t: { level: string; message: string; description
   });
   // Bound the ring buffer (mirrors agent-governor-observer).
   void (async () => {
-    const stale = await db
-      .select({ id: tl.id })
-      .from(tl)
-      .orderBy(desc(tl.createdAt))
-      .offset(TOAST_RING_BUFFER);
-    if (stale.length > 0) await db.delete(tl).where(inArray(tl.id, stale.map((r) => r.id)));
+    const stale = await db.select({ id: tl.id }).from(tl).orderBy(desc(tl.createdAt)).offset(TOAST_RING_BUFFER);
+    if (stale.length > 0)
+      await db.delete(tl).where(
+        inArray(
+          tl.id,
+          stale.map((r) => r.id),
+        ),
+      );
   })().catch(() => {});
   void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
 }
@@ -420,6 +474,32 @@ export function formatUndeclaredToast(
       `either adding a category in storage/categories.ts (with an ageColumn + federation class), or, if ` +
       `something already prunes it, recording that in RETENTION_COVERED_ELSEWHERE with the verified call ` +
       `site. Tune the floor via PAPERCUSP_STORAGE_ALARM_UNDECLARED_MB.${stale}`,
+  };
+}
+
+/** Build ONE aggregated toast for the bounded disk undeclared sweep. */
+export function formatUndeclaredDiskToast(
+  found: readonly UndeclaredDiskGrowth[],
+  incomplete = false,
+): { level: string; message: string; description: string } {
+  const lines = found.map((entry) => `• ${entry.path}: ${fmtSize(entry.bytes)}`).join('\n');
+  const floor = found[0]?.floorBytes ?? undeclaredDiskFloorBytes();
+  const qualification = incomplete
+    ? `\n\n⚠ The bounded disk walk was truncated before it could inspect every child. ` +
+      `This result is UNKNOWN, not healthy; rerun the sweep after the budget can cover the roots.`
+    : '';
+  return {
+    level: 'warning',
+    message:
+      found.length > 0
+        ? `${found.length} unowned disk entr${found.length === 1 ? 'y' : 'ies'} over ${fmtSize(floor)}`
+        : `Disk retention coverage check incomplete — unmeasured entries are UNKNOWN`,
+    description:
+      `These on-disk entries are over the undeclared-growth floor and are not covered by a registered ` +
+      `storage category. They are invisible to the category ceiling alarm by construction, so they can ` +
+      `grow without bound unnoticed:\n${lines}\n\n` +
+      `Fix by adding a storage category with an explicit retention policy, or record why the entry is ` +
+      `covered elsewhere. Tune the shared floor via PAPERCUSP_STORAGE_ALARM_UNDECLARED_MB.${qualification}`,
   };
 }
 
@@ -511,18 +591,20 @@ async function defaultListTableSizes(): Promise<TableSizeRow[]> {
 
 /** One read-only pass: size every storage category, toast on any breach. Never
  *  throws — observability is best-effort, mirroring the other periodic monitors. */
-export async function runStorageGrowthAlarmOnce(
-  deps: GrowthAlarmDeps = {},
-): Promise<{
+export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Promise<{
   checked: number;
   breaches: StorageBreach[];
   undeclared: UndeclaredGrowth[];
+  undeclaredDisk: UndeclaredDiskGrowth[];
+  diskScanIncomplete: boolean;
   exemptSubsets: ExemptSubsetGrowth[];
   exemptUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
   const listTableSizes = deps.listTableSizes ?? defaultListTableSizes;
+  const scanDiskRoots =
+    deps.listDiskRootChildren ?? ((paths: readonly string[]) => listDiskRootChildrenAsync({ registeredPaths: paths }));
   const escalate = deps.escalate;
   const recentlyEscalated = deps.recentlyEscalated;
 
@@ -571,6 +653,45 @@ export async function runStorageGrowthAlarmOnce(
     );
   }
 
+  // ── The disk undeclared sweep (the category leg cannot cover this) ────────
+  // The root list intentionally overlaps (~/.papercusp contains several named
+  // stores), and the scanner/detector both deduplicate exact child paths.
+  let undeclaredDisk: UndeclaredDiskGrowth[] = [];
+  let diskScanIncomplete = false;
+  try {
+    const declaredDiskPaths = registeredDiskPaths(STORAGE_CATEGORIES.filter((c) => c.kind === 'disk'));
+    const scan = await scanDiskRoots(declaredDiskPaths);
+    const result = detectUndeclaredDiskGrowth(
+      scan.entries,
+      declaredDiskPaths,
+      undeclaredDiskFloorBytes(),
+      scan.truncated,
+    );
+    undeclaredDisk = result.undeclared;
+    diskScanIncomplete = result.incomplete;
+    if (undeclaredDisk.length > 0 || diskScanIncomplete) {
+      try {
+        await emitToast(formatUndeclaredDiskToast(undeclaredDisk, diskScanIncomplete));
+      } catch (err) {
+        console.warn(
+          `[storage-growth-alarm] disk undeclared toast failed (non-fatal): ${(err as Error)?.message ?? String(err)}`,
+        );
+      }
+    }
+  } catch (err) {
+    diskScanIncomplete = true;
+    console.warn(
+      `[storage-growth-alarm] disk undeclared sweep skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`,
+    );
+    try {
+      await emitToast(formatUndeclaredDiskToast([], true));
+    } catch (toastErr) {
+      console.warn(
+        `[storage-growth-alarm] disk undeclared UNKNOWN toast failed (non-fatal): ${(toastErr as Error)?.message ?? String(toastErr)}`,
+      );
+    }
+  }
+
   // ── The exempt-subset sweep (the leg NEITHER of the two above can cover) ──
   // Also independent: the two legs above are blind to this class by
   // construction, so a failure in either must not suppress it.
@@ -590,5 +711,13 @@ export async function runStorageGrowthAlarmOnce(
     );
   }
 
-  return { checked: rows.length, breaches, undeclared, exemptSubsets, exemptUnknown };
+  return {
+    checked: rows.length,
+    breaches,
+    undeclared,
+    undeclaredDisk,
+    diskScanIncomplete,
+    exemptSubsets,
+    exemptUnknown,
+  };
 }

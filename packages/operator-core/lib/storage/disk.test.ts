@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dirSizeBytes, dirSizeBytesAsync, type DiskWalkBudget } from './disk';
+import { dirSizeBytes, dirSizeBytesAsync, listDiskRootChildren, type DiskWalkBudget } from './disk';
 
 /**
  * Recurrence guard for EI-6045: the synchronous recursive disk-sizing walk must
@@ -121,5 +121,55 @@ describe('dirSizeBytesAsync (WI-5471 event-loop-cooperative walk)', () => {
     } finally {
       rmSync(big, { recursive: true, force: true });
     }
+  });
+});
+
+describe('listDiskRootChildren (bounded undeclared-growth sweep)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'storage-disk-root-scan-test-'));
+    const registered = join(root, 'registered');
+    mkdirSync(registered);
+    writeFileSync(join(registered, 'owned.bin'), Buffer.alloc(100));
+    const unknown = join(root, 'unknown');
+    mkdirSync(unknown);
+    writeFileSync(join(unknown, 'unowned.bin'), Buffer.alloc(200));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps registered trees in the snapshot but skips their recursive sizing', () => {
+    const registered = join(root, 'registered');
+    const result = listDiskRootChildren({
+      roots: [root],
+      registeredPaths: [registered],
+      budget: { deadlineMs: Date.now() + 60_000 },
+    });
+    expect(result.truncated).toBe(false);
+    expect(result.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: registered, sizeBytes: 0 }),
+        expect.objectContaining({ path: join(root, 'unknown'), sizeBytes: 200 }),
+      ]),
+    );
+  });
+
+  it('deduplicates overlapping exact root-child paths and marks a child-cap cut', () => {
+    const result = listDiskRootChildren({
+      roots: [root, root],
+      maxChildren: 1,
+      budget: { deadlineMs: Date.now() + 60_000 },
+    });
+    expect(result.entries).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('marks an already-expired budget incomplete instead of claiming a healthy empty scan', () => {
+    const result = listDiskRootChildren({ roots: [root], budget: { deadlineMs: Date.now() - 1 } });
+    expect(result.entries).toEqual([]);
+    expect(result.truncated).toBe(true);
   });
 });
