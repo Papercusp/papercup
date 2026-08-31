@@ -710,6 +710,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         backend: backend as SuSessionBackend,
         carry: 'warm',
         slug: HARNESS,
+        account: backend === 'codex' ? CODEX_ACCOUNT : 'default',
         // The machine's historical OMP default may point at a retired remote
         // model. An acceptance matrix must exercise the session transport, not
         // accidentally certify whichever mutable model id happens to be saved
