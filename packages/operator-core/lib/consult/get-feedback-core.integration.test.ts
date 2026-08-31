@@ -731,6 +731,61 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     );
   });
 
+  it('CONTROL: the self-description assertions are FALSIFIABLE — the pre-fix row shape is caught', async () => {
+    // WI-1713046. The two assertions above are NEGATIVES about a row the
+    // product wrote, and a negative is satisfiable by an instrument that
+    // cannot see the field at all — `stateRow` selecting `*` today is no
+    // guarantee it will tomorrow, and `null` vs `undefined` vs a missing
+    // column all read the same through `toBeNull()`. So keep the exact row the
+    // archive serve USED to write, permanently, and prove both predicates flip.
+    //
+    // Written straight through rootSql on purpose: this must not be reachable
+    // from the product path (that is the whole point of the fix), and mutating
+    // the shared tree to re-create it would be committed by the git-sync sweep.
+    const ws = 'ws-arch-prefix-control';
+    const conv = 'arch-prefix-1';
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         routing, outcome, closed_at, wakes_used)
+      VALUES
+        (${ws}, ${conv}, 'req-1', 'resp-arch', 'closed_answered', 'q',
+         '{}'::jsonb,
+         ${rootSql.json({ source: 'archive', source_responder_id: 'resp-arch' } as never)},
+         now() - interval '1.9 seconds', 0)
+    `;
+    const bad = await stateRow(conv, ws);
+
+    // 1. Phantom responder: named, yet never woken. The pair is the defect —
+    //    either alone is legitimate elsewhere in the table.
+    expect(bad.responder_id).not.toBeNull();
+    expect(bad.wakes_used).toBe(0);
+
+    // 2. Closed before created. If the clock comparison above were inverted or
+    //    reading an absent column, this would pass too — it must not.
+    expect(new Date(bad.closed_at as string).getTime()).toBeLessThan(
+      new Date(bad.created_at as string).getTime(),
+    );
+
+    // Calibration: the instrument is not simply always-reporting-bad. The
+    // fixed shape must read clean through the SAME helper and comparison.
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         routing, outcome, closed_at, wakes_used)
+      VALUES
+        (${ws}, 'arch-postfix-1', 'req-1', NULL, 'closed_answered', 'q',
+         '{}'::jsonb,
+         ${rootSql.json({ source: 'archive', source_responder_id: 'resp-arch' } as never)},
+         now(), 0)
+    `;
+    const good = await stateRow('arch-postfix-1', ws);
+    expect(good.responder_id).toBeNull();
+    expect(new Date(good.closed_at as string).getTime()).toBeGreaterThanOrEqual(
+      new Date(good.created_at as string).getTime(),
+    );
+  });
+
   it('does not archive-serve a rubric critique answered by an owner who already graded that rubric', async () => {
     const ws = 'ws-arch-rubric-role-conflict';
     const rubricRef = 'acceptance-archive-role-conflict-2026-08-25';
