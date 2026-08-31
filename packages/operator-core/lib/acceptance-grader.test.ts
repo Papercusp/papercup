@@ -51,7 +51,15 @@ const workItems = [
   },
 ] as never;
 
-const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
+const baseCtx = {
+  workspaceId: 'ws-test',
+  harnessSlug: 'papercusp',
+  role: 'su',
+  isSuperuser: true,
+  uiClientId: 'su-grader',
+};
+const ctx = baseCtx as never;
+const callerCtx = (ownerId: string) => ({ ...baseCtx, uiClientId: ownerId }) as never;
 
 function deps(launch: ReturnType<typeof vi.fn>) {
   return {
@@ -66,6 +74,7 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     // Default the shared harness to NOT-settled so every pre-existing case keeps
     // exercising the dispatch path deterministically, without reaching a database.
     readSettlement: vi.fn(async () => ({ settled: false, reason: 'no_author_acceptance' as const, rubricRevision: 7 })),
+    lineageRelated: vi.fn(async () => false),
   };
 }
 
@@ -107,6 +116,66 @@ describe('launchAcceptanceGrader', () => {
     expect(brief).toContain('git rev-parse <superproject-ref>:<nested-path>');
     expect(brief).toContain('not evidence of a fabricated citation');
     expect(brief.length).toBeLessThan(8_000);
+  });
+
+  it('refuses a fresh judge launch when the caller is in the rubric author lineage', async () => {
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'must not launch' }],
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-forbidden' }] } },
+    }));
+    const lineageRelated = vi.fn(async () => true);
+
+    const result = await launchAcceptanceGrader('ship-the-thing', callerCtx('su-implementer'), {
+      ...deps(launch),
+      lineageRelated,
+    });
+
+    expect(result).toMatchObject({ state: 'failed', idempotencyKey: '', label: '' });
+    expect(result.error).toMatch(/launch refused.*su-implementer.*su-implementer/i);
+    expect(lineageRelated).toHaveBeenCalledWith('su-implementer', 'su-implementer', { workspaceId: 'ws-test' });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('allows a fresh judge launch for an unrelated caller', async () => {
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-independent' }] } },
+    }));
+    const lineageRelated = vi.fn(async () => false);
+
+    const result = await launchAcceptanceGrader('ship-the-thing', callerCtx('su-independent'), {
+      ...deps(launch),
+      lineageRelated,
+    });
+
+    expect(result.state).toBe('launched');
+    expect(lineageRelated).toHaveBeenCalledWith('su-implementer', 'su-independent', { workspaceId: 'ws-test' });
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses createdBy when a legacy rubric has no proposedBy author', async () => {
+    const launch = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'must not launch' }],
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-forbidden-legacy' }] } },
+    }));
+    const lineageRelated = vi.fn(async () => true);
+    const legacyRubric = {
+      rubricId: 'acceptance-ship-the-thing',
+      title: 'Ship acceptance',
+      proposedBy: null,
+      createdBy: 'su-legacy-author',
+      criteria: [{ key: 'outcome', title: 'Outcome works', description: 'The shipped outcome is verified.' }],
+    } as never;
+
+    const result = await launchAcceptanceGrader('ship-the-thing', callerCtx('su-legacy-author'), {
+      ...deps(launch),
+      getRubric: vi.fn(async () => legacyRubric),
+      lineageRelated,
+    });
+
+    expect(result.state).toBe('failed');
+    expect(lineageRelated).toHaveBeenCalledWith('su-legacy-author', 'su-legacy-author', { workspaceId: 'ws-test' });
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it('EI-21923986145923904: passes through launch-agent\'s agentStarted verdict on a fresh launch, including the honest null case', async () => {

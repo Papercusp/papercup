@@ -2,7 +2,9 @@
 import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
+import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readPlanBySlug } from './agent-tools/plans/source';
+import { areAcceptanceLineageRelated } from './acceptance-author-identity';
 import {
   readAcceptanceGradingSettlement,
   type AcceptanceGradingSettlement,
@@ -984,6 +986,8 @@ export async function launchAcceptanceGrader(
     getRubric?: typeof getAcceptanceRubricForPlan;
     getAudit?: typeof getLatestPlanAudit;
     listWork?: typeof listWorkItems;
+    /** Injectable for unit tests; production uses the canonical lineage reader. */
+    lineageRelated?: typeof areAcceptanceLineageRelated;
     launch?: typeof launchAgentTool.handler;
     listTasks?: typeof listTasks;
     killTask?: typeof killTask;
@@ -1016,7 +1020,48 @@ export async function launchAcceptanceGrader(
     return { state: 'failed', idempotencyKey: '', label: '', error: `acceptance rubric missing for '${planSlug}'` };
   if (!audit) return { state: 'failed', idempotencyKey: '', label: '', error: `plan audit missing for '${planSlug}'` };
 
-  const rubricRef = String((rubric as unknown as { rubricId: string }).rubricId);
+  const rubricRecord = rubric as unknown as {
+    rubricId: string;
+    proposedBy?: string | null;
+    createdBy?: string | null;
+  };
+  // A fresh judge must not be launched by the rubric's own author (or an
+  // identity in that author's launch/rebind lineage). Acceptance rubrics
+  // written before proposedBy was persisted only have createdBy, so retain
+  // that legacy value as the explicit fallback rather than silently disabling
+  // the guard for those rows.
+  const rubricAuthor = rubricRecord.proposedBy ?? rubricRecord.createdBy ?? null;
+  if (rubricAuthor) {
+    try {
+      const callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+      const related = await (deps.lineageRelated ?? areAcceptanceLineageRelated)(
+        rubricAuthor,
+        callerOwnerId,
+        { workspaceId: plan.row.workspaceId },
+      );
+      if (related) {
+        return {
+          state: 'failed',
+          idempotencyKey: '',
+          label: '',
+          error:
+            `acceptance grader launch refused: caller '${callerOwnerId}' is related to ` +
+            `rubric author '${rubricAuthor}'`,
+        };
+      }
+    } catch (err) {
+      return {
+        state: 'failed',
+        idempotencyKey: '',
+        label: '',
+        error:
+          `acceptance grader launch refused: could not verify caller lineage: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  const rubricRef = String(rubricRecord.rubricId);
   const identity = createHash('sha256')
     .update(
       [plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef, plan.row.version, plan.row.contentHash].join(
