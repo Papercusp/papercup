@@ -180,6 +180,15 @@ const ask = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port
 const post = (body: unknown) =>
   ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-beta': 'fine-grained-2025' }, body: JSON.stringify(body) });
 
+/** Deterministic-rig value for the SHORT bare-429 account penalty. Production is 15s
+ *  (`BARE_429_FAILOVER_BACKOFF_MS` in gateway.ts) and `bare429FailoverBackoffMs` exists so a rig can
+ *  inject a smaller one — its docstring says so verbatim. Every rig below asserts that the gateway
+ *  WAITS THE PENALTY OUT AND RECOVERS, never how long the penalty is, so a rig that omits the seam
+ *  spends the full 15s of real wall-clock on a constant none of its assertions read. Six such tests
+ *  were 91.9s of this file's 121.2s (WI-1507930). Tests that are ABOUT the penalty's length — the
+ *  16_000/18_000 pair below, the 60_000 cooled-IP hold — set their own value and must not use this. */
+const RIG_BARE_429_BACKOFF_MS = 100;
+
 test('estimateTokens — uses max_tokens for output, ~chars/4 for input', () => {
   const e = estimateTokens({ system: 'hi', messages: [{ role: 'user', content: 'hello world' }], max_tokens: 256 });
   assert.equal(e.outTok, 256);
@@ -703,7 +712,7 @@ test('ALL accounts transiently throttled (bare 429) → gateway WAITS out the sh
         res.end(JSON.stringify({ ok: true, content: 'recovered' }));
       }
     },
-    { pool },
+    { pool, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
   );
   const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(res.status, 200, 'gateway waited out the all-accounts transient throttle + retried → 200, not a forwarded retryable 429');
@@ -2624,7 +2633,7 @@ test('[B-GW-1 budget-aware] high concurrency, MAXED + HEALTHY accounts mixed: pe
         res.end(JSON.stringify({ ok: true }));
       }
     },
-    { pool, governorFor: undefined, concurrency: 24, aimd: { floor: 4 } },
+    { pool, governorFor: undefined, concurrency: 24, aimd: { floor: 4 }, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
   );
 
   const N = 40;
@@ -2671,7 +2680,7 @@ test('[B-GW-1 G1] FLEET-WIDE bare-burst → rotate-retry SUPPRESSED (no cross-ac
         res.end(JSON.stringify({ ok: true, content: 'recovered' }));
       }
     },
-    { pool, governorFor: undefined, concurrency: 8, aimd: { floor: 2 } },
+    { pool, governorFor: undefined, concurrency: 8, aimd: { floor: 2 }, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
   );
   // SIMULATE the fleet-wide state that concurrent in-flight requests create under the shared edge throttle:
   // HALF the 4-account pool (A, B) is already out of rotation. With ≥half penalized, rotating this bare-429
@@ -2726,7 +2735,7 @@ test('[B-GW-1 G6] fleet-CONCURRENCY bare-burst regression rig: N real concurrent
         res.end(JSON.stringify({ ok: true, content: 'served' }));
       }
     },
-    { pool, governorFor: undefined, concurrency: ACCOUNTS.length * 2, aimd: { floor: 2 } },
+    { pool, governorFor: undefined, concurrency: ACCOUNTS.length * 2, aimd: { floor: 2 }, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
   );
 
   const N = ACCOUNTS.length;
@@ -3074,7 +3083,7 @@ test('[429-absorb SU-3650] all-accounts transient-429 under HIGH CONCURRENCY: ab
         res.end(JSON.stringify({ ok: true }));
       }
     },
-    { pool, concurrency: 4, requestAbsorbMs: 300 },
+    { pool, concurrency: 4, requestAbsorbMs: 300, bare429FailoverBackoffMs: RIG_BARE_429_BACKOFF_MS },
   );
   const N = 20;
   const t0 = Date.now();
