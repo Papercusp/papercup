@@ -33,6 +33,23 @@ import { runWithWorkspace } from '../workspace-als';
 
 /** Min cadence floor (seconds) — mirrors blueprint:validate's EPHEMERAL_MIN_INTERVAL_SEC. */
 export const EPHEMERAL_MIN_INTERVAL_SEC = 1;
+/**
+ * WI-1406487: cadence CEILING (seconds) — mirrors blueprint:validate's
+ * EPHEMERAL_MAX_INTERVAL_SEC, which rejects a coarser ephemeral schedule outright.
+ *
+ * This runtime check is NOT redundant with that validator: a routine row can be seeded
+ * straight into `harness_shared.routines` without ever passing through blueprint:validate,
+ * which is exactly how `corpus-term-df` reached production at 21600s. `armOne` uses an
+ * in-process `managedSetInterval` that restarts from zero on every bg-host boot, so a
+ * period longer than host uptime never reaches its deadline — it fired ZERO times in 35.7h
+ * while reporting `active:true` and logging "armed" on every boot.
+ *
+ * Deliberately a LOUD WARNING rather than a skip. The defect being fixed is SILENCE, not
+ * the arming itself, and refusing to arm would change behaviour for a host whose uptime
+ * genuinely does exceed the period. This makes the un-fireable case say so; it does not
+ * decide the routine's fate.
+ */
+export const EPHEMERAL_MAX_INTERVAL_SEC = 3600;
 /** Global-heartbeat cadence: a single inventory-visible managed timer proving the executor is alive. */
 export const EPHEMERAL_HEARTBEAT_INTERVAL_MS = 30_000;
 
@@ -195,6 +212,17 @@ export function productionEphemeralExecutorDeps(): EphemeralExecutorDeps {
           if (!Number.isFinite(intervalSec) || intervalSec <= 0) {
             console.warn(`[ephemeral-executor] skipping ${r.id}: missing/invalid interval_sec`);
             continue;
+          }
+          if (intervalSec > EPHEMERAL_MAX_INTERVAL_SEC) {
+            // WI-1406487: still armed (see EPHEMERAL_MAX_INTERVAL_SEC), but never again
+            // silently. Without this line the ONLY trace of an unfireable routine is a
+            // cheerful "armed" log, which is what made corpus-term-df invisible for 35.7h.
+            console.warn(
+              `[ephemeral-executor] UNFIREABLE-CADENCE ${r.name} (${r.id}): interval_sec ${intervalSec}s ` +
+                `> ${EPHEMERAL_MAX_INTERVAL_SEC}s. This timer re-arms from zero on every host restart, so it ` +
+                `only fires if the host stays up ${Math.ceil(intervalSec / 60)}min continuously — it will most ` +
+                `likely NEVER fire. Move it to tier:durable with a cron (next_fire_at survives restarts).`,
+            );
           }
           out.push({
             id: r.id,
