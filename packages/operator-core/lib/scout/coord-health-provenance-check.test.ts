@@ -102,7 +102,7 @@ describe('provenance-check pattern emission (aggregate-only, D-004)', () => {
       ...baseInput,
       provenanceCheck: reading({ matched: 0, unmatched: 10 }),
     }).find((p) => p.ref === 'coord:computed-provenance-check')!;
-    expect(dirty.weight).toBeGreaterThan(clean.weight);
-    expect(dirty.weight).toBeLessThanOrEqual(0.65);
+    expect(dirty.weight!).toBeGreaterThan(clean.weight!);
+    expect(dirty.weight!).toBeLessThanOrEqual(0.65);
   });
 });

@@ -96,7 +96,7 @@ describe('annotateBlockedOnStatus (fail-soft)', () => {
   });
 
   it('returns entries unannotated (never throws) when the database is unreachable', async () => {
-    const entries = [
+    const entries: Record<string, unknown>[] = [
       {
         msg_id: 'm1',
         ts: '2026-08-31T12:00:00Z',
