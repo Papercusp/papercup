@@ -325,8 +325,15 @@ describe('gate wiring safety contract', () => {
 
   it('persists a validated clean first pass from the task-settlement callback', () => {
     const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
-    const pool = AFFECTED_TESTS_SRC.indexOf('const initialPool = await runBudgetedTaskShards');
+    // Anchor on the ASSIGNMENT, not the declaration: the contract is that the persist
+    // callback is defined before the pool is CONSTRUCTED, which is independent of whether
+    // the pool is held in a `const` or hoisted into a `let` and assigned later. Pinning
+    // `const initialPool = await` made a pure refactor (`let initialPool;` + assignment)
+    // read as a contract violation, and the resulting `expected <n> to be less than -1`
+    // hid the real cause — so assert the anchor resolved before comparing positions.
+    const pool = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards');
     expect(persist).toBeGreaterThan(-1);
+    expect(pool).toBeGreaterThan(-1);
     expect(persist).toBeLessThan(pool);
     expect(AFFECTED_TESTS_SRC).toContain('onTaskSettled: persistCleanFirstPassTaskVerdict');
     expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
