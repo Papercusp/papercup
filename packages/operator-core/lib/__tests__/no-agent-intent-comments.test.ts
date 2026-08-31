@@ -161,6 +161,8 @@ describe('the guard over the REAL tree', () => {
       cwd: repoRoot,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     expect(run.stderr ?? '').not.toMatch(/Error|Cannot find/i);
     expect(`${run.stdout}${run.stderr}`).toMatch(/0 findings/);
@@ -172,6 +174,8 @@ describe('the guard over the REAL tree', () => {
       cwd: repoRoot,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     const scanned = Number(/scanned (\d+) files/.exec(run.stdout ?? '')?.[1] ?? 0);
     expect(scanned).toBeGreaterThan(5000);
