@@ -44,6 +44,16 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'intel:read',
     'operator:write',
     'testing:run',
+    // The ATTRIBUTION pair. The persona forbids `git blame` for "who caused this"
+    // (git-sync commits the whole tree under one identity — WI-5111) and directs the
+    // fixer to the two read-only routes that DO resolve: the commissioning
+    // work-item/plan-item (`plans:get` → plans:read) and, when that fails,
+    // `sessions:search` correlated to the commit time (→ search:read). Both are
+    // declared in the release-fix blueprint's `dependencies.tools`; without the caps
+    // the allowlist half is inert and the mandated procedure dead-ends in
+    // missing_capability. Read-only: neither admits a plan/session WRITE.
+    'plans:read',
+    'search:read',
   ],
   // Dedicated plan-acceptance judges are evidence-only: they may read the rubric,
   // prior scorecards, test-run ledger, and work-item completion evidence; emit the
