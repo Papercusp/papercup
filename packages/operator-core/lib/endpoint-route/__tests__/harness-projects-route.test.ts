@@ -48,6 +48,7 @@ vi.mock('../../harness-core', async (importActual) => ({
   harnessDir: (p: { path: string }) => `${p.path}/.papercusp`,
 }));
 
+import { pinModuleState } from '@papercusp/module-singleton';
 import { bustProjectsLiteCache } from '../../harness/projects-lite';
 import type { RouteContext } from '../define-route';
 
@@ -76,15 +77,24 @@ function resetProjectsCache(): void {
   // The route module captures the cache object reference at import time —
   // mutate it in place (replacing the global would leave the module's
   // captured reference stale).
-  const key = Symbol.for('papercusp.harnessProjectsCache');
-  const g = globalThis as Record<symbol, { sig: string; expires: number; inflight: unknown; value: unknown } | undefined>;
-  const entry = g[key];
-  if (entry) {
-    entry.sig = '';
-    entry.expires = 0;
-    entry.inflight = null;
-    entry.value = null;
-  }
+  // Reach the entry THROUGH pinModuleState — the same primitive the route pins it
+  // with — not through a hand-rolled `globalThis[Symbol.for(key)]`. pinModuleState
+  // stores every slot inside ONE container (Symbol.for('@papercusp/module-singleton
+  // .slots')), so the raw per-key symbol lookup this used to do resolved `undefined`,
+  // the `if (entry)` guard never fired, and the reset silently did NOTHING: the first
+  // test in each block passed on a cold cache while every later one inherited its warm
+  // one and saw zero queries. That is exactly the failure the sibling comment below
+  // already records for projects-lite (EI-19479108855357092) — target the module's
+  // STATE, never the storage location. Called for the key's side effect of returning
+  // the existing pinned object; `init` only runs if nothing is pinned yet.
+  const entry = pinModuleState<{ sig: string; expires: number; inflight: unknown; value: unknown }>(
+    'papercusp.harnessProjectsCache',
+    () => ({ sig: '', expires: 0, inflight: null, value: null }),
+  );
+  entry.sig = '';
+  entry.expires = 0;
+  entry.inflight = null;
+  entry.value = null;
   // Bust THROUGH the module's own seam. This used to `delete` the
   // globalThis slot directly — i.e. target the storage LOCATION rather than the
   // module's state — which keeps compiling and silently busts NOTHING once that
