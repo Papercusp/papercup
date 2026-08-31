@@ -122,6 +122,7 @@ export const BORROWABLE = [
   ['libs/generic/resumable-download',             'Pure utilities & infra'],
   ['libs/generic/result-encoding',                'Pure utilities & infra'],
   ['libs/generic/module-singleton',                'Pure utilities & infra'],
+  ['libs/generic/debounce-coalesce',              'Pure utilities & infra'],
   ['libs/generic/search',                     'Search & retrieval'],
   ['libs/generic/search-core',                    'Search & retrieval'],
   ['libs/generic/rerank',                         'Search & retrieval'],

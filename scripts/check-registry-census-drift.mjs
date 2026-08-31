@@ -361,7 +361,8 @@ async function main() {
 
   if (!files.length) {
     if (!json) console.log('check-registry-census-drift: no source files given — nothing to check');
-    process.exit(0);
+    process.exitCode = 0;
+    return;
   }
 
   const results = [];
@@ -377,7 +378,10 @@ async function main() {
   }
 
   if (json) console.log(JSON.stringify({ results }, null, 2));
-  process.exit(check && anyFindings ? 1 : 0);
+  // Set the status and let the program end naturally: process.exit() here would
+  // truncate the unbounded --json dump above when stdout is a pipe
+  // (lint:no-undrained-stdout-exit).
+  process.exitCode = check && anyFindings ? 1 : 0;
 }
 
 /**
