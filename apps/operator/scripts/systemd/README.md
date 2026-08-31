@@ -3,9 +3,30 @@
 `papercusp-user-manager-watchdog.{service,timer}` is the recovery actor for a
 failure that user-scoped monitoring cannot repair: `user@1000.service` itself
 dying. The timer runs under the system manager, verifies that uid 1000 still has
-`Linger=yes`, and waits for two observations spanning at least 60 seconds before
+linger enabled, and waits for two observations spanning at least 60 seconds before
 starting the manager. `activating`, `deactivating`, and `reloading` states reset
 the observation window, so a deliberate restart cannot race the watchdog.
+
+**Linger is read from the DURABLE marker `/var/lib/systemd/linger/<username>`,
+never from `loginctl` alone (WI-1430770).** `loginctl show-user` queries logind's
+LIVE user object, which is destroyed once the user manager exits and the last
+session is removed — so it exits 1 with *"User ID N is not logged in or
+lingering"* EXACTLY when the manager is down. This script used to gate on that
+call and treat the failure as fatal, which made its enabling check succeed only
+while it had nothing to do. On 2026-08-30 the user manager was SIGTERMed at
+21:32:45; the watchdog then failed on that single line once a minute for 13
+consecutive runs while the desktop session and the entire agent fleet stayed
+down, until the owner logged back in by hand at 21:46:37 — 13m52s. `loginctl` is
+now only corroboration, and its failure is an ordinary observation of a down
+manager. The healthy-path log line names which source answered, so a regression
+is visible in the journal before it costs anything:
+
+```
+healthy: user@1000.service is active (linger source: /var/lib/systemd/linger/<username>)
+```
+
+If that ever reads `linger source: loginctl` on a host where the marker should
+exist, the watchdog is one manager-exit away from being inert again.
 
 ## Install or update
 
@@ -50,6 +71,85 @@ session's service plane.
 ```bash
 sudo systemctl disable --now papercusp-user-manager-watchdog.timer
 sudo rm -f /etc/systemd/system/papercusp-user-manager-watchdog.{service,timer,sh}
+sudo systemctl daemon-reload
+```
+
+---
+
+# User-manager signal audit — installation (WI-1430770)
+
+`papercusp-usermgr-signal-audit.{service,timer}` is the FORENSIC half of the
+watchdog above: it arms an audit rule recording every `kill()`/`tgkill()` aimed
+at the current main process of `user@1000.service`, so a signal that tears the
+manager down names its sender.
+
+**Why it exists.** When the manager was SIGTERMed on 2026-08-30, the sender could
+not be identified at all. This host's audit rules capture only signal 9
+(`-S kill -F a1=0x9 -k sigkill`) and only `execve` of the session binaries
+(`systemctl`/`loginctl`/`pkill`/`killall`/`kill`/`gnome-session-quit`/`systemd-run`,
+`-k session_ctl`). A direct in-process `kill(pid, SIGTERM)` matches neither and
+leaves no trace. The rule is pinned to one pid, so it closes that gap for the
+process whose death costs the whole box while adding no measurable audit volume.
+
+The rule is pid-pinned, so it is re-armed every minute: the manager's MainPID
+changes on every restart, and an auditd restart flushes the ruleset outright.
+
+This is a SEPARATE unit rather than a few lines inside the watchdog on purpose.
+`auditctl` speaks `NETLINK_AUDIT`, and the watchdog runs with
+`RestrictAddressFamilies=AF_UNIX`. Widening the recovery actor's sandbox to carry
+a forensic nicety would be a bad trade — nothing should enlarge the failure
+surface of the thing whose job is to come back up.
+
+## Install or update
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+sudo install -o root -g root -m 0755 papercusp-usermgr-signal-audit.sh \
+  /etc/systemd/system/papercusp-usermgr-signal-audit.sh
+sudo install -o root -g root -m 0644 papercusp-usermgr-signal-audit.service \
+  /etc/systemd/system/papercusp-usermgr-signal-audit.service
+sudo install -o root -g root -m 0644 papercusp-usermgr-signal-audit.timer \
+  /etc/systemd/system/papercusp-usermgr-signal-audit.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now papercusp-usermgr-signal-audit.timer
+```
+
+## Verify
+
+```bash
+sudo systemctl start papercusp-usermgr-signal-audit.service
+journalctl -u papercusp-usermgr-signal-audit.service --since "5 min ago" --no-pager
+sudo auditctl -l | grep usermgr_signal
+```
+
+A positive control, safe to run at any time — signal 0 is a permission check that
+delivers nothing, and the rule matches on the target pid regardless of signal:
+
+```bash
+kill -0 "$(systemctl show user@1000.service -p MainPID --value)"
+sudo ausearch -k usermgr_signal -ts recent
+```
+
+The resulting `SYSCALL` record carries `syscall=62` (kill), `a0` = the target pid
+in hex, `a1` = the signal, and — the point of the whole exercise — the sender's
+`pid`, `ppid`, `auid`, `comm`, `exe`, and full `PROCTITLE`.
+
+**Known limit, stated rather than assumed away:** `pidfd_send_signal` carries a
+pidfd in `a0`, not a pid, so it cannot be filtered this way. A sender using it
+stays invisible to this rule.
+
+## Read it after an incident
+
+```bash
+sudo ausearch -k usermgr_signal -ts today
+```
+
+## Roll back
+
+```bash
+sudo systemctl disable --now papercusp-usermgr-signal-audit.timer
+sudo auditctl -l | grep usermgr_signal   # then -d the listed rule if still loaded
+sudo rm -f /etc/systemd/system/papercusp-usermgr-signal-audit.{service,timer,sh}
 sudo systemctl daemon-reload
 ```
 

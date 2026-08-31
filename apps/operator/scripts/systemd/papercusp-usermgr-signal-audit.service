@@ -1,0 +1,32 @@
+[Unit]
+Description=Papercusp audit arming for signals sent to the systemd user manager (WI-1430770)
+Documentation=file:///etc/systemd/system/papercusp-usermgr-signal-audit.sh
+Wants=auditd.service
+After=auditd.service user@1000.service
+StartLimitIntervalSec=5min
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+User=root
+Environment=PAPERCUSP_USERMGR_SIGNAL_AUDIT_UID=1000
+Environment=PAPERCUSP_USERMGR_SIGNAL_AUDIT_STATE_DIR=/run/papercusp-usermgr-signal-audit
+Environment=PAPERCUSP_USERMGR_SIGNAL_AUDIT_KEY=usermgr_signal
+RuntimeDirectory=papercusp-usermgr-signal-audit
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/etc/systemd/system/papercusp-usermgr-signal-audit.sh
+TimeoutStartSec=30
+UMask=0022
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/run/papercusp-usermgr-signal-audit
+# auditctl talks to the kernel over NETLINK_AUDIT, so unlike the recovery
+# watchdog this unit cannot be confined to AF_UNIX. CAP_AUDIT_CONTROL is what
+# actually authorises the rule change; everything else stays dropped.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_AUDIT_CONTROL CAP_AUDIT_READ CAP_DAC_OVERRIDE
