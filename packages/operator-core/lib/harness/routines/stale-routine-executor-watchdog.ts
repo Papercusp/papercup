@@ -39,6 +39,7 @@
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { hostIdentity } from '../../serving-host-identity';
 import {
   processBootCommitSha,
   processBootTimeMs,
@@ -125,8 +126,11 @@ function routinesEnabledHere(): boolean {
  *  (stable across restarts of "the same" logical service — :3070/:3170/:3270);
  *  falls back to a pid-scoped identity when no port is resolvable. */
 export function executorIdentity(): string {
-  const port = process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT;
-  return port ? `port-${port}` : `pid-${process.pid}`;
+  // WI-1565914: ONE host vocabulary, shared with the `serving_host` column on
+  // harness_shared.tool_invocations. Computing the label separately here would let
+  // the two drift, and a drifted label cannot be joined — the staleness page and the
+  // calls that host actually served would silently stop lining up.
+  return hostIdentity();
 }
 
 export interface ExecutorAlarmContext {

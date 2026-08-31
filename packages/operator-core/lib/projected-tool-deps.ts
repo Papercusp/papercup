@@ -55,6 +55,7 @@ import { recordDecisionLedger } from './decision-ledger/emit';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readAgentStateStamp } from './agent-state-stamp';
 import { classifyCallOrigin } from './telemetry-call-origin';
+import { getServingHostIdentity } from './serving-host-identity';
 import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
 import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvidence } from './goals/kickoff-evidence';
@@ -289,10 +290,11 @@ const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
     principal_kind, principal_auth_method, principal_trust, error_code,
     coord_owner_id, invoked_at,
     intent_event_id, assumption_set_id, goal_ref,
-    call_origin, call_origin_source)
+    call_origin, call_origin_source,
+    serving_host, serving_process_id, serving_build_sha)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
          $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz,
-         $27,$28,$29,$30,$31)`;
+         $27,$28,$29,$30,$31,$32,$33,$34)`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -599,6 +601,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     requestOrigin: input.ctx.requestOrigin,
     spawnId: input.ctx.spawnId,
   });
+  const servingHost = getServingHostIdentity();
   return {
     workspaceId: input.ctx.workspaceId,
     params: [
@@ -644,6 +647,17 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       stamp.goalRef,
       callOrigin.origin,
       callOrigin.source,
+      // WI-1565914: WHICH HOST PROCESS served this call, and what code it had
+      // loaded. Every other column here describes the CALLER; without these, a
+      // behavioural difference between two concurrently-running hosts is
+      // invisible, and `spawn_id` cannot stand in — it is a label, not a process
+      // (all 490 subscription-driven pot:wake rows carry the literal
+      // 'event-reaction'). Three process CONSTANTS off one cached read; a null
+      // serving_build_sha means the loaded bytes are UNPROVEN and is never
+      // backfilled with the checkout's HEAD. See lib/serving-host-identity.ts.
+      servingHost.host,
+      servingHost.processId,
+      servingHost.buildSha,
     ],
   };
 }
