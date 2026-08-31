@@ -564,6 +564,35 @@ describe('argument schema', () => {
   });
 });
 
+// EI-21769332722376884 made `harness` an accepted-and-ignored arg here; this
+// pins that so it cannot be silently reverted. The sibling read `loop:status`
+// deliberately REJECTS `harness` and has a test asserting so
+// (EI-20232692935534790), so a later consistency sweep across the loop tools
+// could reasonably "correct" this one back to rejecting and re-open
+// EI-21938191079973393. The two tools genuinely disagree; whichever way that is
+// eventually reconciled, it should be a deliberate decision that has to delete a
+// test, not a silent edit.
+describe('the habitual `harness` argument (EI-21769332722376884)', () => {
+  it('is accepted rather than rejected as invalid_args', () => {
+    const schema = (endTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
+    expect(schema.safeParse({ harness: 'papercusp' }).success).toBe(true);
+    // Negative control: an undeclared arg still fails, so the assertion above is
+    // a statement about `harness` specifically and not about a permissive schema
+    // that would accept anything.
+    expect(schema.safeParse({ notARealArgument: 'x' }).success).toBe(false);
+  });
+
+  it('is IGNORED — the caller’s own loop is ended, never one redirected by harness', async () => {
+    const got = await run({ harness: 'some-other-harness' });
+
+    expect(got).toMatchObject({ ok: true, ended: true });
+    // Guarded behaviourally, not by field name: a schema-only assertion would
+    // still pass if `harness` ever began redirecting the write somewhere else.
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+    expect(deactivateLoopMock.mock.calls[0][0]).toBe('su-caller-own-id');
+  });
+});
+
 describe('the surviving-awaits receipt (EI-21349668185386229)', () => {
   // The disproven claim this fix retires. The new wordings ("no further LOOP
   // wakes") deliberately do not contain this substring, so the assertion
