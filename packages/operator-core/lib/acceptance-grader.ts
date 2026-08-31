@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { readPlanBySlug } from './agent-tools/plans/source';
+import {
+  readAcceptanceGradingSettlement,
+  type AcceptanceGradingSettlement,
+} from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems } from './work-items';
@@ -30,8 +34,12 @@ export type AssignedGrader = {
 
 export type AcceptanceGraderLifecycle = {
   /** 'assigned' (P-011/D-009): existing non-excluded, reachable agents were
-   * selected by the relevance router — no fresh judge was launched. */
-  state: 'launched' | 'deduped' | 'failed' | 'assigned';
+   * selected by the relevance router — no fresh judge was launched.
+   * 'settled' (WI-1699998): nothing was dispatched at all, because this rubric's
+   * grading is ALREADY DECIDED at its current revision — see `settlement`. This is
+   * a success, not a failure: re-routing a decided grading burns a non-replenishable
+   * independent grader. */
+  state: 'launched' | 'deduped' | 'failed' | 'assigned' | 'settled';
   idempotencyKey: string;
   label: string;
   launch?: unknown;
@@ -92,6 +100,11 @@ export type AcceptanceGraderLifecycle = {
   /** Wake delivery for the HEAD grader ({ woke: 0 } = parked; they read the
    * grading request on their next turn — the subscribe is durable). */
   notified?: { woke: number };
+  /** Why dispatch was skipped (state 'settled'), or — on any other state — the
+   * not-settled reading that ALLOWED the dispatch. Recorded on both paths on
+   * purpose: a skip nobody can see is how this bug class hides, and so is a
+   * dispatch whose settlement read silently failed open. */
+  settlement?: AcceptanceGradingSettlement;
   /** A stable launch receipt may outlive the judge mission it originally
    * represented. When that receipt pointed at an ended/over-age task, these
    * are the stale task ids bypassed before a fresh deterministic retry. */
@@ -860,8 +873,10 @@ export async function resolveAcceptanceGrader(
   deps: Parameters<typeof launchAcceptanceGrader>[2] & {
     discover?: typeof prodDiscoverGrader;
     openCascade?: typeof prodOpenGradingCascade;
+    readSettlement?: typeof readAcceptanceGradingSettlement;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
+  let settlement: AcceptanceGradingSettlement | undefined;
   let discovery:
     | {
         excluded: string[];
