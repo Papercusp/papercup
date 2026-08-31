@@ -37,6 +37,8 @@
  * re-fire".
  */
 
+import { formatIdleAge } from '../format/relative-time';
+
 /**
  * The statuses that can actually reach a reader as `gate_health.inconclusive`.
  *
@@ -206,4 +208,109 @@ export function gateAbortLever(status: string): string {
     default:
       return `clear the gate's abort condition (${status}) — it renders no verdict until then, and re-firing aborts the same way`;
   }
+}
+
+/**
+ * WI-1752145: how old a recorded abort may be before a reader must stop reading it as a
+ * description of NOW.
+ *
+ * ## Why the abort record needs its OWN vintage, separate from the verdict's
+ *
+ * `gate_health.inconclusive` is written by `jsonb_set` on the `{gate_health,inconclusive}`
+ * PATH (release-actions.ts), deliberately NOT through the full-blob replace that every real
+ * verdict takes. That is correct — an abort judged no code, so it must not disturb the
+ * verdict counters — but it has a consequence nothing was reporting: **the top-level
+ * `gate_health.observedAt` does not advance when a tick aborts.** The two vintages under one
+ * payload therefore drift without bound, and `readAttestation.snapshotAgeMs` (derived from
+ * the top-level stamp) describes the VERDICT, never the abort sitting beside it.
+ *
+ * Measured live 2026-08-31 across the green-checkpoint rows that carried an abort:
+ *
+ * | install     | top-level `observedAt` | `inconclusive.observedAtMs` | skew    |
+ * |-------------|------------------------|-----------------------------|---------|
+ * | portal      | 12:43:33Z              | 15:38:11Z                   | +2h55m  |
+ * | hello-world-3 | 15:14:11Z            | 15:14:15Z                   | +4s     |
+ * | oddsmith    | 2026-08-25 21:39Z      | 15:06:24Z                   | +5.7d   |
+ * | readinglist | 2026-08-26 00:15Z      | 15:00:10Z                   | +5.6d   |
+ *
+ * The originating incident is the other direction of the same gap: an abort observed at
+ * 11:23:52Z naming `migrations-pending` on migration 1044 was still being served ~1h after
+ * 1044 APPLIED (11:27:20Z), and was repeated downstream as current fact. The record is
+ * LATCHED — it persists until some later tick overwrites or clears it — so its age is the
+ * one thing a reader needs and the one thing no surface printed.
+ *
+ * ## Why `stale` is nullable, and why that is the load-bearing part
+ *
+ * A blob written before `inconclusive.observedAtMs` existed carries no stamp at all. Such a
+ * record MUST NOT render as `stale: false` — an unmeasured value presented as a clean
+ * negative is exactly the failure this helper exists to stop, and it is worse than printing
+ * nothing because it manufactures confidence. `null` means UNKNOWN VINTAGE and is reported as
+ * such; only a real subtraction can produce `true` or `false`.
+ */
+export const GATE_ABORT_VINTAGE_STALE_MS = 90 * 60_000;
+
+export interface GateAbortVintage {
+  /** The abort record's own stamp, or null when the blob predates the field. */
+  observedAtMs: number | null;
+  /** Age at read time. Null ⇒ unknown vintage, never "fresh". */
+  ageMs: number | null;
+  /** Compact human age ("4s", "2h55m", "5d17h"). Null alongside `ageMs`. */
+  age: string | null;
+  /**
+   * True past `staleAfterMs`, false within it, and **null when the vintage is unknown**.
+   * Read `=== true` / `=== false`; a falsy check silently promotes unknown to fresh.
+   */
+  stale: boolean | null;
+  /**
+   * The sentence to append to a load-bearing abort claim. Non-null ONLY when the record is
+   * provably stale or provably unstamped — a fresh abort is deliberately left undecorated,
+   * because a disclosure that fires on every read is one a reader learns to skip.
+   */
+  warning: string | null;
+}
+
+/**
+ * Pure: pair a recorded abort with its own age, so the claim and its vintage travel together.
+ *
+ * Callers pass `nowMs` explicitly rather than reading the clock here, so both the
+ * `routines:list` attestation and the `dev:pipeline_position` sentence are deterministically
+ * testable in both directions — fresh and stale — from one implementation.
+ */
+export function gateAbortVintage(args: {
+  status: string;
+  observedAtMs: number | null | undefined;
+  nowMs: number;
+  staleAfterMs?: number;
+}): GateAbortVintage {
+  const staleAfterMs = args.staleAfterMs ?? GATE_ABORT_VINTAGE_STALE_MS;
+  const observedAtMs =
+    typeof args.observedAtMs === 'number' && Number.isFinite(args.observedAtMs) ? args.observedAtMs : null;
+
+  if (observedAtMs === null) {
+    return {
+      observedAtMs: null,
+      ageMs: null,
+      age: null,
+      stale: null,
+      warning:
+        `⚠ This abort record (${args.status}) carries NO observation timestamp, so its age cannot be ` +
+        `established — do not read it as current. The record is latched and persists until a later ` +
+        `tick overwrites it; confirm the condition first-hand before acting on it.`,
+    };
+  }
+
+  const ageMs = Math.max(0, args.nowMs - observedAtMs);
+  const stale = ageMs > staleAfterMs;
+  return {
+    observedAtMs,
+    ageMs,
+    age: formatIdleAge(ageMs / 1000),
+    stale,
+    warning: stale
+      ? `⚠ This abort was observed ${formatIdleAge(ageMs / 1000)} ago and is LATCHED — it persists until a ` +
+        `later tick overwrites it, so it describes that observation, not necessarily now. The condition it ` +
+        `names may already have cleared (measured 2026-08-31: a 'migrations-pending' abort served ~1h after ` +
+        `its migration had applied). Confirm it first-hand before acting on it.`
+      : null,
+  };
 }
