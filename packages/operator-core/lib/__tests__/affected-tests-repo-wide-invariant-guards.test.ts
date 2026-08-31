@@ -125,8 +125,45 @@ function dryTasks(changedPaths: string, base?: string): string {
   expect(res.error, `CLI failed to spawn: ${res.error?.message}`).toBeUndefined();
   const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
   expect(out, 'probe produced no output — cannot conclude anything about task selection').not.toBe('');
-  expect(out).toContain('AFFECTED_TESTS_RESULT');
+  // A NON-ZERO exit means the CLI aborted BEFORE it routed anything, so this run says
+  // nothing about task selection either way. Checking it is what stops the abort from
+  // being misattributed: without it the next assertion is the one that fails, as
+  // `expected 'file:///…' to contain 'AFFECTED_TESTS_RESULT'` — a message that names the
+  // routing contract while the actual cause is a crash, and that truncates to the stack's
+  // first line so the real error is not even visible. On this shared tree the usual cause
+  // is a PEER's half-written file in the runner's import graph (measured 2026-08-30T15:07Z:
+  // `constEMPTY_MARKER_DEBRIS_MS` — a missing space in scripts/lib/preempt-markers.mjs —
+  // reddened this suite as if its routing had regressed). `--dry` builds the task list and
+  // exits 0 on every path class, so a non-zero status here is never a legitimate verdict.
+  expect(res.status, dryAbortDiagnostic(changedPaths, res.status, out)).toBe(0);
+  expect(out, `CLI exited 0 but emitted no ${RESULT_MARKER} verdict line:\n${outputTail(out)}`).toContain(
+    RESULT_MARKER,
+  );
   return out;
+}
+
+const RESULT_MARKER = 'AFFECTED_TESTS_RESULT';
+
+/** Last `limit` lines of a probe's combined output — the part that carries the real error. */
+function outputTail(out: string, limit = 12): string {
+  return out.trimEnd().split('\n').slice(-limit).join('\n');
+}
+
+/**
+ * The message a reader gets when the probe CLI aborts. It must name the abort as the
+ * subject and surface the underlying stack, because the failure it replaces pointed at
+ * the routing contract instead and hid the cause.
+ */
+function dryAbortDiagnostic(changedPaths: string, status: number | null, out: string): string {
+  return [
+    `affected-tests CLI ABORTED (exit ${status ?? 'null'}) before producing a ${RESULT_MARKER} verdict.`,
+    'This is NOT a routing regression in the guard under test — the runner never got far enough',
+    'to route anything. The usual cause is a syntax/module-load error in the runner\'s import',
+    'graph, often a peer\'s in-flight edit on this shared tree; re-run once the tree is clean.',
+    `  probed --changed-paths: ${changedPaths}`,
+    '  CLI output (tail):',
+    outputTail(out),
+  ].join('\n');
 }
 
 function commitSha(ref: string): string {

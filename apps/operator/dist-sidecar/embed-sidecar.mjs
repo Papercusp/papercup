@@ -19959,7 +19959,10 @@ var toolInvocationsInHarnessShared = harnessShared.table("tool_invocations", {
   assumptionSetId: bigint("assumption_set_id", { mode: "number" }),
   goalRef: text("goal_ref"),
   callOrigin: text("call_origin"),
-  callOriginSource: text("call_origin_source")
+  callOriginSource: text("call_origin_source"),
+  servingHost: text("serving_host"),
+  servingProcessId: text("serving_process_id"),
+  servingBuildSha: text("serving_build_sha")
 }, (table) => [
   index("tool_invocations_coord_owner_idx").using("btree", table.coordOwnerId.asc().nullsLast().op("text_ops"), table.invokedAt.desc().nullsFirst().op("timestamptz_ops")).where(sql`(coord_owner_id IS NOT NULL)`),
   index("tool_invocations_error_code_idx").using("btree", table.errorCode.asc().nullsLast().op("text_ops"), table.invokedAt.asc().nullsLast().op("timestamptz_ops")).where(sql`(error_code IS NOT NULL)`),
@@ -19968,6 +19971,7 @@ var toolInvocationsInHarnessShared = harnessShared.table("tool_invocations", {
   index("tool_invocations_invoked_at_cov_idx").using("btree", table.invokedAt.desc().nullsFirst().op("timestamptz_ops"), table.toolName.asc().nullsLast(), table.durationMs.asc().nullsLast(), table.status.asc().nullsLast()),
   index("tool_invocations_parent_spawn_partial_idx").using("btree", table.parentSpawnId.asc().nullsLast().op("text_ops")).where(sql`((parent_spawn_id IS NOT NULL) AND (parent_spawn_id <> ''::text))`),
   index("tool_invocations_quota_idx").using("btree", table.workspaceId.asc().nullsLast().op("text_ops"), table.toolName.asc().nullsLast().op("text_ops"), table.role.asc().nullsLast().op("text_ops"), table.windowKey.asc().nullsLast().op("text_ops"), table.status.asc().nullsLast()).where(sql`(status = ANY (ARRAY['ok'::text, 'refused'::text]))`),
+  index("tool_invocations_serving_host_idx").using("btree", table.servingHost.asc().nullsLast().op("text_ops"), table.invokedAt.desc().nullsFirst().op("timestamptz_ops")).where(sql`(serving_host IS NOT NULL)`),
   index("tool_invocations_spawn_id_ws_idx").using("btree", table.workspaceId.asc().nullsLast().op("text_ops"), table.spawnId.asc().nullsLast().op("text_ops")),
   index("tool_invocations_telemetry_idx").using("btree", table.workspaceId.asc().nullsLast().op("text_ops"), table.harnessSlug.asc().nullsLast().op("text_ops"), table.invokedAt.desc().nullsFirst().op("timestamptz_ops")),
   pgPolicy("tool_invocations_workspace_isolation", { as: "permissive", for: "all", to: ["public"], using: sql`(workspace_id = current_setting('app.workspace_id'::text, true))`, withCheck: sql`(workspace_id = current_setting('app.workspace_id'::text, true))` })
@@ -46558,7 +46562,15 @@ function validateEmbedRequest(body) {
       return { error: `texts[${i}] exceeds ${MAX_TEXT_CHARS} chars (got ${t.length}) \u2014 truncate before embedding` };
     }
   }
-  return { model, kind: b2.kind, texts: b2.texts };
+  if (b2.bypassCache !== void 0 && typeof b2.bypassCache !== "boolean") {
+    return { error: `bypassCache must be a boolean (got '${String(b2.bypassCache)}')` };
+  }
+  return {
+    model,
+    kind: b2.kind,
+    texts: b2.texts,
+    bypassCache: b2.bypassCache === true
+  };
 }
 var warmTokens = (env) => (env[EMBED_SIDECAR_WARM_ENV] ?? "").split(",").map((s) => s.trim()).filter((s) => s !== "");
 function resolveWarmModels(env = process.env) {
@@ -46849,30 +46861,37 @@ function createEmbedSidecarServer(opts = {}) {
       vecCache.delete(oldest);
     }
   };
-  const computeCached = (key, work, signal, batch) => {
+  const computeCached = (key, work, signal, batch, tally, bypassCache = false) => {
     if (signal.aborted) return Promise.reject(new SidecarRequestAbortedError());
-    const cached3 = cacheGet(key);
-    if (cached3) {
-      cacheHits++;
-      return Promise.resolve(cached3);
+    if (!bypassCache) {
+      const cached3 = cacheGet(key);
+      if (cached3) {
+        cacheHits++;
+        if (tally) tally.hits++;
+        return Promise.resolve(cached3);
+      }
     }
-    let entry = inflight.get(key);
+    let entry = bypassCache ? void 0 : inflight.get(key);
     if (entry) {
       cacheHits++;
+      if (tally) tally.coalesced++;
     } else {
       cacheMisses++;
+      if (tally) tally.inferred++;
       entry = { task: enqueue(work, batch), consumers: 0 };
-      inflight.set(key, entry);
-      const owned2 = entry;
-      void owned2.task.promise.then(
-        (value) => {
-          if (owned2.consumers > 0) cachePut(key, value);
-        },
-        () => {
-        }
-      ).finally(() => {
-        if (inflight.get(key) === owned2) inflight.delete(key);
-      });
+      if (!bypassCache) {
+        inflight.set(key, entry);
+        const owned2 = entry;
+        void owned2.task.promise.then(
+          (value) => {
+            if (owned2.consumers > 0) cachePut(key, value);
+          },
+          () => {
+          }
+        ).finally(() => {
+          if (inflight.get(key) === owned2) inflight.delete(key);
+        });
+      }
     }
     const owned = entry;
     owned.consumers++;
@@ -46914,7 +46933,7 @@ function createEmbedSidecarServer(opts = {}) {
       );
     });
   };
-  const embedOneCached = (model, kind, text2, signal, batch) => computeCached(
+  const embedOneCached = (model, kind, text2, signal, batch, tally, bypassCache = false) => computeCached(
     `${model}:${kind}\0${text2}`,
     (taskSignal) => runSidecarUnit({
       admissionClass: "embedding",
@@ -46933,7 +46952,9 @@ function createEmbedSidecarServer(opts = {}) {
       }
     }),
     signal,
-    batch
+    batch,
+    tally,
+    bypassCache
   );
   const rerankOneCached = (model, query, text2, signal, batch) => computeCached(
     `${model}\0${query}\0${text2}`,
@@ -46975,14 +46996,18 @@ function createEmbedSidecarServer(opts = {}) {
     }
     try {
       const batch = createQueueBatch();
+      const tally = { hits: 0, coalesced: 0, inferred: 0 };
       const vectors = await Promise.all(
-        v.texts.map((text2) => embedOneCached(v.model, v.kind, text2, signal, batch))
+        v.texts.map(
+          (text2) => embedOneCached(v.model, v.kind, text2, signal, batch, tally, v.bypassCache === true)
+        )
       );
       const body = {
         vectors,
         dims: vectors[0]?.length ?? 0,
         runtime: EMBED_SIDECAR_RUNTIME,
-        modelRev: MODEL_REVS[v.model]
+        modelRev: MODEL_REVS[v.model],
+        cache: tally
       };
       json3(res, 200, body);
     } catch (e) {
