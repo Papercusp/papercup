@@ -9,6 +9,7 @@ import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
 import BlueprintSettingsPanel from '@/app/harness/BlueprintSettingsPanel';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/InsightsTab';
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 import HarnessTestsView from '@/app/adv/harnesses/HarnessTestsView';
@@ -48,11 +49,15 @@ const ADV_PHASE = 'staging';
 // D-002/P-021). Now a revisit renders the cached cards instantly and refreshes
 // in the background. (Proper follow-up: migrate to useSyncQuery once an insights
 // sync resolver exists; this is the contained, server-change-free fix.)
-const ADV_INSIGHTS_CACHE_KEY = '__advInsightsCache';
+// Pinned THROUGH the primitive rather than by hand: a hand-rolled globalThis key
+// fixes the split just as well, but is invisible to listModuleDuplications(), which
+// then answers a confident [] while this module is duplicated. Same key string.
 type AdvInsightsCache = Map<string, InsightsTabProps>;
-const advInsightsCache: AdvInsightsCache =
-  ((globalThis as Record<string, unknown>)[ADV_INSIGHTS_CACHE_KEY] as AdvInsightsCache | undefined) ??
-  ((globalThis as Record<string, unknown>)[ADV_INSIGHTS_CACHE_KEY] = new Map() as AdvInsightsCache);
+const advInsightsCacheState = pinModuleState<{ cache: AdvInsightsCache }>(
+  '__advInsightsCache',
+  () => ({ cache: new Map<string, InsightsTabProps>() }),
+);
+const advInsightsCache: AdvInsightsCache = advInsightsCacheState.cache;
 
 function AdvInsightsTab({ slug }: { slug: string }) {
   const [insights, setInsights] = useState<InsightsTabProps | null>(() => advInsightsCache.get(slug) ?? null);

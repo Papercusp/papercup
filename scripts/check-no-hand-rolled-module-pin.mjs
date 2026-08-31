@@ -81,7 +81,6 @@ const SKIP_DIR = new Set([
  * re-opens the hole this guard closes.
  */
 const ALLOW = new Set([
-  'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
   'libs/generic/sse/src/server/channel.ts',
 ]);
 

@@ -26,6 +26,7 @@
     "@papercusp/flags": "file:../../libs/flags",
     "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
     "@papercusp/lexicon": "file:../../libs/generic/lexicon",
+    "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
     "@papercusp/operator-core": "file:../../packages/operator-core",
     "@papercusp/p2p-voice": "file:../../libs/generic/p2p-voice",
     "@papercusp/sse": "file:../../libs/generic/sse",
