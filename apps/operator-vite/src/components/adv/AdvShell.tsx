@@ -596,6 +596,22 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     [setMaxLevel],
   );
 
+  // Leaving /adv drops ?max= along with the route, so holding the OS in fullscreen
+  // after the surface that asked for it is gone strands the same kind of lying
+  // level applyMaxLevel's fallback exists to prevent — just from the other end,
+  // and with the tab strip (the only visible way back) no longer rendered.
+  // Mount-scoped so it runs on UNMOUNT only, and gated on the ref so a fullscreen
+  // the USER entered themselves (F11, the window manager) is left alone.
+  useEffect(
+    () => () => {
+      if (typeof document === 'undefined') return;
+      if (maxLevelRef.current === 'screen' && document.fullscreenElement) {
+        void document.exitFullscreen?.().catch(() => {});
+      }
+    },
+    [],
+  );
+
   // The user can leave OS fullscreen without us (Esc, F11, the window manager).
   // Without this the URL would still claim 'screen' while the document is not in
   // it, and the next press would try to EXIT a fullscreen that is already gone.

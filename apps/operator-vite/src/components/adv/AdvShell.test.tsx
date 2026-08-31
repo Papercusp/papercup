@@ -747,6 +747,25 @@ describe('AdvShell — tab fullscreen', () => {
     expect(nuqsSetters.max).not.toHaveBeenCalledWith('screen');
   });
 
+  // Caught by the live Tauri run: OS fullscreen really does engage in WebKitGTK,
+  // so leaving /adv while at 'screen' would otherwise strand the window fullscreen
+  // with the tab strip — the only visible way back — no longer rendered.
+  it('releases OS fullscreen on unmount, since ?max= leaves with the route', async () => {
+    nuqsState.max = 'screen';
+    fullscreenElement = document.documentElement;
+    const { unmount } = await renderShell();
+    unmount();
+    expect(exitFullscreenSpy).toHaveBeenCalled();
+  });
+
+  it('leaves a fullscreen it did not enter alone (a user F11) on unmount', async () => {
+    nuqsState.max = 'off';
+    fullscreenElement = document.documentElement;
+    const { unmount } = await renderShell();
+    unmount();
+    expect(exitFullscreenSpy).not.toHaveBeenCalled();
+  });
+
   it('syncs back down when the user leaves OS fullscreen outside the app (Esc / F11 / the window manager)', async () => {
     nuqsState.max = 'screen';
     fullscreenElement = document.documentElement;
