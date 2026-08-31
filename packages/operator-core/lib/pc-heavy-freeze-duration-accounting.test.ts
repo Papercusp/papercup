@@ -97,6 +97,14 @@ function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     // No victim-size floor: the fixture's `sleep` child reports no real cgroup memory of its own,
     // and this suite is about freeze-DURATION accounting, not victim election sizing.
     PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB: '0',
+    // No scarcity floor either, and for the same reason: this suite is about
+    // freeze-DURATION accounting, not the scarcity DECISION. The floor reads the
+    // MEMAVAIL override below (4096 GiB — set to keep the admission slot clamp
+    // non-binding) and would correctly conclude memory is ample, decline the
+    // freeze, and leave the freeze/thaw cases below waiting forever on a
+    // state=frozen that never arrives. The decision itself is asserted in
+    // pc-heavy-psi-scarcity-gate.test.ts.
+    PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB: '0',
     PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '4096',
     PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
     PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '100',

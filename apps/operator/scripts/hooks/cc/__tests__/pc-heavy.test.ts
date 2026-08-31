@@ -87,6 +87,18 @@ const baseEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   // memory-clamp tests below override it explicitly to exercise it.
   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '4096',
   PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+  // Neutralise the PSI SCARCITY FLOOR for the same reason, and note that the two
+  // settings above are what make it necessary: the floor asks "is memory ACTUALLY
+  // scarce", and it answers that from PC_HEAVY_MEMAVAIL_GIB_OVERRIDE when one is
+  // supplied — so the deliberately-enormous 4096 above (chosen to keep the SLOT
+  // clamp non-binding) also reads as "vastly ample", and every freeze/thaw
+  // scenario below would find the freeze declined and time out waiting for a
+  // state=frozen that can never arrive. The freeze cases here exercise the freeze
+  // MECHANISM (election, accounting, thaw, stdout isolation), not the scarcity
+  // DECISION; that decision has its own dedicated suite
+  // (pc-heavy-psi-scarcity-gate.test.ts), which is where an ample-memory host
+  // declining to freeze is asserted rather than neutralised.
+  PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB: '0',
   // Neutralise the caller-cgroup typecheck guard (EI-21206772578500745). The
   // suite itself may run inside a finite CI/agent cgroup; every unrelated test
   // must see a deterministic unlimited envelope. The focused guard cases below

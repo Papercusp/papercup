@@ -94,7 +94,34 @@
 #                         precedence over /proc and the scalar override.
 #   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE / PC_HEAVY_MEM_PSI_OVERRIDE  inject
 #                         MemAvailable-GiB / PSI for the clamp (tests — same
-#                         convention as PC_HEAVY_LOAD1_OVERRIDE).
+#                         convention as PC_HEAVY_LOAD1_OVERRIDE). NOTE the
+#                         MemAvailable value feeds BOTH the admission slot clamp
+#                         and the PSI scarcity floor below, so a test that pins
+#                         it enormous to keep the clamp non-binding also tells
+#                         the floor that memory is vastly ample — which is
+#                         correct, and is why the freeze/thaw suites set
+#                         PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB=0 explicitly.
+#   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE_FILE  dynamic form of the above: its first
+#                         line is the MemAvailable-GiB reading and it is re-read
+#                         on every sample, so a test can move memory from scarce
+#                         to ample DURING a run and observe the thaw. Takes
+#                         precedence over /proc and the scalar override.
+#   PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB  scarcity floor for the post-admission PSI
+#                         freeze (default 8 GiB; 0 disables the gate and
+#                         restores the pre-fix freeze-on-PSI-alone behaviour).
+#                         Memory PSI measures reclaim/refault stall, which on a
+#                         host with a large page cache and ample swap tracks IO
+#                         pressure rather than shortage — so PSI alone elected
+#                         freezes on a box with 65 GiB MemAvailable and zero OOM
+#                         kills, suspending the very work generating the churn
+#                         (EI-21924870233271057). Above this floor a freeze can
+#                         return no memory, so none is elected; an already-frozen
+#                         root is thawed once memory is ample again rather than
+#                         left to the expiry that reports undetermined/exit-75.
+#                         Fails OPEN (treats memory as scarce) when the reading
+#                         is unavailable, so an unreadable /proc/meminfo restores
+#                         the previous always-freeze behaviour rather than
+#                         silently disabling the guard.
 #   PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE /
 #   PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE  inject the caller-cgroup
 #                         envelope for tests. `max` means unlimited. In normal
@@ -488,7 +515,16 @@ _pc_heavy_mem_psi_full_avg10() {
 # admission-time slot clamp so the two readers cannot drift apart.
 _pc_heavy_mem_avail_gib() {
   local _raw=''
-  if [ -n "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE:-}" ]; then
+  # File override first, and re-read on EVERY call — same convention as
+  # PC_HEAVY_MEM_PSI_OVERRIDE_FILE above. Scarcity is sampled inside the PSI
+  # loop, so a static env override can only ever describe a host whose memory
+  # never moves; a file lets a caller model the transition that matters here —
+  # a host that becomes ample again while a root is already frozen, which must
+  # thaw it rather than let it sit to the expiry that reports undetermined.
+  if [ -n "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE_FILE:-}" ]; then
+    IFS= read -r _raw < "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE_FILE}" 2>/dev/null || return 1
+    _raw="${_raw%%.*}"
+  elif [ -n "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE:-}" ]; then
     _raw="${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE%%.*}"
   else
     _raw="$(awk '/^MemAvailable:/ { print int($2 / 1048576); exit }' /proc/meminfo 2>/dev/null)"
@@ -532,6 +568,7 @@ _pc_heavy_mem_is_scarce() {
   # otherwise treat injected pressure as scarce, which is what the pre-existing
   # freeze/thaw scenarios assert and what keeps this gate falsifiable in tests.
   if [ -z "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE:-}" ] &&
+     [ -z "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE_FILE:-}" ] &&
      { [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE:-}" ] || [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE_FILE:-}" ]; }; then
     return 0
   fi
@@ -953,6 +990,29 @@ _pc_heavy_internal_preempt_run() {
         _psi_write_record expired || true
         _psi_emit expired memory-psi-high-timeout "$_sample" "$_psi_total_mib"
         _expire_frozen=1
+      elif [ "$_psi_selected_id" = "$_psi_admission_id" ] &&
+           [ "$_psi_state" = frozen ] &&
+           ! _pc_heavy_mem_is_scarce; then
+        # SCARCITY THAW. The recovery path below is an `elif` on the HIGH-PSI test,
+        # so it cannot run while PSI is still high — which is precisely the case
+        # this exists for. Memory PSI plateaus above the recover threshold on pure
+        # page-cache churn, so a root frozen during a transient episode would stay
+        # suspended for the whole PC_HEAVY_MEM_PSI_MAX_FREEZE_SEC window and leave
+        # by the expiry path, which reports `undetermined` (exit 75) — a verdict
+        # with no per-file evidence behind it, from a run that was perfectly
+        # healthy. Releasing as soon as memory is ample keeps the freeze a
+        # last-resort OOM guard rather than a throughput tax.
+        if kill -CONT -- "-${_preempt_child_pid:-}" 2>/dev/null; then
+          # Same accounting as the expire and recovery paths: capture this
+          # episode's frozen duration BEFORE _psi_write_record flips the state,
+          # since _psi_frozen_since is only meaningful while state=frozen.
+          _psi_frozen_total_ms=$(( _psi_frozen_total_ms + (_now - _psi_frozen_since) * 1000 ))
+          _psi_frozen_episodes=$(( _psi_frozen_episodes + 1 ))
+          _psi_write_record active || true
+          rm -f "$_psi_recovery_file" 2>/dev/null || true
+          _psi_state=active
+          _psi_emit thawed memory-not-scarce "$_sample" "$_psi_total_mib"
+        fi
       elif [ -z "$_psi_selected_id" ]; then
         # SCARCITY GATE: high PSI is necessary but NOT sufficient to justify
         # suspending work. If MemAvailable is comfortably above the floor there
