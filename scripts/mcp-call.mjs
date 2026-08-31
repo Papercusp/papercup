@@ -270,6 +270,31 @@ export function buildMcpSessionQuery({ client, workspace, harness }) {
 }
 
 /**
+ * Resolve the coordination identity used by the stateless MCP transport.
+ *
+ * A launched helper can make several `mcp-call` invocations from different
+ * processes. `PAPERCUSP_SPAWN_ID` is stable for that launch, whereas a PID is
+ * not; using only the PID strands work-item ownership between calls. Preserve
+ * an explicit client or full session identity first, then reuse the launch id
+ * before falling back to the legacy per-process identity for ordinary shells.
+ */
+export function resolveMcpClientId(
+  flags = {},
+  env = process.env,
+  pid = process.pid,
+) {
+  for (const candidate of [
+    flags.client,
+    env.PAPERCUSP_SID,
+    env.PAPERCUSP_SPAWN_ID,
+  ]) {
+    const value = String(candidate ?? '').trim();
+    if (value) return value;
+  }
+  return `mcp-call-${pid}`;
+}
+
+/**
  * Decide whether this module is the launched script after resolving filesystem
  * aliases. macOS exposes `/tmp` as a symlink to `/private/tmp`; the VM-rig
  * deploy invokes `/tmp/mcp-call.mjs`, while `import.meta.url` canonicalizes to
@@ -309,10 +334,9 @@ async function main() {
     console.error(`mcp-call: ${error?.message ?? error}`);
     process.exit(2);
   }
-  // EI-6631: an empty/whitespace-only --client (e.g. `--client "$UNSET_VAR"`) must fall
-  // back to the generated id, not be sent as a blank client= — `??` alone only catches
-  // null/undefined, not "".
-  const client = (flags.client && flags.client.trim()) || `mcp-call-${process.pid}`;
+  // EI-6631: blank explicit clients still fall through; EI-22014303182044906:
+  // launched helpers reuse their stable session/spawn identity across processes.
+  const client = resolveMcpClientId(flags);
   // The scoped-superuser session requires a resolved workspace (else
   // `scoped_superuser_workspace_unresolved`). Default to the standard one; override
   // with --workspace or PAPERCUSP_WORKSPACE.
