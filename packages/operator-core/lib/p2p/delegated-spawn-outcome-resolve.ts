@@ -43,7 +43,12 @@
  * dressing it up as a verdict is worse than silence.
  */
 import { getWorkOffer, listOffers as listOffersDefault, type StoredWorkOffer } from './offer-store';
-import { listP2pReceipts, type P2pReceipt } from './receipts';
+import {
+  listP2pReceipts,
+  parseResponderBuildMarker,
+  type P2pReceipt,
+  type ResponderBuildMarkerEvidence,
+} from './receipts';
 import {
   spawnRequestFactsFromRow,
   memberEvidenceAvailableForHonor,
@@ -62,6 +67,8 @@ import {
 export interface DelegatedSpawnOutcomeResolution {
   outcome: DelegatedSpawnOutcome;
   request: DelegatedSpawnRequestFacts;
+  /** Build evidence from the receipt that determines this outcome, if one exists. */
+  responderBuild: ResponderBuildMarkerEvidence | null;
   /** The seat offer this request targeted (identifies the honoring MACHINE). */
   targetOfferId: string;
   /** The honoring host's device pubkey, when it could be established. */
@@ -180,6 +187,20 @@ function honoringDevicePubkeyFrom(
 }
 
 /**
+ * Match the classifier's evidence precedence: an explicit refusal determines
+ * the outcome before any honor, otherwise the first honor is authoritative.
+ * This keeps the build identity attached to the host response the displayed
+ * outcome actually rests on rather than an unrelated sibling receipt.
+ */
+function responderBuildForOutcome(receipts: P2pReceipt[]): ResponderBuildMarkerEvidence | null {
+  const byTime = (a: P2pReceipt, b: P2pReceipt) => a.receiptTs - b.receiptTs;
+  const decisive =
+    receipts.filter((receipt) => receipt.kind === 'refusal').sort(byTime)[0] ??
+    receipts.filter((receipt) => receipt.kind === 'honored').sort(byTime)[0];
+  return decisive ? parseResponderBuildMarker(decisive.detail) : null;
+}
+
+/**
  * Reconcile ONE delegated spawn request against everything this host can see.
  *
  * Returns `null` when `offerId` is not a usable spawn request here — a seat
@@ -270,6 +291,7 @@ export async function resolveDelegatedSpawnOutcome(
   return {
     outcome,
     request: self.facts,
+    responderBuild: responderBuildForOutcome(receipts),
     targetOfferId: self.targetOfferId,
     honoringDevicePubkey,
     memberEvidenceAvailable,

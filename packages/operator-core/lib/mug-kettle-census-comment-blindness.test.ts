@@ -28,7 +28,15 @@ import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strin
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CENSUS = join(REPO_ROOT, 'scripts/mug-kettle-surface-census.mjs');
 
-type Finding = { category: string; subject: string; file: string; line: number; detail?: string };
+type Finding = {
+  category: string;
+  subject: string;
+  file: string;
+  line: number;
+  detail?: string;
+  substrate?: boolean;
+  why?: string;
+};
 
 /**
  * TEMPORARY MITIGATION (EI-20088302984457398), not a fix — sized, not guessed.
@@ -118,6 +126,25 @@ describe('mug/kettle census — comment blindness (WI-37661)', () => {
         'Use stripCommentsOnly — NOT stripCommentsAndStrings: these detectors read quoted ' +
         "VALUES ('kettle', role: 'cup'), so stripping string contents would blind the census.",
     ).toEqual([]);
+  });
+
+  it('classifies live per-pot learning controls as non-tier UI substrate', { timeout: CENSUS_TIMEOUT_MS }, () => {
+    const expected = new Map([
+      ['LearningPotDrawer', 'apps/operator-vite/src/components/adv/LearningPotDrawer.tsx'],
+      ['LearningPotPicker', 'apps/operator-vite/src/components/adv/LearningPotPicker.tsx'],
+      ['LearningPotRail', 'apps/operator-vite/src/components/adv/LearningPotRail.tsx'],
+    ]);
+    const findings = census().filter(
+      (finding) => finding.category === 'ui' && expected.has(finding.subject),
+    );
+
+    expect(findings).toHaveLength(expected.size);
+    for (const finding of findings) {
+      expect(finding.file).toBe(expected.get(finding.subject));
+      expect(finding.substrate).toBe(true);
+      expect(finding.why).toMatch(/learning:set-pot-scope/);
+      expect(finding.why).toMatch(/no retired-tier route/i);
+    }
   });
 
   /**

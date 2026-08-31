@@ -712,6 +712,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
     let launchArgv: string[] = [];
     let binding: PuiSuSessionBinding | null = null;
     let spawned: ManagedSpawnResult | null = null;
+    /** Last bounded pane output, retained across cases so a later drive failure
+     *  reports the native TUI state instead of only "no transcript". */
+    let paneOutput = '';
     let leg: LiveLeg;
     let attached: AttachedLeg | null = null;
     /** What the END hop actually returned, so reconciliation can judge the
@@ -829,10 +832,10 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         // Capture the child's own output. Without this a failed launch reports
         // only "exited (code 1)", which is a symptom with the cause thrown away —
         // and the cause is the entire value of running the real argv.
-        let captured = '';
+        paneOutput = '';
         const capture = (chunk: Buffer | string) => {
-          captured += String(chunk);
-          if (captured.length > 8_000) captured = captured.slice(-8_000);
+          paneOutput += String(chunk);
+          if (paneOutput.length > 8_000) paneOutput = paneOutput.slice(-8_000);
         };
         spawned.child.stdout?.on('data', capture);
         spawned.child.stderr?.on('data', capture);
@@ -883,7 +886,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           exited,
           `the ${backend} pane argv exited (code ${exited}) before a native session materialised.\n` +
             `  argv: ${launchArgv.join(' ')}\n` +
-            `  child output (last 8k):\n${captured || '(the child wrote nothing at all)'}`,
+            `  child output (last 8k):\n${paneOutput || '(the child wrote nothing at all)'}`,
         ).toBeNull();
 
         expect(
@@ -906,7 +909,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
 
         expect(
           pidAlive(spawned.child.pid),
-          `the ${backend} pane process died after registering its session; child output:\n${captured}`,
+          `the ${backend} pane process died after registering its session; child output:\n${paneOutput}`,
         ).toBe(true);
       },
       READY_TIMEOUT_MS + 60_000,
@@ -1033,7 +1036,8 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
 
         const diagnostic =
           `\n  tools observed: ${toolsSeen.map((t) => `${t.name}${t.isError ? '(error)' : ''}`).join(', ') || '(none)'}` +
-          `\n  assistant text (first 400): ${assistantText.slice(0, 400) || '(none)'}`;
+          `\n  assistant text (first 400): ${assistantText.slice(0, 400) || '(none)'}` +
+          `\n  pane output (last 8k): ${paneOutput || '(none)'}`;
 
         // Four separate assertions, because these are four different defects and
         // collapsing them is what produced the earlier false green: a delivered

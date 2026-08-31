@@ -195,12 +195,12 @@ const SUBSTRATE_SYMBOLS = new Set([
  * The SAME D-003 population (b) exemption, for the UI category (P-077).
  *
  * The `ui` finding below is a FILENAME heuristic — any `.tsx` whose basename carries a
- * tier noun ("Pot…") is flagged — and a filename cannot tell a per-pot START/STOP control
- * from a component that merely READS the shared federation substrate. Both of the
- * components here read `shared_presence` / `network.federationStatus`: they are population
- * (b), they SURVIVE the retirement, and gating them with the tier would delete the
- * install's only view of the p2p swarm the moment the flag goes off — the exact opposite
- * of what the guard is protecting.
+ * tier noun ("Pot…") is flagged — and a filename cannot tell a retired-tier control from
+ * a current product surface scoped by pot. The map therefore carries the classification
+ * reason per component: federation readers survive as D-003 population (b), while the
+ * LearningPot surfaces drive today's learning/gym/governor system and never offer a route
+ * into Mug/Kettle/Cup. Gating either class with the retired tier would remove live product
+ * functionality — the exact opposite of what the guard is protecting.
  *
  * This closes a REAL mechanism gap, not just this file's case: the guard's failure text
  * tells you a genuine substrate site "belongs in the census's SUBSTRATE_SYMBOLS", but the
@@ -212,9 +212,32 @@ const SUBSTRATE_SYMBOLS = new Set([
  * component and confirming it reads substrate rather than driving the tier — the whole
  * failure mode here is a name standing in for a fact nobody checked.
  */
-const SUBSTRATE_UI = new Set([
-  'PotFederationStatus', // p2p reach + install substrate health (Brief M / G-004)
-  'PotPeerRoster',       // the p2p peer roster over shared_presence (re-homed by P-077)
+const SUBSTRATE_UI = new Map([
+  [
+    'PotFederationStatus',
+    'D-003 population (b): reads p2p reach + install substrate health (Brief M / G-004), not the retired tier',
+  ],
+  [
+    'PotPeerRoster',
+    'D-003 population (b): reads the p2p peer roster over shared_presence (re-homed by P-077), not the retired tier',
+  ],
+  // learning-pot-scope-gate-2026-08-30 (shipped). These three surfaces use
+  // "pot" in its LIVE product sense: the scope that owns learning automation.
+  // Read the writers before adding them here — Drawer/Rail invoke only the
+  // current learning:set-pot-scope, gym:arm and governor:arm tools; Picker invokes
+  // learning:set-pot-scope. None mounts, launches or controls Mug/Kettle/Cup.
+  [
+    'LearningPotDrawer',
+    'Live per-pot learning control: reads automation.catalog/hive.overrides and writes learning:set-pot-scope, gym:arm and governor:arm — no retired-tier route',
+  ],
+  [
+    'LearningPotPicker',
+    'Live every-pot learning-scope picker: reads automation.catalog/harnessProjects.lite and writes learning:set-pot-scope — no retired-tier route',
+  ],
+  [
+    'LearningPotRail',
+    'Live per-pot learning rail: reads automation.catalog and writes learning:set-pot-scope, gym:arm and governor:arm — no retired-tier route',
+  ],
 ]);
 
 /* ══════════════════════════════════════════════════════════════════════════════════
@@ -644,6 +667,7 @@ const NAMED_CONTROL_SURFACES = new RegExp(
   `(${[...LIVE_CONTROL_SURFACES, ...RETIRED_SURFACE_TRIPWIRES].join('|')})`,
 );
 
+const seenSubstrateUi = new Set();
 for (const abs of allFiles) {
   const r = rel(abs);
   if (!/\.tsx?$/.test(r) || isTestFile(r)) continue;
@@ -654,10 +678,11 @@ for (const abs of allFiles) {
   if (NAMED_CONTROL_SURFACES.test(base)) {
     add('ui', abs, 0, base, 'named control surface for pot/plan start-stop (plan D-009/D-010)');
   } else if (/\.tsx$/.test(r) && namesTier(base)) {
+    if (SUBSTRATE_UI.has(base)) seenSubstrateUi.add(base);
     add('ui', abs, 0, base, 'component file named for the retiring tier',
       { matchedToken: namesTier(base), tabTokens: tabHits.length,
         ...(SUBSTRATE_UI.has(base)
-          ? { substrate: true, why: 'D-003 population (b): reads the SHARED POT SUBSTRATE (federation/presence), not the tier — inventory, do NOT gate' }
+          ? { substrate: true, why: `${SUBSTRATE_UI.get(base)} — inventory, do NOT gate` }
           : {}) });
   } else if (/\.tsx$/.test(r) && tabHits.length > 0 && /(LeftSidebar|Sidebar|Tab|Rail|Nav)/.test(base)) {
     const tokens = [...new Set(tabHits.map((h) => h[1]))].join(', ');
@@ -672,6 +697,17 @@ for (const abs of allFiles) {
         { display: true });
     }
   }
+}
+
+const danglingSubstrateUi = [...SUBSTRATE_UI.keys()].filter(
+  (base) => !seenSubstrateUi.has(base),
+);
+if (danglingSubstrateUi.length > 0) {
+  throw new Error(
+    'mug-kettle-surface-census: SUBSTRATE_UI contains basenames that no current non-test ' +
+      `.tsx finding resolves: ${danglingSubstrateUi.join(', ')}. Reclassify a deliberate ` +
+      'rename/deletion; do not leave a dead exemption that looks protective.',
+  );
 }
 
 /* ── D8: wake / watchdog arming ────────────────────────────────────────────────────

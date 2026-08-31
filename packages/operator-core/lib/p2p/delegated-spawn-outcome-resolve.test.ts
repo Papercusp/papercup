@@ -181,6 +181,57 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
     expect(r!.outcome.detail).toContain('account default');
   });
 
+  it('composes the decisive receipt build marker into the resolved outcome', async () => {
+    const r = await resolveDelegatedSpawnOutcome(
+      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
+      deps({
+        listReceipts: vi.fn(async () => [
+          receipt({
+            detail:
+              "honored: opened 1/1 member(s) for fleet 'fed-drill' " +
+              '[responder-build sha=rigbuild1 version=0.0.13]',
+          }),
+        ]),
+      }),
+    );
+    expect(r!.responderBuild).toEqual({
+      state: 'current',
+      sha: 'rigbuild1',
+      version: '0.0.13',
+      marker: '[responder-build sha=rigbuild1 version=0.0.13]',
+      detail:
+        "honored: opened 1/1 member(s) for fleet 'fed-drill' " +
+        '[responder-build sha=rigbuild1 version=0.0.13]',
+    });
+  });
+
+  it('uses refusal build evidence when conflicting response kinds exist', async () => {
+    const r = await resolveDelegatedSpawnOutcome(
+      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
+      deps({
+        listReceipts: vi.fn(async () => [
+          receipt({ detail: 'honored [responder-build sha=honor123 version=0.0.13]' }),
+          receipt({
+            kind: 'refusal',
+            refusalCode: 'seat_budget_exhausted',
+            detail: 'refused [responder-build sha=refuse456 version=0.0.12]',
+            receiptTs: REQUESTED_AT + 3_000,
+          }),
+        ]),
+      }),
+    );
+    expect(r!.outcome.verdict).toBe('refused');
+    expect(r!.responderBuild).toMatchObject({ state: 'current', sha: 'refuse456', version: '0.0.12' });
+  });
+
+  it('keeps a marker-less legacy responder explicit on the outcome', async () => {
+    const r = await resolveDelegatedSpawnOutcome(
+      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
+      deps({ listReceipts: vi.fn(async () => [receipt({ detail: 'legacy honored receipt' })]) }),
+    );
+    expect(r!.responderBuild).toMatchObject({ state: 'legacy', sha: null, version: null });
+  });
+
   it('a D-029 honored receipt yields first-turn-proven even with zero remote member evidence', async () => {
     const r = await resolveDelegatedSpawnOutcome(
       { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
