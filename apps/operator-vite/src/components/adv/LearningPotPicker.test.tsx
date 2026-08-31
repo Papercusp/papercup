@@ -356,3 +356,88 @@ describe('selection and the footer’s one write', () => {
     );
   });
 });
+
+/**
+ * The picker → drawer join (D-005 / D-008).
+ *
+ * This is the ONE join the `every-pot-reachable` acceptance criterion exists to
+ * protect, and until now it was asserted NOWHERE: deleting `onOpenFields={openFields}`
+ * would strand exactly the population P-052 buries — a switched-off pot whose rail
+ * chip has collapsed — while every bound check stayed green. Independent grading
+ * (EI-21960348160674773) rated that criterion `degraded` for this gap, correctly.
+ *
+ * Asserted through the REAL `useOpenPotDrawer`, never a mock of it: a mocked hook
+ * would keep passing if the wiring were deleted or re-pointed somewhere harmless.
+ * The observable is the nuqs URL write the drawer itself reads (`lpot`), so this
+ * fails if the join is cut at either end.
+ */
+describe('opening the drawer BY SLUG — what makes the rail collapse legal', () => {
+  afterEach(cleanup);
+
+  function renderWithUrl(
+    a: AutomationArming | null,
+    projects: { slug: string; harness_kind?: string | null }[],
+  ) {
+    H.arming = a;
+    H.projects = projects.map((p) => ('harness_kind' in p ? p : { ...p, harness_kind: 'hive' }));
+    const updates: string[] = [];
+    render(
+      <NuqsTestingAdapter
+        searchParams="?lpick=true"
+        onUrlUpdate={(e) => updates.push(e.queryString)}
+      >
+        <LearningPotPicker />
+      </NuqsTestingAdapter>,
+    );
+    return updates;
+  }
+
+  const clickFields = async (updates: string[], slug: string) => {
+    const btn = rowFor(slug).querySelector<HTMLButtonElement>('.pc-potpick__fields');
+    if (!btn) throw new Error(`row ${slug} has no Fields button`);
+    await act(async () => {
+      fireEvent.click(btn);
+      // nuqs THROTTLES url writes; asserting synchronously reads an empty list.
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    return updates.join(' | ');
+  };
+
+  it('sets ?lpot to the clicked slug for a pot that owns NO rail chip at all', async () => {
+    // `quiet` has no gym row and no lane, so it renders no rail chip and the
+    // drawer is its ONLY route to per-lane controls. That is the whole point.
+    const updates = renderWithUrl(arming({ gymPots: [gym('alpha')] }), [
+      { slug: 'alpha' },
+      { slug: 'quiet' },
+    ]);
+    const seen = await clickFields(updates, 'quiet');
+    expect(seen).toContain('lpot=quiet');
+  });
+
+  it('closes the picker in the same interaction, so the drawer is never nested under it', async () => {
+    const updates = renderWithUrl(arming({ gymPots: [gym('alpha')] }), [
+      { slug: 'alpha' },
+      { slug: 'quiet' },
+    ]);
+    const seen = await clickFields(updates, 'quiet');
+    // POSITIVE CONTROL FIRST. Without it the negative assertion below passes
+    // vacuously when NO url write happened at all — i.e. it would report the
+    // picker as correctly closing precisely when the join is broken.
+    expect(seen).toContain('lpot=quiet');
+    // The picker opened with ?lpick=true; opening the drawer must retire it.
+    expect(seen).not.toMatch(/lpick=true[^|]*$/);
+  });
+
+  it('POSITIVE CONTROL: every listed pot exposes the Fields affordance, chip or not', async () => {
+    // Without this, the two assertions above could pass while the button existed
+    // for only ONE pot — which is the stranding they are meant to rule out.
+    renderWithUrl(arming({ gymPots: [gym('alpha')] }), [
+      { slug: 'alpha' },
+      { slug: 'quiet' },
+      { slug: 'dormant' },
+    ]);
+    for (const slug of ['alpha', 'quiet', 'dormant']) {
+      expect(rowFor(slug).querySelector('.pc-potpick__fields')).toBeTruthy();
+    }
+  });
+});

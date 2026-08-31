@@ -132,4 +132,36 @@ describe('HiveCustomizationPage', () => {
     expect(screen.getByText(/Must be a JSON object/i)).toBeTruthy();
     expect((screen.getByRole('button', { name: /Save config/i }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  /**
+   * The retired budget section (P-013 / D-011).
+   *
+   * Independent grading (EI-21960348160674773) measured that this file could NOT
+   * detect a re-added `budget` section: it had zero references to budget /
+   * CONFIG_SECTIONS / section, so restoring a second writable editor for a value
+   * the learning drawer now owns — whose whole-object save would clobber the
+   * drawer's keys — would have left every bound check green.
+   *
+   * These two assertions are a matched pair. The first is the detector; the
+   * second is the positive control WITHOUT WHICH THE FIRST PASSES VACUOUSLY,
+   * since a page that ignored `?section=` entirely would also render scout.
+   */
+  it('normalizes a stale ?section=budget URL instead of rendering the retired editor', () => {
+    initialParams = { hive: 'acme-hive', section: 'budget' };
+    render(<HiveCustomizationPage />);
+    // Falls back to CONFIG_SECTIONS[0] === 'scout'.
+    expect(screen.getByText(/loop ideates, critiques, and routes/i)).toBeTruthy();
+    // And the retired editor's own placeholder is nowhere on the page.
+    expect(screen.queryByPlaceholderText(/maxCostUsd/i)).toBeNull();
+  });
+
+  it('POSITIVE CONTROL: ?section= is genuinely read, so the fallback above is not vacuous', () => {
+    initialParams = { hive: 'acme-hive', section: 'cadence' };
+    render(<HiveCustomizationPage />);
+    // A recognised section must NOT show the scout copy — proving the param is
+    // consulted. If this ever passes alongside the test above, the page has
+    // stopped reading ?section= and the normalization assertion means nothing.
+    expect(screen.queryByText(/loop ideates, critiques, and routes/i)).toBeNull();
+    expect(screen.getByPlaceholderText(/signalScoreThreshold/i)).toBeTruthy();
+  });
 });
