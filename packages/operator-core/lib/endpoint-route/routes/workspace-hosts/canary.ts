@@ -149,6 +149,10 @@ export function createWorkspaceHostCanaryRoute(
           workspaceId,
           hostId,
           controller,
+          // D-216. The canary binds git and agent, both of which require delivered material, so
+          // without this the run refuses at its first binding step naming the missing store keys —
+          // which is the intended pre-flight signal, not a failure discovered on a running VM.
+          credentialMaterialSource: createOperatorWorkspaceHostCredentialMaterialSource(),
         }));
       } catch (error) {
         if (error instanceof WorkspaceHostDesiredSpecUnavailableError) {

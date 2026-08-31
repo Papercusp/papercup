@@ -38,6 +38,7 @@ import {
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperationsForHost,
 } from '../../../workspace-host/initialization-operations-resolver';
+import { createOperatorWorkspaceHostCredentialMaterialSource } from '../../../workspace-host/credential-material-source';
 import { runWorkspaceHostInitialization } from '../../../workspace-host/initialization-runner';
 
 const HOST_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
@@ -112,6 +113,11 @@ export default defineTool({
         workspaceId,
         hostId,
         controller,
+        // D-216. The route does NOT accept material in its body and must not: the request carries
+        // public binding metadata that the planner asserts secret isolation over. The bytes are
+        // resolved from the operator's encrypted store, under a key derived from the reference the
+        // caller DID send.
+        credentialMaterialSource: createOperatorWorkspaceHostCredentialMaterialSource(),
       }));
     } catch (error) {
       if (error instanceof WorkspaceHostDesiredSpecUnavailableError) {

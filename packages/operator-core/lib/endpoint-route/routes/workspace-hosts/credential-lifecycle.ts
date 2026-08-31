@@ -133,6 +133,9 @@ export function createWorkspaceHostCredentialLifecycleRoute(
           workspaceId,
           hostId,
           controller,
+          // D-216. A rotation's `bind` needs the NEW generation's material on the host exactly as
+          // much as the first binding did, so the lifecycle route resolves a source too.
+          credentialMaterialSource: createOperatorWorkspaceHostCredentialMaterialSource(),
         }));
       } catch (error) {
         if (error instanceof WorkspaceHostDesiredSpecUnavailableError) {
