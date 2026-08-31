@@ -17,9 +17,12 @@
 import { z } from "zod";
 import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
 import {
-  listPlanRows,
+  listPlanIndexRows,
   getPlanRow,
+  getPlanContentsBySlugs,
+  getPlanSlugsWithSpecTriadDeclaration,
   planItemsForRow,
+  type PlanIndexRow,
   type PlanRow,
 } from "./source";
 import { isTerminalItemStatus } from "../../fleet-drained-events";
@@ -46,7 +49,11 @@ import { ITEM_STATUSES, IMPORTANCE_LEVELS, type Importance } from "./parser";
 import { TERMINAL_PLAN_STATUSES } from "./plan-start-state";
 import { shapePlansItems } from "./items-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
-import { specTriadGate, specTriadEpoch } from "./spec-triad-policy";
+import {
+  planInSpecTriadScope,
+  specTriadGate,
+  specTriadEpoch,
+} from "./spec-triad-policy";
 import type { SpecTriadLegName } from "@papercusp/plan-parser";
 import { getFlag } from "@papercusp/flags/server";
 import { FLAGS } from "@papercusp/flags";
@@ -214,6 +221,12 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    // The named-query/admin dispatch is a display-only scan feed. Its UI
+    // projection drops coverage before serialization, so computing the live
+    // coordination overlay there is pure discarded work (and was the dominant
+    // measured latency on the 150ms sync-read budget). Agent/MCP callers keep
+    // the full liveness-aware coverage contract.
+    const uiDisplayRead = (ctx as { uiClientId?: string }).uiClientId === "pc-admin-plans-ui";
     // EI-21194994217912029: exact-slug scope recovery for single-plan reads —
     // a caller passing `slug` without any resolvable harness gets the owning
     // harness resolved from the PG index instead of a bare harness_required.
@@ -278,12 +291,18 @@ export default defineTool({
         },
         tags: ["harness_plans", "plan_revisions", "plan_runs"],
         softTtlMs: PLANS_ITEMS_SOFT_TTL_MS,
+        // P-024/D-082: the portal can land on any operator worker. Share the
+        // plan/status projection through the durable cache so a worker-local
+        // cold start does not rebuild the same cross-plan index after another
+        // worker already did; tag invalidation and the 45s SWR contract stay
+        // identical to the L1 path.
+        l2: true,
       },
       async () => {
         // PG-canonical: read the structured rows (no content-blob parse for plans that
         // carry the derived `items` index — Stage 3); planItemsForRow falls back to a
         // parse only when the index is absent.
-        let planRows: PlanRow[] = [];
+        let planRows: PlanIndexRow[] = [];
 
         if (args.slug) {
           let one: PlanRow | null;
@@ -304,7 +323,11 @@ export default defineTool({
           }
         } else {
           try {
-            planRows = await listPlanRows({ includeArchived, ...opts });
+            // `plans:items` consumes the normalized item index and never needs
+            // the canonical markdown blob on the common path. The old full-row
+            // reader detoasted/transferred every plan body before filtering,
+            // which made this resolver pay for ~30 MB of unrelated content.
+            planRows = await listPlanIndexRows({ includeArchived, ...opts, includeItems: true });
           } catch (error) {
             if (isUnknownPlanScopeError(error)) {
               return {
@@ -313,6 +336,50 @@ export default defineTool({
               };
             }
             throw error;
+          }
+        }
+
+        // Index rows intentionally omit content. Fetch markdown only for the
+        // rows that need the parser fallback (projection gaps) or the enabled
+        // spec-triad policy. The latter is a deliberate full candidate fetch:
+        // explicit `specTriad: required|exempt` declarations override the epoch
+        // and cannot be inferred from index metadata alone.
+        let contentBySlug = new Map<string, string>();
+        const contentSlugs = new Set(
+          planRows
+            .filter((row) => !Array.isArray(row.items) || row.items.length === 0)
+            .map((row) => row.planSlug),
+        );
+        if (specTriadFlag) {
+          try {
+            const declared = await getPlanSlugsWithSpecTriadDeclaration({
+              ...opts,
+              includeArchived,
+            });
+            for (const row of planRows) {
+              if (
+                declared.has(row.planSlug) ||
+                planInSpecTriadScope(
+                  { content: "", created: row.created },
+                  specTriadOpts,
+                ).inScope
+              ) {
+                contentSlugs.add(row.planSlug);
+              }
+            }
+          } catch {
+            // Preserve declaration precedence if the metadata probe fails. A
+            // slower full candidate fetch is safer than silently ignoring a
+            // pre-epoch `specTriad: required` opt-in.
+            for (const row of planRows) contentSlugs.add(row.planSlug);
+          }
+        }
+        if (contentSlugs.size > 0) {
+          try {
+            contentBySlug = await getPlanContentsBySlugs([...contentSlugs], opts);
+          } catch {
+            // A projection-gap/content read failure degrades to the structured
+            // index; spec-triad then fails open via its empty-content policy.
           }
         }
 
@@ -333,7 +400,10 @@ export default defineTool({
         for (const row of planRows) {
           if (row.isLegacy) continue;
           if (isTerminalPlanHiddenFromCrossPlan(row.status, args)) continue;
-          const planItems = planItemsForRow(row);
+          const planItems = planItemsForRow({
+            ...row,
+            content: contentBySlug.get(row.planSlug) ?? "",
+          } as PlanIndexRow & { content: string });
           const { items: resolvedItems, blockingIssues } = applyPlanItemBlocks(
             resolveEffectiveStatusForItems(planItems).items,
             (id) => allBlocked.get(planItemRef(row.planSlug, id)),
@@ -353,7 +423,7 @@ export default defineTool({
           const triad = specTriadGate(
             {
               planSlug: row.planSlug,
-              content: row.content,
+              content: contentBySlug.get(row.planSlug) ?? "",
               created: row.created,
               itemCount: planItems.length,
             },
@@ -416,10 +486,14 @@ export default defineTool({
     // changed. This also strips coverage fields from an entry created by an older
     // handler version before applying the fresh overlay.
     let coverage = new Map<string, PlanItemCoverage>();
-    try {
-      coverage = await getAllPlanItemCoverage();
-    } catch {
-      // Non-fatal — no coverage overlay.
+    if (!uiDisplayRead && cached.rows.length > 0) {
+      try {
+        coverage = await getAllPlanItemCoverage({
+          planItemRefs: cached.rows.map((row) => planItemRef(row.plan, row.item.id)),
+        });
+      } catch {
+        // Non-fatal — no coverage overlay.
+      }
     }
     // The cached plan read can only filter the plan item's own effective status.
     // Linked work-item state is live coverage, so apply this claimability floor

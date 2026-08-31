@@ -611,18 +611,32 @@ export async function getAllPlanItemCoverage(opts: {
   // the sibling stamp lookup ~7.6 HOURS of DB time per day (WI-6993). The write path
   // is fixed at the source (restoreRawJsonbSerializer, EI-18698602043482898) and 725's
   // CHECK constraint makes a non-object payload unstorable.
-  const stampRows = await sql<StampCoverageRow[]>`
-    SELECT feature_id AS work_item_id, item_kind, status, updated_ts,
-           payload ->> '_claimHold' AS claim_hold,
-           payload->'plan_item'->>'plan_slug' AS plan_slug,
-           payload->'plan_item'->>'item_id'  AS item_id
-      FROM harness_shared.work_items
-     WHERE payload->'plan_item' IS NOT NULL
-       AND payload->'plan_item'->>'plan_slug' IS NOT NULL
-       AND payload->'plan_item'->>'item_id'  IS NOT NULL
-       ${requestedRefs !== undefined
-         ? sql`AND ((payload->'plan_item'->>'plan_slug') || '#' || (payload->'plan_item'->>'item_id')) = ANY(${requestedRefs}::text[])`
-         : sql``}`;
+  const stampRows = requestedRefs !== undefined
+    ? await sql<StampCoverageRow[]>`
+        WITH requested(plan_slug, item_id) AS (
+          SELECT * FROM unnest(
+            ${requestedRefs.map((ref) => ref.slice(0, ref.lastIndexOf('#')))}::text[],
+            ${requestedRefs.map((ref) => ref.slice(ref.lastIndexOf('#') + 1))}::text[]
+          )
+        )
+        SELECT w.feature_id AS work_item_id, w.item_kind, w.status, w.updated_ts,
+               w.payload ->> '_claimHold' AS claim_hold,
+               w.payload->'plan_item'->>'plan_slug' AS plan_slug,
+               w.payload->'plan_item'->>'item_id'  AS item_id
+          FROM harness_shared.work_items w
+          JOIN requested r
+            ON w.payload->'plan_item'->>'plan_slug' = r.plan_slug
+           AND w.payload->'plan_item'->>'item_id' = r.item_id
+         WHERE w.payload->'plan_item' IS NOT NULL`
+    : await sql<StampCoverageRow[]>`
+        SELECT feature_id AS work_item_id, item_kind, status, updated_ts,
+               payload ->> '_claimHold' AS claim_hold,
+               payload->'plan_item'->>'plan_slug' AS plan_slug,
+               payload->'plan_item'->>'item_id'  AS item_id
+          FROM harness_shared.work_items
+         WHERE payload->'plan_item' IS NOT NULL
+           AND payload->'plan_item'->>'plan_slug' IS NOT NULL
+           AND payload->'plan_item'->>'item_id'  IS NOT NULL`;
   for (const row of stampRows) {
     const ref = planItemRef(row.plan_slug, row.item_id);
     const arr = byRef.get(ref) ?? [];
