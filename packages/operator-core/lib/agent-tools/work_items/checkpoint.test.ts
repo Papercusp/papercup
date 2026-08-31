@@ -313,6 +313,51 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(parsed.checks[0]).not.toHaveProperty('kind');
   });
 
+  it('EI-21674755057848047: accepts a NESTED probe whose kind is implied by `tool`', () => {
+    // The canonical nested spelling used to be the ONE shape that bypassed the
+    // normalizer, so it failed with a raw "Invalid discriminator value" while the
+    // flattened envelope directly above it succeeded. Callers responded by
+    // dropping `checks` entirely, which cost evidence rather than just a retry.
+    const revision = continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL)!;
+    const parsed = parse({
+      id: 'WI-7',
+      checks: [
+        {
+          claim: 'gate is green',
+          probe: {
+            tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+            args: { value: 'green' },
+            schemaRevision: revision,
+            expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+          },
+        },
+      ],
+    }) as { checks: Array<Record<string, unknown>> };
+
+    expect(parsed.checks[0]).toEqual({
+      claim: 'gate is green',
+      probe: {
+        kind: 'tool',
+        tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+        args: { value: 'green' },
+        schemaRevision: revision,
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    });
+  });
+
+  it('EI-21674755057848047: still REFUSES a nested probe with nothing to execute', () => {
+    // `probe:{expect}` is not an under-specified probe — it is a claim with no
+    // probe, and the row wants `recheck` instead. Inferring here would persist a
+    // probe the caller never described.
+    expect(() =>
+      parse({
+        id: 'WI-7',
+        checks: [{ claim: 'gate is green', probe: { expect: { path: '$.value', op: 'eq' as const, value: 'green' } } }],
+      }),
+    ).toThrow(/discriminator/i);
+  });
+
   it("keys the checkpoint by the ITEM's harness (looked up), disambiguated by the ctx hint", async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
