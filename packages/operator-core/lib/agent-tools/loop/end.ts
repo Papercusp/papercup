@@ -76,9 +76,9 @@ export default defineTool({
   name: 'loop:end',
   profile: 'engineer',
   description:
-    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. If an autonomy-implying mode remains active with no deliberate event await, the stop refuses unless `acknowledgeWakeLessAutonomy:true` consciously overrides the safety guard. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
+    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. If an autonomy-implying mode remains active with no deliberate event await, the stop refuses unless `acknowledgeWakeLessAutonomy:true` consciously overrides the safety guard. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. Loops are keyed by owner, not by harness; a `harness` arg is accepted for compatibility but has no effect. Re-arm anytime with loop:arm.",
   guidance: {
-    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.',
+    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool ignores `harness` if passed (loops are keyed by owner). Better to loop:end than burn empty wakes spinning.',
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
     chaining:
@@ -93,6 +93,13 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Accepted for compatibility and IGNORED — loops are keyed by owner, not by harness, so this has no effect. Present only because nearly every other tool in this catalog takes a `harness` arg and callers reasonably reach for it out of habit; omit it, or pass anything.',
+      ),
     ownerId: z.string().max(120).optional().describe('End the loop for this owner id (default: yourself).'),
     reason: z
       .string()
