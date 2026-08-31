@@ -91,6 +91,25 @@ describe('buildGatePipelineHealthPatterns — the release ship-path lane (WI-445
     expect(JSON.stringify(out)).not.toContain('do-not-dispatch');
   });
 
+  it('never surfaces an inconclusive checkpoint as a code red, but preserves other pipeline evidence', () => {
+    const out = buildGatePipelineHealthPatterns(
+      base({
+        gateLabel: 'inconclusive',
+        consecutiveReds: 9,
+        gateStallMs: 5 * 3_600_000,
+        mainBehindStaging: 50,
+        recentFailingFiles: ['historical-do-not-dispatch.test.ts'],
+        eventFailures: [{ kind: 'deploy', status: 'failed', count: 4 }],
+      }),
+    );
+    expect(out.some((p) => p.ref === 'pipeline:gate')).toBe(false);
+    expect(JSON.stringify(out)).not.toContain('historical-do-not-dispatch');
+    expect(out.find((p) => p.ref === 'pipeline:promotion-stall')?.detail).toContain(
+      'rendered no code verdict',
+    );
+    expect(out.some((p) => p.ref === 'pipeline:event:deploy:failed')).toBe(true);
+  });
+
   it('surfaces a promotion stall, and joins it to a standing red gate (the incident no consumer joins today)', () => {
     const joined = buildGatePipelineHealthPatterns(
       base({ gateLabel: 'red', consecutiveReds: 4, gateStallMs: 3_600_000, mainBehindStaging: 102 }),
