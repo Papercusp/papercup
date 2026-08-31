@@ -606,16 +606,28 @@ describe('native-scheduler lockout: read-only listings are exempt (EI-2041948418
 // (scripts/hooks/omp/coord-hook.ts). Fix one, fix both.
 describe('native-scheduler lockout: redirections do not defeat the read exemption (EI-21934170410740770)', () => {
   it.each([
-    ['the reported shape: stderr merged, piped to a filter', 'crontab -l 2>&1 | head -20'],
+    ['stderr merged, piped to a filter', 'crontab -l 2>&1 | grep session-archive'],
     ['stderr to /dev/null', 'crontab -l 2>/dev/null'],
     ['stdout to a scratch file', 'crontab -l > /tmp/out.txt'],
     ['appended to a scratch file', 'crontab -l >> /tmp/out.txt'],
     ['both streams to separate files', 'crontab -l 1>/tmp/a 2>/tmp/b'],
-    ['sudo form with a redirect', 'sudo crontab -l 2>&1 | head -5'],
+    ['sudo form with a redirect', 'sudo crontab -l 2>&1 | wc -l'],
     ['another user listed, with a redirect', 'crontab -u root -l 2>/dev/null'],
     ['redirect inside a compound', 'git status; crontab -l 2>&1 | wc -l'],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command), AGENT));
+  });
+
+  // The reported command VERBATIM. It cannot use expectAllow (which asserts
+  // total silence) because `| head` independently trips the foreground SIGPIPE
+  // advisory (EI-18787618439028592) — an ALLOW decision carrying advice, from a
+  // guard that has nothing to do with schedulers. Asserting silence here would
+  // couple this regression to that unrelated advisory's existence; asserting the
+  // scheduler verdict directly is what this test is actually about.
+  it('does not deny the reported command verbatim', () => {
+    const r = runGate(bashCmd('crontab -l 2>&1 | head -20'), AGENT);
+    expect(r.status, describeGateExit(r)).toBe(0);
+    expect(`${r.stdout}${r.stderr}`).not.toMatch(/native-scheduler lockout/);
   });
 
   // Stripping redirections stays fail-CLOSED. These are the shapes where a
