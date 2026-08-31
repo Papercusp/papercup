@@ -129,7 +129,7 @@ import { SignalsPanel } from "./SignalsPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
 import LearningLoopControl from "./LearningLoopControl";
 import LearningPotRail from "./LearningPotRail";
-import LearningPotPicker from "./LearningPotPicker";
+import LearningPotPicker, { useOpenPotPicker } from "./LearningPotPicker";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
@@ -509,31 +509,36 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
   "throughput",
 ]);
 
-/** Learning's arming teaching links open the Workflows tab filtered to AI routines.
- * The middle pane no longer owns a duplicate Agents/System automation catalog.
+/**
+ * Learning's arming teaching links open the every-pot SCOPE PICKER
+ * (learning-pot-scope-gate-2026-08-30, P-009).
  *
- * The destination params changed with the Workflows one-frame redesign
- * (workflows-tab-one-frame-2026-08-28, D-001): the tab no longer reads `wfView`/`wfFilter`,
- * so writing them landed this link on a DEFAULT Workflows tab and silently dropped the
- * intent. `wfKind=routine` is the exact successor of the old `wfFilter=ai` — both select the
- * ai-routine population — and the retired view param has no successor because there is only
- * one frame now. */
+ * THEY USED TO LAND ON THE WRONG PAGE. The destination was
+ * `tab=workflows&wfKind=routine` — the routine SCHEDULE list, which answers
+ * "when does this run", not "is this pot learning at all". A person who clicked
+ * "Open Arming" because nothing was learning arrived at a cadence table with no
+ * control that would change what they came to change. The picker is the surface
+ * that actually answers it: every pot, its current switch, and what turning it
+ * on would really do.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT CLAIM. The pot switch is a GATE, not an arm
+ * (D-007) — releasing it lets each lane resume at its own prior arming, so it
+ * cannot by itself arm a lane. That is why the Gym empty-state's button is
+ * labelled for the scope surface rather than "Arm the Gym": the picker names
+ * the lane you still have to arm ("switching on alone starts nothing; arm Gym
+ * to make it learn") but is not the control that arms it, and a button whose
+ * label promises an action its destination cannot perform is the same
+ * wrong-page failure in a new costume.
+ *
+ * The old constants are kept EXPORTED and referenced by nothing here on
+ * purpose — LearningTab.test.tsx pins them as the pre-P-009 destination so a
+ * silent revert to the Workflows tab fails a test instead of shipping.
+ */
 export const ARMING_WORKFLOWS_TAB = "workflows";
 export const ARMING_WORKFLOWS_KIND = "routine";
 
 function useOpenArming(): () => void {
-  const [, setDestination] = useQueryStates({
-    tab: parseAsString,
-    wfKind: parseAsString,
-  });
-  return useCallback(
-    () =>
-      void setDestination({
-        tab: ARMING_WORKFLOWS_TAB,
-        wfKind: ARMING_WORKFLOWS_KIND,
-      }),
-    [setDestination],
-  );
+  return useOpenPotPicker();
 }
 
 /** P-009 first-run orientation banner — ONCE PER WORKSPACE (owner decision
@@ -4030,7 +4035,13 @@ function GymView({
               : "No gym activity in this workspace yet"
           }
           body={`Armed ${t("pot", { plural: true, lower: true })} A/B-refine their blueprints under a budget you set — completed cycles land here with their verdicts.`}
-          action={{ label: "Arm the Gym", onClick: openArming }}
+          action={{
+            // Not "Arm the Gym" (P-009): this opens the pot SCOPE picker, which
+            // is a gate and cannot arm the gym lane (D-007). The label names
+            // where it actually goes.
+            label: "Check learning scope",
+            onClick: openArming,
+          }}
         />
       ) : (
         <>
