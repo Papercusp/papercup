@@ -159,6 +159,28 @@ export type CompletionTreeContentIdentity = {
    * opposite remedies, and conflating them is what made this class silent three times.
    */
   headBlobUnresolvable?: string;
+  /**
+   * EI-21937921955988010: the checkout that OWNS this path, when it is not the
+   * stamp's top-level `repositoryRoot`. A completion legitimately spans several
+   * repositories here — the suite apps (portal/email/calendar/phone) each live in
+   * their own checkout under `~/.papercusp-workspaces/<ws>/.papercusp/apps/*` while
+   * infra lands in the papercusp repo — so a single-root stamp could not prove every
+   * declared path and the whole stamp was discarded, closing the item as `proposed`
+   * with no diagnostic. Each entry now carries the root and HEAD it was proven
+   * against; the top-level pair remains the primary (highest-match) root so
+   * pre-existing readers keep working unchanged.
+   */
+  repositoryRoot?: string;
+  headSha?: string;
+  /**
+   * EI-21937921955988010: this path belongs to NO git checkout, so blob identity is
+   * not merely unavailable — it is undefined for it. The canonical case is an
+   * evidence artifact (`~/.papercusp/evidence/<id>/*.png`), which
+   * `verifiedHow: 'live-drove-ui'` REQUIRES the closer to cite and which the identity
+   * floor then counted as an unproven citation. Excluded from the floor rather than
+   * failed by it; never set for a path that has an owning repository.
+   */
+  outOfRepoArtifact?: true;
 };
 
 /**
@@ -239,6 +261,19 @@ export const CompletionTreeStampSchema = z
            * unset, which is what keeps the two distinguishable downstream.
            */
           headBlobUnresolvable: z.string().min(1).optional(),
+          /**
+           * EI-21937921955988010: per-entry owning checkout + HEAD, present when this
+           * path was proven against a repository OTHER than the stamp's top-level
+           * `repositoryRoot`. Plain optional strings for the same JSON-Schema reason
+           * the blob slots above are plain `.nullable()`.
+           */
+          repositoryRoot: z.string().min(1).optional(),
+          headSha: z
+            .string()
+            .regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/)
+            .optional(),
+          /** EI-21937921955988010: path owned by no checkout (an evidence artifact). */
+          outOfRepoArtifact: z.literal(true).optional(),
         }),
       )
       .min(1)

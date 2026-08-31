@@ -54,6 +54,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 import {
   completionCheckoutRootForPath,
@@ -62,6 +63,10 @@ import {
   completionTreeStamp,
   completionTreeStampForEvidence,
 } from './complete';
+import {
+  committedCloseDowngradedForUnprovenContentIdentity,
+  completionTreeContentIdentityMatches,
+} from './completion-freshness';
 
 const ROOT = '/repo';
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
@@ -616,5 +621,155 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     });
 
     expect(result?.contentIdentity).toEqual([expect.objectContaining({ path: 'src/new-fix.ts', headBlobSha: null })]);
+  });
+});
+
+/**
+ * EI-21937921955988010 — a completion may span SEVERAL repositories, and may cite
+ * artifacts that live in none.
+ *
+ * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+ * WI-1409555 (built the phone suite app and wired it into the Portal) declared 30
+ * paths in THREE classes at once: 2 papercusp-relative (`infra/phone-app/...`), 23
+ * absolute paths inside two INDEPENDENT suite-app checkouts (phone-app and portal,
+ * each its own git repo under ~/.papercusp-workspaces/<ws>/.papercusp/apps/*), and 5
+ * screenshot artifacts under ~/.papercusp/evidence/WI-1409555/ that belong to no repo
+ * at all.
+ *
+ * Measured live 2026-08-31: that close stored `has_tree_stamp=false` — NO stamp
+ * whatsoever, `identity_rows=0` — and landed `authority='proposed'`,
+ * `countsTowardBurnDown=false`. Two independent causes, and BOTH had to be fixed:
+ *   - the stamp was single-repo BY TYPE, so paths in a second checkout could never be
+ *     proven; and
+ *   - `completionTreeStampForEvidence` bailed all-or-nothing when ANY declared path
+ *     failed to resolve under the one selected root, so the unprovable paths discarded
+ *     the proof of every provable one — leaving no diagnostic naming which paths were
+ *     at fault. The close read as sloppy or fabricated citations rather than as a
+ *     structural gap, which is the dangerous part.
+ *
+ * The artifact class is not an edge case: `verifiedHow: 'live-drove-ui'` REQUIRES the
+ * closer to cite exactly those screenshots, so the floor demanded a citation it then
+ * counted as unproven — UI-verified work could not reach `committed` however clean its
+ * code side was.
+ *
+ * ── HOW THIS PROVES ITSELF ─────────────────────────────────────────────────
+ * Both directions, because the failure mode of a fix here is a floor that has been
+ * LOOSENED rather than made cross-repo aware. The last two cases are the controls: an
+ * implementation that simply ignored unprovable entries would mint `committed` for an
+ * artifacts-only close, and one that ignored artifact entries too broadly would excuse
+ * a genuine content mismatch. Both must still be refused.
+ *
+ * PURE: every filesystem and git read is injected.
+ */
+describe('completionTreeStampForEvidence — multi-repository completions (EI-21937921955988010)', () => {
+  const PAPERCUSP = '/operator';
+  const PHONE = '/suite/phone-app';
+  const PORTAL = '/suite/portal';
+  const PAPERCUSP_SHA = '1'.repeat(40);
+  const PHONE_SHA = '2'.repeat(40);
+  const PORTAL_SHA = '3'.repeat(40);
+  const ARTIFACT = '/home/marsh-office/.papercusp/evidence/WI-1409555/phone-dialer.png';
+
+  const declared = [
+    'infra/phone-app/deploy.sh',
+    `${PHONE}/apps/sidecar/src/api.ts`,
+    `${PORTAL}/app/layout.tsx`,
+    ARTIFACT,
+  ];
+
+  const heads: Record<string, string> = {
+    [`${PAPERCUSP}/.git/HEAD`]: PAPERCUSP_SHA,
+    [`${PHONE}/.git/HEAD`]: PHONE_SHA,
+    [`${PORTAL}/.git/HEAD`]: PORTAL_SHA,
+  };
+
+  // `workingTreeBlobSha` is computed from the REAL bytes the probe returns, so a match
+  // has to be asserted against the real Git blob hash of that content — a placeholder
+  // sha on the HEAD side could never equal it, which would make every case here read as
+  // a mismatch for a reason that has nothing to do with the behavior under test.
+  const CONTENT = 'content\n';
+  const blobShaOf = (content: string) =>
+    createHash('sha1')
+      .update(Buffer.from(`blob ${Buffer.byteLength(content)}\0`, 'utf8'))
+      .update(Buffer.from(content))
+      .digest('hex');
+  const MATCHING_BLOB = blobShaOf(CONTENT);
+
+  const probe = (blob: (repoRoot: string) => string) => ({
+    exists: (abs: string) =>
+      abs === `${PAPERCUSP}/infra/phone-app/deploy.sh` ||
+      abs === `${PHONE}/apps/sidecar/src/api.ts` ||
+      abs === `${PORTAL}/app/layout.tsx` ||
+      abs === ARTIFACT,
+    isCheckoutRoot: (abs: string) => abs === PAPERCUSP || abs === PHONE || abs === PORTAL,
+    readFile: (abs: string): string | undefined => heads[abs],
+    readBytes: () => Buffer.from(CONTENT),
+    headBlobs: (repoRoot: string, _sha: string, paths: readonly string[]) =>
+      new Map(paths.map((path) => [path, { status: 'resolved' as const, sha: blob(repoRoot) }])),
+  });
+
+  // Every repository's working tree agrees with its own HEAD.
+  const matching = probe(() => MATCHING_BLOB);
+
+  it('stamps EVERY owning checkout instead of discarding the whole stamp', () => {
+    const stamp = completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], matching);
+
+    // The regression itself: this used to be `undefined`.
+    expect(stamp).toBeDefined();
+    // The primary (highest-match) root stays the top-level identity, so existing
+    // readers are unchanged.
+    expect(stamp?.repositoryRoot).toBe(PAPERCUSP);
+    expect(stamp?.headSha).toBe(PAPERCUSP_SHA);
+    expect(stamp?.contentIdentity).toHaveLength(4);
+
+    const byPath = new Map((stamp?.contentIdentity ?? []).map((entry) => [entry.path, entry]));
+
+    // A path in the primary checkout carries no per-entry root: the top-level pair is it.
+    expect(byPath.get('infra/phone-app/deploy.sh')).toMatchObject({ headBlobSha: MATCHING_BLOB });
+    expect(byPath.get('infra/phone-app/deploy.sh')?.repositoryRoot).toBeUndefined();
+
+    // Paths in the two independent suite checkouts are proven against THEIR OWN HEADs.
+    expect(byPath.get('apps/sidecar/src/api.ts')).toMatchObject({
+      repositoryRoot: PHONE,
+      headSha: PHONE_SHA,
+    });
+    expect(byPath.get('app/layout.tsx')).toMatchObject({
+      repositoryRoot: PORTAL,
+      headSha: PORTAL_SHA,
+    });
+
+    // The screenshot is CLASSIFIED, not counted unproven.
+    expect(byPath.get(ARTIFACT)).toMatchObject({
+      outOfRepoArtifact: true,
+      workingTreeBlobSha: null,
+      headBlobSha: null,
+    });
+  });
+
+  it('lets a clean mixed-class completion reach committed authority', () => {
+    const stamp = completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], matching);
+
+    expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(true);
+    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', declared, stamp)).toBe(false);
+  });
+
+  it('CONTROL: an artifacts-only completion still does NOT qualify as committed', () => {
+    const stamp = completionTreeStampForEvidence({ filesChanged: [ARTIFACT] }, [PAPERCUSP], matching);
+
+    // Excluding artifacts from the floor must never mean a close with no provable code
+    // evidence at all can mint the strongest authority.
+    expect(stamp?.contentIdentity).toEqual([expect.objectContaining({ outOfRepoArtifact: true })]);
+    expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', [ARTIFACT], stamp)).toBe(true);
+  });
+
+  it('CONTROL: an artifact citation does not excuse a real content mismatch elsewhere', () => {
+    // The phone-app checkout's working tree no longer matches its HEAD.
+    const drifted = probe((repoRoot) => (repoRoot === PHONE ? 'a'.repeat(40) : MATCHING_BLOB));
+    const stamp = completionTreeStampForEvidence({ filesChanged: declared }, [PAPERCUSP], drifted);
+
+    expect(stamp?.contentIdentity).toHaveLength(4);
+    expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', declared, stamp)).toBe(true);
   });
 });

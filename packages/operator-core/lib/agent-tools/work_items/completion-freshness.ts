@@ -286,9 +286,23 @@ export function completionTreeContentIdentityMatches(
   // `undefined === undefined` matches. That is the one direction this floor must never
   // fail in, since it would mint `committed` authority from evidence the server never
   // actually observed.
+  //
+  // EI-21937921955988010: an `outOfRepoArtifact` entry is EXCLUDED from the floor
+  // rather than failed by it. Such a path (an evidence screenshot under
+  // ~/.papercusp/evidence/) belongs to no checkout, so blob identity is undefined for
+  // it — not "unavailable". `verifiedHow: 'live-drove-ui'` requires citing exactly
+  // those artifacts, so counting them unproven made UI-verified completions
+  // permanently ineligible for `committed` no matter how clean the code side was.
+  //
+  // The floor stays conservative in the direction that matters: at least one
+  // REPO-BACKED entry must exist and every repo-backed entry must match. A completion
+  // citing only artifacts therefore still does NOT qualify — absence of provable code
+  // evidence must never mint `committed`.
+  const repoBacked = (identity ?? []).filter((entry) => entry.outOfRepoArtifact !== true);
   return Boolean(
     identity?.length &&
-    identity.every(
+    repoBacked.length &&
+    repoBacked.every(
       (entry) =>
         entry.workingTreeBlobSha != null &&
         entry.headBlobSha != null &&
@@ -445,10 +459,20 @@ export function completionTreeStampForEvidence(
     const declaredPath = raw.trim();
     if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
     const absolutePath = nodePath.resolve(primaryRoot, declaredPath);
-    if (absolutePath !== primaryRoot && !absolutePath.startsWith(primaryRoot + nodePath.sep)) continue;
+    const underPrimary = absolutePath === primaryRoot || absolutePath.startsWith(primaryRoot + nodePath.sep);
+
+    // EI-21937921955988010: an ABSOLUTE path outside the primary checkout used to be
+    // skipped here, which is precisely why a suite-app completion never acquired an
+    // owning root: the apps live in independent checkouts under
+    // ~/.papercusp-workspaces/<ws>/.papercusp/apps/*, so every one of their paths fell
+    // through this `continue` and the stamp collapsed to the papercusp repo alone.
+    // Walk up to the checkout that actually owns it, bounded by the path's own ancestor
+    // chain exactly as the nested case is — this never walks a repository tree.
+    if (!underPrimary && !nodePath.isAbsolute(declaredPath)) continue;
 
     let dir = nodePath.dirname(absolutePath);
-    for (let depth = 0; depth < 64 && dir !== primaryRoot; depth += 1) {
+    const stopAt = underPrimary ? primaryRoot : undefined;
+    for (let depth = 0; depth < 64 && dir !== stopAt; depth += 1) {
       if (isCheckoutRoot(dir)) {
         nestedOwners.set(declaredPath, { absolutePath, root: dir });
         break;
@@ -543,9 +567,22 @@ export function completionTreeStampForEvidence(
         // An unreadable candidate is not evidence that another checkout owns the file.
       }
     }
+    // EI-21937921955988010: on a TIE, a REGISTERED checkout outranks one that was merely
+    // discovered by walking a declared path's ancestors. Now that a multi-repo completion
+    // stamps every owning checkout, the top-level pair is only the PRIMARY identity — and
+    // letting an unregistered suite-app checkout capture it (its absolute paths score
+    // specificity while the registered root's relative ones score -1) would silently
+    // re-point `completionSettlementManifest` and every freshness re-check at a repository
+    // the system does not track. A discovered root still wins outright when it owns MORE
+    // declared paths, which is what the nested-checkout case depends on.
+    const registered = roots.includes(repoRoot);
+    const selectedRegistered = roots.includes(selectedRoot);
     if (
       matches > selectedMatches ||
-      (matches === selectedMatches && absoluteSpecificity > selectedAbsoluteSpecificity)
+      (matches === selectedMatches &&
+        registered === selectedRegistered &&
+        absoluteSpecificity > selectedAbsoluteSpecificity) ||
+      (matches === selectedMatches && registered && !selectedRegistered)
     ) {
       selectedRoot = repoRoot;
       selectedMatches = matches;
@@ -553,11 +590,11 @@ export function completionTreeStampForEvidence(
     }
   }
 
-  const selectedFiles = declared.map((raw) => {
-    const resolved = pathForRoot(selectedRoot, raw);
-    if (!resolved) return normalizedRepoPath(selectedRoot, raw);
-    // Mirror the scoring loop's own preference: the stripped candidate wins only when
-    // it is the one that actually exists and the plain form does not.
+  // Mirror the scoring loop's own preference: the stripped candidate wins only when
+  // it is the one that actually exists and the plain form does not.
+  const fileForRoot = (root: string, raw: string): string | undefined => {
+    const resolved = pathForRoot(root, raw);
+    if (!resolved) return normalizedRepoPath(root, raw);
     if (resolved.strippedRelativePath) {
       try {
         if (!exists(resolved.absolutePath) && exists(resolved.strippedAbsolutePath!)) {
@@ -568,17 +605,118 @@ export function completionTreeStampForEvidence(
       }
     }
     return resolved.relativePath;
-  });
-  const validSelectedFiles = selectedFiles.filter((file): file is string => file !== undefined);
-  if (validSelectedFiles.length !== selectedFiles.length) return undefined;
+  };
 
-  return completionTreeStamp({
+  /**
+   * EI-21937921955988010: the checkout that OWNS a declared path, which is NOT always
+   * `selectedRoot`. Previously every path was forced through `selectedRoot` and a
+   * single unresolvable one discarded the ENTIRE stamp (the `validSelectedFiles`
+   * all-or-nothing bail) — so a completion spanning the papercusp repo, two suite-app
+   * checkouts and a handful of screenshot artifacts stored no stamp at all and closed
+   * as `proposed` with no diagnostic naming which paths were the problem.
+   */
+  const ownerForPath = (raw: string): string | undefined => {
+    const nested = nestedOwners.get(raw.trim());
+    if (nested) return nested.root;
+    // Mirror the scoring loop's tie rule EXACTLY: deepest-containing-checkout wins only
+    // for an ABSOLUTE declared path (where containment is a real fact and a submodule
+    // should stamp its own HEAD). A RELATIVE path resolves "inside" every root by
+    // construction, so it retains the primary-root compatibility rule instead —
+    // EI-20460682854560939, "legacy completions do not change repositories".
+    const declaredIsAbsolute = nodePath.isAbsolute(raw.trim());
+    let best: string | undefined;
+    let bestSpecificity = -1;
+    for (const repoRoot of candidateRoots) {
+      const resolved = pathForRoot(repoRoot, raw);
+      if (!resolved) continue;
+      try {
+        const plainExists = exists(resolved.absolutePath);
+        const strippedExists =
+          !plainExists && resolved.strippedAbsolutePath && exists(resolved.strippedAbsolutePath);
+        if (!(plainExists || strippedExists)) continue;
+      } catch {
+        continue;
+      }
+      if (!declaredIsAbsolute) {
+        // First match wins, and `selectedRoot` (scored primary) outranks any other.
+        if (repoRoot === selectedRoot) return repoRoot;
+        best ??= repoRoot;
+        continue;
+      }
+      if (repoRoot.length > bestSpecificity) {
+        best = repoRoot;
+        bestSpecificity = repoRoot.length;
+      }
+    }
+    if (best) return best;
+    // A path that resolves INSIDE the primary checkout but does not exist is still that
+    // checkout's to prove: recording it with a null identity is what keeps a missing
+    // file reading as UNPROVEN rather than being excused as an out-of-repo artifact.
+    return pathForRoot(selectedRoot, raw) ? selectedRoot : undefined;
+  };
+
+  const groups = new Map<string, string[]>();
+  const artifactPaths: string[] = [];
+  for (const raw of declared) {
+    const declaredPath = raw.trim();
+    // A glob or empty citation is INVALID, not an artifact. WI-312624 made the
+    // fail-closed bail explicit for exactly this case; keep it.
+    if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) return undefined;
+    const owner = ownerForPath(raw);
+    const file = owner ? fileForRoot(owner, raw) : undefined;
+    if (!owner || !file) {
+      artifactPaths.push(declaredPath);
+      continue;
+    }
+    const group = groups.get(owner) ?? [];
+    group.push(file);
+    groups.set(owner, group);
+  }
+
+  const primaryStamp = completionTreeStamp({
     repoRoot: selectedRoot,
     readFile: probe.readFile,
     readBytes: probe.readBytes,
     headBlobs: probe.headBlobs,
-    filesChanged: validSelectedFiles,
+    filesChanged: groups.get(selectedRoot) ?? [],
   });
+  if (!primaryStamp) return undefined;
+
+  const identity: CompletionTreeContentIdentity[] = [...(primaryStamp.contentIdentity ?? [])];
+  for (const [repoRoot, files] of groups) {
+    if (repoRoot === selectedRoot) continue;
+    const stamp = completionTreeStamp({
+      repoRoot,
+      readFile: probe.readFile,
+      readBytes: probe.readBytes,
+      headBlobs: probe.headBlobs,
+      filesChanged: files,
+    });
+    if (!stamp?.contentIdentity) {
+      // That checkout's HEAD could not be read. Record ITS paths as unproven — with the
+      // reason, per WI-42441 — instead of discarding every other repository's proof.
+      for (const path of files) {
+        identity.push({
+          path,
+          workingTreeBlobSha: null,
+          headBlobSha: null,
+          repositoryRoot: repoRoot,
+          headBlobUnresolvable: `checkout '${repoRoot}' HEAD could not be read`,
+        });
+      }
+      continue;
+    }
+    for (const entry of stamp.contentIdentity) {
+      identity.push({ ...entry, repositoryRoot: repoRoot, headSha: stamp.headSha });
+    }
+  }
+  for (const path of artifactPaths) {
+    identity.push({ path, workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true });
+  }
+
+  return identity.length
+    ? { ...primaryStamp, contentIdentity: identity.slice(0, MAX_PATHS_PROBED) }
+    : primaryStamp;
 }
 
 export type CompletionFreshnessVerdict = 'fresh' | 'stale' | 'unavailable' | 'not-applicable';
