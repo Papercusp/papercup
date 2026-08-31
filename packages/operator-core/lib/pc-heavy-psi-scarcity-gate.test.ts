@@ -59,14 +59,43 @@ beforeEach(() => {
   memAvailFile = join(dir, 'memavail-gib');
 });
 
-afterEach(() => {
+afterEach(async () => {
   // Kill before removing the tree: a still-running admission re-creates its record file (and can
   // outlive the test by the length of its own `sleep`), which would leak processes across cases
   // and let one scenario's controller observe the next one's override files.
+  const killed: ChildProcess[] = [];
   for (const child of spawned.splice(0)) {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      killed.push(child);
+    }
   }
-  rmSync(dir, { recursive: true, force: true });
+  // WI-1496508: the kill above was correct in INTENT but could not deliver it, because
+  // `child.kill()` only SIGNALS — it never waits. `rmSync` therefore started while the `bash` it
+  // had just signalled was still alive and still writing, and a file re-created between rmSync's
+  // readdir and its rmdir surfaces as `ENOTEMPTY, Directory not empty: /tmp/pcv/pcheavy-scarcity-*`.
+  // That is a TEARDOWN-ONLY red: every assertion in the case has already passed by then.
+  // Measured 2026-08-31 (3d window): 2 such reds / 9 passes — and this file is bound as a
+  // `check:{kind:'tests'}` criterion on the `gate-speed-round-2-2026-08-31-acceptance` rubric,
+  // which RUNS it at grading time, so the race corrupted acceptance grading and not just the lane.
+  // Awaiting the actual exit closes the window rather than papering over it.
+  await Promise.all(
+    killed.map(
+      (child) =>
+        new Promise<void>((resolveExit) => {
+          if (child.exitCode !== null || child.signalCode !== null) return resolveExit();
+          child.once('exit', () => resolveExit());
+          // A SIGKILLed direct child cannot ignore the signal, so this bound is a liveness
+          // backstop for a lost 'exit' event, never the expected path.
+          setTimeout(() => resolveExit(), 2_000).unref();
+        }),
+    ),
+  );
+  // `force` suppresses ENOENT, NOT ENOTEMPTY, and Node's rm retry default is 0 on POSIX. The
+  // awaited exit above removes the writer this test controls; `maxRetries` covers the residual
+  // case of a descendant `pc-heavy.sh` spawned (the plain `spawn` leads no process group, so
+  // SIGKILL to `bash` never reached them).
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 /**
