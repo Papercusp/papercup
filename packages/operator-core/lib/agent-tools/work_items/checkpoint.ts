@@ -156,6 +156,7 @@ import {
   type CarryArgRepair,
   evidenceFirst,
   normalizeCheckEntries,
+  normalizeFlattenedContinuityProbeRow,
   patchExistingCheckEntries,
   renderCarryNote,
   sanitizeCarryRowId,
@@ -494,47 +495,9 @@ function dependsOnSpec() {
  * SUCCESSOR inherits — the reader least able to tell an asserted claim from a
  * checked one.
  */
-/**
- * EI-21631530729522909: accept the flattened executable-probe envelope that
- * callers naturally construct from a check row, e.g.
- * `{ claim, kind: 'tool', tool, args, schemaRevision, expect }`.
- *
- * `coerceCarryRowShape` also treats `kind` as the legacy structured-check
- * claim alias, so this lift must happen first and only for a COMPLETE
- * executable envelope. Incomplete rows and ordinary `{kind, command, result}`
- * rows keep their existing validation/compatibility behavior; a nested probe
- * is canonical and always wins. The lifted fields are removed from the row so
- * the strict row schema cannot retain a second, ambiguous copy of them.
- */
-function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
-  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
-  const source = row as Record<string, unknown>;
-  if (source.probe !== undefined) return row;
-
-  const kind = source.kind;
-  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : null;
-  if (!targetKey) return row;
-
-  // These are the required fields for both discriminated probe variants;
-  // `args`, `projection`, and `as` are optional on their respective shapes.
-  const requiredKeys = [targetKey, 'schemaRevision', 'expect'];
-  if (!requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(source, key))) return row;
-
-  const lifted = { kind } as Record<string, unknown>;
-  const probeKeys =
-    kind === 'tool'
-      ? ['tool', 'args', 'projection', 'schemaRevision', 'expect']
-      : ['cell', 'as', 'schemaRevision', 'expect'];
-  const normalized = { ...source };
-  for (const key of probeKeys) {
-    if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
-    lifted[key] = normalized[key];
-    delete normalized[key];
-  }
-  delete normalized.kind;
-  normalized.probe = lifted;
-  return normalized;
-}
+// normalizeFlattenedContinuityProbeRow (EI-21631530729522909) now lives in
+// ../../carry-note, SHARED with loop:checkpoint (EI-21922421392042550) — see
+// its docstring there for why this must not be a second, drifting copy.
 
 function checksSpec() {
   return z
