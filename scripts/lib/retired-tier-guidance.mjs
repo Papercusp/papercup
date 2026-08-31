@@ -26,7 +26,22 @@ import { stripCommentsOnly } from "./strip-comments-and-strings.mjs";
  */
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs"]);
 
-function guidanceTextFor(relativeFile, source) {
+/**
+ * WI-1726926 — EXPORTED so a census can drive the detector faithfully.
+ *
+ * `findRetiredGuidanceOffenders` is pure but takes ALREADY-NORMALIZED text, so calling
+ * it directly on raw source silently re-enables the comment scanning the block above
+ * exists to prevent. Measured 2026-08-31: a corpus census that called the detector
+ * directly reported 1,325 offenders / 458 files where the real population is a fraction
+ * of that — the over-count is entirely historical block comments, exactly the ~40-per-
+ * scout-dir noise described above, generalized to the whole tree. The census then reads
+ * as "this guard is unwidenable" and the widening gets abandoned for the wrong reason.
+ *
+ * Re-implementing the normalization in the caller is the other wrong fix: it is a second
+ * copy of a truth this module owns, and it drifts the moment CODE_EXTENSIONS changes.
+ * Import this instead.
+ */
+export function guidanceTextFor(relativeFile, source) {
   if (!CODE_EXTENSIONS.has(path.extname(relativeFile).toLowerCase()))
     return source;
   try {
