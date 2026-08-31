@@ -184,14 +184,14 @@ function inboxBulkAction(
   actionText: string,
 ): ReviewRowAction {
   if (status === "applied") {
-    return { label: "Resolved", tone: "good", description: "Already applied." };
+    return { key: "resolved", tone: "good", description: "Already applied." };
   }
   if (status === "dismissed") {
-    return { label: "Skipped", tone: "manual", description: "Left alone." };
+    return { key: "skipped", tone: "manual", description: "Left alone." };
   }
   if (accounting === "not-assessed") {
     return {
-      label: "Assess",
+      key: "assess",
       tone: "warn",
       description:
         "The resolver did not reach this item before the run settled — resume to assess it.",
@@ -199,7 +199,7 @@ function inboxBulkAction(
   }
   if (runItem.outcome === "failed") {
     return {
-      label: "Retry",
+      key: "retry",
       tone: "warn",
       description:
         runItem.recommendation?.retryCondition ??
@@ -208,7 +208,7 @@ function inboxBulkAction(
   }
   if (accounting === "manual") {
     return {
-      label: runItem.actionId === "answer" ? "You answer it" : "You handle it",
+      key: runItem.actionId === "answer" ? "you-answer-it" : "you-handle-it",
       tone: "manual",
       description:
         runItem.actionId === "answer"
@@ -216,7 +216,14 @@ function inboxBulkAction(
           : "No safe automatic action — open the item and handle it.",
     };
   }
-  return { label: actionText, description: `Apply: ${actionText}.` };
+  // The resolver's own recommendation wording, which no fixed vocabulary can
+  // hold. Declared `custom` so the commit button knows not to claim this row's
+  // words as the whole selection's consequence.
+  return {
+    key: "custom",
+    label: actionText,
+    description: `Apply: ${actionText}.`,
+  };
 }
 
 function evidenceLines(runItem: BulkRunItem): string[] {
@@ -348,7 +355,7 @@ export function buildInboxBulkReviewGroups(
       title: item?.title ?? runItem.title ?? runItem.itemId,
       action: applyFailed
         ? {
-            label: "Retry",
+            key: "retry" as const,
             tone: "warn" as const,
             description: `The resolve failed: ${localError}. Re-check it, then apply it again.`,
           }

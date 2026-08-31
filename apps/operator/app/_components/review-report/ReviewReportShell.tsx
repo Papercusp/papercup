@@ -132,6 +132,7 @@ export const REVIEW_ACTION_VOCABULARY = {
   // Terminal / manual — never in an apply set, so deliberately no `commit`.
   assess: { verb: "Assess" },
   "you-handle-it": { verb: "You handle it" },
+  "you-answer-it": { verb: "You answer it" },
   "you-write-it": { verb: "You write it" },
   fixed: { verb: "Fixed" },
   resolved: { verb: "Resolved" },
@@ -164,11 +165,18 @@ export type ReviewRowAction =
   | ({ key: ReviewActionKey } & ReviewRowActionBase)
   | ({ key: "custom"; label: string } & ReviewRowActionBase);
 
-/** The words a row shows, resolved from the one vocabulary. */
+/**
+ * The words a row shows, resolved from the one vocabulary.
+ *
+ * Degrades to the raw key instead of throwing on an unknown one. The types
+ * already make that unreachable, but this renders every row in a report the
+ * owner is mid-review on: a bad key blanking the whole surface would be a far
+ * worse failure than one row reading oddly, and the previous free-form `label`
+ * could not crash at all.
+ */
 export function reviewRowVerb(action: ReviewRowAction): string {
-  return action.key === "custom"
-    ? action.label
-    : REVIEW_ACTION_VOCABULARY[action.key].verb;
+  if (action.key === "custom") return action.label;
+  return REVIEW_ACTION_VOCABULARY[action.key]?.verb ?? action.key;
 }
 
 /**
@@ -1050,6 +1058,25 @@ export default function ReviewReportShell({
     for (const id of selected) if (pendingIds.has(id)) s.add(id);
     return s;
   }, [selected, pendingIds]);
+
+  /**
+   * The commit button's words, resolved from the SAME vocabulary the rows use.
+   *
+   * Derived from what is actually selected — never from a label the consumer
+   * passes alongside the rows — so the button cannot name a consequence the
+   * selected rows do not carry.
+   */
+  const commitLabel = useMemo(() => {
+    const actions: ReviewRowAction[] = [];
+    for (const group of groups)
+      for (const row of group.rows)
+        if (liveSelected.has(row.id) && row.action) actions.push(row.action);
+    // A selected row with no declared verb means the shared phrasing cannot be
+    // justified for the whole set; fall back rather than speak for it.
+    if (actions.length !== liveSelected.size)
+      return `${applyLabel} (${liveSelected.size})`;
+    return reviewCommitLabel(actions, applyLabel);
+  }, [groups, liveSelected, applyLabel]);
 
   useLayoutEffect(() => {
     const actionSettled = wasBusy.current && !busy;
