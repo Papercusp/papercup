@@ -28,6 +28,37 @@ export type HostedWorkspaceFileOperation =
   | "write"
   | "upload";
 
+/**
+ * Largest RAW file this client will place in ONE `file.upload` frame.
+ *
+ * This is a hard CLIENT-SIDE guard, not a limit we can afford to discover from
+ * the server's reply, because the relay does not reply: a browser frame over
+ * `HOSTED_WORKSPACE_MAX_MESSAGE_BYTES` (1 MiB) is answered by CLOSING the
+ * socket with `invalid_browser_message`, which drops the user's terminal along
+ * with the upload. base64 inflates 4/3 and the JSON envelope costs a few
+ * hundred bytes, so 700 KiB raw encodes to ~933 KiB and keeps ~115 KiB of
+ * headroom under the cap.
+ *
+ * Kept honest by `hosted-workspace-session-protocol.test.ts`, which imports the
+ * relay's own cap and fails if this stops fitting inside it.
+ */
+export const HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES = 700 * 1024;
+
+/** Human-readable size for an upload refusal the user has to act on. */
+export function formatUploadBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** What the host says it can accept for an upload. See the `ready` event. */
+export interface HostedWorkspaceUploadLimits {
+  /** Largest complete file the host will store. */
+  maxFileBytes: number;
+  /** Largest RAW (pre-base64) byte count per chunk frame. */
+  maxUploadChunkBytes: number;
+}
+
 export type HostedWorkspaceProtocolEvent =
   | {
       kind: "bound";
@@ -45,6 +76,25 @@ export type HostedWorkspaceProtocolEvent =
       kind: "ready";
       role: HostedWorkspaceTabRole;
       resumed: boolean;
+      /**
+       * Upload capability advertised by the host, ABSENT on a host that
+       * predates chunked upload.
+       *
+       * Absence is load-bearing, not a default to fill in: hosts run pinned
+       * generations in customer VMs, and sending a chunk sequence to one that
+       * cannot assemble it writes each chunk as a whole file, leaving only the
+       * last on disk. No `limits` therefore means "whole-file only", never
+       * "assume the current limits".
+       */
+      limits?: HostedWorkspaceUploadLimits;
+    }
+  | {
+      kind: "upload-progress";
+      requestId: string;
+      uploadId: string;
+      received: number;
+      chunks: number;
+      count: number;
     }
   | { kind: "terminal-data"; source: "output" | "snapshot"; data: Uint8Array }
   | { kind: "exit"; code: number; signal: number }
@@ -246,7 +296,44 @@ export function parseHostedWorkspaceProtocolMessage(
   if (type === "pty.ready") {
     const tabRole = role(payload.role);
     if (!tabRole || typeof payload.resumed !== "boolean") return null;
-    return { kind: "ready", role: tabRole, resumed: payload.resumed };
+    // A malformed `limits` is dropped to undefined rather than partially
+    // trusted: "the host said something about limits" is not a capability, and
+    // half-reading one would chunk against a host that never claimed it could
+    // assemble chunks.
+    const advertised = record(payload.limits);
+    const maxFileBytes = safeInteger(advertised?.maxFileBytes);
+    const maxUploadChunkBytes = safeInteger(advertised?.maxUploadChunkBytes);
+    const limits =
+      maxFileBytes !== null &&
+      maxUploadChunkBytes !== null &&
+      maxFileBytes > 0 &&
+      maxUploadChunkBytes > 0
+        ? { maxFileBytes, maxUploadChunkBytes }
+        : undefined;
+    return {
+      kind: "ready",
+      role: tabRole,
+      resumed: payload.resumed,
+      ...(limits ? { limits } : {}),
+    };
+  }
+
+  if (type === "file.progress") {
+    const requestId = nonEmptyString(payload.requestId);
+    const uploadId = nonEmptyString(payload.uploadId);
+    const received = safeInteger(payload.received);
+    const chunks = safeInteger(payload.chunks);
+    const count = safeInteger(payload.count);
+    if (
+      !requestId ||
+      !uploadId ||
+      received === null ||
+      chunks === null ||
+      count === null
+    ) {
+      return null;
+    }
+    return { kind: "upload-progress", requestId, uploadId, received, chunks, count };
   }
 
   if (type === "pty.output" || type === "pty.snapshot") {

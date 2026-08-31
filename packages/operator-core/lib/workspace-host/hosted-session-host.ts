@@ -37,6 +37,24 @@ import {
 
 export const HOSTED_HOST_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_HOST_MAX_FILE_BYTES = 8 * 1024 * 1024;
+/**
+ * Largest RAW (pre-base64) byte count accepted in ONE chunked-upload frame.
+ *
+ * Sized from the RELAY's envelope cap rather than taste. The browser→relay hop
+ * refuses any frame over `HOSTED_WORKSPACE_MAX_MESSAGE_BYTES` (1 MiB) by
+ * CLOSING the socket — which takes the user's terminal down with the upload,
+ * not just the transfer — and base64 inflates by 4/3. 512 KiB raw encodes to
+ * ~683 KiB, leaving ~340 KiB of headroom for the JSON envelope (path,
+ * requestId, chunk descriptor).
+ *
+ * Why this exists at all: `maxFileBytes` (8 MiB) advertises a range the single
+ * frame could never carry. Before chunking, everything above ~768 KiB was
+ * unreachable, so ~90% of the advertised ceiling was a promise the wire could
+ * not keep.
+ */
+export const HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES = 512 * 1024;
+/** Concurrent part-assembled uploads one session may hold. Bounds memory. */
+export const HOSTED_HOST_MAX_PENDING_UPLOADS = 4;
 export const HOSTED_HOST_MAX_PTY_INPUT_BYTES = 64 * 1024;
 export const HOSTED_HOST_SESSION_IDLE_MS = 15 * 60_000;
 /**
@@ -243,9 +261,27 @@ type HostSession = {
   pty: HostedHostPty;
   idleTimer: ReturnType<typeof setTimeout> | null;
   mutationResults: Map<string, { digest: string; payload: unknown }>;
+  /**
+   * Part-assembled chunked uploads, keyed by `uploadId`.
+   *
+   * Held in memory and written ONCE on the final chunk, so a partial file is
+   * never visible on disk: an interrupted upload leaves nothing rather than a
+   * truncated file that looks complete to whatever reads it next.
+   */
+  uploads: Map<string, PendingUpload>;
   removeData: () => void;
   removeExit: () => void;
   closed: boolean;
+};
+
+type PendingUpload = {
+  path: string;
+  encoding: 'base64' | 'utf8';
+  count: number;
+  /** Index the next chunk MUST carry; out-of-order arrival is refused, not reordered. */
+  next: number;
+  bytes: number;
+  parts: Buffer[];
 };
 
 /**
@@ -302,6 +338,30 @@ function filePayload(value: unknown, max: number): string | null {
 
 function integer(value: unknown, min: number, max: number): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max ? value : null;
+}
+
+type UploadChunkRef = { uploadId: string; index: number; count: number };
+
+/** Structural bound on a chunk sequence; real size is enforced against `maxFileBytes` per chunk. */
+const HOSTED_HOST_MAX_UPLOAD_CHUNKS = 4096;
+
+/**
+ * Parse the OPTIONAL chunk descriptor off a `file.upload` frame.
+ *
+ * Absent ⇒ null ⇒ the whole-file upload this protocol has always spoken.
+ * Malformed ⇒ THROWS. Collapsing those two cases is the dangerous shortcut: a
+ * malformed descriptor read as "absent" would write a single chunk as though it
+ * were the entire file, which succeeds loudly and truncates silently.
+ */
+function uploadChunk(value: unknown): UploadChunkRef | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new SafeRootFileError('invalid_chunk');
+  const raw = value as { uploadId?: unknown; index?: unknown; count?: unknown };
+  const uploadId = string(raw.uploadId, 128);
+  const count = integer(raw.count, 1, HOSTED_HOST_MAX_UPLOAD_CHUNKS);
+  const index = count === null ? null : integer(raw.index, 0, count - 1);
+  if (!uploadId || count === null || index === null) throw new SafeRootFileError('invalid_chunk');
+  return { uploadId, index, count };
 }
 
 function byteLength(value: unknown): number {
@@ -651,6 +711,7 @@ export class HostedWorkspaceHostSessionAdapter {
         pty,
         idleTimer: null,
         mutationResults: new Map(),
+        uploads: new Map(),
         removeData: () => {},
         removeExit: () => {},
         closed: false,
@@ -670,7 +731,27 @@ export class HostedWorkspaceHostSessionAdapter {
     }
     session.channels.add(channelId);
     this.channels.set(channelId, { kind: 'pty', sessionKey: key });
-    this.send(channelId, { type: 'pty.ready', resumed, role });
+    /**
+     * `limits` is the upload CAPABILITY ADVERTISEMENT, and its absence is
+     * load-bearing in the other direction.
+     *
+     * A workspace host runs on a pinned generation in the customer's VM (the
+     * same skew that makes an absent `kind` mean 'pty' in `open()`), so a
+     * client cannot assume the peer understands chunked uploads. An older host
+     * omits this field; a client seeing no `limits` must send whole-file frames
+     * and refuse anything too large for one, because a chunk sequence sent to a
+     * host that does not assemble it would be written as N successive WHOLE
+     * files, silently leaving only the last chunk on disk.
+     */
+    this.send(channelId, {
+      type: 'pty.ready',
+      resumed,
+      role,
+      limits: {
+        maxFileBytes: this.files.maxFileBytes,
+        maxUploadChunkBytes: HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
+      },
+    });
     const snapshot = await session.pty.snapshot();
     // Re-entrancy guard: the channel may have been detached — or reused by a
     // different session, or by a DESKTOP open — while the snapshot was awaited.
@@ -856,11 +937,35 @@ export class HostedWorkspaceHostSessionAdapter {
       }
       if (type === 'file.write' || type === 'file.upload') {
         const requestId = this.requestId(payload);
-        const encoded = filePayload(payload.data, Math.ceil((this.files.maxFileBytes * 4) / 3) + 8);
         const encoding = payload.encoding === 'utf8' ? 'utf8' : 'base64';
+        // An ABSENT `chunk` is the whole-file upload this protocol has always
+        // spoken, byte for byte. Only its presence opts into assembly, which is
+        // what lets a new client keep talking to an old host and vice versa.
+        const chunk = type === 'file.upload' ? uploadChunk(payload.chunk) : null;
+        // A chunk frame is bounded by the CHUNK cap, a whole-file frame by the
+        // file cap: accepting a chunk as large as a whole file would spend the
+        // envelope headroom the chunk size exists to preserve.
+        const encoded = filePayload(
+          payload.data,
+          Math.ceil(((chunk ? HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES : this.files.maxFileBytes) * 4) / 3) + 8,
+        );
         if (encoded === null) throw new SafeRootFileError('invalid_file_data');
-        const data = Buffer.from(encoded, encoding);
-        const requestDigest = digest({ type, path: payload.path, data: encoded, encoding });
+        // Widened to plain `Buffer` on purpose: `Buffer.concat` (the assembled
+        // chunk path below) returns Buffer<ArrayBufferLike>, which does not
+        // assign to the Buffer<ArrayBuffer> that `Buffer.from` infers.
+        let data: Buffer = Buffer.from(encoded, encoding);
+        let requestDigest = digest({ type, path: payload.path, data: encoded, encoding });
+
+        if (chunk) {
+          const assembled = this.acceptUploadChunk(session, channelId, requestId, payload.path, encoding, chunk, data);
+          // Non-final chunk: accumulated and acked. Nothing is written until
+          // the last one arrives, so an abandoned upload leaves no file.
+          if (assembled === null) return;
+          data = assembled;
+          // Idempotency must key on the ASSEMBLED file, not on the final chunk:
+          // two different uploads can share a last chunk.
+          requestDigest = digest({ type, path: payload.path, data: data.toString('base64'), encoding: 'base64' });
+        }
         const prior = session.mutationResults.get(requestId);
         if (prior) {
           if (prior.digest !== requestDigest) throw new SafeRootFileError('idempotency_conflict');
@@ -890,6 +995,81 @@ export class HostedWorkspaceHostSessionAdapter {
       });
       this.audit('operation_denied', session, channelId, code);
     }
+  }
+
+  /**
+   * Accumulate one upload chunk; return the assembled file ONLY on the last one.
+   *
+   * Out-of-order arrival is REFUSED, never repaired. A gap means frames were
+   * dropped or raced, and assembling them anyway would write the wrong bytes
+   * while reporting success — the one outcome worse than a failed upload, since
+   * nothing downstream can tell a silently-wrong file from a correct one.
+   *
+   * The per-chunk `file.progress` ack is not decoration: it is the client's
+   * backpressure signal. Without it a client streams every chunk into the
+   * socket buffer at once, which re-creates the head-of-line blocking chunking
+   * was introduced to remove — the terminal goes unresponsive for the duration
+   * of the upload exactly as it did with one big frame.
+   */
+  private acceptUploadChunk(
+    session: HostSession,
+    channelId: string,
+    requestId: string,
+    path: unknown,
+    encoding: 'base64' | 'utf8',
+    chunk: UploadChunkRef,
+    data: Buffer,
+  ): Buffer | null {
+    const target = string(path, 4096);
+    if (!target) throw new SafeRootFileError('invalid_path');
+
+    let pending = session.uploads.get(chunk.uploadId) ?? null;
+    if (chunk.index === 0) {
+      // A restart REPLACES the prior accumulation rather than appending to it,
+      // so a retried upload cannot concatenate itself onto its own abandoned
+      // first attempt and produce a file twice the right size.
+      if (!pending && session.uploads.size >= HOSTED_HOST_MAX_PENDING_UPLOADS) {
+        throw new SafeRootFileError('too_many_uploads');
+      }
+      pending = { path: target, encoding, count: chunk.count, next: 0, bytes: 0, parts: [] };
+      session.uploads.set(chunk.uploadId, pending);
+    }
+    if (!pending) throw new SafeRootFileError('unknown_upload');
+
+    if (
+      pending.next !== chunk.index ||
+      pending.count !== chunk.count ||
+      pending.path !== target ||
+      pending.encoding !== encoding
+    ) {
+      session.uploads.delete(chunk.uploadId);
+      throw new SafeRootFileError('invalid_chunk_sequence');
+    }
+    // Enforced as it accumulates, not at the end: the point of a running check
+    // is to refuse an oversized upload before its bytes are all in memory.
+    if (pending.bytes + data.byteLength > this.files.maxFileBytes) {
+      session.uploads.delete(chunk.uploadId);
+      throw new SafeRootFileError('file_too_large');
+    }
+
+    pending.parts.push(data);
+    pending.bytes += data.byteLength;
+    pending.next += 1;
+
+    if (pending.next < pending.count) {
+      this.send(channelId, {
+        type: 'file.progress',
+        requestId,
+        uploadId: chunk.uploadId,
+        received: pending.bytes,
+        chunks: pending.next,
+        count: pending.count,
+      });
+      return null;
+    }
+
+    session.uploads.delete(chunk.uploadId);
+    return Buffer.concat(pending.parts);
   }
 
   /**
