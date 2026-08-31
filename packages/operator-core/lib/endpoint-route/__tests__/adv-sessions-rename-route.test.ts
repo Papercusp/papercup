@@ -19,7 +19,7 @@ import type { RouteContext } from '../define-route';
 const setAgentDisplayNameMock = vi.fn();
 const resolveOwnerWorkspaceIdMock = vi.fn();
 const activeWorkspaceIdMock = vi.fn();
-const notifySyncInvalidateMock = vi.fn(async () => {});
+const notifySyncInvalidateMock = vi.fn(async (..._args: unknown[]) => {});
 
 vi.mock('../../display-names/store', () => ({
   setAgentDisplayName: (...a: unknown[]) => setAgentDisplayNameMock(...a),
@@ -150,11 +150,12 @@ describe('POST /adv/sessions/rename', () => {
     expect(notifySyncInvalidateMock).toHaveBeenCalledWith('roster');
   });
 
-  it.each([
+  const invalidRenameInputs: Array<[unknown, string]> = [
     [{ name: 'n' }, 'no ownerId'],
     [{ ownerId: '   ', name: 'n' }, 'a blank ownerId'],
     ['not json at all', 'an unparseable body'],
-  ])('refuses %j (%s) with a 400 instead of guessing a target', async (body) => {
+  ];
+  it.each(invalidRenameInputs)('refuses %j (%s) with a 400 instead of guessing a target', async (body) => {
     const res = await callRename(body);
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({ status: 'error' });
