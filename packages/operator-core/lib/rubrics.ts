@@ -751,6 +751,21 @@ export async function getRubric(rubricId: string): Promise<Rubric | null> {
 }
 
 /**
+ * The rubric's `criteriaHash` (WI-1393208) — a stable hash over {characteristic,
+ * criteria, ratingScale, methodRef, description}, computed fresh on every rubric
+ * read (see {@link Rubric.criteriaHash}'s doc comment: "the field to pin/compare
+ * to prove the rubric's graded substance did not change under my grade"). Never
+ * throws; null when the rubric is missing, the read failed, or the rare degraded
+ * read could not compute a hash. Fail-open, mirroring `getRubricPlanRevision`'s
+ * contract — a caller that must distinguish "not found" from "hash absent"
+ * should read the full `Rubric` via `getRubric` directly.
+ */
+export async function getRubricCriteriaHash(rubricId: string): Promise<string | null> {
+  const rubric = await getRubric(rubricId);
+  return rubric?.criteriaHash ?? null;
+}
+
+/**
  * Read every LIVE acceptance rubric FOR a plan (acceptance-rubrics-on-every-plan-
  * 2026-08-11). A plan may have at most one active/ready, unarchived acceptance rubric;
  * returning all rows lets callers fail closed when old data or a concurrent write has
