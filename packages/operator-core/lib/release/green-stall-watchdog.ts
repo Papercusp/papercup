@@ -48,8 +48,12 @@ import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-ev
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
 import {
   isCheckpointRunLockHeldCheap,
+  launchDetachedCheckpoint,
   readCheckpointRunPhaseCheap,
+  type LaunchCheckpointResult,
 } from '../release-checkpoint-launch';
+import { readManualRunAdmission, readQualificationAdmission } from '../release-checkpoint-config';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { integrationRoot } from '../release-deploy-launch';
 import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
@@ -156,6 +160,18 @@ export interface GreenStallThresholds {
   greenCheckpointStallRecoveryStaleMs?: number;
   /** Maximum number of bounded recovery dispatch attempts for one stall episode. */
   greenCheckpointStallRecoveryMaxAttempts?: number;
+  /**
+   * D-006 ACTUATION SEAMS (gate-verdict-liveness-and-repair-reliability-2026-08-31 D-003).
+   * `checkGreenStall` fires a verdict-less auto-refire ONLY when BOTH are wired; a caller
+   * that omits them (every unit test, any bare sweep call) gets the pre-actuation advisory
+   * behaviour, with the owner wall read fail-closed as ACTIVE. `startGreenStallWatchdog`
+   * wires the production implementations, so actuation is a property of the running
+   * watchdog process, never of an ad-hoc sweep invocation.
+   */
+  readGateFireWall?: () => Promise<GateFireWall>;
+  launchCheckpoint?: () => Promise<LaunchCheckpointResult>;
+  /** The one install refire actuation is scoped to (default: the operator-home harness). */
+  refireHomeSlug?: string;
 }
 
 /**
@@ -595,6 +611,93 @@ export interface VerdictlessRefireDecision {
   nextAttempt: number;
   /** one operator-facing sentence — the whole judgement, quotable into an alarm. */
   detail: string;
+}
+
+/**
+ * D-006 actuation, second half (gate-verdict-liveness-and-repair-reliability-2026-08-31
+ * D-003; supersedes the hardcoded `ownerWallActive: true` documented by
+ * green-main-fast-2026-08-25 D-038). The owner wall is now a REAL signal: the release
+ * checkpoint-config hold tokens. EITHER scope being held — 'qualification' (scheduled
+ * admission) or 'manual-run' — reads as an active wall: an owner who has placed either
+ * lever has withheld machine-initiated gate fires, and an automatic recovery must not
+ * out-clever that. A FAILED read is an ACTIVE wall (fail-closed), for the same reason the
+ * decision function defaults `ownerWallActive` to true. Re-arming the wall is one owner
+ * call, no deploy: `release:checkpoint-config { op:'hold', scope, governingRef }`.
+ */
+export interface GateFireWall {
+  active: boolean;
+  detail: string | null;
+}
+
+export async function readGateFireOwnerWall(
+  readQual: typeof readQualificationAdmission = readQualificationAdmission,
+  readManual: typeof readManualRunAdmission = readManualRunAdmission,
+): Promise<GateFireWall> {
+  try {
+    const [qual, manual] = await Promise.all([readQual(), readManual()]);
+    if (qual.status === 'held') {
+      return { active: true, detail: `qualification hold: ${qual.hold?.governingRef ?? 'unattributed'}` };
+    }
+    if (manual.status === 'held') {
+      return { active: true, detail: `manual-run hold: ${manual.hold?.governingRef ?? 'unattributed'}` };
+    }
+    return { active: false, detail: null };
+  } catch (e) {
+    return {
+      active: true,
+      detail: `hold read failed (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+/**
+ * The durable verdict-less refire EPISODE carried in `gate_health.verdictlessRefire`,
+ * resolved against the newest recorded verdict: a verdict of ANY colour landing AFTER the
+ * last refire attempt ends the episode, so the next verdict-less death starts a fresh
+ * budget. This keeps the reset self-contained in the watchdog — no release-actions.ts hook
+ * is needed, because `lastVerdictAtMs` is already in the sweep's row. Absent or malformed
+ * state reads as a FRESH episode — never as spent budget.
+ */
+export interface VerdictlessRefireEpisode {
+  attempts: number;
+  lastAttemptStatus: string | null;
+  lastAttemptAtMs: number | null;
+}
+
+export function resolveVerdictlessRefireEpisode(
+  gh:
+    | {
+        verdictlessRefire?: {
+          attempts?: number;
+          lastAttemptStatus?: string | null;
+          lastAttemptAtMs?: number | null;
+        } | null;
+      }
+    | null
+    | undefined,
+  lastVerdictAtMs: number | null,
+): VerdictlessRefireEpisode {
+  const fresh: VerdictlessRefireEpisode = { attempts: 0, lastAttemptStatus: null, lastAttemptAtMs: null };
+  const raw = gh?.verdictlessRefire;
+  if (!raw || typeof raw !== 'object') return fresh;
+  const attempts = Number(raw.attempts);
+  const lastAttemptAtMs = Number(raw.lastAttemptAtMs);
+  if (!Number.isFinite(attempts) || attempts <= 0 || !Number.isFinite(lastAttemptAtMs)) return fresh;
+  if (lastVerdictAtMs != null && lastVerdictAtMs > lastAttemptAtMs) return fresh;
+  return {
+    attempts: Math.floor(attempts),
+    lastAttemptStatus: typeof raw.lastAttemptStatus === 'string' ? raw.lastAttemptStatus : null,
+    lastAttemptAtMs,
+  };
+}
+
+/** Best-effort operator-home slug; null when the registry cannot answer (fail toward advisory). */
+function safeOperatorHomeSlug(): string | null {
+  try {
+    return operatorHomeHarnessSlug();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1832,6 +1935,14 @@ export async function checkGreenStall(
           // tick. Already inside the `gate_health` jsonb this query selects, so reading it
           // costs nothing extra — it is what lets the re-fire advisory classify the abort.
           inconclusive?: { status?: string; candidate?: string | null; observedAtMs?: number } | null;
+          // D-003 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the durable
+          // verdict-less refire episode this sweep both reads and writes; see
+          // resolveVerdictlessRefireEpisode for the reset rule.
+          verdictlessRefire?: {
+            attempts?: number;
+            lastAttemptStatus?: string | null;
+            lastAttemptAtMs?: number | null;
+          } | null;
         } | null;
       }[]
     >`

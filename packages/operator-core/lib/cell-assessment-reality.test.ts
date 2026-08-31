@@ -676,6 +676,26 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     // EI-21862849770458561: the unmeasured-checkpointRunInFlight control appended above.
     null,
   ],
+  // Index-aligned to the CONTROLS rows above. `readGateCandidateFailures` computes its
+  // assessment inline (it is one branch of an async, git+PG-reading resolver rather than a
+  // separately-exported pure function), so these rows name the codes that resolver emits —
+  // gate-candidate-failures.ts:267 no-frozen-candidate, :315/:385 unmeasured, :377
+  // none-failing, :379 repairs-outstanding, :381 all-fixes-contained.
+  'gate.greenCheckpoint.candidateFailures': [
+    'no-frozen-candidate',
+    'unmeasured',
+    'all-fixes-contained',
+    'repairs-outstanding',
+    'none-failing',
+  ],
+  'gate.greenCheckpoint.ownerBrief': [
+    'green',
+    'red-owned-remediating',
+    'red-owned-stalled',
+    'red-unowned',
+    'not-judging',
+    'unknown',
+  ],
   'gate.greenCheckpoint.ownership': [
     'duplicate-owners',
     'unowned',
@@ -700,6 +720,18 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   ],
   'deploy.3070.sha': ['executing', 'restart-required', 'process-unverified', null],
   'git.mainBehindStaging': ['caught-up', 'normal-buffer', 'gate-stalled', null],
+  // `portfolioAssessmentFor` maps the resolver's verdict REASON onto the cell's code
+  // vocabulary, and the two are deliberately not the same words: reason `idle` codes as
+  // `idle-past-threshold` and reason `not-measured` codes as `evidence-unavailable` (the
+  // latter on purpose — `not-measured` is a CellUnknownCode, so reusing it would collapse
+  // "the ledger was unreadable" into "the apparatus failed").
+  'goal.portfolioThroughput': [
+    'placing',
+    'within-grace',
+    'idle-past-threshold',
+    'not-held',
+    'evidence-unavailable',
+  ],
   'host.memoryPressure': ['critical', 'warning', 'stable-low-free', 'stable', null, null],
   'memory.cgroupAttribution': ['crit', 'warn', 'ok', null],
   'agent.goal': ['nothing-held', 'corroborated', 'sole', 'divergent', 'divergent', null],
