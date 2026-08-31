@@ -6,6 +6,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   getRubric,
+  getRubricCriteriaHash,
   getRubricPlanRevision,
   META_ACCEPTANCE_RUBRIC_ID,
   readRubricPlanRevision,
@@ -515,6 +516,12 @@ export async function emitScorecard(
     // A failed read remains unrecorded; historical cards must not be back-filled
     // from whatever the rubric says today.
     const rubricRevision = await getRubricPlanRevision(args.rubricRef);
+    // WI-1393208: also pin the rubric's criteriaHash (the field designed exactly
+    // for this — see its doc comment) so a later criterion/method/description
+    // edit is machine-detectable against this card, not just a plan-row revision
+    // bump (which fires on ANY propose, typo included, and says nothing about
+    // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
+    const criteriaHash = await getRubricCriteriaHash(args.rubricRef);
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
     const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
     if (acceptance && rubric.kind !== 'acceptance') {
@@ -799,9 +806,11 @@ export async function emitScorecard(
           };
         }
         const rubricRevision = await getRubricPlanRevision(subjectRef);
+        const criteriaHash = await getRubricCriteriaHash(subjectRef);
         vetting = {
           workItemId: args.vettingWorkItem,
           ...(rubricRevision != null ? { rubricRevision } : {}),
+          ...(criteriaHash != null ? { criteriaHash } : {}),
           critiquePosts: critique.critiquePosts,
           ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
         };
@@ -872,9 +881,11 @@ export async function emitScorecard(
         };
       }
       const rubricRevision = await getRubricPlanRevision(subjectRef);
+      const criteriaHash = await getRubricCriteriaHash(subjectRef);
       vetting = {
         consultId: args.vettingConsult,
         ...(rubricRevision != null ? { rubricRevision } : {}),
+        ...(criteriaHash != null ? { criteriaHash } : {}),
         critiquePosts: critique.critiquePosts,
         ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
         ...(waived ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason } : {}),
@@ -1203,6 +1214,7 @@ export async function emitScorecard(
         observation: {
           rubricRef: args.rubricRef,
           ...(rubricRevision != null ? { rubricRevision } : {}),
+          ...(criteriaHash != null ? { criteriaHash } : {}),
           ratings,
           ...(acceptance ? { acceptance } : {}),
           ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe } : {}),
