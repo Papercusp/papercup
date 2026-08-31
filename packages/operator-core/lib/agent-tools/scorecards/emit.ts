@@ -38,6 +38,10 @@ import {
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
+import {
+  collapseCriticsToSoleParty,
+  resolveAcceptanceGraderEligibility,
+} from './grader-eligibility';
 import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
 import { GRADING_INTEGRITY_RUBRIC_REF, gradingAuditGateEnabled, needsGradingAudit } from '../../grading-integrity';
@@ -823,15 +827,34 @@ export async function emitScorecard(
         ...(waived ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason } : {}),
       };
     }
-    // D-031 fallback advisory: when the vetting channel names exactly one critic,
-    // that critic cannot later supply the independent acceptance grade because
-    // grader_is_sole_vetting_critic must refuse the two-party chain. Surface the
-    // sequencing consequence now, without weakening the later refusal or changing
-    // the durable vetting stamp.
+    // D-031 fallback advisory: when the vetting channel's recorded critics all
+    // resolve to ONE party, that party cannot later supply the independent
+    // acceptance grade because grader_is_sole_vetting_critic must refuse the
+    // two-party chain. Surface the sequencing consequence now, without weakening
+    // the later refusal or changing the durable vetting stamp.
+    //
+    // EI-21974075442192005: this advisory now derives from the SAME predicate as
+    // the refusal it predicts (`collapseCriticsToSoleParty`). It previously read
+    // `critics.length === 1` — the exact test WI-905074 had already widened on
+    // the REFUSAL side — so a vetting record naming two critics of one lineage
+    // was refused at grading time having never been warned at attestation time.
+    // An advisory narrower than the rail it speaks for is worse than none: its
+    // silence reads as clearance.
+    const advisoryCritics = vetting?.critics ?? [];
+    const soleVettingParty =
+      advisoryCritics.length > 0
+        ? await collapseCriticsToSoleParty(advisoryCritics, {
+            workspaceId: input.workspaceId || activeWorkspaceId(),
+            lineageRelated: deps.lineageRelated ?? areAcceptanceLineageRelated,
+          })
+        : null;
     const vettingWarning =
-      vetting?.critics?.length === 1
-        ? `vetting for acceptance rubric '${args.subject?.ref ?? 'unknown'}' records a sole critic '${vetting.critics[0]}'. ` +
-          `That critic cannot later emit the independent acceptance grade; the sole-vetting-critic rail will refuse it. ` +
+      soleVettingParty != null
+        ? `vetting for acceptance rubric '${args.subject?.ref ?? 'unknown'}' records ` +
+          (advisoryCritics.length === 1
+            ? `a sole critic '${soleVettingParty}'`
+            : `${advisoryCritics.length} vetting critics who all resolve to one party ('${soleVettingParty}')`) +
+          `. That party cannot later emit the independent acceptance grade; the sole-vetting-critic rail will refuse it. ` +
           `Use another lineage-independent grader or obtain a second independent critic before grading.`
         : undefined;
     // P-008 (EI-20581177540737568): a 'violatable' criterion is monotonic-downward — one

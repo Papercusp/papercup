@@ -18,6 +18,8 @@ import {
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveAcceptanceGraderEligibility } from './grader-eligibility';
 
 export const scorecardRatingEntrySchema = z
   .object({
@@ -46,9 +48,108 @@ export const scorecardEvaluateArgs = z
   })
   .strict();
 
-export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateArgs>) {
+/**
+ * Who the caller is, for the acceptance-grader pre-flight. Optional: omitting it
+ * yields `graderEligibility: null` (the pre-existing behaviour) rather than a
+ * guess, so a non-agent caller is never told it is disqualified.
+ */
+export interface ScorecardEvaluateCaller {
+  id: string;
+  workspaceId?: string | null;
+}
+
+export type GraderEligibilityReport =
+  | {
+      role: 'acceptance-author' | 'independent-grader' | 'disqualified' | 'unknown';
+      canEmitGrading: boolean;
+      blocksEmit: boolean;
+      implementer: string | null;
+      advice: string;
+      refusal?: { code: string; error: string };
+    }
+  | null;
+
+/**
+ * EI-21974075442192005: this tool is the DOCUMENTED pre-flight before grading
+ * (`evaluate -> fill skeleton -> evaluate -> emit`), which makes it the place a
+ * would-be grader has to learn it is disqualified. The acceptance-grader rails
+ * are pure identity facts, settled before any criterion is rated, yet they used
+ * to be reachable only through the terminal `scorecards:emit` — so a launched
+ * reviewer could complete an entire independent pass and only then be refused.
+ *
+ * Derived from the same module `scorecards:emit` refuses with; never a second
+ * copy of the predicates. It reports rather than refuses: the skeleton is still
+ * useful to a disqualified caller (handing it to the replacement grader), and a
+ * read-only pre-flight that hard-failed would be a worse instrument than one
+ * that answers.
+ */
+async function reportGraderEligibility(
+  rubric: { rubricId: string; kind?: string | null; workspaceId?: string | null; proposedBy?: string | null; createdBy?: string | null },
+  caller: ScorecardEvaluateCaller | undefined,
+): Promise<GraderEligibilityReport> {
+  if (!caller || rubric.kind !== 'acceptance') return null;
+  try {
+    const verdict = await resolveAcceptanceGraderEligibility({
+      rubric,
+      callerId: caller.id,
+      workspaceId: rubric.workspaceId || caller.workspaceId || activeWorkspaceId(),
+    });
+    if (verdict.refusal) {
+      return {
+        role: 'disqualified',
+        canEmitGrading: false,
+        blocksEmit: true,
+        implementer: verdict.implementer,
+        advice:
+          `STOP — do not grade: scorecards:emit will refuse this card with '${verdict.refusal.code}' ` +
+          `however complete it is. Report this to whoever assigned the review so a different ` +
+          `independent grader is named; the ratings skeleton below is still useful to hand them.`,
+        refusal: verdict.refusal,
+      };
+    }
+    if (verdict.callerIsImplementer) {
+      return {
+        role: 'acceptance-author',
+        canEmitGrading: false,
+        blocksEmit: false,
+        implementer: verdict.implementer,
+        advice:
+          'You authored this acceptance rubric. You record the acceptance verdict ' +
+          "(acceptance:{ verdict, reasoning }) AFTER reading a non-implementer's independent grading — " +
+          'emitting the grading ratings yourself is refused.',
+      };
+    }
+    return {
+      role: 'independent-grader',
+      canEmitGrading: true,
+      blocksEmit: false,
+      implementer: verdict.implementer,
+      advice:
+        'Eligible to emit the independent grading (omit acceptance — that is the rubric author’s call). ' +
+        'Identity rails only; the ratings/evidence rails are what this call validates.',
+    };
+  } catch (error) {
+    // A pre-flight that cannot answer must say so, not imply clearance.
+    return {
+      role: 'unknown',
+      canEmitGrading: false,
+      blocksEmit: false,
+      implementer: null,
+      advice:
+        'Grader eligibility could not be resolved (' +
+        `${error instanceof Error ? error.message : String(error)}` +
+        ') — this is NOT a clearance; scorecards:emit re-checks the identity rails and may still refuse.',
+    };
+  }
+}
+
+export async function evaluateScorecard(
+  args: z.infer<typeof scorecardEvaluateArgs>,
+  caller?: ScorecardEvaluateCaller,
+) {
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  const graderEligibility = await reportGraderEligibility(rubric, caller);
 
   const skeleton = rubric.criteria.map((criterion) => ({
     key: criterion.key,
@@ -70,6 +171,7 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
   if (!args.ratings) {
     return {
       ok: true as const,
+      graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
         title: rubric.title,
@@ -105,6 +207,7 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
     if (rubric.releaseGating && !instrumentContract.valid) {
       return {
         ok: false as const,
+        graderEligibility,
         error:
           `release-gating instrument contract invalid for '${args.rubricRef}' — ` +
           'inspect instrumentContract for missing/stale/window/verdict mismatches',
@@ -132,6 +235,7 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
       });
     return {
       ok: true as const,
+      graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
         title: rubric.title,
@@ -155,7 +259,13 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
     };
   } catch (error) {
     if (error instanceof ObservationEvidenceError) {
-      return { ok: false as const, error: error.message, skeleton, latest: latest ?? null };
+      return {
+        ok: false as const,
+        graderEligibility,
+        error: error.message,
+        skeleton,
+        latest: latest ?? null,
+      };
     }
     throw error;
   }
@@ -168,7 +278,7 @@ export default defineTool({
     'Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; use scorecards:emit to file the validated result.',
   guidance: {
     when:
-      'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing.',
+      'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after.',
     notWhen: 'Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.',
     chaining:
       'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result.',
@@ -191,7 +301,15 @@ export default defineTool({
   agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEvaluateArgs,
   async handler(args, ctx) {
-    resolveAgentIdentity(ctx);
-    return { data: await evaluateScorecard(args) };
+    // EI-21974075442192005: this identity used to be resolved and discarded, which
+    // is why the pre-flight could not answer the one question that costs a whole
+    // grading pass to get wrong. Pass it through.
+    const identity = resolveAgentIdentity(ctx);
+    return {
+      data: await evaluateScorecard(args, {
+        id: identity.ownerId,
+        workspaceId: identity.workspaceId,
+      }),
+    };
   },
 });
