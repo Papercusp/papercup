@@ -12,6 +12,8 @@ status: active
 documents:
   - "papercusp-desktop/src-tauri/src/dev_bridge.rs"
   - "scripts/verify-tauri-headless.sh"
+  - "scripts/settle-probe.mjs"
+  - "packages/operator-core/lib/__tests__/settle-probe.test.ts"
 plans:
   - "app-impersonation-e2e-round5-2026-06-18"
   - "app-impersonation-e2e-round3-2026-06-14"
@@ -2254,6 +2256,105 @@ The empty-set trap: `assertEquals(0, results.length)` passes when the query is b
 Here: a null delta is trivially true of a workload that never ran the path. Each one is
 a verdict reported without the population it was computed over - so state the
 population, every time.
+
+### 14.4 Settle before you measure — a guarded component's absence is not a missing feature (EI-19385008818210514)
+
+§14.2 guards a negative *assertion*; §14.3 guards a negative *measurement*. This is
+the fourth costume, and the most expensive one, because **nothing about it looks like
+a failure**. You take a perfectly correct measurement:
+
+```text
+zoneCaps: 2, zoneCapLabels: ["Controls", "Fleet"]
+```
+
+Three band caps were expected. Status is missing. Nothing errored, nothing timed out,
+the number is real — and the natural conclusion is *"the Status cap was never wired
+up; the checkpoint claiming it overstated the work."* That conclusion is wrong, and it
+is wrong in the one direction that costs someone else their afternoon.
+
+**Why it happens.** Most non-trivial components here are GUARDED on async data. The
+two shapes are everywhere:
+
+```tsx
+{entry && <ZoneCap entry={entry} />}   // renders nothing until `entry` lands
+if (!harness) return null;             // same, one level up
+```
+
+Before that data arrives the component is *legitimately* absent from the DOM, so a
+measurement taken during the hydration wave reads the guard, not the feature.
+
+**Why no existing rail catches it.** `VERIFY_TAURI_POLL` retries until an ASSERTION
+succeeds. Here nothing is being asserted — a value is being read as DATA — so there is
+nothing for the helper to retry. And the failure is asymmetric: a race that HIDES an
+element reads as a real finding worth filing, while a race that SHOWS one just reads
+as success. The error therefore only ever fires against someone's finished work.
+
+**The rail: settle first, then measure.**
+
+```bash
+bash "$VERIFY_TAURI_SETTLE"                       # blocks until the page is idle
+tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" '<your measurement>'
+```
+
+`VERIFY_TAURI_SETTLE` reads `window.__sync_metrics__.snapshot().transport` — installed
+by the PRODUCTION SSE transport — plus DOM quiescence, and is deliberately
+**three-state**:
+
+| exit | verdict | what it means |
+|---|---|---|
+| 0 | `settled` | no sync requests in flight or queued, and the DOM was unchanged for the quiet window |
+| 1 | `busy` | still loading when the timeout expired |
+| 3 | `unknown` | the metrics global was absent, or the gate reported `null` |
+
+**`null` is UNKNOWN, never zero.** `transport.inFlight` is `number | null`, and `null`
+means "no concurrency gate is registered" or "the gate probe threw" — `metrics.ts`
+reports it that way on purpose ("A throwing probe must never break the snapshot —
+report unknown instead"). A settle check that read `null` as "0 in flight ⇒ settled"
+would rebuild this exact confident false-negative inside the tool built to prevent it.
+So an `unknown` is not permission to conclude anything from an absence.
+
+**You do not have to remember any of this.** The same probe runs automatically, in
+`--note-only` form, on every `VERIFY_TAURI_POLL` timeout and attaches the loading
+context to the failure — naming the wrong conclusion and its falsifier rather than
+restating the measurement:
+
+```text
+FATAL: DOM assertion did not pass within 4s (pid=1476757)
+[FAIL] selector: [data-testid="no-such-thing"]
+⚠ SETTLE: the page was STILL LOADING when this ran — 2 sync request(s) in flight, 1 queued.
+   Do NOT conclude from a missing element that the feature is missing. Most components here
+   are guarded on async data (`entry && <Thing entry={entry}/>`, `if (!x) return null`), so they
+   are legitimately absent until that data lands.
+   Falsifier: re-run this same assertion after `bash "$VERIFY_TAURI_SETTLE"`. If the element
+   then appears, what you measured was a RACE, not a defect.
+```
+
+It prints **nothing at all** when the page really was settled. That silence is
+deliberate, and is kept as a permanent negative control in
+`packages/operator-core/lib/__tests__/settle-probe.test.ts`: a caveat attached to
+every failure is a caveat readers learn to skip, and this one has to be believed on
+the run where it matters.
+
+**Two live-measured gotchas if you drive `tauri-agent-tools eval` yourself** (both cost
+a false `unknown` before they were fixed in `scripts/settle-probe.mjs`):
+
+- **`--pid` and `--port` are alternatives, not complements.** Sending both makes the
+  tool reach for the port and answer `Bridge error (404)`. And `$VERIFY_TAURI_PORT` is
+  the webview's own Hono+SPA origin, *not* the agent-tools bridge port, so it is the
+  wrong number to volunteer. Pass the pid.
+- **`eval` pretty-prints an object result across many lines** even when your expression
+  returns `JSON.stringify(...)` — the same trap that makes a literal
+  `grep '"ok":true'` never match. Parse the whole output as one document; a
+  line-at-a-time reader finds valid JSON on no line and reports "no reading", which
+  reads as a defect on a perfectly healthy page.
+
+**The generalization worth carrying.** A warning already existed here — the poll
+helper's guards, the freshness check — and the mistake kept happening anyway. Adding
+precision to those warnings would have bought nothing, because they were addressed to
+the wrong VERB: they told you how to CITE and how to ASSERT, and the mistake was an
+INFERENCE. When a caveat already exists and the error persists, ask which verb the
+reader is about to perform — cite, infer, decide, report — and check the caveat is
+aimed at that one.
 
 ## 15. Common gotchas
 
