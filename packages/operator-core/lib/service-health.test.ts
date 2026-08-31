@@ -1483,6 +1483,30 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
       expect(second.embedModelExercised).toBe('unknown');
     });
 
+    it('is what lets the embed sidecar EVER confirm DOWN, because the debounce resets on any up', () => {
+      // The back-off rule is not a nicety — it is load-bearing against a
+      // mechanism that already exists. `embed-sidecar` is damped: it needs
+      // EMBED_SIDECAR_DOWN_CONFIRM_TICKS consecutive bad ticks before a DOWN
+      // is exposed, and any `up` tick RESETS that streak. So if the duty-cycle
+      // clock advanced on ATTEMPT, a dead worker would produce one exercising
+      // DOWN followed by cheap cached ups for the rest of the interval — the
+      // streak would reset every time and the sidecar could never confirm.
+      expect(EMBED_SIDECAR_DOWN_CONFIRM_TICKS).toBeGreaterThan(1);
+      const down = () => ({ name: 'embed-sidecar', up: false, status: null, latencyMs: 1 });
+
+      // What advancing on attempt would produce: DOWN, then a cached "up".
+      const t1 = applyDownConfirmDebounce([down()], {});
+      expect(t1.results[0].up).toBe(true); // unconfirmed — correctly suppressed
+      const cachedUp = { name: 'embed-sidecar', up: true, status: 200, latencyMs: 4 };
+      const t2Wrong = applyDownConfirmDebounce([cachedUp], t1.nextStreaks);
+      expect(t2Wrong.nextStreaks['embed-sidecar']).toBeUndefined(); // streak lost
+
+      // What advancing only on PROOF produces: the next tick exercises again.
+      const t2Right = applyDownConfirmDebounce([down()], t1.nextStreaks);
+      expect(t2Right.nextStreaks['embed-sidecar']).toBe(EMBED_SIDECAR_DOWN_CONFIRM_TICKS);
+      expect(t2Right.results[0].up).toBe(false); // confirmed DOWN, as intended
+    });
+
     it('backs off after a proven inference instead of bypassing the cache every tick', async () => {
       const bodies = serveEmbed(inferredOnce);
 

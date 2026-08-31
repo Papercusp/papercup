@@ -1425,6 +1425,11 @@ export async function probeEmbedSidecar(
       // Back off ONLY on proof. A failed or unprovable exercise leaves the
       // clock alone so the next tick tries again, which is what stops a dead
       // worker from producing one DOWN followed by an interval of cached ups.
+      // ⚠ Load-bearing, not tidiness: `embed-sidecar` is damped by
+      // EMBED_SIDECAR_DOWN_CONFIRM_TICKS, and `applyDownConfirmDebounce`
+      // RESETS the streak on any `up`. Advance this clock on ATTEMPT instead
+      // and a dead worker alternates DOWN / cached-up forever, so the sidecar
+      // can never confirm DOWN at all.
       lastEmbedSidecarProvenInferenceMs = Date.now();
       return {
         name,
