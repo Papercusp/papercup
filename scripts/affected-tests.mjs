@@ -35,7 +35,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadavg, availableParallelism, tmpdir } from "node:os";
+import { loadavg, availableParallelism, tmpdir, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { parseQuarantineWorkspaces } from "./lib/quarantine.mjs";
 import {
@@ -4299,10 +4299,28 @@ const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash("sha256")
   .update(ROOT)
   .digest("hex")
   .slice(0, 16);
+// WI-1492652: this default USED to be `tmpdir()`, which resolves to /tmp/pcv here — and
+// /etc/tmpfiles.d/tmp.conf sets `D /tmp 1777 root root 7d` while the boot unit runs
+// `systemd-tmpfiles --create --remove --boot`. Capital D + --remove EMPTIES /tmp at every
+// boot, so the whole verdict cache was destroyed on each reboot and the next gate run lost
+// 100% of its cross-run reuse. (Measured: 0 of 7,866 /tmp entries predated the boot; 0 of
+// 5,986 under /tmp/pcv. The cost is ~0.4% of runs — ~8 boots/81d against an hourly gate —
+// NOT the ~18% originally filed on that item, which generalised a 2-of-11 window that
+// happened to straddle a reboot.)
+//
+// ⚠ ONLY THE DIRECTORY MOVES. The filename still carries the cache IDENTITY — the `v2`
+// version constant and the ROOT-scope hash — and must not be touched here: durability and
+// identity are separate concerns, and a cache that HITS on a wrong identity would serve
+// stale passing verdicts, i.e. FALSE GREENS. That is strictly worse than the cold cache
+// this fixes, so never bundle an identity/version change into a relocation.
+//
+// The writer mkdirs recursively and renames atomically, so a missing dir is not a concern.
 const TASK_VERDICT_CACHE_PATH =
   process.env.AFFECTED_TASK_VERDICT_CACHE_PATH ||
   join(
-    tmpdir(),
+    homedir(),
+    ".papercusp",
+    "cache",
     `papercusp-affected-passing-verdicts-v2-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`,
   );
 const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED
