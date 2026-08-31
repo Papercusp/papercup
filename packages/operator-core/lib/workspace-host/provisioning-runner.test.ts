@@ -248,4 +248,43 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(store.beginOperation).not.toHaveBeenCalled();
     expect(store.upsertCheckpoint).not.toHaveBeenCalled();
   });
+
+  function httpError(status: number): Error {
+    return Object.assign(new Error(`gcp_preflight_http_${status}`), { status });
+  }
+
+  // The failure this exists to prevent: every thrown provider call was classified 'ambiguous', so
+  // a deterministic 400 (a boot disk smaller than its source image) reconciled every 2s past 40
+  // attempts — never terminal, never surfaced, and indistinguishable from a hang.
+  it('halts on a deterministic provider rejection instead of reconciling it forever', async () => {
+    const steps = [planStep('create-instance')];
+    const { store, checkpoints } = storeHarness();
+    const { provider, apply, reconcile } = providerHarness(steps);
+    apply.mockRejectedValueOnce(httpError(400));
+
+    await expect(runWorkspaceHostProvisioning(runInput(provider, store))).resolves.toMatchObject({
+      status: 'failed',
+    });
+    expect(checkpoints()[0]).toMatchObject({ state: 'failed', retryClass: 'terminal' });
+    expect(checkpoints()[0]).not.toHaveProperty('retryAfterMs');
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(store.updateOperation).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+  });
+
+  it.each([
+    ['a throttle', 429, 'throttled'],
+    ['a request timeout', 408, 'throttled'],
+    ['a conflict that an idempotent replay can cause', 409, 'ambiguous'],
+    ['a provider-side fault', 503, 'ambiguous'],
+  ])('keeps retrying %s (%i)', async (_label, status, retryClass) => {
+    const steps = [planStep('create-instance')];
+    const { store, checkpoints } = storeHarness();
+    const { provider, apply } = providerHarness(steps);
+    apply.mockRejectedValueOnce(httpError(status));
+
+    await expect(runWorkspaceHostProvisioning(runInput(provider, store))).resolves.toMatchObject({
+      status: 'in-progress',
+    });
+    expect(checkpoints()[0]).toMatchObject({ state: 'failed', retryClass });
+  });
 });

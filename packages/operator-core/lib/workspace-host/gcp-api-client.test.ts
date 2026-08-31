@@ -708,3 +708,74 @@ describe('ADC-backed GCP workspace-host API client', () => {
     expect(JSON.stringify(await provider.validateConnection(context))).not.toContain(TOKEN);
   });
 });
+
+describe('boot disk sizing against the source image', () => {
+  function bootInstance(diskSizeGb: number): GcpInstanceInsertInput {
+    return {
+      name: 'pc-host-vm',
+      zone: ZONE,
+      machineType: 'n2-standard-2',
+      labels: { 'papercusp-managed': 'true' },
+      tags: { items: ['pc-host'] },
+      networkInterfaces: [{ network: 'pc-host-net', subnetwork: 'pc-host-subnet', stackType: 'IPV4_ONLY' }],
+      disks: [
+        {
+          boot: true,
+          autoDelete: true,
+          initializeParams: {
+            sourceImage: `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18-r18`,
+            diskSizeGb,
+            diskType: 'pd-balanced',
+          },
+        },
+        { boot: false, autoDelete: false, source: 'pc-host-data', deviceName: 'papercusp-data', mode: 'READ_WRITE' },
+      ],
+      serviceAccounts: [{ email: `workspace-host@${PROJECT}.iam.gserviceaccount.com`, scopes: [] }],
+      metadata: { items: [] },
+    };
+  }
+
+  /** Records the POSTed instance body while answering the image lookup with `imageDiskSizeGb`. */
+  function harness(imageDiskSizeGb: string | undefined) {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url.includes('/global/images/')) {
+        return imageDiskSizeGb === undefined
+          ? json({ error: { message: 'not found' } }, 404)
+          : json({ name: 'papercusp-workspace-host-0-0-18-r18', diskSizeGb: imageDiskSizeGb });
+      }
+      return json({ name: 'operation-1', status: 'PENDING', zone: `projects/${PROJECT}/zones/${ZONE}` });
+    }) as typeof fetch;
+    const body = () => JSON.parse(String(calls.find(({ url }) => url.includes('/instances?'))!.init?.body));
+    return { client: makeClient(fetchImpl), body };
+  }
+
+  // The failure this exists to prevent: bootDiskGiB defaults to 30 while the shipped
+  // workspace-host image is 32 GB, so GCP rejected every default-config provision with
+  // "Requested disk size cannot be smaller than the image size (32 GB)".
+  it('raises a boot disk that is smaller than its source image up to the image size', async () => {
+    const { client, body } = harness('32');
+
+    await client.insertInstance(PROJECT, ZONE, bootInstance(30), REQUEST_ID);
+
+    expect(body().disks[0].initializeParams.diskSizeGb).toBe(32);
+  });
+
+  it('never shrinks a boot disk the caller deliberately sized larger than the image', async () => {
+    const { client, body } = harness('32');
+
+    await client.insertInstance(PROJECT, ZONE, bootInstance(100), REQUEST_ID);
+
+    expect(body().disks[0].initializeParams.diskSizeGb).toBe(100);
+  });
+
+  it('falls back to the requested size when the image cannot be read', async () => {
+    const { client, body } = harness(undefined);
+
+    await client.insertInstance(PROJECT, ZONE, bootInstance(30), REQUEST_ID);
+
+    expect(body().disks[0].initializeParams.diskSizeGb).toBe(30);
+  });
+});

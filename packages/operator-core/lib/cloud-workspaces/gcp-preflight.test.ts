@@ -4,6 +4,7 @@ import {
   GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS,
   acquireGcpGcloudActiveUserAuth,
   createGcpWorkspaceHostAcquireAuth,
+  fetchGcpApiJson,
   inspectGcpLocalCredentialOnboarding,
   runGcpWorkspaceHostPreflight,
   type GcpPreflightDeps,
@@ -326,5 +327,48 @@ describe('GCP workspace-host preflight', () => {
     expect(
       vi.mocked(fetchImpl).mock.calls.some(([url]) => String(url).includes('workspace-runtime%40example-project')),
     ).toBe(true);
+  });
+});
+
+describe('provider failure reasons on the shared Google API transport', () => {
+  async function failWith(body: unknown, status = 400): Promise<Error> {
+    const fetchImpl = vi.fn(async () => json(body, status)) as unknown as typeof fetch;
+    return await fetchGcpApiJson(fetchImpl, SECRET, 'https://compute.googleapis.com/compute/v1/x').then(
+      () => {
+        throw new Error('expected the transport to reject');
+      },
+      (error: Error) => error,
+    );
+  }
+
+  // Without this the operator saw only `gcp_preflight_http_400` and could not learn WHAT was
+  // rejected: diagnosing one provisioning failure needed a hand-replay against the live API.
+  it('carries the field-level provider reason on the thrown error', async () => {
+    const error = await failWith({
+      error: {
+        code: 400,
+        message: "Invalid value for field 'resource.disks[0].initializeParams.diskSizeGb': '30'.",
+        errors: [{ message: 'Requested disk size cannot be smaller than the image size (32 GB)' }],
+      },
+    });
+
+    expect(error.message).toContain('gcp_preflight_http_400');
+    expect(error.message).toContain('Requested disk size cannot be smaller than the image size (32 GB)');
+    expect((error as { reason?: string }).reason).toContain('diskSizeGb');
+  });
+
+  it('never lets a token-shaped value out of the provider body', async () => {
+    const error = await failWith({ error: { message: `denied for Bearer ${SECRET}`, errors: [{ message: SECRET }] } });
+
+    expect(error.message).not.toContain(SECRET);
+    expect((error as { reason?: string }).reason).not.toContain(SECRET);
+    expect((error as { reason?: string }).reason).toContain('[redacted]');
+  });
+
+  it('still reports the status when the body carries no usable reason', async () => {
+    const error = await failWith({ nothing: 'useful' }, 403);
+
+    expect(error.message).toBe('gcp_preflight_http_403');
+    expect((error as { status?: number }).status).toBe(403);
   });
 });
