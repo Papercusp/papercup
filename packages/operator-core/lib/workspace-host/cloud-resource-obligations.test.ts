@@ -15,10 +15,13 @@ import {
   closeCloudResourceObligation,
   markCloudResourceObligationEscalated,
   runCloudResourceObligationSweepOnce,
+  cloudResourceObligationSourceKey,
   CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+  CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS,
   type CloudResourceObligationRow,
   type CloudResourceObligationCaptureDep,
 } from './cloud-resource-obligations';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 function makeRow(overrides: Partial<CloudResourceObligationRow> = {}): CloudResourceObligationRow {
   return {
@@ -105,6 +108,90 @@ describe('selectCloudResourceObligationsToEscalate', () => {
 
   it('rejects a non-finite evaluatedAtMs rather than silently miscomputing age', () => {
     expect(() => selectCloudResourceObligationsToEscalate([makeRow()], Number.NaN)).toThrow(/finite/);
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// IN-USE suppression: an obligation whose originating work-item is still open is not a
+// leak. Regression for the measured 2026-08-31 incident — all four open obligations
+// shared one still-open source (WI-40474) whose holder was live and mid-Packer-run, and
+// the sweep filed four "undischarged resource" bugs against infrastructure in active use.
+// ---------------------------------------------------------------------------------
+
+describe('selectCloudResourceObligationsToEscalate — in-use suppression', () => {
+  const pastGrace = CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS;
+  const openKeys = (...rows: CloudResourceObligationRow[]) =>
+    new Set(rows.map((r) => cloudResourceObligationSourceKey(r.workspaceId, r.sourceWorkItemId)));
+
+  it('suppresses an obligation whose originating work-item is still open', () => {
+    const row = makeRow({ createdAtMs: 0 });
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      openSourceWorkItemKeys: openKeys(row),
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('suppresses EVERY sibling obligation sharing one still-open source work-item', () => {
+    // The exact measured shape: 4 resources, 1 source work-item, source still open.
+    const rows = (['network', 'subnetwork', 'router', 'nat'] as const).map((kind, i) =>
+      makeRow({ id: i + 1, resourceKind: kind, resourceId: `pc-p046-rel-${kind}`, createdAtMs: 0 }),
+    );
+    const out = selectCloudResourceObligationsToEscalate(rows, pastGrace, undefined, {
+      openSourceWorkItemKeys: openKeys(rows[0]!),
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('escalates once the source work-item reaches a terminal state', () => {
+    const row = makeRow({ createdAtMs: 0 });
+    // Terminal source => absent from the open set.
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      openSourceWorkItemKeys: new Set<string>(),
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.suppressionCeilingOverridden).toBe(false);
+  });
+
+  it('escalates anyway past the ceiling, so an abandoned-open work-item cannot cloak a leak forever', () => {
+    const row = makeRow({ createdAtMs: 0 });
+    const evaluatedAtMs = CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS;
+    const out = selectCloudResourceObligationsToEscalate([row], evaluatedAtMs, undefined, {
+      openSourceWorkItemKeys: openKeys(row),
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.suppressionCeilingOverridden).toBe(true);
+  });
+
+  it('suppresses nothing when the open-source set is OMITTED (fail toward escalation)', () => {
+    // A caller that cannot establish source state must keep the old behaviour: filing a
+    // work-item is recoverable, silently hiding a metered resource is not.
+    const row = makeRow({ createdAtMs: 0 });
+    expect(selectCloudResourceObligationsToEscalate([row], pastGrace)).toHaveLength(1);
+  });
+
+  it('does not let a same-named work-item in ANOTHER workspace suppress a real leak', () => {
+    const row = makeRow({ createdAtMs: 0, workspaceId: 'papercusp-workspace' });
+    const foreign = cloudResourceObligationSourceKey('some-other-workspace', row.sourceWorkItemId);
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      openSourceWorkItemKeys: new Set([foreign]),
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it('never suppresses an obligation that records no source work-item at all', () => {
+    const row = makeRow({ createdAtMs: 0, sourceWorkItemId: '' });
+    const out = selectCloudResourceObligationsToEscalate([row], pastGrace, undefined, {
+      openSourceWorkItemKeys: new Set([cloudResourceObligationSourceKey(row.workspaceId, '')]),
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it('rejects a negative suppression ceiling rather than silently disabling the gate', () => {
+    expect(() =>
+      selectCloudResourceObligationsToEscalate([makeRow()], pastGrace, undefined, {
+        inUseSuppressionCeilingMs: -1,
+      }),
+    ).toThrow(/non-negative/);
   });
 });
 
@@ -254,12 +341,27 @@ function toDbRow(row: CloudResourceObligationRow): Record<string, unknown> {
   };
 }
 
-function makeSweepFakeSql(openRows: CloudResourceObligationRow[]) {
+function makeSweepFakeSql(
+  openRows: CloudResourceObligationRow[],
+  /**
+   * Source work-items that are still NON-terminal, as the work_items probe would return
+   * them. Defaults to EMPTY — i.e. every source work-item is already terminal — so the
+   * pre-existing sweep tests keep asserting the same escalate-on-time behaviour.
+   */
+  openSourceWorkItems: Array<{ workspaceId: string; featureId: string }> = [],
+  opts: { failSourceRead?: boolean } = {},
+) {
   const markCalls: Array<{ id: number; workItemId: string }> = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     if (text.includes('SELECT * FROM harness_shared.cloud_resource_obligations')) {
       return Promise.resolve(openRows.map(toDbRow));
+    }
+    if (text.includes('FROM harness_shared.work_items')) {
+      if (opts.failSourceRead) return Promise.reject(new Error('work_items probe exploded'));
+      return Promise.resolve(
+        openSourceWorkItems.map((w) => ({ workspace_id: w.workspaceId, feature_id: w.featureId })),
+      );
     }
     if (text.includes('SET last_escalated_at')) {
       // Template layout: UPDATE ... SET last_escalated_at = now(), escalation_work_item_id =
@@ -332,5 +434,85 @@ describe('runCloudResourceObligationSweepOnce', () => {
     const result = await runCloudResourceObligationSweepOnce(sql, { capture }, { evaluatedAtMs });
     expect(result).toEqual({ candidates: 1, escalated: 0, errors: [] });
     expect(markCalls).toEqual([]);
+  });
+
+  it('files NOTHING for four sibling resources whose one source work-item is still open', async () => {
+    // End-to-end regression for the measured incident: without the in-use gate this tick
+    // filed four bugs against live infrastructure, and re-filed them every 12h.
+    const rows = (['network', 'subnetwork', 'router', 'nat'] as const).map((kind, i) =>
+      makeRow({ id: i + 1, resourceKind: kind, resourceId: `pc-p046-rel-${kind}`, createdAtMs: 0 }),
+    );
+    const { sql, markCalls } = makeSweepFakeSql(rows, [
+      { workspaceId: rows[0]!.workspaceId, featureId: rows[0]!.sourceWorkItemId },
+    ]);
+    const capture: CloudResourceObligationCaptureDep = async () => {
+      throw new Error('capture must not be called while the source work-item is still open');
+    };
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result).toEqual({ candidates: 0, escalated: 0, errors: [] });
+    expect(markCalls).toEqual([]);
+  });
+
+  it('names the still-open source work-item in the body when the ceiling overrides suppression', async () => {
+    const row = makeRow({ id: 1, resourceId: 'held-too-long', createdAtMs: 0 });
+    const { sql } = makeSweepFakeSql([row], [
+      { workspaceId: row.workspaceId, featureId: row.sourceWorkItemId },
+    ]);
+    const bodies: string[] = [];
+    const capture: CloudResourceObligationCaptureDep = async (input) => {
+      bodies.push(input.body ?? '');
+      return { ok: true, created: true, issue: { id: 'EI-ceiling' } };
+    };
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_IN_USE_SUPPRESSION_CEILING_MS,
+    });
+    expect(result.escalated).toBe(1);
+    // The reader must be told the owner may still be using it — not that it is abandoned.
+    expect(bodies[0]).toContain('IS STILL OPEN');
+    expect(bodies[0]).toContain(row.sourceWorkItemId);
+  });
+
+  it('falls back to escalating (and records the error) when the source-state probe fails', async () => {
+    const row = makeRow({ id: 1, resourceId: 'probe-broken', createdAtMs: 0 });
+    const { sql, markCalls } = makeSweepFakeSql([row], [], { failSourceRead: true });
+    const capture: CloudResourceObligationCaptureDep = async () => ({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-fallback' },
+    });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture }, {
+      evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS,
+    });
+    expect(result.escalated).toBe(1);
+    expect(result.errors).toEqual([
+      { id: 0, error: 'source work-item state read failed: work_items probe exploded' },
+    ]);
+    expect(markCalls).toEqual([{ id: 1, workItemId: 'EI-fallback' }]);
+  });
+
+  it('probes source state with the DERIVED terminal vocabulary, not a hand-copied list', async () => {
+    // Guards the drift that once hid `dropped` from a sibling consumer for a month.
+    const row = makeRow({ id: 1, createdAtMs: 0 });
+    const seen: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      if (text.includes('SELECT * FROM harness_shared.cloud_resource_obligations')) {
+        return Promise.resolve([toDbRow(row)]);
+      }
+      if (text.includes('FROM harness_shared.work_items')) {
+        seen.push(values);
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as postgres.Sql;
+    await runCloudResourceObligationSweepOnce(
+      sql,
+      { capture: async () => ({ ok: true, created: true, issue: { id: 'EI-x' } }) },
+      { evaluatedAtMs: CLOUD_RESOURCE_OBLIGATION_DEFAULT_GRACE_MS },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContainEqual([...ANY_FAMILY_TERMINAL_STATES]);
   });
 });
