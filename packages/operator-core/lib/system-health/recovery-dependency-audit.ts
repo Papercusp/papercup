@@ -338,6 +338,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
 
   // ── DBOS / routines engine ───────────────────────────────────────────────────────
   {
+    name: 'in-process-sweep-arm-reconcile',
+    file: 'packages/operator-core/lib/dbos/in-process-sweep-arm.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'Converges code-declared in-process sweep timers onto durable arm-state rows. The watchdog observes control-plane drift, not a listed substrate failure, so no substrate component is in its recovery domain.',
+  },
+  {
     name: 'dbos-executor-reaper',
     file: 'packages/operator-core/lib/dbos/dbos-executor-reaper.ts',
     executor: 'operator-in-process-timer',

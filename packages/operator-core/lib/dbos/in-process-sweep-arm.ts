@@ -238,7 +238,9 @@ export function startInProcessSweepArmReconciler(deps: SweepArmReconcilerDeps): 
     }
     await reconcileSweepArmStateOnce(deps);
   };
-  reconciler = managedSetInterval(SWEEP_ARM_RECONCILER_NAME, SWEEP_ARM_RECONCILE_INTERVAL_MS, seedThenReconcile, {
+  // Keep the registry name literal: recovery-dependency-audit statically extracts watchdog
+  // registrations so every out-of-band timer has a declaration in RECOVERY_MECHANISMS.
+  reconciler = managedSetInterval('in-process-sweep-arm-reconcile', SWEEP_ARM_RECONCILE_INTERVAL_MS, seedThenReconcile, {
     category: 'watchdog',
     // The writer is a DIFFERENT process (the operator serving `routines:set`), and no push
     // channel reaches the background host from there today, so a bounded poll of the durable
