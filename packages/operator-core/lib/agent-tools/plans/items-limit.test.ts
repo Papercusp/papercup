@@ -10,7 +10,8 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
-  listPlanRows: vi.fn(async () => [] as unknown[]),
+  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
+  getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
   getPlanRow: vi.fn(async () => null as unknown),
   planItemsForRow: vi.fn((row: unknown) => (row as { planItems?: unknown[] }).planItems ?? []),
   getAllPlanItemCoverage: vi.fn(async () => new Map()),
@@ -21,7 +22,8 @@ vi.mock("./source", async (orig) => {
   const actual = await orig<typeof import("./source")>();
   return {
     ...actual,
-    listPlanRows: M.listPlanRows,
+    listPlanIndexRows: M.listPlanIndexRows,
+    getPlanContentsBySlugs: M.getPlanContentsBySlugs,
     getPlanRow: M.getPlanRow,
     planItemsForRow: M.planItemsForRow,
   };
@@ -47,6 +49,7 @@ import {
 import { _refreshCacheLayerForTests } from "../../cache/instance";
 
 const CACHE_LAYER = "papercusp-cache-layer";
+const CACHE_L2 = "papercusp-cache-l2";
 
 const item = (id: string, importance: "urgent" | "high" | "normal") => ({
   id,
@@ -93,14 +96,16 @@ const run = async (args: Record<string, unknown>) =>
 beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
-  M.listPlanRows.mockReset();
+  M.listPlanIndexRows.mockReset();
+  M.getPlanContentsBySlugs.mockReset();
+  M.getPlanContentsBySlugs.mockResolvedValue(new Map());
   M.getPlanRow.mockReset();
   M.getPlanRow.mockResolvedValue(null);
   M.planItemsForRow.mockClear();
   M.getAllPlanItemCoverage.mockReset();
   M.getAllPlanItemCoverage.mockResolvedValue(new Map());
   contexts.length = 0;
-  setFlagOverridesForTest({ [CACHE_LAYER]: true });
+  setFlagOverridesForTest({ [CACHE_LAYER]: true, [CACHE_L2]: false });
   await _refreshCacheLayerForTests();
 });
 
@@ -147,7 +152,7 @@ describe("plans:items bounded limit", () => {
 
     expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
     expect(M.getPlanRow).toHaveBeenCalledWith("plan-a", expect.anything());
-    expect(M.listPlanRows).not.toHaveBeenCalled();
+    expect(M.listPlanIndexRows).not.toHaveBeenCalled();
   });
 
   it("EI-21588504660347963: the singular `item` alias filters the same as one-element itemIds", async () => {
@@ -219,7 +224,7 @@ describe("plans:items bounded limit", () => {
   });
 
   it("caps after importance ordering and reports truncation", async () => {
-    M.listPlanRows.mockResolvedValue([
+    M.listPlanIndexRows.mockResolvedValue([
       plan("p-normal", [item("P-003", "normal")]),
       plan("p-urgent", [item("P-001", "urgent")]),
       plan("p-high", [item("P-002", "high")]),
@@ -237,7 +242,7 @@ describe("plans:items bounded limit", () => {
   });
 
   it("keeps different limits in separate cache entries", async () => {
-    M.listPlanRows.mockResolvedValue([
+    M.listPlanIndexRows.mockResolvedValue([
       plan("p-urgent", [item("P-001", "urgent")]),
       plan("p-high", [item("P-002", "high")]),
     ]);
@@ -251,6 +256,6 @@ describe("plans:items bounded limit", () => {
 
     expect(first.data.items).toHaveLength(1);
     expect(second.data.items).toHaveLength(2);
-    expect(M.listPlanRows).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 });

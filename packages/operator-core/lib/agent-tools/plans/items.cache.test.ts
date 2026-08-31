@@ -2,7 +2,7 @@
  * plans:items cache integration (cache-expensive-tool-reads-round2-2026-06-23 P-002).
  *
  * Drives the REAL handler against a mocked source layer + the REAL operator cache to pin
- * the caching CONTRACT specific to plans:items: a repeat cross-plan query HITS (listPlanRows
+ * the caching CONTRACT specific to plans:items: a repeat cross-plan query HITS (listPlanIndexRows
  * runs once); a plan-table write busts it (tag invalidation); different args / workspaces
  * never share an entry (no cross-key / cross-workspace leak); the CACHE_LAYER kill-switch
  * disables caching. (Generic SWR/key semantics are pinned in cache/cached-read.test.ts.)
@@ -12,7 +12,8 @@ import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
   planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
-  listPlanRows: vi.fn(async () => [] as unknown[]),
+  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
+  getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
   getPlanRow: vi.fn(async () => null as unknown),
   planItemsForRow: vi.fn(() => [] as unknown[]),
   getAllPlanItemCoverage: vi.fn(async () => new Map()),
@@ -26,7 +27,8 @@ vi.mock("./source", async (orig) => {
   return {
     ...actual,
     planHarnessesForSlugs: M.planHarnessesForSlugs,
-    listPlanRows: M.listPlanRows,
+    listPlanIndexRows: M.listPlanIndexRows,
+    getPlanContentsBySlugs: M.getPlanContentsBySlugs,
     getPlanRow: M.getPlanRow,
     planItemsForRow: M.planItemsForRow,
   };
@@ -54,6 +56,7 @@ import {
 import { _refreshCacheLayerForTests } from "../../cache/instance";
 
 const CACHE_LAYER = "papercusp-cache-layer";
+const CACHE_L2 = "papercusp-cache-l2";
 
 const ctx = (workspaceId: string, harnessSlug = "papercup"): never =>
   ({
@@ -76,13 +79,17 @@ beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
-  M.listPlanRows.mockClear();
+  M.listPlanIndexRows.mockClear();
+  M.getPlanContentsBySlugs.mockClear();
   M.planHarnessesForSlugs.mockReset();
   M.planHarnessesForSlugs.mockResolvedValue(new Map());
   M.ctxToPlanSourceOpts.mockClear();
   M.getAllPlanItemCoverage.mockReset();
   M.getAllPlanItemCoverage.mockResolvedValue(new Map());
-  setFlagOverridesForTest({ [CACHE_LAYER]: true });
+  // This suite pins the L1 invalidation/key contract. Keep the now-production
+  // L2 leg off so durable entries from another test/process cannot satisfy a
+  // read before the mocked source is exercised.
+  setFlagOverridesForTest({ [CACHE_LAYER]: true, [CACHE_L2]: false });
   await _refreshCacheLayerForTests();
 });
 
@@ -112,54 +119,54 @@ describe("plans:items — cache wiring", () => {
     );
   });
 
-  it("a repeat cross-plan query HITS (listPlanRows runs once)", async () => {
+  it("a repeat cross-plan query HITS (listPlanIndexRows runs once)", async () => {
     await run({ actionable: true });
     await run({ actionable: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
   });
 
   it("a harness_plans write BUSTS the entry (tag invalidation rebuilds)", async () => {
     await run({ actionable: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
     getOperatorCache().invalidateByTags("ws-items", ["harness_plans"]);
     await run({ actionable: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it("a plan_revisions write also busts (every tagged table invalidates)", async () => {
     await run({ actionable: true });
     getOperatorCache().invalidateByTags("ws-items", ["plan_revisions"]);
     await run({ actionable: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it("different filters do NOT share an entry (no cross-arg leak)", async () => {
     await run({ actionable: true });
     await run({ needsHuman: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
     // each independently cached on repeat
     await run({ actionable: true });
     await run({ needsHuman: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
   it("different workspaces do NOT share an entry (no cross-workspace leak)", async () => {
     await run({ actionable: true }, "ws-A");
     await run({ actionable: true }, "ws-B");
-    expect(M.listPlanRows).toHaveBeenCalledTimes(2);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
     getOperatorCache().invalidateByTags("ws-A", ["harness_plans"]);
     await run({ actionable: true }, "ws-A");
     await run({ actionable: true }, "ws-B");
-    expect(M.listPlanRows).toHaveBeenCalledTimes(3);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(3);
   });
 
-  it("CACHE_LAYER OFF ⇒ bypass: listPlanRows runs on every call", async () => {
+  it("CACHE_LAYER OFF ⇒ bypass: listPlanIndexRows runs on every call", async () => {
     setFlagOverridesForTest({ [CACHE_LAYER]: false });
     await _refreshCacheLayerForTests();
     await run({ actionable: true });
     await run({ actionable: true });
     await run({ actionable: true });
-    expect(M.listPlanRows).toHaveBeenCalledTimes(3);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(3);
   });
 
   it("refreshes coverage on a plan-cache hit instead of replaying stale liveness", async () => {
@@ -178,7 +185,7 @@ describe("plans:items — cache wiring", () => {
       needsHuman: false,
       staleBlockedHint: null,
     };
-    M.listPlanRows.mockResolvedValue([{
+    M.listPlanIndexRows.mockResolvedValue([{
       planSlug: "coverage-plan",
       archived: false,
       isLegacy: false,
@@ -207,8 +214,52 @@ describe("plans:items — cache wiring", () => {
     M.getAllPlanItemCoverage.mockResolvedValueOnce(coverage("full"));
     const second = await run({}) as { data: { items: Array<{ coverage?: { level: string } }> } };
     expect(second.data.items[0]?.coverage?.level).toBe("full");
-    expect(M.listPlanRows).toHaveBeenCalledTimes(1);
+    expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
     expect(M.getAllPlanItemCoverage).toHaveBeenCalledTimes(2);
+    expect(M.getAllPlanItemCoverage).toHaveBeenLastCalledWith({
+      planItemRefs: ["coverage-plan#P-001"],
+    });
+  });
+
+  it("skips the live coverage overlay for the UI display feed that projects it away", async () => {
+    M.listPlanIndexRows.mockResolvedValue([{
+      planSlug: "ui-plan",
+      archived: false,
+      isLegacy: false,
+      status: "active",
+      content: "",
+      created: "2026-08-01T00:00:00.000Z",
+    }]);
+    M.planItemsForRow.mockReturnValue([{
+      id: "P-001",
+      text: "display row",
+      storedStatus: "todo",
+      importance: "normal",
+      blockedBy: [],
+      decisionRefs: [],
+      phase: "Phase 1",
+      lineNumber: 0,
+      rawLine: "",
+      effectiveStatus: "todo",
+      unresolvedBlockers: [],
+      needsHuman: false,
+      staleBlockedHint: null,
+    }]);
+
+    const result = await tool.handler(
+      { actionable: true } as never,
+      {
+        workspaceId: "ws-ui",
+        harnessSlug: "papercup",
+        uiClientId: "pc-admin-plans-ui",
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+      } as never,
+    ) as { data: { items: unknown[] } };
+
+    expect(result.data.items).toHaveLength(1);
+    expect(M.getAllPlanItemCoverage).not.toHaveBeenCalled();
   });
 
   it("hides a todo item linked to a blocked work-item from actionable results", async () => {
@@ -227,7 +278,7 @@ describe("plans:items — cache wiring", () => {
       needsHuman: false,
       staleBlockedHint: null,
     };
-    M.listPlanRows.mockResolvedValue([{
+    M.listPlanIndexRows.mockResolvedValue([{
       planSlug: "blocked-linked-plan",
       archived: false,
       isLegacy: false,

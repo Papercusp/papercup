@@ -8,7 +8,8 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
-  listPlanRows: vi.fn(async () => [] as unknown[]),
+  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
+  getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
   getPlanRow: vi.fn(async () => null as unknown),
   getAllPlanItemCoverage: vi.fn(async () => new Map()),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "desktop-notes-demo" })),
@@ -18,7 +19,8 @@ vi.mock("./source", async (orig) => {
   const actual = await orig<typeof import("./source")>();
   return {
     ...actual,
-    listPlanRows: M.listPlanRows,
+    listPlanIndexRows: M.listPlanIndexRows,
+    getPlanContentsBySlugs: M.getPlanContentsBySlugs,
     getPlanRow: M.getPlanRow,
   };
 });
@@ -43,6 +45,7 @@ import {
 import { _refreshCacheLayerForTests } from "../../cache/instance";
 
 const CACHE_LAYER = "papercusp-cache-layer";
+const CACHE_L2 = "papercusp-cache-l2";
 const HARNESS = "desktop-notes-demo";
 
 const ctx = (metadata: ReturnType<typeof vi.fn>): never =>
@@ -60,12 +63,14 @@ const unknownHarnessError = (message: string) =>
 beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
-  M.listPlanRows.mockReset();
+  M.listPlanIndexRows.mockReset();
+  M.getPlanContentsBySlugs.mockReset();
+  M.getPlanContentsBySlugs.mockResolvedValue(new Map());
   M.getPlanRow.mockReset();
   M.getAllPlanItemCoverage.mockReset();
   M.getAllPlanItemCoverage.mockResolvedValue(new Map());
   M.ctxToPlanSourceOpts.mockResolvedValue({ harnessSlug: HARNESS });
-  setFlagOverridesForTest({ [CACHE_LAYER]: true });
+  setFlagOverridesForTest({ [CACHE_LAYER]: true, [CACHE_L2]: false });
   await _refreshCacheLayerForTests();
 });
 
@@ -94,7 +99,7 @@ describe("plans:items unknown plan scope", () => {
   });
 
   it("returns an empty cross-plan read and warning metadata for an unknown harness", async () => {
-    M.listPlanRows.mockRejectedValueOnce(
+    M.listPlanIndexRows.mockRejectedValueOnce(
       unknownHarnessError(
         "harness 'desktop-notes-demo' is not registered in the harness registry",
       ),
@@ -141,7 +146,7 @@ describe("plans:items unknown plan scope", () => {
   });
 
   it("still propagates unrelated plan-source failures", async () => {
-    M.listPlanRows.mockRejectedValueOnce(new Error("database unavailable"));
+    M.listPlanIndexRows.mockRejectedValueOnce(new Error("database unavailable"));
 
     await expect(
       tool.handler({ harness: HARNESS } as never, ctx(vi.fn())),
