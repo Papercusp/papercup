@@ -208,6 +208,9 @@ export async function buildGatePipelineHealthLane(
     const { computePipelineHealth } = await import('../why-chain');
     const health = await computePipelineHealth({ slug: opts.slug });
     if (!health.known) return [];
+    // An inconclusive checkpoint rendered no code verdict; its historical red counters and
+    // failing files must not be surfaced as a current gate incident.
+    if (health.gateLabel === 'inconclusive') return [];
     const { sql } = getOrgPg();
     const fails = await sql<Array<{ kind: string; status: string; n: number }>>`
       SELECT kind, status, count(*)::int AS n
