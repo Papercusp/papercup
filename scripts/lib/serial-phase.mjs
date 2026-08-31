@@ -28,6 +28,8 @@
  * failure mode this whole module exists to avoid.
  *
  * @param {Array<{ name: string, ms: number }>} legs
+ * @param {{ wallMs?: number }} [opts] measured phase wall; omit it rather than passing a
+ *   placeholder, so an unmeasured phase reports no achieved overlap instead of 0.00x.
  */
 export function summarizeSerialPhase(legs, opts = {}) {
   if (!Array.isArray(legs) || legs.length === 0) return null;
@@ -101,7 +103,7 @@ const secs = (ms) => (ms / 1000).toFixed(1);
  * caller can splat it unconditionally.
  *
  * @param {Array<{ name: string, ms: number }>} legs
- * @param {{ topN?: number }} [opts]
+ * @param {{ topN?: number, wallMs?: number }} [opts]
  */
 export function formatSerialPhaseSummary(legs, opts = {}) {
   const summary = summarizeSerialPhase(legs, opts);

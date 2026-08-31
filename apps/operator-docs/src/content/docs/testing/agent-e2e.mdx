@@ -2189,6 +2189,72 @@ makes `assertEquals(0, results.length)` pass when the query is broken. Anywhere
 you verify an ABSENCE, the presence of the thing being searched is part of the
 assertion — and in async UI it is the part most likely to be missing.
 
+### 14.3 Prove the path EXECUTED before you believe a null result (EI-19296830787454501)
+
+§14.2 guards a negative *assertion*. This guards a negative *measurement* - the
+same trap wearing a stopwatch. **A null A/B result is trivially true of a workload
+that never ran the code under test.**
+
+Measured end to end on 2026-08-01 (WI-6560). A landed React render optimisation was
+measured three ways: 8 paired idle rounds, 10 paired typing rounds, and 10 three-arm
+rounds with an interleaved sham - 28 paired rounds in total. All three agreed: no
+effect. Median paired deltas +2ms, -6.5ms, +0.5ms, with coin-flip signs.
+
+All three were VOID. Not "the fix does nothing" - the fix was NEVER EXECUTED. Neither
+idling nor typing into the surface's own search box re-renders the board at all, so the
+ablation arm and the shipped arm ran byte-identical code and the frame numbers were
+measuring the box's background stalls twice. A workload that DOES re-render the board (a
+tab switch) then gave a median paired delta of -78.5ms, 9 of 10 rounds agreeing on sign.
+
+**A sham does not catch this.** The in-run sham required by
+[measuring per-keystroke input latency](/internal/docs/agent-insights/measuring-per-keystroke-input-latency)
+worked exactly as designed - it showed 57-59ms worst frames with ZERO keystrokes,
+correctly proving those stalls were background. But a sham separates interaction-cost
+from background-cost. It CANNOT separate "no effect" from "not exercised": in a dead
+workload the sham looks healthy and the null result looks clean.
+
+**The convention: count the path, in the seam itself.** When you add a runtime ablation
+seam to measure a fix, increment a counter BEFORE the ablation branch, so it counts the
+path regardless of which arm is live:
+
+```ts
+hudRenderStabilitySwitch.compares++;              // counted BEFORE the branch
+if (hudRenderStabilitySwitch.off) return false;   // <- the ablation
+```
+
+Then `compares === 0` is an unambiguous **"this row is VOID"** - discard the row, never
+average it in. The worked reference is `hudRenderStabilitySwitch` in
+`apps/operator/app/adv/hud/hud-board-model.ts` (`off` plus
+`compares`/`skips`/`reconciles`/`reuses`), exposed on `window` for the harness to read.
+Its tests pin BOTH that the seam defaults to `off:false` - so the fix cannot ship
+ablated - AND that flipping it genuinely ablates the comparator. A dead switch produces
+the identical false negative, so a switch never proven live is not a control.
+
+**No harness enforces this for you.** `experiment:*` runs replay/gym/instance/hive
+subjects, not webview frames; `VERIFY_TAURI_POLL --require` guards DOM presence (§14.2)
+and a perf A/B driving `tauri-agent-tools` directly bypasses it anyway. So it falls to
+the author of each run: **report the counter beside the delta, or the delta is not
+evidence.**
+
+**Three instrument traps specific to this webview**, each of which reads as a clean
+number rather than an error:
+
+- **`longtask` never fires here.** This WebKitGTK webview emits ZERO `longtask`
+  `PerformanceObserver` entries - `observe()` succeeds, throws nothing, and yields
+  nothing forever, so any metric built on it silently reads as "no long tasks". Use rAF
+  frame gaps instead.
+- **`worst` (max frame) is an extreme-value statistic** and is close to useless for a
+  sub-10ms effect over a short window. Grade medians (§14.1).
+- **Frame timings drift enough that a 10-round median cannot call a 5-10ms effect.** A
+  -6.5ms result was retracted 20 minutes later when the next run gave +0.5ms. Size the
+  sample to the effect, or report the interval rather than a point estimate.
+
+**The same trap, third costume.** §14.2: an absence is trivially true of an empty DOM.
+The empty-set trap: `assertEquals(0, results.length)` passes when the query is broken.
+Here: a null delta is trivially true of a workload that never ran the path. Each one is
+a verdict reported without the population it was computed over - so state the
+population, every time.
+
 ## 15. Common gotchas
 
 - **Verdict shares chromium with the human user.** Long
