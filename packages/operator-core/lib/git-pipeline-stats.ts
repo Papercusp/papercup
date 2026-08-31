@@ -30,6 +30,7 @@ import {
 } from './harness/git-sync/pipeline-events';
 import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
+import { gatePausedBanner, readRoutinePause } from './harness/routines/release-pause-ttl';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from './release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
@@ -56,11 +57,19 @@ export interface RoutineInfo {
   cron: string | null;
   lastFiredAtMs: number | null;
   nextFireAtMs: number | null;
+  /** Routine group (WI-5018). `release` is the group whose pauses carry a finite TTL. */
+  groupSlug: string | null;
   /** Deliberate pause provenance written by routines:set. Null when no hold is active. */
   pause: {
     reason: string | null;
     pausedBy: string | null;
     pausedAtMs: number | null;
+    /**
+     * P-004: the stamped auto-resume deadline for a release-group hold. Null means
+     * NO auto-resume is scheduled — a distinct, louder fact than "not yet due", and
+     * every renderer must keep them apart (release-pause-ttl.ts).
+     */
+    expiresAtMs: number | null;
   } | null;
 }
 
@@ -649,28 +658,30 @@ interface RoutineRow {
   metadata: Record<string, unknown> | null;
   last_fired_at: Date | string | null;
   next_fire_at: Date | string | null;
+  /** Optional so an older/narrower SELECT still type-checks; absent reads as ungrouped. */
+  group_slug?: string | null;
 }
 
 export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
   if (!r) return null;
-  const rawPause = r.metadata?.pause;
-  const pause =
-    rawPause && typeof rawPause === 'object'
-      ? (() => {
-          const rec = rawPause as Record<string, unknown>;
-          return {
-            reason: typeof rec.reason === 'string' ? rec.reason : null,
-            pausedBy: typeof rec.pausedBy === 'string' ? rec.pausedBy : null,
-            pausedAtMs: typeof rec.pausedAtMs === 'number' && Number.isFinite(rec.pausedAtMs) ? rec.pausedAtMs : null,
-          };
-        })()
-      : null;
+  // P-004: parse through the shared reader so `expiresAtMs` (and the legacy-field
+  // aliases) mean exactly one thing across every surface that renders a pause.
+  const parsed = readRoutinePause(r.metadata?.pause);
+  const pause = parsed.present
+    ? {
+        reason: parsed.reason,
+        pausedBy: parsed.pausedBy,
+        pausedAtMs: parsed.pausedAtMs,
+        expiresAtMs: parsed.expiresAtMs,
+      }
+    : null;
   return {
     name: r.name,
     active: Boolean(r.active),
     cron: typeof r.trigger_config?.cron === 'string' ? (r.trigger_config.cron as string) : null,
     lastFiredAtMs: dateMs(r.last_fired_at),
     nextFireAtMs: dateMs(r.next_fire_at),
+    groupSlug: r.group_slug ?? null,
     pause,
   };
 }
@@ -684,7 +695,7 @@ export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
 export async function readReleaseTriggerControl(slug: string = DEFAULT_SLUG): Promise<RoutineInfo | null> {
   const { sql } = getOrgPg();
   const rows = await sql<RoutineRow[]>`
-    SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at
+    SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
        AND name = 'release-trigger'
@@ -740,21 +751,34 @@ export function projectGreenCheckpointFireFreshness(verdict: { fireStale: boolea
  * An inactive routine with a pause record cannot produce a verdict, but it is
  * not an unexplained wedge: the record is the authoritative reason and exit
  * context. Active routines must not inherit stale pause metadata.
+ *
+ * P-004 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the reason
+ * text is now the SHARED standing banner — who held it, since when, and when it
+ * auto-resumes (or that nothing will re-arm it). The 11-day red-gate audit found
+ * 99h of deliberate pause across 14 windows that every status surface rendered as
+ * an ordinary red, so the banner exists to make "the gate is OFF" impossible to
+ * read as "the gate is FAILING". One builder, so the surfaces cannot drift.
  */
-export function projectGreenCheckpointPause(routine: RoutineInfo | null): {
+export function projectGreenCheckpointPause(
+  routine: RoutineInfo | null,
+  nowMs: number = Date.now(),
+): {
   pause: RoutineInfo['pause'];
   fireStale: boolean;
   fireStaleReason: string | null;
 } {
   const pause = routine?.active === false ? routine.pause : null;
   if (!pause) return { pause: null, fireStale: false, fireStaleReason: null };
-  const reason = pause.reason?.trim();
+  const banner = gatePausedBanner({
+    routineName: routine?.name ?? 'green-checkpoint',
+    groupSlug: routine?.groupSlug ?? null,
+    pause: { ...pause, present: true, legacy: pause.expiresAtMs == null },
+    nowMs,
+  });
   return {
     pause,
     fireStale: true,
-    fireStaleReason:
-      `green-checkpoint is deliberately PAUSED (active:false)${reason ? `: ${reason}` : ''} — ` +
-      'no scheduled fire can occur until the hold is resumed',
+    fireStaleReason: banner,
   };
 }
 
@@ -973,7 +997,7 @@ export async function gitPipelineSnapshot(
   // consuming any result; the derivation below still observes exactly one
   // settled result from each source and retains every existing fail-soft path.
   const routineRowsPromise = sql<RoutineRow[]>`
-    SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at
+    SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
        AND name IN ('git-sync', 'green-checkpoint', 'release-trigger')

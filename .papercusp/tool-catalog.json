@@ -3917,7 +3917,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer"
       ],
       "guidance": {
         "when": "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
@@ -20016,7 +20017,8 @@
         "kettle",
         "worker",
         "cup",
-        "judge"
+        "judge",
+        "release-fixer"
       ],
       "guidance": {
         "when": "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
@@ -26988,7 +26990,8 @@
         "documenter",
         "curator",
         "papercup",
-        "kettle"
+        "kettle",
+        "release-fixer"
       ],
       "guidance": {
         "when": "\"Which session did agent X say Y\" / \"we discussed this earlier — where?\" / after a compaction, \"I said something before the summary — recover it\" (session:'self', mode:'verbatim'). Filters: owner/fleet/speaker/session/source_kind/since/until.",

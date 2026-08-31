@@ -1521,11 +1521,82 @@ export async function reportCountersOnly(runId: string, workspaceId?: string): P
 }
 
 /**
+ * The settle decision, split out PURE so the rule is testable without a ctx, PG
+ * or a live resolver — the same convention as attention/sources.ts.
+ *
+ * `complete` is the only outcome that reads as SUCCESS, so it is the one that
+ * has to be earned. Two ways a run can reach "nothing is awaiting the owner"
+ * without having done anything, both of which used to settle `complete`:
+ *
+ *  1. EMPTY STATE SET. `[].some()` is `false`, so a run with no rows at all fell
+ *     straight through to `complete` — a run whose membership never
+ *     materialized reported itself as successfully finished, indistinguishable
+ *     from one that genuinely settled every row. The empty set means DIFFERENT
+ *     things per kind, so this is deliberately not one rule:
+ *       - `inbox-resolve`: createRun seeds the whole membership snapshot in the
+ *         SAME transaction as the run row and refuses a zero-item run outright,
+ *         so zero rows here is impossible-by-construction — the manifest was
+ *         lost, or we are reading a different scope. Never success.
+ *       - `plan-cleanup`: findings ACCRUE during the run, so zero findings is
+ *         the legitimate "scanned it, nothing to clean" result — provided the
+ *         resolver actually ran, which is what (2) establishes.
+ *  2. NO EVIDENCE OF LIFE. A run that recorded nothing AND never once beat its
+ *     heartbeat has not demonstrated that it scanned anything, so "nothing to
+ *     do" cannot be distinguished from "never started". Both resolver tool
+ *     paths (inbox/bulk-run.ts, plans/cleanup-run.ts) heartbeat before they
+ *     settle, so this never fires on a working run; it fires on the dead one.
+ *
+ * Refusing settles the run `failed` with a specific reason rather than minting a
+ * new phase: `failed` already frees the single-flight slot and is restartable,
+ * and the reason string is what makes an abandoned run distinguishable from a
+ * genuine failure without a migration or a new vocabulary every reader must
+ * learn (plan autonomous-inbox-resolution-2026-08-31 D-003, D-007).
+ *
+ * This matters far more once runs are UNATTENDED: a scheduled pass that dies
+ * before doing anything and reports `complete` is a silent no-op that looks
+ * healthy, which is exactly the failure a schedule cannot afford.
+ * (EI-22013650201095388.)
+ */
+export function deriveSettleOutcome(input: {
+  runKind: BulkRunKind;
+  /** Every state row for the run — item outcomes, or plan-cleanup findings. */
+  outcomes: readonly string[];
+  /** Has the resolver ever reported life for this run? */
+  everReportedLife: boolean;
+}): { phase: BulkRunPhase; refusedReason: string | null } {
+  const { runKind, outcomes, everReportedLife } = input;
+  const terminal =
+    runKind === 'plan-cleanup'
+      ? ['auto_applied', 'accepted', 'dismissed']
+      : ['auto_resolved', 'dismissed'];
+  const awaitingOwner = outcomes.some((o) => !terminal.includes(o));
+  const recordedNothing = outcomes.length === 0;
+
+  if (recordedNothing && runKind !== 'plan-cleanup') {
+    return {
+      phase: 'failed',
+      refusedReason:
+        'settle refused: this inbox run has zero item rows. Its membership snapshot is seeded in the same transaction as the run row and a zero-item run is refused at creation, so an empty set means the manifest was lost — never that every row settled.',
+    };
+  }
+  if (recordedNothing && !everReportedLife) {
+    return {
+      phase: 'failed',
+      refusedReason:
+        'settle refused: this run recorded no outcomes and never reported a heartbeat, so there is no evidence the resolver ran. "Nothing to do" is not distinguishable from "never started" here.',
+    };
+  }
+  return { phase: awaitingOwner ? 'review' : 'complete', refusedReason: null };
+}
+
+/**
  * Close out a run: `review` when recommendations are waiting for the owner,
  * `complete` when nothing is left to act on. Derived from the item rows rather
  * than trusted from the caller, so a resolver that miscounts cannot park the
  * pane in a review state with an empty list (or, worse, mark a run complete
  * while items still need the owner).
+ *
+ * The `complete`-vs-refuse rule itself lives in {@link deriveSettleOutcome}.
  */
 export async function settleRunPhase(input: {
   runId: string;

@@ -98,6 +98,29 @@
  * VERIFY rather than "restart the bg-host". That remediation is why a false blocker here is
  * actively dangerous rather than merely noisy: acting on it kills in-flight routine work and
  * reaps headless children in that service's cgroup (EI-9748 class).
+ *
+ * THE CHEAP CROSS-CHECK THAT CRACKS THIS CLASS (EI-19408259798878394). A streak counter is
+ * reset by definition when its condition clears. So a streak that RISES across an intervening
+ * `severe-event-resolved` for the same `condition_key` is NOT a flapping condition — it is
+ * arithmetic proof that the ALARMING reader and the RESOLVING reader are two observers
+ * disagreeing about the world. It costs nothing: the streak is already in the broadcast body
+ * and the resolutions are already rows in the same `harness_shared.coord_event_log`. Here it
+ * sat uncomputed for 8.7h across three agent sessions, at a cost of several retracted claims
+ * and a false fleet-wide blocker.
+ *
+ * The corollary is worth more than the check. A monotonic counter is a TIMESTAMP OF ONSET:
+ * `first_alarm_ts − (streak × interval)` dates when the reader started being wrong. Here that
+ * landed within ~2 ticks of the real onset, which is what separated "the reader was always
+ * wrong" from "the reader was RIGHT at onset and then got STUCK" — different bugs, different
+ * fixes, and only the second one is what happened.
+ *
+ * Measured 2026-08-31 over 28d of coord_event_log: 11 such contradictions, ALL inside the week
+ * of 2026-08-03; max streak 273 that week, then 2 in every week since — that is the reset
+ * above working, on an alarm that still fires. A standing detector was declined on that
+ * evidence: exactly 1 of 23 `broadcastSevereEvent` emitters carries a streak at all, so a
+ * "generic" rule would guard a class of one, keyed to one prose format. If a streak alarm ever
+ * looks stuck again, run the cross-check by hand — and if you ADD a streak to another emitter,
+ * this is the property to preserve.
  */
 import { execFileSync } from 'node:child_process';
 import { getOrgPg } from '@papercusp/db-org';

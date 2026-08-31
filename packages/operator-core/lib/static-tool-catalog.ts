@@ -59,6 +59,33 @@ export function buildBuiltinToolCatalog(repoRoot: string): Set<string> {
   return tools;
 }
 
+/**
+ * Tool name → the source file(s) whose `defineTool({ name: … })` declares it,
+ * absolute paths. Same single scan as {@link buildBuiltinToolCatalog} (that one
+ * throws the paths away); this keeps them so a caller holding only a NAME — e.g.
+ * one derived from prompt text — can import the owning module and read the REAL
+ * descriptor (`agentRoles`, `capability`) instead of re-parsing the source.
+ *
+ * A name maps to a list, not a single path: `register()` deliberately tolerates a
+ * benign re-import of the same tool, so a duplicate is a fact about the tree the
+ * caller should see rather than a silently-dropped entry.
+ */
+export function buildBuiltinToolFileIndex(repoRoot: string): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const dir of TOOL_SOURCE_DIRS) {
+    for (const file of walkTsFiles(join(repoRoot, dir))) {
+      const src = readFileSync(file, 'utf8');
+      if (!src.includes('defineTool(')) continue;
+      for (const m of src.matchAll(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/g)) {
+        const existing = index.get(m[1]);
+        if (existing) existing.push(file);
+        else index.set(m[1], [file]);
+      }
+    }
+  }
+  return index;
+}
+
 export interface DistributionUnitInfo {
   name: string;
   kind: 'plugin' | 'pack';
