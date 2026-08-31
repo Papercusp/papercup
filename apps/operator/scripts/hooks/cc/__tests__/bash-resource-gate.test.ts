@@ -589,6 +589,50 @@ describe('native-scheduler lockout: read-only listings are exempt (EI-2041948418
   });
 });
 
+// ── EI-21934170410740770: the read-only allowlist above is $-ANCHORED, so any
+// shell REDIRECTION defeated it. `crontab -l 2>&1 | head -20` denied while bare
+// `crontab -l` passed — and the refusal text promised, in the same breath, that
+// listings pass. Worse, its advertised remedy ("re-run the listing form on its
+// own") denied a SECOND time, because the reporter kept the redirect. A rail
+// whose own instructions do not work is the one a session stops believing.
+//
+// Pipes were never the cause: the segment splitter already ends a segment at
+// `|`, and `crontab -l | grep x` has passed since EI-20419484186942049. The
+// mechanism is subtler — the splitter cuts on [;&|\n], and the `&` inside
+// `2>&1` is one of those, so the segment reaching the classifier is the
+// truncated `crontab -l 2>`.
+//
+// MIRROR: the same classification lives in the OMP hook
+// (scripts/hooks/omp/coord-hook.ts). Fix one, fix both.
+describe('native-scheduler lockout: redirections do not defeat the read exemption (EI-21934170410740770)', () => {
+  it.each([
+    ['the reported shape: stderr merged, piped to a filter', 'crontab -l 2>&1 | head -20'],
+    ['stderr to /dev/null', 'crontab -l 2>/dev/null'],
+    ['stdout to a scratch file', 'crontab -l > /tmp/out.txt'],
+    ['appended to a scratch file', 'crontab -l >> /tmp/out.txt'],
+    ['both streams to separate files', 'crontab -l 1>/tmp/a 2>/tmp/b'],
+    ['sudo form with a redirect', 'sudo crontab -l 2>&1 | head -5'],
+    ['another user listed, with a redirect', 'crontab -u root -l 2>/dev/null'],
+    ['redirect inside a compound', 'git status; crontab -l 2>&1 | wc -l'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), AGENT));
+  });
+
+  // Stripping redirections stays fail-CLOSED. These are the shapes where a
+  // redirection genuinely CREATES a schedule — the reason the strip is not a
+  // blanket one — so they must keep denying even with a read flag beside them.
+  it.each([
+    ['stdin redirect IS the install vector', 'crontab < jobs.txt'],
+    ['stdin install for another user', 'crontab -u bob < jobs.txt'],
+    ['listing written straight into the cron spool', 'crontab -l > /var/spool/cron/crontabs/bob'],
+    ['listing written into a cron drop-in', 'crontab -l > /etc/cron.d/evil'],
+    ['listing appended to /etc/crontab', 'crontab -l >> /etc/crontab'],
+    ['a redirect on the read does not launder the install', 'crontab -l 2>&1 | crontab -'],
+  ])('still denies %s', (_label, command) => {
+    expectDeny(runGate(bashCmd(command), AGENT));
+  });
+});
+
 // ── EI-20437152261657452: `status 0 + empty stdout` is BOTH the credential
 // fail-open AND an ordinary allow (silence = allow). The diagnostic must read the
 // credential sizes it already collects before naming a cause, or it sends the
