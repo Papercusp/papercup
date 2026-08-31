@@ -3301,6 +3301,44 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(data).toContain('[08-27T19:49:40Z]');
   });
 
+  it('EI-21972787374193956: a mixed rehydration/cold snapshot is marked UNTRUSTED while cold delivery is preserved', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const renderedNote = '## Next action\nrendered delivery snapshot';
+    const cachedNote = '## Next action\ncached cold-injection snapshot';
+    const renderedAtMs = Date.parse('2026-08-31T17:00:00.000Z');
+    const cachedAtMs = Date.parse('2026-08-31T17:01:00.000Z');
+    const getLoopCarryNoteWithMetaFn = vi
+      .fn()
+      // The refresh read used to render the delivery-time block.
+      .mockResolvedValueOnce({ note: renderedNote, updatedAtMs: renderedAtMs })
+      // The refresh's second observation agrees, so the rendered snapshot remains exact.
+      .mockResolvedValueOnce({ note: renderedNote, updatedAtMs: renderedAtMs })
+      // The cold injector independently observes a different snapshot.
+      .mockResolvedValueOnce({ note: cachedNote, updatedAtMs: cachedAtMs });
+
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: coldPayload({ wakeCount: 1 }),
+      }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        getLoopCarryNoteFn: undefined,
+        getLoopCarryNoteWithMetaFn: getLoopCarryNoteWithMetaFn as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(3);
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }])[1];
+    expect(data.mode).toBe('reset');
+    expect(data.data).toContain('UNTRUSTED');
+    expect(data.data).toContain('bodyHash');
+    expect(data.data).toContain('updatedAtMs');
+    expect(data.data).toContain(renderedNote);
+    expect(data.data).toContain(cachedNote);
+  });
+
   // WI-6951: the un-checkpointed-work banner must read the STRICT turn signal
   // (lastRealTurnAt = session_turn_journal) and never the lastTurnAt union, which folds
   // in the '■ session ended' lifecycle marker. A cold reset KILLS its predecessor, so that
