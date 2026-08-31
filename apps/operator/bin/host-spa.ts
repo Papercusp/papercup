@@ -31,6 +31,9 @@ import { extname, join, resolve, sep } from 'node:path';
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
 import { cspReportOnlyHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
 import { describeMissingBundle } from '../lib/spa-build-status';
+import { hostedBrowserApiMarker } from "../lib/hosted-browser-api";
+export { hostedBrowserApiMarker };
+export type { HostedBrowserApiMarker } from "../lib/hosted-browser-api";
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
@@ -152,39 +155,6 @@ export type SpaRouteProfile =
       /** Fixed control-plane workspace; never a customer-selected workspace. */
       readonly controlPlaneWorkspaceId: string;
     };
-
-/**
- * The only browser transport contract the hosted shell exposes. Keep this
- * object data-only: it is injected into a static document before the client
- * bundle runs, and the client uses it to opt into the hosted route namespace.
- */
-export interface HostedBrowserApiMarker {
-  readonly version: 1;
-  readonly controlPlaneWorkspaceId: string;
-  readonly restEndpoint: '/api/hosted/browser';
-  readonly sseEndpoint: '/api/hosted/browser/sse';
-  readonly workspaceHostEndpoints: {
-    readonly connection: '/api/hosted/browser/workspace-hosts/connection';
-    readonly provision: '/api/hosted/browser/workspace-hosts/provision';
-    readonly action: '/api/hosted/browser/workspace-hosts/action';
-  };
-}
-
-export function hostedBrowserApiMarker(controlPlaneWorkspaceId: string): HostedBrowserApiMarker {
-  const id = controlPlaneWorkspaceId.trim();
-  if (!id) throw new TypeError('hosted_browser_marker_requires_a_control_plane_workspace_id');
-  return {
-    version: 1,
-    controlPlaneWorkspaceId: id,
-    restEndpoint: '/api/hosted/browser',
-    sseEndpoint: '/api/hosted/browser/sse',
-    workspaceHostEndpoints: {
-      connection: '/api/hosted/browser/workspace-hosts/connection',
-      provision: '/api/hosted/browser/workspace-hosts/provision',
-      action: '/api/hosted/browser/workspace-hosts/action',
-    },
-  };
-}
 
 /** Escape the three characters that can terminate or mutate a script element. */
 function scriptSafeJson(value: unknown): string {

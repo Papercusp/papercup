@@ -32,6 +32,7 @@ import {
   type AssembledHostedControlPlane,
 } from './hosted-control-plane';
 import { HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, type HostedRouteAllowlistEntry } from './hosted-profile';
+import { createHostedBrowserRoutes, type HostedBrowserRouteDependencies } from './hosted-browser';
 import { ALL_ROUTES } from './routes';
 import { createWorkOsWebhookRoute } from './routes/auth/workos-webhook';
 import { HostedWorkspaceConnectorGateway, PostgresHostedWorkspaceConnectorStore } from './hosted-workspace-connector';
@@ -56,6 +57,11 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'GET /health',
   'GET /health/ready',
   'POST /auth/workos/webhook',
+  'GET /hosted/browser/rest-query',
+  'GET /hosted/browser/sse',
+  'POST /hosted/browser/workspace-hosts/connection',
+  'POST /hosted/browser/workspace-hosts/provision',
+  'POST /hosted/browser/workspace-hosts/action',
   'POST /hosted/workspaces/:workspaceId/connectors/enroll',
   'POST /hosted/workspaces/:workspaceId/connectors/rotate',
   'POST /hosted/workspaces/:workspaceId/connectors/revoke',
@@ -91,6 +97,8 @@ export interface HostedRuntimeDependencies {
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
+  /** Injectable hosted SPA route leaves for hermetic composition tests. */
+  readonly hostedBrowser?: HostedBrowserRouteDependencies;
   readonly providerDelegationAdapters?: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>;
 }
 
@@ -235,6 +243,18 @@ export async function createHostedRuntime(
     },
   });
 
+  // The hosted SPA gets its own explicit browser boundary. Keep the browser
+  // leaf on the same tenant runner as the hosted identity/session stack so
+  // every customer read/write enters the RLS transaction exactly once.
+  const hostedBrowser = createHostedBrowserRoutes({
+    publicOrigin: configuration.publicOrigin,
+    controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
+    dependencies: {
+      ...(dependencies.hostedBrowser ?? {}),
+      runTenant: dependencies.hostedBrowser?.runTenant ?? runTenant,
+    },
+  });
+
   const plane = assembleHostedControlPlane({
     provider,
     publicOrigin: configuration.publicOrigin,
@@ -245,8 +265,12 @@ export async function createHostedRuntime(
     identityDirectory,
     connectorGateway,
     providerDelegationManager,
-    routes: [...ALL_ROUTES, webhookRoute],
-    staticAllowlist: [...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, HOSTED_WORKOS_WEBHOOK_ALLOWLIST_ENTRY],
+    routes: [...ALL_ROUTES, webhookRoute, ...hostedBrowser.routes],
+    staticAllowlist: [
+      ...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST,
+      HOSTED_WORKOS_WEBHOOK_ALLOWLIST_ENTRY,
+      ...hostedBrowser.allowlist,
+    ],
   });
   assertHostedRuntimeMounted(plane);
   return plane;

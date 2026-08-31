@@ -102,6 +102,28 @@ describe('SPA shell pre-hydration globals', () => {
 
       expect(res.status).toBe(200);
       expect(body).toContain('window.__PAPERCUSP_WS__="hosted-control-plane";');
+      const markerStart = body.indexOf("window.__PAPERCUSP_HOSTED_BROWSER__=");
+      expect(markerStart).toBeGreaterThan(-1);
+      const markerJson = body
+        .slice(
+          markerStart + "window.__PAPERCUSP_HOSTED_BROWSER__=".length,
+          body.indexOf(";", markerStart),
+        )
+        .trim();
+      expect(JSON.parse(markerJson)).toEqual({
+        version: 1,
+        controlPlaneWorkspaceId: "hosted-control-plane",
+        restEndpoint: "/api/hosted/browser",
+        sseEndpoint: "/api/hosted/browser/sse",
+        workspaceHostEndpoints: {
+          connection: "/api/hosted/browser/workspace-hosts/connection",
+          provision: "/api/hosted/browser/workspace-hosts/provision",
+          action: "/api/hosted/browser/workspace-hosts/action",
+        },
+      });
+      expect(body).toContain(
+        "window.__PAPERCUSP_HOSTED_BROWSER_API__=window.__PAPERCUSP_HOSTED_BROWSER__;",
+      );
       expect(body).not.toContain('other-tenant-workspace');
       expect(body).not.toContain('window.__PAPERCUSP_PREFS__=');
       expect(body).not.toContain('window.__PAPERCUSP_FLAGS__=');
@@ -115,6 +137,19 @@ describe('SPA shell pre-hydration globals', () => {
     const res = await spaRoutes.request('/some/deep/client/route');
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('window.__PAPERCUSP_WS__=');
+  });
+
+  it("script-escapes a hosted workspace marker before injecting it into HTML", async () => {
+    const hostedRoutes = createSpaRoutes({
+      kind: "hosted",
+      controlPlaneWorkspaceId: "</script><script>window.compromised=1</script>",
+    });
+    const body = await (await hostedRoutes.request("/")).text();
+
+    expect(body).not.toContain(
+      "</script><script>window.compromised=1</script>",
+    );
+    expect(body).toContain("\\u003c/script\\u003e");
   });
 
   it('returns a real 404 for a missing extensioned asset (never shells a .js)', async () => {

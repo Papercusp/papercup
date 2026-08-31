@@ -8,10 +8,9 @@
  * misleadingly implied this provider still uses Zero. It is purely SSE now.)
  *
  * Transport: **SSE for every runtime** (desktop Tauri shell *and* plain
- * browser). The operator sidecar serves `/api/zero-harness/sse` itself —
- * PG LISTEN/NOTIFY → invalidate/update events — so SSE works identically
- * whether the page is loaded inside the Tauri webview or a normal browser
- * tab pointed at the dev server.
+ * browser). Local installs use `/api/zero-harness/sse`; the hosted static
+ * shell opts into its authenticated `/api/hosted/browser/sse` contract via
+ * the server-injected marker. Both paths share this adapter and scheduler.
  *
  * History: the browser path used to mount a Zero WebSocket adapter against
  * a separate `zero-cache` process, configured via `/api/runtime-config`'s
@@ -47,6 +46,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
 import { isTauri } from '@/app/_components/SetupWizard/tauri-detect';
 import { createSyncDeltaCodec } from './sync-delta-codec';
+import { resolveBrowserApiTransport } from "../lib/hosted-browser-api";
 
 const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 // SSE drift-repair tick, NOT a freshness source (EI-278). Under SSE,
@@ -64,6 +64,18 @@ const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 // One QueryClient for the app lifetime. Module-scope (not useMemo) so it
 // survives the provider unmount/remount that happens on some route swaps.
 const queryClient = new QueryClient();
+
+/** Resolve the endpoint props passed to the shared SyncProvider boundary. */
+export function resolveHarnessSyncTransport(): {
+  restEndpoint: string;
+  endpointOverride?: string;
+} {
+  const browserTransport = resolveBrowserApiTransport();
+  return {
+    restEndpoint: browserTransport.restEndpoint || DEFAULT_REST_ENDPOINT,
+    endpointOverride: browserTransport.sseEndpoint,
+  };
+}
 
 /**
  * WI-6253: the sync concurrency gate's 24-wide default is tuned for the
@@ -244,6 +256,13 @@ export function HarnessSyncProvider({
   /** SSE drift-repair tick (see DEFAULT_SSE_DRIFT_REPAIR_MS). */
   ssePollIntervalMs?: number;
 }) {
+  // The hosted shell injects and validates this marker before the deferred
+  // bundle runs.  Select the transport once at the provider boundary so a
+  // later global mutation cannot retarget an already-mounted session. A normal
+  // local install deterministically keeps the legacy endpoint; hosted mode
+  // selects only its mounted tenant-aware boundary.
+  const [browserTransport] = useState(resolveHarnessSyncTransport);
+
   // P-006: inject the rows-delta codec while the flag is on (the owner flips it after an attended
   // desktop verify). OFF ⇒ setSyncDeltaCodec(null) ⇒ the batch fetcher serves full re-fetches.
   // D-047: start capped, raise once the shell PROVES IPC is carrying fetch.
@@ -260,7 +279,8 @@ export function HarnessSyncProvider({
       <SyncProvider
         syncType="SSE"
         userId={userID}
-        restEndpoint={DEFAULT_REST_ENDPOINT}
+        restEndpoint={browserTransport.restEndpoint}
+        endpointOverride={browserTransport.sseEndpoint}
         ssePollIntervalMs={ssePollIntervalMs}
         maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
         persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}

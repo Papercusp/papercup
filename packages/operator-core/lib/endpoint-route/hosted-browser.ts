@@ -158,8 +158,11 @@ function noStore(response: Response): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-function selectedHostedPrincipal(ctx: RouteContext): HostedPrincipal | Response {
+function selectedHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: string): HostedPrincipal | Response {
   if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return jsonError('hosted_principal_required', 401);
+  if (ctx.principal.workspaceId !== controlPlaneWorkspaceId) {
+    return jsonError('control_plane_binding_mismatch', 403);
+  }
   if (!ctx.principal.selectedWorkspaceId) return jsonError('workspace_not_selected', 403);
   return ctx.principal;
 }
@@ -272,6 +275,10 @@ function localConnectionRoute(
   const upsertConnection = deps.upsertConnection ?? upsertWorkspaceHostConnection;
   const inspectConnection = deps.inspectConnection ?? inspectWorkspaceHostConnection;
   return createWorkspaceHostConnectionRoute({
+    // Workspace-host rows keep the fixed control-plane workspace as their
+    // Stage-A key.  `runTenant` below supplies the selected customer scope;
+    // migration 979's hosted_app policy joins that key to the selected
+    // customer workspace instead of rewriting the row key.
     activeWorkspaceId: () => config.controlPlaneWorkspaceId,
     readConnection: (workspaceId, connectionId) =>
       wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
@@ -288,6 +295,9 @@ function localProvisionRoute(
 ) {
   const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
   return createWorkspaceHostProvisionRoute({
+    // Provisioning writes the same control-plane-keyed host graph.  The
+    // selected tenant is enforced by the transaction/RLS context, not by
+    // trusting a browser-supplied workspace id.
     activeWorkspaceId: () => config.controlPlaneWorkspaceId,
     provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
     readConnection: (workspaceId, connectionId) =>
@@ -306,6 +316,8 @@ function localActionRoute(
   const readTarget = deps.readTarget ?? readWorkspaceHostDestroyTarget;
   const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
   return createWorkspaceHostActionRoute({
+    // Lifecycle rows are likewise keyed by the fixed control-plane workspace;
+    // the selected customer binding is carried only by `runTenant` + RLS.
     activeWorkspaceId: () => config.controlPlaneWorkspaceId,
     provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
     readTarget: (workspaceId, hostId) =>
@@ -342,6 +354,11 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const origin = exactHttpsOrigin(configuration.publicOrigin);
   const controlPlaneWorkspaceId = configuration.controlPlaneWorkspaceId.trim();
   if (!controlPlaneWorkspaceId) throw new TypeError('hosted_browser_requires_a_control_plane_workspace_id');
+  const normalizedConfiguration: HostedBrowserRouteConfiguration = {
+    ...configuration,
+    publicOrigin: origin,
+    controlPlaneWorkspaceId,
+  };
   const deps = configuration.dependencies ?? {};
   const runTenant = deps.runTenant ?? withTenantContext;
   const readControl = deps.readControl ?? readWorkspaceHostControl;
@@ -355,7 +372,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     cors: { origins: [origin] },
     sampleRate: 0,
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx);
+      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
       if (principal instanceof Response) return principal;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (headerError) return headerError;
@@ -403,7 +420,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     timeoutSec: null,
     sampleRate: 0,
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx);
+      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
       if (principal instanceof Response) return principal;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (headerError) return headerError;
@@ -441,13 +458,15 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     auth: HOSTED_CONNECTION_AUTH,
     cors: { origins: [origin] },
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx);
+      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
       if (principal instanceof Response) return principal;
       const csrf = exactOriginOr403(request, origin);
       if (csrf) return csrf;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (headerError) return headerError;
-      return noStore(await localConnectionRoute(configuration, principal, deps, runTenant).handler(request, ctx));
+      return noStore(
+        await localConnectionRoute(normalizedConfiguration, principal, deps, runTenant).handler(request, ctx),
+      );
     },
   });
 
@@ -457,13 +476,15 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     auth: HOSTED_OPERATE_AUTH,
     cors: { origins: [origin] },
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx);
+      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
       if (principal instanceof Response) return principal;
       const csrf = exactOriginOr403(request, origin);
       if (csrf) return csrf;
       const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (headerError) return headerError;
-      return noStore(await localProvisionRoute(configuration, principal, deps, runTenant).handler(request, ctx));
+      return noStore(
+        await localProvisionRoute(normalizedConfiguration, principal, deps, runTenant).handler(request, ctx),
+      );
     },
   });
 
@@ -473,7 +494,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     auth: HOSTED_OPERATE_AUTH,
     cors: { origins: [origin] },
     async handler(request, ctx) {
-      const principal = selectedHostedPrincipal(ctx);
+      const principal = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
       if (principal instanceof Response) return principal;
       const csrf = exactOriginOr403(request, origin);
       if (csrf) return csrf;
@@ -481,7 +502,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
       if (headerError) return headerError;
       const permission = await destroyPermissionDenied(request, principal);
       if (permission) return permission;
-      return noStore(await localActionRoute(configuration, principal, deps, runTenant).handler(request, ctx));
+      return noStore(await localActionRoute(normalizedConfiguration, principal, deps, runTenant).handler(request, ctx));
     },
   });
 

@@ -33,7 +33,8 @@ const {
   assertIpcCarriesFetch,
   reportIpcAssertionTimeout,
   useIpcCarriesFetch,
-} = await import('./HarnessSyncProvider');
+  resolveHarnessSyncTransport,
+} = await import("./HarnessSyncProvider");
 
 beforeEach(() => {
   invoke.mockReset();
@@ -42,8 +43,39 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+describe("resolveHarnessSyncTransport (hosted browser marker)", () => {
+  it("keeps the local REST/SSE endpoints when no hosted marker is present", () => {
+    vi.stubGlobal("window", {});
+    expect(resolveHarnessSyncTransport()).toEqual({
+      restEndpoint: "/api/zero-harness",
+      endpointOverride: undefined,
+    });
+  });
+
+  it("selects the hosted REST base and explicit SSE endpoint from the marker", () => {
+    vi.stubGlobal("window", {
+      __PAPERCUSP_HOSTED_BROWSER__: {
+        version: 1,
+        controlPlaneWorkspaceId: "control-plane",
+        restEndpoint: "/api/hosted/browser",
+        sseEndpoint: "/api/hosted/browser/sse",
+        workspaceHostEndpoints: {
+          connection: "/api/hosted/browser/workspace-hosts/connection",
+          provision: "/api/hosted/browser/workspace-hosts/provision",
+          action: "/api/hosted/browser/workspace-hosts/action",
+        },
+      },
+    });
+    expect(resolveHarnessSyncTransport()).toEqual({
+      restEndpoint: "/api/hosted/browser",
+      endpointOverride: "/api/hosted/browser/sse",
+    });
+  });
 });
 
 describe('resolveMaxInFlightFetches', () => {

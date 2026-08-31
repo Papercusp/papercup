@@ -12,6 +12,7 @@ import type {
   LifecycleAction,
   ProviderTarget,
 } from "./workspace-view-model";
+import { resolveBrowserApiTransport } from "../../lib/hosted-browser-api";
 
 export type WorkspaceHostActionArgs =
   | {
@@ -134,12 +135,13 @@ export const DESTROY_DISPOSITIONS: readonly {
 export async function workspaceHostActionRest(
   args: WorkspaceHostActionArgs,
 ): Promise<WorkspaceHostActionResponse> {
+  const transport = resolveBrowserApiTransport();
   const endpoint =
     args.action === "connect" || args.action === "validate-connection"
-      ? "/api/workspace-hosts/connection"
+      ? transport.workspaceHostEndpoints.connection
       : args.action === "provision"
-        ? "/api/workspace-hosts/provision"
-        : "/api/workspace-hosts/action";
+        ? transport.workspaceHostEndpoints.provision
+        : transport.workspaceHostEndpoints.action;
   const payload =
     args.action === "provision"
       ? {
@@ -148,9 +150,18 @@ export async function workspaceHostActionRest(
           desired: args.desired,
         }
       : args;
+  const headers = new Headers({ "content-type": "application/json" });
+  // The hosted marker pins the operator's control-plane scope.  The global
+  // workspace-header adapter normally adds this too, but this helper is also
+  // called directly by tests and by small shell integrations, so keep the
+  // boundary explicit at the mutation seam itself.
+  if (transport.mode === "hosted" && transport.controlPlaneWorkspaceId) {
+    headers.set("x-papercusp-workspace", transport.controlPlaneWorkspaceId);
+  }
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
+    credentials: "include",
     body: JSON.stringify(payload),
   });
   const parsedBody = await response.json().catch(() => null);

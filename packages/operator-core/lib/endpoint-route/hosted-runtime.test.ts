@@ -57,10 +57,25 @@ describe('hosted runtime composition', () => {
 
     expect((await plane.app.request('/api/health')).status).toBe(200);
     expect((await plane.app.request('/api/auth/login', { method: 'POST' })).status).toBe(404);
-    expect((await plane.app.request(
-      '/api/hosted/workspaces/customer-1/provider-delegations/onboard',
-      { method: 'POST' },
-    )).status).toBe(401);
+    expect(
+      (await plane.app.request('/api/hosted/workspaces/customer-1/provider-delegations/onboard', { method: 'POST' }))
+        .status,
+    ).toBe(401);
+
+    // The static hosted SPA has a deliberately separate, tenant-aware browser
+    // surface.  Its routes must be mounted (and reach the hosted auth stack),
+    // while the local process-global sync/workspace-host paths stay absent.
+    for (const [method, path] of [
+      ['GET', '/api/hosted/browser/rest-query?name=workspaceHosts.control'],
+      ['GET', '/api/hosted/browser/sse'],
+      ['POST', '/api/hosted/browser/workspace-hosts/connection'],
+      ['POST', '/api/hosted/browser/workspace-hosts/provision'],
+      ['POST', '/api/hosted/browser/workspace-hosts/action'],
+    ] as const) {
+      expect((await plane.app.request(path, { method })).status).toBe(401);
+    }
+    expect((await plane.app.request('/api/zero-harness/rest-query?name=workspaceHosts.control')).status).toBe(404);
+    expect((await plane.app.request('/api/workspace-hosts/action', { method: 'POST' })).status).toBe(404);
 
     const webhook = await plane.app.request('/api/auth/workos/webhook', {
       method: 'POST',

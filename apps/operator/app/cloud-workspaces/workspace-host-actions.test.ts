@@ -3,6 +3,7 @@ import {
   workspaceHostActionRest,
   type WorkspaceHostActionArgs,
 } from "./workspace-host-actions";
+import { hostedBrowserApiMarker } from "../../lib/hosted-browser-api";
 
 const lifecycleRequest: WorkspaceHostActionArgs = {
   action: "stop",
@@ -62,5 +63,46 @@ describe("workspaceHostActionRest response contract", () => {
     await expect(workspaceHostActionRest(lifecycleRequest)).rejects.toThrow(
       "connection is not ready",
     );
+  });
+
+  it("uses the authenticated hosted mutation endpoint when the shell advertises it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ ok: true, message: "accepted" }));
+    vi.stubGlobal("window", {
+      __PAPERCUSP_HOSTED_BROWSER__: hostedBrowserApiMarker("control-plane"),
+      __PAPERCUSP_HOSTED_BROWSER_API__: hostedBrowserApiMarker("control-plane"),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      workspaceHostActionRest(lifecycleRequest),
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/hosted/browser/workspace-hosts/action",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get("x-papercusp-workspace")).toBe(
+      "control-plane",
+    );
+  });
+
+  it("falls back explicitly to the local endpoint when the hosted marker is invalid", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ ok: true, message: "accepted" }));
+    vi.stubGlobal("window", {
+      __PAPERCUSP_HOSTED_BROWSER__: {
+        version: 1,
+        restEndpoint: "https://evil.example",
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await workspaceHostActionRest(lifecycleRequest);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace-hosts/action");
   });
 });
