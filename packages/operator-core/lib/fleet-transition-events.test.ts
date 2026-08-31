@@ -77,6 +77,40 @@ describe('detectFleetTransitions', () => {
     expect(detectFleetTransitions(dead, [member({ sessionState: 'ended', contextPressure: 'critical' })])).toEqual([]);
   });
 
+  it('does NOT fire context-critical on an UNKNOWN → critical reading — a lapsed estimate is not a crossing (EI-21968977558564590)', () => {
+    // Rule 3. `null` means the bucket could not be derived, not that the member
+    // was comfortable. deriveContextPressure degrades any estimate older than
+    // CONTEXT_ESTIMATE_STALE_MS to null, and gatherFleetObservations falls back
+    // to an empty pressure map on a failed batch read — so a member that never
+    // left critical is routinely observed as null and then critical again.
+    const lapsed = indexObservations([member({ contextPressure: null })]);
+    expect(detectFleetTransitions(lapsed, [member({ contextPressure: 'critical' })])).toEqual([]);
+  });
+
+  it('does NOT re-fire across a lapse for a member that never left critical — the eight-coalesced-edges regression', () => {
+    // The reported shape end to end: critical, estimate lapses to unknown,
+    // estimate returns still-critical. Before rule 3 the third sweep fired a
+    // fresh edge, and repeated once per lapse for as long as the member stayed
+    // critical — eight of them for one RETIRED member whose telemetry is frozen.
+    let snapshot = indexObservations([member({ contextPressure: 'critical' })]);
+    for (const bucket of [null, 'critical', null, 'critical'] as const) {
+      const next = [member({ contextPressure: bucket })];
+      expect(detectFleetTransitions(snapshot, next)).toEqual([]);
+      snapshot = indexObservations(next);
+    }
+  });
+
+  it('STILL fires on a KNOWN non-critical → critical crossing — rule 3 narrows the signal, it does not disable it', () => {
+    // Calibration for the two tests above: if this ever goes quiet, rule 3 has
+    // suppressed the real signal rather than only the manufactured one.
+    for (const from of ['ok', 'high'] as const) {
+      const prev = indexObservations([member({ contextPressure: from })]);
+      expect(detectFleetTransitions(prev, [member({ contextPressure: 'critical' })])).toEqual([
+        { kind: 'context-critical', fleetSlug: 'push-not-poll', agentId: 'su-a', to: 'critical', from },
+      ]);
+    }
+  });
+
   it('does NOT treat draining or suspect as dead — both need a wake confirmation first (WI-4400)', () => {
     const prev = indexObservations([member({ sessionState: 'live' })]);
     expect(detectFleetTransitions(prev, [member({ sessionState: 'draining' })])).toEqual([]);

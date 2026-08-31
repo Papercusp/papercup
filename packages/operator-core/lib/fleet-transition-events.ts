@@ -218,9 +218,28 @@ export function detectFleetTransitions(
       });
     }
 
+    // Rule 3 — an UNKNOWN previous bucket is not a crossing. `null` means the
+    // pressure could not be derived, NOT that the member was comfortable, so
+    // `!wasCritical` must not be read as "was below critical" when the prior
+    // reading is absent. Coercing it manufactures a fresh edge for a member
+    // that has been sitting at critical the whole time, every time the estimate
+    // lapses and comes back.
+    //
+    // That lapse is routine, not exotic: `deriveContextPressure` deliberately
+    // degrades any estimate older than CONTEXT_ESTIMATE_STALE_MS (15 min) to
+    // `null` (EI-18729596985129261), and `gatherFleetObservations` also falls
+    // back to an EMPTY pressure map whenever the batch read fails. Both are
+    // correct on their own, and both hand this detector a `null` for a member
+    // whose bucket never actually moved — so unknown→critical repeats for as
+    // long as the member stays critical. That is the repeat behind
+    // EI-21968977558564590's eight coalesced edges for one retired member,
+    // whose frozen telemetry re-derives as critical after every lapse.
+    //
+    // Same rule the stalled verdict below already applies for the same reason;
+    // this brings the context signal into line with it.
     const wasCritical = before.contextPressure === CRITICAL_CONTEXT_BUCKET;
     const isCritical = o.contextPressure === CRITICAL_CONTEXT_BUCKET;
-    if (isCritical && !wasCritical) {
+    if (isCritical && !wasCritical && before.contextPressure !== null) {
       edges.push({
         kind: 'context-critical',
         fleetSlug: o.fleetSlug,
