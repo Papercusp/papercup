@@ -346,7 +346,6 @@ const snap = (
       // semantically correct default rather than a compiler-silencer: these fixtures describe a
       // gate that RENDERED a verdict, which is exactly the case where no abort is recorded.
       inconclusive: null,
-      candidateFailures: null,
       qualification: NO_QUALIFICATION,
       ...gate,
     },
@@ -1528,7 +1527,6 @@ describe('gitPipelinePosition (P-002)', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
-            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           }),
       },
@@ -1575,7 +1573,6 @@ describe('gitPipelinePosition (P-002)', () => {
               commitsBehindTip: null,
               observedCandidate: null,
               inconclusive: null,
-              candidateFailures: null,
               qualification: NO_QUALIFICATION,
             },
             'synced',
@@ -1630,7 +1627,6 @@ describe('gitPipelinePosition (P-002)', () => {
               commitsBehindTip: null,
               observedCandidate: null,
               inconclusive: null,
-              candidateFailures: null,
               qualification: NO_QUALIFICATION,
               lastGreenAtMs: Date.now() - 5 * 60_000,
             },
