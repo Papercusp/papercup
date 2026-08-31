@@ -460,7 +460,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   });
 
   it('a hold-engine miss (null — item vanished between release and hold) omits claimHold rather than reporting a false hold', async () => {
-    holdM.mockResolvedValue(null as never);
+    holdM.mockResolvedValue(null);
     const b = await body({ id: 'F-1', claimHold: true });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'F-1' });
     expect(b.results[0].claimHold).toBeUndefined();
@@ -470,7 +470,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   // the caller unable to tell a no-op apart from success — the reply still says ok:true.
   // The park/unpark must be reported as FAILED, not merely left unmentioned.
   it('a hold-engine miss NAMES the failure (claimHoldFailed) instead of only staying silent', async () => {
-    holdM.mockResolvedValue(null as never);
+    holdM.mockResolvedValue(null);
     const b = await body({ id: 'F-1', claimHold: true });
     // The pre-existing guarantee is unchanged — still no false hold reported.
     expect(b.results[0].claimHold).toBeUndefined();
@@ -480,7 +480,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   });
 
   it('the UNPARK direction reports the miss too — a silently-unwritten claimHold:false leaves the row hidden from self-select', async () => {
-    holdM.mockResolvedValue(null as never);
+    holdM.mockResolvedValue(null);
     const b = await body({ id: 'WI-9', claimHold: false });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-9' });
     expect(b.results[0].claimHold).toBeUndefined();
@@ -488,7 +488,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   });
 
   it('the miss names the harness it filtered on, so the caller can retry with the scope the row actually carries', async () => {
-    holdM.mockResolvedValue(null as never);
+    holdM.mockResolvedValue(null);
     const b = await body({ items: [{ id: 'WI-1', harness: 'h1', claimHold: true }] });
     expect(b.results[0].claimHoldFailed).toEqual(expect.stringContaining("harness_slug='h1'"));
   });
