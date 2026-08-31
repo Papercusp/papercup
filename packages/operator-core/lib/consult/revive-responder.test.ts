@@ -31,7 +31,12 @@ function makeFakes(over: Partial<Record<keyof ConsultReviveDeps, unknown>> = {})
     build: [] as unknown[],
     inject: [] as unknown[],
     envelope: [] as unknown[],
-    spawn: [] as Array<{ envelope: { env: Record<string, string>; greetingCmd: string; cwd: string }; logDir?: string | null; launchedBy?: string }>,
+    spawn: [] as Array<{
+      envelope: { env: Record<string, string>; greetingCmd: string; cwd: string };
+      logDir?: string | null;
+      launchedBy?: string;
+      kickoffProof?: boolean;
+    }>,
     verify: [] as Array<{ ownerId: string; timeoutMs?: number }>,
   };
   const deps = {
@@ -63,7 +68,15 @@ function makeFakes(over: Partial<Record<keyof ConsultReviveDeps, unknown>> = {})
     },
     spawnHeadless: async (o: (typeof calls.spawn)[number]) => {
       calls.spawn.push(o);
-      return { status: 'ok', pid: 42, terminal: 'headless', logPath: '/logs/x.log', child: null, display: null };
+      return {
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        logPath: '/logs/x.log',
+        child: null,
+        display: null,
+        kickoffProof: { persisted: true, nativeRef: '/native/revive.jsonl', reason: null },
+      };
     },
     verifyResumeStarted: async (ownerId: string, o: { timeoutMs?: number } = {}) => {
       calls.verify.push({ ownerId, ...o });
@@ -93,6 +106,7 @@ describe('reviveConsultResponder', () => {
     expect(spawn.envelope.cwd).toBe('/recorded/cwd');
     expect(spawn.logDir).toContain('fleet-logs');
     expect(spawn.launchedBy).toBe('su-requester');
+    expect(spawn.kickoffProof).toBe(true);
     // Verify polls the ORIGINAL identity within the revive window.
     expect(calls.verify[0]).toMatchObject({ ownerId: 'su-dead-expert', timeoutMs: REVIVE_VERIFY_TIMEOUT_MS });
   });
@@ -153,6 +167,7 @@ describe('reviveConsultResponder', () => {
         logPath: '/logs/x.log',
         child: null,
         display: null,
+        kickoffProof: { persisted: true, nativeRef: '/native/revive.jsonl', reason: null },
         childExit: Promise.resolve({ code: 2, signal: null }),
       }),
       verifyResumeStarted: () => new Promise(() => {}),
@@ -161,6 +176,27 @@ describe('reviveConsultResponder', () => {
     expect(r).toMatchObject({ spawned: false, verified: false });
     expect(r.detail).toMatch(/status 2/);
     expect(r.detail).toContain('not successful');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['negative', { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' }],
+  ])('fails closed when an ok headless spawn has %s native kickoff proof', async (_label, kickoffProof) => {
+    const { deps, calls } = makeFakes({
+      spawnHeadless: async () => ({
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        logPath: '/logs/x.log',
+        child: null,
+        display: null,
+        ...(kickoffProof === undefined ? {} : { kickoffProof }),
+      }),
+    });
+    const r = await reviveConsultResponder(OPTS, CTX, deps);
+    expect(r).toMatchObject({ spawned: false, verified: false });
+    expect(r.detail).toMatch(/kickoff-proof-(missing|timeout)/);
+    expect(calls.verify).toHaveLength(0);
   });
 
   it('NEVER throws: a throwing seam resolves as spawned:false', async () => {

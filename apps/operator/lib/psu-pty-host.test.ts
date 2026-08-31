@@ -61,6 +61,9 @@ import {
   ACTIVITY_PERSIST_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
+  KICKOFF_PROOF_PATH_ENV,
+  KICKOFF_PROOF_TOKEN_ENV,
+  publishKickoffProofReceipt,
   hashHostScript,
   hostCodeStaleness,
   LOADED_HOST_CODE_VERSION,
@@ -113,6 +116,65 @@ describe('socketPathFor / metaPathFor', () => {
   it('derive sibling .sock / .json paths under PSU_PTY_DIR', () => {
     expect(socketPathFor('su-x')).toBe(`${PSU_PTY_DIR}/su-x.sock`);
     expect(metaPathFor('su-x')).toBe(`${PSU_PTY_DIR}/su-x.json`);
+  });
+});
+
+describe('publishKickoffProofReceipt (detached plain-launch proof)', () => {
+  it('atomically replaces a parent-owned placeholder with a persisted native proof', () => {
+    if (typeof process.getuid !== 'function') return;
+    const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-kickoff-proof-'));
+    const path = pathJoin(root, 'proof.json');
+    const token = 'a'.repeat(48);
+    try {
+      nodeFs.writeFileSync(path, '', { mode: 0o600 });
+      nodeFs.chmodSync(path, 0o600);
+      expect(publishKickoffProofReceipt(
+        { persisted: true, nativeRef: '/tmp/native-session.jsonl', reason: null },
+        { [KICKOFF_PROOF_PATH_ENV]: path, [KICKOFF_PROOF_TOKEN_ENV]: token },
+      )).toEqual({ published: true });
+      expect(JSON.parse(nodeFs.readFileSync(path, 'utf8'))).toEqual({
+        token,
+        persisted: true,
+        nativeRef: '/tmp/native-session.jsonl',
+        reason: null,
+      });
+      expect(nodeFs.statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      nodeFs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes a negative receipt for an unavailable native proof and refuses a symlink placeholder', () => {
+    if (typeof process.getuid !== 'function') return;
+    const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-kickoff-proof-negative-'));
+    const path = pathJoin(root, 'proof.json');
+    const target = pathJoin(root, 'target.json');
+    const token = 'b'.repeat(48);
+    try {
+      nodeFs.writeFileSync(path, '', { mode: 0o600 });
+      nodeFs.chmodSync(path, 0o600);
+      expect(publishKickoffProofReceipt(
+        { persisted: false, nativeRef: null, reason: 'unsupported-backend' },
+        { [KICKOFF_PROOF_PATH_ENV]: path, [KICKOFF_PROOF_TOKEN_ENV]: token },
+      )).toEqual({ published: true });
+      expect(JSON.parse(nodeFs.readFileSync(path, 'utf8'))).toMatchObject({
+        token,
+        persisted: false,
+        nativeRef: null,
+        reason: 'unsupported-backend',
+      });
+
+      nodeFs.writeFileSync(target, '', { mode: 0o600 });
+      nodeFs.chmodSync(target, 0o600);
+      nodeFs.unlinkSync(path);
+      nodeFs.symlinkSync(target, path);
+      expect(publishKickoffProofReceipt(
+        { persisted: true, nativeRef: '/tmp/native-session.jsonl' },
+        { [KICKOFF_PROOF_PATH_ENV]: path, [KICKOFF_PROOF_TOKEN_ENV]: token },
+      )).toMatchObject({ published: false, reason: 'kickoff-proof-receipt-publish-failed' });
+    } finally {
+      nodeFs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -14,10 +14,14 @@
  *
  * CONTRACT (GetFeedbackDeps.revive): MUST resolve, never throw — spawned:false
  * on any failure, and the core falls back to the pre-revival selection
- * outcome. `verified` is three-state like the launch verifier (D-004):
- * true = a live pty host registered for the identity within the wait window;
- * null = still booting (NOT a failure — the cascade expiry guards the reply);
- * spawned:false makes it meaningless.
+ * outcome. A successful detached spawn must also carry a persisted native
+ * kickoff receipt; an `ok` spawn without `kickoffProof.persisted === true` is
+ * treated as a failed revival so an unsubmitted consult brief cannot create a
+ * phantom responder. `verified` is three-state like the launch verifier
+ * (D-004): true = a live pty host registered for the identity within the wait
+ * window; null = still booting after a persisted kickoff (the cascade expiry
+ * guards the reply); false = the detached spawn returned but its kickoff was
+ * not durably persisted. `spawned:false` makes it a fallback outcome.
  *
  * Reuses the launch-agent building blocks verbatim (resolveResumeTarget /
  * buildAgentLaunchCommand / buildConsoleEnvelope / spawnHeadless /
@@ -140,12 +144,28 @@ export async function reviveConsultResponder(
       launchedBy: ctx.launchedBy ?? undefined,
       fleetSlug: null,
       coordOwnerId: target.ownerId,
+      kickoffProof: true,
     });
     if (spawn.status !== 'ok') {
       return {
         spawned: false,
         verified: null,
         detail: `headless resume spawn failed (code ${spawn.code}): ${spawn.error}`,
+      };
+    }
+
+    // A detached spawn can report `ok` after the shell starts even when the
+    // resume command never submitted the consult brief. Require the host's
+    // parent-visible native transcript receipt before treating this as a
+    // successful revival; the proof is intentionally fail-closed when absent.
+    if (spawn.kickoffProof?.persisted !== true) {
+      const proofReason = spawn.kickoffProof?.reason ?? 'kickoff-proof-missing';
+      return {
+        spawned: false,
+        verified: false,
+        detail:
+          `headless resume spawn did not persist its kickoff in the native transcript ` +
+          `(${proofReason}; log ${spawn.logPath ?? '?'})`,
       };
     }
 
