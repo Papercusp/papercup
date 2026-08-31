@@ -70,7 +70,7 @@ interface FakeEl {
   sent: string[];
 }
 const el: FakeEl = { handlers: null, sent: [] };
-const persisted: Array<{ role: string; text: string }> = [];
+const persisted: Array<{ conversationId: string | null; role: string; text: string }> = [];
 const leaseClaims: Array<{ playerId: string; force: boolean }> = [];
 const leaseReleases: string[] = [];
 
@@ -83,8 +83,8 @@ function makeDeps(): OperatorVoiceSessionDeps {
     },
     relayToBrain: async () => ({ ok: true as const }),
     loadConversationId: async () => 'conv_1',
-    persistTurn: async (role, text) => {
-      persisted.push({ role, text });
+    persistTurn: async (conversationId, role, text) => {
+      persisted.push({ conversationId, role, text });
     },
     parseUtterance: (raw) => ({ say: raw.replace(/<[^>]+>/g, '').trim() || null, setMode: null }),
     claimLease: async (playerId, _kind, force) => {
@@ -212,6 +212,10 @@ describe('universal voice — two surfaces, one session (P-011)', () => {
     // Persist-once (P-010): exactly one user + one assistant turn recorded by the host.
     expect(persisted.filter((p) => p.role === 'user')).toHaveLength(1);
     expect(persisted.filter((p) => p.role === 'assistant')).toHaveLength(1);
+    expect(persisted).toEqual([
+      { conversationId: 'conv_1', role: 'user', text: 'how is the fleet' },
+      { conversationId: 'conv_1', role: 'assistant', text: 'all green' },
+    ]);
 
     desktop.sock.destroy();
     tui.sock.destroy();

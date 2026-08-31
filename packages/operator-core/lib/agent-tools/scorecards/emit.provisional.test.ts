@@ -2,12 +2,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
+const getRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
-  return { ...real, getRubric: (...a: unknown[]) => getRubric(...a) };
+  return {
+    ...real,
+    getRubric: (...a: unknown[]) => getRubric(...a),
+    getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
+  };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../scorecards')>();
@@ -65,6 +70,7 @@ const EMIT_INPUT = { createdBy: 'su-grader', ctxHarness: 'papercusp' };
 
 beforeEach(() => {
   getRubric.mockReset().mockResolvedValue(RUBRIC);
+  getRubricPlanRevision.mockReset().mockResolvedValue(33);
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
 });
@@ -114,6 +120,7 @@ describe('scorecards:emit provisional stamping (P-008)', () => {
       {
         issueId: 'EI-interim',
         rubricRef: 'goal-mode-e2e',
+        rubricRevision: 33,
         ratings: RATINGS,
         evidenceFingerprint: fingerprint,
         provisional: { violatableKeys: ['never-implements'], stampedAt: '2026-08-17T00:00:00.000Z' },
@@ -135,6 +142,7 @@ describe('scorecards:emit provisional stamping (P-008)', () => {
       {
         issueId: 'EI-prior-final',
         rubricRef: 'goal-mode-e2e',
+        rubricRevision: 33,
         ratings: RATINGS,
         evidenceFingerprint: fingerprint,
         // no provisional — a final card, matching the new terminal emit's finality
