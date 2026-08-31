@@ -153,6 +153,8 @@ import {
   shouldBackOff,
   gateStallEscalationBody,
   decideReleaseFixerDispatch,
+  classifyFrozenRepairFixerSuccession,
+  FIXER_SUCCESSION_STALL_MS,
   shouldDispatchReleaseFixer,
   isStaleReleaseFixerCandidate,
   checkReleaseFixerCandidateStale,
@@ -677,8 +679,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
 
   it('EI-21393982931638628: trackGateStall threads the measured infra cause to both log and metadata', async () => {
     fakeSql.unsafe.mockClear();
-    const detail =
-      'pc-heavy --exclusive-all-slots refused materialization after 900s; live holders: 1990073, 3015730';
+    const detail = 'pc-heavy --exclusive-all-slots refused materialization after 900s; live holders: 1990073, 3015730';
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     try {
@@ -775,8 +776,7 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     // other noop message needs: the files this run failed are INNOCENT and must not be triaged.
     // Without it a reader does exactly what the incident produced — agents sent at ~4,800 files
     // that were never broken.
-    const detail =
-      'pc-heavy --exclusive-all-slots refused materialization after 900s; live holders: 1990073, 3015730';
+    const detail = 'pc-heavy --exclusive-all-slots refused materialization after 900s; live holders: 1990073, 3015730';
     const msg = gateStallNoopLogMessage('infra-inconclusive', detail);
     expect(msg).not.toContain('an active peer run holds the lock');
     expect(msg).not.toContain('migration preflight');
@@ -1438,6 +1438,75 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
   });
 });
 
+describe('P-003: classifyFrozenRepairFixerSuccession', () => {
+  const NOW = 1_800_000_000_000;
+  const queue = (over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue => ({
+    schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+    phase: 'awaiting-fixer',
+    candidate: 'a'.repeat(40),
+    base: 'b'.repeat(40),
+    repairHead: 'c'.repeat(40),
+    worktreePath: '/tmp/frozen-repair',
+    attempts: 1,
+    openedAtMs: NOW - 2 * FIXER_SUCCESSION_STALL_MS,
+    updatedAtMs: NOW - FIXER_SUCCESSION_STALL_MS,
+    fixerSpawnId: 'fixer-dead',
+    failingTests: ['lib/broken.test.ts'],
+    ...over,
+  });
+
+  it('classifies a confirmed-dead awaiting-fixer spawn with attempt-scoped age/identity', () => {
+    const result = classifyFrozenRepairFixerSuccession(queue(), false, NOW);
+    expect(result).toMatchObject({
+      state: 'dead',
+      ageMs: FIXER_SUCCESSION_STALL_MS,
+      spawnId: 'fixer-dead',
+      attempts: 1,
+    });
+    expect(result?.key).toContain('fixer-dead');
+    expect(result?.key).toContain(String(NOW - FIXER_SUCCESSION_STALL_MS));
+  });
+
+  it('classifies a missing fixer only after the queue has no active launch reservation', () => {
+    const absent = queue({ fixerSpawnId: null, attempts: 0 });
+    expect(classifyFrozenRepairFixerSuccession(absent, undefined, NOW)).toMatchObject({
+      state: 'absent',
+      spawnId: null,
+      attempts: 0,
+    });
+    expect(
+      classifyFrozenRepairFixerSuccession(
+        queue({
+          fixerSpawnId: null,
+          dispatchReservation: {
+            token: 'launch-owner',
+            claimedAtMs: NOW - 1_000,
+            expiresAtMs: NOW + 60_000,
+          },
+        }),
+        undefined,
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('never guesses death from live or unknown liveness, and ignores non-awaiting phases', () => {
+    expect(classifyFrozenRepairFixerSuccession(queue(), true, NOW)).toBeNull();
+    expect(classifyFrozenRepairFixerSuccession(queue(), null, NOW)).toBeNull();
+    expect(classifyFrozenRepairFixerSuccession(queue({ phase: 'ready-to-verify' }), false, NOW)).toBeNull();
+  });
+
+  it('changes identity for a successor attempt so its first ladder rung is not suppressed', () => {
+    const first = classifyFrozenRepairFixerSuccession(queue(), false, NOW);
+    const successor = classifyFrozenRepairFixerSuccession(
+      queue({ attempts: 2, updatedAtMs: NOW - FIXER_SUCCESSION_STALL_MS, fixerSpawnId: 'fixer-2' }),
+      false,
+      NOW,
+    );
+    expect(first?.key).not.toBe(successor?.key);
+  });
+});
+
 describe('isStaleReleaseFixerCandidate (EI-8718: no fixer for a superseded/self-healed candidate)', () => {
   it('a valid, not-yet-promoted candidate is NOT stale — the legitimate-dispatch case', () => {
     expect(isStaleReleaseFixerCandidate({ candidateExists: true, candidatePromoted: false })).toBe(false);
@@ -1549,9 +1618,7 @@ describe('EI-21363817573800034: a scheduled tick declines while a qualification 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await getSystemAction('green-checkpoint')!(ctx);
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(appendPipelineEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'skipped-admission-unknown' }),
-    );
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'skipped-admission-unknown' }));
     warn.mockRestore();
   });
 });
@@ -1608,9 +1675,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     // WI-41206: worker scopes page at their cap instead of being OOM-killed when the host
     // has free swap. The deny policy remains an explicit opt-in for known thrashers.
     expect(argv).not.toContain('--property=MemorySwapMax=0');
-    expect(buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'deny')).toContain(
-      '--property=MemorySwapMax=0',
-    );
+    expect(buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'deny')).toContain('--property=MemorySwapMax=0');
     // Payload appended verbatim, in order, at the end.
     expect(argv.slice(-2)).toEqual(['/x/tsx', '/x/suite.ts']);
   });
@@ -1625,7 +1690,11 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
           [
             '-c',
             buildScheduledCheckpointShell(
-              [process.execPath, '-e', "process.stdout.write('normal stdout\\n'); process.stderr.write('normal stderr\\n')"],
+              [
+                process.execPath,
+                '-e',
+                "process.stdout.write('normal stdout\\n'); process.stderr.write('normal stderr\\n')",
+              ],
               paths,
             ),
           ],
@@ -1724,11 +1793,9 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       const wrapperPath = join(dir, 'wrapper.sh');
       const killerPath = join(dir, 'kill-wrapper.sh');
       try {
-        writeFileSync(
-          wrapperPath,
-          buildScheduledCheckpointShell(['/bin/bash', '-c', 'sleep 30'], paths),
-          { mode: 0o700 },
-        );
+        writeFileSync(wrapperPath, buildScheduledCheckpointShell(['/bin/bash', '-c', 'sleep 30'], paths), {
+          mode: 0o700,
+        });
         // Run the wrapper in its own process group, matching systemd's cgroup-level
         // stop closely enough to exercise the EXIT trap while leaving no sleeper behind.
         writeFileSync(
@@ -2160,11 +2227,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       runId: 'run-oddsmith-1',
       integrationRoot: '/srv/oddsmith',
     });
-    expect(Object.keys(d.checkpointEvidence as object).sort()).toEqual([
-      'integrationRoot',
-      'logPath',
-      'runId',
-    ]);
+    expect(Object.keys(d.checkpointEvidence as object).sort()).toEqual(['integrationRoot', 'logPath', 'runId']);
   });
 
   it('WI-39944: buildCheckpointDetail preserves the bounded repair-queue identity needed by durable readers', () => {
@@ -2632,9 +2695,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     );
 
     const replacement = { ...queue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
-    fakeSql.unsafe
-      .mockResolvedValueOnce(sqlRows([]))
-      .mockResolvedValueOnce(sqlRows([{ repair_queue: replacement }]));
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([])).mockResolvedValueOnce(sqlRows([{ repair_queue: replacement }]));
     await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toMatchObject({
       retired: false,
       current: { updatedAtMs: 3, repairHead: 'd'.repeat(40) },
