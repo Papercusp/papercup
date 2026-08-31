@@ -19,6 +19,21 @@
   container-type: inline-size;
 }
 
+/* The shared host's inner wrapper. Carries `data-presentation` so the phase a
+   report was admitted under is addressable from CSS and from a test without
+   either consumer re-deriving it (bulk-review-report-legibility P-005/D-005). */
+.review-report-surface {
+  display: contents;
+}
+
+.review-report__loading {
+  width: min(1120px, calc(100% - 40px));
+  margin: 24px auto;
+  padding: 18px 20px;
+  color: var(--fg-muted, var(--fg));
+  font-size: 13px;
+}
+
 /* ── Frame ─────────────────────────────────────────────────────────────── */
 .review-report {
   --review-accent: color-mix(in oklab, var(--accent) 62%, var(--bad));
@@ -300,12 +315,13 @@
 
 .review-report__row {
   display: grid;
-  /* check | VERB | identity | change | evidence | confidence | why
+  /* check | VERB | identity | change | evidence | confidence | why | ⋯
    * The verb column is second on purpose (D-001): the row reads as a sentence
    * — what will happen, to what, how it changes, and why. */
   grid-template-columns:
     20px minmax(96px, max-content) minmax(128px, 190px)
-    minmax(104px, max-content) minmax(0, 1fr) max-content max-content;
+    minmax(104px, max-content) minmax(0, 1fr) max-content max-content
+    max-content;
   align-items: center;
   gap: 10px;
   min-height: 38px;
@@ -672,6 +688,89 @@
   gap: 4px;
 }
 
+/* ── Per-row overflow menu (P-008) ──────────────────────────────────────── */
+.review-report__row-menu-slot {
+  justify-self: end;
+}
+
+.review-report__row-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.review-report__row-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.review-report__row-menu-toggle:hover:not(:disabled),
+.review-report__row-menu-toggle:focus-visible,
+.review-report__row-menu-toggle[aria-expanded="true"] {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.review-report__row-menu-toggle:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.review-report__row-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated, var(--bg));
+  box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
+}
+
+.review-report__row-menu-item {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.review-report__row-menu-item:hover:not(:disabled),
+.review-report__row-menu-item:focus-visible {
+  background: color-mix(in oklab, var(--review-accent), transparent 88%);
+}
+
+.review-report__row-menu-item--danger {
+  color: var(--bad);
+}
+
+/* A disabled entry stays VISIBLE and keeps its `title` reason: a recovery that
+   silently disappears is indistinguishable from one that never existed. */
+.review-report__row-menu-item:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .review-report__row-detail-toggle:hover:not(:disabled),
 .review-report__row-detail-toggle:focus-visible {
   color: var(--fg);
@@ -820,8 +919,13 @@
   /* Auto-placed onto its own full-width line below the stack; the explicitly
    * placed cells above never collide with it. */
   .review-report__row-detail-toggle {
-    grid-column: 2 / -1;
+    grid-column: 2;
     justify-self: start;
+  }
+
+  .review-report__row-menu-slot {
+    grid-column: 3;
+    justify-self: end;
   }
 
   .review-report__row-change,

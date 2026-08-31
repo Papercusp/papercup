@@ -16,10 +16,17 @@ import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import { usePlanAttentionItem } from "@/app/admin/plans/plans-api";
 import { isNavigateAction } from "@/app/admin/plans/attention-card";
 import { KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
+import RunLifecycleBar, {
+  type RunLifecycleIntent,
+} from "../review-report/RunLifecycleBar";
+import type { ReviewReportPresentation } from "../review-report/ReviewReportHost";
+import { chunkFindingIds } from "../review-report/run-resume-chunks";
 import ReviewReportShell, {
+  partitionReviewRows,
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAction,
+  type ReviewRowMenuAction,
   type ReviewRowConfidence,
   type ReviewRowAccounting,
   type ReviewRowStatus,
@@ -289,6 +296,10 @@ export function buildInboxBulkReviewGroups(
   locallyDismissed: ReadonlySet<string> = new Set(),
   detailFor?: (item: AttentionItem, runItem: BulkRunItem) => ReactNode,
   openSource?: (item: AttentionItem) => void,
+  rowActions?: (
+    runItem: BulkRunItem,
+    item: AttentionItem | undefined,
+  ) => ReviewRowMenuAction[],
 ): ReviewReportGroup[] {
   const grouped = new Map<string, ReviewReportGroup>();
   const ordered = [...runItems].sort(
@@ -317,6 +328,11 @@ export function buildInboxBulkReviewGroups(
 
     const status = reviewStatus(runItem, locallyApplied, locallyDismissed);
     const localError = localErrors.get(runItem.itemId);
+    // A row whose apply FAILED leaves the pending pool (P-010): it keeps its
+    // reason and gains a Retry verb, but pressing Apply again must not blind-
+    // re-dispatch it. Recovery is deliberate — the run bar's "Re-check and
+    // retry", or the row's own drill-in.
+    const applyFailed = localError != null && status === "pending";
     const hasAction =
       Boolean(runItem.actionId) &&
       (!isNavigateAction(runItem.actionId!) ||
@@ -330,7 +346,13 @@ export function buildInboxBulkReviewGroups(
     const row: ReviewReportRow = {
       id: runItem.itemId,
       title: item?.title ?? runItem.title ?? runItem.itemId,
-      action: inboxBulkAction(runItem, status, accounting, action),
+      action: applyFailed
+        ? {
+            label: "Retry",
+            tone: "warn" as const,
+            description: `The resolve failed: ${localError}. Re-check it, then apply it again.`,
+          }
+        : inboxBulkAction(runItem, status, accounting, action),
       sourceLabel: kindLabel(kind),
       ...(openSource && item
         ? {
@@ -344,20 +366,38 @@ export function buildInboxBulkReviewGroups(
       accounting,
       status,
       selectable:
+        !applyFailed &&
         status === "pending" &&
         runItem.outcome === "recommended" &&
         hasAction &&
         Boolean(item),
       error: localError,
+      ...(rowActions ? { actions: rowActions(runItem, item) } : {}),
       detail:
         status === "pending" && item && detailFor
           ? detailFor(item, runItem)
           : fallbackDetail(runItem),
     };
+    if (applyFailed) {
+      let failedGroup = grouped.get(INBOX_BULK_FAILED_GROUP_ID);
+      if (!failedGroup) {
+        failedGroup = {
+          id: INBOX_BULK_FAILED_GROUP_ID,
+          title: "Failed to apply",
+          description:
+            "Nothing was left half-resolved. Each row says why it failed; re-check them before applying again.",
+          rows: [],
+        };
+        grouped.set(INBOX_BULK_FAILED_GROUP_ID, failedGroup);
+      }
+      failedGroup.rows.push(row);
+      continue;
+    }
     group.rows.push(row);
   }
 
   return [...grouped.values()]
+    .filter((group) => group.rows.length > 0)
     .flatMap((group) => {
       const actionable = group.rows.filter((row) => row.selectable === true);
       const otherResults = group.rows.filter((row) => row.selectable !== true);
@@ -380,7 +420,13 @@ export function buildInboxBulkReviewGroups(
         },
       ];
     })
-    .sort((a, b) => a.title.localeCompare(b.title));
+    // Failures lead: they are the only rows carrying an unhandled consequence
+    // of the owner's last click (P-010). Everything else stays alphabetical.
+    .sort((a, b) => {
+      const aFailed = a.id === INBOX_BULK_FAILED_GROUP_ID ? 0 : 1;
+      const bFailed = b.id === INBOX_BULK_FAILED_GROUP_ID ? 0 : 1;
+      return aFailed - bFailed || a.title.localeCompare(b.title);
+    });
 }
 
 interface HydratedRecommendationProps {
@@ -550,9 +596,17 @@ export function InboxBulkRecommendationDetail(
   );
 }
 
+/** The group a failed apply lands in — named so the run bar's `reveal` intent
+ *  can address it without either side guessing the string (P-010). */
+export const INBOX_BULK_FAILED_GROUP_ID = "apply-failed";
+
 export interface InboxBulkReportProps {
   run: BulkRun;
   runItems: BulkRunItem[];
+  /** Which phase family the shared host admitted this report under (D-005). */
+  presentation?: ReviewReportPresentation;
+  /** A live run's rows are still being written; batch Apply is withheld. */
+  readOnly?: boolean;
   onOpenThread?: (item: AttentionItem) => void;
   onClose: () => void;
 }
@@ -560,6 +614,8 @@ export interface InboxBulkReportProps {
 export default function InboxBulkReport({
   run,
   runItems,
+  presentation = "review",
+  readOnly = false,
   onOpenThread,
   onClose,
 }: InboxBulkReportProps) {
@@ -567,10 +623,31 @@ export default function InboxBulkReport({
   // component commits. Passive settlement preserves the perf-marks ordering
   // contract; direct/deep-linked mounts have no start and therefore no-op.
   useInteractionSettle(PERF_INTERACTIONS.inboxBulkReportOpen, true);
-  const { acceptRecommendation, dismissItem, reconcileItem, resume } =
-    useBulkRunOps();
+  const {
+    acceptRecommendation,
+    dismissItem,
+    reconcileItem,
+    resume,
+    restart,
+    stop,
+    start,
+  } = useBulkRunOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // P-010: what the in-flight apply is doing, and what the last one did.
+  const [applying, setApplying] = useState<{
+    done: number;
+    total: number;
+    current?: string;
+  } | null>(null);
+  const [applyResult, setApplyResult] = useState<{
+    applied: number;
+    failed: number;
+  } | null>(null);
+  const [revealRequest, setRevealRequest] = useState<{
+    groupId: string;
+    seq: number;
+  } | null>(null);
   const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
     () => new Set(),
   );
@@ -738,6 +815,67 @@ export default function InboxBulkReport({
     [busy, clearItemError, onClose, reconcileItem, run.runId],
   );
 
+  // P-008: Inbox already HAD Retry/Dismiss/Reconcile — buried in a drill-in
+  // that only mounts for `pending` rows carrying a hydrated snapshot, so the
+  // rows that most needed recovery (no snapshot, already failed) had none.
+  // Hoisting them onto the row is what makes them reachable at all (R8).
+  const rowActions = useCallback(
+    (
+      runItem: BulkRunItem,
+      item: AttentionItem | undefined,
+    ): ReviewRowMenuAction[] => [
+      {
+        id: "apply-one",
+        label: "Apply just this one",
+        disabled: !item || runItem.outcome !== "recommended",
+        ...(item && runItem.outcome === "recommended"
+          ? {}
+          : {
+              disabledReason: !item
+                ? "This row has no persisted dispatch snapshot; resolve it from the live Inbox."
+                : "Only a live recommendation can be applied from here.",
+            }),
+        run: () => {
+          // The row's PERSISTED draft, not an override: the menu has no editor,
+          // so applying from here must commit exactly what the report shows.
+          if (item) void acceptSingle(item, runItem, runItem.draftAnswer);
+        },
+      },
+      {
+        id: "open",
+        label: "Open the thread",
+        disabled: !item || !onOpenThread,
+        ...(item && onOpenThread
+          ? {}
+          : {
+              disabledReason: !item
+                ? "This row has no persisted dispatch snapshot to open."
+                : "This report was opened without a thread target.",
+            }),
+        run: () => {
+          if (item) onOpenThread?.(item);
+        },
+      },
+      {
+        id: "reconcile",
+        label: "Reconcile with the live Inbox",
+        run: () => void reconcileOne(runItem),
+      },
+      {
+        id: "retry",
+        label: "Send back to the resolver",
+        run: () => void retryItem(runItem),
+      },
+      {
+        id: "dismiss",
+        label: "Dismiss this item",
+        tone: "danger",
+        run: () => void dismissOne(runItem),
+      },
+    ],
+    [acceptSingle, dismissOne, onOpenThread, reconcileOne, retryItem],
+  );
+
   const groups = useMemo(
     () =>
       buildInboxBulkReviewGroups(
@@ -761,6 +899,11 @@ export default function InboxBulkReport({
             onReconcile={() => void reconcileOne(runItem)}
           />
         ),
+        // P-003: the source chip becomes a REAL control that opens the item's
+        // thread. Without a handler the shell renders an inert chip instead of
+        // a link-styled span that does nothing.
+        onOpenThread,
+        rowActions,
       ),
     [
       runItems,
@@ -774,6 +917,7 @@ export default function InboxBulkReport({
       dismissOne,
       reconcileOne,
       onOpenThread,
+      rowActions,
     ],
   );
 
@@ -782,14 +926,26 @@ export default function InboxBulkReport({
       if (busy) return;
       setBusy(true);
       setNotice(null);
+      // P-010: a batch reports AS a batch. Reset the previous summary before
+      // the first write so a stale "3 failed" cannot linger over a clean run.
+      setApplyResult(null);
+      const selected = selectedIds
+        .map((id) => runItemById.get(id))
+        .filter((item): item is BulkRunItem => Boolean(item))
+        .sort((a, b) => a.position - b.position);
+      setApplying({ done: 0, total: selected.length });
+      let appliedCount = 0;
+      let failedCount = 0;
       try {
-        const selected = selectedIds
-          .map((id) => runItemById.get(id))
-          .filter((item): item is BulkRunItem => Boolean(item))
-          .sort((a, b) => a.position - b.position);
-        for (const runItem of selected) {
+        for (const [index, runItem] of selected.entries()) {
+          setApplying({
+            done: index,
+            total: selected.length,
+            current: runItem.title ?? runItem.itemId,
+          });
           const item = attentionById.get(runItem.itemId);
           if (!item) {
+            failedCount += 1;
             setLocalErrors((previous) =>
               new Map(previous).set(
                 runItem.itemId,
@@ -799,19 +955,193 @@ export default function InboxBulkReport({
             continue;
           }
           const result = await applyRecommendation(item, runItem);
-          if (result.phase === "complete") {
+          if (result.ok) appliedCount += 1;
+          else failedCount += 1;
+          // A partial failure keeps the report OPEN even when the run settled:
+          // closing it would hide the only surface naming what did not land.
+          if (result.phase === "complete" && failedCount === 0) {
             onClose();
             break;
           }
         }
+        setApplying({ done: selected.length, total: selected.length });
+        setApplyResult({ applied: appliedCount, failed: failedCount });
       } finally {
+        setApplying(null);
         setBusy(false);
       }
     },
     [applyRecommendation, attentionById, busy, onClose, runItemById],
   );
 
+  // ── Run lifecycle (P-007) ────────────────────────────────────────────────
+  // `supports` below lists exactly the intents serviced here, so the bar never
+  // renders a control this consumer cannot perform (D-001).
+
+  const notAssessedIds = useMemo(
+    () =>
+      runItems
+        .filter(
+          (runItem) =>
+            runItem.outcome === "pending" &&
+            !locallyApplied.has(runItem.itemId) &&
+            !locallyDismissed.has(runItem.itemId),
+        )
+        .map((runItem) => runItem.itemId),
+    [runItems, locallyApplied, locallyDismissed],
+  );
+
+  const failedIds = useMemo(
+    () =>
+      runItems
+        .filter(
+          (runItem) =>
+            localErrors.has(runItem.itemId) &&
+            !locallyApplied.has(runItem.itemId) &&
+            !locallyDismissed.has(runItem.itemId),
+        )
+        .map((runItem) => runItem.itemId),
+    [runItems, localErrors, locallyApplied, locallyDismissed],
+  );
+
+  const onRunIntent = useCallback(
+    (intent: RunLifecycleIntent) => {
+      if (busy) return;
+      if (intent === "reveal") {
+        if (failedIds.length > 0) {
+          setRevealRequest((previous) => ({
+            groupId: INBOX_BULK_FAILED_GROUP_ID,
+            seq: (previous?.seq ?? 0) + 1,
+          }));
+        }
+        return;
+      }
+      void (async () => {
+        setBusy(true);
+        setNotice(null);
+        try {
+          if (intent === "stop") {
+            await stop(run.runId);
+            return;
+          }
+          if (intent === "restart") {
+            const result = await restart(run.runId);
+            if (!result.ok) {
+              setNotice(result.error ?? "The resolver could not be restarted.");
+            }
+            return;
+          }
+          if (intent === "resume") {
+            // P-009: chunked — a stopped Inbox-wide run can leave thousands
+            // unassessed, which is one request the route rejects on body size.
+            for (const chunk of chunkFindingIds(notAssessedIds)) {
+              const result = await resume(run.runId, chunk);
+              if (!result.ok) {
+                setNotice(
+                  result.error ??
+                    "The resolver could not resume the unassessed items.",
+                );
+                return;
+              }
+            }
+            return;
+          }
+          if (intent === "recheck") {
+            // Reconcile each failed row against the LIVE Inbox: the item may
+            // already have been handled elsewhere. Either way its stale error
+            // is cleared so it re-enters the pending pool deliberately.
+            let stillFailing = 0;
+            for (const itemId of failedIds) {
+              const result = await reconcileItem(run.runId, itemId);
+              if (!result.ok) stillFailing += 1;
+              setLocalErrors((previous) => {
+                if (!previous.has(itemId)) return previous;
+                const next = new Map(previous);
+                next.delete(itemId);
+                return next;
+              });
+            }
+            setApplyResult(null);
+            if (stillFailing > 0) {
+              setNotice(
+                `${stillFailing} of ${failedIds.length} could not be reconciled — open them and resolve them from the live Inbox.`,
+              );
+            }
+            return;
+          }
+          if (intent === "rerun") {
+            // The run's OWN recorded scope, rebuilt from its persisted rows —
+            // not the pane's current selection. The report is the audit trail
+            // of that scope; silently widening it would make the two disagree.
+            const seed = runItems.map((runItem) => ({
+              itemId: runItem.itemId,
+              kind: runItem.kind ?? "unknown",
+              title: runItem.title,
+              ref: runItem.ref,
+              ownerAgentId: runItem.ownerAgentId,
+            }));
+            const result = await start(
+              seed,
+              (run.filterSnapshot ?? {}) as Record<string, unknown>,
+              run.harnessSlug ?? null,
+            );
+            if (!result.ok) {
+              setNotice(result.error ?? "A new run could not be started.");
+              return;
+            }
+            onClose();
+          }
+        } finally {
+          setBusy(false);
+        }
+      })();
+    },
+    [
+      busy,
+      failedIds,
+      notAssessedIds,
+      onClose,
+      reconcileItem,
+      restart,
+      resume,
+      run.filterSnapshot,
+      run.harnessSlug,
+      run.runId,
+      runItems,
+      start,
+      stop,
+    ],
+  );
+
   const counts = deriveRunCounts(runItems, run);
+  const partition = useMemo(() => partitionReviewRows(groups), [groups]);
+  const runAgeMs = useMemo(() => {
+    const settledAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
+    if (!settledAt) return null;
+    const parsed = Date.parse(settledAt);
+    return Number.isFinite(parsed) ? Date.now() - parsed : null;
+  }, [run.finishedAt, run.startedAt, run.createdAt]);
+
+  const runBar = (
+    <RunLifecycleBar
+      phase={run.phase}
+      liveness={run.liveness ?? null}
+      total={partition.results}
+      decided={partition.results - partition.notAssessed}
+      notAssessed={partition.notAssessed}
+      autoApplied={counts.resolved}
+      open={partition.ready + partition.manual}
+      error={run.error}
+      ageMs={runAgeMs}
+      applying={applying}
+      applyResult={applyResult}
+      unit="item"
+      busy={busy}
+      onIntent={onRunIntent}
+      supports={["rerun", "resume", "restart", "stop", "recheck", "reveal"]}
+    />
+  );
+
   return (
     <ReviewReportShell
       key={run.runId}
@@ -836,21 +1166,53 @@ export default function InboxBulkReport({
         </span>
       }
       groups={groups}
+      runBar={runBar}
+      revealRequest={revealRequest}
       collapseNonSelectableByDefault
       busy={busy}
-      applyLabel="Apply selected"
+      // A live run is still writing rows; committing a batch mid-scan would act
+      // on a moving target (D-005). Every settled phase stays actionable.
+      defaultSelected={readOnly ? "none" : "pending"}
+      applyLabel={readOnly ? "Still assessing…" : "Apply selected"}
       dismissLabel="Close"
-      onApply={(ids) => void onApply(ids)}
+      onApply={(ids) => {
+        if (!readOnly) void onApply(ids);
+      }}
       onDismiss={onClose}
       footer={
-        <span>
-          <strong>Resolve-first guarantee.</strong> Selected rows dispatch
-          through the same live Inbox action path as a hand resolve, then record
-          acceptance on the run. A failed resolve stays visible and unrecorded.
-          Click a row—or use its details button—to review the item&rsquo;s
-          current options, edit a drafted reply, open the source, Retry, or
-          dismiss one row deliberately. Closing the report never completes
-          unresolved work.
+        <span data-testid="inbox-bulk-report-footer">
+          {presentation === "settled" ? (
+            <>
+              <strong>Audit trail.</strong> This run finished on its own — every
+              row below is an item Papercup already resolved, with the evidence
+              it resolved on. Nothing here is waiting on you; open a row to see
+              why, or re-run the same scope from the bar above.
+            </>
+          ) : presentation === "failed" ? (
+            <>
+              <strong>This run did not finish.</strong> The rows below are what
+              it had assessed before it stopped, and they are still applicable.
+              The run&apos;s own error is in the bar above; re-run the same scope
+              from there once you have addressed it.
+            </>
+          ) : presentation === "live" ? (
+            <>
+              <strong>Still assessing.</strong> Rows appear as the resolver
+              decides them, so nothing can be applied as a batch yet — the set
+              would change under the click. Stop the run from the bar above to
+              settle it and keep what it has decided.
+            </>
+          ) : (
+            <>
+              <strong>Resolve-first guarantee.</strong> Selected rows dispatch
+              through the same live Inbox action path as a hand resolve, then
+              record acceptance on the run. A failed resolve stays visible and
+              unrecorded. Click a row—or use its details button—to review the
+              item&rsquo;s current options, edit a drafted reply, open the
+              source, Retry, or dismiss one row deliberately. Closing the report
+              never completes unresolved work.
+            </>
+          )}
         </span>
       }
     />
