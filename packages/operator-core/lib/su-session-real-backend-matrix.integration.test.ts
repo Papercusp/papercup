@@ -83,7 +83,7 @@
  * configured account. Turns are deliberately single-shot and the matrix ends
  * every session it creates, then asserts the process is gone.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
@@ -115,6 +115,11 @@ import { managedSpawn, type ManagedSpawnResult } from './task-manager/managed-sp
 import { openClaudeSuSession, resolveClaudeSuRuntime } from './su-session-claude-adapter';
 import { openCodexSuSession, resolveCodexSuRuntime } from './su-session-codex-adapter';
 import { openOmpSuSession, resolveOmpSuRuntime } from './su-session-omp-adapter';
+import {
+  evaluateRealBackendAdmission,
+  readLatestPerfSignals,
+  type RealBackendAdmission,
+} from './system-health/perf-budgets';
 
 // ── the gate ────────────────────────────────────────────────────────────────
 // Deliberately an explicit opt-in rather than a capability probe. A probe
@@ -612,6 +617,8 @@ const MATRIX_OPERATOR_BASE = (process.env.PAPERCUSP_OPERATOR_BASE?.trim() || 'ht
   '',
 );
 
+let REAL_BACKEND_ADMISSION: RealBackendAdmission | null = null;
+
 /** The path whose identity decides whether a CREATE result means anything. */
 const CREATE_PATH_UNDER_TEST = 'packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts';
 
@@ -628,6 +635,22 @@ beforeAll(async () => {
   // Fail loudly rather than quietly addressing the wrong database: every hop
   // below reads rows the live operator wrote.
   if (!process.env.PAPERCUSP_WORKSPACE_ID) process.env.PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace';
+
+  // A real backend is an expensive, freezable process and its failure output is
+  // otherwise indistinguishable from a host instrument outage. Read the same
+  // canonical memory-pressure writer used by host.memoryPressure before touching
+  // the operator or creating an adv row. Critical pressure is a deliberate block;
+  // absent, stale, or partial evidence is NOT MEASURED, never a backend failure.
+  REAL_BACKEND_ADMISSION = evaluateRealBackendAdmission(await readLatestPerfSignals(), Date.now());
+  if (REAL_BACKEND_ADMISSION.decision !== 'admit') {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[matrix] ${REAL_BACKEND_ADMISSION.decision === 'block' ? 'BLOCKED' : 'NOT MEASURED'} — ` +
+        `${REAL_BACKEND_ADMISSION.reason}. No real backend will be started; re-run when ` +
+        'the host memory-pressure capture is complete and admissible.',
+    );
+    return;
+  }
 
   // Make launchSuEndpoints() resolve to the pinned operator instead of falling
   // through to :3070. This is the ONLY reason CREATE addresses the tree under
@@ -730,6 +753,10 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
     /** What the END hop actually returned, so reconciliation can judge the
      *  session against what really happened rather than assuming end worked. */
     let endOutcome: string | null = null;
+
+    beforeEach((ctx) => {
+      if (REAL_BACKEND_ADMISSION && REAL_BACKEND_ADMISSION.decision !== 'admit') ctx.skip();
+    });
 
     it('CREATE: records exactly one deferred row carrying the pane argv, and spawns nothing', async () => {
       const opened = await openPuiSuSession({

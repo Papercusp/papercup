@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  evaluateRealBackendAdmission,
   evaluateMemoryPressure,
   evaluatePerfSignals,
   worstOwnedInotifyHolder,
@@ -659,6 +660,40 @@ describe('evaluateMemoryPressure (host.memoryPressure shared writer)', () => {
       expect(v.status).toBe('crit');
       expect(v.reasons.join(' ')).toContain(DEEP_PATH);
     });
+  });
+});
+
+describe('evaluateRealBackendAdmission (real-backend matrix preflight)', () => {
+  it('admits fresh complete ok and warn captures', () => {
+    expect(evaluateRealBackendAdmission(sig({ psi: { memory: { some: { avg60: 1 }, full: { avg60: 0 } } } }), NOW)).toMatchObject({
+      decision: 'admit',
+      pressure: 'ok',
+    });
+    expect(evaluateRealBackendAdmission(sig({ psi: { memory: { some: { avg60: 15 }, full: { avg60: 1 } } } }), NOW)).toMatchObject({
+      decision: 'admit',
+      pressure: 'warn',
+    });
+  });
+
+  it('blocks a fresh complete critical capture before a real backend can start', () => {
+    const admission = evaluateRealBackendAdmission(
+      sig({ psi: { memory: { some: { avg60: 15 }, full: { avg60: 8 } } } }),
+      NOW,
+    );
+    expect(admission).toMatchObject({ decision: 'block', pressure: 'crit', ageMs: 10_000 });
+    expect(admission.reason).toMatch(/PSI memory full avg60 8/);
+    expect(admission.unknown).toEqual([]);
+  });
+
+  it.each([
+    ['absent capture', null, NOW],
+    ['stale capture', sig({ psi: { memory: { some: { avg60: 1 }, full: { avg60: 8 } } } }, { capturedAt: '2026-06-19T16:20:00Z' }), NOW],
+    ['incomplete capture', sig({ psi: { memory: { full: { avg60: 8 } } } }), NOW],
+  ])('returns not-measured for %s rather than blocking or admitting', (_label, capture, now) => {
+    const admission = evaluateRealBackendAdmission(capture as PerfSignalsV1 | null, now);
+    expect(admission.decision).toBe('not-measured');
+    expect(admission.decision).not.toBe('block');
+    expect(admission.reason).toMatch(/capture|PSI memory/i);
   });
 });
 

@@ -753,6 +753,65 @@ export function evaluateMemoryPressure(
 }
 
 /**
+ * Decide whether the real-backend acceptance matrix may start a process.
+ *
+ * This is an admission policy, not a second memory-pressure evaluator: it
+ * consumes the same canonical verdict as `host.memoryPressure`. A fresh,
+ * complete `ok` or `warn` capture is safe enough to admit, while a fresh,
+ * complete `crit` capture means the test instrument must not add another real
+ * backend to the pressured host. Missing, stale, or partial evidence is
+ * explicitly `not-measured` so an acceptance run can skip without reporting a
+ * backend failure from a measurement gap.
+ */
+export type RealBackendAdmissionDecision = 'admit' | 'block' | 'not-measured';
+
+export interface RealBackendAdmission {
+  decision: RealBackendAdmissionDecision;
+  pressure: MemoryPressureVerdict['pressure'];
+  measuredAt: string | null;
+  ageMs: number | null;
+  reason: string;
+  unknown: MemoryPressureVerdict['unknown'];
+}
+
+export function evaluateRealBackendAdmission(
+  signals: PerfSignalsV1 | null | undefined,
+  nowMs: number,
+  budgets: PerfBudgets = PERF_BUDGETS,
+): RealBackendAdmission {
+  const memory = evaluateMemoryPressure(signals, nowMs, budgets);
+  if (!signals || memory.stale || memory.unknown.length > 0 || memory.pressure === null) {
+    const detail = memory.unknown.map((entry) => entry.detail).join('; ');
+    return {
+      decision: 'not-measured',
+      pressure: memory.pressure,
+      measuredAt: memory.measuredAt,
+      ageMs: memory.ageMs,
+      reason: detail || 'memory pressure capture was incomplete; real-backend admission is not measured',
+      unknown: memory.unknown,
+    };
+  }
+  if (memory.pressure === 'crit') {
+    return {
+      decision: 'block',
+      pressure: memory.pressure,
+      measuredAt: memory.measuredAt,
+      ageMs: memory.ageMs,
+      reason: memory.reasons[0] ?? 'critical host memory pressure blocks real-backend admission',
+      unknown: [],
+    };
+  }
+  return {
+    decision: 'admit',
+    pressure: memory.pressure,
+    measuredAt: memory.measuredAt,
+    ageMs: memory.ageMs,
+    reason: `host memory pressure is ${memory.pressure}; real-backend admission is allowed`,
+    unknown: [],
+  };
+}
+
+/**
  * Evaluate a perf-signals-v1 capture against per-thread budgets. PURE — no IO. A
  * stale capture (older than budgets.staleMs measured from `nowMs`) returns `unknown`
  * so an old snapshot never reds the system. Crit is reserved for DEFINITIVE per-thread
