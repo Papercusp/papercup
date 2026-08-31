@@ -1225,7 +1225,11 @@ export async function notifyFleetScopeRefusal(
     summary: `fleet-scope admission blocked ${action}`,
     body:
       `${admission.reason}. The assignment was not mutated. ` +
-      `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans)}` +
+      // EI-21906739799895413: the LEADER is the one who actually bumps the spec, so this
+      // notice most of all must carry the executable widen rather than describe it. `itemId`
+      // is already resolved above and is '' when the caller sent no subject stamp, which
+      // degrades to the prose wording exactly as the other call sites do.
+      `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans, itemId || null)}` +
       (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     category: FLEET_ADMISSION_BLOCK_CATEGORY,
     ...(stamp ? { extra: stamp } : {}),
