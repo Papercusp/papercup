@@ -874,6 +874,57 @@ export function annotateCarryNoteLiveContradictions(
     .join('\n');
 }
 
+/**
+ * The cited-ref LIVENESS sections — the stale-note contradiction banner (only
+ * when the note cites an already-terminal id) followed by the LIVE-status block
+ * for every id it cites. ONE implementation, TWO consumers: the carry-respawn
+ * document (`renderCarryBriefText`, which places it inline directly after the
+ * note) and the COLD LOOP WAKE extras (`renderCarryBriefColdExtras`).
+ *
+ * EI-19362981097884026: those two renderers had silently drifted apart.
+ * `buildCarryBrief` resolves `citedRefs` for BOTH paths — the cold wake pays for
+ * that hydration like everyone else — but only the respawn document ever
+ * consumed it, so a cold wake reproduced its note's "Next action" verbatim with
+ * no liveness signal on the single field that DIRECTS the whole turn. Measured
+ * live on this lane (cold fire #71): the note cited FIVE ids that were already
+ * `done` and rendered none of them as terminal, while the respawn document for
+ * the SAME session annotated them correctly — same data, two renderers, one
+ * answer. Sharing the renderer is what stops them drifting again; a second copy
+ * of this block would just re-arm the bug.
+ *
+ * Returns [] for an empty ref list, so a caller can splat it unconditionally.
+ */
+export function renderCitedRefLivenessSections(citedRefs: readonly string[]): string[] {
+  if (citedRefs.length === 0) return [];
+  const sections: string[] = [];
+  const terminalIds = detectTerminalCitedRefs(citedRefs);
+  if (terminalIds.length > 0) {
+    // EI-18726068732447732: the note's own imperatives ("complete WI-NNN",
+    // "verify then close it") can target an id the fold below ALREADY resolves
+    // as terminal — flag the contradiction loudly, right at the point a reader
+    // would otherwise just follow the stale prose.
+    const idList = terminalIds.join(', ');
+    const plural = terminalIds.length > 1;
+    sections.push(
+      `⚠⚠ STALE-NOTE CONTRADICTION: the note above may still instruct action on ${idList} — ` +
+        `but the LIVE status below shows ${plural ? 'they are' : 'it is'} already TERMINAL. ` +
+        `Do NOT follow any instruction to complete/verify/close/work on ${plural ? 'them' : 'it'}; ` +
+        `treat ${plural ? 'them' : 'it'} as already resolved and re-orient before acting on the rest of the note.`,
+    );
+  }
+  sections.push(
+    `Cited in the note — LIVE status (trust these over the note's phrasing):\n` +
+      citedRefs
+        .map((l) => {
+          const tag = parseCitedLiveState(l);
+          const flagged = !!tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state);
+          return `  ${flagged ? '⚠ TERMINAL ' : ''}↪ ${l}`;
+        })
+        .join('\n'),
+  );
+  return sections;
+}
+
 /** Retraction-shaped language in a post-note message — "retract", "I was wrong",
  *  "supersede", etc. A post-note message merely EXISTING is already flagged (the
  *  generic P-003 list below); this distinguishes the subset that specifically
@@ -1293,6 +1344,13 @@ export function renderCarryBriefColdExtras(
   const sessionActivityMs = opts.sessionActivityMs ?? null;
   const deferredItems = brief.deferredItems ?? [];
   const sections: string[] = [];
+  // EI-19362981097884026: FIRST, because these extras are appended directly
+  // beneath the carry-note and this is the block that can contradict it. The
+  // cold wake previously rendered the note's imperative with no liveness signal
+  // at all while `buildCarryBrief` had already resolved every id it cites.
+  // `renderCarryBriefText` strips `citedRefs` before delegating here (it places
+  // the same block inline, higher up), exactly as it does for `directives`.
+  sections.push(...renderCitedRefLivenessSections(brief.citedRefs ?? []));
   // A held checkpoint can preserve a native exec/write_stdin session id. That
   // handle belongs to the predecessor process and is not addressable after a
   // carry-respawn, including the warm session:request-compaction path. Surface
@@ -1486,33 +1544,9 @@ export function renderCarryBriefText(
         sections.push(`${head} Its carry-note${age}:\n${annotatedNote}`);
         // P-002: LIVE hydrations of the ids the note cites — a successor trusts
         // these over the note's phrasing (the note is a snapshot; these are now).
-        if (brief.citedRefs && brief.citedRefs.length > 0) {
-          const terminalIds = detectTerminalCitedRefs(brief.citedRefs);
-          if (terminalIds.length > 0) {
-            // EI-18726068732447732: the note's own imperatives ("complete WI-NNN",
-            // "verify then close it") can target an id the fold below ALREADY
-            // resolves as terminal — flag the contradiction loudly, right at the
-            // point a reader would otherwise just follow the stale prose.
-            const idList = terminalIds.join(', ');
-            const plural = terminalIds.length > 1;
-            sections.push(
-              `⚠⚠ STALE-NOTE CONTRADICTION: the note above may still instruct action on ${idList} — ` +
-                `but the LIVE status below shows ${plural ? 'they are' : 'it is'} already TERMINAL. ` +
-                `Do NOT follow any instruction to complete/verify/close/work on ${plural ? 'them' : 'it'}; ` +
-                `treat ${plural ? 'them' : 'it'} as already resolved and re-orient before acting on the rest of the note.`,
-            );
-          }
-          sections.push(
-            `Cited in the note — LIVE status (trust these over the note's phrasing):\n` +
-              brief.citedRefs
-                .map((l) => {
-                  const tag = parseCitedLiveState(l);
-                  const flagged = !!tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state);
-                  return `  ${flagged ? '⚠ TERMINAL ' : ''}↪ ${l}`;
-                })
-                .join('\n'),
-          );
-        }
+        // Rendered by the SHARED helper (EI-19362981097884026) so this document
+        // and the cold-loop wake cannot answer the same question differently.
+        sections.push(...renderCitedRefLivenessSections(brief.citedRefs ?? []));
         // P-003: the note PREDATES this mail — a cold successor must reconcile
         // before executing the note's imperatives.
         if (brief.postNoteInbox && brief.postNoteInbox.count > 0) {
@@ -1543,9 +1577,16 @@ export function renderCarryBriefText(
   }
   // Directives already rendered at the top — strip them so the extras call
   // (shared with the cold path, where they DO belong inside) can't double-render.
-  const extras = renderCarryBriefColdExtras(directivesBlock ? { ...brief, directives: [] } : brief, {
-    sessionActivityMs: opts.sessionActivityMs,
-  });
+  // EI-19362981097884026: `citedRefs` is the SAME hazard and takes the SAME
+  // remedy. This renderer places the liveness block inline right after the note
+  // (a better position than the extras tail), so it is stripped here; the cold
+  // path has no inline placement, which is why the extras renderer owns it there.
+  const extras = renderCarryBriefColdExtras(
+    { ...brief, ...(directivesBlock ? { directives: [] } : {}), citedRefs: [] },
+    {
+      sessionActivityMs: opts.sessionActivityMs,
+    },
+  );
   if (extras) sections.push(extras);
   return sections.join('\n\n');
 }

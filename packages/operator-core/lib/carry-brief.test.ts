@@ -25,6 +25,7 @@ import {
   parseCitedLiveState,
   detectCarryNoteRefs,
   detectTerminalCitedRefs,
+  renderCitedRefLivenessSections,
   annotateCarryNoteLiveContradictions,
   detectRetractionShapedLines,
   CARRY_BRIEF_FOCUS_MAX,
@@ -711,6 +712,108 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       fleet: null,
     };
     expect(renderCarryBriefColdExtras(empty)).toBe('');
+  });
+
+  // EI-19362981097884026 — the COLD LOOP WAKE half of the cited-ref liveness
+  // block. `buildCarryBrief` resolved `citedRefs` on the cold path all along and
+  // this renderer discarded them, so a cold note's "Next action" could name an id
+  // a peer had already closed and read as current marching orders. Measured live
+  // (cold fire #71): a note citing FIVE `done` ids rendered none as terminal.
+  const coldBriefWith = (citedRefs: string[]): CarryBrief => ({
+    ownerId: 'x',
+    loop: { harness: 'h', active: true, intervalSec: 60, goal: null, carryNote: 'n', carryNoteUpdatedAtMs: 1 },
+    heldItems: [],
+    directives: [],
+    directivesTotalOpen: 0,
+    walls: [],
+    facts: [],
+    awaits: [],
+    fleet: null,
+    citedRefs,
+  });
+
+  it('flags a TERMINAL cited ref in the cold-wake extras, with the contradiction banner first', () => {
+    const out = renderCarryBriefColdExtras(
+      coldBriefWith(['WI-6054 [bug/done @su-397]: "already fixed + closed…"']),
+    );
+    expect(out).toContain('STALE-NOTE CONTRADICTION');
+    expect(out).toContain('already TERMINAL');
+    expect(out).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
+    // The banner is useless below the roster it is warning about.
+    expect(out.indexOf('STALE-NOTE CONTRADICTION')).toBeLessThan(out.indexOf('Cited in the note'));
+  });
+
+  it('stays quiet (no banner, no TERMINAL marker) when every cited ref is still live', () => {
+    // The negative control, and a real one: cold fire #71's note also cited
+    // WI-989591, which was genuinely open. A marker that fires on every read is
+    // one the reader stops seeing — so an active id gets the roster line only.
+    const out = renderCarryBriefColdExtras(
+      coldBriefWith(['WI-989591 [bug/open @b37b0]: "concurrent keypair mint…"']),
+    );
+    expect(out).toContain('↪ WI-989591 [bug/open');
+    expect(out).not.toContain('STALE-NOTE CONTRADICTION');
+    expect(out).not.toContain('⚠ TERMINAL');
+  });
+
+  it('renders no liveness block at all when the note cites nothing', () => {
+    expect(renderCarryBriefColdExtras(coldBriefWith([]))).toBe('');
+  });
+
+  const terminalRef = 'WI-6054 [bug/done @su-397]: "already fixed + closed…"';
+
+  it('does NOT double-render the block in the carry-respawn document', async () => {
+    // renderCarryBriefText places the block inline right after the note AND
+    // delegates to renderCarryBriefColdExtras for the tail. It strips citedRefs
+    // before delegating — the same remedy it already uses for `directives`.
+    // Without that strip this fix would print the roster twice in every respawn
+    // document, which is how a shared renderer normally goes wrong.
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Next action\nverify then work_items:complete WI-6054 citing that line',
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        hydrateNoteRefsFn: async () => [terminalRef],
+      }),
+    );
+    const text = renderCarryBriefText(brief);
+    expect(text.match(/Cited in the note/g) ?? []).toHaveLength(1);
+    expect(text.match(/STALE-NOTE CONTRADICTION/g) ?? []).toHaveLength(1);
+  });
+
+  it('gives the cold wake and the respawn document the SAME verdict for the same refs', () => {
+    // The anti-drift assertion, and the actual content of this fix: these two
+    // surfaces answered the same question differently for months because each
+    // owned a copy. Comparing rendered output (not implementations) means a
+    // future edit to one that does not reach the other fails HERE.
+    const sections = renderCitedRefLivenessSections([terminalRef]);
+    const cold = renderCarryBriefColdExtras({
+      ownerId: 'x',
+      loop: { harness: 'h', active: true, intervalSec: 60, goal: null, carryNote: 'n', carryNoteUpdatedAtMs: 1 },
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+      citedRefs: [terminalRef],
+    });
+    expect(sections).toHaveLength(2);
+    for (const section of sections) expect(cold).toContain(section);
+  });
+
+  it('is falsifiable in both directions from one input list', () => {
+    // A permanent in-file control pair: same function, opposite verdicts, no
+    // tree mutation needed to prove the guard can fail.
+    expect(renderCitedRefLivenessSections([]).join('')).toBe('');
+    const live = renderCitedRefLivenessSections(['WI-989591 [bug/open]: "still open…"']);
+    expect(live).toHaveLength(1);
+    expect(live.join('')).not.toContain('TERMINAL');
+    const dead = renderCitedRefLivenessSections([terminalRef]);
+    expect(dead).toHaveLength(2);
+    expect(dead.join('')).toContain('TERMINAL');
   });
 
   it('renders open walls FIRST, as verbatim rows with re-check commands (P-006)', () => {
