@@ -649,6 +649,38 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     expect(auditUnsafeM).not.toHaveBeenCalled();
   });
 
+  it('with a drain budget, the cgroup preflight is ADVISORY and the barrier arbitrates instead', async () => {
+    // EI-21930094737784126. The preflight asks "is a git-sync PROCESS inside this
+    // cgroup?" — on bg-host the worker IS the host process, so it is ~always true and
+    // hard-refused 20/20 real attempts, making the stale-executor page's own named
+    // remediation unfireable. The authoritative signal is the barrier LOCK, measured
+    // FREE in 20 of 40 sampled seconds. A caller willing to wait must reach it.
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    gitSyncBarrierM.mockResolvedValue({ acquired: false, resource: 'git-sync', reason: 'drain_timeout', holders: [] });
+
+    const b = body(
+      await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reload code', git_sync_drain_sec: 45 }),
+    );
+
+    // It got PAST the preflight — the refusal now comes from the barrier, not the proxy.
+    expect(b.reason).not.toBe('git_sync_collision_operation_in_flight');
+    expect(gitSyncBarrierM).toHaveBeenCalled();
+    expect(gitSyncBarrierM).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      expect.objectContaining({ maxDrainSec: 45 }),
+    );
+  });
+
+  it('with NO drain budget the preflight still hard-refuses — the default path is unchanged', async () => {
+    // The other half of the guard above: demoting the preflight unconditionally would
+    // remove a real protection for every caller who did not opt in.
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reload code' }));
+    expect(b.reason).toBe('git_sync_collision_operation_in_flight');
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+  });
+
   it('covers the :3070 dev target, not only scheduled bg-host fires', async () => {
     gitSyncCollisionM.mockResolvedValue(blocked());
     const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
