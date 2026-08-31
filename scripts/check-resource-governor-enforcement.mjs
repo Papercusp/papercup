@@ -1333,6 +1333,41 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for scripts/tmp-p002-interrupt-control.ts: this is a self-documented TEMPORARY PROBE ('delete after use', EI-21908787009967815) — a human-run diagnostic for an open PTY-interrupt investigation, never invoked by any routine, endpoint, or automated pipeline. The one spawn('script', ...) child it starts is a bounded, manually-triggered experiment the script's own watch loop SIGKILLs before exit; it creates no independent resident queue. When the linked investigation closes, delete the file and this row together.",
   },
+  {
+    path: "scripts/check-deps-wiring-parity.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-deps-wiring-parity.mjs: this CI guard launches bounded, awaited helper probes to inspect dependency wiring and creates no resident production work.",
+  },
+  {
+    path: "scripts/check-no-agent-intent-comments.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-no-agent-intent-comments.mjs: the child git listing is a bounded, awaited source-file enumeration for this CI comment guard, not a resident resource start.",
+  },
+  {
+    path: "scripts/lib/disk-reservations.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/disk-reservations.mjs: its child-process calls are bounded filesystem and process metadata probes used by the reservation ledger, with no independent resident queue.",
+  },
+  {
+    path: "scripts/lib/retry-tree-provenance.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/retry-tree-provenance.mjs: git metadata reads are bounded and awaited to classify retry-tree changes; they start no resident work.",
+  },
+  {
+    path: "scripts/settle-probe.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/settle-probe.mjs: this probe runs bounded child commands to settle diagnostics and exits; it does not create an independent resident queue.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [
@@ -1588,14 +1623,6 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         'pty.spawn (:3743) starts the launched agent\'s OWN child under the host that already represents it; admission happened upstream at capability/launch-agent.ts:1250 -> spawnGovernedAgentProcess -> beginGovernedExecution admissionClass "agent" (spawn-execution.ts:46). Re-admitting the same logical agent inside its own host would double-count it. The other two START hits are a detector coincidence, not starts: turnCoalescer.admit (:4820) and staleFireGuard.admit (:5041) are local fold/dedupe methods matched by the `.admit(` alternative; evidence required',
-    },
-  ],
-  [
-    "apps/operator/scripts/psu-pty-host.mjs::unbounded-resident-queue",
-    {
-      disposition: "semantic",
-      reason:
-        'neither collection queues resource starts. :1726 pending.add(key) is a respawn re-poll DEDUPE set — an arriving duplicate returns "duplicate"/"superseded" instead of enqueuing, and the key is removed on delivery. :3002 pending.set(...) is makeTurnCoalescer folding repeat injects onto ONE waiter (newest-wins, folded++). Both are keyed by inject key and bounded by distinct in-flight injects, not by arrival rate; same lifecycle-ledger shape as memory/op-deadline.ts; evidence required',
     },
   ],
   [

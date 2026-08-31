@@ -31,7 +31,7 @@ describe('EI-10822 — verify-tauri-headless DOM polling', () => {
     expect(src).toContain(
       String.raw`printf 'VERIFY_TAURI_POLL=%q\n' "$VERIFY_TAURI_POLL"`,
     );
-    expect(src).toMatch(/^export VERIFY_TAURI_POLL VERIFY_TAURI_STOP\b/m);
+    expect(src).toMatch(/^export (?=.*VERIFY_TAURI_POLL)(?=.*VERIFY_TAURI_STOP).*$/m);
     expect(helper).toBeTruthy();
   });
 

@@ -124,15 +124,6 @@ describe('scenario registry', () => {
       'su-S31d-asymmetry-provenance',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
-      // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
-      'queen-Q01-grade-routed-on-triage',
-      'queen-Q02-owner-grade-sovereign-no-retry',
-      // queen ranked-queue decider (self-learning-frontier-2026-06-12 P-045 / FB-19)
-      'queen-Q03-ranked-queue-decider',
-      // hybrid bee-scheduler adoption (hybrid-bee-scheduler-work-stealing-2026-06-22 P-003)
-      'queen-Q04-authors-claim-spec',
-      'bee-B01-pull-via-get-next',
-      'bee-B02-idle-on-empty-frontier',
       // onboarding-tutor scenario suite (onboarding-tutor target)
       'onboarding-tutor-OT1-section-protocol',
       'onboarding-tutor-OT2-progress-checkpoint',

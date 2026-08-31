@@ -542,6 +542,9 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
    * parse. To add one: don't — mask the source instead.
    */
   const SCANS_UNMASKED_SOURCE = new Set([
+    // This guard intentionally scans comments (its subject is pending-action attribution),
+    // so masking its own source would hide the prose it must inspect.
+    'check-no-agent-intent-comments.mjs',
     // check-bundled-cli-entry-guards.mjs delegates the source-token scan to findGuards(),
     // whose shared implementation masks comments and strings before matching. The cheap
     // census cannot follow that imported helper, so keep this justified exposure here rather

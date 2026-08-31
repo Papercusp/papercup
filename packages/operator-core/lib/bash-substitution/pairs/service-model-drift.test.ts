@@ -194,7 +194,7 @@ describe('service.ts equivalence model tracks the real dev:service_health (WI-61
     expectArgSurface(
       devListeningPorts,
       'dev:listening_ports',
-      ['limit', 'pid', 'port'],
+      ['app', 'limit', 'pid', 'port'],
       'cover() maps port-scoped queries onto `port`, the reverse (which ports does this pid hold) onto `pid`, ' +
         'and unscoped table reads onto the default `limit`. A NEW arg is the dangerous direction here: the pair ' +
         'is recorded `needs-widening` SOLELY because 9 of 24 sampled atoms ask about non-LISTEN sockets. Adding ' +

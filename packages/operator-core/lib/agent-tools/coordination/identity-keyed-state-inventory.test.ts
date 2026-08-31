@@ -192,6 +192,11 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'a stale rebind here means the new sid falls back to the DEFAULT wake-mode, not a stolen/lost claim — a UX nit, not a correctness bug (no reaper frees a resource because of it). Candidate for a future rebind surface, not urgent.',
   },
+  'agent_display_names.owner_id': {
+    status: 'exempt',
+    reason:
+      'durable manual display-name attribute (migration 1045 / D-003), not a live claim or lease; a rebound session may miss the old cosmetic name and safely falls back to objective/short id, while rebinding could transfer a human-chosen label to a different session.',
+  },
   'agent_seat_consumptions.owner_id': {
     status: 'exempt',
     reason: 'seat accounting is boot-time-consume / explicit-release (consumeSeatAtBoot / releaseSeatConsumption), not presence-reap-tied as far as this sweep found — flagged for a follow-up audit of its release path (no reaper caller found; TTL/explicit-release only), not a confirmed WI-3642-class bug.',

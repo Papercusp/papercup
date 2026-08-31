@@ -66,6 +66,8 @@ import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './age
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
+import { composeGateOwnerBrief } from './gate-owner-brief';
+import { portfolioAssessmentFor } from './goals/portfolio-throughput';
 
 /**
  * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
@@ -128,6 +130,7 @@ const PIPELINE_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:pipeline_position',
 );
 const GOAL_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'coord:goal');
+const PORTFOLIO_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'goals:get');
 const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'host:memory_pressure',
 );
@@ -219,6 +222,22 @@ const GOALOF = (agreement: string, competing: readonly string[] = []) =>
     corroboratedBy: [],
     declaredAt: '2026-08-24T00:00:00.000Z',
   }) as never;
+
+const OWNER_BRIEF_BASE = {
+  nowMs: 1_000,
+  consecutiveReds: 0,
+  failingTests: [],
+  failingTestsMeasured: true,
+  lastGreenAtMs: 1_000,
+  verdictObservedAtMs: 1_000,
+  fireStale: false,
+  verdictStale: false,
+  inconclusive: null,
+  repairQueue: null,
+  ownership: { claimState: 'held', takenBy: 'su-holder', workItem: 'WI-1', assessment: 'held-live' },
+} as const;
+const OWNER_BRIEF = (over: Partial<typeof OWNER_BRIEF_BASE> = {}) =>
+  composeGateOwnerBrief({ ...OWNER_BRIEF_BASE, ...over }).answer;
 
 const CONTROLS: Record<string, readonly Control[]> = {
   'git.pipelinePosition': [
@@ -376,6 +395,21 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessGateCandidate({ judgingSha: null, verdictUnknownLegs: [] }),
     },
   ],
+  'gate.greenCheckpoint.candidateFailures': [
+    { label: 'no frozen candidate', expect: 'no-frozen-candidate' },
+    { label: 'frozen candidate failures could not be measured', expect: 'unmeasured' },
+    { label: 'all candidate fixes already contained', expect: 'all-fixes-contained' },
+    { label: 'at least one repair remains outstanding', expect: 'repairs-outstanding' },
+    { label: 'no failing files in the judged radius', expect: 'none-failing' },
+  ],
+  'gate.greenCheckpoint.ownerBrief': [
+    { label: 'green gate', expect: OWNER_BRIEF() },
+    { label: 'red with live remediation', expect: OWNER_BRIEF({ consecutiveReds: 1, repairQueue: { phase: 'awaiting-fixer', attempts: 1, updatedAtMs: 900, ageMs: 100, fixerSpawnId: 's-fixer', fixerAlive: true, zeroAttemptStalled: false } }) },
+    { label: 'red with stalled remediation', expect: OWNER_BRIEF({ consecutiveReds: 1, repairQueue: { phase: 'awaiting-fixer', attempts: 1, updatedAtMs: 900, ageMs: 100, fixerSpawnId: 's-fixer', fixerAlive: false, zeroAttemptStalled: false } }) },
+    { label: 'red with no owner', expect: OWNER_BRIEF({ consecutiveReds: 1, ownership: null }) },
+    { label: 'gate not judging', expect: OWNER_BRIEF({ fireStale: true }) },
+    { label: 'verdict unmeasured', expect: OWNER_BRIEF({ consecutiveReds: null }) },
+  ],
   'gate.greenCheckpoint.ownership': [
     {
       label: 'two work-items claim the condition',
@@ -473,6 +507,13 @@ const CONTROLS: Record<string, readonly Control[]> = {
       label: 'an unresolved branch tip refuses a code',
       expect: assessMainBehindStaging({ mainBehindStaging: null, fireStale: false, verdictUnknownLegs: [] }),
     },
+  ],
+  'goal.portfolioThroughput': [
+    { label: 'placing', expect: portfolioAssessmentFor('placing') },
+    { label: 'within grace', expect: portfolioAssessmentFor('within-grace') },
+    { label: 'idle past threshold', expect: portfolioAssessmentFor('idle') },
+    { label: 'not held', expect: portfolioAssessmentFor('not-held') },
+    { label: 'ledger evidence unavailable', expect: portfolioAssessmentFor('not-measured') },
   ],
   'host.memoryPressure': [
     {
@@ -680,12 +721,13 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * partition with zero residue, and this is it.
    */
   it('registers exactly seventeen cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(17);
-    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length + GOVERNOR_CELLS.length).toBe(
+    expect(BUILTIN_CELLS).toHaveLength(20);
+    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + PORTFOLIO_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length + GOVERNOR_CELLS.length).toBe(
       BUILTIN_CELLS.length,
     );
-    expect(PIPELINE_CELLS).toHaveLength(7);
+    expect(PIPELINE_CELLS).toHaveLength(9);
     expect(GOAL_CELLS).toHaveLength(1);
+    expect(PORTFOLIO_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);
     expect(COVERAGE_CELLS).toHaveLength(2);
     expect(GOVERNOR_CELLS).toHaveLength(5);

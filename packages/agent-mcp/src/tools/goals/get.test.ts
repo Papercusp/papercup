@@ -221,6 +221,7 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
       // levels. Null here because this fixture declares no goalPackageRef —
       // goalPackageUpdateInfo() returns null before it ever looks a package up.
       packageUpdate: null,
+      portfolioThroughput: expect.objectContaining({ assessment: 'not-held', reason: 'not-held' }),
     });
     const json = JSON.stringify(res.data);
     expect(json).not.toContain('rationale'); // body dropped
@@ -267,6 +268,7 @@ describe('goals:get — the deliberate-pause record is READ BACK (P-005)', () =>
       premiseInvalidated: false,
       // P-018 (WI-41129) — see the note on the summary assertion above.
       packageUpdate: null,
+      portfolioThroughput: expect.objectContaining({ assessment: 'not-held', reason: 'not-held' }),
     });
   });
 
@@ -350,6 +352,7 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
       blockedBy: [],
       // P-018 (WI-41129) — see the note on the summary assertion above.
       packageUpdate: null,
+      portfolioThroughput: expect.objectContaining({ assessment: 'not-held', reason: 'not-held' }),
     });
   });
 

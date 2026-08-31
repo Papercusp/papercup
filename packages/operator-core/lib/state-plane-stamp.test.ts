@@ -323,7 +323,29 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
       deployedSha: null,
       // Carry the registered LEAF with a null reading. A null qualification
       // parent does not carry `gate.qualification.attemptId` at all.
-      gate: { consecutiveReds: 0, qualification: { attemptId: null }, ownership: { claimState: null } },
+      gate: {
+        consecutiveReds: 0,
+        qualification: { attemptId: null },
+        ownership: { claimState: null },
+        candidateFailures: {
+          assessment: null,
+          stillBrokenCount: null,
+          distinctFailingFiles: [],
+          filesJudged: 0,
+          scope: null,
+          postSuiteMeasured: null,
+        },
+        ownerBrief: {
+          answer: null,
+          assessment: null,
+          mainGreen: { value: null },
+          whyNot: { failingLegs: [] },
+          ownership: { assessmentCode: null },
+          remediation: { fixerAlive: null },
+          vintageSpreadMs: null,
+          unknownLegs: [],
+        },
+      },
       changeInCandidate: { judgingSha: null },
       // The pair is ONE reading in two polarities, so they must stay consistent
       // negations of each other or this fixture stops mirroring the resolver

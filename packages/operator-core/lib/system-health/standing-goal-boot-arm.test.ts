@@ -85,6 +85,7 @@ function harness(over: Partial<GoalHolderRespawnDeps> = {}) {
     attach: async (g, ownerId) => {
       attaches.push(`${g.goalId}:${ownerId}`);
     },
+    reserveRateSlot: async () => ({ kind: 'reserved', attemptsInWindow: 1 }),
     escalateGiveUp: async () => {},
     now: () => Date.now(),
     states: new Map(),

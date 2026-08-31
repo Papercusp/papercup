@@ -234,10 +234,11 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // re-runs the failed files under the DEFAULT `test` script so the re-run is ISOLATED,
     // otherwise it delegates to `run`. It is still THE re-run this sample must follow, so the
     // alternation keeps this guard pointed at both arms rather than silently dropping to one.
-    const sites = [
-      ...src.matchAll(/r = await (?:run|runFreshRetry)\((?:failedFiles)?\);[\s\S]{0,500}?load1AtRerun = loadavg\(\)\[0\];/g),
-    ];
+    const sites = [...src.matchAll(/load1AtRerun = loadavg\(\)\[0\];/g)];
     expect(sites).toHaveLength(2); // both arms: scoped fresh-process re-run, and whole-workspace retry
+    const beforeSamples = sites.map((site) => src.slice(Math.max(0, (site.index ?? 0) - 800), site.index));
+    expect(beforeSamples.some((before) => /runFreshRetry\(failedFiles\)/.test(before))).toBe(true);
+    expect(beforeSamples.some((before) => /runRetryWithProvenance\(\(\) => run\(\)\)/.test(before))).toBe(true);
   });
 
   it("re-runs a LANE workspace's failed files under the DEFAULT `test` script, so the retry is ISOLATED", () => {
@@ -261,7 +262,7 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // …and it is the function the scoped arm actually calls. Pinned separately because the
     // helper could be defined correctly and simply not wired in — a passing definition beside
     // a bare `run(failedFiles)` call site would look right and behave exactly as before.
-    expect(src).toMatch(/r = await runFreshRetry\(failedFiles\);/);
+    expect(src).toMatch(/runRetryWithProvenance\(\(\) => runFreshRetry\(failedFiles\)\)/);
     expect(src).not.toMatch(/\n\s*r = await run\(failedFiles\);/);
   });
 
