@@ -14,6 +14,7 @@ import {
   GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF,
   acquireGcpAdcAuth,
   fetchGcpApiJson,
+  type ApiError as GcpTransportError,
   type GcpResolvedAuth,
 } from '../cloud-workspaces/gcp-preflight';
 import type {
@@ -46,9 +47,11 @@ import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } fro
 
 const COMPUTE_API = 'https://compute.googleapis.com/compute/v1';
 
-interface GcpHttpError extends Error {
-  status?: number;
-}
+/**
+ * The error the shared transport throws. Imported rather than re-declared: a second copy of this
+ * shape is how the `throttled` signal came to be read by one classifier and not the other.
+ */
+type GcpHttpError = GcpTransportError;
 
 const SAFE_CONNECTION_VALIDATION_PROBLEMS: Readonly<Record<string, string>> = {
   gcp_workspace_host_project_id_missing:
@@ -93,9 +96,15 @@ function safeConnectionValidationProblem(error: unknown): SafeConnectionValidati
   const status = (error as GcpHttpError | undefined)?.status;
   if (typeof status === 'number') {
     // 401/403 are settled answers about this credential; 408/429/5xx are the API asking us to retry.
+    // A throttle is the exception that status alone cannot see: Google rate-limits with 403, so
+    // without this a rate-limited validation reports the credential as disproved and fails a
+    // lifecycle action that a backoff would have completed.
+    const throttled = (error as GcpHttpError | undefined)?.throttled === true;
     return {
-      message: `GCP Compute validation failed (HTTP ${status})`,
-      retryable: status === 408 || status === 429 || status >= 500,
+      message: throttled
+        ? `GCP Compute validation was rate limited (HTTP ${status})`
+        : `GCP Compute validation failed (HTTP ${status})`,
+      retryable: throttled || status === 408 || status === 429 || status >= 500,
     };
   }
   const code = error instanceof Error ? error.message : '';

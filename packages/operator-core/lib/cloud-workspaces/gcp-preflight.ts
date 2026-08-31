@@ -236,10 +236,20 @@ export interface GcpPreflightDeps {
   now?: () => string;
 }
 
-interface ApiError extends Error {
+export interface ApiError extends Error {
   status?: number;
   /** Redacted, field-level provider reason. Safe to persist and surface; see gcpFailureReason. */
   reason?: string;
+  /**
+   * The provider stated, OUT OF BAND, that this refusal is a THROTTLE rather than a verdict.
+   *
+   * Google answers Compute rate limiting with HTTP **403**, not 429, so the status code alone
+   * classifies a transient throttle as a settled refusal — and a retry classifier that maps 4xx to
+   * `terminal` then halts a durable workflow permanently on a fault a short backoff would clear.
+   * Any classifier reading `status` must read this first. {@link gcpRateLimitThrottle} owns which
+   * reasons set it, and deliberately excludes `quotaExceeded`.
+   */
+  throttled?: boolean;
 }
 
 function normalizeProjectId(value: string | undefined): string | undefined {
@@ -510,6 +520,41 @@ function gcpFailureReason(body: unknown): string | undefined {
 }
 
 /**
+ * Google's machine-readable reasons for RATE limiting — the ones a retry actually clears.
+ *
+ * These arrive as HTTP 403, which is why they need naming at all: a status-only classifier reads
+ * them as a settled permission refusal. The reason code is the only stable discriminator, because
+ * the human `message` beside it ("Rate Limit Exceeded") is display text, not contract.
+ *
+ * Deliberately NOT `quotaExceeded`: a spent quota does not refill on a backoff, so retrying it
+ * burns the retry schedule against a wall and hides a condition that needs an operator. That is
+ * the same line `YouTubeRateLimited` draws for the Data API, for the same reason.
+ */
+const GCP_RATE_LIMIT_REASONS: ReadonlySet<string> = new Set([
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'rateLimitExceededByUser',
+]);
+
+/**
+ * Whether a Google API error body says "you are going too fast" rather than "no".
+ *
+ * Reads `error.errors[].reason` only — the canonical `error.status` is NOT consulted, because
+ * `RESOURCE_EXHAUSTED` covers rate limits and spent quota alike, so keying on it would sweep the
+ * quota case into the retry path the set above deliberately excludes.
+ */
+function gcpRateLimitThrottle(body: unknown): boolean {
+  const error = (body as { error?: unknown } | null)?.error;
+  if (!error || typeof error !== 'object') return false;
+  const { errors } = error as { errors?: unknown };
+  if (!Array.isArray(errors)) return false;
+  return errors.some((entry) => {
+    const reason = (entry as { reason?: unknown } | null)?.reason;
+    return typeof reason === 'string' && GCP_RATE_LIMIT_REASONS.has(reason);
+  });
+}
+
+/**
  * Shared authenticated Google API JSON transport. The raw error body is never copied into the
  * thrown error, so bearer tokens and provider internals cannot leak through logs or persisted
  * workflow failures; only the redacted field-level reason above travels with it.
@@ -530,12 +575,15 @@ export async function fetchGcpApiJson<T>(
     },
   });
   if (!response.ok) {
-    const reason = gcpFailureReason(await response.json().catch(() => undefined));
+    // Parsed ONCE and read twice: the redacted human reason, and the machine throttle signal.
+    const body = await response.json().catch(() => undefined);
+    const reason = gcpFailureReason(body);
     const error = new Error(
       reason ? `gcp_preflight_http_${response.status}: ${reason}` : `gcp_preflight_http_${response.status}`,
     ) as ApiError;
     error.status = response.status;
     if (reason) error.reason = reason;
+    if (gcpRateLimitThrottle(body)) error.throttled = true;
     throw error;
   }
   return (await response.json()) as T;

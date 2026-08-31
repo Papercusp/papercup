@@ -371,4 +371,55 @@ describe('provider failure reasons on the shared Google API transport', () => {
     expect(error.message).toBe('gcp_preflight_http_403');
     expect((error as { status?: number }).status).toBe(403);
   });
+
+  // WI-1818869. Google answers Compute rate limiting with 403, so a status-only retry classifier
+  // calls it `terminal` -> `halt` and a durable provisioning workflow stops permanently on a fault
+  // a backoff clears. The reason code is the only thing that separates it from a real refusal.
+  it.each(['rateLimitExceeded', 'userRateLimitExceeded', 'rateLimitExceededByUser'])(
+    'marks a 403 carrying %s as a throttle',
+    async (reason) => {
+      const error = await failWith(
+        { error: { code: 403, message: 'Rate Limit Exceeded', errors: [{ reason, message: 'Rate Limit Exceeded' }] } },
+        403,
+      );
+
+      expect((error as { status?: number }).status).toBe(403);
+      expect((error as { throttled?: boolean }).throttled).toBe(true);
+    },
+  );
+
+  // The other half of the contract, and the reason this keys on reason codes rather than on the
+  // canonical `RESOURCE_EXHAUSTED` status: a spent quota does not refill on a backoff, so retrying
+  // it burns the schedule against a wall instead of surfacing a condition that needs an operator.
+  it('does NOT treat a spent quota as a throttle', async () => {
+    const error = await failWith(
+      {
+        error: {
+          code: 403,
+          message: 'Quota exceeded',
+          status: 'RESOURCE_EXHAUSTED',
+          errors: [{ reason: 'quotaExceeded', message: 'Quota exceeded' }],
+        },
+      },
+      403,
+    );
+
+    expect((error as { status?: number }).status).toBe(403);
+    expect((error as { throttled?: boolean }).throttled).toBeUndefined();
+  });
+
+  it('does NOT treat a genuine permission denial as a throttle', async () => {
+    const error = await failWith(
+      {
+        error: {
+          code: 403,
+          message: 'Required permission compute.instances.create',
+          errors: [{ reason: 'forbidden', message: 'Required permission compute.instances.create' }],
+        },
+      },
+      403,
+    );
+
+    expect((error as { throttled?: boolean }).throttled).toBeUndefined();
+  });
 });

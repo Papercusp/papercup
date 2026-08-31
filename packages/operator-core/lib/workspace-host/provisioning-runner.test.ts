@@ -290,6 +290,37 @@ describe('runWorkspaceHostProvisioning', () => {
     });
     expect(checkpoints()[0]).toMatchObject({ state: 'failed', retryClass });
   });
+
+  // WI-1818869, end to end. Google rate-limits Compute with 403, not 429, so this exact shape used
+  // to classify as `terminal` -> `halt`: the durable workflow stopped for good on a throttle, which
+  // a 24h soak is near-certain to hit. The assertion that matters is `in-progress` (the run is
+  // still alive), not merely the retry class.
+  it('retries a 403 that the provider marked as a rate limit instead of halting forever', async () => {
+    const steps = [planStep('create-instance')];
+    const { store, checkpoints } = storeHarness();
+    const { provider, apply, reconcile } = providerHarness(steps);
+    apply.mockRejectedValueOnce(Object.assign(httpError(403), { throttled: true }));
+
+    await expect(runWorkspaceHostProvisioning(runInput(provider, store))).resolves.toMatchObject({
+      status: 'in-progress',
+    });
+    expect(checkpoints()[0]).toMatchObject({ state: 'failed', retryClass: 'throttled' });
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  // The control that keeps the fix honest: an UNMARKED 403 is still a settled refusal, so a real
+  // permission denial must keep halting rather than reconciling against the wall forever.
+  it('still halts on a 403 the provider did not mark as a rate limit', async () => {
+    const steps = [planStep('create-instance')];
+    const { store, checkpoints } = storeHarness();
+    const { provider, apply } = providerHarness(steps);
+    apply.mockRejectedValueOnce(httpError(403));
+
+    await expect(runWorkspaceHostProvisioning(runInput(provider, store))).resolves.toMatchObject({
+      status: 'failed',
+    });
+    expect(checkpoints()[0]).toMatchObject({ state: 'failed', retryClass: 'terminal' });
+  });
 });
 
 describe('assertProviderConnectionUsable (WI-1743793)', () => {
