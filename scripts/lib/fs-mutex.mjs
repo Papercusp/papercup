@@ -271,7 +271,7 @@ async function waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, started
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -317,6 +317,27 @@ export async function withFsMutex(name, fn, opts = {}) {
   }
 
   let announcedWaiting = false;
+  let lastWaitingNoticeMs = 0;
+  // WI-1490656 — EI-21921867787033533 wired a FIRST-wait notice, but it fires exactly
+  // ONCE, at t≈0. A caller that then queues for hours produces no further output, so any
+  // observer who attaches later (or reads a rotated capture) sees a process parked in
+  // ep_poll with zero children and a frozen log — byte-for-byte indistinguishable from a
+  // genuine wedge, and repeatedly misdiagnosed as one. Callers that pass
+  // `waitingNoticeIntervalMs` get the notice RE-ANNOUNCED on that cadence, so the WAITING
+  // state keeps emitting attributable forward-progress bytes for as long as it lasts.
+  const waitingNoticeIntervalMs =
+    Number(opts.waitingNoticeIntervalMs) > 0 ? Number(opts.waitingNoticeIntervalMs) : 0;
+  const announceWaiting = async (elapsedMs) => {
+    if (!opts.onWaiting) return;
+    const due =
+      !announcedWaiting ||
+      (waitingNoticeIntervalMs > 0 &&
+        elapsedMs - lastWaitingNoticeMs >= waitingNoticeIntervalMs);
+    if (!due) return;
+    announcedWaiting = true;
+    lastWaitingNoticeMs = elapsedMs;
+    opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs });
+  };
   try {
     for (;;) {
       if (ticketRegistered) {
@@ -325,10 +346,7 @@ export async function withFsMutex(name, fn, opts = {}) {
           // Someone else registered first — don't even attempt the mkdir race this
           // cycle; let them go before us.
           const elapsed = Date.now() - startedAt;
-          if (!announcedWaiting && opts.onWaiting) {
-            announcedWaiting = true;
-            opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs: elapsed });
-          }
+          await announceWaiting(elapsed);
           if (elapsed > timeoutMs) {
             const currentOwner = await readOwner(lockDir);
             throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
@@ -345,10 +363,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         if (error.code !== 'EEXIST') throw error;
 
         const elapsed = Date.now() - startedAt;
-        if (!announcedWaiting && opts.onWaiting) {
-          announcedWaiting = true;
-          opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs: elapsed });
-        }
+        await announceWaiting(elapsed);
         const lockAgeMs = await stat(lockDir)
           .then((s) => Date.now() - s.mtimeMs)
           .catch(() => 0);
@@ -379,6 +394,12 @@ export async function withFsMutex(name, fn, opts = {}) {
 
   try {
     await waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, startedAt, onWaiting: opts.onWaiting });
+    // WI-1490656: report how long admission actually QUEUED. A caller that re-acquires
+    // the same lock across many short sub-invocations (one affected-tests shard after
+    // another) otherwise has no way to bound its TOTAL queue time — each call's
+    // `timeoutMs` restarts from zero, so an N-shard run's real worst case is N × timeoutMs.
+    // Fires inside the try so a throwing callback still releases the lock.
+    if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
     return await fn();
   } finally {
     await rm(lockDir, { recursive: true, force: true });

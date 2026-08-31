@@ -31,6 +31,9 @@ import {
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS policy module, no declaration file.
 import { resolveTaskTimeoutMs } from '../../../../scripts/lib/batch-watchdog.mjs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — plain-Node entrypoint, consumed directly by scripts/*.mjs.
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
@@ -1072,4 +1075,189 @@ describe('affected-tests scheduler wiring', () => {
     expect(reporting).toBeGreaterThan(pool);
     expect(retry).toBeGreaterThan(reporting);
   });
+});
+
+/**
+ * WI-1490656 — the shared-admission QUEUE, and why a queued run reads as a wedge.
+ *
+ * Measured on this box: green-checkpoint run pid 952836 (candidate 6da5cd4db218) ran 16 of
+ * its 126 planned tasks, then produced nothing for 1h42m while holding the gate's SINGLETON
+ * run lock, so every later fire recorded `skipped-locked`. It was filed as
+ * "affected-tests.mjs --related hangs". It was not hanging. `/proc` showed the textbook
+ * wedge signature — parked in `ep_poll`, ZERO child processes, a run log frozen mid-run —
+ * which is ALSO exactly what a caller queued on `papercusp-test-process-admission` looks
+ * like, because a queued caller does nothing by definition.
+ *
+ * A live instance was captured while writing this: pid 4094320 held the mutex 50 min while
+ * pid 911055 sat queued 23.5 min, its log frozen at the exact line before the acquisition.
+ *
+ * Two independent defects made that indistinguishable and unbounded:
+ *
+ *  1. INVISIBLE. The queued notice went to `console.error`, which cannot reach the
+ *     affected-tests RUN LOG (written by the runner's own `logLine`) — the very file the
+ *     run's BEGIN line tells a triager to grep. Confirmed by census: zero occurrences of
+ *     `AFFECTED_TESTS_ADMISSION_QUEUED` across all 993 run logs present on the box. It also
+ *     fired exactly ONCE, at t≈0, so even on stderr a multi-hour queue said nothing after
+ *     the first instant.
+ *
+ *  2. UNBOUNDED. `SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS` (4h) bounds ONE acquisition, and
+ *     `runBudgetedTaskShards` acquires once PER SHARD. The 126-task run planned 16 shards, so
+ *     the bound everyone reads as "4h" was really 16 × 4h.
+ */
+describe('shared test-process admission queue (WI-1490656)', () => {
+  const heldTasks = ['a'];
+  const trivialRun = {
+    ...config,
+    runTask: async () => 'ok',
+  };
+
+  it('re-announces while still queued instead of falling silent after the first notice', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(
+      'wi1490656-reannounce',
+      async () => {
+        acquired.resolve();
+        await release.promise;
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await acquired.promise;
+
+    const notices: number[] = [];
+    const waiter = withFsMutex('wi1490656-reannounce', async () => 'done', {
+      timeoutMs: 10_000,
+      staleMs: 60_000,
+      retryMs: 5,
+      waitingNoticeIntervalMs: 25,
+      onWaiting: ({ elapsedMs }: { elapsedMs: number }) => notices.push(elapsedMs),
+    });
+
+    // THE POINT: a caller that keeps waiting keeps SAYING SO. Before this fix `onWaiting`
+    // was one-shot, so this could never exceed 1 no matter how long the wait ran.
+    await until(() => notices.length >= 3, 're-announced waiting notices');
+    release.resolve();
+    await holder;
+    await waiter;
+
+    expect(notices.length).toBeGreaterThanOrEqual(3);
+    // Each notice reports a strictly later elapsed time — they are real re-announcements on
+    // a cadence, not the same event delivered repeatedly.
+    for (let i = 1; i < notices.length; i += 1) {
+      expect(notices[i]).toBeGreaterThan(notices[i - 1]);
+    }
+  }, 20_000);
+
+  it('CONTROL: without an interval the notice stays one-shot, so the count above is caused by the interval', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(
+      'wi1490656-oneshot',
+      async () => {
+        acquired.resolve();
+        await release.promise;
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await acquired.promise;
+
+    let notices = 0;
+    const waiter = withFsMutex('wi1490656-oneshot', async () => 'done', {
+      timeoutMs: 10_000,
+      staleMs: 60_000,
+      retryMs: 5,
+      onWaiting: () => {
+        notices += 1;
+      },
+    });
+    await until(() => notices >= 1, 'first waiting notice');
+    // Give it far more poll cycles than the re-announcing case needed for 3 notices.
+    await new Promise<void>((done) => setTimeout(done, 200));
+    expect(notices).toBe(1);
+
+    release.resolve();
+    await holder;
+    await waiter;
+  }, 20_000);
+
+  it('routes the queued notice to an injected sink so it can reach the run log', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(
+      'papercusp-test-process-admission',
+      async () => {
+        acquired.resolve();
+        await release.promise;
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await acquired.promise;
+
+    const lines: string[] = [];
+    const running = runBudgetedTasks(heldTasks, {
+      ...trivialRun,
+      onAdmissionNotice: (line: string) => lines.push(line),
+    });
+    await until(() => lines.length >= 1, 'queued notice on the injected sink');
+    release.resolve();
+    await holder;
+    await running;
+
+    // The marker a triager greps for, carried on the sink the runner wires to `errSync`
+    // (stderr AND the run log) rather than `console.error` (stderr only).
+    expect(lines[0]).toContain('AFFECTED_TESTS_ADMISSION_QUEUED');
+    expect(lines[0]).toContain('not a hang');
+  }, 20_000);
+
+  it('spends ONE queue budget across all shards instead of restarting it per shard', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(
+      'papercusp-test-process-admission',
+      async () => {
+        acquired.resolve();
+        await release.promise;
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await acquired.promise;
+
+    const admissions: Array<{ waitedMs: number; budgetMs: number }> = [];
+    // `near-tree-wide` is the class that actually splits — and the class the 126-task run
+    // that lost the gate was assigned (`class=near-tree-wide reason=root-manifest-or-config`,
+    // 126 tasks ⇒ 16 shards). A scoped plan is one shard and cannot exhibit the defect.
+    const plan = planAffectedTaskShards(['s1', 's2'], {
+      blastRadius: { kind: 'near-tree-wide', reason: 'root-manifest-or-config', triggerPaths: [] },
+      taskKey: (task: string) => task,
+      maxTasksPerShard: 1,
+    });
+    expect(plan.shards.length).toBe(2);
+
+    const queuedNotices: string[] = [];
+    const running = runBudgetedTaskShards(plan, {
+      ...trivialRun,
+      admissionRunBudgetMs: 8_000,
+      onAdmissionNotice: (line: string) => queuedNotices.push(line),
+      onAdmissionAcquired: (info: { waitedMs: number; budgetMs: number }) =>
+        admissions.push(info),
+    });
+
+    // Hold long enough that shard 1's queue time is unambiguously larger than timer noise,
+    // so the budget it consumes is measurable rather than a rounding artefact.
+    await until(() => queuedNotices.length >= 1, 'shard 1 queued');
+    await new Promise<void>((done) => setTimeout(done, 300));
+    release.resolve();
+    await holder;
+    await running;
+
+    expect(admissions.length).toBe(2);
+    const [first, second] = admissions;
+    expect(first.budgetMs).toBe(8_000);
+    expect(first.waitedMs).toBeGreaterThanOrEqual(250);
+    // THE POINT: shard 2 inherits what shard 1 LEFT, not a fresh full budget. Before this
+    // fix every shard got the full value, so an N-shard run's real admission bound was
+    // N × the timeout — 16 × 4h for the 126-task run that lost the gate.
+    expect(second.budgetMs).toBeLessThan(first.budgetMs);
+    expect(second.budgetMs).toBeCloseTo(8_000 - first.waitedMs, -2);
+  }, 20_000);
 });

@@ -5338,7 +5338,21 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
 // retains priority during setup but cannot destroy the once-only task run after
 // its task ledger has become authoritative.
 publishPreemptReadyMarker();
-const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
+// WI-1490656: admission starvation must end as an ATTRIBUTABLE verdict, not a lost run.
+// `runBudgetedTaskShards` now bounds the total time this invocation may spend queued on the
+// shared admission mutex. When that budget is spent, `withFsMutex` throws — and at top level
+// in an ESM module an uncaught rejection kills the process with no `AFFECTED_TESTS_RESULT`
+// line, which is precisely the "exit-without-verdict" shape the gate records as a LOST RUN.
+// Bounding the wait without this would only make the gate lose runs faster. Exit 78
+// (EX_CONFIG) matches the pids-exhausted refusal: a red that is NOT a test verdict.
+function isAdmissionStarvation(error) {
+  return /waiting for fs-mutex "papercusp-test-process-admission"/.test(
+    String(error?.message ?? error),
+  );
+}
+let initialPool;
+try {
+  initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
   // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
   // any child exists. A long run's real memory picture drifts underneath it, so admission
@@ -5348,7 +5362,30 @@ const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => runCapturedTask(context, allocation),
   onTaskSettled: persistCleanFirstPassTaskVerdict,
-});
+  // WI-1490656: send the shared-admission queue notices through `errSync`, so they land in
+  // BOTH stderr and this run's own log. The scheduler's default sink is `console.error`,
+  // which never reaches `RUN_LOG_PATH` — the file the BEGIN line explicitly tells a triager
+  // to grep. A queued run therefore froze its log mid-run with no explanation and was read
+  // as a hang (zero children + ep_poll + flat log is the same signature either way).
+  onAdmissionNotice: (line) => errSync(line),
+  });
+} catch (error) {
+  if (!isAdmissionStarvation(error)) throw error;
+  errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
+  errSync(
+    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved tasks=${tasks.length} ` +
+      `failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=${tasks.length}`,
+  );
+  errSync(
+    "NOT MEASURED — this run spent its whole shared-admission budget queued behind another " +
+      "test process and never got to run its tasks. Nothing here is a test verdict. The " +
+      "holder is named in the AFFECTED_TESTS_ADMISSION_QUEUED lines above; re-fire once the " +
+      "queue drains.",
+  );
+  terminalEmitted = true;
+  errSync(`Full run log: ${RUN_LOG_PATH}`);
+  process.exit(78);
+}
 // The initial pool has now journaled every settled task. Keep the external
 // supervisor from freezing the aggregate while it replays those records,
 // performs retries/cargo attribution, and emits the terminal result line.
@@ -5450,6 +5487,7 @@ for (const scheduled of initialPool.results) {
     const retryPool = await runBudgetedTasks([scheduled.task], {
       ...SCHEDULER_CONFIG,
       readMemAvailableMb,
+      onAdmissionNotice: (line) => errSync(line),
       runTask: (context, allocation) =>
         runCapturedTask(
           context,
