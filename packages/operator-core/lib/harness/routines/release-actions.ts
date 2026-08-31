@@ -62,6 +62,7 @@ import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
 import {
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
+  FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
   parseFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
   buildFrozenRepairConvergenceGateHealth,
@@ -1458,6 +1459,68 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
 const GATE_STALL_PHASE = 'green-checkpoint-stall';
 const GATE_STALL_KIND = 'green-checkpoint-stall';
 
+/**
+ * P-003: reuse the frozen queue's existing "a fixer should have materialized by now" floor.
+ * A 15-minute policy observed only on the hourly gate cadence alarms on the next tick, while
+ * still excluding the normal launch/reservation window. One threshold, not a second setting.
+ */
+export const FIXER_SUCCESSION_STALL_MS = FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS;
+
+export interface FrozenRepairFixerSuccession {
+  /** Attempt-scoped identity; a replacement fixer starts a fresh ladder series. */
+  key: string;
+  state: 'dead' | 'absent';
+  ageMs: number;
+  spawnId: string | null;
+  candidate: string;
+  repairHead: string;
+  attempts: number;
+}
+
+/**
+ * Pure qualification for the fixer-succession ladder axis.
+ *
+ * Only an `awaiting-fixer` queue can qualify. A live fixer is progress; unknown liveness fails
+ * closed against a false death alarm; an active dispatch reservation is a real owner during
+ * the launch handoff. The remaining two shapes are actionable: a recorded spawn is confirmed
+ * dead, or no spawn exists after the reservation window. `updatedAtMs` is the canonical queue
+ * transition timestamp and is part of the key, so each replacement attempt earns its own first
+ * rung while repeated observations of the SAME gap remain geometrically sparse.
+ */
+export function classifyFrozenRepairFixerSuccession(
+  queue: FrozenCandidateRepairQueue | null,
+  fixerAlive: boolean | null | undefined,
+  nowMs: number,
+): FrozenRepairFixerSuccession | null {
+  if (!queue || queue.phase !== 'awaiting-fixer') return null;
+  if (queue.dispatchReservation && queue.dispatchReservation.expiresAtMs > nowMs) return null;
+
+  let state: FrozenRepairFixerSuccession['state'];
+  if (queue.fixerSpawnId) {
+    if (fixerAlive !== false) return null;
+    state = 'dead';
+  } else {
+    state = 'absent';
+  }
+
+  const spawnId = queue.fixerSpawnId ?? null;
+  return {
+    key: [
+      queue.candidate,
+      queue.repairHead,
+      String(queue.attempts),
+      String(queue.updatedAtMs),
+      spawnId ?? 'absent',
+    ].join(':'),
+    state,
+    ageMs: Math.max(0, nowMs - queue.updatedAtMs),
+    spawnId,
+    candidate: queue.candidate,
+    repairHead: queue.repairHead,
+    attempts: queue.attempts,
+  };
+}
+
 /** Pure: the `harness_escalations` body for a green-checkpoint stall (testable). */
 export function gateStallEscalationBody(opts: {
   installSlug: string;
@@ -2369,11 +2432,14 @@ export async function trackGateStall(
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   // EI-18672078222841101: `last_fixer` rides along in the SAME metadata row we already
-  // read — no extra round-trip, and deliberately NOT a new ownership record. It is the
-  // signature-keyed record the dispatcher already keys its own dedup on, so the owner this
-  // escalation names can never disagree with the owner the dispatcher is deferring to.
+  // read — no extra round-trip, and deliberately NOT a new ownership record. P-003 adds the
+  // existing `repair_queue` key to that same read: it is the serialized convergence state whose
+  // current fixer succession we need to judge, not a parallel detector or ownership row.
   const rows = (await sql.unsafe(
-    `SELECT metadata->'gate_health' AS gh, metadata->'last_fixer' AS lf FROM harness_shared.routines
+    `SELECT metadata->'gate_health' AS gh,
+            metadata->'last_fixer' AS lf,
+            metadata->'repair_queue' AS rq
+       FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
   )) as Array<{
@@ -2389,6 +2455,10 @@ export async function trackGateStall(
       // `stallAlerted` in that case rather than re-alerting for an announced stall.
       stallAlertedAtReds?: number | null;
       stallAlertedAtAgeMs?: number | null;
+      /** P-003: high-water mark for the CURRENT fixer-attempt succession gap. */
+      stallAlertedAtFixerAgeMs?: number | null;
+      /** Attempt identity paired with the mark above; a replacement resets that axis. */
+      stallFixerSuccessionKey?: string | null;
       lastFrom?: string;
       lastMainPin?: string | null;
       watchdogAlerted?: boolean;
@@ -2406,9 +2476,19 @@ export async function trackGateStall(
       retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
     } | null;
     lf: ReleaseFixerRecord | null;
+    rq: unknown;
   }>;
   const gh = rows[0]?.gh ?? {};
   const lastFixer = rows[0]?.lf ?? null;
+  const repairQueue = parseFrozenCandidateRepairQueue(rows[0]?.rq);
+  const repairFixerAlive = repairQueue?.fixerSpawnId
+    ? await releaseFixerSpawnAlive(sql, repairQueue.fixerSpawnId).catch(() => null)
+    : undefined;
+  const fixerSuccession = classifyFrozenRepairFixerSuccession(
+    repairQueue,
+    repairFixerAlive,
+    Date.now(),
+  );
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
   // work landed on `main` through a path this routine never saw — a MANUAL detached run
