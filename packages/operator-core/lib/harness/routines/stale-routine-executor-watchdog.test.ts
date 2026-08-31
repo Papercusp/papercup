@@ -351,7 +351,11 @@ describe('the stale-executor page carries the restart-safety precondition, not j
 
     expect(note).toContain('git_sync_collision');
     expect(note).toContain('EXPECTED');
-    expect(note).toContain('retry it in a loop');
+    // EI-21930094737784126: once dev:restart could actually wait the sweep out, "retry
+    // it in a loop" stopped being the honest instruction. A page that names a lever
+    // owes the reader the ARGUMENT that makes it fire.
+    expect(note).toContain('git_sync_drain_sec');
+    expect(note).toMatch(/retry once rather than abandoning/);
     // And the destructive escape hatch is named as the WRONG answer — it is the
     // obvious next reach for someone who has just been refused seven times.
     expect(note).toContain('override_git_sync_collision');
