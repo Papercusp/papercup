@@ -35,6 +35,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   'release-fixer': [
     'coord:read',
     'coord:write',
+    'docs:read',
     'work_items:read',
     'work_items:write',
     'locks:read',

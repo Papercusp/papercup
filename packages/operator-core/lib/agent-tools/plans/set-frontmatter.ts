@@ -31,7 +31,7 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { domainFailureMessage } from './plan-activation-gate';
-import { parsePlan } from './parser';
+import { parsePlan, PLAN_STATUSES } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
@@ -45,8 +45,12 @@ const argsSchema = z.object({
   title: hardText(LIMITS.SHORT_TITLE)
     .refine((s) => s.trim().length > 0, 'title cannot be blank')
     .describe('Human-readable plan title.'),
+  // Derived from PLAN_STATUSES, not re-listed: this schema carried its own
+  // hand-typed copy of the five values, so adding `awaiting-acceptance` to the
+  // vocabulary left this one verb silently rejecting it. A second copy of a
+  // list the parser already owns is the exact drift this plan removes.
   status: z
-    .enum(['draft', 'ready', 'active', 'shipped', 'superseded'])
+    .enum([...PLAN_STATUSES] as [string, ...string[]])
     .describe('Plan-level status.'),
   created: z
     .string()

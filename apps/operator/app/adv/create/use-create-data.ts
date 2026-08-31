@@ -28,6 +28,7 @@ import {
   bucketOf,
   type PlanListRow,
   type PlanBucket,
+  PLAN_BUCKETS,
   type PlanItemRow,
   type AttentionItem,
   type AttentionGroup,
@@ -471,7 +472,9 @@ export function useQueueData(opts: {
 
 /* ── Shared nuqs hooks for the additive filters ──────────────────────── */
 
-const BUCKET_IDS: PlanBucket[] = ['draft', 'ready', 'running', 'shipped', 'rejected'];
+// Derived from PLAN_BUCKETS rather than re-listed — see the same note in
+// PlanRail.tsx. P-004 added `awaiting`.
+const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
 
 export function useItemStatusFilter() {
   return useQueryState(

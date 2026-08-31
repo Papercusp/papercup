@@ -9908,7 +9908,8 @@
         "mug",
         "documenter",
         "curator",
-        "papercup-deep"
+        "papercup-deep",
+        "release-fixer"
       ],
       "guidance": {
         "when": "You have slugs from docs:outline and need page contents. Use `heading` with either headings[].id or headings[].text (single-slug) when only one section of a long page is relevant.",
@@ -9938,7 +9939,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer"
       ],
       "guidance": {
         "when": "You need design context, architectural rationale, or \"how does X work\" answers and have not yet called docs:outline this run.",
@@ -13292,7 +13294,8 @@
         "curator",
         "papercup",
         "papercup-deep",
-        "kettle"
+        "kettle",
+        "release-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -24304,7 +24307,8 @@
         "operator",
         "architect",
         "debugger",
-        "cup"
+        "cup",
+        "release-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -25328,7 +25332,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer"
       ],
       "profile": "engineer",
       "guidance": {

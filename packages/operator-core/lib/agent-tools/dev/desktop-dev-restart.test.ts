@@ -7,9 +7,10 @@ import {
   resolveDesktopDevListener,
   restartDesktopDev,
 } from './desktop-dev-restart';
+import type { ListeningSocketsResult } from '../../listening-sockets';
 
 const stat = (ppid: number, pgrp = 900, session = 900) => `900 (node) S ${ppid} ${pgrp} ${session} 0 0 0 0 0 0 0 0 0 0 0`;
-const socketResult = (pid: number, ownerVisible = true) => ({
+const socketResult = (pid: number, ownerVisible = true): ListeningSocketsResult => ({
   sockets: [{
     port: DESKTOP_DEV_PORT,
     address: '127.0.0.1',
@@ -21,6 +22,9 @@ const socketResult = (pid: number, ownerVisible = true) => ({
     ownerVisible,
     reserved: false,
     acceptQueue: { pending: 0, backlog: 511 },
+    app: null,
+    appUnknownReason: 'not-attempted',
+    localUrl: `http://127.0.0.1:${DESKTOP_DEV_PORT}`,
   }],
   matched: 1,
   totalListening: 1,

@@ -28,6 +28,7 @@ import {
   type ItemStatus,
   type PlanStatus,
   type PlanBucket,
+  PLAN_BUCKETS,
   planTriggerSourceLabel,
   usePlanViewerEmail,
 } from './plans-api';
@@ -53,7 +54,10 @@ export interface PlanRailHandle {
   prev: () => void;
 }
 
-const BUCKET_FILTER_VALUES: PlanBucket[] = ['draft', 'ready', 'running', 'shipped', 'rejected'];
+// Derived from PLAN_BUCKETS rather than re-listed: a hand-typed copy silently
+// drops any bucket added later, so the new one is unfilterable while every
+// other surface shows it (P-004 added `awaiting`).
+const BUCKET_FILTER_VALUES: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
 
 const COUNT_ORDER: Array<ItemStatus | 'unknown'> = [
   'wip',
