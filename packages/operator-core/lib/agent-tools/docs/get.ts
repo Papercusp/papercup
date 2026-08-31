@@ -129,7 +129,7 @@ const argsSchema = z.preprocess(
         .boolean()
         .optional()
         .describe(
-          'Return the doc CANONICAL SOURCE — the exact bytes an author edits, frontmatter included, MDX unrendered, no `# title` / `URL:` preamble. This is the ONLY read that survives a round trip back through docs:author { overwrite:true }; the default read is a lossy projection (it flattens the `import`/JSX that 195 of 990 docs carry, strips frontmatter, and prepends a header). Composes with `offset`/`nextOffset`, so page a large doc to its end before rewriting it. Refused with `heading` (a slice is not the document) and refused with `source_unavailable` when the docs source has no canonical text — never quietly downgraded to the rendered body.',
+          'Return the doc CANONICAL SOURCE — the exact bytes an author edits: frontmatter included, MDX unrendered, no `# title` / `URL:` preamble. The ONLY read that survives a round trip back through docs:author { overwrite:true }. The default read is a lossy projection: it strips frontmatter, prepends a header, and rewrites every JSX component (a self-closing one is dropped entirely) — 163 of 956 papercusp docs carry one. Composes with `offset`/`nextOffset`, so page a large doc to its end before rewriting it. Refused with `heading` (a slice is not the document), and refused as `source_unavailable` when the docs source has no canonical text — never quietly downgraded to the rendered body.',
         ),
       harness: z
         .string()

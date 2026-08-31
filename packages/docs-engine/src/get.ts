@@ -162,7 +162,7 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
             slug,
             found: false,
             error: 'source_unavailable',
-            detail: `${source.name} has no retrievable source for this page (unreadable, oversize, or no canonical row). Its rendered body is NOT a substitute — writing one back flattens JSX/imports and drops frontmatter.`,
+            detail: `${source.name} has no retrievable source for this page (unreadable, oversize, or no canonical row). Its rendered body is NOT a substitute — writing one back drops the frontmatter and rewrites every JSX component (a self-closing one disappears entirely).`,
           };
         }
         return sourceEntry(slug, raw, page, offset, evaluateOkfTrust(page.okf, now));

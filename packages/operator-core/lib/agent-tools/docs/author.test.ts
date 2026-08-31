@@ -24,6 +24,7 @@ import {
   truncatedBodyVerdict,
   overwriteShrinkVerdict,
   canonicalSourceHint,
+  droppedFrontmatterEdits,
   stripReadPreamble,
   SHRINK_REFUSAL_RATIO,
   SHRINK_REFUSAL_MIN_LOSS,
@@ -207,6 +208,54 @@ describe('stripLeadingFrontmatter', () => {
     const r = stripLeadingFrontmatter(body);
     expect(r.stripped).toBe(false);
     expect(r.body).toBe(body);
+  });
+});
+
+/**
+ * WI-1511581 — a discarded frontmatter EDIT must not read as a clean write.
+ *
+ * `docs:get { source: true }` returns the doc WITH its frontmatter, which is the
+ * read this tool's refusals now point at, so a round-tripped body carries a block
+ * by design. The block is discarded (a body read minutes ago must not revert a
+ * peer's metadata write) — but an author who edited `title:` inside it needs to be
+ * told, or they get a success with their edit silently missing.
+ *
+ * The quiet-on-the-faithful-path case is the load-bearing one: a warning that fires
+ * on every correct round trip is noise, and noise stops being read.
+ */
+describe('droppedFrontmatterEdits', () => {
+  const stored = { title: 'Old', description: 'desc', tags: ['a', 'b'], status: 'active' };
+
+  it('is SILENT when the submitted block matches what will be written', () => {
+    expect(droppedFrontmatterEdits(stored, { ...stored })).toEqual([]);
+  });
+
+  it('names an edited key — the case a clean-looking success would hide', () => {
+    expect(droppedFrontmatterEdits({ ...stored, title: 'New title' }, stored)).toEqual(['title']);
+  });
+
+  it('names several edited keys, sorted, and only those', () => {
+    expect(
+      droppedFrontmatterEdits({ ...stored, title: 'New', tags: ['a', 'b', 'c'] }, stored),
+    ).toEqual(['tags', 'title']);
+  });
+
+  it('treats list order/format differences as equal — normalizeList is the comparison', () => {
+    expect(droppedFrontmatterEdits({ tags: 'a, b' }, { tags: ['a', 'b'] })).toEqual([]);
+  });
+
+  it('ignores whitespace-only differences in scalars', () => {
+    expect(droppedFrontmatterEdits({ title: ' Old ' }, { title: 'Old' })).toEqual([]);
+  });
+
+  it('reports a key the submitted block adds that the write will not carry', () => {
+    expect(droppedFrontmatterEdits({ ...stored, custom: 'mine' }, stored)).toEqual(['custom']);
+  });
+
+  it('says nothing about a stored key the submitted block simply lacks', () => {
+    // Absent from the submission is not an edit — it is what a body with no
+    // frontmatter looks like, and preservedFrontmatter carries it through anyway.
+    expect(droppedFrontmatterEdits({ title: 'Old' }, stored)).toEqual([]);
   });
 });
 
@@ -550,27 +599,49 @@ describe('stripReadPreamble', () => {
 });
 
 describe('canonicalSourceHint', () => {
-  // A refusal with no usable exit is a dead end, and the OBVIOUS exit is wrong:
-  // docs:get serves a rendered, preamble-prefixed projection (measured 2026-08-31 —
-  // agent-insights/index came back 1,712 chars for an 1,812-char row, with a
-  // `# title` + `URL:` header prepended), and 195/990 authored docs carry `import`
-  // statements that the MDX→markdown render would flatten. So the hint must name
-  // the .mdx projection and must steer AWAY from docs:get.
-  it('names the concrete projection path to read', () => {
+  // A refusal with no usable exit is a dead end — and an exit that returns something
+  // WRONG is worse, because the caller acts on it. The obvious exit was wrong for a
+  // long time: a DEFAULT docs:get serves a rendered, preamble-prefixed projection
+  // (measured 2026-08-31 — agent-insights/index came back 1,712 chars for an
+  // 1,812-char row, with a `# title` + `URL:` header prepended, and the MDX→markdown
+  // pass rewrites every JSX component; 163 of 956 papercusp rows carry one).
+  //
+  // WI-1511581 built the exit that IS faithful — `docs:get { source: true }` — so the
+  // hint now names it FIRST, still names the read cap, and still steers off the
+  // default read. These assertions pin the DIRECTION of the advice, which is the
+  // part that outlives the session reading it.
+  it('names the faithful read first, as a call that can be run as written', () => {
+    const hint = canonicalSourceHint(
+      '/repo/apps/operator-docs/src/content/docs/testing/agent-e2e.mdx',
+      'testing/agent-e2e',
+      'engineering',
+    );
+    expect(hint).toContain('source: true');
+    expect(hint).toContain('"testing/agent-e2e"');
+    // The harness is load-bearing, not decoration: without it a workspace-scoped
+    // session gets `harness_required` and the repair reads as a dead end.
+    expect(hint).toContain('harness: "engineering"');
+    expect(hint.indexOf('source: true')).toBeLessThan(hint.indexOf('capability:read'));
+  });
+
+  it('keeps the concrete projection path as the fallback read', () => {
     const hint = canonicalSourceHint('/repo/apps/operator-docs/src/content/docs/testing/agent-e2e.mdx');
     expect(hint).toContain('capability:read');
     expect(hint).toContain('/repo/apps/operator-docs/src/content/docs/testing/agent-e2e.mdx');
   });
 
-  it('warns off docs:get as an overwrite source', () => {
+  it('warns off a DEFAULT docs:get as an overwrite source', () => {
     const hint = canonicalSourceHint('/x.mdx');
-    expect(hint).toContain('Do NOT source an overwrite body from docs:get');
+    expect(hint).toContain('Do NOT source an overwrite body from a DEFAULT docs:get');
     expect(hint).toContain(String(MAX_PAYLOAD_BYTES));
   });
 
-  it('still gives an exit when the path could not be resolved', () => {
+  it('still gives a usable exit when the path could not be resolved', () => {
     const hint = canonicalSourceHint(null);
-    expect(hint).toContain('capability:read');
+    // No path to offer, so the faithful tool call is the whole exit — and it must
+    // not degrade into prose containing a literal "null" path.
+    expect(hint).toContain('docs:get');
+    expect(hint).toContain('source: true');
     expect(hint).not.toContain('null');
   });
 });

@@ -423,6 +423,45 @@ describe('docs:get handler', () => {
       expect.anything(),
     );
   });
+
+  /**
+   * WI-1511581 — `source: true` is the read whose body can be written back.
+   *
+   * The handler's only job here is to carry the flag through UNTRANSLATED and to
+   * refuse the one combination that would return a partial body looking whole. A
+   * flag silently dropped at this seam is the failure mode: the engine would serve
+   * the rendered projection and the caller would have no way to tell.
+   */
+  describe('source mode', () => {
+    it('passes source through to the engine as an explicit flag', async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      const tool = (await import('../get')).default;
+      await tool.handler({ slugs: ['p1'], source: true } as never, { harnessSlug: 'sheets' } as never);
+      expect(getDocs).toHaveBeenCalledWith(expect.anything(), { slugs: ['p1'], source: true }, expect.anything());
+    });
+
+    it('CONTROL: omits the key entirely when source is not asked for', async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      const tool = (await import('../get')).default;
+      await tool.handler({ slugs: ['p1'] } as never, { harnessSlug: 'sheets' } as never);
+      expect(getDocs).toHaveBeenCalledWith(expect.anything(), { slugs: ['p1'] }, expect.anything());
+    });
+
+    it('args schema REJECTS source + heading — a slice is not the document', async () => {
+      const mod = await import('../get');
+      const parsed = mod.default.args.safeParse({ slugs: ['a'], heading: 'sec-1', source: true });
+      expect(parsed.success).toBe(false);
+      // Controls: each half alone is valid, so the refusal is about the COMBINATION
+      // and not about either field being rejected outright.
+      expect(mod.default.args.safeParse({ slugs: ['a'], source: true }).success).toBe(true);
+      expect(mod.default.args.safeParse({ slugs: ['a'], heading: 'sec-1' }).success).toBe(true);
+    });
+
+    it('args schema accepts source together with offset — paging a large doc whole', async () => {
+      const mod = await import('../get');
+      expect(mod.default.args.safeParse({ slugs: ['a'], source: true, offset: 50_000 }).success).toBe(true);
+    });
+  });
 });
 
 /**

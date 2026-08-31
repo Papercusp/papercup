@@ -123,6 +123,61 @@ describe('starlightContentAdapter — synthetic fixture', () => {
       src.invalidate();
     }
   });
+
+  /**
+   * WI-1511581 — `getSource` is the authoring read: the file as it sits on disk.
+   *
+   * `getContent` is a lossy projection of it (frontmatter stripped, `.mdx` flattened
+   * through remark), so a body sourced from `getContent` and written back corrupts
+   * the doc. Every assertion here is byte-exact against the fixture, because a body
+   * that is merely close is exactly the failure this closes.
+   */
+  describe('getSource', () => {
+    const RAW = `---\ntitle: Source fidelity\ndescription: keep me\n---\n\nimport { Aside } from '@astrojs/starlight/components';\n\n## Head\n\n<Aside>kept verbatim</Aside>\n`;
+
+    it('returns the file byte for byte — frontmatter, import and JSX intact', async () => {
+      const file = path.join(tmp, 'source-fidelity.mdx');
+      await fs.writeFile(file, RAW, 'utf8');
+      const src = starlightContentAdapter({ name: 'fx-src', contentRoot: tmp, baseUrl: '/d' });
+
+      const page = await src.getPage('source-fidelity');
+      expect(page).not.toBeNull();
+      expect(await src.getSource!(page!)).toBe(RAW);
+
+      // CONTROL, against the REAL remark pipeline: the rendered read of the SAME
+      // page loses the frontmatter and the JSX element. Without this pair, a
+      // getSource that simply aliased getContent would look identical.
+      const rendered = await src.getContent(page!);
+      expect(rendered).not.toBe(RAW);
+      expect(rendered).not.toContain('---\ntitle:'); // frontmatter gone
+      expect(rendered).not.toContain('<Aside>'); // component rewritten away
+      // …and the import it referenced SURVIVES, because nothing in the pass handles
+      // `mdxjsEsm`. Written back, that is an import of a component the body no
+      // longer contains — measured, not assumed, and the reason the prose around
+      // this feature says "rewrites JSX" rather than "flattens imports".
+      expect(rendered).toContain("import { Aside } from '@astrojs/starlight/components';");
+    });
+
+    it('re-reads the file rather than serving a cached body, so an authoring read is never stale', async () => {
+      const file = path.join(tmp, 'source-refresh.mdx');
+      await fs.writeFile(file, RAW, 'utf8');
+      const src = starlightContentAdapter({ name: 'fx-src2', contentRoot: tmp, baseUrl: '/d' });
+      const page = (await src.getPage('source-refresh'))!;
+      expect(await src.getSource!(page)).toBe(RAW);
+
+      const edited = RAW.replace('kept verbatim', 'edited by a peer');
+      await fs.writeFile(file, edited, 'utf8');
+      // Deliberately NO invalidate(): a stale hit here would hand an author bytes the
+      // file no longer has, and their write would silently revert the peer.
+      expect(await src.getSource!(page)).toBe(edited);
+    });
+
+    it('answers null — never the rendered body — for a page the source does not have', async () => {
+      const src = starlightContentAdapter({ name: 'fx-src3', contentRoot: tmp, baseUrl: '/d' });
+      const ghost = { slug: 'no/such-page', slugs: ['no', 'such-page'], url: '/d/no/such-page', title: 'x', toc: [] };
+      expect(await src.getSource!(ghost)).toBeNull();
+    });
+  });
 });
 
 describe('starlightContentAdapter — real operator-docs tree', () => {

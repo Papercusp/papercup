@@ -86,8 +86,16 @@ export interface DocSource {
    * ⚠ OPTIONAL ON PURPOSE, and a source that cannot produce one must OMIT it
    * rather than alias `getContent`. `getDocs({ source: true })` REFUSES when this
    * method is absent, which is a visible answer; a rendered body served as
-   * "source" is the silent corruption the whole mode exists to prevent — 195 of
-   * this corpus's 990 docs carry `import … from` that rendering flattens.
+   * "source" is the silent corruption the whole mode exists to prevent.
+   *
+   * What rendering actually costs (`remark-mdx-to-markdown`): EVERY MDX JSX node is
+   * rewritten — `<Callout>` to a blockquote, Tabs/Steps/Card unwrapped, any other
+   * element with children unwrapped, and a SELF-CLOSING unknown element DROPPED
+   * ENTIRELY. Its `import` line survives untouched (nothing handles `mdxjsEsm`),
+   * so a rendered body written back leaves an import of a component that no longer
+   * appears anywhere. Measured 2026-08-31 over the 956 populated
+   * `harness_shared.harness_docs` rows for `papercusp`: 163 carry a Starlight
+   * component tag, 222 carry some `<Capital…` token, 195 carry `import … from`.
    *
    * Return `null` when this particular page has no retrievable source (unreadable
    * file, oversize, no canonical row) — again a refusal, never a fallback.
