@@ -58,17 +58,22 @@ const EXPECTED_COVERAGE_GAPS: readonly string[] = [
   `${B}papercup/papercup-deep-delegate-deps.ts`,
 ];
 
+// Row shapes are INFERRED from scripts/check-resource-governor-enforcement.d.mts
+// (emitted by `gen:declarations`), never restated here. Restating them is what
+// broke: a hand-written `(row: { paths: string[] })` stopped matching the
+// declaration's `paths: readonly string[]` and failed as TS2769, because a
+// `readonly string[]` is not assignable to a mutable `string[]`. The annotations
+// were only ever needed while the .mjs had no declaration; it has one now, so
+// inference is both correct and drift-proof. Do not re-add them.
 const activeLanes = RESOURCE_GOVERNOR_INVENTORY.filter(
-  (row: { enforcement: string }) => row.enforcement === 'active',
+  (row) => row.enforcement === 'active',
 );
 
 /** Every active lane whose prefixes claim `path`. Cross-lane by construction. */
 function lanesCovering(path: string): string[] {
   return activeLanes
-    .filter((row: { paths: string[] }) =>
-      row.paths.some((prefix) => path.startsWith(prefix)),
-    )
-    .map((row: { id: string }) => row.id);
+    .filter((row) => row.paths.some((prefix) => path.startsWith(prefix)))
+    .map((row) => row.id);
 }
 
 describe('spawn-door governor coverage (P-002 recurrence guard)', () => {
