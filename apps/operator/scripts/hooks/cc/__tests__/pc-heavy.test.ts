@@ -1648,7 +1648,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       if (first) killGroup(first);
       if (second) killGroup(second);
     }
-  });
+    // WI-1707579: measured timing out at the 5s default inside a loaded sweep. This case
+    // spawns three coordinating roots and waits out a real flock handoff, so it needs the
+    // same budget as its structural twin below rather than the default.
+  }, 30_000);
 
   it('keeps a release gate kernel-queued past the ordinary writer deadline and ahead of a later writer', async () => {
     const order = join(dir, 'exclusive-writer-order');
