@@ -92,15 +92,106 @@ export type ReviewRowActionTone =
  * consequence. Every row therefore carries its own verb, in the same vocabulary
  * as the button that commits it.
  */
-export interface ReviewRowAction {
-  /** Imperative and short: "Clear blocker", "Archive plan", "You write it". */
-  label: string;
+/**
+ * THE ONE vocabulary both the row verb and the commit button resolve from.
+ *
+ * A row that says "Mark done" must be committed by a button that says it too.
+ * Before this map each consumer passed a free-form row `label` AND a free-form
+ * `applyLabel`, so a row reading "Zap" under a button reading "Apply 12
+ * selected" broke nothing — the agreement was eyeballed, and drifted the
+ * moment either side was edited alone. Keying both off this map makes the
+ * divergence unrepresentable instead of merely discouraged.
+ *
+ * `commit` is the button's phrasing when the whole selection shares one verb.
+ * Entries WITHOUT a `commit` are terminal or manual states — a row in one of
+ * them is never selectable, so it can never be part of an apply set and has no
+ * button phrasing to agree with.
+ */
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+export const REVIEW_ACTION_VOCABULARY = {
+  "mark-done": { verb: "Mark done", commit: (n: number) => `Mark ${n} done` },
+  "clear-blocker": {
+    verb: "Clear blocker",
+    commit: (n: number) => `Clear ${plural(n, "blocker")}`,
+  },
+  "finish-plan": {
+    verb: "Finish plan",
+    commit: (n: number) => `Finish ${plural(n, "plan")}`,
+  },
+  "archive-plan": {
+    verb: "Archive plan",
+    commit: (n: number) => `Archive ${plural(n, "plan")}`,
+  },
+  "reaper-clears": {
+    verb: "Reaper clears it",
+    commit: (n: number) => `Let the reaper clear ${n}`,
+  },
+  resolve: { verb: "Resolve", commit: (n: number) => `Resolve ${n}` },
+  retry: { verb: "Retry", commit: (n: number) => `Retry ${n}` },
+  // Terminal / manual — never in an apply set, so deliberately no `commit`.
+  assess: { verb: "Assess" },
+  "you-handle-it": { verb: "You handle it" },
+  "you-write-it": { verb: "You write it" },
+  fixed: { verb: "Fixed" },
+  resolved: { verb: "Resolved" },
+  skipped: { verb: "Skipped" },
+} as const;
+
+export type ReviewActionKey = keyof typeof REVIEW_ACTION_VOCABULARY;
+
+interface ReviewRowActionBase {
   tone?: ReviewRowActionTone;
   /** Presentational glyph. The label alone must still read correctly. */
   icon?: ReactNode;
   /** Fuller phrasing for the row's accessible description, when "Clear
    *  blocker" alone would not tell a screen-reader user what Apply does. */
   description?: string;
+}
+
+/**
+ * A row's verb: either a key into the shared vocabulary, or an EXPLICITLY
+ * declared custom label.
+ *
+ * The custom arm exists because Inbox's verbs are partly data-driven — the
+ * resolver can hand back a recommendation label that no fixed map could hold.
+ * Making that an explicit `key: "custom"` rather than a free string keeps the
+ * escape honest: a custom verb never claims shared wording, so the commit
+ * button falls back to neutral phrasing instead of asserting an agreement it
+ * cannot guarantee.
+ */
+export type ReviewRowAction =
+  | ({ key: ReviewActionKey } & ReviewRowActionBase)
+  | ({ key: "custom"; label: string } & ReviewRowActionBase);
+
+/** The words a row shows, resolved from the one vocabulary. */
+export function reviewRowVerb(action: ReviewRowAction): string {
+  return action.key === "custom"
+    ? action.label
+    : REVIEW_ACTION_VOCABULARY[action.key].verb;
+}
+
+/**
+ * The words the commit button shows, resolved from the SAME vocabulary.
+ *
+ * A selection that shares one committable verb is committed in that verb's own
+ * words. Anything else — mixed verbs, a custom verb, a terminal verb with no
+ * commit phrasing — falls back to the neutral label, because there is no
+ * single consequence to name and pretending otherwise would be the lie this
+ * whole criterion is about.
+ */
+export function reviewCommitLabel(
+  actions: readonly ReviewRowAction[],
+  fallback: string,
+): string {
+  const count = actions.length;
+  if (count === 0) return `${fallback} (0)`;
+  const first = actions[0];
+  if (first.key === "custom") return `${fallback} (${count})`;
+  if (!actions.every((a) => a.key === first.key))
+    return `${fallback} (${count})`;
+  const entry = REVIEW_ACTION_VOCABULARY[first.key];
+  return "commit" in entry ? entry.commit(count) : `${fallback} (${count})`;
 }
 
 /**
@@ -545,14 +636,16 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
             className={`review-report__verb review-report__verb--${action.tone ?? "apply"}`}
             data-testid={`review-row-verb-${row.id}`}
             data-verb-tone={action.tone ?? "apply"}
-            title={action.description ?? action.label}
+            title={action.description ?? reviewRowVerb(action)}
           >
             {action.icon != null ? (
               <span className="review-report__verb-icon" aria-hidden="true">
                 {action.icon}
               </span>
             ) : null}
-            <span className="review-report__verb-label">{action.label}</span>
+            <span className="review-report__verb-label">
+              {reviewRowVerb(action)}
+            </span>
           </span>
         ) : null}
       </span>
@@ -1201,7 +1294,7 @@ export default function ReviewReportShell({
             }}
           >
             <Check size={14} aria-hidden="true" />
-            {applyLabel} ({liveSelected.size})
+            {commitLabel}
           </Button>
           <Button
             ref={dismissButtonRef}
