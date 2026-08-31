@@ -21,7 +21,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { getDocs } from './get';
-import { hasTruncationTail, MAX_PAYLOAD_BYTES } from './shared';
+import { hasResultDoorTruncation, hasTruncationTail, MAX_PAYLOAD_BYTES, truncationTail } from './shared';
 import type { DocPage, DocSource, GetEntry } from './index';
 
 /** The bytes an author edits: frontmatter, an import, and JSX the renderer flattens. */
@@ -222,6 +222,44 @@ describe('getDocs { source: true }', () => {
       expect(entry.content.length).toBeGreaterThan(MAX_PAYLOAD_BYTES);
       expect(hasTruncationTail(entry.content)).toBe(true);
       expect(hasTruncationTail(RAW)).toBe(false); // control: the detector is not vacuous
+    });
+  });
+
+  /**
+   * WI-1511581, measured during the live round trip: a SECOND clipping layer.
+   *
+   * The tool returned all 6,119 chars; the MCP result door trimmed the response to
+   * 849 and left `…[TRUNCATED +5319 chars — see _projection.cursor]`. `docs:author`'s
+   * HARD guard knew only docs:get's own marker, so a door-clipped body fell through
+   * to the OVERRIDABLE shrink heuristic — which also blamed the wrong cap.
+   */
+  describe('result-door clip detection', () => {
+    const clipped = 'title: x\ndocuments:\n  - "…[TRUNCATED +5319 chars — see _projection.cursor]';
+
+    it('detects the door marker at the end of a body', () => {
+      expect(hasResultDoorTruncation(clipped)).toBe(true);
+      expect(hasResultDoorTruncation(`${clipped}\n  `)).toBe(true); // trailing whitespace only
+    });
+
+    it('has NO length floor — the door clips far under the docs:get cap', () => {
+      // The floor that makes hasTruncationTail safe would make this never fire:
+      // the measured clip was 849 chars against a 50,000-byte cap.
+      expect(clipped.length).toBeLessThan(MAX_PAYLOAD_BYTES);
+      expect(hasResultDoorTruncation(clipped)).toBe(true);
+    });
+
+    it('CONTROL: does not fire on prose that merely QUOTES the marker', () => {
+      // This very file, and the doc that explains the failure, both quote it.
+      expect(
+        hasResultDoorTruncation('The door leaves …[TRUNCATED +12 chars — see _projection.cursor] mid-sentence, then keeps going.'),
+      ).toBe(false);
+    });
+
+    it('CONTROL: the two markers are distinct — neither detector sees the other', () => {
+      expect(hasTruncationTail(clipped)).toBe(false);
+      const engineClipped = `x${truncationTail({ h2Count: 0 })}`;
+      expect(hasResultDoorTruncation(engineClipped)).toBe(false);
+      expect(hasTruncationTail(engineClipped)).toBe(true);
     });
   });
 

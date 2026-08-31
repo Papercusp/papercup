@@ -208,3 +208,34 @@ export function truncationTail(args: { firstH2Id?: string; h2Count: number; next
 export function hasTruncationTail(body: string): boolean {
   return body.slice(-TRUNCATION_TAIL_WINDOW).includes(TRUNCATION_TAIL_MARKER);
 }
+
+/**
+ * The MCP RESULT DOOR's own clip marker — a SECOND clipping layer, above this one.
+ *
+ * Measured 2026-08-31 (WI-1511581): `docs:get { source: true }` returned the whole
+ * 6,119-char row from the tool, and the result door then trimmed the response to
+ * ~2.4KB, replacing the tail of `$.results[0].content` with
+ * `…[TRUNCATED +5319 chars — see _projection.cursor]`. The envelope reports the
+ * clip honestly (`_projection.truncated`, `omitted[]`, a recovery cursor) — but the
+ * BODY the agent then pastes into `docs:author` carries a marker
+ * {@link hasTruncationTail} never knew about, so the HARD `truncated_body` refusal
+ * did not fire and the clipped write fell through to the weaker, overridable
+ * shrink heuristic.
+ *
+ * Two markers, one failure: a guard that knows only its OWN layer's clip is blind
+ * to every other layer that can clip the same bytes.
+ */
+export const RESULT_DOOR_TRUNCATION_RE = /…\[TRUNCATED \+[\d,]+ chars? — see _projection\.cursor\]\s*$/;
+
+/**
+ * Does this body end with the result door's clip marker?
+ *
+ * Anchored to the very END (trailing whitespace only) rather than scanned within a
+ * window, and DELIBERATELY carries no length floor: the door clips at a few KB, far
+ * under {@link MAX_PAYLOAD_BYTES}, so the floor that makes {@link hasTruncationTail}
+ * safe would make this one never fire. The end-anchor is what keeps it off a doc
+ * that merely writes ABOUT this failure mode — including this package's own tests.
+ */
+export function hasResultDoorTruncation(body: string): boolean {
+  return RESULT_DOOR_TRUNCATION_RE.test(body);
+}

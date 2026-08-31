@@ -71,8 +71,10 @@ export {
   sliceByHeading,
   truncationTail,
   hasTruncationTail,
+  hasResultDoorTruncation,
   TRUNCATION_TAIL_MARKER,
   TRUNCATION_TAIL_WINDOW,
+  RESULT_DOOR_TRUNCATION_RE,
   type TocEntry,
   type NearestOpts,
 } from './shared.js';

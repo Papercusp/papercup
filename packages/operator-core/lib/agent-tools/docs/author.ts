@@ -25,7 +25,13 @@ import { promises as fs, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { normalizeDocStatus, parseFrontmatterBlock, hasTruncationTail, MAX_PAYLOAD_BYTES } from '@papercusp/docs-engine';
+import {
+  normalizeDocStatus,
+  parseFrontmatterBlock,
+  hasTruncationTail,
+  hasResultDoorTruncation,
+  MAX_PAYLOAD_BYTES,
+} from '@papercusp/docs-engine';
 import { stringify as stringifyYaml } from 'yaml';
 import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
@@ -195,6 +201,51 @@ export function stripReadPreamble(body: string): { body: string; stripped: boole
   if (!m) return { body, stripped: false };
   return { body: body.slice(m[0].length), stripped: true };
 }
+
+/**
+ * Which frontmatter edits in a submitted `body` will NOT be written, and why.
+ *
+ * `docs:get { source: true }` — the read this tool's own refusals now point at —
+ * returns the doc WITH its frontmatter, so a round-tripped body carries a
+ * frontmatter block by design. That block is discarded: the written frontmatter is
+ * generated from the args plus the STORED row. Discarding it is the right call
+ * (a body read minutes ago must not silently revert a peer's metadata write), but
+ * doing it SILENTLY means an author who edited `title:` in the source they were
+ * told to read gets a success with their edit missing.
+ *
+ * So: compare, and name the keys. Values equal to what is being written are not
+ * reported — a faithful round trip must stay quiet, or the warning becomes noise
+ * on the correct path and stops being read at all.
+ */
+export function droppedFrontmatterEdits(
+  submitted: Record<string, unknown>,
+  written: Record<string, unknown>,
+): string[] {
+  const same = (a: unknown, b: unknown): boolean => {
+    if (Array.isArray(a) || Array.isArray(b)) {
+      return JSON.stringify(normalizeList(a)) === JSON.stringify(normalizeList(b));
+    }
+    if (a === undefined || a === null) return b === undefined || b === null || b === '';
+    if (typeof a === 'string' && typeof b === 'string') return a.trim() === b.trim();
+    return JSON.stringify(a) === JSON.stringify(b);
+  };
+  return Object.keys(submitted)
+    .filter((key) => !same(submitted[key], written[key]))
+    .sort();
+}
+
+/** Which arg carries an edit to this frontmatter key, for keys the tool models. */
+const FRONTMATTER_ARG_FOR_KEY: Record<string, string> = {
+  title: 'title',
+  description: 'description',
+  status: 'status',
+  type: 'type',
+  tags: 'tags',
+  documents: 'documents',
+  plans: 'plans',
+  normative: 'normative',
+  governs: 'governs',
+};
 
 /** string | string[] (possibly comma-joined) → trimmed, de-duped, non-empty array. */
 export function normalizeList(input: unknown): string[] {
@@ -377,9 +428,12 @@ export interface OverwriteGuardVerdict {
  * 1,712 chars for a 1,812-char row, having stripped the frontmatter and PREPENDED
  * a `# <title>` + `URL: …` + description preamble (`withPreamble`). So even an
  * UNTRUNCATED default read injects that header into the doc on write. Worse, the
- * engineering adapter serves `renderMdxToMarkdown(body)` for a `.mdx` doc — and
- * 195 of 990 authored docs carry `import … from` statements, 218 carry JSX — so
- * round-tripping those through it silently flattens them.
+ * engineering adapter serves `renderMdxToMarkdown(body)` for a `.mdx` doc, and
+ * that pass REWRITES every JSX node — `<Callout>` to a blockquote, Tabs/Steps/Card
+ * unwrapped, a self-closing unknown element DROPPED ENTIRELY — while leaving the
+ * `import` line that referenced it (nothing handles `mdxjsEsm`). Measured the same
+ * day over the 956 populated `harness_docs` rows for `papercusp`: 163 carry a
+ * Starlight component tag, 195 carry `import … from`.
  *
  * `docs:get { source: true }` (WI-1511581) is the read that does NOT do any of
  * that: it serves `harness_shared.harness_docs.content` verbatim for an authored
@@ -391,11 +445,16 @@ export interface OverwriteGuardVerdict {
  * row. It is faithful to the row EXCEPT for the generated projection banner inside
  * its frontmatter — harmless here only because frontmatter is regenerated on write.
  */
-export function canonicalSourceHint(absPath: string | null, ref?: string): string {
+export function canonicalSourceHint(absPath: string | null, ref?: string, readHarness?: string): string {
   const slug = ref ? `"${ref}"` : '"<section>/<slug>"';
+  // Emitted with the SAME `read: { slugs, harness }` shape a successful author
+  // returns, so the repair is one copy-paste rather than a shape the caller has to
+  // reconstruct — including the harness, without which a workspace-scoped session
+  // gets `harness_required` and reads the refusal as a dead end.
+  const harnessArg = readHarness ? `, harness: "${readHarness}"` : '';
   const fallback = absPath ? ` (or capability:read { file_path: "${absPath}" })` : '';
   return (
-    `Read the CANONICAL source first: docs:get { slugs: [${slug}], source: true }${fallback} — ` +
+    `Read the CANONICAL source first: docs:get { slugs: [${slug}]${harnessArg}, source: true }${fallback} — ` +
     'that mode serves the doc bytes verbatim (frontmatter included, MDX unrendered, no read preamble) and pages ' +
     'a large doc whole via `offset`/`nextOffset`. ' +
     `Do NOT source an overwrite body from a DEFAULT docs:get: it caps a page at ${MAX_PAYLOAD_BYTES} bytes AND serves a ` +
@@ -412,6 +471,23 @@ export function canonicalSourceHint(absPath: string | null, ref?: string): strin
  * nowhere near 50KB, so it passes. Needs no baseline, so it also guards a create.
  */
 export function truncatedBodyVerdict(body: string): OverwriteGuardVerdict | null {
+  // TWO clipping layers can cut the same bytes, and each leaves a different mark.
+  // The result door's is checked FIRST and with no length floor: it clips at a few
+  // KB, so the floor that makes the docs:get check safe would let every door-clipped
+  // body straight through (measured 2026-08-31, WI-1511581 — a 6,119-char source
+  // read arrived as 849 chars and only the OVERRIDABLE shrink heuristic caught it,
+  // while blaming the wrong cap).
+  if (hasResultDoorTruncation(body)) {
+    return {
+      code: 'truncated_body',
+      overridable: false,
+      detail:
+        '`body` ends with the MCP result door\'s clip marker (`…[TRUNCATED +N chars — see _projection.cursor]`), so it is a ' +
+        'CLIPPED TOOL RESPONSE, not the document — the tool returned the whole doc and the RESPONSE was trimmed on the way to you. ' +
+        'Recover the full text with the `_projection.cursor` call that response carried (capability:read on the named scratch page, ' +
+        'paging with byte_offset until eof), then re-send. There is no override: the marker means the body is provably incomplete.',
+    };
+  }
   if (body.length < MAX_PAYLOAD_BYTES) return null;
   if (!hasTruncationTail(body)) return null;
   return {
@@ -604,9 +680,10 @@ export default defineTool({
     }
 
     const stripCheck = stripLeadingFrontmatter(args.body);
-    if (stripCheck.stripped) {
-      warnings.push('a leading --- frontmatter block in `body` was stripped — frontmatter is generated from the args; pass body content only.');
-    }
+    // The submitted block is parsed, not just discarded: a `source: true` read
+    // legitimately carries one, and the only thing an author can lose here is an
+    // EDIT to it. That comparison happens after `fm` is built, below.
+    const submittedFrontmatter = stripCheck.stripped ? parseExistingFrontmatter(args.body) : {};
     // Remove docs:get's read preamble before it becomes part of the document. The
     // truncation guards below use the RAW body (the preamble sits inside the
     // clipped window, so removing it first would move the body off the read-cap
@@ -686,20 +763,52 @@ export default defineTool({
     };
     const content = composeDoc(fm, authoredBody);
 
+    // Report only what the author actually LOSES. A body round-tripped from
+    // `docs:get { source: true }` carries its frontmatter unchanged, so the faithful
+    // path stays silent; an EDITED key gets named along with the arg that would have
+    // applied it. (Discarding the block is deliberate — a body read minutes ago must
+    // not revert a peer's metadata write — but doing it silently is what turned a
+    // dropped edit into a clean-looking success.)
+    if (stripCheck.stripped) {
+      const dropped = droppedFrontmatterEdits(submittedFrontmatter, {
+        ...existingFrontmatter,
+        title: fm.title,
+        description: fm.description,
+        discovered: fm.discovered,
+        status: fm.status,
+        type: fm.type,
+        tags: fm.tags,
+        documents: fm.documents,
+        plans: fm.plans,
+        ...(fm.normative !== undefined ? { normative: fm.normative } : {}),
+        ...(fm.governs !== undefined ? { governs: fm.governs } : {}),
+      });
+      if (dropped.length) {
+        const repairs = dropped
+          .map((key) => (FRONTMATTER_ARG_FOR_KEY[key] ? `${key} → pass \`${FRONTMATTER_ARG_FOR_KEY[key]}\`` : key))
+          .join('; ');
+        warnings.push(
+          `frontmatter edits in \`body\` were NOT applied — this tool generates frontmatter from the args plus the stored row, ` +
+            `so an edit made inside the block is discarded: ${repairs}. Re-send with those args set.`,
+        );
+      }
+    }
+
     // ── Truncated-body guards (EI-21940075757786953) ────────────────────────────
     // `body` is a FULL replacement, so a body sourced from a clipped read deletes
     // the rest of the page. Both checks run BEFORE the canonical write; the
     // baseline is `existingContent`, which the frontmatter-inheritance step above
     // has already loaded, so this costs no extra read.
+    const sourceHint = canonicalSourceHint(abs, ref, harnessRes.engineering ? 'engineering' : harnessSlug);
     const truncated = truncatedBodyVerdict(args.body);
-    if (truncated) return err(`${truncated.code} — ${docId}: ${truncated.detail} ${canonicalSourceHint(abs, ref)}`);
+    if (truncated) return err(`${truncated.code} — ${docId}: ${truncated.detail} ${sourceHint}`);
     if (args.overwrite && !args.confirmShrink) {
       const shrink = overwriteShrinkVerdict({
         existingLength: existingContent?.length,
         bodyLength: args.body.length,
         contentLength: content.length,
       });
-      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail} ${canonicalSourceHint(abs, ref)}`);
+      if (shrink) return err(`${shrink.code} — ${docId}: ${shrink.detail} ${sourceHint}`);
     }
 
     // Validate the complete projected document before the canonical write. The downstream
