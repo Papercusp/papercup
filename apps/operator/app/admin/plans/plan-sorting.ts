@@ -52,8 +52,9 @@ const BUCKET_ORDER: Record<PlanBucket, number> = {
   running: 0,
   ready: 1,
   draft: 2,
-  shipped: 3,
-  rejected: 4,
+  awaiting: 3,
+  shipped: 4,
+  rejected: 5,
 };
 
 /**
