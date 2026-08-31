@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   detectBreaches,
   detectUndeclaredGrowth,
+  detectUndeclaredDiskGrowth,
   formatBreachToast,
   formatGrowthEscalation,
   formatUndeclaredToast,
+  formatUndeclaredDiskToast,
   runStorageGrowthAlarmOnce,
   categoryCeilingBytes,
   RETENTION_COVERED_ELSEWHERE,
@@ -20,9 +22,16 @@ import {
   type ExemptSubsetProbe,
   type ExemptSubsetGrowth,
 } from './storage-growth-alarm';
+import type { DiskEntry, DiskRootChildScan } from './disk';
 import type { StorageUsageRow } from './usage';
 
 const GIB = 1024 ** 3;
+
+/** Keep legacy alarm-leg tests independent from the host filesystem. */
+const emptyDiskScan = async (_registeredPaths: readonly string[]): Promise<DiskRootChildScan> => ({
+  entries: [],
+  truncated: false,
+});
 
 function pgRow(id: string, gb: number, extra: Partial<StorageUsageRow> = {}): StorageUsageRow {
   return {
@@ -100,8 +109,10 @@ describe('runStorageGrowthAlarmOnce', () => {
       computeUsage: async () => [pgRow('decision-ledger', 12), pgRow('agent-activity', 1)],
       emitToast,
       // Isolate the CATEGORY leg: the undeclared sweep is a second, independent
-      // leg with its own tests below. Without this it would hit a live catalog.
+      // leg with its own tests below. Without this it would hit a live catalog
+      // and the host filesystem.
       listTableSizes: async () => [],
+      listDiskRootChildren: emptyDiskScan,
       escalate: async () => {},
       recentlyEscalated: async () => false,
     });
@@ -117,6 +128,7 @@ describe('runStorageGrowthAlarmOnce', () => {
       computeUsage: async () => [pgRow('substrate-outbox', 4)],
       emitToast: async () => {},
       listTableSizes: async () => [],
+      listDiskRootChildren: emptyDiskScan,
       escalate,
       recentlyEscalated: async () => false,
     });
@@ -130,6 +142,7 @@ describe('runStorageGrowthAlarmOnce', () => {
       computeUsage: async () => [pgRow('decision-ledger', 1), pgRow('substrate-outbox', 1)],
       emitToast,
       listTableSizes: async () => [],
+      listDiskRootChildren: emptyDiskScan,
     });
     expect(res.breaches).toEqual([]);
     expect(emitToast).not.toHaveBeenCalled();
@@ -147,6 +160,100 @@ function tbl(table: string, mb: number, rows = 1000): TableSizeRow {
   return { table, totalBytes: mb * MB, rows };
 }
 
+function diskEntry(path: string, mb: number): DiskEntry {
+  return { path, mtimeMs: 0, sizeBytes: mb * MB };
+}
+
+describe('detectUndeclaredDiskGrowth', () => {
+  it('flags an over-floor unregistered child and sorts the largest first', () => {
+    const result = detectUndeclaredDiskGrowth(
+      [diskEntry('/papercusp/small', 200), diskEntry('/papercusp/big', 900)],
+      [],
+      128 * MB,
+    );
+    expect(result.undeclared.map((entry) => entry.path)).toEqual(['/papercusp/big', '/papercusp/small']);
+    expect(result.incomplete).toBe(false);
+  });
+
+  it('does not flag a registered path or any registered descendant, however large', () => {
+    const result = detectUndeclaredDiskGrowth(
+      [diskEntry('/papercusp/owned', 9_000), diskEntry('/papercusp/owned/nested', 9_000)],
+      ['/papercusp/owned'],
+      128 * MB,
+    );
+    expect(result.undeclared).toEqual([]);
+  });
+
+  it('deduplicates overlapping snapshots and exposes a truncated walk as incomplete', () => {
+    const result = detectUndeclaredDiskGrowth(
+      [diskEntry('/papercusp/unknown', 500), diskEntry('/papercusp/unknown', 500)],
+      [],
+      128 * MB,
+      true,
+    );
+    expect(result.undeclared).toHaveLength(1);
+    expect(result.incomplete).toBe(true);
+  });
+});
+
+describe('formatUndeclaredDiskToast', () => {
+  it('names offenders and says a partial result is UNKNOWN, not healthy', () => {
+    const toast = formatUndeclaredDiskToast(
+      [diskEntry('/papercusp/unknown', 500)].map((entry) => ({
+        path: entry.path,
+        bytes: entry.sizeBytes,
+        floorBytes: 128 * MB,
+      })),
+      true,
+    );
+    expect(toast.message).toContain('1 unowned disk entry');
+    expect(toast.description).toContain('/papercusp/unknown');
+    expect(toast.description).toContain('UNKNOWN, not healthy');
+  });
+});
+
+describe('runStorageGrowthAlarmOnce — disk undeclared leg', () => {
+  it('runs the injected disk sweep and reports its offenders independently', async () => {
+    const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    const scanDiskRootChildren = vi.fn(
+      async (_registeredPaths: readonly string[]): Promise<DiskRootChildScan> => ({
+        entries: [diskEntry('/papercusp/unowned', 900)],
+        truncated: false,
+      }),
+    );
+    const res = await runStorageGrowthAlarmOnce({
+      computeUsage: async () => [],
+      listTableSizes: async () => [],
+      listDiskRootChildren: scanDiskRootChildren,
+      emitToast,
+      countExemptSubsets: healthySubsetCounts,
+    });
+
+    expect(scanDiskRootChildren).toHaveBeenCalledOnce();
+    expect(res.undeclaredDisk.map((entry) => entry.path)).toEqual(['/papercusp/unowned']);
+    expect(res.diskScanIncomplete).toBe(false);
+    expect(emitToast).toHaveBeenCalledTimes(1);
+    expect(emitToast.mock.calls[0][0].description).toContain('/papercusp/unowned');
+  });
+
+  it('emits an UNKNOWN toast when the bounded disk walk is incomplete', async () => {
+    const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    const res = await runStorageGrowthAlarmOnce({
+      computeUsage: async () => [],
+      listTableSizes: async () => [],
+      listDiskRootChildren: async () => ({ entries: [], truncated: true }),
+      emitToast,
+      countExemptSubsets: healthySubsetCounts,
+    });
+
+    expect(res.undeclaredDisk).toEqual([]);
+    expect(res.diskScanIncomplete).toBe(true);
+    expect(emitToast).toHaveBeenCalledTimes(1);
+    expect(emitToast.mock.calls[0][0].message).toContain('incomplete');
+    expect(emitToast.mock.calls[0][0].description).toContain('UNKNOWN, not healthy');
+  });
+});
+
 /** A real declared category table (storage/categories.ts) — the covered control. */
 const DECLARED = ['tool_invocations', 'route_invocations', 'agent_activity'];
 
@@ -154,11 +261,7 @@ describe('detectUndeclaredGrowth', () => {
   it('flags an over-floor table that carries no retention decision', () => {
     // pot_throughput_ticks, measured live 2026-08-03: 167 MB / 410,510 rows,
     // no storage category and zero DELETE sites anywhere in the tree.
-    const { undeclared } = detectUndeclaredGrowth(
-      [tbl('pot_throughput_ticks', 167, 410_510)],
-      DECLARED,
-      128 * MB,
-    );
+    const { undeclared } = detectUndeclaredGrowth([tbl('pot_throughput_ticks', 167, 410_510)], DECLARED, 128 * MB);
     expect(undeclared.map((u) => u.table)).toEqual(['pot_throughput_ticks']);
     expect(undeclared[0].rows).toBe(410_510);
   });
@@ -271,6 +374,7 @@ describe('runStorageGrowthAlarmOnce — undeclared leg', () => {
       },
       emitToast,
       listTableSizes: async () => [tbl('pot_throughput_ticks', 900, 410_510)],
+      listDiskRootChildren: emptyDiskScan,
       countExemptSubsets: healthySubsetCounts,
     });
     // The category leg degrades loudly but non-fatally...
@@ -287,7 +391,11 @@ describe('runStorageGrowthAlarmOnce — undeclared leg', () => {
     const res = await runStorageGrowthAlarmOnce({
       computeUsage: async () => [],
       emitToast,
-      listTableSizes: async () => [tbl('tool_invocations', 2313), ...Object.keys(RETENTION_COVERED_ELSEWHERE).map((t) => tbl(t, 1))],
+      listTableSizes: async () => [
+        tbl('tool_invocations', 2313),
+        ...Object.keys(RETENTION_COVERED_ELSEWHERE).map((t) => tbl(t, 1)),
+      ],
+      listDiskRootChildren: emptyDiskScan,
       countExemptSubsets: healthySubsetCounts,
     });
     expect(res.undeclared).toEqual([]);
@@ -307,9 +415,7 @@ describe('runStorageGrowthAlarmOnce — undeclared leg', () => {
 
 /** Every declared probe, measured and comfortably under its ceiling. */
 function healthySubsetCounts(): Promise<ExemptSubsetCount[]> {
-  return Promise.resolve(
-    EXEMPT_SUBSET_PROBES.map((p) => ({ table: p.table, subset: p.subset, rows: 0 })),
-  );
+  return Promise.resolve(EXEMPT_SUBSET_PROBES.map((p) => ({ table: p.table, subset: p.subset, rows: 0 })));
 }
 
 function count(table: string, subset: string, rows: number | null): ExemptSubsetCount {
@@ -378,9 +484,7 @@ describe('EXEMPT_SUBSET_PROBES registry integrity — the recurrence guard', () 
     // this" exemption without answering "what ephemeral rows land in here?"
     // fails right here, which is the question nobody asked about work_items.
     const probed = new Set(EXEMPT_SUBSET_PROBES.map((p) => p.table));
-    const unanswered = unprunedByDesignTables().filter(
-      (t) => !probed.has(t) && !(t in NO_EPHEMERAL_SUBSET),
-    );
+    const unanswered = unprunedByDesignTables().filter((t) => !probed.has(t) && !(t in NO_EPHEMERAL_SUBSET));
     expect(
       unanswered,
       `${unanswered.join(', ')} is declared "${NOT_AGE_PRUNABLE}" but names neither an EXEMPT_SUBSET_PROBES ` +
@@ -409,9 +513,7 @@ describe('EXEMPT_SUBSET_PROBES registry integrity — the recurrence guard', () 
 
   it('no table is BOTH probed and declared subset-free — that is a contradiction, not a belt-and-braces', () => {
     for (const p of EXEMPT_SUBSET_PROBES) {
-      expect(p.table in NO_EPHEMERAL_SUBSET, `${p.table} both has a probe and claims no ephemeral subset`).toBe(
-        false,
-      );
+      expect(p.table in NO_EPHEMERAL_SUBSET, `${p.table} both has a probe and claims no ephemeral subset`).toBe(false);
     }
   });
 
@@ -493,10 +595,9 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
       listTableSizes: async () => {
         throw new Error('catalog scan down');
       },
+      listDiskRootChildren: emptyDiskScan,
       emitToast,
-      countExemptSubsets: async () => [
-        count('work_items', 'resource-governor admission receipts', 776_382),
-      ],
+      countExemptSubsets: async () => [count('work_items', 'resource-governor admission receipts', 776_382)],
     });
     warn.mockRestore();
     expect(res.exemptSubsets.map((o) => o.rows)).toEqual([776_382]);
@@ -509,6 +610,7 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
     const res = await runStorageGrowthAlarmOnce({
       computeUsage: async () => [],
       listTableSizes: async () => [],
+      listDiskRootChildren: emptyDiskScan,
       emitToast,
       countExemptSubsets: healthySubsetCounts,
     });
@@ -522,10 +624,9 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
     const res = await runStorageGrowthAlarmOnce({
       computeUsage: async () => [],
       listTableSizes: async () => [],
+      listDiskRootChildren: emptyDiskScan,
       emitToast,
-      countExemptSubsets: async () => [
-        count('work_items', 'resource-governor admission receipts', null),
-      ],
+      countExemptSubsets: async () => [count('work_items', 'resource-governor admission receipts', null)],
     });
     expect(res.exemptUnknown).toEqual(['work_items/resource-governor admission receipts']);
     expect(emitToast).toHaveBeenCalledTimes(1);
@@ -537,6 +638,7 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
     const res = await runStorageGrowthAlarmOnce({
       computeUsage: async () => [],
       listTableSizes: async () => [],
+      listDiskRootChildren: emptyDiskScan,
       emitToast,
       countExemptSubsets: async () => {
         throw new Error('subset count down');
