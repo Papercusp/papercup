@@ -530,6 +530,38 @@ const SCOPE_VARIANT_PAIR =
 const HARNESS_VS_PRODUCTION =
   'WI-1745363 adjudicated: load-test harness vs production sidecar — deliberate, concern is inapplicable at the other site';
 
+/**
+ * WI-1745363 — all five seams have REAL production defaults (host-recycle.ts:168-177:
+ * `exit ?? process.exit`, `closeSubstrate ?? closeAllBootedHarnesses`, `isSaturated ??
+ * isLoopElevated`, `dropReplicationTracking ?? dropAllReplicationLivenessTracking`,
+ * `killSelf ?? process.kill`), so the hono-host callers omitting them get the production
+ * behaviour, not a skipped concern.
+ *
+ * ⚠ AND the site they are "diverging" from (host-recycle.ts:348) is a PASS-THROUGH
+ * FORWARDER inside the declaring module — `exit: opts.exit, closeSubstrate:
+ * opts.closeSubstrate, …` — which forwards whatever ITS caller supplied, including
+ * `undefined`. A forwarder therefore inflates the union of "seams someone wires" without
+ * being evidence that any other caller must wire them. That is a known residual
+ * imprecision in this detector, recorded here rather than papered over.
+ */
+const DEFAULTED_PLUS_FORWARDER =
+  'WI-1745363 adjudicated: every seam has a real production default; the "wiring" site is a pass-through forwarder of possibly-undefined opts';
+
+/**
+ * WI-1745363 — `ConsultVerbDeps` binds VERB-SPECIFIC capabilities, and each verb binds
+ * only the seams its own outcome path can reach. `close` binds `mintGraduationWorkItem` +
+ * `settleConversation` (both close-time: graduating an unanswered consult into a work
+ * item, and settling the conversation as the consult closes). `decline` / `reply` bind
+ * `reach` + `revive` (route the question onward to another responder) — they never close
+ * the consult, so the close-time seams are unreachable there, and vice versa.
+ *
+ * Decisive evidence that this is not the silent-skip shape: an absent
+ * `mintGraduationWorkItem` fails LOUD — consult-verbs-core.ts:714 returns
+ * `{ error: 'graduate_unavailable', hint: … }` rather than quietly skipping.
+ */
+const VERB_SPECIFIC_BINDING =
+  'WI-1745363 adjudicated: verb-specific capability binding; the unbound seams are unreachable on this verb (and an absent mintGraduationWorkItem fails loud)';
+
 const FAIL_BASELINE = new Map([
   // Re-seeded from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
