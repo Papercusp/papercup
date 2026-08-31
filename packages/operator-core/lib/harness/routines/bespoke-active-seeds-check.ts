@@ -96,6 +96,15 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // that this registry was written to close. Found red in committed staging while greening
   // main on 2026-08-30; unrelated to the frozen-candidate entry below.
   { name: 'dead-citation-sweep', seedScript: 'seed-dead-citation-sweep-routine.ts' },
+  // WI-1741477. Added in the SAME change as the action, its import and its spend entry —
+  // deliberately not deferred. The entry above records that dead-citation-sweep landed
+  // always-on but was missed here, so the "seed script nobody ever ran" guard could not see
+  // it; this action's whole subject is instruments that exist and never fire, which makes
+  // repeating that omission here the one mistake it must not make.
+  {
+    name: 'durable-escalation-orphan-sweep',
+    seedScript: 'seed-durable-escalation-orphan-sweep-routine.ts',
+  },
   {
     name: 'frozen-candidate-drift-sweep',
     seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',

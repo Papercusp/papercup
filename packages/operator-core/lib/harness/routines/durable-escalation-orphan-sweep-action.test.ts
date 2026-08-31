@@ -61,12 +61,29 @@ function report(over: Partial<ScanReport> = {}): ScanReport {
   };
 }
 
+type FileInput = {
+  workspaceId: string;
+  harnessSlug: string;
+  report: ScanReport;
+  findings: EmitterFinding[];
+};
+
+/** Captures into plain arrays rather than reading `.mock.calls[0][0]`: under this project's
+ *  `noUncheckedIndexedAccess`, an untyped `vi.fn()` gives an empty-tuple call signature, so
+ *  indexing it is both untyped and possibly-undefined. */
 function harness(overrides: Parameters<typeof makeDurableEscalationOrphanSweepAction>[0] = {}) {
-  const file = vi.fn(async () => ({ filed: true }));
+  const fileArgs: FileInput[] = [];
+  const logs: string[] = [];
+  const file = vi.fn(async (input: FileInput) => {
+    fileArgs.push(input);
+    return { filed: true };
+  });
   const fileScanBlind = vi.fn(async () => ({ filed: true }));
-  const log = vi.fn();
+  const log = vi.fn((message: string) => {
+    logs.push(message);
+  });
   const action = makeDurableEscalationOrphanSweepAction({ file, fileScanBlind, log, ...overrides });
-  return { action, file, fileScanBlind, log };
+  return { action, file, fileScanBlind, log, fileArgs, logs };
 }
 
 describe('durable-escalation orphan sweep action — a blind scan is not a clean one', () => {
@@ -77,7 +94,7 @@ describe('durable-escalation orphan sweep action — a blind scan is not a clean
     // The failure this guards: zero rows and zero findings look identical in `findings`
     // alone, so routing a blind scan into the ordinary path reports "nothing wrong".
     expect(h.file).not.toHaveBeenCalled();
-    expect(h.log.mock.calls[0][0]).toMatch(/BLIND, not clean/);
+    expect(h.logs.join('\n')).toMatch(/BLIND, not clean/);
   });
 
   it('CONTRAST: a real scan with nothing actionable files NOTHING and is not called blind', async () => {
@@ -86,7 +103,7 @@ describe('durable-escalation orphan sweep action — a blind scan is not a clean
     expect(h.fileScanBlind).not.toHaveBeenCalled();
     // `file` is still invoked; productionFile itself no-ops on an empty finding set.
     expect(h.file).toHaveBeenCalledTimes(1);
-    expect(h.file.mock.calls[0][0].findings).toEqual([]);
+    expect(h.fileArgs[0]!.findings).toEqual([]);
   });
 
   it('passes actionable findings through, dropping within-own-norm', async () => {
@@ -97,7 +114,7 @@ describe('durable-escalation orphan sweep action — a blind scan is not a clean
         }),
     });
     await h.action(ctx);
-    const passed = h.file.mock.calls[0][0].findings;
+    const passed = h.fileArgs[0]!.findings;
     expect(passed).toHaveLength(1);
     expect(passed[0].emitter).toBe('system:resource-governor');
   });

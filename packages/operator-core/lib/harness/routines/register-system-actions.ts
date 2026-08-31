@@ -500,6 +500,11 @@ import './work-item-admission-promoter-action';
 import './work-item-admission-bulk-dedup-action';
 import './work-item-admission-delta-sweep-action';
 import './dead-citation-sweep-action';
+// WI-1741477: the caller for the durable-escalation orphan detector built in
+// EI-19339499404613652. Landed together with its TARGET_ROLE_SPEND entry, its seed script,
+// and its BESPOKE_ACTIVE_SEEDS row — the detector's own defect is "an instrument that exists
+// and never fires", so a half-wired registration here would reproduce it verbatim.
+import './durable-escalation-orphan-sweep-action';
 import './work-item-admission-daily-digest-action';
 import './work-item-durable-park-audit-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
