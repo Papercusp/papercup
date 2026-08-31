@@ -38,6 +38,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'docs:read',
     'work_items:read',
     'work_items:write',
+    'harness:read',
     'locks:read',
     'locks:write',
     'intel:read',
