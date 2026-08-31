@@ -551,9 +551,7 @@ export function findRetiredGuidanceOffenders(file, source) {
  *      (EI-21972876172423322).
  */
 export const ACTIVE_RETIRED_GUIDANCE_PENDING = [
-  { path: "packages/operator-core/lib/agent-tools/pot", offenders: 14 },
-  { path: "packages/operator-core/lib/agent-tools/fleet", offenders: 5 },
-  { path: "packages/operator-core/lib/agent-tools/deploy", offenders: 2 },
+  { path: "packages/operator-core/lib/agent-tools/pot", offenders: 2 },
 ];
 
 const PENDING_PATHS = new Set(

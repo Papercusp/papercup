@@ -262,7 +262,7 @@ describe('module specifiers are paths, not guidance', () => {
     const out = guidanceTextFor('t.ts', source);
     expect(out).toHaveLength(source.length);
     // The surviving offender is still reported on line 2, not line 1.
-    expect(offenders('t.ts', source).map((o) => o.line)).toEqual([2]);
+    expect(offenders('t.ts', source).map((o: { line: number }) => o.line)).toEqual([2]);
   });
 });
 
