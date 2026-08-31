@@ -1650,6 +1650,75 @@ export const BYPASS_REGISTRY = new Map([
         "The one retry in this file wraps store.enqueue — the write that CREATES the receipt — via acquireWithContentionRetry, and is keyed by idempotencyKey: a pg lock/statement timeout aborts its transaction so nothing is committed, and if an earlier attempt HAD committed, the retry returns that same row and the requestFingerprint check still raises a genuine idempotency conflict. Non-contention faults propagate on the first attempt. Admission is PRE-execution, so dropping the record would mean running ungoverned; the retry is the correct lever. NOTE: the detector's text-proximity heuristic does not actually match that call site — it matches the adjacent `admissionRetryBackoffsMs` / `receiptId` option-type declarations at lines 367-370. That precision gap is tracked separately; this row dispositions the file's real, reviewed retry.",
     },
   ],
+  // ── dead-target / dead-citation / drift sweep routines (EI-21921643279095147) ─
+  // Three new background-routines-watchdogs (P-016) lanes, each a bounded git
+  // metadata read with no resident work created.
+  [
+    "packages/operator-core/lib/harness/routines/dead-citation-sweep-action.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "execFileAsync(git ls-files) lists tracked *.md/*.ts/etc paths as a cheap pre-filter before the in-module dead-citation scan; awaited, exits immediately, starts no resident work. Same cheap-metadata class as the already-registered plans/git-history.ts row.",
+    },
+  ],
+  [
+    "packages/operator-core/lib/harness/routines/dead-target-probe.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "execFileAsync(git rev-parse --verify --quiet HEAD^{commit}) and (git status --porcelain --untracked-files=no) — two bounded, explicitly-timed-out reads (probeTimeoutMs) run per install per sweep to classify an install's git object store as readable/corrupt/absent/unknown. Both are awaited and read-only; neither starts resident work or a queue.",
+    },
+  ],
+  [
+    "packages/operator-core/lib/harness/routines/frozen-candidate-drift-sweep-action.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "spawnSync(git log <candidate>..<branch> --name-only) is one bounded synchronous metadata read (explicit maxBuffer) used to compute the residual drift finding; the trailer it parses is the only trustworthy attribution here since git-sync commits the whole tree under one identity. No resident work or queue is created.",
+    },
+  ],
+  [
+    "packages/operator-core/lib/release/converge-repair-head.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "The GitProbe implemented here (realGitProbe) is read-only: spawnSync(git rev-parse --verify --quiet), spawnSync(git merge-base --is-ancestor), and a rev-parse blob lookup. This module only classifies the frozen-candidate queue against staging and returns a ConvergePlan; it performs no fast-forward, merge, or push itself. Same bounded-metadata-probe class as the already-registered dbos/bootstrap.ts row.",
+    },
+  ],
+  // ── CI lint scripts: bounded git discovery, never resident (scripts/ lane) ────
+  [
+    "scripts/check-integration-teardown-nullsafe.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "execFileSync(git ls-files) discovers tracked *.integration.test.ts paths for this CI lint script (falsifiability-seam override via explicit argv takes precedence); awaited, exits immediately, starts no resident work.",
+    },
+  ],
+  [
+    "scripts/check-narrowing-gated-assertions.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "execFileSync(git ls-files --recurse-submodules) enumerates tracked files for this CI lint script's AST scan; awaited, exits immediately, starts no resident work.",
+    },
+  ],
+  [
+    "scripts/check-registry-census-drift.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "execFileSync(git grep -l --fixed-strings) is a bounded tracked-file search over *.test.ts/*.test.tsx for this CI lint script; a non-zero exit (no match) is caught and treated as an empty result. Awaited, exits immediately, starts no resident work.",
+    },
+  ],
+  // ── ephemeral manual diagnostic tied to an open investigation ─────────────────
+  [
+    "scripts/tmp-p002-interrupt-control.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Self-documented TEMPORARY PROBE ('delete after use', EI-21908787009967815) — a human-run diagnostic for an open PTY-interrupt investigation, never invoked by any routine, endpoint, or automated pipeline. The one `spawn('script', ...)` child it starts is a bounded, manually-triggered experiment the script's own watch loop SIGKILLs before exit; it is not resident production admission surface. When the linked investigation closes, delete the file and this row together (the strict registry check will flag a stale entry once the path stops being scanned).",
+    },
+  ],
 ]);
 
 function registryKey(path, code) {
