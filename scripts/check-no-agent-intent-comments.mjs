@@ -38,6 +38,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
   FIX_HINT,
@@ -51,11 +52,24 @@ const CENSUS = process.argv.includes('--census');
 /** Source extensions that carry comments in this tree. */
 const EXT = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py|rs|sql|toml|yml|yaml)$/;
 
+/**
+ * The repo root, resolved explicitly — NOT the inherited cwd.
+ *
+ * This guard is registered in REPO_WIDE_INVARIANT_GUARDS under the
+ * `@papercusp/operator-core` workspace, so `test:affected` invokes it with cwd set to
+ * packages/operator-core. `git ls-files` is cwd-relative, so taking the inherited cwd
+ * would silently narrow a WHOLE-TREE guard to one package and still print a confident
+ * green — the "scanned zero bytes of the file you actually wrote" failure, one level up.
+ */
+const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+  encoding: 'utf8',
+}).trim();
+
 function enumerateFiles() {
   const out = execFileSync(
     'git',
     ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    { encoding: 'utf8', cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
   );
   return out.split('\0').filter((f) => f && EXT.test(f) && !isSkippedPath(f));
 }
@@ -66,7 +80,7 @@ let scanned = 0;
 for (const file of enumerateFiles()) {
   let text;
   try {
-    text = readFileSync(file, 'utf8');
+    text = readFileSync(resolve(REPO_ROOT, file), 'utf8');
   } catch {
     continue; // unreadable / vanished mid-scan — not this rule's business
   }

@@ -1671,6 +1671,31 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-19324979765038953 — a comment attributing a PENDING action to an agent
+    // session id (e.g. "su-37bf2 is DELETING this entry") reads as "handled" to every
+    // later reader and froze `main` for hours when the named session vanished.
+    //
+    // WIRED REPO-WIDE, not left at test tier, because check-lint-guard-reachability
+    // named the exact gap: the guard "enumerates the WHOLE tree but only runs when
+    // packages/operator-core is affected" — so the same comment landing in
+    // apps/operator would not have been scanned by the suite that owns it.
+    //
+    // Safe to wire NOW on the precedent below: measured green over the whole real
+    // tree FIRST (15,462 files scanned, 0 findings) after fixing the 8 live
+    // instances it found, so registering it cannot red-pin the fleet on defects
+    // accrued while it slept.
+    //
+    // TRIGGER SCOPE — the subject is any comment-bearing source file, which is
+    // exactly the extension set the guard itself enumerates; keep the two in step.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-agent-intent-comments",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "scripts/check-no-agent-intent-comments.mjs" ||
+      f === "scripts/lib/agent-intent-comment-patterns.mjs" ||
+      /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py|rs|sql|toml|yml|yaml)$/.test(f),
+  },
+  {
     // WI-1472680 — this guard was declared in package.json and run by NOTHING:
     // check-lint-guard-reachability reported it verbatim as "nothing runs it at all".
     // WIRED rather than retired, and the wiring is safe to do NOW because the
