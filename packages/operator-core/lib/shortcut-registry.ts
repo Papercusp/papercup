@@ -214,6 +214,20 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     category: 'navigation',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
   },
+  // Two-level fullscreen for the /adv tab surface (owner ask 2026-08-31: "I
+  // should be able to full screen the main section that shows up inside the
+  // tabs"). One press maximizes the tab content inside the app window; a second
+  // escalates to real OS fullscreen; Escape walks back down a level at a time.
+  // The handler lives in AdvShell (the component that owns the nuqs ?max=
+  // state), so the shortcut is a no-op outside /adv — same shape as the tab and
+  // harness cycling above.
+  {
+    id: 'view.fullscreen',
+    description: 'Maximize the tab (again for fullscreen, Esc to step back)',
+    defaultCombo: 'mod+shift+Enter',
+    category: 'navigation',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
   {
     id: 'goto.inbox',
     description: 'Go to Conversations (inbox)',

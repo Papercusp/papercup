@@ -25,7 +25,9 @@ import {
   LayoutDashboard,
   Lightbulb,
   ListChecks,
+  Maximize2,
   MessageCircle,
+  Minimize2,
   MonitorPlay,
   Settings,
   TrendingUp,
@@ -34,6 +36,7 @@ import {
 } from 'lucide-react';
 import type { SelectEntry, SelectOption } from '@/app/harness/Select';
 import { Popover } from '@/app/harness/Popover';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { potHomeLabel } from '@/lib/pot-label';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
@@ -170,6 +173,58 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
 /** The tab strip for a scope: full strip for a single pot, workspace-level subset under "All Pots". */
 export function visibleAdvTabs(allMode: boolean): typeof ADV_TABS {
   return allMode ? ADV_TABS.filter((t) => WORKSPACE_TAB_IDS.has(t.id)) : ADV_TABS;
+}
+
+/**
+ * ── Tab fullscreen (owner ask 2026-08-31) ─────────────────────────────────
+ *
+ * "I should be able to full screen the main section that shows up inside the
+ * tabs, like HUD WORKFLOWS WORK AND LEARNING ETC." Owner picked the two-level
+ * shape over a single toggle, so a press escalates rather than jumping straight
+ * to an OS takeover:
+ *
+ *   off    — normal: chrome (left sidebar, chat rail, ChromeShell header) around
+ *            the shell.
+ *   window — MAXIMIZED. The shell (tab strip + tab body) becomes a
+ *            viewport-filling overlay that covers the app chrome. The strip
+ *            deliberately STAYS so HUD ⇄ Workflows ⇄ Work ⇄ Learning are still
+ *            one click apart while maximized.
+ *   screen — window, plus real OS fullscreen (requestFullscreen) so the desktop
+ *            title bar and taskbar go too.
+ *
+ * The level is on the URL (`?max=`) like every other user-meaningful bit of /adv
+ * state, so it survives a refresh and is drivable from `ui:get_state` /
+ * `ui:dispatch`. `off` is the default, so nuqs clears the param rather than
+ * writing `?max=off`.
+ */
+export const ADV_MAX_LEVELS = ['off', 'window', 'screen'] as const;
+export type AdvMaxLevel = (typeof ADV_MAX_LEVELS)[number];
+
+/**
+ * What a press of the toggle moves to: off → window → screen → off. Pure so the
+ * escalation order is pinned by a unit test rather than by reading the handler.
+ */
+export function nextAdvMaxLevel(level: AdvMaxLevel): AdvMaxLevel {
+  if (level === 'off') return 'window';
+  if (level === 'window') return 'screen';
+  return 'off';
+}
+
+/**
+ * What Escape steps DOWN to — one level at a time (screen → window → off), which
+ * is the "Esc, Esc" the owner picked. Note the browser owns the first Esc while
+ * a document is in real fullscreen: it exits fullscreen itself and we learn about
+ * it from `fullscreenchange`, which lands on the same 'window' this returns.
+ */
+export function prevAdvMaxLevel(level: AdvMaxLevel): AdvMaxLevel {
+  return level === 'screen' ? 'window' : 'off';
+}
+
+/** Button label/tooltip for the level a press would move to (also the a11y name). */
+export function advMaxToggleLabel(level: AdvMaxLevel): string {
+  if (level === 'off') return 'Maximize this tab';
+  if (level === 'window') return 'Fullscreen this tab (whole screen)';
+  return 'Exit fullscreen';
 }
 
 /**
@@ -481,6 +536,118 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   // Share the currently-selected harness. URL-backed so it survives refresh
   // and is agent-controllable; only meaningful when a slug is active.
   const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
+  // ── Tab fullscreen: off → window (maximize) → screen (OS fullscreen) ──────
+  // See the ADV_MAX_LEVELS doc comment for the shape. URL-backed so it survives
+  // a refresh and is agent-drivable; 'off' is the default so nuqs clears ?max=.
+  const [maxLevel, setMaxLevel] = useQueryState(
+    'max',
+    parseAsStringEnum<AdvMaxLevel>([...ADV_MAX_LEVELS]).withDefault('off'),
+  );
+  // The listeners below (fullscreenchange, Escape) need the CURRENT level without
+  // re-subscribing on every change — a document-level listener that re-binds each
+  // render is how you end up handling one keypress twice.
+  const maxLevelRef = useRef<AdvMaxLevel>(maxLevel);
+  maxLevelRef.current = maxLevel;
+
+  // Publish the level on <body> so the CSS at the bottom of this file can lift the
+  // shell over the app chrome. An ATTRIBUTE, not React style, because the elements
+  // it has to out-rank (the fixed left sidebar, the sticky ChromeShell header) are
+  // not in this component's subtree. Cleared on unmount so navigating away from
+  // /adv can never leave the app wearing a maximize it isn't in.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const { body } = document;
+    if (maxLevel === 'off') body.removeAttribute('data-adv-max');
+    else body.setAttribute('data-adv-max', maxLevel);
+    return () => body.removeAttribute('data-adv-max');
+  }, [maxLevel]);
+
+  /**
+   * Move to `next`, reconciling the real Fullscreen API on the way.
+   *
+   * requestFullscreen() needs transient user activation, so it is called HERE —
+   * from the click/keyboard handler's own task — not from an effect watching the
+   * level. If it is refused (no activation, a kiosk policy, a webview without the
+   * API) we fall back to 'window' rather than parking the URL on a 'screen' the
+   * document never entered: a level that lies is worse than a level that degrades.
+   */
+  const applyMaxLevel = useCallback(
+    async (requested: AdvMaxLevel) => {
+      let next = requested;
+      if (typeof document !== 'undefined') {
+        try {
+          if (next === 'screen') {
+            if (!document.fullscreenElement) {
+              // documentElement, NOT the shell element: Radix dialogs, popovers and
+              // the BlockNote menus portal to <body>, which is OUTSIDE any smaller
+              // fullscreen element — fullscreening the shell alone would make every
+              // one of them invisible while fullscreen.
+              await document.documentElement.requestFullscreen?.();
+            }
+          } else if (document.fullscreenElement) {
+            await document.exitFullscreen?.();
+          }
+        } catch {
+          if (next === 'screen') next = 'window';
+        }
+      }
+      await setMaxLevel(next);
+    },
+    [setMaxLevel],
+  );
+
+  // The user can leave OS fullscreen without us (Esc, F11, the window manager).
+  // Without this the URL would still claim 'screen' while the document is not in
+  // it, and the next press would try to EXIT a fullscreen that is already gone.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement && maxLevelRef.current === 'screen') {
+        void setMaxLevel('window');
+      }
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, [setMaxLevel]);
+
+  // A cold load carrying ?max=screen (bookmark, refresh, an agent's ui:dispatch)
+  // cannot enter fullscreen — there is no user activation on mount. Degrade to the
+  // maximize rather than rendering a level the document is not actually in.
+  const maxScreenDegradedRef = useRef(false);
+  useEffect(() => {
+    if (maxScreenDegradedRef.current || typeof document === 'undefined') return;
+    maxScreenDegradedRef.current = true;
+    if (maxLevel === 'screen' && !document.fullscreenElement) void setMaxLevel('window');
+  }, [maxLevel, setMaxLevel]);
+
+  // Escape steps DOWN one level — but only when nothing layered above the shell
+  // already owns the key, so Esc keeps closing the thing you just opened instead of
+  // tearing down the maximize underneath it.
+  //
+  // The guard matches OPEN dismissable layers by role, NOT by
+  // `[data-radix-popper-content-wrapper]`: a Radix TOOLTIP is a popper too, so that
+  // broader selector would let this button's own hover tooltip disable the Escape
+  // that exits the mode it just turned on. Tooltips never carry data-state="open"
+  // (they are 'delayed-open'/'instant-open'), so keying on that excludes them while
+  // still catching dialogs, popovers, menus and open comboboxes.
+  useEffect(() => {
+    if (maxLevel === 'off' || typeof document === 'undefined') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (
+        document.querySelector(
+          '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"], [role="combobox"][aria-expanded="true"]',
+        )
+      ) {
+        return;
+      }
+      event.preventDefault();
+      void applyMaxLevel(prevAdvMaxLevel(maxLevelRef.current));
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [maxLevel, applyMaxLevel]);
+
   // The persisted-selection restore runs at most once per mount. Setting the
   // slug re-renders (activeSlug changes), but the ref keeps the effect from
   // re-restoring (or fighting a user's later pick / a later live push).
@@ -654,6 +821,14 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   useShortcutAction('goto.brainstorm', () => void setActiveTab('brainstorm'));
   useShortcutAction('goto.insights', () => void setActiveTab('insights'));
 
+  // Same escalation as the strip's button (off → window → screen → off). Reads the
+  // ref, not the closed-over value, so a rebind or a stale registration can't fire
+  // against a level from an earlier render. A keydown carries user activation, so
+  // the requestFullscreen() inside applyMaxLevel is allowed from here too.
+  useShortcutAction('view.fullscreen', () =>
+    void applyMaxLevel(nextAdvMaxLevel(maxLevelRef.current)),
+  );
+
   return (
     // data-testid is the packaged perf suite's contract for "the OPERATOR shell
     // is up, not a first-run lookalike" (tools/perf-test/wdio/app-mount.ts,
@@ -767,6 +942,35 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           <div className="pc-advshell__header-status">
             <AgentsRunningPill />
             <TasksRunningPill />
+          </div>
+          {/* Tab fullscreen (owner ask 2026-08-31). Its own container rather than
+              a third child of __header-status: that wrapper is allowed to shrink
+              and CLIPS (overflow: hidden) so the pills can degrade gracefully on a
+              narrow window — correct for a readout, wrong for the only affordance
+              that gets you back out of a maximize. This one is pinned right and
+              never shrinks. */}
+          <div className="pc-advshell__tools">
+            <Tooltip
+              label={`${advMaxToggleLabel(maxLevel)} — Ctrl/⌘+Shift+Enter${maxLevel === 'off' ? '' : ' · Esc steps back'}`}
+              side="bottom"
+              align="end"
+            >
+              <button
+                type="button"
+                className="pc-advshell__maxbtn"
+                data-testid="adv-fullscreen-toggle"
+                data-level={maxLevel}
+                aria-label={advMaxToggleLabel(maxLevel)}
+                aria-pressed={maxLevel !== 'off'}
+                onClick={() => void applyMaxLevel(nextAdvMaxLevel(maxLevel))}
+              >
+                {maxLevel === 'off' ? (
+                  <Maximize2 size={13} aria-hidden />
+                ) : (
+                  <Minimize2 size={13} aria-hidden />
+                )}
+              </button>
+            </Tooltip>
           </div>
           <button
             type="button"
@@ -939,7 +1143,89 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
           display: inline-block;
           line-height: 18px;
         }
-        .pc-advshell__tabs[data-of-right] .pc-advshell__header-status { margin-right: 26px; }
+        /* The right-hand tool cluster (currently just the fullscreen toggle). It is
+           the LAST thing in the strip, so it — not the pills — is what the overflow
+           chevron would land on top of; the 26px clearance moved here with it. */
+        .pc-advshell__tools {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          flex: 0 0 auto;
+          margin-left: auto;
+          margin-bottom: 6px;
+          padding-left: 8px;
+        }
+        .pc-advshell__tabs[data-of-right] .pc-advshell__tools { margin-right: 26px; }
+        .pc-advshell__maxbtn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 26px;
+          height: 26px;
+          padding: 0;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-radius: 7px;
+          background: transparent;
+          color: var(--fg-mute, #8fa9be);
+          cursor: pointer;
+          transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+        }
+        .pc-advshell__maxbtn:hover,
+        .pc-advshell__maxbtn:focus-visible {
+          color: var(--fg, #e7f7ff);
+          border-color: color-mix(in srgb, var(--accent, #38bdf8), transparent 55%);
+          background: color-mix(in srgb, var(--accent, #38bdf8), transparent 90%);
+        }
+        /* Maximized/fullscreen reads as ON, so the control that got you here stays
+           findable against a full-bleed tab body. */
+        .pc-advshell__maxbtn[aria-pressed='true'] {
+          color: var(--accent, #38bdf8);
+          border-color: color-mix(in srgb, var(--accent, #38bdf8), transparent 45%);
+          background: color-mix(in srgb, var(--accent, #38bdf8), transparent 88%);
+        }
+
+        /* ── Tab fullscreen (owner ask 2026-08-31) ───────────────────────────
+           Both levels ('window' and 'screen') use the SAME layout: the shell
+           becomes a viewport-filling overlay. 'screen' differs only in that the
+           document is additionally in real OS fullscreen, which is the window
+           manager's business, not CSS's.
+
+           z-index 1350 is chosen from both sides, not picked for headroom:
+             ABOVE the app chrome this is meant to cover — PresenceRail (900),
+             LeftSidebar (1290), the sticky ChromeShell header (1300);
+             BELOW every layer a tab can portal to <body> — BlockNote's editor
+             menus (1400), the voice hint (1410), the maximal-HUD oracle dock
+             (1450) and the modal band (1500+). Going higher would hide a dialog
+             opened from inside the maximized tab behind it.
+
+           Top is the env-bar height, not 0: EnvSwitcherBar is fixed at z-index
+           2147483640 by design (it is the deliberate escape hatch if a build
+           white-screens) and publishes its measured height as --pc-env-bar-h,
+           which is exactly how .pc-header already sits below it. */
+        body[data-adv-max] .pc-advshell {
+          position: fixed;
+          top: var(--pc-env-bar-h, 0px);
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: auto;
+          z-index: 1350;
+        }
+        /* NOTE: no backticks anywhere in this block — it is a JS template literal
+           and one in a comment ends the literal (the warning on the pills rule
+           above; hit again writing this one).
+
+           main[data-route-transition-page] carries will-change: transform, which
+           makes it a CONTAINING BLOCK for position:fixed descendants — without this
+           the overlay above would size to <main> (the area the chrome already left
+           over) instead of the viewport, i.e. it would "maximize" into exactly the
+           box it is supposed to escape. Route transitions do not run while a tab is
+           maximized, so dropping the hint costs nothing. */
+        body[data-adv-max] [data-route-transition-page='true'] {
+          will-change: auto;
+          transform: none;
+          filter: none;
+        }
         .pc-advshell__tablist {
           display: inline-flex;
           align-items: flex-end;
