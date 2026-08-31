@@ -1743,8 +1743,36 @@ function inventory(row) {
   });
 }
 
-const START =
-  /(?:\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(|new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\()/;
+const START_VERBS = ["spawn", "spawnSync", "fork", "execFile", "execFileSync"];
+const START_NON_VERB = /new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\(/;
+// A start verb is also the natural NAME for a caller-supplied callback: a pacing,
+// retry, or instrumentation wrapper takes `spawn: () => Promise<T>` and calls
+// `spawn()` while starting nothing itself. The real child process is started by the
+// caller it wraps, at a site this same scan already covers, so counting the wrapper
+// as a start reports the one start twice and pins the finding on the file that does
+// not make it. That is a detector misfire, and BYPASS_REGISTRY deliberately refuses
+// to absorb misfires ("a detector that misfires is a detector bug to fix, and
+// registering it would preserve the bug behind a row that reads as judgement"), so
+// it is narrowed HERE rather than dispositioned.
+//
+// The exemption is deliberately hard to obtain, because it must not become a way to
+// launder a real start: the identifier has to be declared as a function-typed
+// binding in this same file (`spawn: (`), AND the file must never import or require
+// that name. A file that pulls in the real primitive keeps its finding even when it
+// also happens to carry a callback parameter of the same name.
+function isLocalCallbackBinding(code, name) {
+  if (!new RegExp(`\\b${name}\\s*:\\s*\\(`).test(code)) return false;
+  return !new RegExp(`\\b(?:import|require)\\b[^;\\n]*\\b${name}\\b`).test(code);
+}
+function hasResourceStart(code) {
+  if (START_NON_VERB.test(code)) return true;
+  for (const verb of START_VERBS) {
+    if (!new RegExp(`\\b${verb}\\s*\\(`).test(code)) continue;
+    if (isLocalCallbackBinding(code, verb)) continue;
+    return true;
+  }
+  return false;
+}
 // Direct-call matching misses dependency-injected aliases such as
 // `const spawnImpl = spawn` / `spawnImpl(...)` and
 // `const exec = promisify(execFile)` / `exec(...)`. Match only identifiers
@@ -1791,7 +1819,7 @@ export function inspectGovernorSource(source) {
   const code = stripCommentsAndStrings(source, "fixture.ts");
   const findings = [];
   if (
-    (START.test(code) || hasCalledResourceStartAlias(code)) &&
+    (hasResourceStart(code) || hasCalledResourceStartAlias(code)) &&
     !GOVERNED.test(code)
   )
     findings.push("resource-start-outside-admission");
