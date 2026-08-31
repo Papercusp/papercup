@@ -73,6 +73,36 @@ describe('the picker population', () => {
     expect(rows.map((r) => r.potSlug).sort()).toEqual(['alpha', 'beta', 'gamma']);
   });
 
+  it('EXCLUDES workspace projects that are not pots', () => {
+    // The bug this prevents (measured live 2026-08-30): the picker read
+    // `harnessProjects.lite`, which is EVERY project in the workspace, and
+    // rendered 116 rows against 28 real pots — 38 of them `papercusp/libs/*`
+    // submodules. A repo cannot hold a learning row, and `learning:set-pot-scope`
+    // REFUSES an unknown pot slug, so each of those rows was a control that
+    // could only fail.
+    const rows = buildPotPickerRows(
+      [
+        pot('alpha'),
+        { slug: 'papercusp/libs/generic/cache' },
+        { slug: 'papercusp/libs/agent-chat', harness_kind: 'repo' },
+        { slug: 'papercusp/papercusp-desktop', harness_kind: null },
+      ],
+      arming({ gymPots: [gym('alpha', true)] }),
+    );
+    expect(rows.map((r) => r.potSlug)).toEqual(['alpha']);
+  });
+
+  it('still surfaces a NON-pot-kinded project that the arming block names', () => {
+    // The filter above must not be able to hide a slug that is actually
+    // spending: the union with the arming block is what keeps the strict
+    // filter safe, including when a cached payload predates `harness_kind`.
+    const rows = buildPotPickerRows(
+      [{ slug: 'unlabelled' }],
+      arming({ gymPots: [gym('unlabelled', true)] }),
+    );
+    expect(rows.map((r) => r.potSlug)).toEqual(['unlabelled']);
+  });
+
   it('INCLUDES a pot that carries arming but is missing from the project listing', () => {
     // The failure this prevents: such a pot would be invisible on the only
     // surface that can switch it off, so it would keep spending with no route
@@ -132,7 +162,7 @@ describe('what arming a row would ACTUALLY do (D-007)', () => {
   });
 
   it('names the lane a NEVER-learned pot will start', () => {
-    const rows = buildPotPickerRows([{ slug: 'fresh' }], arming({}));
+    const rows = buildPotPickerRows([pot('fresh')], arming({}));
     const row = bySlug(rows, 'fresh');
     expect(row.neverLearned).toBe(true);
     expect(row.laneCount).toBe(0);
@@ -183,7 +213,7 @@ describe('the master gate is read, never guessed', () => {
 
 describe('search', () => {
   const rows = buildPotPickerRows(
-    [{ slug: 'papercusp' }, { slug: 'calendar' }, { slug: 'cupboard' }],
+    [pot('papercusp'), pot('calendar'), pot('cupboard')],
     arming({}),
   );
 
