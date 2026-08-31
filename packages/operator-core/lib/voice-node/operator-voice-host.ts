@@ -74,7 +74,10 @@ export function startOperatorVoiceHost(): void {
       const { drainSentinelSays } = await import('../sentinel-output-buffer');
       return drainSentinelSays();
     },
-    speak: (text) => speakIntoSession(text, broadcastOpVoice),
+    speak: async (text) => {
+      session?.emitCanonicalAssistantSentence(text);
+      return speakIntoSession(text, broadcastOpVoice);
+    },
     broadcast: broadcastOpVoice,
     // No persist dep (WI-4838): voice:say persists the line to the shared
     // conversation at PUSH time, covering every drain path exactly once.

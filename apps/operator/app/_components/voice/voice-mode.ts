@@ -41,6 +41,31 @@ import { f32ToWav } from './f32-to-wav';
 import { transcribeChunk } from '@papercusp/operator-core/lib/voice-engines/whisper';
 import { startEnergyVadCapture } from './energy-vad-capture';
 import { PlayoutLedger, type CaptureWindow } from './capture-window';
+import {
+  createPapercupVoiceTurnAdapter,
+  type PapercupVoiceTransport,
+} from '@papercusp/operator-core/lib/papercup-voice-turn-adapter';
+import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
+
+/**
+ * Canonical event observer for the local/browser Papercup path. The hosted
+ * lease session emits its events server-side; local Whisper + converse uses
+ * this adapter while retaining the existing DOM/provider transport.
+ */
+const localCanonicalAdapter = createPapercupVoiceTurnAdapter({
+  emit: (event: VoiceTurnEvent) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.dispatchEvent(new CustomEvent('papercusp:voiceTurnEvent', { detail: event }));
+    } catch {
+      /* telemetry must never break voice */
+    }
+  },
+});
+
+function canonicalTransportForSource(source: TranscriptSource): PapercupVoiceTransport | null {
+  return source === 'localWhisper' ? 'papercup-local' : null;
+}
 
 /**
  * Emit the voice-engagement signal the OperatorConversationProvider
@@ -346,6 +371,14 @@ function beginAwaitingResponse(): void {
         );
       } catch { /* ignore */ }
     }
+    // The executor failed to produce a substantive response inside the local
+    // turn deadline. Emit the canonical failure before speaking the fallback
+    // notice; the notice is UX, not a successful assistant answer.
+    localCanonicalAdapter.error({
+      code: 'response_timeout',
+      message: "Papercup didn't reply before the local response deadline.",
+      retryable: true,
+    });
     // A visual toast is invisible to the eyes-off-screen user who initiated
     // this turn by voice. Route the failure through the same local TTS queue
     // as normal replies. `allowDuringRealtime` is intentionally narrower than
@@ -2401,6 +2434,15 @@ export function onFinalUtterance(
 function onUtteranceFinal(text: string, transcriptSource: TranscriptSource = 'localWhisper'): void {
   endProcessingTranscript();
   beginAwaitingResponse();
+  const transport = canonicalTransportForSource(transcriptSource);
+  if (transport) {
+    localCanonicalAdapter.finalTranscript({
+      text,
+      transport,
+      latencyClass: 'interactive',
+      executor: 'papercup-local',
+    });
+  }
   for (const l of utteranceListeners) {
     try {
       l(text, transcriptSource);
@@ -2554,6 +2596,15 @@ export function speak(
     role,
     preserveAwaitingResponse: options.preserveAwaitingResponse === true,
   });
+  // Local Papercup replies are produced by the same `speak()` seam used by
+  // typed text. Keep the canonical sentence/completion events observational;
+  // the existing queue and TTS behavior remain untouched. An instant ack can
+  // leave the turn open so the substantive response records its own sentence
+  // and end-to-end latency.
+  if (localCanonicalAdapter.activeTurnId) {
+    localCanonicalAdapter.assistantSentence(text);
+    if (!options.preserveAwaitingResponse) localCanonicalAdapter.complete();
+  }
   // Cap queue depth: drop the oldest items beyond MAX so newer (more
   // relevant) utterances win. Critical when a stuck TTS engine + a
   // chatty caller (background scanner during always-on voice) would
@@ -2707,6 +2758,9 @@ async function synthViaAdapter(text: string, role: string): Promise<void> {
  * and when voice mode is turned off.
  */
 export function cancelAllSpeech(): void {
+  // Barge-in / mode-off terminates any local canonical turn still awaiting a
+  // substantive answer. The existing audio cancellation semantics are kept.
+  if (localCanonicalAdapter.activeTurnId) localCanonicalAdapter.interrupt('user');
   synthQueue = [];
   isSynthSpeaking = false;
   // BARGE-IN CLOSES THE INTERVAL TOO (WI-954890). The old code cleared

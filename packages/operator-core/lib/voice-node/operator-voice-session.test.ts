@@ -24,6 +24,7 @@ import {
   type ElSocket,
   type OperatorVoiceSessionDeps,
 } from './operator-voice-session';
+import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
 
 /** A fake EL socket that records sends and lets the test push inbound text. */
 class FakeEl implements ElSocket {
@@ -47,6 +48,7 @@ interface Harness {
   el: FakeEl | null;
   /** Decoded bus messages the host broadcast, in order. */
   out: OpVoiceMessage[];
+  canonical: VoiceTurnEvent[];
   deps: {
     persistTurn: ReturnType<typeof vi.fn>;
     relayToBrain: ReturnType<typeof vi.fn>;
@@ -66,6 +68,7 @@ function makeHarness(
   } = {},
 ): Harness {
   const out: OpVoiceMessage[] = [];
+  const canonical: VoiceTurnEvent[] = [];
   let el: FakeEl | null = null;
 
   const persistTurn = vi.fn(async () => {});
@@ -112,6 +115,7 @@ function makeHarness(
         if (m) out.push(m);
       }
     },
+    emitCanonicalEvent: (event) => canonical.push(event),
   };
 
   const session = new OperatorVoiceSession(deps);
@@ -121,6 +125,7 @@ function makeHarness(
       return el;
     },
     out,
+    canonical,
     deps: { persistTurn, relayToBrain, claimLease, releaseLease, resolveConfig },
     getEl() {
       if (!el) throw new Error('EL socket not connected yet');
@@ -173,6 +178,69 @@ describe('OperatorVoiceSession — start + election (P-002/P-006)', () => {
 });
 
 describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
+  it('emits canonical hosted transcript/sentence/completion events alongside the existing bus', async () => {
+    const h = makeHarness();
+    await startSession(h);
+    h.getEl().push({
+      type: 'user_transcript',
+      user_transcription_event: { user_transcript: '  what is next?  ' },
+    });
+    h.getEl().push({
+      type: 'agent_response',
+      agent_response_event: { agent_response: '<say>Here is the answer.</say>' },
+    });
+    await flush();
+
+    expect(h.canonical.map((event) => event.type)).toEqual([
+      'transcript.final', 'assistant.sentence', 'completed',
+    ]);
+    expect(h.canonical[0]).toMatchObject({
+      type: 'transcript.final', text: 'what is next?', sequence: 0,
+    });
+    expect(h.canonical[1]).toMatchObject({
+      type: 'assistant.sentence', text: 'Here is the answer.', sentenceIndex: 0,
+    });
+    expect(h.canonical[2]).toMatchObject({
+      type: 'completed', metrics: { executor: 'papercup-hosted', latencyClass: 'interactive' },
+    });
+  });
+
+  it('emits a canonical interruption when the hosted provider reports barge-in', async () => {
+    const h = makeHarness();
+    await startSession(h);
+    h.getEl().push({
+      type: 'user_transcript',
+      user_transcription_event: { user_transcript: 'first question' },
+    });
+    h.getEl().push({
+      type: 'interruption',
+      interruption_event: {},
+    });
+
+    expect(h.canonical.map((event) => event.type)).toEqual(['transcript.final', 'interruption']);
+    expect(h.canonical[1]).toMatchObject({ type: 'interruption', reason: 'user', sequence: 1 });
+  });
+
+  it('keeps the relay acknowledgement out of the canonical answer and closes on the says-pump answer', async () => {
+    const h = makeHarness();
+    await startSession(h);
+    h.getEl().push({
+      type: 'user_transcript',
+      user_transcription_event: { user_transcript: 'status please' },
+    });
+    h.getEl().push({
+      type: 'agent_response',
+      agent_response_event: { agent_response: `<say>${VOICE_RELAY_ACK}</say>` },
+    });
+    expect(h.canonical.map((event) => event.type)).toEqual(['transcript.final']);
+
+    h.session.emitCanonicalAssistantSentence('The answer is ready.');
+    expect(h.canonical.map((event) => event.type)).toEqual([
+      'transcript.final', 'assistant.sentence', 'completed',
+    ]);
+    expect(h.canonical[1]).toMatchObject({ text: 'The answer is ready.', sentenceIndex: 0 });
+  });
+
   it('init sets the audio format/rate from the EL output format', async () => {
     const h = makeHarness();
     await startSession(h);

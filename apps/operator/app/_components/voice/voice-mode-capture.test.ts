@@ -192,6 +192,73 @@ describe('utterance dispatch', () => {
   });
 });
 
+describe('canonical Papercup local voice-turn events (P-003)', () => {
+  function captureCanonical(): { events: any[]; stop: () => void } {
+    const events: any[] = [];
+    const handler = (event: any) => events.push(event.detail);
+    (globalThis as any).addEventListener('papercusp:voiceTurnEvent', handler);
+    return {
+      events,
+      stop: () => (globalThis as any).removeEventListener('papercusp:voiceTurnEvent', handler),
+    };
+  }
+
+  it('emits transcript, ack, substantive sentence, and measured completion without changing the TTS path', async () => {
+    const prefs = await import('./voice-prefs-client');
+    prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('push-to-talk');
+    const captured = captureCanonical();
+    try {
+      mod.__simulateUtterance('  what   is next?  ', 'localWhisper');
+      mod.speak('On it.', 'system:operator', 'polite', { preserveAwaitingResponse: true });
+      mod.speak('Here is the answer.', 'system:operator', 'polite');
+
+      expect(captured.events.map((event) => event.type)).toEqual([
+        'transcript.final', 'assistant.sentence', 'assistant.sentence', 'completed',
+      ]);
+      expect(captured.events[0]).toMatchObject({ text: 'what is next?', sequence: 0 });
+      expect(captured.events[1]).toMatchObject({ text: 'On it.', sentenceIndex: 0, sequence: 1 });
+      expect(captured.events[2]).toMatchObject({
+        text: 'Here is the answer.', sentenceIndex: 1, sequence: 2,
+      });
+      expect(captured.events[3]).toMatchObject({
+        type: 'completed', sequence: 3,
+        metrics: { executor: 'papercup-local', latencyClass: 'interactive' },
+      });
+      expect(captured.events.every((event) => event.turnId === captured.events[0].turnId)).toBe(true);
+      expect((globalThis as any).window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+    } finally {
+      captured.stop();
+      mod.setVoiceMode('off');
+    }
+  });
+
+  it('emits a canonical user interruption on local barge-in', async () => {
+    const mod = await loadVoiceMode();
+    const captured = captureCanonical();
+    try {
+      mod.__simulateUtterance('first question', 'localWhisper');
+      mod.cancelAllSpeech();
+      expect(captured.events.map((event) => event.type)).toEqual(['transcript.final', 'interruption']);
+      expect(captured.events[1]).toMatchObject({ reason: 'user', sequence: 1 });
+    } finally {
+      captured.stop();
+    }
+  });
+
+  it('does not duplicate hosted provider events in the browser adapter', async () => {
+    const mod = await loadVoiceMode();
+    const captured = captureCanonical();
+    try {
+      mod.__simulateUtterance('hosted transcript', 'providerSTT');
+      expect(captured.events).toEqual([]);
+    } finally {
+      captured.stop();
+    }
+  });
+});
+
 describe('response timeout', () => {
   it('speaks an audible failure notice as well as dispatching the visual timeout', async () => {
     vi.useFakeTimers();

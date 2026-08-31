@@ -28,6 +28,7 @@ vi.mock('../workspace-registry', () => ({
 vi.mock('../agent-tools/index', () => ({}));
 
 import { createOperatorVoiceSessionDeps } from './operator-voice-session-deps';
+import { clearVoiceDebugEvents, readVoiceDebugEvents } from '../voice-debug-ring';
 
 function resolve() {
   const deps = createOperatorVoiceSessionDeps(() => {});
@@ -65,5 +66,33 @@ describe('resolveConfig — humanFacingRole persona repoint (P-011)', () => {
     const out = await resolve();
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.config.humanFacingRole).toBe('operator');
+  });
+});
+
+describe('createOperatorVoiceSessionDeps — canonical event sink (P-003)', () => {
+  beforeEach(() => clearVoiceDebugEvents());
+
+  it('records canonical hosted events in the existing bounded voice-debug surface', () => {
+    const deps = createOperatorVoiceSessionDeps(() => {});
+    deps.emitCanonicalEvent?.({
+      version: 1,
+      type: 'completed',
+      turnId: 'turn-1',
+      sequence: 2,
+      emittedAt: '2026-08-31T18:00:00.000Z',
+      metrics: {
+        executor: 'papercup-hosted',
+        latencyClass: 'interactive',
+        firstSentenceMs: 50,
+        totalMs: 100,
+      },
+    });
+    expect(readVoiceDebugEvents()).toEqual([
+      expect.objectContaining({
+        event: 'voice.turn.completed',
+        ts: Date.parse('2026-08-31T18:00:00.000Z'),
+        detail: expect.objectContaining({ type: 'completed', turnId: 'turn-1' }),
+      }),
+    ]);
   });
 });

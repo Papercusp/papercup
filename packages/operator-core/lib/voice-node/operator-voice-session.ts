@@ -44,6 +44,11 @@ import {
   pcmRateFromFormat,
   decodeAudioB64,
 } from './el-convai-protocol';
+import {
+  createPapercupVoiceTurnAdapter,
+  type PapercupVoiceTurnAdapter,
+} from '../papercup-voice-turn-adapter';
+import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
 
 export interface ElSessionConfig {
   signedUrl: string;
@@ -114,6 +119,8 @@ export interface OperatorVoiceSessionDeps {
   releaseLease(playerId: string): Promise<void>;
   /** Send a framed bus message to every attached client. */
   broadcast(frame: Uint8Array): void;
+  /** Optional canonical contract sink; telemetry must never affect the bus. */
+  emitCanonicalEvent?(event: VoiceTurnEvent): void;
   log?(msg: string, extra?: unknown): void;
 }
 
@@ -178,8 +185,18 @@ export class OperatorVoiceSession {
   // promise (the ack path peeks at it to speak a failure instead of a false ack).
   private lastRelayedText: string | null = null;
   private lastRelay: Promise<BrainRelayResult> | null = null;
+  /**
+   * Papercup's EL/lease transport remains unchanged; this observer gives
+   * callers one canonical event stream for transcript, sentence, interruption,
+   * error, and latency evidence.
+   */
+  private readonly canonicalAdapter: PapercupVoiceTurnAdapter | null;
 
-  constructor(private readonly deps: OperatorVoiceSessionDeps) {}
+  constructor(private readonly deps: OperatorVoiceSessionDeps) {
+    this.canonicalAdapter = deps.emitCanonicalEvent
+      ? createPapercupVoiceTurnAdapter({ emit: deps.emitCanonicalEvent })
+      : null;
+  }
 
   // ── client lifecycle (called by the local-audio-socket) ──────────────────
 
@@ -352,15 +369,24 @@ export class OperatorVoiceSession {
       this.ackVoice = resolved.config.fullAgentAckVoice === 'suppressed' ? 'suppressed' : 'provider';
       const socket = await this.deps.connect(resolved.config.signedUrl, {
         onText: (t) => this.onElText(t),
-        onClose: (reason) => void this.teardown(reason),
-        onError: (e) => void this.teardown(`voice link error: ${(e as Error)?.message ?? String(e)}`, 'error'),
+        onClose: (reason) => {
+          this.canonicalAdapter?.interrupt('transport');
+          void this.teardown(reason);
+        },
+        onError: (e) => {
+          const message = (e as Error)?.message ?? String(e);
+          this.emitCanonicalError('transport_error', message, true);
+          void this.teardown(`voice link error: ${message}`, 'error');
+        },
       });
       this.socket = socket;
       socket.send(elInitiationMessage(resolved.config.overrides, resolved.config.dynamicVariables));
       this.setStatus('idle');
     } catch (err) {
       this.starting = false;
-      await this.teardown(`voice connect: ${(err as Error)?.message ?? String(err)}`, 'error');
+      const message = (err as Error)?.message ?? String(err);
+      this.emitCanonicalError('transport_error', message, true);
+      await this.teardown(`voice connect: ${message}`, 'error');
       return;
     }
     this.starting = false;
@@ -411,6 +437,12 @@ export class OperatorVoiceSession {
       case 'user_transcript': {
         const t = ev.text.trim();
         if (!t) return;
+        this.canonicalAdapter?.finalTranscript({
+          text: t,
+          transport: 'papercup-hosted',
+          latencyClass: 'interactive',
+          executor: 'papercup-hosted',
+        });
         this.deps.broadcast(encodeInputTranscript({ text: t, final: true }));
         void this.deps.persistTurn('user', t, this.elConversationId);
         // ONE-BRAIN RELAY (D-001): hand the utterance to the Sentinel pane
@@ -429,11 +461,21 @@ export class OperatorVoiceSession {
         const parsed = this.deps.parseUtterance(raw);
         if (parsed.setMode) this.deps.broadcast(encodeResponseTag({ tag: 'set_mode', value: parsed.setMode }));
         const spoken = (parsed.say ?? raw).trim();
-        if (spoken) void this.deps.persistTurn('assistant', spoken, this.elConversationId);
+        if (spoken) {
+          // In relay mode this is the provider's instant ACK, not Papercup's
+          // answer. The substantive assistant sentence arrives later through
+          // the says-pump; do not close the canonical turn at the ACK boundary.
+          if (spoken !== VOICE_RELAY_ACK) {
+            this.canonicalAdapter?.assistantSentence(spoken);
+            this.canonicalAdapter?.complete();
+          }
+          void this.deps.persistTurn('assistant', spoken, this.elConversationId);
+        }
         return;
       }
       case 'interruption':
         // Barge-in: EL's VAD heard the user — clients cut playout on this state.
+        this.canonicalAdapter?.interrupt('user');
         this.setStatus('listening');
         return;
       case 'client_tool_call': {
@@ -463,6 +505,21 @@ export class OperatorVoiceSession {
       if (!r.ok) this.deps.log?.(`brain relay failed (${r.reason}): ${r.error}`);
     });
     return p;
+  }
+
+  private emitCanonicalError(code: string, message: string, retryable: boolean): void {
+    this.canonicalAdapter?.error({ code, message, retryable });
+  }
+
+  /**
+   * Complete the active hosted Papercup turn when the one-brain says-pump
+   * delivers its substantive answer. The pump is intentionally outside this
+   * class; this tiny port keeps the lease/session lifecycle decoupled from the
+   * shared FIFO consumer.
+   */
+  emitCanonicalAssistantSentence(text: string): void {
+    this.canonicalAdapter?.assistantSentence(text);
+    this.canonicalAdapter?.complete();
   }
 
   /**
