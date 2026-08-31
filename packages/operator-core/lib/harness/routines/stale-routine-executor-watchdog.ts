@@ -307,8 +307,8 @@ export function routineDriftSentence(drift: RoutineCodeDrift | null | undefined)
     const one = added.length === 1;
     parts.push(
       `${added.length} routine source file${one ? '' : 's'} (${nameList(added)}) ` +
-        `${one ? 'does' : 'do'} not exist in this process at all, so any routine ` +
-        `${one ? 'it defines is' : 'they define are'} NOT RUNNING here`,
+        `${one ? 'does' : 'do'} not exist in this process at all, so ` +
+        `${one ? 'the routine it defines is' : 'the routines they define are'} NOT RUNNING here`,
     );
   }
   if (changed.length > 0) {
