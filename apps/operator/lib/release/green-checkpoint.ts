@@ -4732,6 +4732,108 @@ export interface FailingFile {
   file: string;
 }
 
+/**
+ * EI-19381970048172232 fix #1: enumerate the FAILING SET itself.
+ *
+ * Before this the verdict tail stated the OUTCOME and then printed two
+ * "modified since candidate" lists, and NEITHER was the failing set — both are
+ * filtered by commit recency, which on this tree biases them toward the
+ * ALREADY-FIXED portion, so the genuinely-broken files were precisely the ones
+ * NOT listed. Failures were otherwise reported only at TASK granularity
+ * (`@papercusp/operator-core :: test`), recoverable only by grepping the log.
+ *
+ * Granularity and completeness are STATED, never assumed. `failingFiles` is
+ * workspace-mapped and file-granular but OPTIONAL (absent ⇒ no re-triage, e.g.
+ * a gate-only red). `failingTests` is the fallback and its own contract calls
+ * it a heterogeneous FLOOR — "test files / workspaces", sometimes entirely gate
+ * ids, with post-suite legs deferred on a red — so it renders as a `≥`
+ * SIGNATURE, never as a file census. Labelling that "FAILING FILES (N)" would
+ * add a third precisely-worded list answering a different question, which is
+ * the exact defect this fixes.
+ *
+ * Extracted (not inlined) so the label contract is testable: these strings are
+ * the fix, so a careless re-word is the regression.
+ */
+export function buildFailingSetNote(input: {
+  failingFiles?: readonly FailingFile[] | null;
+  failingTests?: readonly string[] | null;
+  failingCasesByFile?: ReadonlyMap<string, readonly string[]> | null;
+}): string {
+  try {
+    const files = input.failingFiles ?? [];
+    if (files.length) {
+      const rendered = files
+        .map((f) => {
+          const cases = input.failingCasesByFile?.get(f.file);
+          const count = cases?.length
+            ? ` (${cases.length} failing case${cases.length === 1 ? "" : "s"})`
+            : "";
+          return `${f.workspace} :: ${f.file}${count}`;
+        })
+        .join("\n  - ");
+      return `\n\nFAILING FILES (${files.length}):\n  - ${rendered}`;
+    }
+    const signature = input.failingTests ?? [];
+    if (signature.length) {
+      return (
+        `\n\nFAILING SIGNATURE (≥${signature.length}) — test files / workspaces, a FLOOR and NOT a file census ` +
+        `(post-suite legs are deferred on a red): ${signature.join(", ")}`
+      );
+    }
+    return "";
+  } catch {
+    // Fail-soft, exactly like the lineage note: a formatting fault must never
+    // block the red path or swallow the verdict it is annotating.
+    return "";
+  }
+}
+
+/**
+ * EI-19381970048172232 fix #2: name this list by the QUESTION IT ANSWERS.
+ *
+ * It is a SUBSET of the failing set, filtered by commit recency — not the
+ * failing set itself. Read as the population, it produced the confident, wrong
+ * conclusion "these all pass now, nobody needs to act", because on this tree
+ * the modified-since subset is systematically the already-fixed portion.
+ */
+export function buildAlreadyFixedNote(input: {
+  candidate: string;
+  changedInRange: readonly string[];
+}): string {
+  if (!input.changedInRange.length) return "";
+  return (
+    `\n\n⚠ OF THE FAILING SET ABOVE, these were MODIFIED SINCE candidate ${input.candidate.slice(0, 8)} — ` +
+    `a SUBSET, filtered by commit recency, NOT the failing set (presumptively stale / fixed-since downstream; ` +
+    `verify before re-diagnosing from scratch): ${input.changedInRange.join(", ")}`
+  );
+}
+
+/**
+ * EI-19381970048172232 fix #3: state the RESIDUE directly — the number a reader
+ * actually wants ("how many are genuinely still broken?"), which no line supplied.
+ *
+ * UNIVERSE DISCIPLINE, and it is the whole reason this takes two counts rather
+ * than the two lists: `computeGateLineage` is called with `failingTests`, so
+ * `failingFilesChangedInRange` is a subset of THAT list. Subtracting it from
+ * `failingFiles.length` would mix two populations and yield a confidently wrong
+ * residue — the same class of error the note exists to prevent. Both terms must
+ * come from the same universe; the caller passes counts so that stays visible.
+ */
+export function buildLineageResidueNote(input: {
+  signatureCount: number;
+  staleCount: number;
+}): string {
+  const { signatureCount, staleCount } = input;
+  if (!signatureCount || !staleCount) return "";
+  const notStale = Math.max(signatureCount - staleCount, 0);
+  return (
+    `\n\n${signatureCount} failing, ${staleCount} modified-since (presumptively stale), ` +
+    (notStale > 0
+      ? `${notStale} NOT modified since — investigate ${notStale === 1 ? "that one" : "those"} first.`
+      : `0 NOT modified since — every failing entry was touched after the candidate, so the whole red may be stale.`)
+  );
+}
+
 /** The npm invocation used to run a workspace-scoped test or rescue script. */
 export interface WorkspaceTestInvocation {
   cmd: string;
@@ -10086,48 +10188,13 @@ async function runGreenCheckpointInner(
     let alreadyFixedNote = "";
     let lineageNote = "";
     let residueNote = "";
-    // EI-19381970048172232 fix #1: enumerate the FAILING SET itself. Before this the tail
-    // stated the outcome and then printed two "modified since candidate" lists, and NEITHER
-    // was the failing set — both are filtered by commit recency, which on this tree biases
-    // them toward the already-fixed portion, so the genuinely-broken files were the ones NOT
-    // listed. Failures were otherwise reported only at TASK granularity
-    // (`@papercusp/operator-core :: test`), recoverable only by grepping the run log.
-    //
-    // Granularity and completeness are STATED, never assumed. `failingFiles` is
-    // workspace-mapped and file-granular but OPTIONAL (absent ⇒ no re-triage, e.g. a
-    // gate-only red). `failingTests` is the fallback and its own contract calls it a
-    // heterogeneous FLOOR — "test files / workspaces", sometimes entirely gate ids, with
-    // post-suite legs deferred on a red — so it is rendered as a "≥" SIGNATURE, never as a
-    // file census. Labelling it "FAILING FILES (N)" would add a third precisely-worded list
-    // answering a different question, which is the exact defect this fixes.
-    const failingSetNote = ((): string => {
-      try {
-        if (failingFiles?.length) {
-          const rendered = failingFiles
-            .map((f) => {
-              const cases = failingCasesByFile?.get(f.file);
-              const count = cases?.length
-                ? ` (${cases.length} failing case${cases.length === 1 ? "" : "s"})`
-                : "";
-              return `${f.workspace} :: ${f.file}${count}`;
-            })
-            .join("\n  - ");
-          return `\n\nFAILING FILES (${failingFiles.length}):\n  - ${rendered}`;
-        }
-        const signature = failingTests ?? [];
-        if (signature.length) {
-          return (
-            `\n\nFAILING SIGNATURE (≥${signature.length}) — test files / workspaces, a FLOOR and NOT a file census ` +
-            `(post-suite legs are deferred on a red): ${signature.join(", ")}`
-          );
-        }
-        return "";
-      } catch {
-        // Fail-soft, exactly like the lineage note above: a formatting fault must never
-        // block the red path or swallow the verdict it is annotating.
-        return "";
-      }
-    })();
+    // EI-19381970048172232 fix #1 — see buildFailingSetNote for why the two
+    // renderings are worded differently (a file census vs a `≥` floor).
+    const failingSetNote = buildFailingSetNote({
+      failingFiles,
+      failingTests,
+      failingCasesByFile,
+    });
     const lineage = await computeGateLineage(
       cfg.integrationRoot,
       cfg.integrationBranch,
@@ -10146,28 +10213,19 @@ async function runGreenCheckpointInner(
             : ""),
       );
       if (lineage.failingFilesChangedInRange.length) {
-        // EI-19381970048172232 fix #2: name this list by the QUESTION IT ANSWERS. It is a
-        // SUBSET of the failing set printed above, filtered by commit recency — not the
-        // failing set itself. Read as the population it produced the confident, wrong
-        // conclusion "these all pass now, nobody needs to act", because on this tree the
-        // modified-since subset is systematically the ALREADY-FIXED portion.
-        alreadyFixedNote = `\n\n⚠ OF THE FAILING SET ABOVE, these were MODIFIED SINCE candidate ${candidate.slice(0, 8)} — a SUBSET, filtered by commit recency, NOT the failing set (presumptively stale / fixed-since downstream; verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(", ")}`;
+        // EI-19381970048172232 fix #2 — see buildAlreadyFixedNote.
+        alreadyFixedNote = buildAlreadyFixedNote({
+          candidate,
+          changedInRange: lineage.failingFilesChangedInRange,
+        });
       }
-      // EI-19381970048172232 fix #3: state the residue directly — the number a reader
-      // actually wants, which no line supplied. UNIVERSE DISCIPLINE: computeGateLineage is
-      // called with `failingTests` above, so `failingFilesChangedInRange` is a subset of
-      // THAT list. Subtracting it from `failingFiles.length` would mix two populations and
-      // yield a confidently wrong residue, so both terms below come from `failingTests`.
-      const signatureCount = (failingTests ?? []).length;
-      const staleCount = lineage.failingFilesChangedInRange.length;
-      if (signatureCount && staleCount) {
-        const notStale = Math.max(signatureCount - staleCount, 0);
-        residueNote =
-          `\n\n${signatureCount} failing, ${staleCount} modified-since (presumptively stale), ` +
-          (notStale > 0
-            ? `${notStale} NOT modified since — investigate those ${notStale === 1 ? "first" : "first"}.`
-            : `0 NOT modified since — every failing entry was touched after the candidate, so the whole red may be stale.`);
-      }
+      // EI-19381970048172232 fix #3 — see buildLineageResidueNote. Both counts
+      // come from `failingTests` because computeGateLineage was called with it;
+      // mixing in `failingFiles.length` would cross universes.
+      residueNote = buildLineageResidueNote({
+        signatureCount: (failingTests ?? []).length,
+        staleCount: lineage.failingFilesChangedInRange.length,
+      });
     }
     // WI-37490: build THIS pass's own not-green CheckpointResult — shared by (a) the
     // terminal/non-refiring fallthrough below, unchanged in shape, and (b) each auto-refire
