@@ -4748,6 +4748,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // alone would show a typo'd unit name as a service that is merely down.
   // NOT table-backed — refreshes on mount and on manual invalidate.
   'phone.plane': {
+    // systemd-backed (probeUnitStates), deliberately no Postgres dependency and
+    // therefore no table-driven push invalidation — the same shape as
+    // designEvidence.report above. Declared EMPTY rather than omitted: the
+    // undeclared-baseline ratchet in __tests__/resolver-backing-table-coverage
+    // is closed, and an empty declaration is the positive way to say "this
+    // query has zero backing tables", not a parking-lot append to the baseline.
+    backingTables: [] as const,
     resolve: async () => {
       const { probeUnitStates } = await import('../agent-tools/dev/systemd-service-probe');
       const { states, unitsUnknown } = await probeUnitStates(

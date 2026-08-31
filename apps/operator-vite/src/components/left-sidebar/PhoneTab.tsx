@@ -61,9 +61,7 @@ export function unitStatusLabel(u: Pick<PlaneUnit, 'known' | 'activeState' | 'up
 export default function PhoneTab({ active = true }: PhoneTabProps = {}) {
   // Gate the fetch on `active`: LeftSidebar mounts panes for tabs the user is
   // not looking at, and this resolver shells out to systemd.
-  const { data: rows, error } = useSyncQuery(
-    active ? { queryName: 'phone.plane' } : { queryName: 'phone.plane', enabled: false },
-  );
+  const { data: rows, error } = useSyncQuery({ queryName: 'phone.plane', enabled: active });
   const units = (rows as PlaneUnit[] | undefined) ?? [];
 
   return (
