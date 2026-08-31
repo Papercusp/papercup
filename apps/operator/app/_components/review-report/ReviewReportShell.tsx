@@ -87,6 +87,28 @@ export interface ReviewRowAction {
   description?: string;
 }
 
+/**
+ * One entry in a row's overflow menu (P-008).
+ *
+ * These are the per-ROW recoveries — Retry, Dismiss, Reconcile, Apply just
+ * this one — as opposed to the batch Apply in the header or the run-level
+ * intents in the bar. Inbox already had them, buried inside a drill-in that
+ * only opens for `pending` rows with a hydrated snapshot; Plans had none at
+ * all. Hoisting them to the row is what makes the two flows symmetric (R8).
+ *
+ * A disabled entry is RENDERED, not hidden, and must say why: a recovery that
+ * silently vanishes is indistinguishable from one that never existed.
+ */
+export interface ReviewRowMenuAction {
+  id: string;
+  label: string;
+  tone?: "default" | "danger";
+  disabled?: boolean;
+  /** Required when `disabled` — a greyed control still owes an explanation. */
+  disabledReason?: string;
+  run: () => void;
+}
+
 export interface ReviewReportRow {
   /** Stable row id (e.g. the scanner's findingId) — the unit Apply targets. */
   id: string;
@@ -120,6 +142,9 @@ export interface ReviewReportRow {
   /** A pending row whose action still needs authored/manual input remains
    *  visible but cannot enter Apply-selected. Default true for pending rows. */
   selectable?: boolean;
+  /** Per-row recoveries, in an overflow menu beside the disclosure (P-008).
+   *  Empty/omitted renders no menu button at all. */
+  actions?: ReviewRowMenuAction[];
   /** Optional drill-in content (P-008 keeps its inline per-row recommendation
    *  cards intact as exactly this). */
   detail?: ReactNode;
@@ -585,6 +610,14 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
           />
         </span>
       </button>
+      <span className="review-report__row-menu-slot">
+        <ReviewRowMenu
+          rowId={row.id}
+          rowTitle={row.title}
+          actions={row.actions ?? []}
+          busy={busy}
+        />
+      </span>
       {detailOpen ? (
         <div
           className="review-report__row-detail-slot"
@@ -629,6 +662,104 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
     </li>
   );
 });
+
+/**
+ * A row's overflow menu (P-008).
+ *
+ * Open state is `useState`, not nuqs, deliberately: this is a transient
+ * pointer/keyboard affordance like a context menu — it closes on Escape, on
+ * blur and on any selection — not a user-meaningful panel anyone would
+ * deep-link or an agent would drive. The row's DISCLOSURE, which is
+ * addressable and persistent, lives in ReviewDetailController instead.
+ */
+function ReviewRowMenu({
+  rowId,
+  rowTitle,
+  actions,
+  busy,
+}: {
+  rowId: string;
+  rowTitle: string;
+  actions: readonly ReviewRowMenuAction[];
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const onDocumentPointerDown = (event: PointerEvent) => {
+      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        wrapRef.current?.querySelector("button")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onDocumentPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  // Busy closes the menu rather than leaving a live-looking list of controls
+  // over an in-flight write.
+  useLayoutEffect(() => {
+    if (busy) setOpen(false);
+  }, [busy]);
+
+  if (actions.length === 0) return null;
+
+  return (
+    <span className="review-report__row-menu" ref={wrapRef}>
+      <button
+        type="button"
+        className="review-report__row-menu-toggle"
+        data-testid={`review-row-menu-${rowId}`}
+        aria-label={`Actions for ${rowTitle}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((previous) => !previous);
+        }}
+      >
+        <span aria-hidden="true">⋯</span>
+      </button>
+      {open ? (
+        <span
+          className="review-report__row-menu-list"
+          data-testid={`review-row-menu-list-${rowId}`}
+          role="menu"
+          aria-label={`Actions for ${rowTitle}`}
+        >
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              role="menuitem"
+              className={`review-report__row-menu-item review-report__row-menu-item--${action.tone ?? "default"}`}
+              data-testid={`review-row-menu-${rowId}-${action.id}`}
+              disabled={busy || action.disabled === true}
+              title={action.disabled === true ? action.disabledReason : undefined}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpen(false);
+                action.run();
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 export default function ReviewReportShell({
   title,

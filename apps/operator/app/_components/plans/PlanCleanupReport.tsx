@@ -20,6 +20,7 @@ import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowAction,
+  type ReviewRowMenuAction,
   type ReviewRowConfidence,
   type ReviewRowAccounting,
   type ReviewRowStatus,
@@ -28,6 +29,7 @@ import RunLifecycleBar, {
   type RunLifecycleIntent,
 } from "../review-report/RunLifecycleBar";
 import type { ReviewReportPresentation } from "../review-report/ReviewReportHost";
+import { chunkFindingIds } from "../review-report/run-resume-chunks";
 import {
   canonicalPlanCleanupDisposition,
   derivePlanCleanupCounts,
@@ -242,6 +244,7 @@ function reportRow(
   localErrors: ReadonlyMap<string, string>,
   detailFor?: (finding: PlanCleanupFinding) => ReactNode,
   openSource?: (finding: PlanCleanupFinding) => void,
+  rowActions?: (finding: PlanCleanupFinding) => ReviewRowMenuAction[],
 ): ReviewReportRow {
   const status = reviewStatus(finding, locallyApplied, locallyDismissed);
   const localError = localErrors.get(finding.findingId);
@@ -275,6 +278,7 @@ function reportRow(
         ? detailFor(finding)
         : (manualReason(finding) ?? undefined),
     error: localError,
+    ...(rowActions ? { actions: rowActions(finding) } : {}),
     evidence: evidenceLines(finding),
     confidence: planCleanupReviewConfidence(finding),
     accounting: reviewAccounting(finding, status),
@@ -300,6 +304,7 @@ export function buildPlanCleanupReviewGroups(
   locallyDismissed: ReadonlySet<string> = new Set(),
   detailFor?: (finding: PlanCleanupFinding) => ReactNode,
   openSource?: (finding: PlanCleanupFinding) => void,
+  rowActions?: (finding: PlanCleanupFinding) => ReviewRowMenuAction[],
 ): ReviewReportGroup[] {
   const assigned = new Set<string>();
   const row = (finding: PlanCleanupFinding) =>
@@ -310,6 +315,7 @@ export function buildPlanCleanupReviewGroups(
       localErrors,
       detailFor,
       openSource,
+      rowActions,
     );
 
   // Rows whose apply FAILED lead everything (P-010): they are the only rows
@@ -507,21 +513,6 @@ function PlanCleanupRecoveryDetail({
       </span>
     </div>
   );
-}
-
-/** P-009: `resume` carries one finding id per element. A stopped scan over a
- *  large workspace can leave thousands unassessed, so the ids are posted in
- *  chunks rather than one request the route would reject on body size. */
-export const RESUME_CHUNK_SIZE = 500;
-
-export function chunkFindingIds(
-  ids: readonly string[],
-  size: number = RESUME_CHUNK_SIZE,
-): string[][] {
-  if (size < 1) throw new Error("chunk size must be >= 1");
-  const chunks: string[][] = [];
-  for (let i = 0; i < ids.length; i += size) chunks.push([...ids.slice(i, i + size)]);
-  return chunks;
 }
 
 export interface PlanCleanupReportProps {
@@ -927,6 +918,70 @@ export default function PlanCleanupReport({
     ],
   );
 
+  // P-008: Plans had ZERO per-row actions — every recovery was buried in a
+  // drill-in that only opened for `pending` rows. These are the same ops the
+  // drill-in exposes, hoisted onto the row where Inbox's already were (R8).
+  const rowActions = useCallback(
+    (finding: PlanCleanupFinding): ReviewRowMenuAction[] => {
+      const applicable =
+        finding.outcome === "recommended" && ACTIONABLE_KINDS.has(finding.kind);
+      return [
+        {
+          id: "apply-one",
+          label: "Apply just this one",
+          disabled: !applicable,
+          ...(applicable
+            ? {}
+            : {
+                disabledReason:
+                  manualReason(finding) ??
+                  "This recommendation has no registered hand-edit action.",
+              }),
+          run: () => void onApply([finding.findingId]),
+        },
+        {
+          id: "open",
+          label: `Open ${finding.planSlug}`,
+          disabled: !onOpenFinding,
+          ...(onOpenFinding
+            ? {}
+            : { disabledReason: "This report was opened without a plan target." }),
+          run: () => onOpenFinding?.(finding),
+        },
+        {
+          id: "recheck",
+          label: "Re-check against the live plan",
+          disabled: finding.kind === "semantic",
+          ...(finding.kind === "semantic"
+            ? {
+                disabledReason:
+                  "A semantic finding has no deterministic re-check; open the plan instead.",
+              }
+            : {}),
+          run: () => void onRecheckFinding(finding),
+        },
+        {
+          id: "retry",
+          label: "Send back to the resolver",
+          run: () => void onRetryFinding(finding),
+        },
+        {
+          id: "dismiss",
+          label: "Dismiss this finding",
+          tone: "danger",
+          run: () => void onDismissFinding(finding),
+        },
+      ];
+    },
+    [
+      onApply,
+      onDismissFinding,
+      onOpenFinding,
+      onRecheckFinding,
+      onRetryFinding,
+    ],
+  );
+
   const groups = useMemo(
     () =>
       buildPlanCleanupReviewGroups(
@@ -946,6 +1001,7 @@ export default function PlanCleanupReport({
           />
         ),
         onOpenFinding ? (finding) => onOpenFinding(finding) : undefined,
+        rowActions,
       ),
     [
       findings,
@@ -957,6 +1013,7 @@ export default function PlanCleanupReport({
       onRecheckFinding,
       onRetryFinding,
       onDismissFinding,
+      rowActions,
     ],
   );
 
