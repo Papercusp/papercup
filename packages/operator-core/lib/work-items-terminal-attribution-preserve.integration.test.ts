@@ -76,12 +76,36 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
     await applyMigrationsForTest(
       sql,
       [
-        '721-work-items-lane-generated-column.sql',
         '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
         '726-preserve-terminal-attribution-on-federated-write.sql',
         '741-work-items-condition-key-singleton.sql',
+        // EI-18808675015292160: this list is hand-maintained, and the staleness guard
+        // refuses the whole suite until a newly-landed migration touching ONLY
+        // harness_shared.work_items is added here. Without it the file fails in
+        // applyMigrationsForTest, so its assertions are COLLECTED BUT NEVER RUN —
+        // a guard that protects nothing while still looking present.
+        // Idempotent (ADD COLUMN IF NOT EXISTS), so it is safe to apply on top of
+        // the canonical fixture whether or not that fixture already models it.
+        '777-work-items-embedding-recipe-discriminator.sql',
       ],
-      { label: 'work-items-terminal-attribution' },
+      {
+        label: 'work-items-terminal-attribution',
+        // 721 is inapplicable for EXACTLY the reason 698 is (see BASE_DDL above), and
+        // it is the acknowledged form of that same narrowing rather than a second
+        // hand-waved omission. The canonical fixture already carries 721's effects —
+        // the `lane` generated column and both family views ending in `lane` — so
+        // re-running 721's CREATE OR REPLACE VIEW re-declares those views at their
+        // 721-era select list, which is SHORTER than the fixture's current one.
+        // Postgres refuses that with "cannot drop columns from view", in beforeAll,
+        // which skips all 7 assertions while the file still reports as present.
+        knownInapplicable: [
+          {
+            file: '721-work-items-lane-generated-column.sql',
+            reason:
+              'The canonical fixture (_work-items-schema.ts) already models the `lane` generated column and both family views ending in `lane`. Re-running 721 CREATE OR REPLACE VIEWs them back to the 721-era select list, dropping every column added since — Postgres: "cannot drop columns from view". Same class as 698, which BASE_DDL omits for the same reason.',
+          },
+        ],
+      },
     );
   }, 120_000);
 
