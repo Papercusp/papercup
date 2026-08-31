@@ -3248,3 +3248,157 @@ describe('SessionChatModal', () => {
     });
   });
 });
+
+/**
+ * Renaming a session from the popup header
+ * (hud-session-display-names-2026-08-31 P-008, D-002 — this is the product's
+ * ONLY rename affordance; the HUD card stays read-only).
+ */
+describe('SessionChatModal — the session name (P-008)', () => {
+  function seedRoster(entries: Array<Record<string, unknown>>) {
+    H.results['advRoster.list'] = {
+      data: [{ active: entries, pending: [] }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+  }
+
+  /** `mockFetchOnce` supplies only `text()`; the rename action reads `json()`. */
+  function mockFetchJsonOnce(status: number, body: unknown) {
+    fetchMock.mockResolvedValueOnce({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => JSON.stringify(body),
+      json: async () => body,
+    });
+  }
+
+  async function openPopup(entry: Record<string, unknown>) {
+    seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: null, ...entry }]);
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+    const view = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('session-chat-name')).toBeTruthy());
+    return view;
+  }
+
+  const renameCalls = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url) === '/api/adv/sessions/rename');
+
+  it('shows a named session’s name as the popup title', async () => {
+    await openPopup({ displayName: 'release wrangler', intent: 'greening the release gate' });
+    const name = screen.getByTestId('session-chat-name');
+    expect(name.textContent).toBe('release wrangler');
+    expect(name.getAttribute('data-named')).toBe('true');
+  });
+
+  /* P-004/D-002 removed the identity/reference fields this band used to repeat
+     from the dossier panel — and an UNNAMED session's resolved headline IS one
+     of them (its intent, or its handle). So the unnamed case offers the name
+     without printing the fallback. */
+  it('offers to name an unnamed session without reprinting its intent', async () => {
+    await openPopup({ intent: 'greening the release gate' });
+    const name = screen.getByTestId('session-chat-name');
+    expect(name.textContent).toBe('Name this session');
+    expect(name.getAttribute('data-named')).toBe('false');
+    expect(screen.getByTestId('session-chat-state-header').textContent).not.toContain(
+      'greening the release gate',
+    );
+  });
+
+  it('opens an input seeded with the current name, and commits it on Enter', async () => {
+    await openPopup({ displayName: 'release wrangler' });
+    fireEvent.click(screen.getByTestId('session-chat-name'));
+    const input = screen.getByLabelText(/Session name/i) as HTMLInputElement;
+    expect(input.value).toBe('release wrangler');
+
+    mockFetchJsonOnce(200, { status: 'ok', displayName: 'gate wrangler', cleared: false });
+    fireEvent.change(input, { target: { value: 'gate wrangler' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(renameCalls()).toHaveLength(1));
+    expect(JSON.parse(String(renameCalls()[0][1].body))).toEqual({
+      ownerId: 'su-live-1',
+      name: 'gate wrangler',
+    });
+  });
+
+  /* THE trap this guards: seeding the field with the resolved HEADLINE would
+     make "open it, press Enter" silently freeze the objective as a manual name,
+     after which the card stops tracking what the session is doing. */
+  it('opens EMPTY for an unnamed session — never seeded with the fallback headline', async () => {
+    await openPopup({ intent: 'greening the release gate' });
+    fireEvent.click(screen.getByTestId('session-chat-name'));
+    const input = screen.getByLabelText(/Session name/i) as HTMLInputElement;
+    expect(input.value).toBe('');
+    // The fallback is SHOWN as the placeholder — "this is what you get instead"
+    // — rather than filled in, where Enter would commit it.
+    expect(input.placeholder).toBe('greening the release gate');
+  });
+
+  it('clears the name on a blank commit rather than storing an empty one (R6)', async () => {
+    await openPopup({ displayName: 'release wrangler' });
+    fireEvent.click(screen.getByTestId('session-chat-name'));
+    const input = screen.getByLabelText(/Session name/i);
+    mockFetchJsonOnce(200, { status: 'ok', displayName: null, cleared: true });
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(renameCalls()).toHaveLength(1));
+    expect(JSON.parse(String(renameCalls()[0][1].body)).name).toBe('   ');
+  });
+
+  it('cancels on Escape without writing, and without closing the popup', async () => {
+    const onClose = vi.fn();
+    seedRoster([{ ownerId: 'su-live-1', displayName: 'release wrangler' }]);
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId('session-chat-name')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('session-chat-name'));
+    const input = screen.getByLabelText(/Session name/i);
+    fireEvent.change(input, { target: { value: 'discarded' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.getByTestId('session-chat-name').textContent).toBe('release wrangler'));
+    expect(renameCalls()).toHaveLength(0);
+    // The keypress that meant "cancel this edit" must not also close the
+    // conversation the user was reading.
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  /* Blur DISCARDS. A blank commit clears the name, so a blur-submit would make
+     clicking anywhere else a silent destructive act. */
+  it('discards the draft on blur instead of submitting it', async () => {
+    await openPopup({ displayName: 'release wrangler' });
+    fireEvent.click(screen.getByTestId('session-chat-name'));
+    const input = screen.getByLabelText(/Session name/i);
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByTestId('session-chat-name').textContent).toBe('release wrangler'));
+    expect(renameCalls()).toHaveLength(0);
+  });
+
+  it('keeps the edit open and reports the failure when the write is rejected', async () => {
+    await openPopup({ displayName: 'release wrangler' });
+    fireEvent.click(screen.getByTestId('session-chat-name'));
+    const input = screen.getByLabelText(/Session name/i);
+    mockFetchJsonOnce(500, { status: 'error', error: 'nope' });
+    fireEvent.change(input, { target: { value: 'gate wrangler' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    const err = await waitFor(() => screen.getByTestId('session-chat-name-error'));
+    expect(err.textContent).toContain('nope');
+    // Still editing — the typed value is not thrown away on a failed write.
+    expect((screen.getByLabelText(/Session name/i) as HTMLInputElement).value).toBe('gate wrangler');
+  });
+
+  /* The accessible dialog name is what a screen reader announces on open, and
+     announcing a raw owner id is the regression this plan exists to fix. It is
+     resolved through the SHARED chain (D-003), so it can fall back to the
+     objective where the visible band deliberately does not. */
+  it('leads the accessible dialog title with the resolved name, not the owner id', async () => {
+    await openPopup({ displayName: 'release wrangler' });
+    expect(screen.getByText('Chat — release wrangler')).toBeTruthy();
+    cleanup();
+    await openPopup({ intent: 'greening the release gate' });
+    expect(screen.getByText('Chat — greening the release gate')).toBeTruthy();
+  });
+});

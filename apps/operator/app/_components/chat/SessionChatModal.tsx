@@ -476,14 +476,32 @@ function SessionNameField({
   headline,
   manualName,
   onRename,
+  onEditingChange,
 }: {
   /** The resolved display name — what every other surface shows. Never blank. */
   headline: string;
   /** The stored MANUAL name, or null when the headline came from the fallback. */
   manualName: string | null;
   onRename?: (name: string) => Promise<void>;
+  /** Reported UP so the dialog can hand Escape to this edit — see `setEditing`. */
+  onEditingChange?: (editing: boolean) => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editingState, setEditingState] = useState(false);
+  const editing = editingState;
+  /* Escape has to mean "cancel this edit", and the popup would otherwise take
+     it as "close the conversation". Reporting the edit up is the ONLY way to
+     win that: Radix's dismissable layer registers its Escape handler on
+     `document` in the CAPTURE phase, so it runs before this input's own
+     keydown ever fires and no amount of stopPropagation here can head it off.
+     SessionChatModal disarms `closeOnEscape` while this is true — the same
+     mechanism it already uses while the browser is painting fullscreen. */
+  const setEditing = useCallback(
+    (next: boolean) => {
+      setEditingState(next);
+      onEditingChange?.(next);
+    },
+    [onEditingChange],
+  );
   // Mid-edit draft: `useState` on purpose. The repo's nuqs-by-default rule lists
   // a draft as one of its explicit exceptions, and a rename half-typed into the
   // URL would be shared/restored as if it had been committed.
@@ -571,11 +589,7 @@ function SessionNameField({
             e.preventDefault();
             void commit();
           } else if (e.key === 'Escape') {
-            // Stop here: the popup's own Escape handler would otherwise close
-            // the whole conversation on the keypress that meant "cancel this
-            // edit".
             e.preventDefault();
-            e.stopPropagation();
             setEditing(false);
           }
         }}
@@ -600,12 +614,16 @@ function SessionStateHeader({
   entry,
   onOpenDetail,
   onRename,
+  onRenamingChange,
 }: {
   entry: HudRosterEntry;
   /** Commit a new manual name (blank CLEARS — R6). Absent while the popup has
    *  no owner-scoped action context, which is also when the rename could not
    *  be routed anywhere. */
   onRename?: (name: string) => Promise<void>;
+  /** True while the name field is in edit mode, so the dialog can yield Escape
+   *  to it (SessionNameField explains why that has to travel this far up). */
+  onRenamingChange?: (editing: boolean) => void;
   /** D-002's ONE deliberate duplicate: the "⚠ N locks / M unread" alert
    *  opens (if collapsed) and scrolls the dossier rail to the named
    *  section — "the glance stays in the reading path, the detail moves." */
@@ -769,7 +787,12 @@ function SessionStateHeader({
           here rather than on the invisible Radix dialog title. It leads the
           band because it says WHAT this session is; everything after it says
           how it is doing. */}
-      <SessionNameField headline={headline} manualName={manualName} onRename={onRename} />
+      <SessionNameField
+        headline={headline}
+        manualName={manualName}
+        onRename={onRename}
+        onEditingChange={onRenamingChange}
+      />
       <span
         className="pc-ctl-state"
         title={statusTitle}
@@ -1835,6 +1858,11 @@ export default function SessionChatModal({
     : agentName;
   const title = `Chat — ${headlineName}`;
 
+  /* While the header's name field is in edit mode, Escape belongs to THAT edit
+     (see SessionNameField: Radix takes Escape on document in the capture phase,
+     so disarming the dialog is the only way to hand it over). */
+  const [renaming, setRenaming] = useState(false);
+
   /* P-007's write path, wired here rather than in the band so the band stays a
      presentation component: it is handed a committed-name callback, not a fetch.
      Absent until an owner-scoped action context exists — which is also when
@@ -1864,7 +1892,12 @@ export default function SessionChatModal({
          means the one press both drops fullscreen and closes the chat, so the
          conversation the user was reading disappears when they only asked for
          a smaller window. */
-      closeOnEscape={!screenActive}
+      /* …and `!renaming` for the same shape of reason one layer in: while the
+         header's name field is being edited, Escape means "cancel this edit".
+         Radix takes Escape on `document` in the CAPTURE phase, so the input
+         cannot claim it by stopping propagation — disarming the dialog is the
+         only handover there is. */
+      closeOnEscape={!screenActive && !renaming}
       /* Send the dialog's initial focus to the CONVERSATION, not to a window
          control. Radix otherwise focuses the first tabbable descendant, which
          since P-001 is the full-window button — and that button is a tooltip
@@ -2107,6 +2140,7 @@ export default function SessionChatModal({
             entry={actionRosterEntry}
             onOpenDetail={scrollToDossierSection}
             onRename={actionCtx ? handleRename : undefined}
+            onRenamingChange={setRenaming}
           />
         ) : null}
         {resolving ? (
