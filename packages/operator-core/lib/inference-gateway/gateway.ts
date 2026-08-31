@@ -7517,6 +7517,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // Owner attribution carries through (ledger/stall-wake), pins do not (see above).
             const owner = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
             if (owner) headers[OWNER_HEADER] = owner;
+            // GATEWAY-NON-UPSTREAM: self-loopback, not an upstream open. This re-enters this
+            // gateway's OWN /v1/messages front door on 127.0.0.1, so the request still crosses
+            // admission and `executeGatewayRequestKernel` exactly like any client's — going
+            // through the front door is what keeps the ladder in one place instead of
+            // re-implementing it here. Asserted by gateway-handlers-reach-kernel.test.ts.
             const r = await fetch(`http://127.0.0.1:${selfPort}/v1/messages`, {
               method: 'POST',
               headers,
