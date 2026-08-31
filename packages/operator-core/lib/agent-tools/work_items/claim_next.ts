@@ -580,6 +580,30 @@ export default defineTool({
       }
     };
 
+    // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths and has
+    // already landed. Unlike every sibling-finding leg beside it, this one reaches the
+    // sibling WITHOUT a plan — the measured duplicate-filing instances are all plan-less,
+    // so the plan-linked legs are structurally silent for exactly that population.
+    const siblingPathOverlapFor = async (
+      wi: { id?: string; payload?: unknown; harness?: string | null } | null,
+    ): Promise<{ siblingPathOverlap: unknown; siblingPathOverlapWarning: string } | null> => {
+      if (!wi?.id) return null;
+      try {
+        const m = await import('../../sibling-path-overlap-claim-port');
+        const hint = await m.getClaimTimeSiblingPathOverlap({
+          workItemId: wi.id,
+          payload: wi.payload,
+          harness: wi.harness ?? null,
+        });
+        const warning = m.siblingPathOverlapWarning(hint, wi.id);
+        return hint && warning
+          ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning }
+          : null;
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -605,6 +629,7 @@ export default defineTool({
         behaviorContractResult,
         pathHintsResult,
         planItemLandedResult,
+        siblingPathOverlapResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -615,6 +640,7 @@ export default defineTool({
         behaviorContractFor(wiOf(claimed)),
         pathHintsFor(wiOf(claimed)),
         planItemLandedFor(wiOf(claimed)),
+        siblingPathOverlapFor(wiOf(claimed)),
       ]);
       return {
         content: [
@@ -634,6 +660,7 @@ export default defineTool({
               ...(behaviorContractResult ?? {}),
               ...(pathHintsResult ?? {}),
               ...(planItemLandedResult ?? {}),
+              ...(siblingPathOverlapResult ?? {}),
             }),
           },
         ],
@@ -675,6 +702,7 @@ export default defineTool({
           behaviorContractResult,
           pathHintsResult,
           planItemLandedResult,
+          siblingPathOverlapResult,
         ] = await Promise.all([
           planDecisionsFor(wiOf(c)),
           priorAttemptsFor(wiOf(c)),
@@ -685,6 +713,7 @@ export default defineTool({
           behaviorContractFor(wiOf(c)),
           pathHintsFor(wiOf(c)),
           planItemLandedFor(wiOf(c)),
+          siblingPathOverlapFor(wiOf(c)),
         ]);
         return {
           ...c,
@@ -699,6 +728,7 @@ export default defineTool({
           ...(behaviorContractResult ?? {}),
           ...(pathHintsResult ?? {}),
           ...(planItemLandedResult ?? {}),
+          ...(siblingPathOverlapResult ?? {}),
         };
       }),
     );

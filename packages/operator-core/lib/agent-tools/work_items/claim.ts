@@ -592,6 +592,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       behaviorContractHint,
       pathHintsResult,
       planItemLanded,
+      siblingPathOverlapResult,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -706,6 +707,26 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         sourcePlanItemIds: workItem.sourcePlanItemIds,
         workspaceId: identity.workspaceId ?? undefined,
       }).catch(() => null),
+      // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths and
+      // has already landed. Every other sibling-finding hint above reaches its sibling
+      // through the PLAN; this one needs no plan, which is the point — the measured
+      // duplicate-filing instances are all plan-less, so the plan-linked hints are
+      // structurally silent for exactly the population that suffers this. Same fail-soft
+      // seam as every hint above: saying nothing asserts nothing.
+      import('../../sibling-path-overlap-claim-port')
+        .then(async (m) => {
+          const hint = await m.getClaimTimeSiblingPathOverlap({
+            workItemId: workItem.id ?? it.id,
+            payload: workItem.payload,
+            harness: workItem.harness ?? it.harness ?? null,
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+          const warning = m.siblingPathOverlapWarning(hint, workItem.id ?? it.id);
+          return hint && warning
+            ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning }
+            : null;
+        })
+        .catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     // A named assignee means the warning is being read by the dispatching caller, not the
@@ -783,6 +804,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
               }
             : {}),
           ...(pathHintsResult ?? {}),
+          ...(siblingPathOverlapResult ?? {}),
         }
       : {
           ok: true,
@@ -828,6 +850,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
               }
             : {}),
           ...(pathHintsResult ?? {}),
+          ...(siblingPathOverlapResult ?? {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
