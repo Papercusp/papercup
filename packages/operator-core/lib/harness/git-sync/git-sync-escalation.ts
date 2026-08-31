@@ -27,6 +27,24 @@ import {
  *  (EI-19275994927087666). */
 export const PUSH_FAILURE_ESCALATION_TICKS = 3;
 
+/**
+ * EI-21906459740652039 — the CHRONIC cumulative-limit cadence.
+ *
+ * The oversized broadcast below is EDGE-TRIGGERED on newly-peeled keys, which is
+ * right for a one-off stray blob and structurally blind to the condition that
+ * actually happened: the SAME set peeled every tick for 13h, silent after the first,
+ * because nothing about it was ever "new" again. So the absence of repeated peel
+ * broadcasts is not evidence the peel stopped — it is what the edge trigger does by
+ * design, and that is precisely why nobody noticed.
+ *
+ * A persisting peel therefore re-broadcasts on a bounded cadence: loud enough to be
+ * noticed, rare enough not to be the per-tick spam the edge trigger exists to
+ * prevent. First alarm at 3 consecutive ticks (past a transient bulk import that
+ * clears itself), then every 18 ticks (~3h at the 10-min default).
+ */
+export const CHRONIC_CUMULATIVE_PEEL_TICKS = 3;
+export const CHRONIC_CUMULATIVE_REBROADCAST_TICKS = 18;
+
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). */
 export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'config-lock' | 'unknown';
 
@@ -100,6 +118,12 @@ export interface EscalationInput {
   maxCommitTotalBytes: number;
   /** `scope:path` keys reported oversized on the PREVIOUS tick (from metadata). */
   prevOversizedKeys: string[];
+  /** EI-21906459740652039: consecutive ticks — INCLUDING this one — on which the
+   *  cumulative-limit guard peeled at least one file (routine metadata
+   *  `consecutive_cumulative_peel_ticks`, computed by the caller exactly like
+   *  `consecutive_content_error_ticks`). 0/omitted ⇒ no chronic condition, so no
+   *  existing caller or fixture has to change. */
+  chronicCumulativeTicks?: number;
   /** EI-21230011589307899: the PREVIOUS tick's own-head-publish refusal, read from
    *  routine metadata (`own_head_publish.refused` / `.blockedAtCommit`).
    *
@@ -186,6 +210,34 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
     parts.push(
       `⚠ git-sync on ${i.installSlug} EXCLUDED file(s) from the auto-commit — ${guards.join('; ')}; ` +
         `gitignore or remove them: ${list}`,
+    );
+  }
+
+  // EI-21906459740652039: the `newOversized` edge trigger above cannot see a
+  // CHRONIC peel — the same paths, every tick, never "new" after the first. Say so
+  // explicitly on a bounded cadence, and say the thing an operator needs to know:
+  // these paths have not been committed for the whole window, so anything derived
+  // from them (a regenerated docs mirror, a projected catalog) is stale on disk while
+  // git-sync keeps reporting success.
+  const chronicTicks = i.chronicCumulativeTicks ?? 0;
+  const cumulativeNow = i.oversized.filter((f) => f.exclusionReason === 'cumulative-limit');
+  const sinceFirstAlarm = chronicTicks - CHRONIC_CUMULATIVE_PEEL_TICKS;
+  if (
+    cumulativeNow.length > 0 &&
+    sinceFirstAlarm >= 0 &&
+    sinceFirstAlarm % CHRONIC_CUMULATIVE_REBROADCAST_TICKS === 0
+  ) {
+    const list = cumulativeNow
+      .slice(0, 6)
+      .map((f) => `${f.scope === 'superproject' ? '' : `${f.scope}/`}${f.path}`)
+      .join(', ')
+      .slice(0, 300);
+    parts.push(
+      `⚠ git-sync on ${i.installSlug}: the cumulative-limit guard has peeled file(s) for ` +
+        `${chronicTicks} CONSECUTIVE ticks — ${cumulativeNow.length} file(s) this tick, and they have NOT ` +
+        `been committed for that whole window even though every tick reported success. If any is a ` +
+        `generated projection (the internal-docs mirror, a catalog artifact), what is SERVED is stale ` +
+        `relative to disk. Raise the cumulative limit, gitignore the offenders, or remove them: ${list}`,
     );
   }
 

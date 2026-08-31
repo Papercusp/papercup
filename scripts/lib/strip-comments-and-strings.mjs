@@ -461,6 +461,21 @@ function parseSource(text, fileName) {
         : fileName.endsWith('.jsx')
           ? ts.ScriptKind.JSX
           : ts.ScriptKind.JS;
+  // setParentNodes MUST stay true — do not "optimise" it away, this was tried and MEASURED.
+  //
+  // The reasoning that it is unused is wrong in a way that reads as correct: nothing here
+  // touches `node.parent` directly, and `sf` is passed explicitly to `node.getChildren(sf)`
+  // and `node.getStart(sf)`. But `getChildren()` SYNTHESISES the token children it returns,
+  // and without parent pointers that synthesis does not reproduce the same traversal — so
+  // `collectRanges` visits fewer token nodes, queries trivia at fewer positions, and silently
+  // finds FEWER COMMENT RANGES. Output stays the same LENGTH (no offset desync, no throw from
+  // blankRanges' tripwire); it is simply masked less. That is a false-NEGATIVE in every guard
+  // that imports this module — a comment left standing as live code — which is the exact
+  // failure this module exists to prevent, and no test of the stripper itself would catch it.
+  //
+  // Measured 2026-08-31 against the whole-corpus differential oracle (16,622 files): flipping
+  // this to false changed BOTH output hashes while LEN_MISMATCH stayed 0. It bought ~4s of a
+  // 135s run. Not worth it at any price, but especially not that one.
   if (byExt !== null) {
     return ts.createSourceFile(
       fileName,
@@ -549,14 +564,48 @@ function blankRanges(text, ranges) {
   // split('') — UTF-16 CODE UNITS, which is what both String.length and TypeScript's node
   // offsets count. Array.from() splits by code POINT, so a single astral emoji (🚨, and this
   // repo is full of them) desynchronises every offset after it and silently mis-blanks code.
-  const buf = text.split('');
+  // Blank by SLICING rather than exploding the source into a character array. The previous
+  // `text.split('')` allocated one single-character string per code unit — the 247 MB of repo
+  // source this module is asked to mask became ~247 million strings per full scan. Measured
+  // on the mug-kettle census (2026-08-31): 3.10s of self time here plus 7.34s of GC, against
+  // 0.35s for all eight detectors it exists to serve.
+  //
+  // Both properties of the old loop are preserved, which is why output is byte-identical:
+  //   - code units, not code points. slice() and a non-`u` regex both index UTF-16 code
+  //     units, which is what String.length and TypeScript's node offsets count. Array.from()
+  //     or a `/u` flag would split by code POINT and desynchronise every offset after an
+  //     astral emoji (🚨, and this repo is full of them), silently mis-blanking code.
+  //   - newlines survive: `[^\n\r]` blanks exactly what `ch !== '\n' && ch !== '\r'` blanked,
+  //     so length, offsets and every reported line number are unchanged.
+  //
+  // Ranges arrive UNSORTED and may OVERLAP (a comment range inside a masked string range),
+  // which the old mutable buffer absorbed for free. Sorting and merging first reproduces that
+  // exactly; slicing overlapping ranges without merging would duplicate or drop text.
+  const clamped = [];
   for (const [s, e] of ranges) {
-    for (let i = Math.max(0, s); i < Math.min(e, buf.length); i += 1) {
-      const ch = buf[i];
-      if (ch !== '\n' && ch !== '\r') buf[i] = ' ';
-    }
+    const lo = Math.max(0, s);
+    const hi = Math.min(e, text.length);
+    if (hi > lo) clamped.push([lo, hi]);
   }
-  const out = buf.join('');
+  if (!clamped.length) return text;
+  clamped.sort((a, b) => a[0] - b[0]);
+
+  const parts = [];
+  let cursor = 0;
+  let [curS, curE] = clamped[0];
+  for (let i = 1; i <= clamped.length; i += 1) {
+    const next = clamped[i];
+    if (next && next[0] <= curE) {
+      if (next[1] > curE) curE = next[1];
+      continue;
+    }
+    if (curS > cursor) parts.push(text.slice(cursor, curS));
+    parts.push(text.slice(curS, curE).replace(/[^\n\r]/g, ' '));
+    cursor = curE;
+    if (next) [curS, curE] = next;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  const out = parts.join('');
   /* c8 ignore next 4 -- a tripwire, not a branch under test: it can only fire on an offset
      desynchronisation, which would mean silently mis-blanked code. Loud is the point. */
   if (out.length !== text.length) {
