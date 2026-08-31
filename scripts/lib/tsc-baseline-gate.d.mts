@@ -460,8 +460,39 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles: string[]
     liveEdits: string[];
     standing: string[];
 };
-export function diagnosticLinesForFiles(tscOutput: any, files: any, { maxPerFile, root, canonicalRoot }?: {
-    maxPerFile?: number | undefined;
+/**
+ * The COMPILER LINES behind a new file's `+N` — the WHAT the count alone withholds (WI-6767).
+ *
+ * The gate holds the full tsc output and, until now, reported only `file: 0 → 1 (+1)`. Recovering
+ * the message from that costs a fresh full-project compile, which on this box is ~100s under
+ * contention and is exactly what the two agents who hit this could not afford: the WI-6764 filer
+ * recorded that a full `tsc -p packages/operator-core` blew their shell budget TWICE, so they filed
+ * a major bug without ever seeing the error; the next agent then spent ~20 minutes re-deriving it.
+ * The line was sitting in a string the gate already had.
+ *
+ * It matters far beyond convenience, because the message is frequently the whole diagnosis. The
+ * WI-6764 error read `TS2322: Type '"memory-recall-scale"' is not assignable to type
+ * 'WatchdogSource'` — naming a type in a DIFFERENT file, which is the signature of a multi-file
+ * change still landing (see `formatLandingRaceCaveat`). A bare `+1` cannot suggest that; the
+ * message says it outright.
+ *
+ * Deliberately a separate projection rather than a widening of `parseTscErrors`: that function's
+ * `{file, code}` shape is asserted with strict equality by `lint-tsc.test.ts` and its narrowness is
+ * a documented decision (`packages/operator-core/lib/tsc-diagnostics.ts` explains why the gate
+ * counts rather than carries messages). This is display-only and feeds nothing that decides a
+ * verdict.
+ *
+ * @param {string} tscOutput - Raw compiler output.
+ * @param {Iterable<string>} files - Repo-relative paths to quote lines for.
+ * @param {{maxPerFile?: number, root?: string, canonicalRoot?: string}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
+ *   cannot bury the guidance underneath it (the report stays readable; the count already told you
+ *   the true total).
+ * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
+ */
+export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<string>, { maxPerFile, root, canonicalRoot }?: {
+    maxPerFile?: number;
+    root?: string;
+    canonicalRoot?: string;
 }): Map<string, string[]>;
 /**
  * The effective per-file quote cap: `defaultCap`, or uncapped under `--all-errors`.

@@ -311,6 +311,17 @@ export function isTaskDeadlineRefusal(error: unknown): boolean;
 export const SHARED_TEST_PROCESS_ADMISSION_RUN_BUDGET_MS: number;
 
 /**
+ * WI-1746759: which admission lane this process belongs in — the release gate gets its own,
+ * everyone else shares one, so the gate's per-shard re-queueing cannot be starved by (and
+ * cannot starve) ad-hoc agent runs.
+ *
+ * ⚠ Keyed on `PC_HEAVY_RELEASE_GATE === "1"` ONLY, never `GREEN_CHECKPOINT` — agents export
+ * that second marker by hand to reproduce the gate's skip-set, so keying a private lane off
+ * it would let any agent leave the queue its peers wait in.
+ */
+export function admissionMutexName(env?: Record<string, string | undefined>): string;
+
+/**
  * True when an error means "never admitted" rather than "a test failed". A caller that
  * misclassifies it exits with no verdict, which the green-checkpoint records as a lost run.
  */

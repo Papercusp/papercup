@@ -616,6 +616,80 @@ describe('work_items:claim handler (keyed-array)', () => {
       },
     });
     expect(b.results[0].hint).toMatch(/admission-pending.*duplicate screening is pending/);
+    // A floor that advertises no bound renders EXACTLY the pre-existing hint — the
+    // EI-21973318733042066 clauses below are strictly additive.
+    expect(b.results[0].hint).not.toMatch(/CLEARS ON ITS OWN/);
+  });
+
+  /**
+   * EI-21973318733042066 — a launched independent reviewer was briefed to claim a review
+   * work-item created seconds earlier as its first act, and `work_items:claim` refused twice
+   * with this floor. MEASURED: the admission promoter is a 30-minute cron, and that item stayed
+   * pending 22.5 minutes — longer than the entire 9-minute life of the agent it was created for.
+   * The refusal said only "wait for admitted/unreviewed", so the reviewer had no basis to choose
+   * between waiting and proceeding unclaimed. It chose right by judgment; nothing helped it.
+   */
+  it('EI-21973318733042066: a self-clearing floor renders its BOUND and its remedy', async () => {
+    claimM.mockResolvedValue(null as never);
+    getM.mockResolvedValue({
+      id: 'EI-PENDING', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
+    } as never);
+    classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
+    explainFloorsM.mockResolvedValue([
+      {
+        id: 'EI-PENDING',
+        admissible: false,
+        refusedBy: 'admission-pending',
+        detail: 'duplicate screening is pending',
+        retry: {
+          clearsOnItsOwn: true,
+          expectedWithinSec: 1800,
+          guaranteedWithinSec: 3600,
+          basis: 'the work-item-admission-promoter cron tick',
+        },
+        remedy: 'assign_to names the intended owner',
+      },
+    ] as never);
+
+    const hint = (await body({ id: 'EI-PENDING', harness: 'papercup' })).results[0].hint as string;
+
+    // The two numbers are what turn "wait" into a decision the caller can actually make.
+    expect(hint).toContain('~30m');
+    expect(hint).toContain('~60m');
+    expect(hint).toMatch(/CLEARS ON ITS OWN/);
+    expect(hint).toContain('WAIT, not a permanent refusal');
+    // And it must not read as blanket reassurance: waiting out most of a tick is the WRONG move
+    // for a short-lived agent, which is precisely what the reporter discovered the hard way.
+    expect(hint).toMatch(/outlive it/);
+    expect(hint).toContain('proceed unclaimed');
+    // The remedy the reporter proposed as new design already existed; the refusal now names it.
+    expect(hint).toContain('assign_to names the intended owner');
+  });
+
+  it('EI-21973318733042066 negative control: a PERMANENT floor claims neither', async () => {
+    // Without this, a bug that unconditionally appended the clauses would pass every assertion
+    // above. `retry` absent must mean "advertises no bound", never "is permanent" — and a
+    // permanent floor must not acquire a self-clearing promise it cannot keep.
+    claimM.mockResolvedValue(null as never);
+    getM.mockResolvedValue({
+      id: 'EI-OBS', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
+    } as never);
+    classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
+    explainFloorsM.mockResolvedValue([
+      {
+        id: 'EI-OBS',
+        admissible: false,
+        refusedBy: 'observation-lane',
+        detail: 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
+      },
+    ] as never);
+
+    const hint = (await body({ id: 'EI-OBS', harness: 'papercup' })).results[0].hint as string;
+
+    expect(hint).toContain('observation-lane');
+    expect(hint).not.toMatch(/CLEARS ON ITS OWN/);
+    expect(hint).not.toMatch(/~\d+m/);
+    expect(hint).not.toContain('assign_to');
   });
 
   // EI-9274: a literal `'self'` assignee must resolve to the caller, not be stored

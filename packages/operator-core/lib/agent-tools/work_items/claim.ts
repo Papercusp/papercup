@@ -895,8 +895,22 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       }
     }
   }
+  // EI-21973318733042066: when the floor CLEARS ON ITS OWN, say so with its bound and its
+  // remedy. Without them a caller cannot tell "not yet" from "never" and has no basis to choose
+  // between waiting and abandoning — the measured cost being a launched reviewer refused twice
+  // on an item that stayed unclaimable for 22.5 minutes, outliving its own 9-minute lifetime.
+  // Both clauses are strictly ADDITIVE: a floor that advertises neither renders exactly the
+  // pre-existing hint, so no other floor's wording changes.
+  const retryHint = claimFloor?.retry
+    ? ` This floor CLEARS ON ITS OWN — typically within ~${Math.round(claimFloor.retry.expectedWithinSec / 60)}m, ` +
+      `and at the latest ~${Math.round(claimFloor.retry.guaranteedWithinSec / 60)}m (${claimFloor.retry.basis}). ` +
+      'So this is a WAIT, not a permanent refusal — but only wait if you expect to outlive it; ' +
+      'a short-lived agent should proceed unclaimed and say so rather than retry.'
+    : '';
+  const remedyHint = claimFloor?.remedy ? ` ${claimFloor.remedy}` : '';
   const floorHint = claimFloor
-    ? ` The claim floor is ${claimFloor.refusedBy}: ${claimFloor.detail ?? 'the item is not claim-path admissible'}.`
+    ? ` The claim floor is ${claimFloor.refusedBy}: ${claimFloor.detail ?? 'the item is not claim-path admissible'}.` +
+      `${retryHint}${remedyHint}`
     : '';
   return {
     ok: false,
