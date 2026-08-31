@@ -378,6 +378,11 @@ async function enforceGoalBreaches(
   const changed = await sql`
     UPDATE harness_shared.goals
        SET status = 'killed',
+           -- A terminal status transition is a definition-state change, just
+           -- like goals:update { status: 'killed' }. Measurement-only writes
+           -- above deliberately leave updated_at alone, but omitting this stamp
+           -- makes the lifecycle transition invisible to recency-ordered reads.
+           updated_at = now(),
            metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({ autoKilled: evidence })}
      WHERE id = ${scope.goalId}
        AND workspace_id = ${scope.workspaceId}

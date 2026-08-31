@@ -504,12 +504,22 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     await seedGoal({ budgetCents: 200 });
     await pot('hive-a');
     await sample({ harness: 'hive-a', usd: 2.0 });
+    // Keep the pre-transition value deterministic so this assertion proves the
+    // kill writer stamps the lifecycle change rather than merely observing the
+    // row's insert-time timestamp.
+    await rootSql`UPDATE harness_shared.goals SET updated_at = ${GOAL_CREATED}
+      WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    const before = await rootSql<Array<{ updated_at: string }>>`
+      SELECT updated_at FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
 
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res).toMatchObject({ ok: true, written: 1, errors: [] });
     const rows = await rootSql<Array<{ status: string }>>`
       SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
     expect(rows[0]?.status).toBe('killed');
+    const after = await rootSql<Array<{ updated_at: string }>>`
+      SELECT updated_at FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(Date.parse(String(after[0]?.updated_at))).toBeGreaterThan(Date.parse(String(before[0]?.updated_at)));
     expect(await goalMetadata()).toMatchObject({
       autoKilled: { reason: 'measured-goal-breach', spentCents: 200, measured: true },
     });
