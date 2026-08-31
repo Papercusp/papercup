@@ -41,6 +41,12 @@ export interface SpawnObservationWriteInput {
   readonly workspaceId: string;
   /** The spawn id the door minted for THIS attempt. */
   readonly spawnId: string;
+  /**
+   * For an `over_cap` refusal: the id of the row `fail()` recorded via
+   * `recordFailedAttempt` (a FRESH id, not `spawnId`). Null/absent when the door
+   * could not record one, in which case the observation is logged, not persisted.
+   */
+  readonly failedAttemptSpawnId?: string | null;
   readonly doorOutcome: SpawnDoorOutcome;
   readonly doorCap: number;
   readonly doorRoleCap: number | null;
@@ -48,33 +54,41 @@ export interface SpawnObservationWriteInput {
   readonly childRole: string;
   readonly fleetSlug: string | null;
   readonly planSlug: string | null;
+  /** Descriptive callsite label (D-011) — attribution only, binds nothing. */
+  readonly caller: string | null;
 }
 
 /**
- * WHICH SPAWNS GET A PERSISTED ROW (plan D-010) — read this before computing any
+ * WHICH ROW CARRIES THIS RECEIPT (plan D-010) — read this before computing any
  * rate from `governor_observation`.
  *
- * The receipt is a column on `harness_shared.spawned_agents`, so it can only be
- * attached to a spawn that HAS a row, and only `admitted` does:
+ * The receipt is a column on `harness_shared.spawned_agents`, so the real question
+ * is never "is this outcome persistable" but "which spawn_id holds the row". The
+ * three outcomes answer it differently, and they do NOT reduce to admitted-only:
  *
- *   • `admitted`  → our `spawnId` was inserted in the committed transaction. Persisted.
- *   • `over_cap`  → the door refused; NO row was inserted anywhere. Nothing to update.
- *   • `duplicate` → the returned spawn id belongs to the ORIGINAL spawn, whose own
- *                   observation is already recorded. Writing here would overwrite a
- *                   different spawn's receipt with this replay's.
+ *   • `admitted`  → our own `spawnId`, inserted in the committed transaction.
+ *   • `over_cap`  → a row DOES exist, under the id `fail()` returns: the door's
+ *                   `recordFailedAttempt` mints a FRESH id, records the row, and
+ *                   flips it to status='failed' with the cap message. Attaching
+ *                   here is what makes refusals observable at all — and refusals
+ *                   are exactly where P-004's BURST SHAPE lives, since a burst is
+ *                   defined by the moments the cap was hit.
+ *   • `duplicate` → the id belongs to the ORIGINAL spawn, which already carries its
+ *                   own receipt. Nothing to attach; writing there would overwrite a
+ *                   different spawn's counterfactual with this replay's.
  *
- * A synthetic row for the two unpersisted cases was rejected outright: `countRunning`
- * derives the live ceiling from this very table, so inserting one to hold telemetry
- * would consume a real spawn slot — telemetry silently tightening the cap it was
- * added to measure. Those cases are LOGGED instead, so the evidence still exists in
- * the journal without any path from this module to the ceiling.
- *
- * The consequence for P-004 is a denominator rule, not a caveat to note in passing:
- * observation rows sample ADMITTED spawns, never spawn ATTEMPTS. A divergence rate
- * computed against attempts would be wrong in the dangerous direction.
+ * Inventing a row to hold telemetry remains forbidden: `countRunning` derives the
+ * live ceiling from this table, so a fabricated 'running' row would let telemetry
+ * consume a real spawn slot. Attaching to the terminal row `fail()` ALREADY created
+ * is not that — it creates nothing and cannot move the ceiling.
  */
-export function observationIsPersistable(outcome: SpawnDoorOutcome): boolean {
-  return outcome === 'admitted';
+export function resolveObservationTarget(
+  outcome: SpawnDoorOutcome,
+  ids: { readonly spawnId: string; readonly failedAttemptSpawnId?: string | null },
+): string | null {
+  if (outcome === 'admitted') return ids.spawnId;
+  if (outcome === 'over_cap') return ids.failedAttemptSpawnId ?? null;
+  return null;
 }
 
 /**
@@ -100,10 +114,15 @@ export async function recordSpawnGovernorObservation(
       childRole: input.childRole,
       fleetSlug: input.fleetSlug,
       planSlug: input.planSlug,
+      caller: input.caller,
       snapshot: read?.payload ?? null,
     });
 
-    if (!observationIsPersistable(input.doorOutcome)) {
+    const targetSpawnId = resolveObservationTarget(input.doorOutcome, {
+      spawnId: input.spawnId,
+      failedAttemptSpawnId: input.failedAttemptSpawnId,
+    });
+    if (!targetSpawnId) {
       logUnpersistable(input, observation, logFn);
       return;
     }
@@ -116,7 +135,7 @@ export async function recordSpawnGovernorObservation(
          SET governor_observation = ${input.sql.json(
            observation as unknown as Parameters<typeof input.sql.json>[0],
          )}
-       WHERE spawn_id = ${input.spawnId}
+       WHERE spawn_id = ${targetSpawnId}
          AND governor_observation IS NULL`;
   } catch {
     /* best-effort evidence only — an observation must never disturb a spawn */

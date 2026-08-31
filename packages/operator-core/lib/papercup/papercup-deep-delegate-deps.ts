@@ -150,6 +150,8 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
             import('../work-items'),
           ]);
         const out = await spawnAgentInHarness({
+          // Descriptive attribution for the observe-only governor receipt (D-011).
+          spawnCaller: 'papercup/papercup-deep-delegate-deps',
           workspaceId: activeWorkspaceId(),
           harness,
           role: 'cup',

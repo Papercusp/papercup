@@ -92,6 +92,8 @@ export async function launchForeignSession(spec: ForeignLaunchSpec): Promise<{ s
     .map(([key, value]) => `${key}=${value}`);
   
   const res = await spawnAgentInHarness({
+    // Descriptive attribution for the observe-only governor receipt (D-011).
+    spawnCaller: 'p2p/offer-executor-prod-deps',
     workspaceId: spec.workspace.workspaceId,
     harness,
     role: spec.sessionRole,

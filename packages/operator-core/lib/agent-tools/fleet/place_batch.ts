@@ -576,6 +576,8 @@ export async function executeBatch(opts: {
       };
     }
     const res = await spawnAgentInHarness({
+      // Descriptive attribution for the observe-only governor receipt (D-011).
+      spawnCaller: 'agent-tools/fleet/place_batch',
       workspaceId,
       harness: task.harness,
       role: 'cup',

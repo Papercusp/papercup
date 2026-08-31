@@ -583,6 +583,19 @@ export interface OperatorSpawnInput {
   chunkId?: string | null;
   /** Queen-authored brief: the situational overlay the bee is MISSING. P-060. */
   brief?: string | null;
+  /**
+   * DESCRIPTIVE caller label for the observe-only governor receipt (plan
+   * spawn-door-governor-migration-2026-08-31, D-011). Attribution ONLY: it binds
+   * nothing, gates nothing, and is not the `parent` AdmissionContext that
+   * P-005..P-011 will later thread — setting it is not migrating a caller.
+   *
+   * It exists because P-004 must produce a per-caller distribution and the door
+   * otherwise cannot tell its callers apart: `parentRole` is the parent agent's
+   * role, and several distinct callsites share the role 'operator', so splitting
+   * on it would silently merge them. Unset is honest — the receipt records the
+   * `caller-attribution-unavailable` caveat rather than guessing.
+   */
+  spawnCaller?: string | null;
   /** Named-fleet placement (fleet-color-schemes): when set, the bee launches INTO
    *  this fleet — its env carries PAPERCUSP_FLEET_SLUG/ROLE + the scheme colors so
    *  it auto-joins (the presence fleet label) + recolors its terminal at launch,
@@ -1220,30 +1233,34 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
 
   // P-003 (plan spawn-door-governor-migration-2026-08-31): OBSERVE-ONLY governor
   // receipt — record the admission decision the governor WOULD have made for this
-  // spawn. Placed HERE, after the admission transaction has committed and BEFORE the
-  // duplicate/over_cap early returns, so a refusal is still observed (D-010 explains
-  // why only `admitted` gets a persisted row and the other two are logged).
-  // `void`-ed and never awaited: this is evidence, and a defect in it must not be able
-  // to fail a spawn (D-009) — same contract as the WI-390 shadow probe above.
-  void recordSpawnGovernorObservation({
-    sql,
-    workspaceId: input.workspaceId,
-    spawnId,
-    doorOutcome:
-      admission.kind === 'admitted'
-        ? 'admitted'
-        : admission.kind === 'duplicate'
-          ? 'duplicate'
-          : 'over_cap',
-    doorCap: spawnConcurrencyCeiling(),
-    doorRoleCap: ownerBeeCeiling,
-    parentRole: input.parentRole ?? 'operator',
-    childRole: role,
-    fleetSlug: input.fleet?.slug ?? null,
-    planSlug: input.planSlug ?? null,
-  });
+  // spawn. `void`-ed and never awaited: this is evidence, and a defect in it must
+  // never be able to fail a spawn (D-009) — the WI-390 shadow probe's contract.
+  //
+  // The over_cap branch below observes SEPARATELY, after `fail()` has minted the
+  // row its receipt attaches to (D-010); it is deliberately not handled here.
+  const observeSpawn = (
+    doorOutcome: 'admitted' | 'duplicate' | 'over_cap',
+    failedAttemptSpawnId?: string | null,
+  ) =>
+    recordSpawnGovernorObservation({
+      sql,
+      workspaceId: input.workspaceId,
+      spawnId,
+      failedAttemptSpawnId,
+      doorOutcome,
+      doorCap: spawnConcurrencyCeiling(),
+      doorRoleCap: ownerBeeCeiling,
+      parentRole: input.parentRole ?? 'operator',
+      childRole: role,
+      fleetSlug: input.fleet?.slug ?? null,
+      planSlug: input.planSlug ?? null,
+      caller: input.spawnCaller ?? null,
+    });
+
+  if (admission.kind === 'admitted') void observeSpawn('admitted');
 
   if (admission.kind === 'duplicate') {
+    void observeSpawn('duplicate');
     console.log(
       `[operator-spawn] idempotent replay: key "${idemKey}" already spawned ${admission.spawnId} — not spawning again (EI-73)`,
     );
@@ -1264,6 +1281,11 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       `spawn rejected: ${runningLabel} already running (fleet ceiling ${admission.cap} — ${capLabel}). ` +
         `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
     );
+    // Observe AFTER fail(): `recordFailedAttempt` mints the row this receipt
+    // attaches to, under a fresh id (res.spawnId), not our `spawnId` (D-010).
+    // Cap refusals are where P-004's burst shape lives — a burst IS the moments
+    // the ceiling was hit — so dropping them would understate bursts invisibly.
+    void observeSpawn('over_cap', res.spawnId);
     return { ...res, awaitEvent };
   }
 

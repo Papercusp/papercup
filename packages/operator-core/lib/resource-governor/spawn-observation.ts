@@ -51,6 +51,13 @@ export interface SpawnObservationInput {
   readonly childRole: string;
   readonly fleetSlug: string | null;
   readonly planSlug: string | null;
+  /**
+   * DESCRIPTIVE callsite label (D-011). `null` when the caller did not identify
+   * itself, which is recorded as `caller-attribution-unavailable` rather than
+   * guessed at from `parentRole` (distinct callers share a role, so a role split
+   * would merge them and be misread as a per-caller distribution).
+   */
+  readonly caller?: string | null;
   /** `null` when the published snapshot was unreadable or too old to trust. */
   readonly snapshot: GovernorStateSnapshot | null;
 }
@@ -66,6 +73,8 @@ export interface SpawnGovernorObservation {
     readonly childRole: string;
     readonly fleetSlug: string | null;
     readonly planSlug: string | null;
+    /** Descriptive callsite label (D-011); `null` when the caller did not say. */
+    readonly caller: string | null;
   };
   readonly governor: {
     readonly wouldAdmit: GovernorWouldAdmit;
@@ -112,11 +121,11 @@ export function buildSpawnGovernorObservation(
   input: SpawnObservationInput,
 ): SpawnGovernorObservation {
   const caveats: SpawnObservationCaveat[] = [];
-  // P-005..P-011 thread the real caller identity through as `parent`
-  // AdmissionContext. Until then the door cannot tell which of the seven
-  // callers invoked it, and saying so beats letting P-004 mistake
-  // parentRole for caller attribution.
-  caveats.push('caller-attribution-unavailable');
+  // D-011: the caller states its own identity via the descriptive `spawnCaller`
+  // label. When it does not, say so — `parentRole` is NOT a fallback, because
+  // several distinct callsites share the role 'operator' and splitting on it
+  // would merge them into what P-004 would then read as a per-caller split.
+  if (!input.caller) caveats.push('caller-attribution-unavailable');
 
   const snapshot = input.snapshot;
   if (!snapshot) {
@@ -132,6 +141,11 @@ export function buildSpawnGovernorObservation(
         childRole: input.childRole,
         fleetSlug: input.fleetSlug,
         planSlug: input.planSlug,
+        // `||` not `??` on purpose: an empty label is a caller that failed to
+        // identify itself, and must normalize to null so it cannot become a
+        // distinct `""` bucket in P-004's per-caller distribution. Kept in step
+        // with the falsy `!input.caller` caveat check above.
+        caller: input.caller || null,
       },
       governor: {
         wouldAdmit: 'unknown',
@@ -201,6 +215,10 @@ export function buildSpawnGovernorObservation(
       childRole: input.childRole,
       fleetSlug: input.fleetSlug,
       planSlug: input.planSlug,
+      // `||` not `??`: an empty label is a caller that failed to identify itself
+      // and must normalize to null, never a distinct `""` bucket in P-004's
+      // per-caller distribution. Kept in step with the `!input.caller` caveat.
+      caller: input.caller || null,
     },
     governor: {
       wouldAdmit,

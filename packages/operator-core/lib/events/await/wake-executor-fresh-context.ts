@@ -91,6 +91,10 @@ async function defaultSpawnFreshBee(input: {
   // does not import wake-executor, so this is one-directional at call time).
   const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
   const res = await spawnAgentInHarness({
+    // Descriptive attribution for the observe-only governor receipt (D-011).
+    // P-011 names this the riskiest caller to bind, so its share of the live
+    // baseline is the number that decides whether Phase 3 is safe here.
+    spawnCaller: 'events/await/wake-executor-fresh-context',
     workspaceId: input.workspaceId,
     harness: input.harness,
     role: 'cup',

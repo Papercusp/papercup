@@ -93,6 +93,10 @@ export async function relaunchReclaimedSpawn(
       const claim = await claimWorkItem(spawn.workItemId, spawnId, { harness: spawn.harnessSlug });
       if (!claim) return false;
       const res = await spawnAgentInHarness({
+        // Descriptive attribution for the observe-only governor receipt (D-011).
+        // Recovery machinery — P-009 onward; a blocking admit here would delay a
+        // relaunch, so this caller's live share is load-bearing for Phase 3.
+        spawnCaller: 'fleet/spawn-relaunch',
         workspaceId: spawn.workspaceId,
         harness: spawn.harnessSlug,
         role: 'cup',

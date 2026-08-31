@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { observationIsPersistable } from './spawn-observation-writer';
+import { resolveObservationTarget } from './spawn-observation-writer';
 
 /**
  * P-003 of plan `spawn-door-governor-migration-2026-08-31`.
@@ -9,31 +9,47 @@ import { observationIsPersistable } from './spawn-observation-writer';
  * from exactly that population. These tests pin the rule (D-010) so a later
  * change cannot silently widen or narrow the sample without a red test.
  */
-describe('observationIsPersistable (D-010 population rule)', () => {
-  it('persists an admitted spawn — the only outcome that inserted a row', () => {
-    expect(observationIsPersistable('admitted')).toBe(true);
+describe('resolveObservationTarget (D-010 — which row carries the receipt)', () => {
+  const ids = { spawnId: 'spawn-ours', failedAttemptSpawnId: 'spawn-failed-row' };
+
+  it('attaches an admitted spawn to our own committed row', () => {
+    expect(resolveObservationTarget('admitted', ids)).toBe('spawn-ours');
   });
 
-  it('does NOT persist over_cap: the door refused and inserted no row at all', () => {
-    // An UPDATE would match zero rows; the value is logged instead. Crucially a
-    // synthetic row is NOT an option — countRunning derives the live ceiling from
-    // this table, so inserting one would let telemetry consume a real spawn slot.
-    expect(observationIsPersistable('over_cap')).toBe(false);
+  it('attaches an over_cap refusal to the row fail() recorded, NOT to our spawnId', () => {
+    // The corrected half of D-010. `recordFailedAttempt` mints a FRESH id, so
+    // keying on our own spawnId would match zero rows and silently drop every
+    // refusal — and refusals are exactly where P-004's burst shape lives, since
+    // a burst is defined by the moments the ceiling was hit.
+    expect(resolveObservationTarget('over_cap', ids)).toBe('spawn-failed-row');
+    expect(resolveObservationTarget('over_cap', ids)).not.toBe(ids.spawnId);
   });
 
-  it('does NOT persist duplicate: the row belongs to the ORIGINAL spawn', () => {
-    // The replay's admission returns the first spawn's id. Writing there would
-    // overwrite that spawn's own receipt with a later replay's counterfactual.
-    expect(observationIsPersistable('duplicate')).toBe(false);
+  it('logs rather than persists an over_cap whose failed-attempt row was not recorded', () => {
+    // recordFailedAttempt is itself best-effort and returns null on failure.
+    expect(resolveObservationTarget('over_cap', { spawnId: 'spawn-ours' })).toBeNull();
+    expect(
+      resolveObservationTarget('over_cap', { spawnId: 'spawn-ours', failedAttemptSpawnId: null }),
+    ).toBeNull();
   });
 
-  it('does NOT persist unknown', () => {
-    expect(observationIsPersistable('unknown')).toBe(false);
+  it('never attaches a duplicate: that row belongs to the ORIGINAL spawn', () => {
+    // The replay's admission returns the first spawn's id, which already carries
+    // its own receipt. Writing there would overwrite a different spawn's
+    // counterfactual with this replay's.
+    expect(resolveObservationTarget('duplicate', ids)).toBeNull();
   });
 
-  it('admits exactly one outcome — a guard against widening the P-004 denominator', () => {
-    const outcomes = ['admitted', 'over_cap', 'duplicate', 'unknown'] as const;
-    expect(outcomes.filter(observationIsPersistable)).toEqual(['admitted']);
+  it('never attaches an unknown outcome', () => {
+    expect(resolveObservationTarget('unknown', ids)).toBeNull();
+  });
+
+  it('never targets our own spawnId for anything but an admitted spawn', () => {
+    // Guards the specific mis-write the original D-010 reasoning would have
+    // produced: our spawnId is only ever a valid target when we inserted it.
+    for (const outcome of ['over_cap', 'duplicate', 'unknown'] as const) {
+      expect(resolveObservationTarget(outcome, ids)).not.toBe(ids.spawnId);
+    }
   });
 });
 
@@ -64,6 +80,7 @@ describe('recordSpawnGovernorObservation (best-effort contract)', () => {
         childRole: 'su',
         fleetSlug: null,
         planSlug: null,
+        caller: 'test/writer-contract',
       }),
     ).resolves.toBeUndefined();
   });
@@ -88,6 +105,7 @@ describe('recordSpawnGovernorObservation (best-effort contract)', () => {
         childRole: 'su',
         fleetSlug: null,
         planSlug: null,
+        caller: 'test/writer-contract',
       }),
     ).resolves.toBeUndefined();
   });

@@ -706,6 +706,8 @@ export default defineTool({
           // parent id would be an orphan: getSubtree anchors on a real row, so a
           // tree rooted at a non-existent parent comes back empty.)
           void spawnAgentInHarness({
+            // Descriptive attribution for the observe-only governor receipt (D-011).
+            spawnCaller: 'agent-tools/operator/converse',
             workspaceId,
             harness: sp.harness,
             role: sp.role,

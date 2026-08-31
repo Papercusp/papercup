@@ -268,6 +268,10 @@ export function liveBeeRunDeps(args: {
   return {
     async spawn({ brief, runInput, timeoutMs }) {
       const res = await spawnAgentInHarness({
+        // Descriptive attribution for the observe-only governor receipt (D-011).
+        // NOTE: this is the EIGHTH door — the plan's "7 callers" does not name it,
+        // so P-012 must not claim sole-chokepoint status until it is accounted for.
+        spawnCaller: 'iq-battery/bee-instance',
         workspaceId: args.workspaceId,
         harness: args.harness,
         role: 'cup',

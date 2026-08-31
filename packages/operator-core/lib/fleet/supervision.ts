@@ -173,7 +173,11 @@ async function defaultRelaunch(sql: Sql, workspaceId: string, spawnId: string): 
     });
     if (!built.ok) return { spawnId, ok: false, newSpawnId: null, error: built.error };
     const { spawnAgentInHarness } = await import('./operator-spawn');
-    const res = await spawnAgentInHarness(built.input);
+    // Descriptive attribution for the observe-only governor receipt (D-011).
+    // buildRelaunchInput is shared, so the label is stamped HERE rather than
+    // inside it — the supervision relaunch and any other consumer of that
+    // builder must stay distinguishable in the P-004 per-caller distribution.
+    const res = await spawnAgentInHarness({ ...built.input, spawnCaller: 'fleet/supervision' });
     if (!res.ok) return { spawnId, ok: false, newSpawnId: null, error: res.error ?? 'relaunch rejected' };
     return { spawnId, ok: true, newSpawnId: res.spawnId };
   } catch (err) {

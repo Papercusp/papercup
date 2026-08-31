@@ -197,11 +197,30 @@ describe('buildSpawnGovernorObservation (P-003 observe-only receipt)', () => {
     expect(o.governor.estimatedWaitMs).toBeNull();
   });
 
-  it('always declares that caller attribution is not yet available', () => {
-    // Until P-005..P-011 thread the real caller through, parentRole is NOT
-    // caller identity. Saying so on every row stops P-004 reading it as one.
+  it('declares caller attribution unavailable ONLY when the caller did not label itself', () => {
+    // D-011: the label is the caller's own statement. parentRole is NOT a
+    // fallback — distinct callsites share the role 'operator', so splitting on
+    // it would merge them into something P-004 would misread as a per-caller
+    // distribution. An unlabelled spawn must say so rather than be guessed at.
     expect(build({ snapshot: snapshot({}) }).caveats).toContain('caller-attribution-unavailable');
     expect(build({ snapshot: null }).caveats).toContain('caller-attribution-unavailable');
+    expect(build({ snapshot: snapshot({}), caller: null }).caveats).toContain(
+      'caller-attribution-unavailable',
+    );
+  });
+
+  it('drops the attribution caveat and records the label when the caller identifies itself', () => {
+    const o = build({ snapshot: snapshot({}), caller: 'fleet/spawn-relaunch' });
+    expect(o.door.caller).toBe('fleet/spawn-relaunch');
+    expect(o.caveats).not.toContain('caller-attribution-unavailable');
+  });
+
+  it('treats an empty-string label as no attribution, not as a caller named ""', () => {
+    // Guards the falsy-check: an empty label is a caller that failed to identify
+    // itself, and must not become a distinct bucket in the P-004 distribution.
+    const o = build({ snapshot: snapshot({}), caller: '' });
+    expect(o.door.caller).toBeNull();
+    expect(o.caveats).toContain('caller-attribution-unavailable');
   });
 
   it('carries the door facts through unchanged', () => {
@@ -212,12 +231,16 @@ describe('buildSpawnGovernorObservation (P-003 observe-only receipt)', () => {
       childRole: 'cup',
       fleetSlug: 'f-1',
       planSlug: 'p-1',
+      caller: 'fleet/supervision',
       snapshot: snapshot({}),
     });
+    // Exact-shape assertion on purpose: a silently ADDED door field would
+    // otherwise slip into the receipt unnoticed, and P-004 reads this object.
     expect(o.door).toEqual({
       outcome: 'admitted',
       cap: 12,
       roleCap: 3,
+      caller: 'fleet/supervision',
       parentRole: 'mug',
       childRole: 'cup',
       fleetSlug: 'f-1',
