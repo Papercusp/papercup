@@ -12,6 +12,7 @@ import {
   formatAffectedTaskShardMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
+  isSharedAdmissionTimeout,
   mergeDurationHistory,
   pidsEventRefusalDelta,
   planAffectedTaskShards,
@@ -1012,7 +1013,7 @@ describe('operator-visible budget markers', () => {
 
 describe('affected-tests scheduler wiring', () => {
   it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {
-    expect(AFFECTED_TESTS_SRC).toContain('const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
+    expect(AFFECTED_TESTS_SRC).toContain('initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
     for (const variable of ['VITEST_MAX_WORKERS', 'VITEST_MAX_FORKS', 'VITEST_MAX_THREADS']) {
       expect(AFFECTED_TESTS_SRC).toContain(`${variable}: String(allocation.workers)`);
     }
@@ -1026,7 +1027,7 @@ describe('affected-tests scheduler wiring', () => {
   // wiring cannot satisfy the assertion on its own.
   it('passes the live memory reader to BOTH budgeted pools, so the admission clamp is not inert', () => {
     expect(AFFECTED_TESTS_SRC).toMatch(
-      /const initialPool = await runBudgetedTaskShards\(TASK_CONTEXT_SHARD_PLAN[\s\S]{0,500}?\n\s*readMemAvailableMb,/,
+      /initialPool = await runBudgetedTaskShards\(TASK_CONTEXT_SHARD_PLAN[\s\S]{0,500}?\n\s*readMemAvailableMb,/,
     );
     expect(AFFECTED_TESTS_SRC).toMatch(
       /const retryPool = await runBudgetedTasks\(\[scheduled\.task\][\s\S]{0,500}?\n\s*readMemAvailableMb,/,
@@ -1068,7 +1069,10 @@ describe('affected-tests scheduler wiring', () => {
   });
 
   it('drains the initial pool before reporting and reuses the same scheduler for retries', () => {
-    const pool = AFFECTED_TESTS_SRC.indexOf('const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
+    // WI-1490656 wrapped this await in a try/catch so an admission-starvation throw becomes a
+    // reported refusal rather than an uncaught top-level rejection, so the declaration is now
+    // `let initialPool;` above the assignment.
+    const pool = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
     const reporting = AFFECTED_TESTS_SRC.indexOf('for (const scheduled of initialPool.results) {');
     const retry = AFFECTED_TESTS_SRC.indexOf('const retryPool = await runBudgetedTasks([scheduled.task]');
     expect(pool).toBeGreaterThan(-1);
@@ -1260,4 +1264,64 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(second.budgetMs).toBeLessThan(first.budgetMs);
     expect(second.budgetMs).toBeCloseTo(8_000 - first.waitedMs, -2);
   }, 20_000);
+
+  it('classifies a REAL admission timeout, so exhausting the budget cannot become a lost run', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(
+      'papercusp-test-process-admission',
+      async () => {
+        acquired.resolve();
+        await release.promise;
+      },
+      { timeoutMs: 10_000, staleMs: 60_000, retryMs: 5 },
+    );
+    await acquired.promise;
+
+    // Provoke the ACTUAL error object the runner will have to classify — not a hand-written
+    // lookalike. If someone rewords the throw in fs-mutex.mjs, this fails here instead of
+    // silently restoring "gate run exits with no verdict".
+    let thrown: unknown;
+    try {
+      await runBudgetedTasks(heldTasks, {
+        ...trivialRun,
+        admissionTimeoutMs: 60,
+        // Keep the notice off `console.error` — vitest-fail-on-console treats the default
+        // sink as a test failure, which is itself a small demonstration of why the sink had
+        // to become injectable.
+        onAdmissionNotice: () => {},
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    release.resolve();
+    await holder;
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(isSharedAdmissionTimeout(thrown)).toBe(true);
+
+    // CONTROLS: a real test failure and a timeout on a DIFFERENT mutex must not be swallowed
+    // as admission starvation — misclassifying either way loses a genuine red.
+    expect(isSharedAdmissionTimeout(new Error('boom: 3 tests failed'))).toBe(false);
+    expect(
+      isSharedAdmissionTimeout(
+        new Error('Timed out after 60ms waiting for fs-mutex "some-other-lock" (/tmp/x)'),
+      ),
+    ).toBe(false);
+    expect(isSharedAdmissionTimeout(undefined)).toBe(false);
+  }, 20_000);
+
+  it('the runner turns that classification into an attributable refusal instead of an uncaught rejection', () => {
+    // `runBudgetedTaskShards` is awaited at module top level. An uncaught rejection there
+    // kills the process with no AFFECTED_TESTS_RESULT line — the exact "exit-without-verdict"
+    // shape the gate records as a lost run — so bounding the wait is only safe if the throw
+    // is caught and reported. Pinned structurally: the catch must re-throw anything that is
+    // NOT admission starvation, so this can never become a blanket swallow.
+    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TESTS_REFUSAL kind=admission-starved');
+    expect(AFFECTED_TESTS_SRC).toContain('status=refused reason=admission-starved');
+    expect(AFFECTED_TESTS_SRC).toMatch(/if\s*\(!isSharedAdmissionTimeout\(error\)\)\s*throw error;/);
+    // And the queue notices must be routed to `errSync` (stderr AND the run log), not left on
+    // the scheduler's `console.error` default, which never reaches RUN_LOG_PATH.
+    expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
+  });
 });

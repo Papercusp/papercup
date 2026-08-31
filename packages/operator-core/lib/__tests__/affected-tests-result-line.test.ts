@@ -547,7 +547,10 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
   it('publishes the pc-heavy finalization barrier after the initial task pool settles', () => {
     const finalizationEnv = source.indexOf('PC_HEAVY_PSI_FINALIZATION_FILE');
     const publishFn = source.indexOf('function publishPreemptFinalizationMarker');
-    const initialPool = source.indexOf('const initialPool = await runBudgetedTaskShards');
+    // WI-1490656: the shard call is now inside a try/catch (admission starvation must report
+    // a refusal rather than die as an uncaught rejection), so the declaration moved to a
+    // preceding `let`. The ordering asserted below is unchanged.
+    const initialPool = source.indexOf('initialPool = await runBudgetedTaskShards');
     const publishCall = source.indexOf('publishPreemptFinalizationMarker();', initialPool);
     const resultLine = source.indexOf('const resultLine = (status) =>');
 

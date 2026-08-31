@@ -241,8 +241,15 @@ async function listReaderLocks(readersDir) {
   }
 }
 
-async function waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, startedAt, onWaiting }) {
+async function waitForReaders(
+  readersDir,
+  { timeoutMs, staleMs, retryMs, startedAt, onWaiting, waitingNoticeIntervalMs = 0 },
+) {
   let announcedWaiting = false;
+  // WI-1490656: same re-announce cadence as the write-lock wait. Fixing only the write path
+  // would leave the identical silent-wait hole here — a writer blocked behind long-lived
+  // READERS goes just as quiet, and looks just as much like a wedge.
+  let lastWaitingNoticeMs = 0;
   for (;;) {
     const readers = await listReaderLocks(readersDir);
     for (const reader of readers) await reclaimAbandonedLock(reader, staleMs);
@@ -250,8 +257,12 @@ async function waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, started
     if (activeReaders.length === 0) return;
 
     const elapsed = Date.now() - startedAt;
-    if (!announcedWaiting && onWaiting) {
+    const dueForNotice =
+      !announcedWaiting ||
+      (waitingNoticeIntervalMs > 0 && elapsed - lastWaitingNoticeMs >= waitingNoticeIntervalMs);
+    if (dueForNotice && onWaiting) {
       announcedWaiting = true;
+      lastWaitingNoticeMs = elapsed;
       onWaiting({ owner: await readOwner(activeReaders[0]), elapsedMs: elapsed });
     }
     if (elapsed > timeoutMs) {
@@ -393,7 +404,14 @@ export async function withFsMutex(name, fn, opts = {}) {
   }
 
   try {
-    await waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, startedAt, onWaiting: opts.onWaiting });
+    await waitForReaders(readersDir, {
+      timeoutMs,
+      staleMs,
+      retryMs,
+      startedAt,
+      onWaiting: opts.onWaiting,
+      waitingNoticeIntervalMs,
+    });
     // WI-1490656: report how long admission actually QUEUED. A caller that re-acquires
     // the same lock across many short sub-invocations (one affected-tests shard after
     // another) otherwise has no way to bound its TOTAL queue time — each call's

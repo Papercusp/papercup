@@ -139,6 +139,7 @@ import {
   resolveMemoryBudgetMb,
   resolveTaskBudget,
   resolveWorkerMemoryMb,
+  isSharedAdmissionTimeout,
   runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
@@ -5333,11 +5334,6 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
   }
 }
 
-// This is the irreversible execution boundary: derivation, dry-run, and empty
-// task exits are all above it. Publish only now so an exclusive materializer
-// retains priority during setup but cannot destroy the once-only task run after
-// its task ledger has become authoritative.
-publishPreemptReadyMarker();
 // WI-1490656: admission starvation must end as an ATTRIBUTABLE verdict, not a lost run.
 // `runBudgetedTaskShards` now bounds the total time this invocation may spend queued on the
 // shared admission mutex. When that budget is spent, `withFsMutex` throws — and at top level
@@ -5345,12 +5341,20 @@ publishPreemptReadyMarker();
 // line, which is precisely the "exit-without-verdict" shape the gate records as a LOST RUN.
 // Bounding the wait without this would only make the gate lose runs faster. Exit 78
 // (EX_CONFIG) matches the pids-exhausted refusal: a red that is NOT a test verdict.
-function isAdmissionStarvation(error) {
-  return /waiting for fs-mutex "papercusp-test-process-admission"/.test(
-    String(error?.message ?? error),
-  );
-}
+// The classifier lives beside the acquisition that throws (budgeted-task-scheduler.mjs) so
+// a reworded error cannot silently stop being recognised here and quietly restore the
+// lost-run behaviour.
+//
+// `let` + the declaration ABOVE the publication boundary on purpose: EI-21361599312981776
+// pins that NOTHING may sit between `publishPreemptReadyMarker()` and the first task shard,
+// so only the `try {` opener is allowed to intervene.
 let initialPool;
+
+// This is the irreversible execution boundary: derivation, dry-run, and empty
+// task exits are all above it. Publish only now so an exclusive materializer
+// retains priority during setup but cannot destroy the once-only task run after
+// its task ledger has become authoritative.
+publishPreemptReadyMarker();
 try {
   initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
@@ -5370,7 +5374,7 @@ try {
   onAdmissionNotice: (line) => errSync(line),
   });
 } catch (error) {
-  if (!isAdmissionStarvation(error)) throw error;
+  if (!isSharedAdmissionTimeout(error)) throw error;
   errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
   errSync(
     `AFFECTED_TESTS_RESULT status=refused reason=admission-starved tasks=${tasks.length} ` +

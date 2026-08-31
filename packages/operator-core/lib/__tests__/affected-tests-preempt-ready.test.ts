@@ -61,12 +61,18 @@ describe('affected-tests after-ready publication boundary (EI-21361599312981776)
     const publication = source.indexOf('publishPreemptReadyMarker();');
     const emptyTasks = source.indexOf('if (!tasks.length)');
     const dryExit = source.indexOf('if (dry) {');
-    const initialPool = source.indexOf('const initialPool = await runBudgetedTaskShards');
+    const initialPool = source.indexOf('initialPool = await runBudgetedTaskShards');
 
     expect(publication).toBeGreaterThan(emptyTasks);
     expect(publication).toBeGreaterThan(dryExit);
     expect(initialPool).toBeGreaterThan(publication);
-    expect(source.slice(publication, initialPool)).toBe('publishPreemptReadyMarker();\n');
+    // WI-1490656 wrapped the shard call in a try/catch so an admission-starvation throw is
+    // reported as a refusal instead of dying as an uncaught top-level rejection. The
+    // adjacency this pins is unchanged and deliberately still exact: ONLY the `try {` opener
+    // may sit between publication and the first shard, so no future early-exit or extra
+    // statement can slip into the window this test exists to keep empty. (The `let
+    // initialPool;` declaration lives ABOVE the publication for exactly this reason.)
+    expect(source.slice(publication, initialPool)).toBe('publishPreemptReadyMarker();\ntry {\n  ');
   });
 
   it('cleans a published marker from the process-exit path', () => {
