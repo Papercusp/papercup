@@ -22,7 +22,7 @@ export default defineTool({
   // scoping itself by the resolved workspace id.
   crossWorkspace: true,
   description:
-    'Set the Mug autonomy ceiling / lock / graduated level for one category. High-risk: widens or narrows what the Mug may auto-decide without asking. Audited; provide a reason.',
+    'Set the autonomy ceiling / lock / graduated level for one category. High-risk: widens or narrows what the deciding agent may auto-decide without asking. Audited; provide a reason.',
   capability: 'audit:write',
   guidance: {
     when: "The owner (or the owner control surface) deliberately changes a category's autonomy — lower/raise the risk ceiling, lock/unlock (protected = never-auto), or the graduation engine records an earned level (clamped ≤ the ceiling).",

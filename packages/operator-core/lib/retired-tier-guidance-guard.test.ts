@@ -132,6 +132,18 @@ describe('retired-tier current-guidance live verdict', () => {
         'packages/operator-core/lib/agent-tools/plans/launch-prompt.ts',
         'packages/operator-core/lib/carry-respawn.ts',
         'packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts',
+        // WI-1756049: the tool CATALOG is agent-facing guidance too — a tool's
+        // `description` + `guidance.{when,notWhen,chaining}` are injected into the MCP
+        // catalog of every agent carrying it. All 8 tools in these two dirs used to
+        // attribute themselves to the retired Mug ("Log the Mug's disposition…",
+        // `when: "You are the Mug and you've DECIDED…"`) while the live callers are
+        // operator/su (29 + 3 invocations by role 'operator'; zero by 'mug'), and the
+        // su playbook simultaneously directs su to autonomy:record_disposition.
+        //
+        // ⚠ decide.ts legitimately still names `kettle`: OVERWATCH_ROLE === "kettle"
+        // is LIVE Overwatch's wire id, not tier residue. Do not "correct" it.
+        'packages/operator-core/lib/agent-tools/autonomy',
+        'packages/operator-core/lib/agent-tools/decision_ledger',
       ]),
     );
   });

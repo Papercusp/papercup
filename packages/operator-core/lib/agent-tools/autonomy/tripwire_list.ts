@@ -17,7 +17,7 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    'List recent Mug auto-decisions and their auto-revert tripwires (category, class, action, watch status armed/cleared/tripped/reverted, revert handle). Backs the settings recent-auto-decisions feed. Read-only.',
+    'List recent auto-decisions and their auto-revert tripwires (category, class, action, watch status armed/cleared/tripped/reverted, revert handle). Backs the settings recent-auto-decisions feed. Read-only.',
   capability: 'intel:read',
   guidance: {
     when: 'Rendering the owner recent-auto-decisions feed, or inspecting which auto-decisions are under watch / tripped. Filter by status (armed|cleared|tripped|reverted) or category.',

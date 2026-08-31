@@ -19,10 +19,10 @@ export default defineTool({
   // the resolved workspace id — so an unscoped operator/SU session can call it.
   crossWorkspace: true,
   description:
-    'Read the Mug autonomy policy (per-category risk ceilings, locks, graduated levels, and the derived effective ceiling) for this workspace.',
+    'Read the autonomy policy (per-category risk ceilings, locks, graduated levels, and the derived effective ceiling) for this workspace.',
   capability: 'intel:read',
   guidance: {
-    when: "Inspecting the Mug's per-category autonomy ceilings — the decider checking whether a category may auto-decide, or the owner settings surface rendering the policy. Pass `category` for one row; omit for all 13.",
+    when: 'Inspecting this workspace\'s per-category autonomy ceilings — the deciding agent checking whether a category may auto-decide, or the owner settings surface rendering the policy. Pass `category` for one row; omit for all 13.',
     notWhen: 'To CHANGE a ceiling use autonomy:policy_set. For feature flags use flags:get.',
     seeAlso: [
       'autonomy:policy_set (change a ceiling — owner authority)',

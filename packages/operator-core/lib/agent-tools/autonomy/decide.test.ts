@@ -123,5 +123,37 @@ describe('autonomy:decide tool', () => {
       await callTool({ action: 'coord:send', role: 'mug' });
       expect(mockResolve).toHaveBeenCalledTimes(1);
     });
+
+    // WI-1756049 recurrence guard. The dispatch branch compares against the literal
+    // "kettle", which reads like leftovers from the retired mug/kettle/cup tier and
+    // invites a well-meaning cleanup to rewrite it to "overwatch". It is not
+    // leftovers: "kettle" IS Overwatch's wire identifier (OVERWATCH_ROLE), the same
+    // value its autoloop_state rows are keyed by.
+    //
+    // Renaming it would not fail loudly — it would silently route Overwatch into the
+    // 13-category gate, whose ceilings are all ARMED at `critical`, so a structural
+    // action that must be escalate-only could come back `auto`. These two assertions
+    // exist so that rename fails HERE, with the reason, instead of in production.
+    it('dispatches on OVERWATCH_ROLE’s wire value, which is "kettle" and is NOT tier residue', async () => {
+      const { OVERWATCH_ROLE } = await import('../../overwatch/liveness');
+      expect(OVERWATCH_ROLE).toBe('kettle');
+
+      mockResolve.mockClear();
+      const res = await callTool({ action: 'processes:kill', role: OVERWATCH_ROLE });
+      const body = JSON.parse(res.content[0].text);
+
+      // Took the overwatch envelope (escalate-only), NOT the risk x ceiling gate.
+      expect(body.decision.escalateOnly).toBe(true);
+      expect(mockResolve).not.toHaveBeenCalled();
+    });
+
+    it('renaming the branch to "overwatch" would break the envelope — positive control', async () => {
+      // The counterfactual the guard above protects: the string a cleanup would
+      // "correct" to does NOT select the overwatch envelope; it falls through to the
+      // 13-category decider. If this ever stops being true the comparison changed.
+      mockResolve.mockClear();
+      await callTool({ action: 'processes:kill', role: 'overwatch' });
+      expect(mockResolve).toHaveBeenCalledTimes(1);
+    });
   });
 });

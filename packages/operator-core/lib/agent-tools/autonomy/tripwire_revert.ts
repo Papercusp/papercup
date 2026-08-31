@@ -16,7 +16,7 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    "Owner one-click undo of a Mug auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.",
+    "Owner one-click undo of an auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.",
   capability: 'audit:write',
   guidance: {
     when: 'The owner rejects a recent auto-decision in the settings feed — undo the action + tell the graduation engine this category was too aggressive (demote one step).',

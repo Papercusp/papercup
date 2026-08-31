@@ -16,7 +16,7 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    'Read the Mug trust-graduation standings: per-(category, class) clean-auto-pass streaks from the tripwire ledger, each category\'s earned graduated_level vs its current level + ceiling, and which classes are graduation-eligible (an owner ratification ask to raise a ceiling). Read-only.',
+    'Read the trust-graduation standings: per-(category, class) clean-auto-pass streaks from the tripwire ledger, each category\'s earned graduated_level vs its current level + ceiling, and which classes are graduation-eligible (an owner ratification ask to raise a ceiling). Read-only.',
   capability: 'intel:read',
   guidance: {
     when: 'Rendering the owner graduation surface, or checking how close a category is to earning more autonomy. Pairs with autonomy:policy_get (ceilings) + autonomy:tripwire_list (the underlying passes).',
