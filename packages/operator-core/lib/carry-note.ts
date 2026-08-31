@@ -2506,6 +2506,28 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
  *  Reads across ALL workspaces, matching {@link getLoopCarryNote}: a note written by
  *  a host on the other side of a redeploy is still this owner's note. */
 export async function listLoopCarryNoteHarnesses(ownerId: string): Promise<string[]> {
+  return (await listLoopCarryNoteScopes(ownerId)).map((row) => row.harness);
+}
+
+/** One owner's loop carry-note scopes WITH each one's write instant, newest first.
+ *
+ *  The timestamp half is what {@link listLoopCarryNoteHarnesses} throws away, and it
+ *  is the only thing that can answer the question that matters on a READ: is the scope
+ *  we just resolved the owner's NEWEST note, or is a fresher one sitting in a hive
+ *  nobody is going to look in? WI-1826126 measured that gap costing 2h38m of skipped
+ *  continuity on a cold wake — the wake resolved a real scope, read it successfully,
+ *  and never learned that a note written 2h38m later existed one scope over.
+ *
+ *  Deliberately NOT a picker. Same reasoning as the harness list it backs: silently
+ *  preferring the newest row would resume a cold wake from another hive's note, which
+ *  is the stranding the "an inactive routine is not a fallback" rule exists to prevent.
+ *  This reports; the caller decides.
+ *
+ *  The `max(updated_ts)` is already computed by the ordering the previous query used,
+ *  so surfacing it costs nothing extra — no second query, no extra round-trip. */
+export async function listLoopCarryNoteScopes(
+  ownerId: string,
+): Promise<{ harness: string; updatedAtMs: number | null }[]> {
   const owner = ownerId.trim();
   if (!owner) return [];
   const prefix = 'loop:';
@@ -2515,16 +2537,16 @@ export async function listLoopCarryNoteHarnesses(ownerId: string): Promise<strin
   // DIFFERENT owner's scopes. The JS filter below is the authority regardless.
   const pattern = `${prefix}%${suffix.replace(/([\\%_])/g, '\\$1')}`;
   try {
-    const rows = await boundedPgReadTxn<{ scope: string | null }[]>(
+    const rows = await boundedPgReadTxn<{ scope: string | null; updated_ts: string | number | null }[]>(
       (tx) => tx`
-      SELECT scope FROM harness_shared.carry_notes
+      SELECT scope, max(updated_ts) AS updated_ts FROM harness_shared.carry_notes
        WHERE scope LIKE ${pattern}
          AND note IS NOT NULL AND btrim(note) <> ''
        GROUP BY scope
        ORDER BY max(updated_ts) DESC`,
     );
     const seen = new Set<string>();
-    const out: string[] = [];
+    const out: { harness: string; updatedAtMs: number | null }[] = [];
     for (const row of rows) {
       const scope = row.scope ?? '';
       if (!scope.startsWith(prefix) || !scope.endsWith(suffix)) continue;
@@ -2533,7 +2555,8 @@ export async function listLoopCarryNoteHarnesses(ownerId: string): Promise<strin
       // scope is malformed or foreign, not a hive a note can be re-addressed to.
       if (!harness || harness.includes(':') || seen.has(harness)) continue;
       seen.add(harness);
-      out.push(harness);
+      const ts = row.updated_ts == null ? NaN : Number(row.updated_ts);
+      out.push({ harness, updatedAtMs: Number.isFinite(ts) ? ts : null });
     }
     return out;
   } catch {
