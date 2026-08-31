@@ -253,6 +253,18 @@ export async function lastInboxReadAt(ownerId: string): Promise<string | null> {
   }
 }
 
+/**
+ * EI-21949862791784103: one carry field of an object-shaped `checkpoint` alias. Callers
+ * bleed the sibling `work_items:checkpoint` spelling across in BOTH its shapes — the
+ * string half has aliased `note` since 2026-08-24, but the STRUCTURED half failed zod
+ * with "Expected string, received object", an error that never names did/left/insight/
+ * next, so the agent reshapes by trial. 13 reports over 6 days.
+ */
+const CARRY_ALIAS_FIELD = z
+  .string()
+  .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+  .optional();
+
 export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
@@ -302,10 +314,29 @@ export default defineTool({
         .nullish()
         .describe('Raw carry-note text; blank/null ⇒ clear. Ignored when any of did/left/insight/next is set.'),
       checkpoint: z
-        .string()
-        .max(32000)
+        .union([
+          z.string().max(32000),
+          // Strict + non-empty on purpose: an unrecognized object shape must be REFUSED
+          // loudly, never composed into an empty note — that would be a carry-note CLEAR
+          // wearing an alias costume, the silent-loss failure this tool guards elsewhere.
+          z
+            .object({
+              did: CARRY_ALIAS_FIELD,
+              left: CARRY_ALIAS_FIELD,
+              insight: CARRY_ALIAS_FIELD,
+              next: CARRY_ALIAS_FIELD,
+              goal: CARRY_ALIAS_FIELD,
+              keyInsight: CARRY_ALIAS_FIELD,
+              nextAction: CARRY_ALIAS_FIELD,
+            })
+            .strict()
+            .refine((o) => Object.values(o).some((v) => v !== undefined), {
+              message:
+                'an object `checkpoint` must set at least one of did/left/insight/next (goal, keyInsight, nextAction alias them)',
+            }),
+        ])
         .nullish()
-        .describe('Compatibility alias for `note`; prefer `note`. Blank/null ⇒ clear, and `note` wins when both are supplied.'),
+        .describe('Compatibility alias: a string aliases `note`, an object aliases { did, left, insight, next }. Prefer the canonical form. Blank/null ⇒ clear; `note` and top-level fields win.'),
       // WI-7264: the `.max()` here is a SANITY BACKSTOP, not the real limit. The real
       // limit is CARRY_TEXT_SOFT_CAP, applied by TRUNCATION in the handler and reported
       // back as `repairs`. A hard reject discards the whole multi-KB note over one long
@@ -793,22 +824,43 @@ export default defineTool({
     // Gated on siblings being ABSENT: a well-formed call that merely QUOTES `</did>` in
     // its prose has left/insight/next set, so it is never touched. rescueTaggedCarryNote-
     // Blob applies the second half of the guard (the full close-tag signature).
+    // EI-21949862791784103: fold an object-shaped `checkpoint` alias into the canonical
+    // carry fields BEFORE anything reads them, so every downstream path (blob rescue,
+    // render, truncation, provenance lint, clear) sees exactly one shape. Explicit
+    // top-level fields win over the alias, matching how `note` wins over `checkpoint`.
+    const checkpointObject =
+      args.checkpoint !== null && typeof args.checkpoint === 'object' ? args.checkpoint : undefined;
+    // Narrow directly off the value: `checkpointObject ? … : args.checkpoint` leaves the
+    // object in the inferred type, because TS cannot correlate the two expressions.
+    const checkpointNote =
+      typeof args.checkpoint === 'string' || args.checkpoint === null ? args.checkpoint : undefined;
+    const carry = checkpointObject
+      ? {
+          did: args.did ?? checkpointObject.did,
+          left: args.left ?? checkpointObject.left,
+          insight: args.insight ?? checkpointObject.insight,
+          next: args.next ?? checkpointObject.next,
+          keyInsight: args.keyInsight ?? checkpointObject.keyInsight,
+          nextAction: args.nextAction ?? checkpointObject.nextAction,
+          goal: args.goal ?? checkpointObject.goal,
+        }
+      : args;
     const rescued =
-      args.did !== undefined &&
-      args.left === undefined &&
-      args.insight === undefined &&
-      args.next === undefined &&
-      args.keyInsight === undefined &&
-      args.nextAction === undefined
-        ? rescueTaggedCarryNoteBlob(args.did)
+      carry.did !== undefined &&
+      carry.left === undefined &&
+      carry.insight === undefined &&
+      carry.next === undefined &&
+      carry.keyInsight === undefined &&
+      carry.nextAction === undefined
+        ? rescueTaggedCarryNoteBlob(carry.did)
         : null;
     const fields = rescued
       ? { did: rescued.did, left: rescued.left, insight: rescued.insight, next: rescued.next }
       : {
-          did: args.did,
-          left: args.left,
-          insight: args.insight ?? args.keyInsight,
-          next: args.next ?? args.nextAction ?? args.goal,
+          did: carry.did,
+          left: carry.left,
+          insight: carry.insight ?? carry.keyInsight,
+          next: carry.next ?? carry.nextAction ?? carry.goal,
         };
 
     // WI-7264: enforce the SOFT caps by truncation, here, after the schema's backstop
@@ -891,7 +943,7 @@ export default defineTool({
     // work_items:checkpoint callers; normalize it at the boundary so every downstream
     // path (row merge, provenance lint, verify-read, and clear) keeps canonical loop
     // semantics. An explicitly supplied `note` wins even when it is null.
-    const rawNote = args.note !== undefined ? args.note : args.checkpoint;
+    const rawNote = args.note !== undefined ? args.note : checkpointNote;
     const baseNote = hasStructured ? renderCarryNote(fields) : rawNote;
 
     // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:

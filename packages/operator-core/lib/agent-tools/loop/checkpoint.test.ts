@@ -446,6 +446,48 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('');
   });
 
+  it('EI-21949862791784103: accepts an OBJECT-shaped checkpoint alias as the structured carry fields', async () => {
+    await call({ checkpoint: { did: 'closed four items', left: 'nothing claimed', next: 'pull the next unit' } });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({
+          did: 'closed four items',
+          left: 'nothing claimed',
+          insight: undefined,
+          next: 'pull the next unit',
+        }),
+    );
+
+    // The object half aliases the same spellings the top level already accepts.
+    setLoopCarryNote.mockClear();
+    await call({ checkpoint: { keyInsight: 'aliased insight', goal: 'aliased next' } });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({ did: undefined, left: undefined, insight: 'aliased insight', next: 'aliased next' }),
+    );
+  });
+
+  it('EI-21949862791784103: explicit top-level fields win over the object alias', async () => {
+    await call({ did: 'authoritative did', checkpoint: { did: 'stale did', left: 'alias-only left' } });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({
+          did: 'authoritative did',
+          left: 'alias-only left',
+          insight: undefined,
+          next: undefined,
+        }),
+    );
+  });
+
+  it('EI-21949862791784103: refuses an unrecognized object shape instead of silently clearing the note', () => {
+    // A stray shape must NOT compose an empty note — that is a carry-note CLEAR wearing
+    // an alias costume, i.e. silent loss of the successor's only state.
+    expect(() => parse({ checkpoint: { summary: 'wrong sibling shape' } })).toThrow(/[Uu]nrecognized key/);
+    expect(() => parse({ checkpoint: {} })).toThrow(/at least one of did\/left\/insight\/next/);
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
   it('accepts a current read-only executable probe and refuses schema drift before the store runs', () => {
     const probe = {
       kind: 'tool' as const,
