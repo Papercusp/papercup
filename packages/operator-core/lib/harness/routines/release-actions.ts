@@ -40,11 +40,7 @@ import {
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 import type postgres from 'postgres';
 import { decideStallNotification, describeLadderPosition } from '../../release/stall-escalation-ladder';
-import {
-  summarizeStreakCause,
-  type StreakCauseDigest,
-  type StreakTick,
-} from '../../release/streak-cause-digest';
+import { summarizeStreakCause, type StreakCauseDigest, type StreakTick } from '../../release/streak-cause-digest';
 // WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
 // own suite (release-actions*.test.ts) drives these code paths, and vitest captures their stdout
 // verbatim into the gate's persisted verdict log — so a hardcoded prefix emits a line
@@ -82,10 +78,7 @@ import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
   recordStoredQualificationVerdict,
 } from '../../release/checkpoint-qualification-transaction';
-import {
-  readLiveReleaseCertification,
-  type LiveReleaseCertification,
-} from '../../release/live-release-certification';
+import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
 
 // Kept as exports from this historical module for callers/tests that already
@@ -159,10 +152,7 @@ function shellQuote(value: string): string {
  * same-directory temp file followed by rename. That last write is deliberately outside the
  * routine parent: a scheduled systemd scope can outlive the parent that launched it.
  */
-export function buildScheduledCheckpointShell(
-  payload: readonly string[],
-  paths: CheckpointRunLogPaths,
-): string {
+export function buildScheduledCheckpointShell(payload: readonly string[], paths: CheckpointRunLogPaths): string {
   const command = payload.map(shellQuote).join(' ');
   const runIdJson = shellQuote(JSON.stringify(paths.runId));
   const logPathJson = shellQuote(JSON.stringify(paths.logPath));
@@ -221,10 +211,7 @@ export function buildScheduledCheckpointShell(
  * candidate-bound red result. Best-effort: a wake failure must not change gate recording.
  */
 function isPinnedCheckpointVerdict(
-  verdict:
-    | { candidateSource?: 'pinned' | 'tip'; diagnostic?: 'candidate-pinned' }
-    | null
-    | undefined,
+  verdict: { candidateSource?: 'pinned' | 'tip'; diagnostic?: 'candidate-pinned' } | null | undefined,
 ): boolean {
   return verdict?.candidateSource === 'pinned' || verdict?.diagnostic === 'candidate-pinned';
 }
@@ -584,14 +571,11 @@ export interface CheckpointTypecheckPreflight {
   diagnostics: CheckpointTypecheckDiagnostic[];
 }
 
-function boundedCheckpointEvidence(
-  evidence?: CheckpointEvidence | null,
-): CheckpointEvidence | undefined {
+function boundedCheckpointEvidence(evidence?: CheckpointEvidence | null): CheckpointEvidence | undefined {
   if (!evidence) return undefined;
   const logPath = typeof evidence.logPath === 'string' ? evidence.logPath.trim() : '';
   const runId = typeof evidence.runId === 'string' ? evidence.runId.trim() : '';
-  const integrationRoot =
-    typeof evidence.integrationRoot === 'string' ? evidence.integrationRoot.trim() : '';
+  const integrationRoot = typeof evidence.integrationRoot === 'string' ? evidence.integrationRoot.trim() : '';
   if (!logPath && !runId && !integrationRoot) return undefined;
   return {
     ...(logPath ? { logPath: logPath.slice(0, 1000) } : {}),
@@ -606,12 +590,8 @@ function boundedTypecheckPreflight(
   if (!preflight) return undefined;
   return {
     status: 'failed',
-    checkedFiles: preflight.checkedFiles
-      .slice(0, 100)
-      .map((file) => file.slice(0, 1000)),
-    failingFiles: preflight.failingFiles
-      .slice(0, 100)
-      .map((file) => file.slice(0, 1000)),
+    checkedFiles: preflight.checkedFiles.slice(0, 100).map((file) => file.slice(0, 1000)),
+    failingFiles: preflight.failingFiles.slice(0, 100).map((file) => file.slice(0, 1000)),
     diagnostics: preflight.diagnostics.slice(0, 100).map((diagnostic) => ({
       file: diagnostic.file?.slice(0, 1000) ?? null,
       line: diagnostic.line,
@@ -808,12 +788,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   if (v.logPath) detail.logPath = v.logPath;
   if (v.checkpointEvidence) {
     detail.checkpointEvidence = {
-      ...(v.checkpointEvidence.logPath
-        ? { logPath: v.checkpointEvidence.logPath.slice(0, 1000) }
-        : {}),
-      ...(v.checkpointEvidence.runId
-        ? { runId: v.checkpointEvidence.runId.slice(0, 128) }
-        : {}),
+      ...(v.checkpointEvidence.logPath ? { logPath: v.checkpointEvidence.logPath.slice(0, 1000) } : {}),
+      ...(v.checkpointEvidence.runId ? { runId: v.checkpointEvidence.runId.slice(0, 128) } : {}),
       ...(v.checkpointEvidence.integrationRoot
         ? { integrationRoot: v.checkpointEvidence.integrationRoot.slice(0, 1000) }
         : {}),
@@ -822,12 +798,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   if (v.typecheckPreflight) {
     detail.typecheckPreflight = {
       status: 'failed',
-      checkedFiles: v.typecheckPreflight.checkedFiles
-        .slice(0, 100)
-        .map((file) => file.slice(0, 1000)),
-      failingFiles: v.typecheckPreflight.failingFiles
-        .slice(0, 100)
-        .map((file) => file.slice(0, 1000)),
+      checkedFiles: v.typecheckPreflight.checkedFiles.slice(0, 100).map((file) => file.slice(0, 1000)),
+      failingFiles: v.typecheckPreflight.failingFiles.slice(0, 100).map((file) => file.slice(0, 1000)),
       diagnostics: v.typecheckPreflight.diagnostics.slice(0, 100).map((diagnostic) => ({
         file: diagnostic.file?.slice(0, 1000) ?? null,
         line: diagnostic.line,
@@ -1578,9 +1550,7 @@ export function gateStallEscalationBody(opts: {
       tests.length
         ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
         : ''
-    }${opts.ownership ? ` ${opts.ownership.label}` : ''}${
-      opts.causeDigest ? ` ${opts.causeDigest.line}` : ''
-    }`,
+    }${opts.ownership ? ` ${opts.ownership.label}` : ''}${opts.causeDigest ? ` ${opts.causeDigest.line}` : ''}`,
   });
 }
 
@@ -1951,9 +1921,7 @@ async function emitTornSweepEvent(announcement: TornSweepAnnouncement): Promise<
       });
     }
   } catch (e) {
-    console.warn(
-      `${orchestratorStdoutTag()} torn-sweep emit failed: ${e instanceof Error ? e.message : e}`,
-    );
+    console.warn(`${orchestratorStdoutTag()} torn-sweep emit failed: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -2216,11 +2184,7 @@ export function gateStallRecordOnlyLogMessage(status: string): string {
   );
 }
 
-type InfraInconclusiveCause =
-  | 'dependency-snapshot-drift'
-  | 'pc-heavy-admission'
-  | 'vite-cache-loss'
-  | 'unclassified';
+type InfraInconclusiveCause = 'dependency-snapshot-drift' | 'pc-heavy-admission' | 'vite-cache-loss' | 'unclassified';
 
 function classifyInfraInconclusiveCause(detail: string | null | undefined): InfraInconclusiveCause {
   const normalized = detail?.toLowerCase() ?? '';
@@ -2484,11 +2448,7 @@ export async function trackGateStall(
   const repairFixerAlive = repairQueue?.fixerSpawnId
     ? await releaseFixerSpawnAlive(sql, repairQueue.fixerSpawnId).catch(() => null)
     : undefined;
-  const fixerSuccession = classifyFrozenRepairFixerSuccession(
-    repairQueue,
-    repairFixerAlive,
-    Date.now(),
-  );
+  const fixerSuccession = classifyFrozenRepairFixerSuccession(repairQueue, repairFixerAlive, Date.now());
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
   // work landed on `main` through a path this routine never saw — a MANUAL detached run
@@ -2527,8 +2487,7 @@ export async function trackGateStall(
   // from the otherwise-noop branch.
   const ladderTracksVerdict = gateClass === 'red' || gateClass === 'record-only';
   const recordOnly = gateClass === 'record-only';
-  const alreadyCountedPending =
-    !promotionPending && !!options.runId && gh.pendingRunId === options.runId;
+  const alreadyCountedPending = !promotionPending && !!options.runId && gh.pendingRunId === options.runId;
   const carryStreak = recordOnly || alreadyCountedPending;
   const consecutiveReds = ladderTracksVerdict
     ? carryStreak
@@ -2541,17 +2500,10 @@ export async function trackGateStall(
       : (gh.firstRedAt ?? Date.now())
     : (gh.firstRedAt ?? null);
   const lastGreenAt = gh.lastGreenAt ?? null;
-  const stallAgeMs =
-    ladderTracksVerdict && lastGreenAt != null ? Date.now() - lastGreenAt : null;
+  const stallAgeMs = ladderTracksVerdict && lastGreenAt != null ? Date.now() - lastGreenAt : null;
   const fixerAxisEligible =
-    fixerSuccession != null &&
-    (ladderTracksVerdict ||
-      status === 'repair-in-progress' ||
-      status === 'repair-staging-mismatch');
+    fixerSuccession != null && (status === 'repair-in-progress' || status === 'repair-staging-mismatch');
   const currentFixerSuccession = fixerAxisEligible ? fixerSuccession : null;
-  const sameFixerSuccession =
-    currentFixerSuccession != null &&
-    gh.stallFixerSuccessionKey === currentFixerSuccession.key;
   const ladder = decideStallNotification({
     consecutiveReds,
     stallAgeMs,
@@ -2559,19 +2511,19 @@ export async function trackGateStall(
     stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
     fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
     fixerSuccessionThresholdMs: FIXER_SUCCESSION_STALL_MS,
+    fixerSuccessionKey: currentFixerSuccession?.key ?? null,
     marks: {
       stallAlertedAtReds: ladderTracksVerdict ? (gh.stallAlertedAtReds ?? null) : null,
       stallAlertedAtAgeMs: ladderTracksVerdict ? (gh.stallAlertedAtAgeMs ?? null) : null,
-      stallAlertedAtFixerAgeMs: sameFixerSuccession
-        ? (gh.stallAlertedAtFixerAgeMs ?? null)
-        : null,
+      stallAlertedAtFixerAgeMs: gh.stallAlertedAtFixerAgeMs ?? null,
+      stallFixerSuccessionKey: gh.stallFixerSuccessionKey ?? null,
       stallAlerted: ladderTracksVerdict ? (gh.stallAlerted ?? false) : false,
     },
   });
   const stallAlertedAtReds = ladder.marks.stallAlertedAtReds;
   const stallAlertedAtAgeMs = ladder.marks.stallAlertedAtAgeMs;
   const stallAlertedAtFixerAgeMs = ladder.marks.stallAlertedAtFixerAgeMs;
-  const stallFixerSuccessionKey = currentFixerSuccession?.key ?? null;
+  const stallFixerSuccessionKey = ladder.marks.stallFixerSuccessionKey ?? null;
   // EI-21462211894072863: 'no-verdict' shares this branch because it shares its ONE load-bearing
   // property — the tick rendered no verdict, so it must not touch `consecutiveReds`, `firstRedAt`
   // or the failing-test signature. It differs in exactly one way, handled after the shared record
@@ -2651,8 +2603,7 @@ export async function trackGateStall(
     // P-003: a serialized repair hold is intentionally a red-counter NOOP, but its targeted
     // fixer can still be confirmed dead/absent. Let the third ladder axis notify without
     // manufacturing a code verdict or touching the one-shot red-streak condition.
-    const repairHold =
-      status === 'repair-in-progress' || status === 'repair-staging-mismatch';
+    const repairHold = status === 'repair-in-progress' || status === 'repair-staging-mismatch';
     if (repairHold) {
       if (ladder.shouldNotify && ladder.axis === 'fixer' && currentFixerSuccession) {
         try {
@@ -2673,11 +2624,9 @@ export async function trackGateStall(
                 : 'absent after the dispatch reservation window.') +
               ` This tick rendered NO code verdict and the queue remains serialized; the ` +
               `action is to restore fixer succession (inspect spawn/provider/launcher evidence ` +
-              `and let the queue dispatch one replacement), not to start a parallel repair.`,
+              `and let the queue dispatch one replacement); do not start a parallel repair.`,
             importance: 'urgent',
-            dedupeKey:
-              `gate-stall:${ctx.installSlug}:fixer:${currentFixerSuccession.key}:` +
-              `${ladder.rung ?? 0}`,
+            dedupeKey: `gate-stall:${ctx.installSlug}:fixer:${currentFixerSuccession.key}:` + `${ladder.rung ?? 0}`,
             workspaceId: ctx.workspaceId,
             data: {
               stallAxis: 'fixer',
@@ -2716,11 +2665,7 @@ export async function trackGateStall(
                   ),
                   updated_at = now()
             WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-          [
-            ctx.installSlug,
-            JSON.stringify(stallAlertedAtFixerAgeMs),
-            JSON.stringify(stallFixerSuccessionKey),
-          ],
+          [ctx.installSlug, JSON.stringify(stallAlertedAtFixerAgeMs), JSON.stringify(stallFixerSuccessionKey)],
         );
       } catch (e) {
         console.warn(
@@ -2945,9 +2890,7 @@ export async function trackGateStall(
           // would re-announce a stall the fleet was already told about (EI-7472's shape).
           stallAlertedAtReds: gh.stallAlertedAtReds ?? null,
           stallAlertedAtAgeMs: gh.stallAlertedAtAgeMs ?? null,
-          stallAlertedAtFixerAgeMs: stallFixerSuccessionKey
-            ? stallAlertedAtFixerAgeMs
-            : null,
+          stallAlertedAtFixerAgeMs: stallFixerSuccessionKey ? stallAlertedAtFixerAgeMs : null,
           stallFixerSuccessionKey,
           lastVerdict: 'not-green',
           lastFrom: fromPin ?? gh.lastFrom ?? null,
@@ -3144,11 +3087,10 @@ export async function trackGateStall(
         stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
         fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
         fixerSuccessionThresholdMs: FIXER_SUCCESSION_STALL_MS,
+        fixerSuccessionKey: currentFixerSuccession?.key ?? null,
         marks: {},
       });
-      console.log(
-        `${orchestratorStdoutTag()} gate stall escalation — ${ladder.reason}; ${ladderPosition}`,
-      );
+      console.log(`${orchestratorStdoutTag()} gate stall escalation — ${ladder.reason}; ${ladderPosition}`);
       // EI-18672078222841101: resolve the CURRENT owner before saying anything about one.
       // The old body asserted "A release-fixer is on it" unconditionally — which is simply
       // false whenever the dispatched fixer died without clearing the red, and that false
@@ -3161,12 +3103,7 @@ export async function trackGateStall(
       // Computed only on an alerting tick, so a quiet red pays nothing for it.
       const causeDigest = fixerOnlyAlert
         ? null
-        : await readStreakCauseDigest(
-            sql,
-            ctx.installSlug,
-            ctx.workspaceId,
-            firstRedAt ?? lastGreenAt,
-          );
+        : await readStreakCauseDigest(sql, ctx.installSlug, ctx.workspaceId, firstRedAt ?? lastGreenAt);
       const currentSignature = gateFailureSignature(failingTests, candidate);
       const ownership = fixerOnlyAlert
         ? null
@@ -3205,29 +3142,31 @@ export async function trackGateStall(
           // the surface a human actually reads, and a red whose candidate is far behind staging
           // is very often already fixed — saying so here is what stops the chase, rather than
           // leaving each reader to re-derive it (which, overwhelmingly, they do not).
-          body: fixerOnlyAlert && currentFixerSuccession
-            ? `The frozen repair queue for candidate ${currentFixerSuccession.candidate.slice(0, 12)} ` +
-              `has remained \`awaiting-fixer\` for ~${Math.max(1, Math.round(currentFixerSuccession.ageMs / 60_000))}m ` +
-              `at repair head ${currentFixerSuccession.repairHead.slice(0, 12)}, but its targeted fixer is ` +
-              (currentFixerSuccession.state === 'dead'
-                ? `confirmed dead (${currentFixerSuccession.spawnId}).`
-                : 'absent after the dispatch reservation window.') +
-              ` Restore fixer succession (inspect the exact spawn/provider evidence and let the ` +
-              `serialized queue dispatch one replacement); do not start a parallel repair. [${ladderPosition}]`
-            : `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership?.label ?? ''}${
-                staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
-                  ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
-                  : ''
-              }${causeDigest ? ` ${causeDigest.line}` : ''} [${ladderPosition}]`,
+          body:
+            fixerOnlyAlert && currentFixerSuccession
+              ? `The frozen repair queue for candidate ${currentFixerSuccession.candidate.slice(0, 12)} ` +
+                `has remained \`awaiting-fixer\` for ~${Math.max(1, Math.round(currentFixerSuccession.ageMs / 60_000))}m ` +
+                `at repair head ${currentFixerSuccession.repairHead.slice(0, 12)}, but its targeted fixer is ` +
+                (currentFixerSuccession.state === 'dead'
+                  ? `confirmed dead (${currentFixerSuccession.spawnId}).`
+                  : 'absent after the dispatch reservation window.') +
+                ` Restore fixer succession (inspect the exact spawn/provider evidence and let the ` +
+                `serialized queue dispatch one replacement); do not start a parallel repair. [${ladderPosition}]`
+              : `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership?.label ?? ''}${
+                  staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
+                    ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
+                    : ''
+                }${causeDigest ? ` ${causeDigest.line}` : ''} [${ladderPosition}]`,
           importance: 'urgent',
           // WI-42116: idempotent PER RUNG. The persisted marks already stop a second alert for
           // the same rung on a later tick; this closes the other window — two trackGateStall
           // calls racing the SAME tick (a retry, or a concurrent run) would otherwise each read
           // the pre-write marks and each notify. The key is the rung itself, so it is stable
           // across those callers and distinct at the next rung.
-          dedupeKey: fixerOnlyAlert && currentFixerSuccession
-            ? `gate-stall:${ctx.installSlug}:fixer:${currentFixerSuccession.key}:${ladder.rung ?? 0}`
-            : `gate-stall:${ctx.installSlug}:${ladder.axis ?? 'count'}:${ladder.rung ?? 0}`,
+          dedupeKey:
+            fixerOnlyAlert && currentFixerSuccession
+              ? `gate-stall:${ctx.installSlug}:fixer:${currentFixerSuccession.key}:${ladder.rung ?? 0}`
+              : `gate-stall:${ctx.installSlug}:${ladder.axis ?? 'count'}:${ladder.rung ?? 0}`,
           workspaceId: ctx.workspaceId,
           data: {
             consecutiveReds,
@@ -3286,7 +3225,7 @@ export async function trackGateStall(
                 candidate,
                 failingTests,
                 nowMs: Date.now(),
-                ownership,
+                ownership: ownership ?? undefined,
                 causeDigest,
               }),
               Date.now(),
@@ -3294,7 +3233,9 @@ export async function trackGateStall(
             ],
           );
         } catch (e) {
-          console.warn(`${orchestratorStdoutTag()} stall escalation write failed: ${e instanceof Error ? e.message : e}`);
+          console.warn(
+            `${orchestratorStdoutTag()} stall escalation write failed: ${e instanceof Error ? e.message : e}`,
+          );
         }
         // P-005: OPEN the `gate-red-streak:<harness>` condition, which is what turns
         // this red into exactly ONE claimable work-item (the condition bridge mints the
@@ -3315,7 +3256,7 @@ export async function trackGateStall(
             heldHrs,
             candidate,
             failingTests,
-            ownership,
+            ownership: ownership ?? undefined,
             commitsBehindTip: staleness.commitsBehindTip,
           });
           await broadcastSevereEvent({

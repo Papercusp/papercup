@@ -87,6 +87,8 @@ export interface StallLadderMarks {
   stallAlertedAtAgeMs?: number | null;
   /** Longest dead/absent fixer succession gap already notified for the CURRENT attempt. */
   stallAlertedAtFixerAgeMs?: number | null;
+  /** Attempt identity paired with the fixer-age mark; a replacement starts a new series. */
+  stallFixerSuccessionKey?: string | null;
   /**
    * The legacy boolean. Back-compat: `true` with no marks means the OLD one-shot already
    * fired, so the marks are seeded at the first rung of each axis rather than re-alerting
@@ -108,6 +110,8 @@ export interface StallLadderInput {
   fixerSuccessionAgeMs?: number | null;
   /** First fixer-succession rung. Omit when no queue/liveness observation was available. */
   fixerSuccessionThresholdMs?: number;
+  /** Attempt identity for the fixer-succession observation. */
+  fixerSuccessionKey?: string | null;
   /** The marks carried on `gate_health`. */
   marks: StallLadderMarks;
 }
@@ -130,6 +134,7 @@ export interface StallLadderDecision {
     stallAlertedAtReds: number | null;
     stallAlertedAtAgeMs: number | null;
     stallAlertedAtFixerAgeMs: number | null;
+    stallFixerSuccessionKey: string | null;
   };
   /** Human-readable why, for the log line and for tests to assert against. */
   reason: string;
@@ -177,44 +182,49 @@ export function decideStallNotification(input: StallLadderInput): StallLadderDec
     stallAgeThresholdMs,
     fixerSuccessionAgeMs,
     fixerSuccessionThresholdMs,
+    fixerSuccessionKey,
     marks,
   } = input;
 
   const countRung = highestRungCrossed(consecutiveReds, stallRedsThreshold);
   const ageRung = highestRungCrossed(stallAgeMs, stallAgeThresholdMs);
-  const fixerRung = highestRungCrossed(
-    fixerSuccessionAgeMs,
-    fixerSuccessionThresholdMs ?? Number.NaN,
-  );
+  const fixerRung = highestRungCrossed(fixerSuccessionAgeMs, fixerSuccessionThresholdMs ?? Number.NaN);
 
   // Back-compat: a legacy `stallAlerted: true` with no marks means the old one-shot already
   // announced this stall. Seed each axis at its FIRST rung so we resume the ladder at the
   // second rung instead of immediately re-alerting for something already reported.
   const legacySeeded = marks.stallAlerted === true;
-  const priorReds =
-    marks.stallAlertedAtReds ?? (legacySeeded ? stallRedsThreshold : null);
-  const priorAgeMs =
-    marks.stallAlertedAtAgeMs ?? (legacySeeded ? stallAgeThresholdMs : null);
+  const priorReds = marks.stallAlertedAtReds ?? (legacySeeded ? stallRedsThreshold : null);
+  const priorAgeMs = marks.stallAlertedAtAgeMs ?? (legacySeeded ? stallAgeThresholdMs : null);
   // New axis, deliberately NOT seeded by the legacy one-shot. A gate can already have raised
   // its generic stall alarm and only later lose its fixer; suppressing that first succession
   // alarm would reproduce the five-hour silent gap this axis exists to close.
-  const priorFixerAgeMs = marks.stallAlertedAtFixerAgeMs ?? null;
+  const sameFixerAttempt =
+    fixerSuccessionKey == null
+      ? marks.stallFixerSuccessionKey == null
+      : marks.stallFixerSuccessionKey === fixerSuccessionKey;
+  const priorFixerAgeMs = sameFixerAttempt ? (marks.stallAlertedAtFixerAgeMs ?? null) : null;
 
   const countIsNew = countRung != null && (priorReds == null || countRung.rung > priorReds);
   const ageIsNew = ageRung != null && (priorAgeMs == null || ageRung.rung > priorAgeMs);
-  const fixerIsNew =
-    fixerRung != null && (priorFixerAgeMs == null || fixerRung.rung > priorFixerAgeMs);
+  const fixerIsNew = fixerRung != null && (priorFixerAgeMs == null || fixerRung.rung > priorFixerAgeMs);
 
   // Marks only ever advance — never regress. A green resets them by clearing the whole
   // gate_health block, which is the ONLY intended way back to null.
-  const nextMarks = {
+  const nextMarks: StallLadderDecision['marks'] = {
     stallAlertedAtReds: countRung != null ? Math.max(countRung.rung, priorReds ?? 0) : priorReds,
     stallAlertedAtAgeMs: ageRung != null ? Math.max(ageRung.rung, priorAgeMs ?? 0) : priorAgeMs,
-    stallAlertedAtFixerAgeMs:
-      fixerRung != null
-        ? Math.max(fixerRung.rung, priorFixerAgeMs ?? 0)
-        : priorFixerAgeMs,
+    stallAlertedAtFixerAgeMs: null,
+    stallFixerSuccessionKey: null,
   };
+  if (fixerRung != null) {
+    nextMarks.stallAlertedAtFixerAgeMs = Math.max(fixerRung.rung, priorFixerAgeMs ?? 0);
+    nextMarks.stallFixerSuccessionKey = fixerSuccessionKey ?? null;
+  } else if (fixerSuccessionKey != null || marks.stallFixerSuccessionKey != null) {
+    // Explicitly clear a stale axis when the queue is healthy/absent.
+    nextMarks.stallAlertedAtFixerAgeMs = null;
+    nextMarks.stallFixerSuccessionKey = fixerSuccessionKey ?? null;
+  }
 
   if (!fixerIsNew && !countIsNew && !ageIsNew) {
     const held =
@@ -276,10 +286,7 @@ export function decideStallNotification(input: StallLadderInput): StallLadderDec
 export function describeLadderPosition(input: StallLadderInput): string {
   const countRung = highestRungCrossed(input.consecutiveReds, input.stallRedsThreshold);
   const ageRung = highestRungCrossed(input.stallAgeMs, input.stallAgeThresholdMs);
-  const fixerRung = highestRungCrossed(
-    input.fixerSuccessionAgeMs,
-    input.fixerSuccessionThresholdMs ?? Number.NaN,
-  );
+  const fixerRung = highestRungCrossed(input.fixerSuccessionAgeMs, input.fixerSuccessionThresholdMs ?? Number.NaN);
   const nextCount = (countRung?.rung ?? input.stallRedsThreshold / STALL_LADDER_GROWTH) * STALL_LADDER_GROWTH;
   const parts: string[] = [];
   parts.push(

@@ -157,9 +157,7 @@ describe('decideStallNotification — the age axis (the livelocked gate)', () =>
   it('escalates on age while the red count is frozen', () => {
     const frozenReds = 43;
     const marks: StallLadderMarks = { stallAlertedAtReds: 27, stallAlertedAtAgeMs: 6 * HOUR };
-    const d = decideStallNotification(
-      input({ consecutiveReds: frozenReds, stallAgeMs: 20 * HOUR, marks }),
-    );
+    const d = decideStallNotification(input({ consecutiveReds: frozenReds, stallAgeMs: 20 * HOUR, marks }));
     expect(d.shouldNotify).toBe(true);
     expect(d.axis).toBe('age');
     expect(d.rung).toBe(18 * HOUR);
@@ -169,9 +167,7 @@ describe('decideStallNotification — the age axis (the livelocked gate)', () =>
   it('stays silent between age rungs', () => {
     const marks: StallLadderMarks = { stallAlertedAtReds: 27, stallAlertedAtAgeMs: 18 * HOUR };
     for (const hrs of [19, 30, 45, 53]) {
-      const d = decideStallNotification(
-        input({ consecutiveReds: 43, stallAgeMs: hrs * HOUR, marks }),
-      );
+      const d = decideStallNotification(input({ consecutiveReds: 43, stallAgeMs: hrs * HOUR, marks }));
       expect(d.shouldNotify, `age=${hrs}h must not re-alert`).toBe(false);
     }
   });
@@ -191,8 +187,7 @@ describe('decideStallNotification — the age axis (the livelocked gate)', () =>
     expect(d.marks.stallAlertedAtAgeMs).toBe(18 * HOUR);
     // the age axis must not fire a redundant alert on the next tick
     expect(
-      decideStallNotification(input({ consecutiveReds: 9, stallAgeMs: 20 * HOUR, marks: d.marks }))
-        .shouldNotify,
+      decideStallNotification(input({ consecutiveReds: 9, stallAgeMs: 20 * HOUR, marks: d.marks })).shouldNotify,
     ).toBe(false);
   });
 });
@@ -233,9 +228,8 @@ describe('decideStallNotification — the fixer-succession axis', () => {
     const marks: StallLadderMarks = { stallAlertedAtFixerAgeMs: FIXER_GAP_MS };
     for (const age of [FIXER_GAP_MS, FIXER_GAP_MS * 2, FIXER_GAP_MS * 3 - 1]) {
       expect(
-        decideStallNotification(
-          input({ fixerSuccessionAgeMs: age, fixerSuccessionThresholdMs: FIXER_GAP_MS, marks }),
-        ).shouldNotify,
+        decideStallNotification(input({ fixerSuccessionAgeMs: age, fixerSuccessionThresholdMs: FIXER_GAP_MS, marks }))
+          .shouldNotify,
       ).toBe(false);
     }
     const next = decideStallNotification(
@@ -292,9 +286,7 @@ describe('the sparsity property — the whole point of the ladder', () => {
     const axes: string[] = [];
 
     for (let tick = 1; tick <= 120; tick += 1) {
-      const d = decideStallNotification(
-        input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }),
-      );
+      const d = decideStallNotification(input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }));
       if (d.shouldNotify) {
         alerts += 1;
         axes.push(`${d.axis}@${d.rung}`);
@@ -312,9 +304,7 @@ describe('the sparsity property — the whole point of the ladder', () => {
       let marks: StallLadderMarks = {};
       let alerts = 0;
       for (let tick = 1; tick <= ticks; tick += 1) {
-        const d = decideStallNotification(
-          input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }),
-        );
+        const d = decideStallNotification(input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }));
         if (d.shouldNotify) alerts += 1;
         marks = d.marks;
       }
@@ -367,9 +357,7 @@ describe('falsifiability control — the sparsity assertions can actually fail',
 
   it('CALIBRATION: the real subject passes the same bound the wrong one fails', () => {
     const realAlerts = replay((tick, marks) => {
-      const d = decideStallNotification(
-        input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }),
-      );
+      const d = decideStallNotification(input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }));
       return { notify: d.shouldNotify, marks: d.marks };
     });
     expect(realAlerts).toBeLessThanOrEqual(8);
