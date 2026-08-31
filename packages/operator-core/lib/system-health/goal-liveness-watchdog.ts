@@ -655,11 +655,13 @@ async function defaultEscalatePortfolioIdle(alert: GoalPortfolioIdleAlert): Prom
     alert.lastActAtMs == null
       ? 'It has placed NOTHING since it was picked up.'
       : `Its last portfolio act was \`${alert.lastActTool}\`, ${alert.idleMinutes} minutes ago.`;
-  await openEscalation({
-    kind: 'goal-portfolio-idle',
-    title: `Goal "${alert.title}" is held and working, but has placed nothing for ${alert.idleMinutes}m`,
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `Goal '${alert.goalId}' is HELD and WORKING but has placed nothing for ${alert.idleMinutes}m ` +
+      `(threshold ${alert.idleAfterMinutes}m)`,
     body:
-      `${alert.holders.length} live holder(s) on \`${alert.goalId}\`. ${last} ` +
+      `"${alert.title}" — ${alert.holders.length} live holder(s). ${last} ` +
       `Portfolio acts in the last hour: ${alert.actsInWindow}. Threshold: ${alert.idleAfterMinutes}m.\n\n` +
       `This is NOT a wedged or dead holder — the session is alive and making tool calls. ` +
       `It is a steward that is reading and reporting without creating, placing or steering any work.\n\n` +
