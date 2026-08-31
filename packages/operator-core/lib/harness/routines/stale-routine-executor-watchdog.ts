@@ -44,6 +44,8 @@ import {
   processBootTimeMs,
   resolveCommitsBehind,
   resolveCurrentHeadCommit,
+  resolveRoutineCodeDrift,
+  type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
 
 // Throttled — never shell out to git on every 30s routinesTick.
@@ -55,6 +57,10 @@ let cachedCurrentHead: { sha: string | null; atMs: number } | null = null;
 // cached per head-pair rather than re-shelled 120×/hour for a number that only
 // moves when HEAD does.
 const cachedCommitsBehind = { key: '', value: null as number | null, atMs: 0 };
+
+// Same pair-keyed memo, same reason: the routine-drift probe shells out to
+// `git diff`, and the answer cannot change unless one endpoint sha does.
+const cachedRoutineDrift = { key: '', value: null as RoutineCodeDrift | null, atMs: 0 };
 
 async function currentHeadCommit(now: number): Promise<string | null> {
   if (cachedCurrentHead && now - cachedCurrentHead.atMs < CURRENT_HEAD_REFRESH_MS) {
@@ -78,6 +84,22 @@ async function commitsBehindCached(bootCommit: string, currentCommit: string, no
   cachedCommitsBehind.key = key;
   cachedCommitsBehind.value = value;
   cachedCommitsBehind.atMs = now;
+  return value;
+}
+
+async function routineDriftCached(
+  bootCommit: string,
+  currentCommit: string,
+  now: number,
+): Promise<RoutineCodeDrift | null> {
+  const key = `${bootCommit}..${currentCommit}`;
+  if (cachedRoutineDrift.key === key && now - cachedRoutineDrift.atMs < CURRENT_HEAD_REFRESH_MS) {
+    return cachedRoutineDrift.value;
+  }
+  const value = await resolveRoutineCodeDrift(bootCommit, currentCommit);
+  cachedRoutineDrift.key = key;
+  cachedRoutineDrift.value = value;
+  cachedRoutineDrift.atMs = now;
   return value;
 }
 
@@ -207,6 +229,11 @@ export interface ExecutorStalenessInput {
    *  null value degrades the alarm to its uptime-only wording rather than
    *  printing a fabricated magnitude. */
   commitsBehind?: number | null;
+  /** WHICH routine code this process is wrong about, when it can be resolved.
+   *  Injected like `commitsBehind` so the decider stays pure; null/omitted
+   *  degrades the alarm to its commit-count wording rather than printing a
+   *  fabricated — or falsely reassuring — functional verdict. */
+  routineDrift?: RoutineCodeDrift | null;
 }
 
 export interface ExecutorStalenessVerdict {
@@ -216,6 +243,65 @@ export interface ExecutorStalenessVerdict {
   /** Echoed through so the pager/broadcast can rank by DRIFT, not just uptime.
    *  null whenever it could not be resolved. */
   commitsBehind?: number | null;
+  /** Echoed through so the escalation row carries the functional drift, not just
+   *  the magnitude. null whenever it could not be resolved. */
+  routineDrift?: RoutineCodeDrift | null;
+}
+
+/** How many file names a page prints before collapsing the rest into a count.
+ *  Small on purpose: the page is read in a notification and an escalation row,
+ *  and an unbounded list is how a page becomes unreadable and therefore ignored. */
+export const ROUTINE_DRIFT_NAME_CAP = 4;
+
+function nameList(paths: string[], cap = ROUTINE_DRIFT_NAME_CAP): string {
+  const shown = paths.slice(0, cap).map((p) => p.slice(p.lastIndexOf('/') + 1));
+  const extra = paths.length - shown.length;
+  // The overflow is always STATED. Silently truncating a list of what is broken
+  // is the same class of lie as printing a fabricated count.
+  return extra > 0 ? `${shown.join(', ')}, +${extra} more` : shown.join(', ');
+}
+
+/**
+ * PURE: turn resolved routine drift into the clause that makes a page credible.
+ *
+ * WHY THIS EXISTS. On 2026-08-31 a page reporting "143 COMMITS BEHIND" sat open and
+ * unacted for over two hours while two agents read it. A commit count is a magnitude
+ * with no content: it cannot distinguish 143 commits of unrelated churn from the
+ * actual state, which was that four routine source files did not exist in the running
+ * process at all — two of them whole routines that had therefore never fired once.
+ * "143 commits behind" is ignorable. "two routines are not running" is not.
+ *
+ * The two cases are deliberately worded as different severities, because they ARE:
+ * a CHANGED handler means the process runs an old version; an ADDED file means the
+ * process has no version, and no amount of waiting will make it run.
+ *
+ * Returns '' for null (unresolvable) AND for an all-empty probe — never a negative
+ * claim. The probe is a bounded lower bound (see ROUTINE_SOURCE_PREFIX), so "found
+ * nothing" is not "nothing is wrong", and saying so would re-introduce exactly the
+ * false all-clear this watchdog exists to prevent.
+ */
+export function routineDriftSentence(drift: RoutineCodeDrift | null | undefined): string {
+  if (!drift) return '';
+  const added = drift.addedSinceBoot ?? [];
+  const changed = drift.changed ?? [];
+  if (added.length === 0 && changed.length === 0) return '';
+  const parts: string[] = [];
+  if (added.length > 0) {
+    const one = added.length === 1;
+    parts.push(
+      `${added.length} routine source file${one ? '' : 's'} (${nameList(added)}) ` +
+        `${one ? 'does' : 'do'} not exist in this process at all, so any routine ` +
+        `${one ? 'it defines is' : 'they define are'} NOT RUNNING here`,
+    );
+  }
+  if (changed.length > 0) {
+    const one = changed.length === 1;
+    parts.push(
+      `${changed.length} routine handler${one ? '' : 's'} it does run ${one ? 'has' : 'have'} ` +
+        `changed since boot (${nameList(changed)})`,
+    );
+  }
+  return ` — ${parts.join('; and ')}`;
 }
 
 /**
@@ -258,16 +344,20 @@ export function evaluateExecutorStaleness(input: ExecutorStalenessInput): Execut
   // behind. Hours measure how long it has been wrong; commits measure how wrong.
   const behind = typeof input.commitsBehind === 'number' && input.commitsBehind > 0 ? input.commitsBehind : null;
   const drift = behind === null ? '' : ` and is ${behind} COMMIT${behind === 1 ? '' : 'S'} BEHIND the tree`;
+  // The magnitude says how wrong; this says WHAT is wrong, which is the half that
+  // decides whether anyone acts on the page at all.
+  const functional = routineDriftSentence(input.routineDrift);
   return {
     stale: true,
     reason:
       `this process has run ${ageHours}h with PAPERCUSP_DBOS_ROUTINES=1${drift}, code loaded at boot commit ` +
       `${input.bootCommit.slice(0, 10)}, while this checkout's tree HEAD has since moved to ` +
-      `${input.currentCommit.slice(0, 10)} — scheduled-routine fixes committed since boot are not loaded by this process ` +
-      `(EI-19409061552037718). Restart this host to pick up current code, or, if it no longer needs to run ` +
-      `routines, unset PAPERCUSP_DBOS_ROUTINES on it.`,
+      `${input.currentCommit.slice(0, 10)}${functional}. Scheduled-routine fixes committed since boot are not loaded ` +
+      `by this process (EI-19409061552037718). Restart this host to pick up current code, or, if it no longer needs ` +
+      `to run routines, unset PAPERCUSP_DBOS_ROUTINES on it.`,
     ageMs,
     commitsBehind: input.commitsBehind ?? null,
+    routineDrift: input.routineDrift ?? null,
   };
 }
 
@@ -298,6 +388,11 @@ export interface StaleExecutorEscalation {
   identity: string;
   ageHours: number;
   commitsBehind: number | null;
+  /** WHICH routine code is wrong, not just how much — the field that lets a reader
+   *  an hour later tell "143 commits of unrelated churn" from "two routines have
+   *  never fired". null when the probe could not run; empty arrays mean it ran and
+   *  found nothing IN ITS BOUNDED SCOPE, which is not a clean bill of health. */
+  routineDrift: RoutineCodeDrift | null;
   detail: string;
   unit: string;
   restartLever: string;
@@ -384,6 +479,7 @@ async function raiseExecutorStalenessAlarm(opts: {
       identity,
       ageHours,
       commitsBehind: verdict.commitsBehind ?? null,
+      routineDrift: verdict.routineDrift ?? null,
       detail: verdict.reason,
       // The escalation ROW is what a reader finds an hour later, once the notification
       // has scrolled away — so the remediation has to travel WITH it, not only on the
@@ -424,6 +520,7 @@ async function raiseExecutorStalenessAlarm(opts: {
         data: {
           ageHours,
           commitsBehind: verdict.commitsBehind ?? null,
+          routineDrift: verdict.routineDrift ?? null,
           identity,
           unit: alarmContext.unit,
           restartLever: alarmContext.restartLever,
@@ -438,7 +535,12 @@ async function raiseExecutorStalenessAlarm(opts: {
     await broadcastSevereEvent({
       summary:
         `stale routine executor ${alarmContext.identityLabel} has run ${ageHours}h${driftSuffix(verdict)} with code from ` +
-        `its boot while PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved — scheduled-routine fixes committed since boot ` +
+        `its boot while PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved` +
+        // The headline is the line most readers act (or fail to act) on, so the
+        // functional drift belongs HERE and not only in the body: a magnitude alone
+        // reads as background churn, which is precisely how the 2026-08-31 page was
+        // read by two agents in succession.
+        `${routineDriftSentence(verdict.routineDrift)}. Scheduled-routine fixes committed since boot ` +
         `are not loaded by this process; restart ${alarmContext.unit} with ${alarmContext.restartLever} to pick up current code.`,
       body:
         `${verdict.reason}\n\nThe worker identity is not necessarily the systemd MainPID. Do NOT kill or duplicate a worker PID ` +
@@ -533,10 +635,16 @@ export async function staleRoutineExecutorSweep(opts: {
     // Only pay for the drift count once this process is ALREADY past the uptime
     // threshold AND the shas differ. A young process on a moving tree is the
     // common case and must not shell out to git on every 30s tick.
-    const commitsBehind =
-      now - bootTimeMs >= thresholdMs && bootCommit && currentCommit && bootCommit !== currentCommit
-        ? await commitsBehindCached(bootCommit, currentCommit, now)
-        : null;
+    const driftWorthResolving =
+      now - bootTimeMs >= thresholdMs && !!bootCommit && !!currentCommit && bootCommit !== currentCommit;
+    // One gate for both probes, so the magnitude and the functional detail can
+    // never disagree about whether they were even measured.
+    const [commitsBehind, routineDrift] = driftWorthResolving
+      ? await Promise.all([
+          commitsBehindCached(bootCommit!, currentCommit!, now),
+          routineDriftCached(bootCommit!, currentCommit!, now),
+        ])
+      : [null, null];
     const verdict = evaluateExecutorStaleness({
       routinesEnabled: enabled,
       bootCommit,
@@ -545,6 +653,7 @@ export async function staleRoutineExecutorSweep(opts: {
       now,
       thresholdMs,
       commitsBehind,
+      routineDrift,
     });
 
     if (!verdict.stale) {
