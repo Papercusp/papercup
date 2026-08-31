@@ -900,8 +900,16 @@ where its radius came from, plus a stderr banner when an unscoped set is tree-si
 wide scope is CORRECT for the green-checkpoint gate (it certifies the whole candidate) and
 wrong for you: `source=explicit` is what verifying your own edit looks like.
 
-⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
-`tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). 
+⚠⚠ **A BARE `npm run lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
+`tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`), so a clean bare run says
+NOTHING about an edit anywhere else, and grepping its output for your paths finds nothing because
+they were never compiled. **Always pass `--files=<the files you edited>`** — that form ROUTES each
+path to the baseline-gated leg that OWNS it (`apps/operator` → `lint:tsc:operator`, plus
+`:operator-vite`, `:orchestrator`, `:papercusp-libs`, `:scripts`, `:workspaces`). A `--files` set
+lying entirely outside operator-core RUNS the owning leg for you (`status=routed`); a MIXED set
+compiles only the in-scope files (`status=partial filesUnchecked=N`) and prints the exact command
+for the rest. Read the `LINT_TSC_RESULT status=`, not just the exit code — `partial` is not `clean`.
+
 
 **The trigger to watch: adding a REQUIRED field to a shared interface** (or renaming
 / re-typing one). 
