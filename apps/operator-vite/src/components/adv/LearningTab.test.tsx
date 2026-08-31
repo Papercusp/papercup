@@ -3670,6 +3670,26 @@ describe("LearningTab — P-009 first-run orientation", () => {
     expect(nuqsState.wfFilter).toBeNull();
   });
 
+  /**
+   * P-012 REGRESSION GUARD, and it is named because its natural failure is
+   * ANONYMOUS. The drawer's open state is a pot SLUG (`lpot`), not a boolean,
+   * so "closed" is the empty string — and a `potSlug !== ""` check reads an
+   * UNSET key (null here, because this file's nuqs mock returns the raw bag
+   * value and ignores `withDefault`) as OPEN. The drawer is a Radix modal over
+   * the whole tab, so the symptom is not "a drawer is stuck": it is 29 tests in
+   * this file failing with "unable to find an accessible element" for tabs and
+   * buttons that are present and merely behind an aria-modal. Measured: that is
+   * exactly what happened on the first run of this change. This asserts the
+   * cheap, legible version of that signal.
+   */
+  it("does not open the per-pot drawer when lpot is unset (P-012)", () => {
+    expect(nuqsState.lpot).toBeNull();
+    render(<LearningTab />);
+    expect(document.querySelector(".pc-potdraw")).toBeNull();
+    // The tab chrome must still be reachable — this is what a stray modal eats.
+    expect(screen.getByRole("tab", { name: "Improve" })).toBeTruthy();
+  });
+
   it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {
     render(<LearningTab />);
     const strap = document.querySelector(".pc-learning__strap");

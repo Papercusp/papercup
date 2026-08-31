@@ -124,7 +124,11 @@ function BudgetEditor({
           setDraft(null);
         }}
       >
-        {parsed === null ? "Clear" : "Save"}
+        {/* The label names the action the click WOULD perform, so it may only
+            say "Clear" when there is something to clear. An untouched empty
+            field is the common case (an unbudgeted lane), and labelling that
+            "Clear" advertises an action that would do nothing. */}
+        {dirty && parsed === null ? "Clear" : "Save"}
       </button>
       {invalid ? (
         <span className="pc-potdraw__bad" role="alert">
@@ -258,8 +262,20 @@ export default function LearningPotDrawer() {
   });
   const arming = catalogQuery.data?.[0]?.arming ?? null;
 
-  const open = potSlug !== "";
-  const model = useMemo(() => buildPotDrawer(arming, potSlug), [arming, potSlug]);
+  /**
+   * NULLISH, not `!== ""`. `withDefault("")` describes the real parser, and a
+   * strict inequality against it looks exhaustive — but the value arrives from
+   * whatever adapter is mounted, and a `null` from one of them makes
+   * `null !== ""` TRUE, i.e. permanently OPEN. This is a Radix modal on a tab
+   * full of other controls, so that failure does not look like a stuck drawer:
+   * every unrelated query on the page starts reporting "unable to find an
+   * accessible element" for controls that are present and simply behind an
+   * aria-modal. Openness here is "a slug is present", which is a truthiness
+   * question — the same nullish discipline D-006 imposes on the arming.
+   */
+  const slug = typeof potSlug === "string" ? potSlug : "";
+  const open = slug !== "";
+  const model = useMemo(() => buildPotDrawer(arming, slug), [arming, slug]);
 
   const run = useCallback(
     async (key: string, tool: string, args: Record<string, unknown>) => {
@@ -306,9 +322,9 @@ export default function LearningPotDrawer() {
 
   const setMaster = useCallback(
     (enabled: boolean) => {
-      void run("master", "learning:set-pot-scope", { pots: [potSlug], enabled });
+      void run("master", "learning:set-pot-scope", { pots: [slug], enabled });
     },
-    [run, potSlug],
+    [run, slug],
   );
 
   const close = useCallback(() => {
@@ -322,7 +338,7 @@ export default function LearningPotDrawer() {
     setErr(null);
   }, [setPotSlug, setPicker]);
 
-  const label = open ? potHomeLabel(potSlug) : "";
+  const label = open ? potHomeLabel(slug) : "";
   const master = model.learning;
   const anyBusy = busyKey !== null;
 

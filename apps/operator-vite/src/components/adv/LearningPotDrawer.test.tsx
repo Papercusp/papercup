@@ -278,6 +278,18 @@ describe('arming and budgeting are two separate writes', () => {
     });
   });
 
+  it('does not offer to "Clear" a budget that is already unset', () => {
+    // Observed live on the gym row of an unbudgeted pot: the button read
+    // "Clear" beside an empty field, advertising an action that would be a
+    // no-op. It was disabled, so it could not misfire — but a control that
+    // names an action it is not going to perform is the same class of lie this
+    // whole surface exists to avoid.
+    H.arming = arming({ lanes: [lane('red-queen', 'p', { budgetUsd: null })] });
+    open('p');
+    expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('treats an emptied box as an explicit CLEAR and says so on the button', async () => {
     H.arming = arming({ lanes: [lane('red-queen', 'p')] });
     open('p');
