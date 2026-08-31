@@ -1008,9 +1008,23 @@ describe('work_items:complete (keyed-array)', () => {
         // P-004: this used to assert `completionRef: 'shipped'` — the auto-fill from
         // completion.summary. That auto-fill is DELETED (it made the completion-integrity
         // gate unfailable by construction for this tool), and the state writer is handed
-        // the AUTHORITY JUDGEMENT instead. This evidence is sufficient (verifiedHow plus
-        // testsRun/testResult), so it lands `committed`.
-        completionAuthority: 'committed',
+        // the AUTHORITY JUDGEMENT instead. What this test owns is that the judgement RIDES
+        // THROUGH to the writer; the two-comments-down reasoning about `treeStamp` —
+        // "asserting strict equality here would couple this test both to the stamp's
+        // presence AND to the real repo's current HEAD" — applies to this field too, and
+        // was simply never extended to it.
+        //
+        // EI-21973530107303854: pinning `'committed'` DID couple it. The content-identity
+        // floor only returns `committed` when every declared path's working-tree blob
+        // equals its HEAD blob, so this assertion silently depended on package.json being
+        // clean at that instant — and on a tree ~100 agents commit to, it periodically is
+        // not, reddening a test with nothing wrong with the code (measured 2026-08-31:
+        // working 853b934 vs HEAD 665d4d6). No deterministic route to `committed` exists
+        // here: `addedTests: true` forces a non-empty filesChanged, and any real path can
+        // be dirty while any fake one is unprovable. So this asserts a VALID JUDGEMENT was
+        // handed over, and complete.content-identity-floor.test.ts — which controls
+        // identity directly instead of reading the live tree — owns which value is correct.
+        completionAuthority: expect.stringMatching(/^(?:committed|proposed)$/),
         // EI-19319623239777505: `summary` now rides alongside the structured fields
         // (previously silently dropped — see the dedicated tests below).
         // `objectContaining` rather than a strict object: EI-18682004530991057 adds a
