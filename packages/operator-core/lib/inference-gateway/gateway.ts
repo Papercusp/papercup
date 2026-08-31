@@ -625,6 +625,15 @@ export const PIN_YIELDED_HEADER = 'x-papercusp-pin-yielded';
  *  sonnet so the call succeeds instead of hard-failing. Makes the silent-substitution VISIBLE to the
  *  caller + observable in the journal. Value: `opus->sonnet`. Not forwarded upstream. */
 export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
+/** Set on the response back to the client when the gateway's internal retry ladder for a 429/529
+ *  (bounded transient-wait + absorb +, for opus, the last-resort downgrade) is fully EXHAUSTED and
+ *  the terminal upstream status is being forwarded as the gateway's final answer. Value: the number
+ *  of internal attempts made on this request. Pairs with a forced `x-should-retry: false` override
+ *  on this same response — the raw upstream 429 often carries `x-should-retry: true` with no
+ *  retry-after, and forwarding that unchanged invites a downstream SDK to honour it and retry a
+ *  terminal, gateway-exhausted condition silently and indefinitely (EI-21921571654476580: 5 client
+ *  retries over 2.5 minutes, no error ever surfaced — "Working..." forever). Not forwarded upstream. */
+export const RETRIES_EXHAUSTED_HEADER = 'x-papercusp-retries-exhausted';
 /** Header a spawn sets carrying its coord ownerId (== spawnId), so the gateway can attribute a
  *  rate-limit shed back to THIS bee and a coordinator can wake it once the account recovers
  *  (gateway-rate-limit-stall-autowake P-001). Stripped before the upstream forward. */
@@ -5096,6 +5105,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   wantOwner,
                   taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
                   { account: active.accountId, status: taken.status },
+                );
+              }
+              // EI-21921571654476580: this IS the gateway's final answer — wait,
+              // absorb, and (for opus) the last-resort downgrade have all failed to
+              // rescue it. Forwarding the raw upstream headers unchanged can carry
+              // `x-should-retry: true` with no retry-after into a downstream SDK
+              // that then retries this exhausted, terminal condition silently and
+              // indefinitely (the client only ever sees "Working..."). Override it
+              // and name the attempt count so "slow" is distinguishable from
+              // "never" without grepping the gateway log.
+              if (taken.status === 429 || taken.status === 529) {
+                taken.outHeaders['x-should-retry'] = 'false';
+                taken.outHeaders[RETRIES_EXHAUSTED_HEADER] = String(attemptsUsed);
+                log(
+                  'warn',
+                  `inference-gateway: upstream ${taken.status} retry ladder EXHAUSTED on '${active.accountId}' for ${model} after ${attemptsUsed} attempt(s) — forwarding terminal ${taken.status} with x-should-retry=false`,
                 );
               }
               res.writeHead(taken.status, taken.outHeaders);
