@@ -67,6 +67,8 @@ import { listFilesIncludingUntracked, describeUnscanned } from '../../../scripts
 
 const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8',
+  timeout: 30_000,
+  killSignal: 'SIGKILL',
 }).trim();
 
 /**
