@@ -370,7 +370,15 @@ export interface AgentProductivitySweepDeps {
   readIdeatePasses: (
     candidates: readonly AgentPresenceCandidate[],
   ) => Promise<Map<string, number>>;
+  /** Active GRADE-mode sessions per workspace. They receive the same missing-pass
+   *  signal as the subject so a detected grading obligation becomes corrective
+   *  action instead of an escalation somebody may notice much later. */
+  resolveGraders: (workspaceIds: string[]) => Promise<Map<string, string[]>>;
   escalateIdeateWave: (wave: AgentIdeateSilenceWave) => Promise<void>;
+  /** One correlated wake fan-out per workspace wave: every violating subject plus
+   *  the workspace's active graders. Failures are contained independently from
+   *  the durable escalation. */
+  notifyIdeateWave: (wave: AgentIdeateSilenceWave, graders: string[]) => Promise<void>;
   escalateDegenerateWakeWave: (wave: DegenerateWakeWave) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
@@ -724,6 +732,26 @@ export function makeReadIdeatePasses(sql: Sql): AgentProductivitySweepDeps['read
   };
 }
 
+/** Resolve the GRADE-mode sessions that must re-evaluate a detected IDEATE-pass
+ *  omission. Kept workspace-batched so one wave costs one indexed mode read, not
+ *  one query per victim. */
+export function makeResolveGraders(sql: Sql): AgentProductivitySweepDeps['resolveGraders'] {
+  return async (workspaceIds) => {
+    const out = new Map<string, string[]>();
+    if (workspaceIds.length === 0) return out;
+    const rows = await sql<{ workspace_id: string; owner_id: string }[]>`
+      SELECT DISTINCT workspace_id, owner_id
+        FROM harness_shared.agent_modes
+       WHERE mode = 'grade' AND workspace_id IN ${sql(workspaceIds)}`;
+    for (const row of rows) {
+      const owners = out.get(row.workspace_id) ?? [];
+      owners.push(row.owner_id);
+      out.set(row.workspace_id, owners);
+    }
+    return out;
+  };
+}
+
 /**
  * Report-only, and one wave per workspace — for the same reason as the wedge
  * leg, with the cause already measured: the registrations come from LAUNCHERS
@@ -790,6 +818,33 @@ async function defaultEscalateIdeateWave(wave: AgentIdeateSilenceWave): Promise<
       suppressedAsWedged: wave.suppressedAsWedged,
       victims: wave.victims.slice(0, 40),
     },
+  });
+}
+
+/** Push the cadence violation to the actors who can correct it now. The durable
+ * escalation remains one correlated workspace wave; this is its active delivery
+ * complement, reusing the coordination wake primitive rather than adding a second
+ * alert or state surface. */
+async function defaultNotifyIdeateWave(
+  wave: AgentIdeateSilenceWave,
+  graders: string[],
+): Promise<void> {
+  const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+  const recipients = [...new Set([...wave.victims.map((victim) => victim.ownerId), ...graders])];
+  if (recipients.length === 0) return;
+  await wakeRecipients(recipients, {
+    summary:
+      `${wave.victims.length} IDEATE-mode session(s) in workspace ${wave.workspaceId} have no ` +
+      '`blender:ideate-pass-record` after the grace window. Subjects: run a grounded pass and record it now. ' +
+      'Graders: re-evaluate the Blender feedback/disposition criterion.',
+    payload: {
+      workspaceId: wave.workspaceId,
+      reason: 'ideate-pass-missing',
+      victimCount: wave.victims.length,
+      victims: wave.victims.slice(0, 40),
+    },
+    source: 'agent-productivity-watchdog',
+    workspaceId: wave.workspaceId,
   });
 }
 
@@ -866,7 +921,9 @@ export function agentProductivitySweepDeps(
     escalateWave: defaultEscalateWave,
     readIdeateRegistrations: makeReadIdeateRegistrations(sql),
     readIdeatePasses: makeReadIdeatePasses(sql),
+    resolveGraders: makeResolveGraders(sql),
     escalateIdeateWave: defaultEscalateIdeateWave,
+    notifyIdeateWave: defaultNotifyIdeateWave,
     escalateDegenerateWakeWave: defaultEscalateDegenerateWakeWave,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
@@ -895,6 +952,8 @@ export interface AgentProductivitySweepResult {
   /** Of those, the ones whose silence the wedge already explains. */
   ideateSuppressedAsWedged: number;
   ideateWavesEscalated: number;
+  /** Workspace waves whose violating subjects + active graders were directly woken. */
+  ideateWavesNotified: number;
   /** Present sessions whose trailing call mix is degenerate. */
   degenerateWake: number;
   /** Correlated workspace waves emitted for the degenerate-wake leg. */
@@ -911,6 +970,7 @@ function emptySweepResult(): AgentProductivitySweepResult {
     ideateSilent: 0,
     ideateSuppressedAsWedged: 0,
     ideateWavesEscalated: 0,
+    ideateWavesNotified: 0,
     degenerateWake: 0,
     degenerateWakeWavesEscalated: 0,
   };
@@ -1083,6 +1143,16 @@ export async function runAgentProductivitySweepOnce(
   }
 
   let ideateWavesEscalated = 0;
+  let ideateWavesNotified = 0;
+  const graderMap =
+    ideateWaves.size > 0
+      ? await deps.resolveGraders([...ideateWaves.keys()]).catch((e) => {
+          console.warn(
+            `[agent-productivity-watchdog] grader resolution failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return new Map<string, string[]>();
+        })
+      : new Map<string, string[]>();
   for (const wave of ideateWaves.values()) {
     // A wave with nothing but suppressed victims raises no alarm: every one of
     // them is already reported by the wedge wave. The population still travels
@@ -1095,6 +1165,15 @@ export async function runAgentProductivitySweepOnce(
     } catch (e) {
       console.warn(
         `[agent-productivity-watchdog] ideate escalate failed for ${wave.workspaceId} ` +
+          `(non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      await deps.notifyIdeateWave(wave, graderMap.get(wave.workspaceId) ?? []);
+      ideateWavesNotified += 1;
+    } catch (e) {
+      console.warn(
+        `[agent-productivity-watchdog] ideate notify failed for ${wave.workspaceId} ` +
           `(non-fatal): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
@@ -1122,6 +1201,7 @@ export async function runAgentProductivitySweepOnce(
     ideateSilent,
     ideateSuppressedAsWedged,
     ideateWavesEscalated,
+    ideateWavesNotified,
     degenerateWake,
     degenerateWakeWavesEscalated,
   };

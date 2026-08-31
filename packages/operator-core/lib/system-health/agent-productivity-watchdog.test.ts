@@ -63,6 +63,7 @@ function aliveVerdict(ownerId: string): LivenessVerdict {
 function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
   const escalated: AgentWedgeWave[] = [];
   const ideateEscalated: AgentIdeateSilenceWave[] = [];
+  const ideateNotified: Array<{ wave: AgentIdeateSilenceWave; graders: string[] }> = [];
   const degenerateEscalated: DegenerateWakeWave[] = [];
   const deps: Partial<AgentProductivitySweepDeps> = {
     flagEnabled: async () => true,
@@ -78,8 +79,12 @@ function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
     // for it rather than a rewritten baseline.
     readIdeateRegistrations: async () => new Map(),
     readIdeatePasses: async () => new Map(),
+    resolveGraders: async () => new Map(),
     escalateIdeateWave: async (w) => {
       ideateEscalated.push(w);
+    },
+    notifyIdeateWave: async (wave, graders) => {
+      ideateNotified.push({ wave, graders });
     },
     readHeldClaims: async () => new Map(),
     escalateDegenerateWakeWave: async (w) => {
@@ -87,7 +92,7 @@ function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
     },
     ...over,
   };
-  return { deps, escalated, ideateEscalated, degenerateEscalated };
+  return { deps, escalated, ideateEscalated, ideateNotified, degenerateEscalated };
 }
 
 describe('runAgentProductivitySweepOnce', () => {
@@ -239,6 +244,7 @@ describe('runAgentProductivitySweepOnce', () => {
       ideateSilent: 0,
       ideateSuppressedAsWedged: 0,
       ideateWavesEscalated: 0,
+      ideateWavesNotified: 0,
       degenerateWake: 0,
       degenerateWakeWavesEscalated: 0,
     });
@@ -518,13 +524,14 @@ describe('runAgentProductivitySweepOnce — ideate cadence leg', () => {
   // ideation. Busy is not the same as doing what the mode obliges, and every
   // count-based surface reads healthy for exactly this agent.
   it('reports an agent that is working normally but has never recorded a pass', async () => {
-    const { deps, ideateEscalated, escalated } = harness({
+    const { deps, ideateEscalated, ideateNotified, escalated } = harness({
       readCandidates: async () => [candidate({ ownerId: 'busy' })],
       resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
       readProductivity: async () =>
         new Map([['busy', { agentOriginCalls: 251, anyOriginCalls: 260 }]]),
       readIdeateRegistrations: async () => new Map([['busy', ideateReg()]]),
       readIdeatePasses: async () => new Map(),
+      resolveGraders: async () => new Map([['papercusp-workspace', ['su-grader', 'busy']]]),
     });
 
     const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
@@ -532,6 +539,7 @@ describe('runAgentProductivitySweepOnce — ideate cadence leg', () => {
     expect(out.ideateSilent).toBe(1);
     expect(out.ideateSuppressedAsWedged).toBe(0);
     expect(out.ideateWavesEscalated).toBe(1);
+    expect(out.ideateWavesNotified).toBe(1);
     // Not wedged — it is working. The two legs must not be confused.
     expect(out.wedged).toBe(0);
     expect(escalated).toHaveLength(0);
@@ -542,6 +550,41 @@ describe('runAgentProductivitySweepOnce — ideate cadence leg', () => {
       setBy: 'pc-admin-coord-ui',
       ownerDirected: false,
     });
+    expect(ideateNotified).toEqual([
+      { wave: ideateEscalated[0], graders: ['su-grader', 'busy'] },
+    ]);
+  });
+
+  it('still wakes subjects and graders when the durable escalation fails', async () => {
+    const notifyIdeateWave = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { deps } = harness({
+        readCandidates: async () => [candidate({ ownerId: 'busy' })],
+        resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+        readProductivity: async () =>
+          new Map([['busy', { agentOriginCalls: 251, anyOriginCalls: 260 }]]),
+        readIdeateRegistrations: async () => new Map([['busy', ideateReg()]]),
+        readIdeatePasses: async () => new Map(),
+        resolveGraders: async () => new Map([['papercusp-workspace', ['su-grader']]]),
+        escalateIdeateWave: async () => {
+          throw new Error('escalation surface down');
+        },
+        notifyIdeateWave,
+      });
+
+      const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+      expect(out.ideateWavesEscalated).toBe(0);
+      expect(out.ideateWavesNotified).toBe(1);
+      expect(notifyIdeateWave).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'papercusp-workspace' }),
+        ['su-grader'],
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('escalation surface down'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // Measured 2026-08-27: 13 of 13 ideate-silent sessions had ZERO agent-origin
