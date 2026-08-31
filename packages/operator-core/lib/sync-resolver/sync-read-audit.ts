@@ -306,6 +306,28 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       "The unified Convos inbox's agent<->agent source — a FIXED 100-row window over the append-only coord_event_log (both consumers pass limit 100 explicitly; resolver default clampedLimit(500,100)), so this read does NOT grow with the corpus. WI-7240 found it was 445,731 B / 100 rows = ~4.3 KB/row because `toAgentMessageRow` is SHARED by this list and conversations.agentMessageDetail: P-033 added the `authored` block to that mapper for the DETAIL views on 2026-08-02 and the LIST silently inherited 188,386 B (43.90%) that NOTHING reads — both <AuthoredFields> render sites (AdvConversationsTab.tsx:2406, ConversationsTab.tsx:687) take their row from the detail query. Mapper parameterised (not forked) so the two shapes cannot drift; measured 445,731 -> 251,350 B (-43.6%), per-row 4,484 -> ~2,514 B, LOSSLESS on the read-set (0 value diffs and 0 non-null lost across the 89 rows shared between captures; the other 11 are append-only window drift — every added row is strictly newer than every dropped one, and the shared rows keep their order). ⚠ CEILING RAISED 250,000 (default) -> 300,000 AND THE JUSTIFICATION MUST BE READ, because raising a ceiling to silence a red is normally the anti-pattern: this is a raise AFTER a real 43.6% cut, per-row cost FELL 44%, and the residual is ~0.5% over the default. THE REMAINING 79% IS `body`, WHICH CANNOT BE CLIPPED: composeUnifiedConversationRows maps it to UnifiedConversationRow.preview and AdvConversationsTab.tsx:318 feeds that into the CLIENT-SIDE SEARCH HAYSTACK, so a server-side clip silently stops matching any phrase past the cut — fewer search hits, no error. (Clipping at 200 would have saved a further 177,897 B; it is otherwise safe — summary non-empty on 100/100 so the body.slice(0,140) title fallback never fires, and summary===body on 0/100 — the haystack is the sole blocker and it is decisive.) THE NEXT BREACH IS A SERVER-SIDE-SEARCH TRIGGER, NOT ANOTHER RAISE (WI-7243): give the resolver a `q` arg that filters in Postgres and `body` stops shipping to be grepped client-side.",
     reviewBy: '2026-09-01',
   },
+  // 'learning.observations' HAS NO ENTRY BY DESIGN (WI-7304) — do not add one.
+  //
+  // WI-7304 was filed 2026-08-03 at 249,529 B / 200 rows — 471 B under the
+  // 250,000 DEFAULT — to pre-empt a breach it expected imminently. The breach
+  // never came and the trend REVERSED: re-measured 2026-08-31 at 127,316 B
+  // (51% of the default), body 48.06% (was 75.46%), body p50 230 chars (was
+  // 1,049). The newest-200 window simply carries shorter bodies now.
+  //
+  // If it DOES go red, most of the prescribed work already landed: the `q`
+  // server-side-search trigger that conversations.agentMessageList's note calls
+  // for (WI-7243) EXISTS here — observationPredicateSql ORs
+  // title/body/observation_kind/refs ILIKE, and ObservationsPanel already sends
+  // `q`. So search does NOT depend on shipping `body`, and clipping it is no
+  // longer the correctness regression WI-7304 warned about.
+  //
+  // The one remaining step is an on-demand single-row body fetch: `body` still
+  // renders for the ONE expanded row. Do that, not a ceiling raise.
+  //
+  // Do NOT reclaim `title` (10.68% when measured) by deriving it from `body`
+  // client-side: that is a CALLER CONVENTION, not a contract — capture-core
+  // takes input.title verbatim, two bracket-tag styles exist, and rows exist
+  // whose title has an EMPTY body. Fix that at the WRITE side or not at all.
 };
 
 /** One measured query. */

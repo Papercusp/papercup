@@ -282,16 +282,22 @@ export default function ObservationsPanel({
     },
     filterBinding,
   );
-  const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return cf.rows.filter((row) => {
-      if (signalFilter && (row.kind ?? "other") !== signalFilter) return false;
-      if (!q) return true;
-      return `${row.title} ${row.body ?? ""} ${row.kind ?? ""} ${row.refs.join(" ")}`
-        .toLowerCase()
-        .includes(q);
-    });
-  }, [cf.rows, search, signalFilter]);
+  // Search is SERVER-side: `q` rides sharedArgs into observationPredicateSql,
+  // which ORs title/body/observation_kind/refs ILIKE. Re-filtering here was a
+  // redundant second pass that could only ever NARROW the server's result, and
+  // could not even do that — the server keeps a row when ANY of those fields
+  // contains `q`, and a concatenation of the SAME fields necessarily contains it
+  // too, so the predicate was a provable no-op. It was also a latent correctness
+  // bug: a field added to the server predicate (say `scope`) would have been
+  // silently re-excluded by this stale client copy. `signalFilter` stays — it is
+  // the one genuinely client-side narrowing. (WI-7304)
+  const rows = useMemo(
+    () =>
+      signalFilter
+        ? cf.rows.filter((row) => (row.kind ?? "other") === signalFilter)
+        : cf.rows,
+    [cf.rows, signalFilter],
+  );
   const hasMore = nextCursor !== null;
   const isFiltered = serverPredicateActive;
   const counts = filterCountLabel(facetCountEvidence, "observation");
