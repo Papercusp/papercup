@@ -52,6 +52,8 @@ function fixture(memory = 0, io = 0) {
       KOPIA_BACKUP_IO_PSI_PATH: ioPath,
       KOPIA_BACKUP_MEM_FULL_AVG10_MAX: '5',
       KOPIA_BACKUP_IO_FULL_AVG10_MAX: '10',
+      KOPIA_BACKUP_MONITOR_INTERVAL_SEC: '0.05',
+      KOPIA_BACKUP_STOP_GRACE_SEC: '2',
     },
   };
 }
@@ -103,7 +105,7 @@ describe('Kopia global backup guard', () => {
     const installedGuard = join(dir, 'installed-guard.sh');
     const ready = join(dir, 'ready');
     const source = readFileSync(guard, 'utf8');
-    const commandTail = '"$@"\nrc=$?';
+    const commandTail = '"$@" &';
     expect(source).toContain(commandTail);
 
     // Make the still-unparsed tail much larger than Bash's read buffer. A
@@ -114,7 +116,7 @@ describe('Kopia global backup guard', () => {
       { length: 8_192 },
       (_, index) => `: # LIVE_SOURCE_PAD_${index.toString().padStart(5, '0')}\n`,
     ).join('');
-    const paddedSource = source.replace(commandTail, `"$@"\n${padding}rc=$?`);
+    const paddedSource = source.replace(commandTail, `"$@" &\n${padding}child_pid=$!`);
     const mutationOffset = paddedSource.lastIndexOf(': # LIVE_SOURCE_PAD_');
     expect(mutationOffset).toBeGreaterThan(0);
 
@@ -185,6 +187,49 @@ describe('Kopia global backup guard', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('result=deferred reason=pressure-unavailable signal=memory');
     expect(spawnSync('test', ['-e', marker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
+  });
+
+  it('stops only the scheduled child when memory pressure rises during the run', async () => {
+    const { dir, env } = fixture();
+    const ready = join(dir, 'ready');
+    const stopped = join(dir, 'stopped');
+    const child = spawn(
+      'bash',
+      [
+        guard,
+        '--mode',
+        'scheduled',
+        '--label',
+        'runtime-pressure',
+        '--',
+        'bash',
+        '-c',
+        'trap \'touch "$2"; exit 143\' TERM; touch "$1"; while :; do sleep 0.1; done',
+        '_',
+        ready,
+        stopped,
+      ],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
+
+    await waitForPath(ready);
+    pressureFile(env.KOPIA_BACKUP_MEM_PSI_PATH!, 6);
+
+    await expect(closed).resolves.toBe(0);
+    expect(stderr).toBe('');
+    expect(existsSync(stopped)).toBe(true);
+    expect(stdout).toContain('result=stopping-during-run reason=memory-pressure');
+    expect(stdout).toContain('result=deferred-during-run reason=memory-pressure');
+    expect(stdout).not.toContain('result=finished mode=scheduled');
   });
 
   it('defers a scheduled contender while a backup holds the lock', () => {
