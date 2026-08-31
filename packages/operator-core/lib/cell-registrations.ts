@@ -1578,6 +1578,172 @@ export const GOVERNOR_RECOVERY_CELL: CellSpec = {
   shape: '{ state, completed, total, progress, nextProbeAtMs, evidenceRef, confidence }',
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * goal-mode-drift-guards-2026-08-31 P-002 — IS THE STEWARD PLACING ANYTHING?
+ *
+ * ── THE GAP, MEASURED ──────────────────────────────────────────────────────────
+ *
+ * Every existing goal predicate reads HEALTHY for a steward that reads and reports
+ * indefinitely while placing nothing. `holder.ts` says `held`. `activity.ts` says
+ * active. The wedge leg says `has-produced-work` — and its own docblock explains
+ * why it must: it "only fires on holders that have NEVER produced an agent-origin
+ * call, so this is not 'idle for 15 minutes' — it is 'has never once worked'".
+ *
+ * So the first thing in the entire system to object to such a goal was the ROLLING
+ * BUDGET CEILING, after 4+ hours and $109. That is the complaint this cell answers:
+ * money is meant to be the last line of defence, not the first one to notice.
+ *
+ * ── WHY THE HEADLINE IS A DURATION AND NOT THE RATE ────────────────────────────
+ *
+ * P-002 names the measurement "portfolio acts per hour", and `actsPerHour` is on
+ * the payload. It is NOT the headline, because the condition to be caught is
+ * "throughput sat at ZERO for N minutes" — a statement about a SPAN, and a rate
+ * sampled at an instant cannot express one. `state:subscribe` compares one poll's
+ * reading with `eq`/`gt`/`changed`; there is no dwell operator, and adding one
+ * would be the second subscription mechanism state-plane P-004 forbids outright.
+ *
+ * Headlining `idleMinutes` makes an ORDINARY threshold do the work: `{op:'gte',
+ * value:20}` on this cell IS "zero for twenty minutes". The duration is answered
+ * where this registry has twice recorded that it belongs — in the RESOLVER. A
+ * registry computing `idleFor >= N` would be the registry deriving a verdict,
+ * which axis 5 forbids one level up.
+ *
+ * ── ⚠ AND WHY MATERIALITY IS NOT OPTIONAL HERE ─────────────────────────────────
+ *
+ * `idleMinutes` is a CLOCK. Absent a materiality declaration every change is
+ * material, so an operand-free subscription would fire on EVERY poll — sixty wakes
+ * an hour, each announcing that a minute had passed. That is the exact churn P-021
+ * was written for, in its purest form: the raw value moves continuously while the
+ * question the cell exists to answer ("is this goal placing nothing?") moves twice
+ * a day at most. `idle` is that question, so `idle` is the material path.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
+  cell: 'goal.portfolioThroughput',
+  registeredOn: '2026-08-31',
+  owner: 'goal-mode-drift-guards-2026-08-31',
+  headline: 'data.portfolioThroughput.idleMinutes',
+  assessment: {
+    path: 'data.portfolioThroughput.assessment',
+    codes: {
+      placing: {
+        meaning:
+          'A live holder has placed portfolio work inside the idle threshold — created, placed or steered something.',
+        safeAction:
+          'Leave the goal alone. If you are deciding whether to wind it down, this is the reading that says do not.',
+      },
+      'within-grace': {
+        meaning:
+          'A live holder, no portfolio act yet, but the goal has been held for less than the idle threshold. Too young to have been expected to place anything.',
+        safeAction:
+          'Wait. Re-read after the threshold elapses rather than escalating now — this is what a healthy steward looks like in its first minutes.',
+      },
+      'idle-past-threshold': {
+        meaning:
+          'A live holder has placed NOTHING for longer than the idle threshold. It is present, it is producing tool calls, and none of them changed the portfolio.',
+        safeAction:
+          'Escalate to the goal owner, or wind the goal down. Do NOT respawn the holder — respawn treats a dead session, and this one is alive and working; a replacement would inherit the same instructions and do the same thing. Read `lastActTool` and `actsInWindow` for what it last actually placed.',
+      },
+      'not-held': {
+        meaning:
+          'Nobody alive holds this goal, so it places nothing trivially. This is an ABSENT steward, not an idle one.',
+        safeAction:
+          'Read holder liveness (unheld / lost) and repair THAT — a holder is what is missing. Reporting this as idleness would route a staffing problem to a wind-down conversation.',
+      },
+      'evidence-unavailable': {
+        meaning:
+          'Throughput could not be measured — no goal-mode row, an unresolved liveness oracle, or an unreadable ledger. See the `unavailable` hoist for which.',
+        safeAction:
+          'Treat as UNKNOWN and retry. Never read it as zero: an unmeasured goal and a measurably idle one are the same absence of acts and completely different facts.',
+      },
+    },
+    evidence: [
+      'data.portfolioThroughput.actsInWindow',
+      'data.portfolioThroughput.lastActAtMs',
+      'data.portfolioThroughput.lastActTool',
+      'data.portfolioThroughput.measuredOwnerIds',
+    ],
+  },
+
+  /**
+   * Axis 2. TRUE. `idleMinutes` is null whenever the measurement could not be
+   * made, and those cases are real rather than theoretical: a goal with no
+   * goal-mode row at all, a liveness oracle that did not answer, an unreadable
+   * ledger. `unavailable` is the D-039 result-level hoist naming which — a caller
+   * who reads only the headline still cannot mistake "we could not look" for
+   * "we looked and found nothing".
+   */
+  nullable: true,
+  unknownHoist: 'data.portfolioThroughput.unavailable',
+
+  /**
+   * Axis 3. Relative to WHICH GOAL. `param: 'id'` is not a naming choice — it is
+   * `goals:get`'s own argument name, and the subscription builds its resolver args
+   * as `{ [param]: subject }`. A mismatch here would dispatch `goals:get` with no
+   * id and answer about nothing.
+   */
+  callerRelativity: { kind: 'parameter', param: 'id' },
+
+  /**
+   * Axis 4. The resolver was exercised against the live ledger while P-002 was
+   * written, and the exercise CHANGED the implementation rather than confirming
+   * it: resolving the criterion's 16 named verbs against real tool declarations
+   * showed that `goals:amend` and `goals:kill` do not exist anywhere in the tree
+   * (the real door for both is `goals:update`), so the prose definition this cell
+   * replaces was structurally blind to amendment and kill activity. That is
+   * precisely the class of defect a fixture cannot catch: the query was fresh,
+   * correctly-scoped and confidently wrong.
+   */
+  provenance: {
+    obtainedBy:
+      "harness_shared.tool_invocations filtered to status='ok' and tool_name = ANY(PORTFOLIO_ACT_TOOLS), scoped to the goal's holder identities from resolveGoalHolders (dead holders included, per spend-rollup's precedent)",
+    liveExercised: true,
+    evidence:
+      'Verified live 2026-08-31 against the real tool registry: all 16 verbs named by the goal-mode-e2e portfolio-activity-floor criterion were resolved against their `name:` declarations — 14 resolved, `goals:amend` and `goals:kill` returned nothing, and a full enumeration of every registered `goals:*` tool confirmed `goals:update` as the only amend/kill door. The verb set this cell counts is the corrected one.',
+  },
+
+  /** Axis 5. ONE derivation. The watchdog leg and every read project this resolver
+   *  and none re-derive it; `goals:get` threads its already-resolved holders in so
+   *  the liveness it reports and the verdict computed from it cannot disagree. */
+  resolver:
+    'readGoalPortfolioThroughput() @ packages/operator-core/lib/goals/portfolio-throughput.ts',
+
+  /**
+   * P-019 (a). WORKSPACE-visible, deliberately. The audience that most needs this
+   * is not the holder — a steward cannot be relied upon to notice its own
+   * idleness, which is the whole reason the condition ran four hours. It is
+   * whoever is deciding whether to keep funding the goal.
+   *
+   * P-019 (b). `local`: goal ids and owner ids do not resolve in a foreign hive,
+   * so the value would not merely be uninteresting there, it would be misread as a
+   * statement about their own goals.
+   */
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+
+  changeSignal: {
+    kind: 'poll',
+    tool: 'goals:get',
+    path: 'data.portfolioThroughput.idleMinutes',
+  },
+
+  /** P-021 — see the header. The clock churns every poll; the boolean is the question. */
+  materiality: {
+    path: 'data.portfolioThroughput.idle',
+    why: 'idleMinutes is a CLOCK: it advances on every poll by construction, so treating its every change as material would wake a subscriber roughly sixty times an hour to report that a minute had passed. `idle` is the question the cell exists to answer and flips at most a couple of times in a goal\'s life.',
+  },
+
+  shape:
+    '{ data: { portfolioThroughput: { windowMinutes, actsInWindow, actsPerHour, lastActAtMs, lastActTool, lastActFacet, ' +
+    'idleMinutes, idleAfterMinutes, measuredOwnerIds, holderLiveness, idle, reason, assessment, unavailable } } }',
+
+  /**
+   * Axis 6 is deliberately ABSENT. Placing work has no stage order — a steward
+   * moves between placing and idle in both directions and neither is "further
+   * along" than the other. Declaring stages would invite a reader to treat `idle`
+   * as a terminal phase rather than a condition that a single act clears.
+   */
+};
+
 /** Every built-in cell, in registration order. */
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
@@ -1591,6 +1757,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   HOST_MEMORY_PRESSURE_CELL,
   MEMORY_CGROUP_ATTRIBUTION_CELL,
   AGENT_GOAL_CELL,
+  GOAL_PORTFOLIO_THROUGHPUT_CELL,
   TESTING_CENSUS_POPULATION_CELL,
   TESTING_COVERAGE_FLOOR_CELL,
   GOVERNOR_HEALTH_CELL,

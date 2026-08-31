@@ -47,7 +47,7 @@ import {
   resolveGoalPortfolioIdle,
   type GoalPortfolioVerdict,
 } from './activity';
-import { resolveGoalHolders, type GoalHolderLiveness } from './holder';
+import { resolveGoalHolders, type GoalHolderLiveness, type GoalHolders } from './holder';
 import { PORTFOLIO_ACT_TOOLS, portfolioActFacet, type PortfolioActFacet } from './portfolio-acts';
 
 /** The rate window. "Acts per hour" is the unit P-002 asks for, so an hour it is. */
@@ -123,8 +123,20 @@ export interface GoalPortfolioThroughputRead {
   unavailable: GoalPortfolioUnavailable | null;
 }
 
-/** Reason → assessment code. One mapping, so a surface never invents its own. */
-function assessmentFor(reason: GoalPortfolioVerdict['reason']): GoalPortfolioAssessment {
+/**
+ * Reason → assessment code. One mapping, so a surface never invents its own.
+ *
+ * EXPORTED so it can be PINNED. `readCell` enforces a CLOSED code vocabulary: a
+ * code the cell's registration never declared is not passed through, it silently
+ * DOWNGRADES the whole read to `unavailable`. So a drift between this function's
+ * image and `GOAL_PORTFOLIO_THROUGHPUT_CELL.assessment.codes` would not fail
+ * anywhere — it would quietly turn every read of a healthy resolver into "no
+ * semantics available", which is indistinguishable from the cell being broken.
+ * `portfolio-acts.test.ts` asserts the two sets are equal in both directions.
+ */
+export function portfolioAssessmentFor(
+  reason: GoalPortfolioVerdict['reason'],
+): GoalPortfolioAssessment {
   switch (reason) {
     case 'idle':
       return 'idle-past-threshold';
@@ -163,7 +175,7 @@ function build(
     holderLiveness: null,
     idle: verdict.idle,
     reason: verdict.reason,
-    assessment: assessmentFor(verdict.reason),
+    assessment: portfolioAssessmentFor(verdict.reason),
     unavailable: null,
     ...fields,
   };
@@ -186,6 +198,18 @@ export async function readGoalPortfolioThroughput(
     windowMs?: number;
     idleAfterMs?: number;
     nowMs?: number;
+    /**
+     * An ALREADY-RESOLVED holder read, when the caller has one.
+     *
+     * `goals:get` resolves holders for its own `holderLiveness`/`deactivated`
+     * fold immediately before calling this, and `resolveGoalHolders` costs a
+     * ledger read plus a liveness-oracle round trip. Re-resolving would not just
+     * be wasteful: two reads taken milliseconds apart can DISAGREE, and the door
+     * would then report a liveness in one field that the throughput verdict in
+     * the next field was not computed from. Threading the same object through is
+     * axis 5 applied within one response — one derivation, many lenses.
+     */
+    holders?: GoalHolders;
   },
 ): Promise<GoalPortfolioThroughputRead> {
   const base = { goalId: opts.goalId, workspaceId: opts.workspaceId };
@@ -194,10 +218,12 @@ export async function readGoalPortfolioThroughput(
   const idleAfterMs = opts.idleAfterMs ?? GOAL_PORTFOLIO_IDLE_AFTER_MS;
   const windowMinutes = Math.max(1, Math.round(windowMs / 60_000));
 
-  const holders = await resolveGoalHolders(sql, {
-    workspaceId: opts.workspaceId,
-    goalId: opts.goalId,
-  });
+  const holders =
+    opts.holders ??
+    (await resolveGoalHolders(sql, {
+      workspaceId: opts.workspaceId,
+      goalId: opts.goalId,
+    }));
   const ownerIds = [...new Set(holders.holders.map((h) => h.ownerId))];
 
   if (ownerIds.length === 0) {

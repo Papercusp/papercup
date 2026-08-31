@@ -14,6 +14,7 @@ import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { resolveGoalHolders } from '@papercusp/operator-core/lib/goals/holder';
 import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals/activity';
+import { readGoalPortfolioThroughput } from '@papercusp/operator-core/lib/goals/portfolio-throughput';
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { goalPackageUpdateInfo } from '@papercusp/operator-core/lib/goals/package-update';
 import { readGoalReadiness } from './goal-deps';
@@ -93,6 +94,36 @@ export default defineTool({
       launchSettings,
       liveness: holders.liveness,
     });
+    /**
+     * PORTFOLIO THROUGHPUT (goal-mode-drift-guards-2026-08-31 P-002) — is this
+     * goal's steward PLACING anything, or merely present?
+     *
+     * ── WHY IT IS ON THE SUMMARY BRANCH AND NOT GATED BEHIND detail='full' ──
+     *
+     * Because `state:subscribe` cannot ask for `full`. A cell subscription
+     * dispatches its resolver with exactly `{ [callerRelativity.param]: subject }`
+     * — here `{ id }` — so `detail` takes its schema default of 'summary' on
+     * every poll. A block that appeared only under 'full' would be absent from
+     * the one call path the cell exists to serve, and `valueAtPath` would report
+     * the missing path as `insufficient-data`: the cell would answer "the
+     * resolver's shape has drifted" forever, about a resolver working perfectly.
+     *
+     * The cost is one aggregate over `tool_invocations_coord_owner_idx` bounded
+     * to this goal's holder ids. The expensive half — `resolveGoalHolders`, a
+     * ledger read plus a liveness-oracle round trip — is ALREADY done above and
+     * is threaded in rather than repeated.
+     *
+     * ⚠ ALWAYS PRESENT, NEVER NULL. Same `valueAtPath` rule: a null here would
+     * make every nested cell path undefined and turn the ordinary
+     * unmeasurable cases into a false shape-drift diagnosis. The resolver
+     * carries its own `unavailable` hoist for exactly that, so absence of
+     * evidence is reported IN the block instead of BY the block's absence.
+     */
+    const portfolioThroughput = await readGoalPortfolioThroughput(ctx.tx, {
+      workspaceId: goal.workspaceId,
+      goalId: goal.id,
+      holders,
+    });
     if (args.detail === 'summary') {
       return {
         data: {
@@ -109,6 +140,7 @@ export default defineTool({
           // already reads its goal. Null unless packaged; the accept is
           // goals:apply-package-update, never automatic.
           packageUpdate: goalPackageUpdateInfo(metadata),
+          portfolioThroughput,
         },
       };
     }
@@ -148,6 +180,9 @@ export default defineTool({
         blockedBy: readiness.blockers,
         // P-018: see the summary branch's note.
         packageUpdate: goalPackageUpdateInfo(metadata),
+        // P-002: the same reading the summary branch carries, at the same path,
+        // so a cell declared against one branch cannot miss on the other.
+        portfolioThroughput,
       },
     };
   },
