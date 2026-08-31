@@ -183,10 +183,8 @@ describe('population and ordering', () => {
  * The DORMANT split. Presence alone is not "learning": measured on the live
  * workspace 2026-08-30, 54 pots have a setup and 7 have anything armed, with
  * learning_pot_scope empty — so a presence rail renders 54 chips that all read
- * 'on'. These assert the narrowing WITHOUT letting it hide a pot whose state we
- * could not READ, which is the way this rule fails dangerously: 'unknown' is the
- * absence of a fact and must stay loud, while 'off' is a fact we read and is
- * summarised behind the counted affordance (D-008).
+ * 'on'. These assert the narrowing WITHOUT letting it hide a pot someone has
+ * actually decided about, which is the way this rule fails dangerously.
  */
 describe('the dormant split — a setup is not the same as learning', () => {
   const potsOf = (chips: ReturnType<typeof buildLearningPotRail>) => chips.map((c) => c.potSlug);
@@ -206,25 +204,15 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(isPotChipDormant(chip)).toBe(false);
   });
 
-  // D-008 REVERSED this. It used to assert `false` ("NEVER hides a switched-off
-  // pot — the rail chip is what switches it back on"). P-008's every-pot picker
-  // lists off pots and re-arms them from its footer, so the chip no longer has
-  // to exist for the pot to be reachable — and with every pot switched off, the
-  // old rule turned the entire rail into chips, which is the opposite of what
-  // switching them off is for.
-  it('treats a switched-off pot as dormant — the picker, not the chip, switches it back on', () => {
+  it('NEVER hides a switched-off pot — its popover owns the per-lane switches', () => {
     const [chip] = buildLearningPotRail(
+      // Nothing armed AND switched off: dormant by arming, but a recorded decision.
       arming({ gymPots: [gym('paused', false)], potScope: scope(['paused']) }),
     );
     expect(chip.learning).toBe('off');
-    expect(isPotChipDormant(chip)).toBe(true);
+    expect(isPotChipDormant(chip)).toBe(false);
   });
 
-  // Where D-008's narrowing STOPS, and why. Burying an off pot is only safe when
-  // it has nothing armed: the picker restores the GATE and nothing else (D-007
-  // keeps per-lane control off that surface deliberately) and P-012's drawer does
-  // not exist yet, so an off pot that still owns lane switches would be stranded
-  // with no surface to operate them. It keeps its chip.
   it('KEEPS a switched-off pot on the rail when a lane is still armed under it', () => {
     const [chip] = buildLearningPotRail(
       arming({ lanes: [lane('l1', 'paused', true)], potScope: scope(['paused']) }),
@@ -253,25 +241,30 @@ describe('the dormant split — a setup is not the same as learning', () => {
     expect(active.length + dormant.length).toBe(rail.length);
   });
 
-  // The regression this whole rule exists for, stated as the owner produced it:
-  // switch EVERY pot off to stop spend. Under the pre-D-008 predicate each of
-  // those pots became 'off', 'off' was never dormant, and the rail rendered a
-  // chip for every one — so the display got bigger the moment you tried to quiet
-  // it. Live measurement after the real 28-pot pause: 26 chips, 522px, clipped.
-  it('collapses to nothing on the rail when EVERY pot is switched off and idle', () => {
+  // ⚠ PINS A KNOWN COST, NOT A DESIRED OUTCOME — see D-008 / P-052.
+  // Switching EVERY pot off is what an owner does to stop spend, and it is the
+  // WORST case for rail width: each pot becomes 'off', 'off' is never dormant,
+  // so every one keeps a chip and the display grows exactly when you try to
+  // quiet it. Live after the real 28-pot pause: 26 chips, 522px, clipped —
+  // the owner's "gigantic" complaint.
+  //
+  // Two attempts to make off pots dormant were both falsified by
+  // LearningPotRail.test.tsx: the chip's popover is the only surface that
+  // operates a pot's per-lane switches (D-007 keeps per-lane control off the
+  // picker deliberately), and arming a lane on a switched-off pot is meaningful
+  // because it pre-stages what switching the pot on restores — so even a fully
+  // idle off pot owns live switches. P-012's per-pot drawer is what gives those
+  // switches another home; when it lands, THIS TEST SHOULD FLIP to expect an
+  // empty active set.
+  it('keeps every switched-off pot on the rail today — the width cost P-012 unblocks', () => {
     const slugs = ['alpha', 'beta', 'gamma', 'delta'];
     const rail = buildLearningPotRail(
-      arming({
-        gymPots: slugs.map((s) => gym(s, false)),
-        potScope: scope(slugs),
-      }),
+      arming({ gymPots: slugs.map((s) => gym(s, false)), potScope: scope(slugs) }),
     );
     const { active, dormant } = partitionLearningPotRail(rail);
     expect(rail).toHaveLength(4);
-    expect(potsOf(active)).toEqual([]);
-    // Sorted both sides: the rail orders by armed-then-spend-then-slug, not
-    // alphabetically, and this case is about WHICH half each pot lands in.
-    expect([...potsOf(dormant)].sort()).toEqual([...slugs].sort());
+    expect([...potsOf(active)].sort()).toEqual([...slugs].sort());
+    expect(dormant).toEqual([]);
   });
 });
 

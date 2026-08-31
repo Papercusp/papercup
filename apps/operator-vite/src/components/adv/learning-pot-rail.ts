@@ -256,10 +256,9 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
 }
 
 /**
- * DORMANT: a pot that is not learning right now and does not need a chip to say
- * so — either a learning SETUP with nothing armed (a gym row configured and
- * disarmed, or governor lanes that all sit off), or a pot switched off at the
- * gate (D-008). Both are reachable from the every-pot picker.
+ * DORMANT: a pot with a learning SETUP but nothing armed and no decision ever
+ * recorded about it — a gym row that was configured and disarmed, or governor
+ * lanes that all sit off. It is genuinely "not learning" right now.
  *
  * WHY THIS EXISTS. Presence alone is far too wide to be a rail. Measured
  * against the live workspace on 2026-08-30: 54 pots have a learning presence
@@ -272,22 +271,23 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
  * `dormant` is returned alongside `active` so the rail can account for all of
  * them in one affordance and hand them to the picker.
  *
- *   - `learning === 'off'` — no longer forces a chip. D-008 drops D-005's
- *     blanket "a decided pot is never dormant" and subjects an off pot to the
- *     SAME armed-check as an on one, because D-005's stated reason ("the rail
- *     chip is what switches it back on") expired when P-008 shipped the
- *     every-pot picker, whose footer switches a selection back on in one write.
- *     It matters because switching every pot off is exactly what an owner does
- *     to stop spend, and under the old rule that turned the entire rail into
- *     chips — the display got bigger the moment you tried to quiet it.
+ *   - `learning === 'off'` — switched off deliberately. It must stay on the
+ *     rail, because the chip's popover is the only surface that operates this
+ *     pot's per-lane switches; burying it is what would strand it.
  *
- *     But the narrowing stops at ARMING, deliberately. An off pot that still
- *     has a lane armed KEEPS its chip, because the picker restores the GATE and
- *     nothing else: D-007 put per-lane control off the picker on purpose, and
- *     P-012's per-pot drawer does not exist yet — so burying an off pot that
- *     owns lane switches would strand the only surface that operates them. An
- *     off pot with nothing armed has no such switches to strand, which is why
- *     it is safe to summarise and it alone.
+ *     ⚠ D-008/P-052 TRIED TO REMOVE THIS AND COULD NOT — read before retrying.
+ *     The tempting argument is that P-008's every-pot picker now switches an
+ *     off pot back on, so the chip is redundant. It is NOT: the picker restores
+ *     the GATE only, because D-007 keeps per-lane control off that surface on
+ *     purpose. Two successive narrowings were both falsified by
+ *     LearningPotRail.test.tsx — first "off is always dormant", then "off with
+ *     nothing armed is dormant" — the second because arming a lane on a
+ *     switched-off pot is MEANINGFUL (it pre-stages what switching the pot on
+ *     will restore), so even a fully-idle off pot owns live switches. Until
+ *     P-012's per-pot drawer gives those switches a home reachable from the
+ *     picker, every off pot needs its chip. This costs real width — with all 28
+ *     pots off the rail rendered 26 chips at 522px, clipped — which is the
+ *     owner's "gigantic" complaint, and P-012 is what unblocks fixing it.
  *   - `learning === 'unknown'` — the scope read failed, and this case is
  *     UNCHANGED: still never dormant. Hiding a pot whose state we could not
  *     read would silently under-report the rail, which is the same fail-open
@@ -295,7 +295,7 @@ export function buildLearningPotRail(arming: AutomationArming | null | undefined
  *     deliberate — 'off' is a fact we read, 'unknown' is the absence of one.
  */
 export function isPotChipDormant(chip: LearningPotChip): boolean {
-  if (chip.learning === 'unknown') return false;
+  if (chip.learning !== 'on') return false;
   return chip.gym.state !== 'on' && chip.lanes.state !== 'on';
 }
 
