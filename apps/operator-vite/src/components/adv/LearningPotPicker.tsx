@@ -76,7 +76,7 @@ function PotRow({
 }) {
   const label = potHomeLabel(row.potSlug);
   return (
-    <li className="pc-potpick__row" data-learning={row.learning}>
+    <li className="pc-potpick__row" data-learning={row.learning} data-slug={row.potSlug}>
       <label className="pc-potpick__pick">
         <input
           type="checkbox"
