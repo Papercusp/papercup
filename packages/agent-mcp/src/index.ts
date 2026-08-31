@@ -251,6 +251,17 @@ export {
   type GoalLastPauseRecord,
   type GoalPauseView,
 } from './tools/goals/pause-record';
+export {
+  appendGoalHistory,
+  addGoalFieldChange,
+  GOAL_EVIDENCE_ACTION,
+  GOAL_AMENDMENT_ACTION,
+  GOAL_WRITE_ACTION,
+  GOAL_HISTORY_LIMIT,
+  type GoalHistoryDetail,
+  type GoalHistoryEntry,
+  type GoalWriteDetail,
+} from './tools/goals/history';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the
