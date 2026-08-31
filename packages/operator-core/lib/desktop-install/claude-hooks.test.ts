@@ -23,6 +23,7 @@ const hookEntryFor = (cfg: any, event: string, name: string) => {
 const hookMatcherOf = (cfg: any, event: string, name: string): string | undefined =>
   hookEntryFor(cfg, event, name).matcher;
 const FILE_WRITE_MATCHER = 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)';
+const BASH_SHELL_MATCHER = 'Bash|mcp__.*__capability_bash';
 const FILE_EDIT_MATCHER = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
 const FILE_OVERWRITE_MATCHER = 'Write|mcp__.*__capability_write';
 
@@ -71,7 +72,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
 
     expect(matcherOf('pretooluse-locks-acquire.sh')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');
-    expect(matcherOf('pretooluse-bash-resource-gate.sh')).toBe('Bash');
+    // EI-21971958067151594 — must cover the MCP shell too, not just native Bash.
+    // WI-38363 widened the FILE writers to `mcp__.*__capability_*` and left this
+    // one native-only, so every deny in the 5.8k-line gate (tauri target guard,
+    // pkill, destructive-git, the scheduler lockout) was bypassable by spelling
+    // the command through `capability:bash`. Measured 2026-08-31: the same
+    // `tauri-agent-tools dom` was DENIED as Bash and RAN as capability:bash.
+    expect(matcherOf('pretooluse-bash-resource-gate.sh')).toBe(BASH_SHELL_MATCHER);
+    expect(BASH_SHELL_MATCHER).toMatch(/capability_bash/);
     expect(matcherOf('pretooluse-plans-read-guard.sh')).toBe('Read|Grep');
 
     // EI-21890940999877469 — the durable-write allow-list mirror. The assertions
@@ -345,9 +353,22 @@ describe('mergeClaudeHookSettings — graceful degradation via `present`', () =>
       ],
     };
     const cfg = mergeClaudeHookSettings({ hooks: { PreToolUse: [mixed] } }, DEST);
-    const bashEntries = (cfg.hooks.PreToolUse as any[]).filter((e) => e.matcher === 'Bash');
-    const allBashCmds = bashEntries.flatMap((e) => e.hooks.map((h: any) => h.command));
-    expect(allBashCmds).toContain('/usr/local/bin/rtk hook claude'); // foreign command preserved
-    expect(allBashCmds).toContain(`${DEST}/pretooluse-bash-resource-gate.sh`); // ours refreshed
+    const entries = cfg.hooks.PreToolUse as any[];
+    const cmdsUnder = (matcher: string) =>
+      entries.filter((e) => e.matcher === matcher).flatMap((e) => e.hooks.map((h: any) => h.command));
+
+    // The foreign command survives, still under ITS original narrow matcher.
+    expect(cmdsUnder('Bash')).toContain('/usr/local/bin/rtk hook claude');
+    // Ours is refreshed under the widened shell matcher (EI-21971958067151594).
+    expect(cmdsUnder(BASH_SHELL_MATCHER)).toContain(`${DEST}/pretooluse-bash-resource-gate.sh`);
+    // ...and exactly once overall — the command-level filter must not leave a stale copy behind.
+    const ourGate = entries
+      .flatMap((e) => e.hooks.map((h: any) => h.command))
+      .filter((c: string) => c.includes('pretooluse-bash-resource-gate.sh'));
+    expect(ourGate).toHaveLength(1);
+    // The SPLIT is the point, not an accident: widening the shared entry in place
+    // would have handed rtk — a third-party command that REWRITES the payload it
+    // is given — coverage of `capability:bash` too. A safety gate may widen alone.
+    expect(cmdsUnder(BASH_SHELL_MATCHER)).not.toContain('/usr/local/bin/rtk hook claude');
   });
 });

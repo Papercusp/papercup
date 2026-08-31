@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,14 @@ import {
   selectEnforceableFixtures,
 } from '@papercusp/operator-core/lib/bash-substitution/corpus';
 
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pretooluse-bash-resource-gate.sh');
+// PROBE_GATE_SCRIPT exists ONLY so a falsifiability probe can point this suite at a
+// MUTATED COPY of the gate (plus its sibling libs) outside the tree — the copy-out tier
+// in CLAUDE.md's "proving a guard is falsifiable". Without this one line the subject
+// path is hardcoded, and the only way to test a mutant is to mutate the SHARED tree,
+// where git-sync can commit it mid-probe even when nothing goes wrong. Every production
+// run leaves it unset.
+const SCRIPT = process.env.PROBE_GATE_SCRIPT
+  ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pretooluse-bash-resource-gate.sh');
 
 let fakeHome = '';
 
@@ -980,6 +987,41 @@ describe('tauri-agent-tools target guard (EI-10939)', () => {
 
   it('ALLOWS when NO bridge is live — nothing to hit; the tool prints its own error', () => {
     expectAllow(runTat(`tauri-agent-tools eval 'document.title'`));
+  });
+
+  // EI-21971958067151594 — the SPELLING hole. `capability:bash` is the same
+  // shell reached over MCP, and it was exempt from this whole file: the script
+  // early-returned on tool_name, and the installers registered a native-only
+  // `Bash` matcher. Measured live 2026-08-31 with 3 real bridges up: this exact
+  // command was DENIED as `Bash` and RAN as `capability:bash`, dumping a foreign
+  // 2669x1391 webview. The guard is only as wide as its narrowest spelling, so
+  // the deny is pinned per-spelling rather than once.
+  it.each([
+    ['claude native', 'Bash'],
+    ['claude MCP shell (EI-21971958067151594)', 'mcp__papercusp-su__capability_bash'],
+    ['MCP shell, any server segment', 'mcp__some-other-server__capability_bash'],
+    ['codex exec_command', 'exec_command'],
+  ])('DENIES an unaimed mutating command spelled as %s', (_l, tool) => {
+    writeBridge(LIVE_A, 46423);
+    const out = runGate(
+      bashCmd(`tauri-agent-tools eval 'document.title'`, { tool }),
+      { ...AGENT, TMPDIR: tmpBridgeDir },
+    );
+    expect(denyReason(out)).toMatch(/DRIVES a webview but does not say WHICH/);
+  });
+
+  // The name test is ANCHORED for a reason: these two take a `bash_id`, never a
+  // `command`, so they are readers rather than shells. A loose prefix match
+  // would pull them in and make every background-log read pay the gate.
+  it.each([
+    ['capability_bash_output', 'mcp__papercusp-su__capability_bash_output'],
+    ['capability_bash_kill', 'mcp__papercusp-su__capability_bash_kill'],
+  ])('does NOT treat %s as a shell', (_l, tool) => {
+    writeBridge(LIVE_A, 46423);
+    expectAllow(runGate(
+      { tool_name: tool, tool_input: { bash_id: 'b-1' }, session_id: 's-test' },
+      { ...AGENT, TMPDIR: tmpBridgeDir },
+    ));
   });
 
   it('guards a full-path / npx invocation too (the binary is a global install)', () => {
@@ -6269,5 +6311,116 @@ describe('tauri-agent-tools screenshot window-resolution advisory (EI-2138366096
       ? ((JSON.parse(out.stdout).hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '')
       : '';
     expect(ctx).not.toContain('screenshot advisory (EI-21383660965482252)');
+  });
+});
+
+describe('bytecode cache degrades to SLOW, never to OFF (EI-20226903620041425)', () => {
+  // This wrapper ends in `|| exit 0` — it fails OPEN. So the risk the cache
+  // introduces is not a crash, it is SILENT non-gating: a cache bug that skipped
+  // the body would allow every command, with no error anywhere and no symptom to
+  // notice. That failure is invisible by construction, which is exactly why it
+  // has to be asserted rather than observed.
+  //
+  // The shipped design routes around it: the try/except covers only cache
+  // PREPARATION and picks the execution route BEFORE any body code runs, so a
+  // broken cache falls back to exec(compile(src)) — the pre-cache behaviour.
+  const cacheEnvIn = (dir: string) => ({ ...AGENT, XDG_CACHE_HOME: dir });
+  const freshCacheRoot = () => mkdtempSync(join(tmpdir(), 'gate-pycache-'));
+  const soleModuleIn = (dir: string) => {
+    const mods = readdirSync(dir).filter((f) => f.startsWith('pcgate_') && f.endsWith('.py'));
+    expect(mods, `expected exactly one cached module in ${dir}`).toHaveLength(1);
+    return join(dir, mods[0]!);
+  };
+
+  // ── CALIBRATION. Without this, every fallback case below would pass just as
+  // happily if the cache NEVER worked at all — they would all be quietly
+  // exercising the same single path. This is the case that fails if the speedup
+  // itself breaks, which is what makes the others mean anything.
+  it('CALIBRATION: a normal run materializes the module AND its .pyc', () => {
+    const root = freshCacheRoot();
+    try {
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(root)));
+      const dir = join(root, 'papercusp-hooks');
+      soleModuleIn(dir);
+      // The .pyc IS the point: CPython writes one only for an IMPORTED module,
+      // never for __main__ — which is why `python3 -c 'import …'` is load-bearing
+      // and `python3 script.py` would not do. If this is empty the gate is still
+      // correct but has silently reverted to recompiling ~291KB per bash call.
+      const pyc = readdirSync(join(dir, '__pycache__')).filter((f) => f.endsWith('.pyc'));
+      expect(pyc, 'no .pyc — the cache is not actually caching').toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still DENIES when the cache directory cannot be created (XDG_CACHE_HOME is a file)', () => {
+    const root = freshCacheRoot();
+    const asFile = join(root, 'not-a-dir');
+    writeFileSync(asFile, '');
+    try {
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(asFile)));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still DENIES when the cache directory is read-only', () => {
+    const root = freshCacheRoot();
+    const dir = join(root, 'papercusp-hooks');
+    try {
+      mkdirSync(dir, { recursive: true });
+      chmodSync(dir, 0o500);
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(root)));
+    } finally {
+      try { chmodSync(dir, 0o700); } catch { /* never created */ }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still DENIES when the cached module is TRUNCATED, and REPAIRS it', () => {
+    const root = freshCacheRoot();
+    try {
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(root))); // populate
+      const mod = soleModuleIn(join(root, 'papercusp-hooks'));
+      const whole = readFileSync(mod);
+      writeFileSync(mod, whole.subarray(0, 5000));
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(root)));
+      // Verify-or-rewrite, not bypass-forever: one bad write (a crashed or
+      // ENOSPC-d peer) must not cost this box the speedup permanently, silently.
+      expect(readFileSync(mod).length, 'the corrupt entry should be repaired').toBe(whole.length);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The filename is content-addressed, which proves what the file was CALLED,
+  // not what it CONTAINS. Size alone is insufficient: this rewrite keeps the byte
+  // count identical, so only a genuine re-hash rejects it. If the check were
+  // weakened back to a size compare, a same-length body would execute AS the gate.
+  it('rejects a SAME-LENGTH tampered cache entry and still DENIES', () => {
+    const root = freshCacheRoot();
+    try {
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(root))); // populate
+      const mod = soleModuleIn(join(root, 'papercusp-hooks'));
+      const size = readFileSync(mod).length;
+      // Valid python that would ALLOW everything, padded to the exact same size.
+      const evil = 'import sys;sys.exit(0)#';
+      writeFileSync(mod, evil + ' '.repeat(size - evil.length));
+      expect(readFileSync(mod).length, 'the tamper must be same-length or this proves nothing').toBe(size);
+      // ⚠ WITHOUT THIS LINE THIS TEST PASSES FOR THE WRONG REASON, and a mutation
+      // probe proved it: CPython validates a .pyc against its source's mtime+size at
+      // ONE-SECOND granularity, so a same-length rewrite inside the same second leaves
+      // the ORIGINAL bytecode looking valid. The honest gate then never even reads the
+      // tampered source, the assertion below passes, and the hash check it is supposed
+      // to be exercising is never reached — the guard survives a gate with NO hash
+      // verification at all. Ageing the source past the .pyc is what forces the import
+      // machinery to go back to the (tampered) file, which is the only state in which
+      // the pre-import re-hash is load-bearing. Do not remove this as a stray sleep.
+      const stale = Date.now() / 1000 + 10;
+      utimesSync(mod, stale, stale);
+      expectDeny(runGate(bashCmd('crontab -e'), cacheEnvIn(root)));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

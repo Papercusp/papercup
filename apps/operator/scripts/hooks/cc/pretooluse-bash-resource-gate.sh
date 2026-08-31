@@ -103,12 +103,23 @@ try:
     _key = "pcgate_" + hashlib.sha256(_raw).hexdigest()[:16]
     _dir = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "papercusp-hooks")
     _py = os.path.join(_dir, _key + ".py")
-    if not os.path.exists(_py):
+    try:
+        with open(_py, "rb") as _fh:
+            _have = _fh.read()
+    except OSError:
+        _have = None
+    # Verify-or-(re)write, NOT write-if-absent. An entry that fails the hash is
+    # REPAIRED rather than merely bypassed: a bypass would be correct but would
+    # cost this box the speedup permanently and silently after a single bad write
+    # (a crashed or ENOSPC-d peer), which is the failure mode nobody would notice.
+    if _have is None or len(_have) != len(_raw) or hashlib.sha256(_have).hexdigest()[:16] != _key[7:]:
         os.makedirs(_dir, exist_ok=True)
         _tmp = "%s.%d.tmp" % (_py, os.getpid())
         with open(_tmp, "wb") as _fh:
             _fh.write(_raw)
         os.replace(_tmp, _py)
+        # CPython validates a .pyc against its source mtime+size, so a repaired
+        # .py invalidates its own stale .pyc -- nothing to clean up here.
         _cut = time.time() - 1209600
         for _old in os.listdir(_dir):
             if _old.startswith("pcgate_") and _old != _key + ".py":
@@ -118,11 +129,8 @@ try:
                         os.remove(_op)
                 except OSError:
                     pass
-    with open(_py, "rb") as _fh:
-        _have = _fh.read()
-    if len(_have) == len(_raw) and hashlib.sha256(_have).hexdigest()[:16] == _key[7:]:
-        sys.path.append(_dir)
-        _mod = _key
+    sys.path.append(_dir)
+    _mod = _key
 except Exception:
     _mod = None
 if _mod:
@@ -543,7 +551,33 @@ tool_name = payload.get('tool_name', '') or ''
 tool_input = payload.get('tool_input', {})
 # 'Bash' is claude's name; exec_command/local_shell/shell are codex's shell
 # tool names (the codex hooks.json attaches this script too — README table).
-if tool_name.lower() not in ('bash', 'exec_command', 'local_shell', 'shell'):
+#
+# EI-21971958067151594 — `mcp__<server>__capability_bash` is THE SAME SHELL
+# reached over MCP, and it was silently exempt from this entire file. Measured
+# 2026-08-31 on a box with 3 live bridges: `tauri-agent-tools dom --selector
+# body` was DENIED as `Bash` and RAN as `capability:bash`, reading a foreign
+# 2669x1391 webview; the self-matching-`pgrep` wait-loop likewise ran to its
+# timeout. So EVERY deny in this file — the tauri target guard, `pkill -f`, the
+# destructive-git set, the OS-scheduler lockout, the systemd-exit guard — was
+# bypassable by spelling the same command through the MCP tool, and CLAUDE.md
+# actively ROUTES agents onto that spelling ("long jobs: background them at the
+# LAUNCH"). Exactly the spelling-shaped hole EI-18695939815676668 closed on the
+# OMP side (isShellTool: `bash*` OR `shell`); this is its Claude-side twin.
+#
+# ANCHORED on purpose: `capability_bash_output` / `capability_bash_kill` take a
+# `bash_id`, never a `command` — they are readers, not shells, and a loose
+# prefix match would drag them in. The `command`-shape check below is a second
+# net, but the name test is the one that states the intent.
+_MCP_SHELL_TOOL_RE = re.compile(r'^mcp__.+__capability_bash$')
+
+
+def _is_shell_tool(name):
+    lowered = name.lower()
+    return (lowered in ('bash', 'exec_command', 'local_shell', 'shell')
+            or bool(_MCP_SHELL_TOOL_RE.match(lowered)))
+
+
+if not _is_shell_tool(tool_name):
     allow()
 
 command = tool_input.get('command') if isinstance(tool_input, dict) else None

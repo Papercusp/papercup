@@ -2537,6 +2537,15 @@ export function mergeClaudeHookSettings(
   const fileWriteMatcher = 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)';
   const fileEditMatcher = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
   const fileOverwriteMatcher = 'Write|mcp__.*__capability_write';
+  // EI-21971958067151594: WI-38363 (above) widened the FILE writers and left the
+  // SHELL gate on a native-only matcher, so `capability:bash` — the same shell,
+  // and the one CLAUDE.md tells agents to prefer for long jobs — was exempt from
+  // every deny in pretooluse-bash-resource-gate.sh. Measured 2026-08-31:
+  // `tauri-agent-tools dom` DENIED as Bash, RAN as capability:bash against a
+  // foreign webview. `capability_bash_output`/`_kill` are readers, not shells;
+  // the gate's own anchored name test rejects them, so a broad matcher here
+  // costs only a no-op invocation.
+  const bashShellMatcher = 'Bash|mcp__.*__capability_bash';
 
   // merge_lock_hooks — PreToolUse + PostToolUse, matcher Edit|Write|MultiEdit,
   // plus the Claude-only matcher-less PostToolBatch union release.
@@ -2746,10 +2755,10 @@ export function mergeClaudeHookSettings(
     const mine = existing && typeof existing === 'object' && String(existing.command ?? '').includes(sl);
     if (!existing || mine) cfg.statusLine = { type: 'command', command: sl };
   }
-  // merge_bash_gate_hook — PreToolUse, matcher 'Bash'.
+  // merge_bash_gate_hook — PreToolUse, matcher bashShellMatcher.
   if (has('pretooluse-bash-resource-gate.sh'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-bash-resource-gate.sh'), {
-      matcher: 'Bash',
+      matcher: bashShellMatcher,
       hooks: cmd('pretooluse-bash-resource-gate.sh'),
     });
   // merge_plans_read_guard_hook — PreToolUse, matcher 'Read|Grep' (P-003(b)).

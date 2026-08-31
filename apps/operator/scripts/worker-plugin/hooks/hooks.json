@@ -12,6 +12,13 @@
           { "type": "command", "command": "${HOME}/.papercusp/hooks/cc/pretooluse-bash-resource-gate.sh" },
           { "type": "command", "command": "command -v rtk >/dev/null 2>&1 || exit 0; __in=$(cat); case \"$__in\" in *vitest*) exit 0;; esac; printf '%s' \"$__in\" | rtk hook claude || exit 0" }
         ]
+      },
+      {
+        "//": "EI-21971958067151594 — `capability:bash` is the SAME shell reached over MCP, and a native-only `Bash` matcher left it exempt from every deny in pretooluse-bash-resource-gate.sh (measured 2026-08-31: `tauri-agent-tools dom` was DENIED as Bash and RAN as capability:bash against a foreign webview; the self-matching-pgrep wait-loop likewise ran to its timeout). Deliberately a SEPARATE entry rather than widening the `Bash` matcher above: rtk REWRITES the payload it is handed, and its behaviour on an MCP tool envelope is unknown — the safety gate must gain coverage without dragging a third-party rewriter along. Ordering is irrelevant here because this entry holds only the gate, and a deny wins regardless.",
+        "matcher": "mcp__.*__capability_bash",
+        "hooks": [
+          { "type": "command", "command": "${HOME}/.papercusp/hooks/cc/pretooluse-bash-resource-gate.sh" }
+        ]
       }
     ],
     "PostToolUse": [

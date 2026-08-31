@@ -99,6 +99,22 @@ describe('papercusp-worker hooks.json', () => {
     expect(rtkIdx).toBeGreaterThan(gateIdx);
   });
 
+  // EI-21971958067151594 — `capability:bash` is the SAME shell over MCP. A
+  // native-only `Bash` matcher left it exempt from every deny in the gate
+  // (measured 2026-08-31: `tauri-agent-tools dom` DENIED as Bash, RAN as
+  // capability:bash against a foreign webview). The gate gets its OWN entry
+  // rather than a widened `Bash` matcher because rtk — co-located in that entry
+  // — REWRITES the payload it is handed, and its behaviour on an MCP envelope is
+  // unknown; a safety gate must not drag a third-party rewriter along with it.
+  it('covers the MCP shell (capability:bash) in a SEPARATE entry that excludes rtk', () => {
+    const entries = hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>;
+    const mcpEntry = entries.find((e) => e.matcher === 'mcp__.*__capability_bash');
+    expect(mcpEntry, 'no PreToolUse entry covers mcp__*__capability_bash').toBeDefined();
+    const cmds = mcpEntry!.hooks.map((h) => h.command);
+    expect(cmds.some((c) => c.includes('pretooluse-bash-resource-gate.sh'))).toBe(true);
+    expect(cmds.some((c) => c.includes('rtk hook claude'))).toBe(false);
+  });
+
   it('host-guards the rtk hook so a host without rtk installed degrades silently (no hard failure)', () => {
     const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
       (e) => e.matcher === 'Bash',

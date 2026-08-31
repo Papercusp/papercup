@@ -916,7 +916,12 @@ cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {gate}"
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
-arr.append({'matcher': 'Bash',
+# EI-21971958067151594: `capability:bash` is the SAME shell over MCP and was
+# exempt from every deny in the gate (measured: `tauri-agent-tools dom` denied
+# as Bash, ran as capability:bash against a foreign webview). Mirrors
+# bashShellMatcher in packages/operator-core/lib/desktop-install/papercusp-files.ts
+# — KEEP THE TWO IN SYNC.
+arr.append({'matcher': 'Bash|mcp__.*__capability_bash',
             'hooks': [{'type': 'command', 'command': cmd}]})
 hooks['PreToolUse'] = arr
 
