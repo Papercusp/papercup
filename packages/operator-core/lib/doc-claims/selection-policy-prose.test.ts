@@ -257,7 +257,12 @@ describe('selection-policy prose stays derived (P-006)', () => {
 
     it('the served docs mirror is INSIDE the scanned population, not filtered out', () => {
       const files = trackedTextFiles({ root: ROOT });
+      // The Markdown twin — the representation this census actually reads.
       expect(files).toContain('apps/operator/public/internal/docs/agent-insights/acceptance-rubric-vetting.md');
+      // Its HTML sibling is deliberately OUT: both are emitted from one source in
+      // one build, so the twin covers the drift, at a fraction of the bytes. This
+      // pins that as a choice rather than an accident of the extension list.
+      expect(files).not.toContain('apps/operator/public/internal/docs/agent-insights/acceptance-rubric-vetting.html');
     });
 
     it('no tracked file spells the responder bound by hand, except the reasoned exclusions', () => {

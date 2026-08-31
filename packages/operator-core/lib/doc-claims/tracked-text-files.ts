@@ -16,7 +16,20 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Extensions carrying human-authored or agent-facing text worth judging. */
+/**
+ * Extensions carrying human-authored or agent-facing text worth judging.
+ *
+ * `.html` is deliberately ABSENT, and the reason matters because the served
+ * docs mirror publishes every page twice. Astro's HTML page and emit-md-twins'
+ * Markdown twin are emitted from the same source in the same build, so they
+ * cannot drift from each other — only together, from their shared source. The
+ * `.md` twin is therefore the covering representative, and it is three orders
+ * of magnitude cheaper to scan (measured 2026-08-31: 81 mirror HTML pages alone
+ * were 31MB). Scanning both would double the cost to re-measure one fact.
+ *
+ * That equivalence is a property of the BUILD, not of this list: if the two
+ * representations ever stop being generated together, `.html` belongs here.
+ */
 export const TEXT_EXTENSIONS: readonly string[] = Object.freeze([
   '.ts',
   '.tsx',
