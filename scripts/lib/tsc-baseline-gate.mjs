@@ -2033,10 +2033,18 @@ export function formatUncoveredFilesBanner({
   rosterReadable = true,
 }) {
   const lines = [''];
+  // EI-21985804122617157 — the header states the OUTCOME, so it must agree with what happens
+  // next. Both non-routing headers say the files were not typechecked, which was true when the
+  // only follow-up was a command printed for the caller to run. Now that routing also fires for a
+  // MIXED set, that wording would sit one line above "AUTO-ROUTING to check them" and flatly
+  // contradict it — and a reader who believes the header stops reading there, which is the whole
+  // failure this banner exists to prevent, re-created by stale wording.
   lines.push(
-    fatal
-      ? `❌ NOTHING YOU NAMED WAS TYPECHECKED — all ${uncovered.length} file(s) are outside \`${label}\`.`
-      : `⚠ ${uncovered.length} of the file(s) you named are OUTSIDE \`${label}\` and were NOT typechecked.`,
+    autoRoute
+      ? `→ ${uncovered.length} of the file(s) you named are outside \`${label}\` — ROUTING them to the gate that owns them.`
+      : fatal
+        ? `❌ NOTHING YOU NAMED WAS TYPECHECKED — all ${uncovered.length} file(s) are outside \`${label}\`.`
+        : `⚠ ${uncovered.length} of the file(s) you named are OUTSIDE \`${label}\` and were NOT typechecked.`,
   );
   lines.push(`   \`--files=\` scopes this gate's VERDICT; it does not widen what tsc compiles.`);
   lines.push('');

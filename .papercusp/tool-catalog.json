@@ -11255,7 +11255,7 @@
       ],
       "guidance": {
         "when": "You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
-        "notWhen": "The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the Hive Mug ≠ drain your fleet-leader peers).",
+        "notWhen": "The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the pot operator ≠ drain your fleet-leader peers).",
         "chaining": "fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member)."
       }
     },
@@ -23315,7 +23315,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Standing up a NEW local pot (its home harness + Mug) in one call. Operator/user only.",
+        "when": "Standing up a NEW local pot (its home harness + operator) in one call. Operator/user only.",
         "notWhen": "Deploying an EXISTING pot to a cloud frame — deploy:pot. A plain non-pot harness — harness:create. From a cup — not allowed (spin a kind:harness subharness instead).",
         "chaining": "pot:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:pot to place it on a Swarm; pot:dissolve to tear it down."
       }
@@ -23389,7 +23389,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Setting this Pot's cross-Pot policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Mug's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
+        "when": "Setting this Pot's cross-Pot policy — grant 'in' (admission) or 'out' (egress; owner-gated before this Pot's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
         "notWhen": "Within-Pot coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Pots.",
         "chaining": "discovery:pots (peer pubkey) → pot:cross_grant {action:\"grant\", direction, peerPotPubkey, kinds}; \"out\" before pot:ask / pot:request_work."
       }
@@ -23463,8 +23463,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Permanently tearing down a local pot — stop the Mug, cancel its cups, deregister it. Operator/user only.",
-        "notWhen": "Destroying a deployed cloud frame (the Mug/member execution planes) — deploy:teardown_pot. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a cup — not allowed.",
+        "when": "Permanently tearing down a local pot — stop the pot operator, cancel its members, deregister it. Operator/user only.",
+        "notWhen": "Destroying a deployed cloud frame (the control/member execution planes) — deploy:teardown_pot. Pausing a pot without tearing down — pot:declare-wake { mode:none }. From a cup — not allowed.",
         "chaining": "pot:get { slug } to inspect before; deploy:teardown_pot first if the pot is deployed to a Swarm."
       }
     },
@@ -23502,7 +23502,7 @@
       "guidance": {
         "when": "You want one pot in depth: is the pot scheduled to wake, who are the members and how loaded, how much work is queued.",
         "notWhen": "A list of all pots — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.",
-        "chaining": "pot:list to find the slug; pot:wake to fire the Mug now; pot:declare-wake to change the cadence; pot:dissolve to tear it down."
+        "chaining": "pot:list to find the slug; pot:wake to fire the pot operator now; pot:declare-wake to change the cadence; pot:dissolve to tear it down."
       }
     },
     {
@@ -23513,7 +23513,7 @@
           "POST"
         ]
       },
-      "description": "Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the pot operator may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Mug reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. Also returns `modelSpecDrift: string[]` (EI-12807) — model specs this pot pins via `modelTiers`/`modelOverrides` that are NO LONGER in the committed tier menu (a global tier-menu fix removed them, but the per-pot override still wins, so spawns die on \"model unavailable\"); non-empty ⇒ reconcile via pot:set-steering { modelTiers:null, modelOverrides:null }. The READ twin of pot:set-steering.",
+      "description": "Read the current owner steering for the pot — the focus `directive`, `eligiblePlans` (plans the pot operator may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the pot operator reads on every wake. An un-steered pot returns the default (no directive, no plan restriction, not paused). Also returns `inconsistent: true` (EI-8277) when the directive text reads like the pause was lifted but `pauseNewWork` is still true — a drift nothing else catches; reconcile with pot:set-steering if the owner meant to resume. Also returns `modelSpecDrift: string[]` (EI-12807) — model specs this pot pins via `modelTiers`/`modelOverrides` that are NO LONGER in the committed tier menu (a global tier-menu fix removed them, but the per-pot override still wins, so spawns die on \"model unavailable\"); non-empty ⇒ reconcile via pot:set-steering { modelTiers:null, modelOverrides:null }. The READ twin of pot:set-steering.",
       "capabilities": [
         "harness:read"
       ],
@@ -23537,7 +23537,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Checking what the Mug is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.",
+        "when": "Checking what the pot operator is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.",
         "notWhen": "Changing steering — pot:set-steering. Reading the whole pot status — pot:status."
       }
     },
@@ -23930,7 +23930,7 @@
           "POST"
         ]
       },
-      "description": "Set the owner steering the Mug reads on every wake (the 👑 Mug tab writes through this): a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), the federated Blender priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`), and `createWakeSuppressPlans` (plan slugs whose unassigned creates should not wake the Mug — EI-13608). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Mug so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.",
+      "description": "⛔ RETIRED (D-048): this tool REFUSES while the autonomous pot-operator tier is retired — it wrote steering and then woke that tier, so it is gated as an actuator, not merely stale. Historically it set the owner steering the pot operator read on every wake: a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), the federated Blender priming override `federatedPriming`, and `createWakeSuppressPlans` (EI-13608). Read current steering with pot:get-steering.",
       "capabilities": [
         "harness:write"
       ],
@@ -23954,9 +23954,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Steering the Mug from the owner surface — focus it on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Mug tab is the UI for this.",
+        "when": "Steering the pot operator from the owner surface — focus it on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 steering tab is the UI for this.",
         "notWhen": "Freezing the WHOLE pot (all autonomous wakes) — pot:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE cup — fleet:drain / fleet:cancel.",
-        "chaining": "pot:set-steering { eligiblePlans:[...], directive:\"only these plans\" } → the Mug wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → it drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets."
+        "chaining": "pot:set-steering { eligiblePlans:[...], directive:\"only these plans\" } → the pot operator wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → it drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets."
       }
     },
     {
