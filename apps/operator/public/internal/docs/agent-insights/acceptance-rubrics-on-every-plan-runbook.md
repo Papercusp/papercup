@@ -87,7 +87,7 @@ rubrics:propose {
 
 Use the class that matches the work: `plan-class-feature-ship`, `plan-class-bugfix`, `plan-class-migration`, or `plan-class-investigation`. A pure investigation may use `criteria:[]` with the investigation class. Add structured checks wherever an outcome is objectively executable.
 
-Vet the rubric's current revision against `meta-acceptance-rubric`: open a `consult:get_feedback` critique, improve the rubric, then emit the meta-scorecard with `subject:{ kind:'rubric', ref:'<rubric-id>' }` and `vettingConsult:'<conversation-id>'`. Any later rubric edit invalidates the attestation. The detailed method is [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
+Vet the rubric's current revision against `meta-acceptance-rubric`: open a `consult:get_feedback` critique, improve the rubric, then emit the meta-scorecard with `subject:{ kind:'rubric', ref:'<rubric-id>' }` and `vettingConsult:'<conversation-id>'`. Any later rubric edit invalidates BOTH the attestation AND any independent grading — the gate pins every scorecard to `harness_shared.harness_plans.version`, so a revision bump un-counts a peer's completed card and requires a re-emit. Batch every intended revision BEFORE requesting independent grading. The detailed method is [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
 
 ## 4. Independent grading, then the implementer's verdict
 
