@@ -22,6 +22,7 @@
  */
 
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
+import { checkHiveSingleRunner } from '../hive-single-runner';
 import { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 import { readWorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
@@ -81,6 +82,13 @@ export function makeScoutCycleAction(
     workspaceId: string;
     installSlug: string;
   }) => Promise<Record<string, Record<string, unknown>> | null>,
+  // WI-1728261: P-019's cross-node SINGLE-RUNNER gate. The FOURTH instance of this
+  // file's recurring defect, and the first in the OTHER direction — the blueprint op
+  // has wired it since 2026-06-19 and this path never had it at all, so on a shared
+  // Hive every node's `system:scout-cycle` loop fired instead of only the elected
+  // runner. Same PG-free contract as the gates above: unwired in unit tests, wired at
+  // boot. Appended LAST so no positional caller shifts.
+  hiveRunnerGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ run: boolean; reason?: string }>,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
@@ -121,6 +129,7 @@ export function makeScoutCycleAction(
         ...(admissionPressureGate ? { admissionPressureGate } : {}),
         ...(potGate ? { potGate } : {}),
         ...(resolveConfigDelta ? { resolveConfigDelta } : {}),
+        ...(hiveRunnerGate ? { hiveRunnerGate } : {}),
       },
     );
 
@@ -160,6 +169,10 @@ export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
       // WI-1664060: the per-pot scout/cadence/budget layering. The blueprint op
       // wires this SAME helper — that parity is the whole point of the seam.
       scoutConfigDelta,
+      // WI-1728261: P-019's cross-node single-runner gate, wired with the SAME helper
+      // the blueprint op uses. `lint:deps-wiring-parity` now fails the build if these
+      // two deps objects ever diverge again.
+      ({ workspaceId, installSlug }) => checkHiveSingleRunner(workspaceId, installSlug),
     ),
   );
 }
