@@ -28,7 +28,6 @@ import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } f
 import { readPsuHeadlessLaunchBlockHint, readPsuLaunchLogTail } from './psu-launch-log.mjs';
 import { heartbeatAgeTone, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
-import { getOrgPg } from '@papercusp/db-org';
 // The SHARED display-name / objective resolvers (D-003, R8). The HUD must not
 // grow its own copy of either fallback chain — the terminal title reads the same
 // two functions, and that is what keeps the two surfaces from disagreeing.

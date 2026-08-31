@@ -115,6 +115,19 @@ export interface SessionDisplayNameInput {
   objective?: string | null;
   /** The coord ownerId — the last-resort identity, shortened via `selfShort`. */
   ownerId?: string | null;
+  /**
+   * A pre-rendered short id to use as the last resort instead of
+   * `selfShort(ownerId)`.
+   *
+   * The CHAIN is shared; the id FORMAT is presentation, and the two surfaces
+   * genuinely differ — the terminal title uses `selfShort` (`su-9859e`, 5 hex
+   * chars, matching the coord ownerLabel form) while the HUD card uses its own
+   * `shortHandle` (`su-709bb0d6`, the leading uuid segment) and prints that same
+   * string on the card's secondary row. Forcing one format on both would make
+   * the HUD's headline disagree with the id printed directly beneath it. Blank
+   * or absent falls back to `selfShort`.
+   */
+  shortHandle?: string | null;
 }
 
 export interface SessionDisplayName {
@@ -141,7 +154,7 @@ export function sessionDisplayName(input: SessionDisplayNameInput = {}): Session
   if (manual) return { name: manual, source: 'manual' };
   const objective = typeof input.objective === 'string' ? input.objective.trim() : '';
   if (objective) return { name: objective, source: 'objective' };
-  const handle = selfShort(input.ownerId);
+  const handle = normalizeObjective(input.shortHandle) ?? selfShort(input.ownerId);
   if (handle) return { name: handle, source: 'handle' };
   return { name: '', source: 'none' };
 }

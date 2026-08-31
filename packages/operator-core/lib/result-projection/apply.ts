@@ -155,8 +155,17 @@ interface BodyTruncationMarker {
 const MAX_BODY_TRUNCATION_MARKERS = 8;
 const TRUNCATION_KEY_REGEX = /(?:^|_)[A-Za-z0-9]*(?:truncated|Truncated)$/;
 const TRUNCATED_BY_KEY_REGEX = /^truncatedBy[A-Z]/;
+// The `omitted:` arm keys on the `recover:` POINTER PREFIX, never on the route
+// that follows it. `omissionMarker` emits several pointers — the cursor, and
+// (WI-1697551) a deferral to `_projection.next` where it used to assert a
+// re-call — and this consumer must detect the CUT, which every flavour shares,
+// not the escape hatch, which varies by caller. Pinning the route made this
+// blind to cursor-flavour omissions the whole time it looked exhaustive: the
+// pipe could then strip truncation evidence it had failed to detect. That is
+// the make-the-wording-load-bearing hazard P-009/D-007 is about, so keep this
+// keyed to the stable prefix.
 const INLINE_TRUNCATION_MARKER_REGEX =
-  /(?:…)?\[(?:TRUNCATED\b[^\]\n]*|omitted:\s*[^\]\n]*\brecover:\s*re-call with payloadTier|payload preview omitted:[^\]\n]*)\]/gi;
+  /(?:…)?\[(?:TRUNCATED\b[^\]\n]*|omitted:\s*[^\]\n]*\brecover:\s*[^\]\n]*|payload preview omitted:[^\]\n]*)\]/gi;
 
 function truncationPath(path: string, key: string): string {
   return path === '$' ? `$.${key}` : `${path}.${key}`;

@@ -838,6 +838,24 @@ export interface HudPlanCardMeta {
    * direction HudCardIdentity.live forbids.
    */
   liveCount: number;
+  /**
+   * The two EXCEPTION counts, carried as numbers so the compact card can render
+   * them as pips (hud-plan-card-density-2026-08-31 D-003).
+   *
+   * These same numbers are also formatted into `badges[]` as label strings
+   * ("2 blocked"). The compact plan card does not render that chips row, and
+   * reading a count back out of its own label would be a second copy of a truth
+   * this model already owns — it breaks silently the moment the label is
+   * reworded. So the counts travel here, beside the other derived plan facts,
+   * and `toPlanCard`'s badge builder is left exactly as it was.
+   *
+   * ZERO IS A REAL ANSWER, not "unknown": a plan with no blocked items reports
+   * 0 and the card renders no pip. `itemCounts` absent likewise reports 0 —
+   * this is a count of KNOWN exceptions, and inventing an unknown-vs-none
+   * distinction the card cannot draw would only invite a wrong reading.
+   */
+  needsHumanCount: number;
+  blockedCount: number;
   /** "su-76a83: recording D-001 · su-6e294: P-045 verification" — live agents'
    *  declared intents, or null when nobody on the plan declared one. */
   who: string | null;
@@ -949,6 +967,9 @@ export function planCardMeta(plan: HudPlanInput, nowMs: number): HudPlanCardMeta
     })),
     avatarsOverflow: Math.max(0, agents.length - shown.length),
     liveCount: agents.filter((a) => a.live === true).length,
+    // D-003: straight off itemCounts, the same source toPlanCard's badges read.
+    needsHumanCount: c['needs-human'] ?? 0,
+    blockedCount: c.blocked ?? 0,
     who: who || null,
   };
 }

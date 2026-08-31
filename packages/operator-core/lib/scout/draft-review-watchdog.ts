@@ -361,10 +361,13 @@ export async function fireReviewWake(
   const summary =
     `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h ` +
     `(oldest: ${formatStaleDuration(oldestStaleMs)} since last update — the plan-review idle activity ` +
-    `never ran — the hive has been saturated, so the Queen was never idle). ` +
-    `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
-    `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
-    `or progressing them stops this wake.\n\n${list}${more}`;
+    `did not run, because the reviewing steward has not been idle). ` +
+    `This is a backstop WAKE, not an idle activity. YOU are the reviewer and you hold the authority to ` +
+    `dispose of these: the Mug/Queen tier is RETIRED, so no other role will drain them. Review each and ` +
+    `either promote it (= ready), coord:send feedback to its scout owner to iterate, or deprecate it WITH ` +
+    `learnings — but do not leave it. Note that a coord reply alone does NOT clear this wake: the backstop ` +
+    `selects on the absence of a decision / needs-human item / revision hold, so record your verdict ON the ` +
+    `plan (plans:add-decision) or it will re-fire looking untouched.\n\n${list}${more}`;
   // P-034: routed, not Mug-only. With no deliverable Mug this reaches a live su, or
   // escalates to the owner — it never parks in @role:mug where nobody drains it.
   await deliverScoutNudge({

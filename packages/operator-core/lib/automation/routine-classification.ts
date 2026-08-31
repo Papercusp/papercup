@@ -282,6 +282,19 @@ export const BLUEPRINT_SPEND: Readonly<Record<string, SpendEntry>> = {
 export const SENTINEL_TARGET_ROLES: readonly string[] = ['system:loop-wake'];
 
 /**
+ * The `target_role` carried by an ARM-STATE row — a `tier='in-process'` routines row standing for
+ * a sweep DECLARED IN CODE, whose `active` column is that sweep's on/off switch
+ * (EI-19294826146331487, migration 1046).
+ *
+ * Deliberately NOT a `system:` role: nothing dispatches these rows, and a `system:` role with no
+ * registered action is the exact shape the missing-system-action auditor exists to flag
+ * (EI-18741229858124453). It lives HERE, in the leaf classification module, rather than beside the
+ * reconciler, so the UI-facing catalog can classify the row without importing the background-host
+ * machinery that maintains it.
+ */
+export const IN_PROCESS_SWEEP_TARGET_ROLE = 'in-process:sweep';
+
+/**
  * `system:<action>` → does firing it bill a model?
  *
  * The rule for `llm`: a fire can DIRECTLY cause billed model turns — it spawns an
@@ -452,6 +465,14 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // never spawns an agent, wakes a session, or dispatches queued work, so a fire cannot bill
     // a model turn.
     why: 'Freezes idle desktop sessions and reaps expired leases — process + DB only',
+  },
+  // EI-19294826146331487: the ARM-STATE row class (`tier='in-process'`). These rows are dispatched
+  // by nobody — they carry the on/off state of a sweep declared in code — so the honest spend is
+  // 'none'. Declaring it here also keeps them out of the 'unknown' bucket, which is what a row with
+  // no entry falls into and what the pane surfaces as needing attention.
+  [IN_PROCESS_SWEEP_TARGET_ROLE]: {
+    spend: 'none',
+    why: 'An on/off record for a sweep declared in code — it is fired by nothing, so it cannot spend',
   },
   'system:session-dir-gc': { spend: 'none', why: 'Deletes isolation dirs of ended sessions' },
   'system:telemetry-retention': { spend: 'none', why: 'Applies telemetry retention windows' },

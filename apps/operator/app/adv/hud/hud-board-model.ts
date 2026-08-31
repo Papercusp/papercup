@@ -27,6 +27,16 @@ import type { NativeSessionHandle } from '@papercusp/operator-core/lib/native-se
 // own — safe in the SPA bundle) so the five official modes are explained here
 // without this file keeping its own copy of what each one means.
 import { modeChipLabel, modeChipTitle } from '@papercusp/operator-core/lib/modes/registry';
+// THE display-name resolver (plan hud-session-display-names-2026-08-31, D-003).
+// The OS terminal title resolves its headline through this same function, and
+// R8 makes a second private `manualName ?? objective ?? handle` chain here the
+// regression the plan exists to prevent — so the board imports it rather than
+// growing one. `shortHandle` below stays: it is this file's own id FORMAT, which
+// the resolver takes as an input, not a competing rule.
+import {
+  sessionDisplayName,
+  type SessionDisplayNameSource,
+} from '@papercusp/operator-core/lib/agent-tools/coordination/status-display';
 // The ONE derivation of "is this session a goal's agent" (D-007/P-020) — pure,
 // SPA-safe, and shared with the Goals tab so the two boards cannot disagree
 // about which sessions this one hides.
@@ -106,6 +116,24 @@ export interface HudRosterEntry {
   label: string;
   source: string;
   intent: string;
+  /**
+   * The owner-keyed MANUAL name a human gave this session (adv-roster's
+   * `displayName`), or absent when it has none.
+   *
+   * Optional for the same reason as `sessionId` below: a payload from an older
+   * operator, or a mid-deploy SSE push, legitimately carries neither — and the
+   * headline must still resolve, one layer down, rather than blank the card.
+   */
+  displayName?: string | null;
+  /**
+   * What this session is working on — its in-flight work-item title falling back
+   * to its declared intent, resolved server-side through the SAME shared chain
+   * the OS terminal title uses (R1). Absent on an older payload, where the
+   * headline falls back to `intent` directly.
+   */
+  objective?: string | null;
+  /** The work-item id the objective came from; absent when it came from the intent. */
+  objectiveWorkItemRef?: string | null;
   currentFiles: string[];
   liveness: Liveness;
   /**
@@ -724,6 +752,25 @@ export interface HudSession {
   ownerId: string;
   /** Short display handle, e.g. `su-92bacd`. */
   handle: string;
+  /**
+   * THE card headline — `manualName ?? objective ?? handle`, resolved through
+   * the shared `sessionDisplayName` (D-001/D-003), so it is the same string the
+   * session's OS terminal title leads with.
+   *
+   * Never blank: the chain bottoms out at `handle`, which is why the card can
+   * render this unconditionally. `handle` is NOT replaced by it — D-001 keeps
+   * the short id on the card as a dim secondary row, because it is how a human
+   * correlates a card with logs, `--resume` lines and work-item bodies.
+   */
+  displayName: string;
+  /**
+   * Which layer of the chain won. The card uses it to avoid printing the same
+   * sentence twice (R3) and to distinguish a name a human chose from the
+   * objective the system derived.
+   */
+  displayNameSource: SessionDisplayNameSource;
+  /** The work-item id behind the objective, for the card's dim secondary row (R2). */
+  objectiveWorkItemRef: string | null;
   label: string;
   /** Declared intent, or null when the agent never declared one (the roster
    *  normalizes its self-referential placeholder away, so empty means empty). */
@@ -972,6 +1019,13 @@ export function matchesSessionText(e: HudRosterEntry, q: string): boolean {
     e.ownerId,
     shortHandle(e.ownerId),
     e.intent,
+    // R7: a session a human NAMED must be findable by that name — it is the
+    // card's headline, so this is the see-it-on-the-card rule, not an exception
+    // to it. `objective` joins it because it is what the headline shows when
+    // there is no manual name.
+    e.displayName,
+    e.objective,
+    e.objectiveWorkItemRef,
     e.role,
     e.agent,
     e.fleetSlug,
@@ -1402,9 +1456,23 @@ export function toHudSession(
   const verdict = deriveColumn(e, asks, opts);
   const claimed = e.claims.length;
   const done = e.claims.filter((c) => (c.status ?? '').toLowerCase() === 'done').length;
+  const handle = shortHandle(e.ownerId);
+  // The headline, resolved through the SHARED chain (D-003) — never a local
+  // rule. `objective` is the roster's server-resolved work-item-title ?? intent;
+  // the `?? e.intent` keeps an older payload (which carries no `objective`)
+  // rendering exactly as it did, one layer down, instead of dropping to the id.
+  const display = sessionDisplayName({
+    manualName: e.displayName,
+    objective: e.objective ?? e.intent,
+    ownerId: e.ownerId,
+    shortHandle: handle,
+  });
   return {
     ownerId: e.ownerId,
-    handle: shortHandle(e.ownerId),
+    handle,
+    displayName: display.name,
+    displayNameSource: display.source,
+    objectiveWorkItemRef: e.objectiveWorkItemRef ?? null,
     label: e.label,
     intent: e.intent?.trim() ? e.intent.trim() : null,
     column: verdict.column,

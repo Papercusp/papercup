@@ -129,6 +129,51 @@ const EXPLICIT_NON_CURRENT_RE =
   /\b(?:retir(?:e[sd]?|ing|ement)|historical(?:ly)?|legacy|former(?:ly)?|obsolete|deprecated|removed|deleted|no longer|replaced|previous(?:ly)?|once)\b/i;
 const EXPLICIT_REFUSAL_RE =
   /\b(?:do not|don't|never|must not|cannot|can't|refus\w*|forbid\w*|unsupported|not supported|not current|not the same|not a fallback)\b/i;
+const EXPLICIT_REFUSAL_RE_GLOBAL =
+  /\b(?:do not|don't|never|must not|cannot|can't|refus\w*|forbid\w*|unsupported|not supported|not current|not the same|not a fallback)\b/gi;
+/**
+ * How far after a refusal word we look for the thing it governs. Short on purpose:
+ * long enough for "never route work to the Mug", short enough that an unrelated role
+ * mention later in the same sentence cannot adopt the negation.
+ */
+const REFUSAL_GOVERNS_WINDOW = 30;
+
+/**
+ * WI-1723896 — a refusal marker must REFUSE SOMETHING.
+ *
+ * The bug: EXPLICIT_REFUSAL_RE matched a bare `never` ANYWHERE in the segment and
+ * exempted the whole thing. draft-review-watchdog.ts emits, at runtime, "the
+ * plan-review idle activity never ran — the hive has been saturated, so the Queen
+ * was never idle" — two incidental `never`s, neither of them a refusal, and the
+ * guard read them as "this text explains that the role is not current" and stayed
+ * silent on a live string naming a retired role as the current actor.
+ *
+ * The fix: a refusal word only earns marker status when it GOVERNS a role or an
+ * execution/authority verb within a short window — "never route to the Mug" counts,
+ * "was never idle" does not. Note this only ever makes the guard MORE willing to
+ * flag, which is the safe direction: a false positive is an argument, a false
+ * negative is a silence.
+ *
+ * EXPLICIT_NON_CURRENT_RE is deliberately NOT tightened the same way. Those are
+ * STATE words about the role ("the Mug is retired"), where the thing being described
+ * sits BEFORE the marker, so requiring a governed object after it would break the
+ * ordinary, correct phrasing this guard exists to permit.
+ */
+function qualifyingRefusalIndex(text) {
+  EXPLICIT_REFUSAL_RE_GLOBAL.lastIndex = 0;
+  for (const match of text.matchAll(EXPLICIT_REFUSAL_RE_GLOBAL)) {
+    const start = (match.index ?? 0) + match[0].length;
+    const governed = text.slice(start, start + REFUSAL_GOVERNS_WINDOW);
+    if (
+      ROLE_RE.test(governed) ||
+      EXECUTION_RE.test(governed) ||
+      AUTHORITY_RE.test(governed) ||
+      EXECUTOR_NOUN_RE.test(governed)
+    )
+      return match.index ?? 0;
+  }
+  return undefined;
+}
 const ADVERSATIVE_RE = /\b(?:but|however|still|yet|nevertheless|except)\b/gi;
 
 /** Keep a Markdown/YAML list item together while separating neighboring policy statements. */
@@ -189,7 +234,7 @@ export function findRetiredGuidanceOffenders(file, source) {
       continue;
 
     const nonCurrentAt = EXPLICIT_NON_CURRENT_RE.exec(segment.text)?.index;
-    const refusalAt = EXPLICIT_REFUSAL_RE.exec(segment.text)?.index;
+    const refusalAt = qualifyingRefusalIndex(segment.text);
     const markerIndexes = [nonCurrentAt, refusalAt].filter(
       (index) => index !== undefined,
     );

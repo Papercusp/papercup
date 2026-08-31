@@ -2092,8 +2092,39 @@ export function runBootstrap(): void {
         }
         }
 
-        const { armInProcessPeriodicChecks } = await import('@papercusp/operator-core/lib/dbos/in-process-periodic');
+        const {
+          armInProcessPeriodicChecks,
+          inProcessPeriodicEligibleChecks,
+          inProcessPeriodicArmedNames,
+          applyInProcessSweepArmState,
+        } = await import('@papercusp/operator-core/lib/dbos/in-process-periodic');
         armInProcessPeriodicChecks();
+
+        // EI-19294826146331487 — the sweeps armed above are DECLARED IN CODE, so until now the
+        // Automation pane could list them but offered no switch. Their durable on/off state lives
+        // in `harness_shared.routines` as `tier='in-process'` arm-state rows (migration 1046),
+        // which nothing fires; this reconciler is what makes those rows mean something. It runs
+        // AFTER the unconditional arm above on purpose — no database read is on the boot path, and
+        // every failure inside it is fail-open (a sweep stays armed).
+        if (!utilityHostEnabled()) {
+          try {
+            const { startInProcessSweepArmReconciler, productionSweepArmDeps } = await import(
+              '@papercusp/operator-core/lib/dbos/in-process-sweep-arm'
+            );
+            startInProcessSweepArmReconciler(
+              productionSweepArmDeps({
+                eligible: inProcessPeriodicEligibleChecks,
+                armed: inProcessPeriodicArmedNames,
+                apply: applyInProcessSweepArmState,
+              }),
+            );
+          } catch (err) {
+            console.warn(
+              '[in-process-sweep-arm] reconciler arm failed (non-fatal — every sweep stays armed):',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
 
         // Ephemeral blueprint cadence tier (schedule-inventory-and-ephemeral-tier-2026-06-26 P-012 / D-006):
         // arm each ACTIVE ephemeral routine as an in-process managed timer. Single-owner: the same

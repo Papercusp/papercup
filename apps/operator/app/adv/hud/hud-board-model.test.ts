@@ -42,6 +42,76 @@ const NOW = Date.parse('2026-07-25T12:00:00.000Z');
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 const OPTS = { nowMs: NOW, thresholds: HUD_DEFAULT_THRESHOLDS };
 
+describe('card headline — sessionDisplayName (hud-session-display-names P-005, D-001/D-003)', () => {
+  it('prefers a manual name, then the objective, then the short handle', () => {
+    const named = toHudSession(entry({ displayName: 'release wrangler' }), undefined, OPTS);
+    expect(named.displayName).toBe('release wrangler');
+    expect(named.displayNameSource).toBe('manual');
+
+    const objective = toHudSession(entry({ objective: 'Green the checkpoint gate' }), undefined, OPTS);
+    expect(objective.displayName).toBe('Green the checkpoint gate');
+    expect(objective.displayNameSource).toBe('objective');
+
+    const bare = toHudSession(entry({ intent: '', objective: null }), undefined, OPTS);
+    expect(bare.displayName).toBe(bare.handle);
+    expect(bare.displayNameSource).toBe('handle');
+  });
+
+  it('falls back to the handle in the BOARD id format, not the terminal one', () => {
+    // The card prints `handle` on its dim secondary row; a headline resolved to a
+    // DIFFERENT shortening of the same id would read as two different sessions.
+    const bare = toHudSession(entry({ intent: '', objective: null }), undefined, OPTS);
+    expect(bare.displayName).toBe('su-11112222');
+    expect(bare.handle).toBe('su-11112222');
+  });
+
+  it('keeps the short id on the card — the headline never replaces it (D-001)', () => {
+    const s = toHudSession(entry({ displayName: 'release wrangler' }), undefined, OPTS);
+    expect(s.handle).toBe('su-11112222');
+    expect(s.displayName).not.toBe(s.handle);
+  });
+
+  it('an older payload with no `objective` still resolves via the declared intent', () => {
+    // objective is optional precisely so a mid-deploy SSE push renders as before
+    const s = toHudSession(entry({}), undefined, OPTS);
+    expect(s.displayName).toBe('greening the release gate');
+    expect(s.displayNameSource).toBe('objective');
+  });
+
+  it('carries the work-item ref only when the roster resolved one', () => {
+    expect(toHudSession(entry({ objectiveWorkItemRef: 'WI-42' }), undefined, OPTS).objectiveWorkItemRef).toBe(
+      'WI-42',
+    );
+    expect(toHudSession(entry({}), undefined, OPTS).objectiveWorkItemRef).toBeNull();
+  });
+
+  it('a blank manual name is cleared, not an empty headline (R6)', () => {
+    const s = toHudSession(entry({ displayName: '   ' }), undefined, OPTS);
+    expect(s.displayName).toBe('greening the release gate');
+    expect(s.displayNameSource).toBe('objective');
+  });
+});
+
+describe('matchesSessionText — a named session is findable by its name (R7)', () => {
+  it('matches the manual name, the objective, and the work-item ref', () => {
+    const e = entry({
+      displayName: 'release wrangler',
+      objective: 'Green the checkpoint gate',
+      objectiveWorkItemRef: 'WI-42',
+    });
+    expect(matchesSessionText(e, 'wrangler')).toBe(true);
+    expect(matchesSessionText(e, 'RELEASE WRANGLER')).toBe(true);
+    expect(matchesSessionText(e, 'checkpoint')).toBe(true);
+    expect(matchesSessionText(e, 'WI-42')).toBe(true);
+    expect(matchesSessionText(e, 'not-in-this-session')).toBe(false);
+  });
+
+  it('an unnamed session is unaffected', () => {
+    expect(matchesSessionText(entry({}), 'greening')).toBe(true);
+    expect(matchesSessionText(entry({}), 'wrangler')).toBe(false);
+  });
+});
+
 function entry(over: Partial<HudRosterEntry> = {}): HudRosterEntry {
   return {
     ownerId: 'su-11112222-3333-4444-5555-666677778888',
