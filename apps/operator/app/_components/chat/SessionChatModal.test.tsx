@@ -3432,8 +3432,9 @@ describe('chat-popup-turn-rail-2026-08-31 D-002 — the turn rail is a sibling o
     mockFetchOnce(200, {
       sessions: [{ source_kind: 'claude', session_id: 'claude-rail', active: true, last_ts: null }],
     });
-    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    const view = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
     await waitFor(() => expect(captured).not.toBeNull());
+    return view;
   }
 
   it('mounts the rail OUTSIDE the conversation region, and the conversation outside the rail', async () => {
@@ -3457,5 +3458,40 @@ describe('chat-popup-turn-rail-2026-08-31 D-002 — the turn rail is a sibling o
     // the popup entirely — that would satisfy the containment check above while
     // dropping the rail out of what maximize paints.
     expect(modal.contains(rail)).toBe(true);
+  });
+
+  it('P-004: chatTurns behaviorally controls rail visibility, including the close path', async () => {
+    const { rerender } = await openWithRail();
+
+    // The default is open, and the rail's own close control must drive the
+    // same nuqs state that governs the conditional render in SessionChatModal.
+    const rail = screen.getByTestId('session-chat-turn-rail');
+    fireEvent.click(within(rail).getByRole('button', { name: 'Hide the turn rail' }));
+    expect(nuqsSetters.chatTurns).toHaveBeenCalledWith(false);
+
+    // The test mock's setter intentionally does not schedule React work; a
+    // rerender makes this a real render-binding assertion rather than merely a
+    // spy on the callback. If the component stopped consulting chatTurns, the
+    // rail would remain mounted here.
+    rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    expect(screen.queryByTestId('session-chat-turn-rail')).toBeNull();
+
+    // Positive control: an explicit deep-link/open choice must restore the
+    // rail, proving the key is not only read on the initial render.
+    nuqs.chatTurns = true;
+    rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    expect(screen.getByTestId('session-chat-turn-rail')).toBeTruthy();
+  });
+
+  it('D-004: the shipped turn rail has no flags-catalog gate', () => {
+    const flagsSource = readFileSync(
+      resolve(__dirname, '../../../../../libs/flags/src/types.ts'),
+      'utf8',
+    );
+
+    // Positive control for the source guard: this is the real flags catalog,
+    // not an empty/mis-resolved file whose absence assertion passes vacuously.
+    expect(flagsSource).toContain('KNOWN_DARK_FLAGS');
+    expect(flagsSource).not.toMatch(/chatTurns|turnrail|turn_rail|turn-rail/i);
   });
 });
