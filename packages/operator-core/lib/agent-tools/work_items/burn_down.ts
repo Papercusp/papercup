@@ -1155,7 +1155,7 @@ export default defineTool({
     "One-call leader census for a harness work queue. Additive `queueControl` fields distinguish active claims, liveness-bound hold-open leases, durable parks, and agent-review gates; durable parks include parker/reason/time/age plus UNPARK-condition and release-liveness status. Legacy buckets/mechanisms remain compatible.",
   guidance: {
     when:
-      'You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
+      'You are leading a drain/fleet pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
     notWhen:
       'You need full per-item bodies/checkpoints/comments — use work_items:get for the specific ids after this census.',
     chaining:
