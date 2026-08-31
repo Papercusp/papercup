@@ -50,6 +50,9 @@
  * RUNNING IT
  * ----------
  *   PAPERCUSP_REAL_BACKEND_MATRIX=1 \
+ *   PAPERCUSP_REAL_BACKEND_MATRIX_BACKENDS=omp \
+ *   PAPERCUSP_REAL_BACKEND_MATRIX_OMP_ACCOUNT=auto \
+ *   PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL=openai-codex/gpt-5.6-terra:xhigh \
  *   PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=auto \
  *   PAPERCUSP_TEST_FILE_TIMEOUT_MS=1800000 \
  *   npm run test:file -- packages/operator-core/lib/su-session-real-backend-matrix.integration.test.ts
@@ -137,9 +140,14 @@ const SELECTED: readonly MatrixBackend[] = (() => {
 })();
 
 const HARNESS = 'papercusp';
-const OMP_MODEL =
-  process.env.PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL?.trim() ||
-  'papercusp-gateway/claude-sonnet-4-6';
+const OMP_MODEL = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_OMP_MODEL?.trim() || 'papercusp-gateway/claude-sonnet-4-6';
+
+/**
+ * An OMP gateway model may be backed by either the Claude or Codex account
+ * pool. Preserve the historical system-account default while allowing a real
+ * acceptance host to select an available routed pool explicitly.
+ */
+const OMP_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_OMP_ACCOUNT?.trim() || 'default';
 
 /**
  * Codex's default/system route requires a local ~/.codex/auth.json. The
@@ -148,8 +156,13 @@ const OMP_MODEL =
  * provenance. This changes no product default; it only lets a run select the
  * credential path it can actually exercise.
  */
-const CODEX_ACCOUNT =
-  process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT?.trim() || 'default';
+const CODEX_ACCOUNT = process.env.PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT?.trim() || 'default';
+
+function accountForBackend(backend: MatrixBackend): string {
+  if (backend === 'codex') return CODEX_ACCOUNT;
+  if (backend === 'omp') return OMP_ACCOUNT;
+  return 'default';
+}
 
 /** A real agent boot is not fast: psu resolves an account, the CLI starts, and
  *  bootstrap has to adopt the row before a native session exists. */
@@ -584,9 +597,10 @@ const liveLegs: LiveLeg[] = [];
  * So: pin the operator, and PROVE it carries this tree's launch-su before
  * spending a single real token.
  */
-const MATRIX_OPERATOR_BASE = (
-  process.env.PAPERCUSP_OPERATOR_BASE?.trim() || 'http://localhost:3170'
-).replace(/\/+$/, '');
+const MATRIX_OPERATOR_BASE = (process.env.PAPERCUSP_OPERATOR_BASE?.trim() || 'http://localhost:3170').replace(
+  /\/+$/,
+  '',
+);
 
 /** The path whose identity decides whether a CREATE result means anything. */
 const CREATE_PATH_UNDER_TEST = 'packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts';
@@ -710,7 +724,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         backend: backend as SuSessionBackend,
         carry: 'warm',
         slug: HARNESS,
-        account: backend === 'codex' ? CODEX_ACCOUNT : 'default',
+        account: accountForBackend(backend),
         // The machine's historical OMP default may point at a retired remote
         // model. An acceptance matrix must exercise the session transport, not
         // accidentally certify whichever mutable model id happens to be saved
@@ -720,10 +734,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       });
 
       // A failure here is an infrastructure verdict, not a flake — say which.
-      expect(
-        opened.ok,
-        `launch-su refused to create a ${backend} session: ${opened.ok ? '' : opened.error}`,
-      ).toBe(true);
+      expect(opened.ok, `launch-su refused to create a ${backend} session: ${opened.ok ? '' : opened.error}`).toBe(
+        true,
+      );
       if (!opened.ok) return;
 
       binding = opened.session;
@@ -753,147 +766,151 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       expect(launchArgv[0]).toMatch(/psu/);
       expect(
         launchArgv,
-        `deferred ${backend} row ${advSessionId} omitted --account=${backend === 'codex' ? CODEX_ACCOUNT : 'default'}; ` +
+        `deferred ${backend} row ${advSessionId} omitted --account=${accountForBackend(backend)}; ` +
           'bootstrap-su may reinterpret the PUI launch through the inference gateway',
-      ).toContain(`--account=${backend === 'codex' ? CODEX_ACCOUNT : 'default'}`);
+      ).toContain(`--account=${accountForBackend(backend)}`);
     }, 120_000);
 
-    it('SPAWN + READY: claiming the row then running the pane argv materialises a native session on the SAME row', async () => {
-      expect(advSessionId, 'CREATE must have produced a row').toBeGreaterThan(0);
-      expect(launchArgv.length, 'CREATE must have produced an argv').toBeGreaterThan(0);
+    it(
+      'SPAWN + READY: claiming the row then running the pane argv materialises a native session on the SAME row',
+      async () => {
+        expect(advSessionId, 'CREATE must have produced a row').toBeGreaterThan(0);
+        expect(launchArgv.length, 'CREATE must have produced an argv').toBeGreaterThan(0);
 
-      // THE CLAIM — this is not bookkeeping, it is load-bearing, and running the
-      // argv without it is the failure this matrix found on its first real run.
-      //
-      // bootstrap-su's pre-pinned-owner guard admits a workbench row as a launch
-      // PRECURSOR only when PUI has already claimed it (`launched_at` set). An
-      // UNCLAIMED workbench row is classified as the split-identity case and
-      // refused with a 409:
-      //   "owner_id <sid> is already bound to live adv session <id>
-      //    — pre-pinned owners must be fresh [live rows: <id>(display=workbench,session=none)]"
-      // psu then exits 1 within ~2s. So "the pane runs the row's argv" is only
-      // the second half of hop 2; `markAdvSessionLaunched` is the first half, and
-      // adv-sessions.test.ts names it exactly: "the server-side claim PUI wins
-      // BEFORE opening the pane."
-      const claimed = await markAdvSessionLaunched(advSessionId);
-      expect(
-        claimed,
-        `PUI's server-side claim on workbench row ${advSessionId} did not stamp launched_at; ` +
-          'psu will refuse the launch as an unclaimed workbench row',
-      ).toBe(true);
+        // THE CLAIM — this is not bookkeeping, it is load-bearing, and running the
+        // argv without it is the failure this matrix found on its first real run.
+        //
+        // bootstrap-su's pre-pinned-owner guard admits a workbench row as a launch
+        // PRECURSOR only when PUI has already claimed it (`launched_at` set). An
+        // UNCLAIMED workbench row is classified as the split-identity case and
+        // refused with a 409:
+        //   "owner_id <sid> is already bound to live adv session <id>
+        //    — pre-pinned owners must be fresh [live rows: <id>(display=workbench,session=none)]"
+        // psu then exits 1 within ~2s. So "the pane runs the row's argv" is only
+        // the second half of hop 2; `markAdvSessionLaunched` is the first half, and
+        // adv-sessions.test.ts names it exactly: "the server-side claim PUI wins
+        // BEFORE opening the pane."
+        const claimed = await markAdvSessionLaunched(advSessionId);
+        expect(
+          claimed,
+          `PUI's server-side claim on workbench row ${advSessionId} did not stamp launched_at; ` +
+            'psu will refuse the launch as an unclaimed workbench row',
+        ).toBe(true);
 
-      // THE PANE ARGV NEEDS A TTY, AND THAT IS NOT AN INCIDENTAL DETAIL.
-      //
-      // Run this argv with piped stdio and psu gets all the way through the
-      // claim, gateway account routing and "session <id>" — then the agent CLI
-      // sees a non-TTY stdin, falls back to non-interactive --print mode, and
-      // dies immediately:
-      //   Warning: no stdin data received in 3s, proceeding without it.
-      //   Error: Input must be provided either through stdin or as a prompt
-      //          argument when using --print
-      // In the product the pane IS a terminal, so the interactive path is the
-      // only one that ever runs. `script -qfec` is the faithful headless
-      // equivalent: it allocates a real pty and runs the argv inside it, which
-      // is what a terminal emulator does and nothing more.
-      const ptyCommand = shellQuote(launchArgv);
-      spawned = await managedSpawn('script', ['-qfec', ptyCommand, '/dev/null'], {
-        class: 'agent-session',
-        title: `p012 real-backend matrix — ${backend} adv:${advSessionId}`,
-        // Provenance is the point of the ledger: record what is ACTUALLY
-        // running (the pty wrapper), and keep the pane argv beside it so a
-        // stray row in processes:list is traceable to this matrix and its leg.
-        argv: ['script', '-qfec', ptyCommand, '/dev/null'],
-        harnessSlug: HARNESS,
-        launchedBy: 'test:su-session-real-backend-matrix',
-        detail: { backend, advSessionId, planItem: 'P-012', paneArgv: launchArgv },
-      });
-      leg.spawned = spawned;
+        // THE PANE ARGV NEEDS A TTY, AND THAT IS NOT AN INCIDENTAL DETAIL.
+        //
+        // Run this argv with piped stdio and psu gets all the way through the
+        // claim, gateway account routing and "session <id>" — then the agent CLI
+        // sees a non-TTY stdin, falls back to non-interactive --print mode, and
+        // dies immediately:
+        //   Warning: no stdin data received in 3s, proceeding without it.
+        //   Error: Input must be provided either through stdin or as a prompt
+        //          argument when using --print
+        // In the product the pane IS a terminal, so the interactive path is the
+        // only one that ever runs. `script -qfec` is the faithful headless
+        // equivalent: it allocates a real pty and runs the argv inside it, which
+        // is what a terminal emulator does and nothing more.
+        const ptyCommand = shellQuote(launchArgv);
+        spawned = await managedSpawn('script', ['-qfec', ptyCommand, '/dev/null'], {
+          class: 'agent-session',
+          title: `p012 real-backend matrix — ${backend} adv:${advSessionId}`,
+          // Provenance is the point of the ledger: record what is ACTUALLY
+          // running (the pty wrapper), and keep the pane argv beside it so a
+          // stray row in processes:list is traceable to this matrix and its leg.
+          argv: ['script', '-qfec', ptyCommand, '/dev/null'],
+          harnessSlug: HARNESS,
+          launchedBy: 'test:su-session-real-backend-matrix',
+          detail: { backend, advSessionId, planItem: 'P-012', paneArgv: launchArgv },
+        });
+        leg.spawned = spawned;
 
-      expect(spawned.child.pid, 'the pane argv produced no pid').toBeTruthy();
+        expect(spawned.child.pid, 'the pane argv produced no pid').toBeTruthy();
 
-      // Capture the child's own output. Without this a failed launch reports
-      // only "exited (code 1)", which is a symptom with the cause thrown away —
-      // and the cause is the entire value of running the real argv.
-      let captured = '';
-      const capture = (chunk: Buffer | string) => {
-        captured += String(chunk);
-        if (captured.length > 8_000) captured = captured.slice(-8_000);
-      };
-      spawned.child.stdout?.on('data', capture);
-      spawned.child.stderr?.on('data', capture);
+        // Capture the child's own output. Without this a failed launch reports
+        // only "exited (code 1)", which is a symptom with the cause thrown away —
+        // and the cause is the entire value of running the real argv.
+        let captured = '';
+        const capture = (chunk: Buffer | string) => {
+          captured += String(chunk);
+          if (captured.length > 8_000) captured = captured.slice(-8_000);
+        };
+        spawned.child.stdout?.on('data', capture);
+        spawned.child.stderr?.on('data', capture);
 
-      // Poll for the native session to materialise. Two independent signals:
-      // the psu-pty discovery file (production wake-path contract) and the
-      // adapter's own runtime resolution (what PUI attach actually needs).
-      const deadline = Date.now() + READY_TIMEOUT_MS;
-      let discovery: PsuPtyDiscovery | null = null;
-      let runtime: unknown = null;
-      let exited: number | null = null;
-      spawned.child.on('exit', (code) => {
-        exited = code ?? -1;
-      });
+        // Poll for the native session to materialise. Two independent signals:
+        // the psu-pty discovery file (production wake-path contract) and the
+        // adapter's own runtime resolution (what PUI attach actually needs).
+        const deadline = Date.now() + READY_TIMEOUT_MS;
+        let discovery: PsuPtyDiscovery | null = null;
+        let runtime: unknown = null;
+        let exited: number | null = null;
+        spawned.child.on('exit', (code) => {
+          exited = code ?? -1;
+        });
 
-      // READINESS IS NOT "THE ROW HAS A SESSION ID".
-      //
-      // The first version of this test broke on exactly that. psu pre-pins the
-      // native session id and writes it to the adv row at launch REGISTRATION —
-      // before the agent process is up — so `resolve<B>SuRuntime` returns a
-      // runtime almost immediately. The test went green in 2.1s having proved
-      // only that psu registered an id: the row showed session_id set, pid null,
-      // and ended 2.7s later by this file's own teardown signal. A matrix whose
-      // whole purpose is to run the real backend must not accept a registration
-      // record as evidence that a backend is running.
-      //
-      // So readiness here is the operator's OWN definition of an injectable live
-      // session: the psu-pty host has published its discovery file AND the pid in
-      // it is alive. That is the same signal the wake-executor requires before it
-      // will inject a turn, and it cannot be satisfied by a row write.
-      let discoveredAlive = false;
-      while (Date.now() < deadline) {
-        if (exited !== null) break;
-        discovery = (await discoverPsuPtyByAdvSessionId(advSessionId)) ?? discovery;
-        const row = await getAdvSession(advSessionId);
-        if (row) {
-          runtime = await RESOLVE_RUNTIME[backend]({
-            ...(binding as PuiSuSessionBinding),
-            advSessionId,
-          });
+        // READINESS IS NOT "THE ROW HAS A SESSION ID".
+        //
+        // The first version of this test broke on exactly that. psu pre-pins the
+        // native session id and writes it to the adv row at launch REGISTRATION —
+        // before the agent process is up — so `resolve<B>SuRuntime` returns a
+        // runtime almost immediately. The test went green in 2.1s having proved
+        // only that psu registered an id: the row showed session_id set, pid null,
+        // and ended 2.7s later by this file's own teardown signal. A matrix whose
+        // whole purpose is to run the real backend must not accept a registration
+        // record as evidence that a backend is running.
+        //
+        // So readiness here is the operator's OWN definition of an injectable live
+        // session: the psu-pty host has published its discovery file AND the pid in
+        // it is alive. That is the same signal the wake-executor requires before it
+        // will inject a turn, and it cannot be satisfied by a row write.
+        let discoveredAlive = false;
+        while (Date.now() < deadline) {
+          if (exited !== null) break;
+          discovery = (await discoverPsuPtyByAdvSessionId(advSessionId)) ?? discovery;
+          const row = await getAdvSession(advSessionId);
+          if (row) {
+            runtime = await RESOLVE_RUNTIME[backend]({
+              ...(binding as PuiSuSessionBinding),
+              advSessionId,
+            });
+          }
+          discoveredAlive = Boolean(discovery && pidAlive(discovery.pid));
+          if (runtime && discoveredAlive) break;
+          await delay(POLL_INTERVAL_MS);
         }
-        discoveredAlive = Boolean(discovery && pidAlive(discovery.pid));
-        if (runtime && discoveredAlive) break;
-        await delay(POLL_INTERVAL_MS);
-      }
 
-      expect(
-        exited,
-        `the ${backend} pane argv exited (code ${exited}) before a native session materialised.\n` +
-          `  argv: ${launchArgv.join(' ')}\n` +
-          `  child output (last 8k):\n${captured || '(the child wrote nothing at all)'}`,
-      ).toBeNull();
+        expect(
+          exited,
+          `the ${backend} pane argv exited (code ${exited}) before a native session materialised.\n` +
+            `  argv: ${launchArgv.join(' ')}\n` +
+            `  child output (last 8k):\n${captured || '(the child wrote nothing at all)'}`,
+        ).toBeNull();
 
-      expect(
-        runtime,
-        `no native ${backend} runtime resolved on adv row ${advSessionId} within ${READY_TIMEOUT_MS}ms. ` +
-          'This is the hop every other su-session test stubs, so a failure here is real.',
-      ).toBeTruthy();
+        expect(
+          runtime,
+          `no native ${backend} runtime resolved on adv row ${advSessionId} within ${READY_TIMEOUT_MS}ms. ` +
+            'This is the hop every other su-session test stubs, so a failure here is real.',
+        ).toBeTruthy();
 
-      // The load-bearing half. Keep this assertion separate from the runtime one
-      // so a failure says WHICH property is missing: "psu registered an id but no
-      // live pty host appeared" is a completely different defect from "no runtime
-      // resolved at all", and collapsing them is what produced the false green.
-      expect(
-        discoveredAlive,
-        `no LIVE psu-pty host for adv row ${advSessionId} within ${READY_TIMEOUT_MS}ms — ` +
-          `discovery file ${discovery ? `found (pid ${discovery.pid}, dead)` : 'never appeared'}. ` +
-          'A resolved runtime alone only proves psu REGISTERED a native session id at launch; ' +
-          'it does not prove a backend process is up and injectable.',
-      ).toBe(true);
+        // The load-bearing half. Keep this assertion separate from the runtime one
+        // so a failure says WHICH property is missing: "psu registered an id but no
+        // live pty host appeared" is a completely different defect from "no runtime
+        // resolved at all", and collapsing them is what produced the false green.
+        expect(
+          discoveredAlive,
+          `no LIVE psu-pty host for adv row ${advSessionId} within ${READY_TIMEOUT_MS}ms — ` +
+            `discovery file ${discovery ? `found (pid ${discovery.pid}, dead)` : 'never appeared'}. ` +
+            'A resolved runtime alone only proves psu REGISTERED a native session id at launch; ' +
+            'it does not prove a backend process is up and injectable.',
+        ).toBe(true);
 
-      expect(
-        pidAlive(spawned.child.pid),
-        `the ${backend} pane process died after registering its session; child output:\n${captured}`,
-      ).toBe(true);
-    }, READY_TIMEOUT_MS + 60_000);
+        expect(
+          pidAlive(spawned.child.pid),
+          `the ${backend} pane process died after registering its session; child output:\n${captured}`,
+        ).toBe(true);
+      },
+      READY_TIMEOUT_MS + 60_000,
+    );
 
     it('ATTACH: the canonical PUI attach entry resolves the live native runtime and builds a driveable adapter', async () => {
       expect(advSessionId, 'SPAWN must have produced a row').toBeGreaterThan(0);
@@ -904,8 +921,8 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         outcome.ok
           ? ''
           : `attach on adv row ${advSessionId} refused with ${outcome.code}: ${outcome.error}. ` +
-            'A `native_session_not_ready` here would mean the pane never materialised a native session — ' +
-            'i.e. the SPAWN hop went green on something weaker than a running backend.',
+              'A `native_session_not_ready` here would mean the pane never materialised a native session — ' +
+              'i.e. the SPAWN hop went green on something weaker than a running backend.',
       ).toBe(true);
       if (!outcome.ok) return;
       attached = outcome.leg;
@@ -919,131 +936,135 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       expect(attached.lifecycle(), 'an attached adapter should present a ready session').toBe('ready');
     }, 120_000);
 
-    it('OWNER TURN: a real turn reaches the agent, streams a response back, and produces a real tool invocation and result', async (ctx) => {
-      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
-      if (!attached) return;
-      const session = attached;
+    it(
+      'OWNER TURN: a real turn reaches the agent, streams a response back, and produces a real tool invocation and result',
+      async (ctx) => {
+        expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+        if (!attached) return;
+        const session = attached;
 
-      // THE NONCE IS THE POINT.
-      //
-      // A session that has just booted writes plenty to its transcript on its
-      // own, so "an assistant message exists" and "a tool ran" are both
-      // satisfiable by boot noise. Every assertion below is therefore scoped to
-      // a value that cannot have existed before this turn was composed — which
-      // is what separates "a tool ran" from "the tool WE asked for ran".
-      const nonce = `P012-${randomUUID().slice(0, 8).toUpperCase()}`;
-      const prompt =
-        `Acceptance probe ${nonce}. Do exactly two things and nothing else: ` +
-        `(1) run the shell command: echo ${nonce} ` +
-        '(2) then reply with only the word ACKNOWLEDGED. ' +
-        'Do not claim work items, do not declare intent, do not arm a loop.';
+        // THE NONCE IS THE POINT.
+        //
+        // A session that has just booted writes plenty to its transcript on its
+        // own, so "an assistant message exists" and "a tool ran" are both
+        // satisfiable by boot noise. Every assertion below is therefore scoped to
+        // a value that cannot have existed before this turn was composed — which
+        // is what separates "a tool ran" from "the tool WE asked for ran".
+        const nonce = `P012-${randomUUID().slice(0, 8).toUpperCase()}`;
+        const prompt =
+          `Acceptance probe ${nonce}. Do exactly two things and nothing else: ` +
+          `(1) run the shell command: echo ${nonce} ` +
+          '(2) then reply with only the word ACKNOWLEDGED. ' +
+          'Do not claim work items, do not declare intent, do not arm a loop.';
 
-      const result = await session.send({
-        type: 'owner_turn',
-        commandId: `owner-${nonce}`,
-        turnId: `p012-turn-${nonce}`,
-        content: prompt,
-      });
-      expect(
-        result.status,
-        `the ${backend} runtime refused the owner turn: ${JSON.stringify(result)}. ` +
-          'A refusal here is a delivery failure at the control socket — the model never saw the prompt.',
-      ).toBe('completed');
+        const result = await session.send({
+          type: 'owner_turn',
+          commandId: `owner-${nonce}`,
+          turnId: `p012-turn-${nonce}`,
+          content: prompt,
+        });
+        expect(
+          result.status,
+          `the ${backend} runtime refused the owner turn: ${JSON.stringify(result)}. ` +
+            'A refusal here is a delivery failure at the control socket — the model never saw the prompt.',
+        ).toBe('completed');
 
-      // Fold STICKY evidence. The host event ring is bounded and each pump
-      // re-emits the whole native record set, so a single scan at the end can
-      // legitimately miss an early record on a long transcript.
-      let sawOwnerEcho = false;
-      let sawNonceInToolResult = false;
-      let assistantText = '';
-      let toolsSeen: { name: string; output: string; isError: boolean }[] = [];
+        // Fold STICKY evidence. The host event ring is bounded and each pump
+        // re-emits the whole native record set, so a single scan at the end can
+        // legitimately miss an early record on a long transcript.
+        let sawOwnerEcho = false;
+        let sawNonceInToolResult = false;
+        let assistantText = '';
+        let toolsSeen: { name: string; output: string; isError: boolean }[] = [];
 
-      const deadline = Date.now() + TURN_TIMEOUT_MS;
-      const stall = createStallWatch();
-      let turnComplete = false;
-      while (Date.now() < deadline) {
-        await session.pump();
-        const events = session.events();
-        if (!sawOwnerEcho) sawOwnerEcho = transcriptText(events, 'owner').some((text) => text.includes(nonce));
-        const assistant = transcriptText(events, 'assistant').join('\n');
-        if (assistant.length > assistantText.length) assistantText = assistant;
-        const completed = completedTools(events);
-        if (completed.length > toolsSeen.length) toolsSeen = completed;
-        if (!sawNonceInToolResult) sawNonceInToolResult = completed.some((tool) => tool.output.includes(nonce));
-        if (sawOwnerEcho && assistantText && sawNonceInToolResult) {
-          turnComplete = true;
-          break;
+        const deadline = Date.now() + TURN_TIMEOUT_MS;
+        const stall = createStallWatch();
+        let turnComplete = false;
+        while (Date.now() < deadline) {
+          await session.pump();
+          const events = session.events();
+          if (!sawOwnerEcho) sawOwnerEcho = transcriptText(events, 'owner').some((text) => text.includes(nonce));
+          const assistant = transcriptText(events, 'assistant').join('\n');
+          if (assistant.length > assistantText.length) assistantText = assistant;
+          const completed = completedTools(events);
+          if (completed.length > toolsSeen.length) toolsSeen = completed;
+          if (!sawNonceInToolResult) sawNonceInToolResult = completed.some((tool) => tool.output.includes(nonce));
+          if (sawOwnerEcho && assistantText && sawNonceInToolResult) {
+            turnComplete = true;
+            break;
+          }
+          await delay(TURN_POLL_INTERVAL_MS);
+          stall.tick();
         }
-        await delay(TURN_POLL_INTERVAL_MS);
-        stall.tick();
-      }
 
-      // ── WAS THE INSTRUMENT STOPPED? ────────────────────────────────────────
-      // Order matters: this runs BEFORE the assertions, because a frozen run
-      // produces exactly the evidence those assertions read as a broken
-      // backend — an empty transcript and an expired budget. Asserting first
-      // and explaining afterwards is how a stopped instrument gets reported as
-      // a product defect.
-      //
-      // The guard is deliberately narrow. It fires ONLY when the turn did not
-      // complete AND a gap appeared that slowness cannot explain, so a freeze
-      // during a turn that still succeeded stays a pass, and an ordinary
-      // failure on a healthy host stays a red.
-      if (!turnComplete && stall.stalled()) {
-        const stalledFor = Math.round(stall.maxGapMs() / 1000);
-        // console.LOG, not warn. This repo runs `vitest-fail-on-console`, which
-        // turns any unasserted console.warn into a hard test FAILURE — including
-        // one emitted on the way to ctx.skip(), because the flush runs in an
-        // afterEach that a runtime skip does not cancel. A warn here would
-        // therefore convert "the host was under memory pressure, so this was not
-        // measured" into "the backend is broken": a false RED blaming the
-        // product for an instrument outage, which is the exact defect class this
-        // guard exists to report. Keep the diagnostic loud in the log and let
-        // the skip be a skip.
-        // eslint-disable-next-line no-console
-        console.log(
-          `[matrix] NOT MEASURED — ${backend} OWNER TURN: this process lost ${stalledFor}s to a ` +
-            `single stall inside its ${TURN_TIMEOUT_MS}ms budget. The agent pty shares this ` +
-            'cgroup, so it was stopped too and could not write a transcript. That is an ' +
-            'instrument outage, not a backend failure — re-run when the host is not under ' +
-            'memory pressure (EI-21903376339103215).',
-        );
-        ctx.skip();
-        return;
-      }
+        // ── WAS THE INSTRUMENT STOPPED? ────────────────────────────────────────
+        // Order matters: this runs BEFORE the assertions, because a frozen run
+        // produces exactly the evidence those assertions read as a broken
+        // backend — an empty transcript and an expired budget. Asserting first
+        // and explaining afterwards is how a stopped instrument gets reported as
+        // a product defect.
+        //
+        // The guard is deliberately narrow. It fires ONLY when the turn did not
+        // complete AND a gap appeared that slowness cannot explain, so a freeze
+        // during a turn that still succeeded stays a pass, and an ordinary
+        // failure on a healthy host stays a red.
+        if (!turnComplete && stall.stalled()) {
+          const stalledFor = Math.round(stall.maxGapMs() / 1000);
+          // console.LOG, not warn. This repo runs `vitest-fail-on-console`, which
+          // turns any unasserted console.warn into a hard test FAILURE — including
+          // one emitted on the way to ctx.skip(), because the flush runs in an
+          // afterEach that a runtime skip does not cancel. A warn here would
+          // therefore convert "the host was under memory pressure, so this was not
+          // measured" into "the backend is broken": a false RED blaming the
+          // product for an instrument outage, which is the exact defect class this
+          // guard exists to report. Keep the diagnostic loud in the log and let
+          // the skip be a skip.
+          // eslint-disable-next-line no-console
+          console.log(
+            `[matrix] NOT MEASURED — ${backend} OWNER TURN: this process lost ${stalledFor}s to a ` +
+              `single stall inside its ${TURN_TIMEOUT_MS}ms budget. The agent pty shares this ` +
+              'cgroup, so it was stopped too and could not write a transcript. That is an ' +
+              'instrument outage, not a backend failure — re-run when the host is not under ' +
+              'memory pressure (EI-21903376339103215).',
+          );
+          ctx.skip();
+          return;
+        }
 
-      const diagnostic =
-        `\n  tools observed: ${toolsSeen.map((t) => `${t.name}${t.isError ? '(error)' : ''}`).join(', ') || '(none)'}` +
-        `\n  assistant text (first 400): ${assistantText.slice(0, 400) || '(none)'}`;
+        const diagnostic =
+          `\n  tools observed: ${toolsSeen.map((t) => `${t.name}${t.isError ? '(error)' : ''}`).join(', ') || '(none)'}` +
+          `\n  assistant text (first 400): ${assistantText.slice(0, 400) || '(none)'}`;
 
-      // Four separate assertions, because these are four different defects and
-      // collapsing them is what produced the earlier false green: a delivered
-      // prompt that the agent never persisted, a persisted prompt with no
-      // answer, an answer with no tool use, and a tool that ran something other
-      // than what was asked, all fail differently and are fixed differently.
-      expect(
-        sawOwnerEcho,
-        `the owner turn was acked by the ${backend} control socket but never appeared in the native ` +
-          `transcript within ${TURN_TIMEOUT_MS}ms. The injection reached the pty and stopped there.${diagnostic}`,
-      ).toBe(true);
+        // Four separate assertions, because these are four different defects and
+        // collapsing them is what produced the earlier false green: a delivered
+        // prompt that the agent never persisted, a persisted prompt with no
+        // answer, an answer with no tool use, and a tool that ran something other
+        // than what was asked, all fail differently and are fixed differently.
+        expect(
+          sawOwnerEcho,
+          `the owner turn was acked by the ${backend} control socket but never appeared in the native ` +
+            `transcript within ${TURN_TIMEOUT_MS}ms. The injection reached the pty and stopped there.${diagnostic}`,
+        ).toBe(true);
 
-      expect(
-        assistantText.length,
-        `the ${backend} agent persisted the prompt but streamed no assistant response back.${diagnostic}`,
-      ).toBeGreaterThan(0);
+        expect(
+          assistantText.length,
+          `the ${backend} agent persisted the prompt but streamed no assistant response back.${diagnostic}`,
+        ).toBeGreaterThan(0);
 
-      expect(
-        toolsSeen.length,
-        `the ${backend} agent answered without invoking any tool, so this turn proves nothing about ` +
-          `real tool invocation/result translation.${diagnostic}`,
-      ).toBeGreaterThan(0);
+        expect(
+          toolsSeen.length,
+          `the ${backend} agent answered without invoking any tool, so this turn proves nothing about ` +
+            `real tool invocation/result translation.${diagnostic}`,
+        ).toBeGreaterThan(0);
 
-      expect(
-        sawNonceInToolResult,
-        `no completed tool result carried ${nonce}, so a tool ran but not the one this turn asked for — ` +
-          `the tool-result translation is unproven for ${backend}.${diagnostic}`,
-      ).toBe(true);
-    }, TURN_TIMEOUT_MS + 60_000);
+        expect(
+          sawNonceInToolResult,
+          `no completed tool result carried ${nonce}, so a tool ran but not the one this turn asked for — ` +
+            `the tool-result translation is unproven for ${backend}.${diagnostic}`,
+        ).toBe(true);
+      },
+      TURN_TIMEOUT_MS + 60_000,
+    );
 
     // ── steering and retirement ───────────────────────────────────────────
     // Everything above proves a session can be created, started, attached and
@@ -1069,10 +1090,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           `${backend} declares no capability entry for '${type}'; ` +
             'an absent entry is indistinguishable from an unsupported one at the call site.',
         ).toBeTruthy();
-        expect(
-          commands[type].state,
-          `${backend} capability '${type}' has no state`,
-        ).toMatch(/^(supported|conditional|unsupported)$/);
+        expect(commands[type].state, `${backend} capability '${type}' has no state`).toMatch(
+          /^(supported|conditional|unsupported)$/,
+        );
       }
 
       // NO PROVIDER-ONLY FALLBACK. The protocol deliberately omits a
@@ -1089,7 +1109,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         // rather than letting a vacuous pass look like a proven refusal path.
         expect(
           Object.values(commands).every((support) =>
-            support.state === 'unsupported' ? true : support.implementation === 'native' || support.implementation === 'host',
+            support.state === 'unsupported'
+              ? true
+              : support.implementation === 'native' || support.implementation === 'host',
           ),
           `${backend} declares a supported command with no native/host implementation`,
         ).toBe(true);
@@ -1116,10 +1138,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
 
       await attached.pump();
       const sequences = attached.events().map((event) => event.sequence);
-      expect(
-        sequences.length,
-        'the session produced no events at all, so ordering is unproven',
-      ).toBeGreaterThan(0);
+      expect(sequences.length, 'the session produced no events at all, so ordering is unproven').toBeGreaterThan(0);
 
       // The protocol says "strictly increasing within one durable session,
       // INCLUDING RECONNECTS". A pump re-resolves and replaces the runtime, so
@@ -1163,10 +1182,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       const RING = 1024; // su-session-host.ts: `ringSize: options.replaySize ?? 1024`
 
       const before = session.retention();
-      expect(
-        before.ids.length,
-        'the session retained no events at all, so retention is unproven',
-      ).toBeGreaterThan(0);
+      expect(before.ids.length, 'the session retained no events at all, so retention is unproven').toBeGreaterThan(0);
 
       // Bounded in BOTH dimensions on purpose: a pump count alone cannot stop a
       // slow backend from eating the whole test budget, and a deadline alone
@@ -1283,10 +1299,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           `${backend} declares interrupt 'supported' but refused it: ` +
             `${result.refusal?.code} ${result.refusal?.message}. A supported command may not refuse.`,
         ).toBe('conditional');
-        expect(
-          result.refusal?.code,
-          `${backend} refused the interrupt without a code`,
-        ).toBeTruthy();
+        expect(result.refusal?.code, `${backend} refused the interrupt without a code`).toBeTruthy();
         return;
       }
       expect(
@@ -1307,8 +1320,8 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         outcome,
         outcome === 'no-runtime'
           ? `${backend} resolved NO native runtime at all (wrong backend, missing adv-session row, or ` +
-            'an unmaterialisable native handle), so replacement could not be exercised. This IS a ' +
-            'runtime-resolution defect — start there.'
+              'an unmaterialisable native handle), so replacement could not be exercised. This IS a ' +
+              'runtime-resolution defect — start there.'
           : outcome === 'no-record'
             ? `${backend} resolved its native runtime fine, but the native record file ` +
               '(Claude/OMP transcript, Codex rollout) is ABSENT on disk, so replacement could not be ' +
@@ -1329,14 +1342,12 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
 
       // STABLE IDENTITY is the other half: durable identity must survive
       // runtime-process replacement, or reconciliation and resume both break.
-      expect(
-        after.identity.advSessionId,
-        `${backend} changed advSessionId across a runtime replacement`,
-      ).toBe(before.identity.advSessionId);
-      expect(
-        after.identity.nativeSessionId,
-        `${backend} changed nativeSessionId across a runtime replacement`,
-      ).toBe(before.identity.nativeSessionId);
+      expect(after.identity.advSessionId, `${backend} changed advSessionId across a runtime replacement`).toBe(
+        before.identity.advSessionId,
+      );
+      expect(after.identity.nativeSessionId, `${backend} changed nativeSessionId across a runtime replacement`).toBe(
+        before.identity.nativeSessionId,
+      );
     }, 120_000);
 
     it('NATIVE RESUME: the runtime accepts a resume for a runtime-replacement cause', async () => {
@@ -1352,20 +1363,16 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
       });
 
       if (support.state === 'unsupported') {
-        expect(
-          result.status,
-          `${backend} declares resume unsupported, so it must be refused explicitly`,
-        ).toBe('refused');
+        expect(result.status, `${backend} declares resume unsupported, so it must be refused explicitly`).toBe(
+          'refused',
+        );
         return;
       }
       // Every backend declares resume CONDITIONAL (claude: "requires the tracked
       // session UUID and a live or P-004-reconciled managed runtime"). So a
       // refusal is in-contract here too — what it may not do is refuse opaquely.
       if (result.status === 'refused') {
-        expect(
-          support.state,
-          `${backend} refused resume while declaring it 'supported'`,
-        ).toBe('conditional');
+        expect(support.state, `${backend} refused resume while declaring it 'supported'`).toBe('conditional');
         expect(
           result.refusal?.code,
           `${backend} refused resume without a code, so a caller cannot tell a declined ` +
@@ -1595,9 +1602,9 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         // REQUIRED, not a default: launch-agent.ts states that psu with no
         // --account opens an interactive picker, which would hang this spawn
         // forever behind a prompt no test can answer. Keep Claude/OMP on the
-        // system credential; Codex can opt into its explicit gateway route on
-        // hosts without ~/.codex/auth.json (PAPERCUSP_REAL_BACKEND_MATRIX_CODEX_ACCOUNT=auto).
-        account: backend === 'codex' ? CODEX_ACCOUNT : 'default',
+        // system credential; Codex/OMP can opt into an explicit gateway route
+        // when the acceptance host has no usable default provider account.
+        account: accountForBackend(backend),
         ...(backend === 'omp' ? { model: OMP_MODEL } : {}),
       });
 
@@ -1845,10 +1852,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
           `${backend} refused 'end' without a refusal code. An opaque refusal is indistinguishable ` +
             'from a dropped command, which is what makes an abandoned agent invisible.',
         ).toBeTruthy();
-        expect(
-          result.refusal?.message,
-          `${backend} refused 'end' without a message explaining why`,
-        ).toBeTruthy();
+        expect(result.refusal?.message, `${backend} refused 'end' without a message explaining why`).toBeTruthy();
         return;
       }
 
