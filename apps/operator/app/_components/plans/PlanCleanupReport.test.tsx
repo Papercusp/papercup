@@ -239,7 +239,12 @@ describe("buildPlanCleanupReviewGroups", () => {
       }),
     ]);
 
+    // P-004/P-009: a finding the resolver never reached leads the report in its
+    // own group. It is unstarted work, not a fix kind — the only thing that
+    // clears it is resuming the run, so it must not sit inside a kind group
+    // captioned "Clear stale blockers".
     expect(groups.map((group) => group.id)).toEqual([
+      "not-assessed",
       "flip-to-done",
       "clear-stale-blockers",
       "finish-or-archive",
@@ -263,7 +268,12 @@ describe("buildPlanCleanupReviewGroups", () => {
     });
     expect(rows.find((row) => row.id === "claim")).toMatchObject({
       selectable: false,
-      accounting: "not-applied",
+      // Was "not-applied", which read as "deliberately skipped" for a row the
+      // resolver simply never got to (P-004).
+      accounting: "not-assessed",
+    });
+    expect(rows.find((row) => row.id === "claim")?.action).toMatchObject({
+      label: "Assess",
     });
   });
 
@@ -277,6 +287,7 @@ describe("buildPlanCleanupReviewGroups", () => {
       ready: 12,
       handled: 0,
       manual: 12,
+      notAssessed: 0,
       notApplied: 0,
     });
 
@@ -312,10 +323,14 @@ describe("applyPlanCleanupFinding", () => {
     await expect(applyPlanCleanupFinding(finding())).resolves.toEqual({
       ok: true,
     });
+    // P-011: the recorded `from` rides along as a compare-and-set precondition,
+    // so a report applied hours after its scan is REFUSED rather than writing
+    // over whatever the item became in the meantime.
     expect(H.setItemStatus).toHaveBeenCalledWith({
       slug: "p-one",
       itemId: "P-001",
       status: "done",
+      expectedStatus: "todo",
       harness: "papercusp",
     });
 
@@ -375,7 +390,7 @@ describe("PlanCleanupReport", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("announces a failed hand edit and keeps the row selected for retry", async () => {
+  it("announces a failed hand edit and takes the row OUT of the pending pool", async () => {
     H.setItemStatus.mockResolvedValue({
       ok: false,
       error: "The plan write was rejected.",
@@ -400,15 +415,34 @@ describe("PlanCleanupReport", () => {
     expect(alert.getAttribute("role")).toBe("alert");
     expect(alert.textContent).toContain("plan write was rejected");
     expect(H.accept).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(apply);
-    expect(apply.disabled).toBe(false);
-    expect(apply.textContent).toContain("(1)");
-    expect(screen.getByTestId("review-report-status").textContent).toBe(
-      "1 of 1 selectable recommendation selected.",
+    // P-010: focus lands on the FAILED ROW, not on the header buttons. The
+    // failure empties the selection, and the old "nothing selected ⇒ focus
+    // Dismiss" rule parked keyboard focus on CLOSE right after a failure —
+    // inviting the owner to discard the only surface naming what did not land.
+    expect(document.activeElement).toBe(
+      screen.getByTestId("review-row-flip:p-one#P-001"),
     );
 
+    // A failed row LEAVES the pending pool: pressing Apply again must
+    // not blind-re-dispatch a write that just failed for an unknown reason.
+    // It is hoisted into its own "Failed to apply" group, keeps its reason,
+    // and carries a Retry verb — recovery becomes a deliberate act.
+    expect(screen.getByTestId("review-group-apply-failed")).toBeTruthy();
+    expect(
+      screen.getByTestId("review-row-verb-flip:p-one#P-001").textContent,
+    ).toContain("Retry");
+    expect(
+      screen.queryByTestId("review-row-check-flip:p-one#P-001"),
+    ).toBeNull();
+    expect(apply.textContent).toContain("(0)");
+
+    // …and the retry path is the ROW's own menu, which re-dispatches exactly
+    // that one finding rather than the whole previous selection.
     H.setItemStatus.mockResolvedValueOnce({ ok: true });
-    fireEvent.click(apply);
+    fireEvent.click(screen.getByTestId("review-row-menu-flip:p-one#P-001"));
+    fireEvent.click(
+      screen.getByTestId("review-row-menu-flip:p-one#P-001-apply-one"),
+    );
     await waitFor(() => expect(H.accept).toHaveBeenCalledTimes(1));
     expect(
       screen.queryByTestId("review-row-error-flip:p-one#P-001"),
@@ -416,11 +450,6 @@ describe("PlanCleanupReport", () => {
     expect(
       screen.getByTestId("review-row-mark-flip:p-one#P-001").textContent,
     ).toBe("✓");
-    expect(apply.disabled).toBe(true);
-    expect(apply.textContent).toContain("(0)");
-    expect(screen.getByTestId("review-report-status").textContent).toBe(
-      "0 of 0 selectable recommendations selected.",
-    );
   });
 
   it("renders stale Now as a visible manual row with no checkbox", () => {

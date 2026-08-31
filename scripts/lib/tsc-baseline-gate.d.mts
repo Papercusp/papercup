@@ -296,6 +296,21 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
     attributionDeclared?: boolean;
 }): PerFileGateResult;
 /**
+ * Is this file's own commit age old enough that its NEW diagnostic cannot be its own doing?
+ *
+ * Exported and shared so the ROW wording and the caller's `unchangedCount` (which drives the
+ * footer) can never disagree about which rows are unchanged — a divergence that would print the
+ * per-file explanation with the wrong count, or omit it while rows are marked UNCHANGED.
+ *
+ * `null` (unknown) is deliberately NOT unchanged: `lastCommitTimes` fails soft to `null`, and a
+ * path inside a submodule also reads `null` from the superproject, so treating unknown as
+ * "unchanged" would manufacture an exoneration out of an absence of evidence.
+ *
+ * @param {number | null} [commitAgeSec]
+ * @returns {boolean}
+ */
+export function isUnchangedForAttribution(commitAgeSec?: number | null): boolean;
+/**
  * Describe a clean diagnostic site without inventing its causal provenance.
  *
  * A clean file is genuinely committed, but its NEW diagnostic may still be caused by another
@@ -316,25 +331,18 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
  * the file named (WI-6928, EI-19332542096444388). In WI-6928 the file was unchanged since 01:21
  * with no commits since the report, so its content never varied — a peer's edit elsewhere induced
  * the error and fixing that file cleared it. Reading 1 is exactly that case, named.
+ *
+ * @param {PerFileGateEntry} r
+ * @param {{dirtyPathCount?: number, commitAgeSec?: number | null}} [opts] `commitAgeSec` is the
+ *   file's age in seconds since its last commit, or `null` when unknown. It MUST be annotated
+ *   `number | null` rather than left to inference: a bare `= null` default makes TS infer the
+ *   parameter as `null | undefined`, so every real (numeric) caller fails to typecheck — this
+ *   file is `.mjs`, so its types come from these JSDoc tags and nothing else.
+ * @returns {string}
  */
-/**
- * Is this file's own commit age old enough that its NEW diagnostic cannot be its own doing?
- *
- * Exported and shared so the ROW wording and the caller's `unchangedCount` (which drives the
- * footer) can never disagree about which rows are unchanged — a divergence that would print the
- * per-file explanation with the wrong count, or omit it while rows are marked UNCHANGED.
- *
- * `null` (unknown) is deliberately NOT unchanged: `lastCommitTimes` fails soft to `null`, and a
- * path inside a submodule also reads `null` from the superproject, so treating unknown as
- * "unchanged" would manufacture an exoneration out of an absence of evidence.
- *
- * @param {number | null} commitAgeSec
- * @returns {boolean}
- */
-export function isUnchangedForAttribution(commitAgeSec: number | null): boolean;
-export function formatStandingRedRow(r: any, { dirtyPathCount, commitAgeSec }?: {
-    dirtyPathCount?: number | undefined;
-    commitAgeSec?: null | undefined;
+export function formatStandingRedRow(r: PerFileGateEntry, { dirtyPathCount, commitAgeSec }?: {
+    dirtyPathCount?: number;
+    commitAgeSec?: number | null;
 }): string;
 /**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.

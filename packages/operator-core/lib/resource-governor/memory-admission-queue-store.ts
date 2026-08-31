@@ -27,6 +27,7 @@
  * about queue ordering may be concluded from this seam.
  */
 
+import { GOVERNOR_RECEIPT_ABANDON_MS } from './queue';
 import type {
   DurableAdmissionQueueStore,
   DurableAdmissionRecord,
@@ -41,6 +42,18 @@ export class MemoryAdmissionQueueStore implements DurableAdmissionQueueStore {
   readonly #rows = new Map<string, Map<string, StoredAdmissionRecord>>();
   /** Set true to make `enqueue` throw, exercising the persistence-failure path. */
   fail = false;
+  /**
+   * No-deadline abandonment dwell, mirroring the PG store's `abandonAfterMs`.
+   * Defaults to the production constant so this seam cannot quietly disagree with
+   * the store it stands in for; a test that wants the floor to bite sets it small.
+   */
+  #abandonAfterMs: number = GOVERNOR_RECEIPT_ABANDON_MS;
+
+  /** Override the abandonment dwell (ms). Returns `this` so it can be chained onto construction. */
+  withAbandonAfterMs(ms: number): this {
+    this.#abandonAfterMs = ms;
+    return this;
+  }
 
   #bucket(namespace: string): Map<string, StoredAdmissionRecord> {
     let bucket = this.#rows.get(namespace);
@@ -90,6 +103,7 @@ export class MemoryAdmissionQueueStore implements DurableAdmissionQueueStore {
   async reconcileExpired(namespace: string, nowMs: number) {
     let requeued = 0;
     let expired = 0;
+    let abandoned = 0;
     for (const stored of this.#all()) {
       if (stored.record.namespace !== namespace) continue;
       let record = stored.record;
@@ -131,20 +145,47 @@ export class MemoryAdmissionQueueStore implements DurableAdmissionQueueStore {
           lease: undefined,
         });
         expired += 1;
+        continue;
+      }
+      // The no-deadline abandonment floor — mirrors the PG store's third branch.
+      // See GOVERNOR_RECEIPT_ABANDON_MS in queue.ts for why this has to exist:
+      // without it, a receipt requeued after its lease died is exempt from the
+      // deadline branch above (it has no deadline) AND from receipt-gc (which
+      // never sweeps an active state), so it lives forever. WI-1741497.
+      if (
+        (record.state === 'queued' || record.state === 'eligible') &&
+        record.deadlineAtMs === null &&
+        record.updatedAtMs <= nowMs - this.#abandonAfterMs
+      ) {
+        this.#replace(stored, {
+          ...record,
+          state: 'expired',
+          updatedAtMs: nowMs,
+          decision: {
+            generation: record.decision.generation + 1,
+            atMs: nowMs,
+            reason: 'abandoned-without-deadline',
+            evidence: {},
+          },
+          lease: undefined,
+        });
+        abandoned += 1;
       }
     }
-    return { requeued, expired, total: requeued + expired };
+    return { requeued, expired, abandoned, total: requeued + expired + abandoned };
   }
 
   async reconcileExpiredAll(nowMs: number) {
     let requeued = 0;
     let expired = 0;
+    let abandoned = 0;
     for (const namespace of new Set(this.#all().map((row) => row.record.namespace))) {
       const result = await this.reconcileExpired(namespace, nowMs);
       requeued += result.requeued;
       expired += result.expired;
+      abandoned += result.abandoned;
     }
-    return { requeued, expired, total: requeued + expired };
+    return { requeued, expired, abandoned, total: requeued + expired + abandoned };
   }
 
   async cancel(namespace: string, idempotencyKey: string, reason: string | undefined, nowMs: number) {

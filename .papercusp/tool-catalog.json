@@ -192,7 +192,7 @@
           "POST"
         ]
       },
-      "description": "List the Mug's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
+      "description": "List the inference gateway's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
       "capabilities": [
         "harness:read"
       ],
@@ -215,7 +215,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Seeing which accounts the Mug can draw from and what each is bound to.",
+        "when": "Seeing which accounts the gateway can draw from and what each is bound to.",
         "notWhen": "Wanting live headroom + sustained-limit flags — accounts:status."
       }
     },
@@ -322,7 +322,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Adding a Claude Max subscription the Mug can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.",
+        "when": "Adding a Claude Max subscription the inference gateway can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.",
         "notWhen": "Setting the operator API key (operator:credentials). A one-off local run (no deploy).",
         "chaining": "accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → cups route by cache-affinity + 5h-budget drain; deploy:pot binds an account per member."
       }
@@ -25280,7 +25280,7 @@
           "POST"
         ]
       },
-      "description": "Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited operator/queen/architect-only escape for an un-green commit (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.",
+      "description": "Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.",
       "capabilities": [
         "operator:write"
       ],
@@ -25823,7 +25823,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Kettle/Blender: discover the rubric set to grade against.",
+        "when": "Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Blender: discover the rubric set to grade against.",
         "notWhen": "You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search.",
         "chaining": "rubrics:list { status: \"active\" } → rubrics:get { rubricRef } → file a structured observation."
       }
@@ -26209,7 +26209,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You (Mug / Kettle / a human) want to see what the fleet is actively executing RIGHT NOW and under which scheduling spec — the live-execution view of the scheduler. Filter by { harness } or { bee }.",
+        "when": "You (an agent or a human) want to see what the fleet is actively executing RIGHT NOW and under which scheduling spec — the live-execution view of the scheduler. Filter by { harness } or { bee }.",
         "notWhen": "Full fleet roster / bee load / orphaned-claim detection across ALL claim kinds (plan-item leases, assignments, presence) — use fleet:assignments. Claiming work — scheduler:get_next. Steering a bee — scheduler:set_claim_spec.",
         "chaining": "scheduler:running (what is executing) → fleet:assignments { agent } (drill into a bee) → scheduler:set_claim_spec (re-steer it)."
       }
@@ -26222,7 +26222,7 @@
           "POST"
         ]
       },
-      "description": "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision, warning? } (EI-6079: a `warning` can flag the bee as not currently wakeable — the spec still stored, but a warm-inject wake to it may return woken:0).",
+      "description": "Steer a SELF-PULLING agent — a coding-hive bee or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision, warning? } (EI-6079: a `warning` can flag the bee as not currently wakeable — the spec still stored, but a warm-inject wake to it may return woken:0).",
       "capabilities": [
         "work_items:write"
       ],
@@ -26246,7 +26246,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee, the queen, or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.",
+        "when": "Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.",
         "notWhen": "A coding-FACTORY push role (scoper/architect/worker/validator): it is handed a FEATURE_ID and never calls get_next, so a spec is inert. Not for hand-picked micro-dispatch, or for overriding global floors (blocked/ready/dedup/cursed) — the resolver enforces those.",
         "chaining": "scheduler:set_claim_spec → the puller applies it on the next scheduler:get_next."
       }
@@ -26322,7 +26322,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing.",
+        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after.",
         "notWhen": "Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.",
         "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result."
       }
@@ -26397,7 +26397,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did the Kettle emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit's structured `subject:{kind,ref}` object.",
+        "when": "You want to SEE the rubric scorecards that have been emitted — e.g. did Overwatch emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion's rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring. To filter by the graded subject, pass the scalar `subjectRef` (the stored observation.subject.ref), not emit's structured `subject:{kind,ref}` object.",
         "notWhen": "You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — scorecards:emit.",
         "chaining": "scorecards:list { rubricRef: \"pot-coordination-health\", subjectRef: \"EI-123\", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions."
       }
@@ -29795,7 +29795,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.",
+        "when": "You are leading a drain/fleet pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.",
         "notWhen": "You need full per-item bodies/checkpoints/comments — use work_items:get for the specific ids after this census.",
         "chaining": "work_items:burn_down → work_items:get for detail on a row → coord:send or work_items:claim/release/set_state as needed."
       }

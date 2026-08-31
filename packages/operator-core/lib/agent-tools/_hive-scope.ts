@@ -86,5 +86,5 @@ export async function resolveHiveScope(
 export const HIVE_REQUIRED_DETAIL =
   'No hive resolvable for this create-side op. Every artifact (work item, plan, ' +
   'assignment, observation) belongs to a HIVE. A harness-scoped session auto-resolves ' +
-  'its hive; a workspace-spanning caller (Mug/overwatch) must pass an explicit ' +
+  'its hive; a workspace-spanning caller (e.g. overwatch) must pass an explicit ' +
   '`hive` (the hive home-harness slug) on this call.';

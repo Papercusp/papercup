@@ -11,6 +11,7 @@ import {
   terminalGuardTrips,
   blockedGuardTrips,
   completedGuardTrips,
+  expectedStatusMismatch,
   planSyncWorkItemState,
   type HolderInfo,
 } from './set-status';
@@ -494,6 +495,47 @@ describe('blockedGuardTrips — never weaken an explicit plan gate', () => {
 // Result: dropping a merely `relates`-linked follow-on silently downgraded an already-`done`
 // plan item. Live case: fix-0014-platform-defects-2026-08-10#P-005, flipped done→dropped 67ms
 // after WI-37872 was dropped, while its real completer WI-37735 sat `done`.
+describe('expectedStatusMismatch — compare-and-set for a RECORDED observation (P-011)', () => {
+  // The defect: a bulk clean-up run scans a plan, its report sits open for
+  // hours, and Apply then wrote the recorded transition with no precondition —
+  // silently overwriting whatever the item became in between.
+  //
+  // Deliberately unlike every onlyIf* guard beside it: those are non-destructive
+  // SKIPS for automated cascades (ok:true, `skipped`). This is an ERROR, because
+  // the caller is asserting a fact about the world that turned out false.
+
+  it('is inert when the caller made no claim', () => {
+    // Every existing caller passes nothing; the precondition must not change
+    // behaviour for them, including when the status cannot be read at all.
+    expect(expectedStatusMismatch({ expectedStatus: undefined, currentStatus: 'done' })).toBe(false);
+    expect(expectedStatusMismatch({ expectedStatus: undefined, currentStatus: null })).toBe(false);
+  });
+
+  it('permits the write when the world still matches the recording', () => {
+    expect(expectedStatusMismatch({ expectedStatus: 'todo', currentStatus: 'todo' })).toBe(false);
+  });
+
+  it('refuses the write when the item moved since the scan', () => {
+    // The whole point: some other agent flipped it while the report was open.
+    expect(expectedStatusMismatch({ expectedStatus: 'todo', currentStatus: 'wip' })).toBe(true);
+    expect(expectedStatusMismatch({ expectedStatus: 'todo', currentStatus: 'done' })).toBe(true);
+    expect(expectedStatusMismatch({ expectedStatus: 'blocked', currentStatus: 'todo' })).toBe(true);
+  });
+
+  it('FAILS CLOSED on an unreadable current status', () => {
+    // null means the flip helper could not read one, which is indistinguishable
+    // from "it changed". Treating it as a match would let exactly the
+    // unverifiable case through — the one the guard exists for.
+    expect(expectedStatusMismatch({ expectedStatus: 'todo', currentStatus: null })).toBe(true);
+  });
+
+  it('is an exact comparison, not a terminal-family one', () => {
+    // done and dropped are both terminal, but a report that recorded done and
+    // finds dropped is looking at a different decision.
+    expect(expectedStatusMismatch({ expectedStatus: 'done', currentStatus: 'dropped' })).toBe(true);
+  });
+});
+
 describe('completedGuardTrips — an automated cascade never downgrades finished work', () => {
   it('SKIPS done → dropped when the caller asked for the guard (the P-005 regression)', () => {
     expect(completedGuardTrips({ onlyIfNotCompleted: true, currentStatus: 'done', nextStatus: 'dropped' })).toBe(true);

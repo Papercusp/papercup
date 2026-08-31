@@ -1926,8 +1926,9 @@ async function governorReceiptGcTick(): Promise<void> {
       const reconciled = await new PgWorkItemAdmissionQueueStore().reconcileExpiredAll();
       if (reconciled.total > 0) {
         console.log(
-          `[governor-receipt-gc] reconciled ${reconciled.requeued} expired lease(s) and ` +
-            `${reconciled.expired} overdue receipt(s)`,
+          `[governor-receipt-gc] reconciled ${reconciled.requeued} expired lease(s), ` +
+            `${reconciled.expired} overdue receipt(s) and ` +
+            `${reconciled.abandoned} abandoned no-deadline receipt(s)`,
         );
       }
       if (!deleteTerminalReceipts) return;

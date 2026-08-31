@@ -43,7 +43,8 @@ import {
   isSystemEmissionUnderAgentIdentity,
 } from './machine-authored';
 import { shouldDerivePlanSlug, derivePlanSlug, PLAN_SLUG_DERIVED_PROVENANCE } from './derived-plan-slug';
-import { noteIntentDeclared } from '../../agent-state-stamp';
+import { shouldDeriveWhyGoal, deriveWhyGoal, WHY_GOAL_DERIVED_PROVENANCE } from './derived-why-goal';
+import { noteIntentDeclared, readAgentStateStamp } from '../../agent-state-stamp';
 
 export type { InboxOptions };
 
@@ -399,6 +400,31 @@ export async function sendMessage(
       env.plan_slug = slug;
       const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
       env.fieldProvenance = { ...existing, plan_slug: PLAN_SLUG_DERIVED_PROVENANCE };
+    }
+  }
+  // coord-derived-fields-2026-08-31 D-002: `why.goalRef` is DERIVABLE, not
+  // authored. Measured 24h, 2026-08-31: 1,635 of 2,755 hand-authored sends
+  // omitted `why`, and 1,563 of those (95.6%) came from a sender whose goal_ref
+  // was stamped on tool_invocations that same hour — 151 distinct senders. Same
+  // tier-1 auto-stamp as plan_slug above; see ./derived-why-goal for the full
+  // qualification (fixed at write time; absence is ambiguous; explicit wins;
+  // the stamp is a last-write-wins DEFAULT, which is why provenance is marked).
+  //
+  // ⚠ MUST RUN AFTER THE `auto` STAMPS, for the same reason plan_slug must —
+  // shouldDeriveWhyGoal reads `env.auto` to exclude system code emitting under
+  // a borrowed agent identity (D-095).
+  if (shouldDeriveWhyGoal({ explicitWhy: env.why, auto: env.auto, from: identity.ownerId })) {
+    // Static read — agent-state-stamp is ALREADY a static import of this module
+    // (noteIntentDeclared above), so unlike derivePlanSlug's presence read there
+    // is no new import-graph edge to keep dynamic. One Map.get, no I/O.
+    const goalRef = await deriveWhyGoal({
+      ownerId: identity.ownerId,
+      readGoalRef: (id) => readAgentStateStamp(id).goalRef,
+    });
+    if (goalRef) {
+      env.why = { goalRef };
+      const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
+      env.fieldProvenance = { ...existing, why: WHY_GOAL_DERIVED_PROVENANCE };
     }
   }
   // Park the envelope durably for each addressed slot (./slot-parked-store) —

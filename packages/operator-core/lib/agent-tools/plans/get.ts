@@ -817,6 +817,12 @@ export default defineTool({
               string,
               { featureId: string; status: string; harnessSlug: string }
             > = {};
+            // P-003: the newest transition across work-items linked to this
+            // plan — one of the two measurable freshness sources. Taken from
+            // the query below rather than a second one: it already selects
+            // exactly this plan's linked rows, so the signal costs one more
+            // column instead of a round-trip.
+            let linkedWorkItemUpdatedAt: string | null = null;
             try {
               const rows = await withWorkspace(
                 DEFAULT_WORKSPACE_ID,
@@ -830,12 +836,13 @@ export default defineTool({
                       stamped_plan_slug: string | null;
                       stamped_item_id: string | null;
                       harness_slug: string;
+                      updated_ts: string | number | null;
                     }[]
                   >`
               SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
                      payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                      payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
-                     harness_slug
+                     harness_slug, updated_ts
                 FROM harness_shared.harness_features_consolidated
                WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
                  AND (source_plan_slug = ${slug}

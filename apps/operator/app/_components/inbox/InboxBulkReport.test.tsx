@@ -428,6 +428,10 @@ describe("buildInboxBulkReviewGroups", () => {
       ready: 3,
       handled: 13,
       manual: 6,
+      // P-004: rows the resolver never reached are their own outcome. This
+      // real 158-row capture has none, which is itself the point — the
+      // category is additive and does not reshuffle a completed run.
+      notAssessed: 0,
       notApplied: 136,
     });
     expect(
@@ -613,9 +617,20 @@ describe("<InboxBulkReport>", () => {
     expect(alert.getAttribute("role")).toBe("alert");
     expect(alert.textContent).toContain("rejected as stale");
     expect(screen.getByTestId("review-row-mark-a").textContent).toBe("✓");
+
+    // P-010: the failed row LEAVES the pending pool rather than staying ticked.
+    // Pressing Apply again must not blind-re-dispatch a resolve that just
+    // failed; it is hoisted into "Failed to apply" with its reason and a Retry
+    // verb, and recovery goes through the row's own menu.
     expect(screen.getByTestId("review-report-apply").textContent).toContain(
-      "(1)",
+      "(0)",
     );
+    expect(screen.getByTestId("review-group-apply-failed")).toBeTruthy();
+    expect(screen.getByTestId("review-row-verb-b").textContent).toContain(
+      "Retry",
+    );
+    expect(screen.queryByTestId("review-row-check-b")).toBeNull();
+    expect(screen.getByTestId("review-row-menu-b")).toBeTruthy();
   });
 
   it("hydrates only one explicitly opened detail across 200 report rows", () => {
