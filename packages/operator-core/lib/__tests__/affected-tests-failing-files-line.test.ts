@@ -50,9 +50,15 @@ import {
   formatStaleFailureSummary,
   AFFECTED_TESTS_STALE_FAILURES_TOKEN,
 } from '../../../../scripts/lib/vitest-summary.mjs';
+import { classifyAffectedCargoFailure } from '../../../../scripts/lib/cargo-result.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+// Subject path is overridable ONLY so a mutation probe can point this at a COPY outside the
+// tree (CLAUDE.md, "Proving a guard is falsifiable"). Mutating the real file in place races
+// git-sync's whole-tree sweep, which will happily commit the mutant. Defaults to the real path.
+const AFFECTED_TESTS = process.env.PROBE_SCRIPT
+  ? resolve(process.env.PROBE_SCRIPT)
+  : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 
 /** Parse the emitted line back into fields, the way a log consumer would. */
 function parseLine(line: string) {
@@ -709,11 +715,44 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
   });
 
   it('accounts for the non-vitest cargo task, which the attributor cannot speak for', () => {
-    // Cargo does not go through attributeFailedTask, so its two failure sites are the one
-    // place a red task could still be silently omitted from the break set.
-    const cargoReasons = source.match(/reason: 'non-vitest'/g) ?? [];
-    expect(cargoReasons).toHaveLength(2); // exit-nonzero, and runner-error
+    // Cargo does not go through attributeFailedTask, so its two failure sites — exit-nonzero
+    // and runner-error — are the one place a red task could still be silently omitted from
+    // the break set. Both must reach `unattributedTasks`, or an empty file list reads as
+    // clean while cargo is red.
+    //
+    // This assertion used to COUNT the literal `reason: 'non-vitest'` twice in this file.
+    // EI-21950408988436927 made that reason structured and per-class
+    // (non-vitest | disk-admission-refused | killed-by-signal) and moved the ordinary-failure
+    // literal into the pure classifier — so the count went red (WI-1593459) while the
+    // invariant itself still held. A literal count is a proxy for the wiring; assert the
+    // wiring and the behaviour directly, neither of which depends on which file a string
+    // happens to live in.
+
+    // Site 1 — exit-nonzero: classified, gated, and pushed with the CLASSIFIER's reason.
+    expect(source).toContain('classifyAffectedCargoFailure({');
+    expect(source).toContain(
+      "if (cargoFailureClass.gating && !quarantined.has('papercusp-desktop'))",
+    );
+    expect(source).toContain('reason: cargoFailureClass.reason,');
     expect(source).toContain("failedTaskNames.push('papercusp-desktop :: cargo test')");
+
+    // Site 2 — runner-error: the catch path accounts for itself directly.
+    expect(source).toContain(
+      "failedTaskNames.push('papercusp-desktop :: cargo test (runner error)')",
+    );
+
+    // BOTH sites reach the break set. This is the assertion the literal count was standing
+    // in for, stated against the push that actually carries the task.
+    const cargoUnattributed =
+      source.match(/unattributedTasks\.push\(\{\s*task: 'papercusp-desktop :: cargo test/g) ?? [];
+    expect(cargoUnattributed).toHaveLength(2); // exit-nonzero, and runner-error
+
+    // BEHAVIOUR, so relocating the literal cannot quietly change what the break set is keyed
+    // on: an ordinary cargo failure still carries `non-vitest`, and every class stays gating —
+    // a suite that never ran must never be able to let the gate go green.
+    expect(classifyAffectedCargoFailure({ code: 1, output: '' }).reason).toBe('non-vitest');
+    expect(classifyAffectedCargoFailure({ code: 1, output: '' }).gating).toBe(true);
+    expect(classifyAffectedCargoFailure({ code: 75, output: '' }).gating).toBe(true);
   });
 
   it('stamps the same run token that names the full run log', () => {
