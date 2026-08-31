@@ -52,6 +52,7 @@ import { gateAbortLever, gateAbortRefireClause } from './release/gate-abort-stat
 import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-verdict-freshness';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
+import { readGateCandidateFailures, type GateCandidateFailures } from './gate-candidate-failures';
 import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 
@@ -1250,6 +1251,18 @@ export interface PipelinePosition {
       observedAtMs: number | null;
     } | null;
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
+    /**
+     * WI-1702869 — HOW MANY TEST FILES FAIL ON THE FROZEN CANDIDATE, and for each, whether
+     * its fix is ALREADY contained in `repairHead`. The one number gate triage needs and the
+     * one no instrument returned, which is why agents hand-wrote `test_runs` SQL and got it
+     * wrong (measured 2026-08-31: "45 → 29 failing" reported when the true answer was ONE
+     * failing file whose fix had already landed).
+     *
+     * ⚠ Read `candidateFailures.scope` before quoting any count from here: `filesJudged` is
+     * the AFFECTED RADIUS, not the full suite, so an empty failing list is NOT "the gate is
+     * green". `null` when there is no frozen repair queue to answer about.
+     */
+    candidateFailures: GateCandidateFailures | null;
     /** Routine-owned logical qualification state, projected from the same snapshot row. */
     qualification: NonNullable<GitPipelineSnapshot['gate']['qualification']>;
   };
@@ -3503,6 +3516,13 @@ export interface PipelinePositionDeps {
    * block dark while looking implemented. Fail-soft to `no-object`, never throws.
    */
   readGateOwnership?: () => Promise<CellOwnership>;
+  /**
+   * WI-1702869: resolve the failing-files-on-the-frozen-candidate answer. Injected by
+   * TESTS only — the default really queries Postgres and really runs the blob compares,
+   * for the same reason `readGateOwnership` does: a null-by-default dep would ship the
+   * cell dark while looking implemented. Fail-soft; never throws.
+   */
+  readGateCandidateFailures?: typeof readGateCandidateFailures;
 }
 
 /**
@@ -4719,6 +4739,20 @@ export async function gitPipelinePosition(
     checkpointRunLockLivePromise,
     gateOwnershipPromise,
   ]);
+  // WI-1702869: the failing-files-on-the-frozen-candidate answer. It cannot join the
+  // Promise.all above because it is the only leg that DEPENDS on `snap` — the candidate
+  // and repairHead it judges come from the frozen repair queue, which git-pipeline-stats
+  // resolves. No repair queue means no frozen candidate to answer about, and rather than
+  // manufacture a reading from the checkout HEAD (the exact inference that made
+  // `run-probe` non-authoritative on the sibling candidate cell) this stays `null`.
+  const candidateFailures = snap.gate.repairQueue
+    ? await (deps.readGateCandidateFailures ?? readGateCandidateFailures)({
+        candidateSha: snap.gate.repairQueue.candidate,
+        repairHeadSha: snap.gate.repairQueue.repairHead,
+        root,
+        submodulePaths: await submodulePaths(git, root),
+      })
+    : null;
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
   // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
   // authoritative answer sat one field away from the inferred one. Passing it makes the
@@ -4780,6 +4814,10 @@ export async function gitPipelinePosition(
     // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
     inconclusive: snap.gate.inconclusive,
     repairQueue: snap.gate.repairQueue ?? null,
+    // WI-1702869. Sits beside `repairQueue` because it is the same subject read one level
+    // deeper: the queue says WHICH sha is frozen, this says WHAT IS FAILING on it and
+    // whether each failure is already repaired at repairHead.
+    candidateFailures,
     qualification: snap.gate.qualification ?? projectCheckpointQualificationState(null),
     // P-004: WHO owns this red, so a reader can see the incident is already
     // claimed before filing another work-item about it. One indexed SELECT,

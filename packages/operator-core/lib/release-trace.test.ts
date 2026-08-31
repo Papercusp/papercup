@@ -68,6 +68,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       // EI-19405864032365760 made this REQUIRED for the same reason: `null` says this gate
       // RENDERED a verdict (no preflight abort recorded), which is what this fixture describes.
       inconclusive: null,
+      candidateFailures: null,
       qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {

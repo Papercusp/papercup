@@ -110,7 +110,22 @@ export interface GateCandidateFailures {
   unavailable: string | null;
   /** Truncation marker — a capped list is a bounded measurement, never a total. */
   truncated: boolean;
+  /**
+   * First-match verdict code. THE ORDER IS THE CONTENT: the two "there is no answer here"
+   * codes outrank every count, because in both of those states the counts below them
+   * describe nothing. A reader who branches on `stillBrokenCount` alone cannot tell an
+   * absent subject from a measured zero — which is precisely the collapse that produced
+   * the original wrong report ("the gate has no verdict" read as "no tests ran").
+   */
+  assessment: GateCandidateFailuresCode;
 }
+
+export type GateCandidateFailuresCode =
+  | 'no-frozen-candidate'
+  | 'unmeasured'
+  | 'none-failing'
+  | 'all-fixes-contained'
+  | 'repairs-outstanding';
 
 type GitRunner = (cwd: string, args: string[]) => Promise<string | null>;
 
@@ -143,10 +158,19 @@ const SCOPE_SENTENCE =
   '"repairHead is green"; the post-suite legs (lint/perf/desktop/delta) and the main fast-forward ' +
   'are separate and are reported by postSuiteMeasured.';
 
-function unavailable(reason: string, candidateSha: string | null, repairHeadSha: string | null): GateCandidateFailures {
+function unavailable(
+  reason: string,
+  candidateSha: string | null,
+  repairHeadSha: string | null,
+  assessment: GateCandidateFailuresCode,
+): GateCandidateFailures {
   return {
     candidateSha,
     repairHeadSha,
+    // ZEROES THAT ARE NOT MEASUREMENTS. They exist so the shape is stable for a reader
+    // that destructures blindly; `assessment` and `unavailable` are what say they mean
+    // nothing. This is the one place this module could manufacture a reassuring number,
+    // so it is the one place that has to be explicit about not doing so.
     filesJudged: 0,
     distinctFailingFiles: [],
     failingFileCount: 0,
@@ -156,6 +180,7 @@ function unavailable(reason: string, candidateSha: string | null, repairHeadSha:
     scope: SCOPE_SENTENCE,
     unavailable: reason,
     truncated: false,
+    assessment,
   };
 }
 
@@ -239,6 +264,7 @@ export async function readGateCandidateFailures(
       'no frozen candidate — there is no sha to judge, so there is no failing-files answer. This is not "zero failures".',
       null,
       repairHeadSha,
+      'no-frozen-candidate',
     );
   }
 
@@ -286,6 +312,7 @@ export async function readGateCandidateFailures(
       `test_runs unreadable: ${err instanceof Error ? err.message : String(err)}`,
       candidateSha,
       repairHeadSha,
+      'unmeasured',
     );
   }
 
@@ -340,5 +367,21 @@ export async function readGateCandidateFailures(
     scope: SCOPE_SENTENCE,
     unavailable: null,
     truncated,
+    // First-match, and `stillBrokenCount > 0` is checked FIRST on purpose: while even one
+    // file is genuinely unrepaired, that is the answer, regardless of how many of its
+    // siblings are already fixed. `all-fixes-contained` is reserved for the case where
+    // there is nothing left to do — claiming it while real work remains would be the
+    // reassuring-degradation failure this cell was filed to end.
+    assessment:
+      files.length === 0
+        ? 'none-failing'
+        : stillBrokenCount > 0
+          ? 'repairs-outstanding'
+          : alreadyFixedCount === files.length
+            ? 'all-fixes-contained'
+            : // Every remaining file measured `null`: rows exist but nothing could be
+              // compared. That is an unmeasured state wearing a green coat, so it is
+              // reported as unmeasured rather than as either verdict.
+              'unmeasured',
   };
 }

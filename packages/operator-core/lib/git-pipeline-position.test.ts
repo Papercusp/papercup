@@ -346,6 +346,7 @@ const snap = (
       // semantically correct default rather than a compiler-silencer: these fixtures describe a
       // gate that RENDERED a verdict, which is exactly the case where no abort is recorded.
       inconclusive: null,
+      candidateFailures: null,
       qualification: NO_QUALIFICATION,
       ...gate,
     },
@@ -1527,6 +1528,7 @@ describe('gitPipelinePosition (P-002)', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           }),
       },
@@ -1573,6 +1575,7 @@ describe('gitPipelinePosition (P-002)', () => {
               commitsBehindTip: null,
               observedCandidate: null,
               inconclusive: null,
+              candidateFailures: null,
               qualification: NO_QUALIFICATION,
             },
             'synced',
@@ -1627,6 +1630,7 @@ describe('gitPipelinePosition (P-002)', () => {
               commitsBehindTip: null,
               observedCandidate: null,
               inconclusive: null,
+              candidateFailures: null,
               qualification: NO_QUALIFICATION,
               lastGreenAtMs: Date.now() - 5 * 60_000,
             },
@@ -1932,6 +1936,7 @@ describe('gitPipelinePosition (P-002)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
@@ -2286,6 +2291,7 @@ describe('computeStages: position x health', () => {
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      candidateFailures: null,
       qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
@@ -2558,6 +2564,7 @@ describe('computeStages: position x health', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
       }),
@@ -2614,6 +2621,7 @@ describe('computeStages: position x health', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
       }),
@@ -2638,6 +2646,7 @@ describe('computeStages: position x health', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
       }),
@@ -2697,6 +2706,7 @@ describe('computeStages: position x health', () => {
         'migration preflight ABORTED this run — 1 migration(s) are pending. Pending: 727-widen-vectors.sql: null value',
       observedAtMs: 1,
     },
+    candidateFailures: null,
     qualification: NO_QUALIFICATION,
   });
 
@@ -2861,6 +2871,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
@@ -2893,6 +2904,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
@@ -2925,6 +2937,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
@@ -2957,6 +2970,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
@@ -2997,6 +3011,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            candidateFailures: null,
             qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
@@ -3446,6 +3461,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      candidateFailures: null,
       qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
@@ -3565,6 +3581,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
@@ -3801,6 +3818,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
         verdictProvenance: {
@@ -3843,6 +3861,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
         changeInCandidate: contained({
@@ -3872,6 +3891,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
       });
@@ -3893,6 +3913,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          candidateFailures: null,
           qualification: NO_QUALIFICATION,
         },
         changeInCandidate: contained({
@@ -3947,6 +3968,7 @@ describe('changeInCandidate (P-004)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
@@ -4582,6 +4604,7 @@ describe('stage levers (P-005)', () => {
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      candidateFailures: null,
       qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
@@ -4622,6 +4645,7 @@ describe('stage levers (P-005)', () => {
     commitsBehindTip: null,
     observedCandidate: null,
     inconclusive: null,
+    candidateFailures: null,
     qualification: NO_QUALIFICATION,
   };
   /** A suite really is running — the EI-18797292094433710 state, where waiting IS the lever. */
@@ -4682,6 +4706,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
       changeInCandidate: { ...NO_CANDIDATE, judgingContainsPath: false, missingReason: 'uncommitted' },
@@ -4706,6 +4731,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
     });
@@ -4935,6 +4961,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
       changeInCandidate: {
@@ -4966,6 +4993,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        candidateFailures: null,
         qualification: NO_QUALIFICATION,
       },
       changeInCandidate: {
@@ -5333,6 +5361,7 @@ describe('sweep exposure (P-006)', () => {
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      candidateFailures: null,
       qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
