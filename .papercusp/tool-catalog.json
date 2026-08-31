@@ -18365,7 +18365,7 @@
           "POST"
         ]
       },
-      "description": "Assemble a pot or offer's cross-machine P2P timeline: both sides' federated receipts plus local refused-op counters. `refusal` names a refused action; `excused-breach` is a preemption excluded from reliability; `honored` is success. D-029 `honored-first-turn-proven` includes a tool-backed first turn; legacy launch-only success is `honored-unverified`. For delegated spawns, `memberEvidenceAvailable:false` means an `indeterminate` outcome is unknowable here, not unhonored.",
+      "description": "Assemble a pot or offer's cross-machine P2P timeline: both sides' federated receipts plus local refused-op counters. `refusal` names a refused action; `excused-breach` is a preemption excluded from reliability; `honored` is success. Delegated-spawn receipts expose responder build evidence and compare it with this tracing operator as `same`, `skew`, or `unknown`; `skew` proves different loaded SHAs, never chronology. D-029 `honored-first-turn-proven` includes a tool-backed first turn; legacy launch-only success is `honored-unverified`. For delegated spawns, `memberEvidenceAvailable:false` means an `indeterminate` outcome is unknowable here, not unhonored.",
       "capabilities": [
         "coord:read"
       ],

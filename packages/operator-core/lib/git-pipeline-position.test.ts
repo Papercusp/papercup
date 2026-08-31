@@ -1350,19 +1350,28 @@ describe('gitPipelinePosition (P-002)', () => {
      * WI-6485 — the asymmetry the WI reported: the sha-only-probe leg above and the
      * submodule leg both already hoist `changeInCandidate.judgingSha` as
      * `not-applicable` when it's null for an explainable reason. The ORDINARY path
-     * branch (a real path, no submodule) did not, even though "no checkpoint run is
-     * in flight right now" is the exact same kind of explainable, enumerable null —
+     * branch (a real path, no submodule) did not, even though a MEASURED
+     * "no checkpoint run is in flight right now" is the exact same kind of
+     * explainable, enumerable null —
      * so `state:read { cell:'gate.greenCheckpoint.candidate' }` read it as a
      * measured, confident `value:null` via the CellHoist contract. A REAL path with
-     * no `resolveGateCandidates` override falls through to the unmocked resolver,
-     * which fails safely to `{judgingSha:null, nextCandidateSha:null}` in this
-     * sandboxed test environment (no real checkout to probe) — i.e. exactly "no
-     * checkpoint run is in flight", the case this fix hoists.
+     * no candidate is in flight. The liveness inputs are explicit because the
+     * production defaults read the real checkpoint cache + live run lock; leaving
+     * them unmocked made this test inherit whichever gate run happened to be active.
      */
     it('assesses an ORDINARY path with no run in flight as no-active-run, without manufacturing an unknown (D-009 supersedes WI-6485)', async () => {
       const res = await gitPipelinePosition(
         { path: 'apps/operator/app/x.ts' },
-        { git: measuring(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+        {
+          git: measuring(),
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap(),
+          readCheckpointRunSnapshot: async () => ({
+            activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+            computedAtMs: Date.now(),
+          }),
+          readCheckpointRunLock: async () => ({ held: false, elapsedSec: null }),
+        },
       );
       const leg = res.verdictUnknown.find((v) => v.leg === 'changeInCandidate.judgingSha');
       expect(leg).toBeUndefined();
